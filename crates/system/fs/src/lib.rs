@@ -13,11 +13,7 @@ pub mod acl;
 #[cfg(feature = "filesystem")]
 pub mod admission;
 #[cfg(feature = "filesystem")]
-pub mod authenticated_transport;
-#[cfg(feature = "filesystem")]
 pub mod availability;
-#[cfg(feature = "filesystem")]
-mod blob_access;
 #[cfg(feature = "filesystem")]
 pub mod cache_policy;
 #[cfg(feature = "filesystem")]
@@ -43,8 +39,6 @@ pub mod file_watch;
 #[cfg(feature = "filesystem")]
 pub mod fs;
 #[cfg(feature = "filesystem")]
-pub mod full_replica;
-#[cfg(feature = "filesystem")]
 pub mod fuse_session;
 #[cfg(feature = "filesystem")]
 pub mod hydration;
@@ -60,14 +54,8 @@ pub mod namespace;
 pub mod namespace_persist;
 #[cfg(all(feature = "filesystem", target_os = "linux"))]
 pub mod native;
-#[cfg(feature = "filesystem")]
-pub mod net;
-#[cfg(feature = "filesystem")]
-pub mod peer_auth;
 #[cfg(feature = "document-media")]
 pub mod public_content;
-#[cfg(feature = "filesystem")]
-pub mod replica_content;
 #[cfg(feature = "filesystem")]
 mod rich_metadata;
 #[cfg(feature = "filesystem")]
@@ -78,13 +66,9 @@ pub mod smart_monitor;
 pub mod storage;
 pub mod store;
 #[cfg(feature = "filesystem")]
-pub mod sync;
-#[cfg(feature = "filesystem")]
 pub mod sync_folder;
 #[cfg(feature = "filesystem")]
 pub mod thumbs;
-#[cfg(feature = "filesystem")]
-pub mod transport_switch;
 /// Putting a file into a workspace's tree from a host or a page that has the tree
 /// and no folder of its own.
 #[cfg(feature = "filesystem")]
@@ -95,8 +79,6 @@ pub mod tree_sync;
 #[cfg(feature = "filesystem")]
 pub mod unsaved;
 #[cfg(feature = "filesystem")]
-pub mod workspace_authority;
-#[cfg(feature = "filesystem")]
 pub mod writer;
 
 // The tilo-doc conflict merge decodes peer versions in Automerge workers.
@@ -106,11 +88,6 @@ tilo_automerge_isolate::test_worker!();
 
 #[cfg(feature = "filesystem")]
 pub use acl::{Access, AclEntry, AclHandle, IdentityKey, WorkspaceAcl};
-#[cfg(feature = "filesystem")]
-pub use authenticated_transport::{
-    AuthenticatedTransportConfig, AuthenticatedTransportError, authenticate_fs_peer_at,
-    authenticate_fs_peer_parts_at,
-};
 #[cfg(feature = "filesystem")]
 pub use availability::AvailabilityRegistry;
 #[cfg(feature = "filesystem")]
@@ -129,16 +106,10 @@ pub use identity::{
 #[cfg(feature = "filesystem")]
 pub use namespace::{Namespace, ROOT_INO};
 #[cfg(feature = "filesystem")]
-pub use peer_auth::{
-    AuthenticatedFsPeer, PeerAuthChallenge, PeerAuthError, PeerAuthProof, PendingPeerChallenges,
-};
-#[cfg(feature = "filesystem")]
 pub use smart::Heuristics;
 pub use store::ContentStore;
 #[cfg(feature = "filesystem")]
 pub use store::StoreEvictionError;
-#[cfg(feature = "filesystem")]
-pub use sync::{FsTransportIdentity, Ticket, Workspace};
 #[cfg(feature = "filesystem")]
 pub use thumbs::ThumbProvider;
 #[cfg(test)]

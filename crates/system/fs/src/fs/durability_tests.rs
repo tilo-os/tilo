@@ -14,11 +14,10 @@ struct Fixture {
 }
 
 impl Fixture {
-    async fn new() -> Self {
+    fn new() -> Self {
         let dir = tilo_test_env::memory_tempdir().unwrap();
-        let endpoint = test_server::direct_endpoint().await;
         let store = Arc::new(crate::store::ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let hydrator = Arc::new(Hydrator::new(store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let person = SigningKey::from_bytes(&[0x41; 32]);
         let device = SigningKey::from_bytes(&[0x52; 32]);
@@ -108,7 +107,7 @@ async fn committed_bytes(fs: &QuickFS, ino: u64) -> Vec<u8> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes() {
     {
-        let fixture = Fixture::new().await;
+        let fixture = Fixture::new();
         let fs = fixture.mount(true);
         let (ino, fh) = create_open(&fs, "notes.txt");
         fs.write_buffer(ino, 0, b"precious bytes").unwrap();
@@ -144,7 +143,7 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
         assert!(fixture.staged().is_empty());
     }
     {
-        let fixture = Fixture::new().await;
+        let fixture = Fixture::new();
         let fs = fixture.mount(false);
         let (ino, fh) = create_open(&fs, "plain.bin");
         fs.write_buffer(ino, 0, b"abc").unwrap();
@@ -161,7 +160,7 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unacceptable_or_uncommitted_bytes_survive_as_copies_and_across_crashes() {
     {
-        let fixture = Fixture::new().await;
+        let fixture = Fixture::new();
         let fs = fixture.mount(true);
         let (ino, fh) = create_open(&fs, "journal.log");
         fs.write_buffer(ino, 0, b"entry that must survive").unwrap();
@@ -182,7 +181,7 @@ async fn unacceptable_or_uncommitted_bytes_survive_as_copies_and_across_crashes(
         assert!(fixture.staged().is_empty());
     }
     {
-        let fixture = Fixture::new().await;
+        let fixture = Fixture::new();
         let (ino, moved_on) = {
             let fs = fixture.mount(true);
             let (ino, _fh) = create_open(&fs, "wal.db");
@@ -223,7 +222,7 @@ async fn unacceptable_or_uncommitted_bytes_survive_as_copies_and_across_crashes(
 /// them, not copy them beside their own file.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_commit_that_landed_despite_a_reported_failure_is_not_copied_beside_itself() {
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new();
     let ino = {
         let fs = fixture.mount(true);
         let (ino, fh) = create_open(&fs, "accounts.db");
@@ -265,7 +264,7 @@ async fn a_commit_that_landed_despite_a_reported_failure_is_not_copied_beside_it
 /// recovery must drop it rather than keep a half-saved copy beside the photo.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_new_files_first_commit_that_landed_is_not_copied_beside_itself() {
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new();
     let ino = {
         let fs = fixture.mount(true);
         let (ino, fh) = create_open(&fs, "photo.jpg");
@@ -301,7 +300,7 @@ async fn a_new_files_first_commit_that_landed_is_not_copied_beside_itself() {
 async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
     let bytes: Vec<u8> = (0..2_500_000_u32).map(|i| (i % 253) as u8).collect();
     {
-        let fixture = Fixture::new().await;
+        let fixture = Fixture::new();
         let fs = fixture
             .mount(true)
             .with_write_stage_dir(fixture.dir.path().join("stage"));
@@ -325,7 +324,7 @@ async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
         assert!(fixture.staged().is_empty());
     }
     {
-        let fixture = Fixture::new().await;
+        let fixture = Fixture::new();
         let fs = fixture
             .mount(true)
             .with_write_stage_dir(fixture.dir.path().join("stage"));
@@ -357,7 +356,7 @@ async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fsync_makes_the_name_durable_with_the_bytes_and_reports_when_it_cannot() {
-    let mut fixture = Fixture::new().await;
+    let mut fixture = Fixture::new();
     let on_disk = Arc::new(Mutex::new(fixture.namespace.lock().unwrap().save()));
     let refuse = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let document_id = {
@@ -424,7 +423,7 @@ async fn fsync_makes_the_name_durable_with_the_bytes_and_reports_when_it_cannot(
 /// remote edit or hydration; using it overwrote the file's start.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_append_lands_at_the_staged_end_and_keeps_offset_writes_and_truncation() {
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new();
     let fs = fixture.mount(true);
     let (ino, _fh) = create_open(&fs, "invoice.txt");
     let original =
@@ -462,7 +461,7 @@ async fn an_append_lands_at_the_staged_end_and_keeps_offset_writes_and_truncatio
 /// saved the namespace, are all there when it starts again from what is kept on disk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_change_the_mount_answered_for_outlives_a_kill() {
-    let mut fixture = Fixture::new().await;
+    let mut fixture = Fixture::new();
     let kept_at = fixture.dir.path().join("tree");
     let (kept, _) = crate::kept_documents::KeptDocuments::open(&kept_at).unwrap();
     kept.opened(

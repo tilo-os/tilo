@@ -29,8 +29,9 @@ struct Paths {
     config: PathBuf,
     runtime: PathBuf,
     identity_socket: PathBuf,
+    tree_socket: PathBuf,
     /// The storage socket alone, so Settings can be handed this directory
-    /// without the blob and authority sockets in `runtime`.
+    /// without the blob socket in `runtime`.
     storage: PathBuf,
 }
 
@@ -49,6 +50,10 @@ fn paths(env: &dyn Fn(&str) -> Option<OsString>) -> Result<Paths> {
         config: base("XDG_CONFIG_HOME", ".config").join("tilo"),
         runtime: runtime_dir.join("tilo/files-workspace"),
         identity_socket: runtime_dir.join("tilo/services/identity.sock"),
+        tree_socket: runtime_dir.join(format!(
+            "tilo/services/{}.sock",
+            tilo_fs::tree_sync::remote::SOCKET
+        )),
         storage: runtime_dir.join("tilo/files-storage"),
     };
     for path in [&paths.state, &paths.identity, &paths.config, &paths.runtime] {
@@ -67,18 +72,15 @@ fn private_dir(path: &Path) -> Result<()> {
 
 fn command(args: &PrimaryArgs, env: &dyn Fn(&str) -> Option<OsString>) -> Result<Command> {
     let paths = paths(env)?;
-    // Read-only: a cache with no saved signed authority, saved tree or
-    // discovered workspace is not started, so the desktop never creates an
-    // empty workspace. This production check validates the existing
-    // certificate/key, signed authority and exact Files capability; it never
-    // creates credentials.
-    workspace_startup::inspect(&paths.state)?.require_existing()?;
+    // Read-only: with no saved tree and no workspace service to sync one
+    // from, nothing starts, so the desktop never shows an empty workspace.
+    // This production check validates the existing certificate and key; it
+    // never creates credentials.
+    workspace_startup::inspect(&paths.state, &paths.tree_socket)?.require_existing()?;
     let status = Command::new(&args.admin_binary)
         .arg("files-workspace-check")
         .arg("--identity-root")
         .arg(&paths.identity)
-        .arg("--cache-dir")
-        .arg(&paths.state)
         .stdout(Stdio::null())
         .status()
         .with_context(|| format!("run {}", args.admin_binary.display()))?;
@@ -109,10 +111,7 @@ fn command(args: &PrimaryArgs, env: &dyn Fn(&str) -> Option<OsString>) -> Result
         .arg(paths.runtime.join("fs-blobs.sock"))
         .arg("--workspace-key-socket")
         .arg(&paths.identity_socket)
-        .arg("--session-link")
-        .arg(paths.runtime.join(tilo_fs::net::LINK_FILE))
-        .env("TILO_IDENTITY_ROOT", &paths.identity)
-        .env("TILO_AUTHORITY_SOCKET_DIR", &paths.runtime);
+        .env("TILO_IDENTITY_ROOT", &paths.identity);
     Ok(serve)
 }
 
@@ -183,10 +182,6 @@ mod tests {
         assert_eq!(
             envs[OsStr::new("TILO_IDENTITY_ROOT")],
             Some(home.join("certified").as_os_str())
-        );
-        assert_eq!(
-            envs[OsStr::new("TILO_AUTHORITY_SOCKET_DIR")],
-            Some(runtime.join("tilo/files-workspace").as_os_str())
         );
         assert!(!home.join("certified").exists());
     }

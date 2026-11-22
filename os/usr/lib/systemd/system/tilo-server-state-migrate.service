@@ -1,7 +1,7 @@
 [Unit]
 Description=Migrate host server state to its unprivileged account
 After=systemd-tmpfiles-setup.service
-Before=tilo-server.service tilo-fs-replica.service
+Before=tilo-server.service
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/tilo-server-state-migrate

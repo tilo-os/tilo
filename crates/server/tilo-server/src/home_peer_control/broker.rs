@@ -1,8 +1,7 @@
 //! Polkit-facing, narrowly scoped home-peer configuration broker.
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::io::Read;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,9 +16,7 @@ use tilo_server::ServerConfig;
 use tilo_server_protocol::WorkSetting;
 
 const SERVER_CONFIG: &str = "/etc/tilo/server.toml";
-const HOME_PEER_CONFIG: &str = "/etc/tilo/home-peer.toml";
 const MAX_REQUEST: u64 = 64 * 1024;
-const MAX_HOME_PEER_EXPORT: u64 = 8 * 1024 * 1024;
 
 #[derive(Parser)]
 #[command(name = "tilo-home-peer-control")]
@@ -69,8 +66,6 @@ struct ApplyRequest {
     /// The work this device takes from other devices.
     work: WorkSetting,
     workspace_ids: Vec<tilo_server_protocol::WorkspaceId>,
-    /// Whether it keeps full copies of its workspaces' files.
-    full_content_replication: bool,
     inbound_server: bool,
     remote_control_server: bool,
     app_serving: bool,
@@ -109,7 +104,6 @@ fn desired_config(request: &ApplyRequest) -> anyhow::Result<ServerConfig> {
     // Which workspaces this device holds, and how much of each, is the workspaces'
     // own hosting membership, not this file's.
     config.services.workspace_replication = serving;
-    config.services.full_content_replication = serving && request.full_content_replication;
     config.services.inbound_server = serving && request.inbound_server;
     config.services.remote_control_server = serving && request.remote_control_server;
     config.services.app_serving = serving && request.app_serving;
@@ -131,93 +125,8 @@ fn service(action: &str, unit: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn export_local_home_peer(
-    identity_root: &Path,
-    workspace_ids: &[tilo_server_protocol::WorkspaceId],
-) -> anyhow::Result<Vec<u8>> {
-    let mut random = [0_u8; 16];
-    getrandom::rand_core::Rng::fill_bytes(&mut UnwrapErr(SysRng), &mut random);
-    let temp_dir = PathBuf::from(format!(
-        "/etc/tilo/.home-peer-export-{}-{}",
-        std::process::id(),
-        hex::encode(random)
-    ));
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&temp_dir)
-        .context("create private full-sync export directory")?;
-    let output = temp_dir.join("bundle.toml");
-    let mut command = Command::new("/usr/bin/fs");
-    command
-        .env("TILO_IDENTITY_ROOT", identity_root)
-        .args([
-            "export-home-peer",
-            "--cache-dir",
-            "/var/cache/quick-fs",
-            "--acl",
-            "/var/lib/tilo/fs-capabilities.json",
-            "--output",
-        ])
-        .arg(&output);
-    for id in workspace_ids {
-        command.args(["--server-workspace-id", &id.to_string()]);
-    }
-    let result = bounded_command::run_prepared(command, None, 64 * 1024, Duration::from_secs(60));
-    let bytes = match result {
-        Ok(result) if result.status.success() => (|| -> std::io::Result<Vec<u8>> {
-            let mut bytes = Vec::new();
-            std::fs::File::open(&output)?
-                .take(MAX_HOME_PEER_EXPORT.saturating_add(1))
-                .read_to_end(&mut bytes)?;
-            if bytes.len() as u64 > MAX_HOME_PEER_EXPORT {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "full workspace sync export is too large",
-                ))
-            } else {
-                Ok(bytes)
-            }
-        })(),
-        Ok(_) => Err(std::io::Error::other(
-            "could not prepare full workspace sync",
-        )),
-        Err(error) => Err(std::io::Error::other(error)),
-    };
-    let _ = std::fs::remove_file(&output);
-    let _ = std::fs::remove_dir(&temp_dir);
-    let bytes = bytes.context("prepare local full-sync export")?;
-    let _: tilo_fs::full_replica::HomePeerSet = toml::from_str(std::str::from_utf8(&bytes)?)?;
-    Ok(bytes)
-}
-
 fn takes_work(config: &ServerConfig) -> bool {
     !config.work.takes_nothing()
-}
-
-fn needs_local_home_peer_export(config: &ServerConfig, home_peer_exists: bool) -> bool {
-    config.services.full_content_replication && !home_peer_exists
-}
-
-fn project_home_peer_workspaces(
-    bytes: &[u8],
-    selected_ids: &[tilo_server_protocol::WorkspaceId],
-) -> anyhow::Result<Vec<u8>> {
-    let mut home: tilo_fs::full_replica::HomePeerSet = toml::from_str(std::str::from_utf8(bytes)?)?;
-    tilo_fs::full_replica::validate_home_peer_set(&home)?;
-    let workspace = home
-        .workspaces
-        .first_mut()
-        .context("home-peer bundle has no global Files workspace")?;
-    let mut projected = selected_ids.to_vec();
-    projected.sort_unstable();
-    projected.dedup();
-    if projected.len() > 4096 {
-        bail!("too many workspace mappings");
-    }
-    workspace.server_workspace_ids = projected;
-    toml::to_string_pretty(&home)
-        .map(String::into_bytes)
-        .map_err(Into::into)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,13 +174,6 @@ fn apply_services(config: &ServerConfig) -> anyhow::Result<()> {
         service("disable", "tilo-server.service")?;
         service("stop", "tilo-server.service")?;
     }
-    if config.services.full_content_replication {
-        service("enable", "tilo-fs-replica.service")?;
-        service("restart", "tilo-fs-replica.service")?;
-    } else {
-        service("disable", "tilo-fs-replica.service")?;
-        service("stop", "tilo-fs-replica.service")?;
-    }
     Ok(())
 }
 
@@ -286,22 +188,12 @@ fn restore(path: &Path, previous: Option<&[u8]>) -> anyhow::Result<()> {
 fn commit_transaction(
     server_path: &Path,
     relay_bytes: &[u8],
-    home_path: &Path,
-    home_bytes: Option<&[u8]>,
     restart: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     let previous = std::fs::read(server_path).ok();
-    let previous_home = std::fs::read(home_path).ok();
     tilo_files::native::atomic::write(server_path, relay_bytes)?;
-    if let Some(bytes) = home_bytes
-        && let Err(error) = tilo_files::native::atomic::write(home_path, bytes)
-    {
-        restore(server_path, previous.as_deref())?;
-        return Err(error.into());
-    }
     if let Err(error) = restart() {
         restore(server_path, previous.as_deref())?;
-        restore(home_path, previous_home.as_deref())?;
         return Err(error.context("configuration was rolled back"));
     }
     Ok(())
@@ -310,43 +202,16 @@ fn commit_transaction(
 fn apply(request: &ApplyRequest) -> anyhow::Result<()> {
     std::fs::create_dir_all("/etc/tilo")?;
     let uid = invoking_uid()?;
-    let identity_root = validate_identity_root(&request.identity_root, uid, &home_for_uid(uid)?)?;
+    validate_identity_root(&request.identity_root, uid, &home_for_uid(uid)?)?;
     let previous_server_state = service_state("tilo-server.service")?;
-    let previous_fs_state = service_state("tilo-fs-replica.service")?;
     let config = desired_config(request)?;
     let bytes = toml::to_string_pretty(&config)?;
-    let home_bytes = if Path::new(HOME_PEER_CONFIG).is_file() {
-        let bytes = std::fs::read(HOME_PEER_CONFIG)?;
-        Some(bytes)
-    } else if needs_local_home_peer_export(&config, false) {
-        Some(export_local_home_peer(
-            &identity_root,
-            &request.workspace_ids,
-        )?)
-    } else {
-        None
-    };
-    let home_bytes = home_bytes
-        .as_deref()
-        .map(|bytes| project_home_peer_workspaces(bytes, &request.workspace_ids))
-        .transpose()?;
-    let result = commit_transaction(
-        Path::new(SERVER_CONFIG),
-        bytes.as_bytes(),
-        Path::new(HOME_PEER_CONFIG),
-        home_bytes.as_deref(),
-        || apply_services(&config),
-    );
+    let result = commit_transaction(Path::new(SERVER_CONFIG), bytes.as_bytes(), || {
+        apply_services(&config)
+    });
     if result.is_err() {
-        let server_restore = restore_service_state("tilo-server.service", previous_server_state);
-        let fs_restore = restore_service_state("tilo-fs-replica.service", previous_fs_state);
-        if let (Err(server), Err(filesystem)) = (&server_restore, &fs_restore) {
-            bail!(
-                "restore previous server service state: {server}; restore previous filesystem service state: {filesystem}"
-            );
-        }
-        server_restore.context("restore previous server service state")?;
-        fs_restore.context("restore previous filesystem service state")?;
+        restore_service_state("tilo-server.service", previous_server_state)
+            .context("restore previous server service state")?;
     }
     result
 }
@@ -711,7 +576,6 @@ mod tests {
                         tilo_server_protocol::WorkspaceId::from_u128(2),
                         tilo_server_protocol::WorkspaceId::from_u128(9),
                     ],
-                    full_content_replication: true,
                     inbound_server: true,
                     remote_control_server: false,
                     app_serving: false,
@@ -719,7 +583,7 @@ mod tests {
                 };
                 let config = desired_config(&request).unwrap();
                 assert!(!config.work.takes_nothing());
-                assert!(config.services.full_content_replication);
+                assert!(config.services.inbound_server);
             }
             {
                 let dir = tempfile::tempdir().unwrap();
@@ -740,31 +604,20 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn config_and_workspace_changes_reload_or_roll_back() {
+    fn config_changes_reload_or_roll_back() {
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("server.toml");
             tilo_files::native::atomic::write(&path, b"old").unwrap();
-            let home = dir.path().join("home.toml");
-            tilo_files::native::atomic::write(&home, b"old-home").unwrap();
-            let result = commit_transaction(&path, b"new", &home, Some(b"new-home"), || {
-                bail!("reload failed")
-            });
+            let result = commit_transaction(&path, b"new", || bail!("reload failed"));
             assert!(result.is_err());
             assert_eq!(std::fs::read(&path).unwrap(), b"old");
-            assert_eq!(std::fs::read(&home).unwrap(), b"old-home");
         }
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("server.toml");
-            let home = dir.path().join("home.toml");
-            commit_transaction(&path, b"new", &home, Some(b"new-home"), || Ok(())).unwrap();
+            commit_transaction(&path, b"new", || Ok(())).unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), b"new");
-            assert_eq!(std::fs::read(&home).unwrap(), b"new-home");
         }
         {
             assert_eq!(
@@ -780,84 +633,6 @@ mod tests {
                     active: true,
                 }),
                 ("disable", "restart")
-            );
-        }
-        {
-            let config = desired_config(&ApplyRequest {
-                identity_root: PathBuf::from("/var/lib/tilo"),
-                work: WorkSetting::own_person(),
-                workspace_ids: vec![tilo_server_protocol::WorkspaceId::from_u128(12)],
-                full_content_replication: true,
-                inbound_server: true,
-                remote_control_server: false,
-                app_serving: false,
-                compute: false,
-            })
-            .unwrap();
-            assert!(needs_local_home_peer_export(&config, false));
-            assert!(!needs_local_home_peer_export(&config, true));
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let server = dir.path().join("server.toml");
-            let home = dir.path().join("home.toml");
-            let governor = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
-            let authority = tilo_fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
-                uuid::Uuid::from_bytes([3; 16]),
-                1,
-                Vec::new(),
-                false,
-                &governor,
-            )
-            .unwrap();
-            let bundle = tilo_fs::full_replica::HomePeerSet {
-                status_file: dir.path().join("status.json"),
-                workspaces: vec![tilo_fs::full_replica::HomePeerBundle {
-                    ticket: "test-ticket".into(),
-                    cache_dir: dir.path().join("cache"),
-                    capability_json: "[]".into(),
-                    authority: Some(authority),
-                    members: Vec::new(),
-                    server_workspace_ids: vec![
-                        tilo_server_protocol::WorkspaceId::from_u128(7),
-                        tilo_server_protocol::WorkspaceId::from_u128(8),
-                    ],
-                }],
-            };
-            let original = toml::to_string_pretty(&bundle).unwrap();
-            tilo_files::native::atomic::write(&home, original.as_bytes()).unwrap();
-
-            let added = project_home_peer_workspaces(
-                original.as_bytes(),
-                &[
-                    tilo_server_protocol::WorkspaceId::from_u128(8),
-                    tilo_server_protocol::WorkspaceId::from_u128(9),
-                ],
-            )
-            .unwrap();
-            commit_transaction(&server, b"server-add", &home, Some(&added), || Ok(())).unwrap();
-            let after_add: tilo_fs::full_replica::HomePeerSet =
-                toml::from_str(&std::fs::read_to_string(&home).unwrap()).unwrap();
-            assert_eq!(
-                after_add.workspaces[0].server_workspace_ids,
-                vec![
-                    tilo_server_protocol::WorkspaceId::from_u128(8),
-                    tilo_server_protocol::WorkspaceId::from_u128(9)
-                ]
-            );
-
-            let removed = project_home_peer_workspaces(
-                &added,
-                &[tilo_server_protocol::WorkspaceId::from_u128(9)],
-            )
-            .unwrap();
-            commit_transaction(&server, b"server-remove", &home, Some(&removed), || Ok(()))
-                .unwrap();
-            let after_remove: tilo_fs::full_replica::HomePeerSet =
-                toml::from_str(&std::fs::read_to_string(&home).unwrap()).unwrap();
-            assert_eq!(
-                after_remove.workspaces[0].server_workspace_ids,
-                vec![tilo_server_protocol::WorkspaceId::from_u128(9)]
             );
         }
     }

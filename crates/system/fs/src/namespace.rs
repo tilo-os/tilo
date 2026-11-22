@@ -59,14 +59,6 @@ pub struct LiveDocumentBlobRoots {
     pub thumbnail: Option<Hash>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LiveBlobOwner {
-    pub path: String,
-    pub document_id: Option<FileDocumentId>,
-    pub manifest: Option<Hash>,
-    pub thumbnail: Option<Hash>,
-}
-
 #[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum LiveDocumentBlobScanError {
     #[error("live-record blob scan limit must be between 1 and {MAX_LIVE_RECORD_BLOB_SCAN}")]
@@ -1782,33 +1774,6 @@ impl Namespace {
     pub fn thumb_hash(&self, ino: u64) -> Option<Hash> {
         let id = self.ino_to_id.get(&ino)?;
         str_at(&self.doc, &self.node(id)?, "thumb").and_then(|h| hash_from_hex(&h))
-    }
-
-    /// Every live node naming content, with its path: the input of the blob provider's reverse
-    /// index. One pass over the tree, where a lookup per blob would scan it per request. A record
-    /// placed at more than one live node publishes no thumbnail, as in
-    /// [`Self::thumbnail_for_id`].
-    pub(crate) fn live_blob_owners(&self) -> Vec<LiveBlobOwner> {
-        let live = self.live_node_ids();
-        live.iter()
-            .filter_map(|id| {
-                let document_id = self.document_id_for_id(id);
-                let manifest = self.node_hash(id);
-                let thumbnail = self
-                    .node(id)
-                    .and_then(|obj| str_at(&self.doc, &obj, "thumb"))
-                    .and_then(|value| hash_from_hex(&value));
-                if manifest.is_none() && thumbnail.is_none() {
-                    return None;
-                }
-                Some(LiveBlobOwner {
-                    path: self.path_for_id(id)?,
-                    document_id,
-                    manifest,
-                    thumbnail,
-                })
-            })
-            .collect()
     }
 
     fn thumbnail_for_id(&self, id: &str) -> Option<Hash> {

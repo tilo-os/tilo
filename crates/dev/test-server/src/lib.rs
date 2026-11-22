@@ -175,7 +175,6 @@ impl Running {
                             tilo_server::ServerConfig {
                                 state_root: host_root.join("host"),
                                 identity_root: host_root.join("identity"),
-                                full_replica_status: host_root.join("full-replica/status.json"),
                                 packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
                                 ..tilo_server::ServerConfig::default()
                             },

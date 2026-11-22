@@ -316,8 +316,6 @@ mod tests {
     use super::*;
     use crate::store::ContentStore;
     use bytes::Bytes;
-    use iroh::endpoint::{Endpoint, presets};
-    use iroh::protocol::Router;
 
     #[test]
     fn speculation_is_guarded_and_budgeted() {
@@ -368,16 +366,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_persons_switch_overrides_the_system_checks() {
-        let endpoint = Endpoint::builder(presets::Minimal)
-            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-            .unwrap()
-            .bind()
-            .await
-            .unwrap();
-        let hydrator = Arc::new(Hydrator::new(
-            endpoint.clone(),
-            Arc::new(ContentStore::memory()),
-        ));
+        let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())));
         let heuristics = Heuristics::new(hydrator);
         let candidate = vec![(Hash::from([3; 32]), 10)];
 
@@ -405,7 +394,6 @@ mod tests {
             "the switch leaves the system's checks in charge"
         );
         drop(heuristics);
-        endpoint.close().await;
     }
 
     /// The policy monitor sleeps until a file is opened: the first open after a
@@ -413,16 +401,7 @@ mod tests {
     /// many there were.
     #[tokio::test]
     async fn an_open_wakes_the_policy_monitor() {
-        let endpoint = Endpoint::builder(presets::Minimal)
-            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-            .unwrap()
-            .bind()
-            .await
-            .unwrap();
-        let hydrator = Arc::new(Hydrator::new(
-            endpoint.clone(),
-            Arc::new(ContentStore::memory()),
-        ));
+        let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())));
         let heuristics = Heuristics::new(hydrator);
         assert!(!heuristics.take_opened(), "nothing was opened yet");
         assert!(
@@ -436,23 +415,19 @@ mod tests {
         tilo_test_env::within("the first open wakes the monitor", heuristics.opened()).await;
         assert!(heuristics.take_opened());
         assert!(!heuristics.take_opened(), "reported once");
-        endpoint.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn open_prediction_hydrates_a_real_sibling_and_drains_accounting() {
-        let server_endpoint = test_server::direct_endpoint().await;
-        let server_store = ContentStore::memory();
+        let server_store = Arc::new(ContentStore::memory());
         let sibling = Bytes::from_static(b"the next image's exact bytes");
         let sibling_hash = server_store.write_content(&sibling).await.unwrap().unwrap();
-        let router = Router::builder(server_endpoint.clone())
-            .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
-            .spawn();
 
-        let client_endpoint = test_server::direct_endpoint().await;
         let client_store = Arc::new(ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(client_endpoint.clone(), client_store.clone()));
-        hydrator.add_peer(server_endpoint.addr());
+        let hydrator = Arc::new(
+            Hydrator::new(client_store.clone())
+                .with_source(Arc::new(crate::hydration::StoreSource(server_store))),
+        );
         let heuristics = Heuristics::new(hydrator.clone());
 
         assert_eq!(
@@ -486,9 +461,6 @@ mod tests {
         );
 
         drop(heuristics);
-        router.shutdown().await.unwrap();
-        client_endpoint.close().await;
-        server_endpoint.close().await;
         client_store.shutdown().await.unwrap();
     }
 }

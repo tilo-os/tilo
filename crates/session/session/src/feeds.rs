@@ -54,20 +54,13 @@ impl crate::Session {
             personal,
             tilo_identity::policy_change::epoch(),
         );
-        // A list the daemon did not take stands for nothing: until one does,
-        // the session hands the same revision over again.
-        let unpublished = self
-            .shared
-            .fs_authority
-            .as_ref()
-            .is_some_and(crate::fs_authority::Publisher::unpublished);
-        if self.shared.capabilities_fed.get() == Some(revision) && !unpublished {
+        if self.shared.capabilities_fed.get() == Some(revision) {
             return;
         }
         self.shared.capabilities_fed.set(Some(revision));
         let tree = self.shared.handle.read(std::clone::Clone::clone);
-        if let Some(publisher) = &self.shared.fs_authority {
-            publisher.publish(&crate::fs_authority::list(
+        if let Some(content) = &self.shared.files_access {
+            content.tell_files_access(&crate::fs_authority::list(
                 &tree,
                 &self.shared.person,
                 crate::fs_authority::device_key(),

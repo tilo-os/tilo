@@ -34,13 +34,11 @@ serde_json.workspace = true
 socket2 = { version = "0.6", default-features = false, features = ["all"] }
 tilo-device-identity = { path = "../tilo-device-identity" }
 tilo-files = { path = "../../platform/tilo-files" }
-fs = { package = "tilo-fs", path = "../../system/fs" }
 tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync", "io-util", "macros"] }
-toml.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
 workspace-hack = { version = "0.1" }

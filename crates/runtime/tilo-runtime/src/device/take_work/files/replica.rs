@@ -67,7 +67,6 @@ pub(crate) struct ReplicaParts<'a> {
     pub(crate) folder: &'a Path,
     /// The profile's content store, the one its record content is kept in.
     pub(crate) store: Arc<tilo_fs::ContentStore>,
-    pub(crate) endpoint: iroh::Endpoint,
     pub(crate) author: &'a Author,
     /// This device's key and its person's, as the workspace knows them.
     pub(crate) keys: ([u8; 32], [u8; 32]),
@@ -127,7 +126,6 @@ impl ReplicaFiles {
             parts.state,
             NamespaceFile::of_tree(&tree),
             parts.store,
-            parts.endpoint,
             parts.author,
             Some((source, keys)),
         );
@@ -173,7 +171,6 @@ pub(crate) struct ReplicaHost {
     /// takes.
     pub(crate) own_folder: Option<PathBuf>,
     pub(crate) store: Arc<tilo_fs::ContentStore>,
-    pub(crate) endpoint: iroh::Endpoint,
     pub(crate) author: Author,
     pub(crate) credentials: Credentials,
     pub(crate) identity: PathBuf,
@@ -259,7 +256,6 @@ impl Replicas {
             state: &state,
             folder: &folder,
             store: Arc::clone(&self.host.store),
-            endpoint: self.host.endpoint.clone(),
             author: &self.host.author,
             keys: (
                 credentials.device_public_key(),

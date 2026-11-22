@@ -2170,7 +2170,6 @@ COPY \
     /usr/lib/systemd/user/
 COPY \
     os/usr/lib/systemd/system/tilo-server.service \
-    os/usr/lib/systemd/system/tilo-fs-replica.service \
     os/usr/lib/systemd/system/tilo-server-firstboot.service \
     os/usr/lib/systemd/system/tilo-server-state-migrate.service \
     os/usr/lib/systemd/system/tilo-network-start.service \

@@ -490,7 +490,6 @@ impl Peer {
             keys,
             replica: &replica,
             store: Arc::clone(&self.store),
-            endpoint: self.endpoint.clone(),
             content,
             actor,
             writers: Arc::clone(&self.writers),

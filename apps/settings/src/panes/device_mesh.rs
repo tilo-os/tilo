@@ -132,8 +132,6 @@ enum ServerRuntimeStatus {
     #[default]
     Offline,
     Online,
-    Syncing,
-    Ready,
     /// The server's state could not be read from here, which says nothing
     /// about whether the server is running.
     Unreadable,
@@ -163,30 +161,6 @@ impl ServerRuntimeStatus {
             return Self::Offline;
         }
         match tilo_server_protocol::metrics::load_metrics(&config.state_root) {
-            Ok(Some(_)) if config.services.full_content_replication => {
-                let ready = std::fs::read(&config.full_replica_status)
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                    .is_some_and(|proof| {
-                        let updated = proof
-                            .get("updated_at_ms")
-                            .and_then(serde_json::Value::as_u64)
-                            .unwrap_or(0);
-                        let now_ms = now
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                            .map_or(0, |duration| {
-                                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-                            });
-                        proof.get("state").and_then(serde_json::Value::as_str) == Some("ready")
-                            && proof
-                                .get("full_content_replication")
-                                .and_then(serde_json::Value::as_bool)
-                                == Some(true)
-                            && now_ms.saturating_sub(updated)
-                                <= u64::try_from(STATUS_FRESHNESS.as_millis()).unwrap_or(u64::MAX)
-                    });
-                if ready { Self::Ready } else { Self::Syncing }
-            }
             Ok(Some(_)) => Self::Online,
             Ok(None) => Self::Offline,
             Err(_) => Self::Unreadable,
@@ -197,8 +171,6 @@ impl ServerRuntimeStatus {
         t(match self {
             Self::Offline => "mesh-runtime-offline",
             Self::Online => "mesh-runtime-online",
-            Self::Syncing => "mesh-runtime-syncing",
-            Self::Ready => "mesh-runtime-ready",
             Self::Unreadable => "mesh-runtime-unreadable",
         })
     }
@@ -287,12 +259,9 @@ fn follow_server(
     now: &(dyn Fn() -> SystemTime + Send + Sync),
 ) {
     use std::sync::mpsc::RecvTimeoutError;
-    let heartbeat = [
-        config
-            .state_root
-            .join(tilo_server_protocol::metrics::METRICS_FILE),
-        config.full_replica_status.clone(),
-    ];
+    let heartbeat = [config
+        .state_root
+        .join(tilo_server_protocol::metrics::METRICS_FILE)];
     let on_change: crate::watch::OnChange = Arc::new(move || {
         let _ = poke.send(());
     });
@@ -331,8 +300,8 @@ fn follow_server(
 
 fn runtime_status_tone(status: ServerRuntimeStatus) -> StatusTone {
     match status {
-        ServerRuntimeStatus::Ready | ServerRuntimeStatus::Online => StatusTone::Success,
-        ServerRuntimeStatus::Syncing | ServerRuntimeStatus::Unreadable => StatusTone::Warning,
+        ServerRuntimeStatus::Online => StatusTone::Success,
+        ServerRuntimeStatus::Unreadable => StatusTone::Warning,
         ServerRuntimeStatus::Offline => StatusTone::Neutral,
     }
 }
@@ -365,7 +334,7 @@ pub enum DeviceMeshEffect {
     #[effect(kind = "outside")]
     #[effect(idempotent)]
     SetDeviceService {
-        #[param("full_content_replication, inbound_server, remote_control_server, app_serving or compute", choices = SERVICES)]
+        #[param("inbound_server, remote_control_server, app_serving or compute", choices = SERVICES)]
         service: String,
         on: bool,
     },
@@ -403,8 +372,7 @@ pub enum DeviceMeshEffect {
 }
 
 const ROOM_PARTS: [&str; 2] = ["processors", "memory"];
-const SERVICES: [&str; 5] = [
-    "full_content_replication",
+const SERVICES: [&str; 4] = [
     "inbound_server",
     "remote_control_server",
     "app_serving",
@@ -569,7 +537,7 @@ fn home_server_row(peer: &tilo_server_protocol::HomePeerRegistration) -> LiveRow
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum HomePeerHealth {
     Connecting,
-    Online { files_ready: bool },
+    Online,
     Removed,
     Unreachable,
 }
@@ -754,8 +722,7 @@ fn last_seen_label(last_seen_ms: u64) -> String {
 fn peer_health_badge(health: HomePeerHealth) -> String {
     t(match health {
         HomePeerHealth::Connecting => "mesh-badge-checking",
-        HomePeerHealth::Online { files_ready: true } => "mesh-badge-online",
-        HomePeerHealth::Online { files_ready: false } => "mesh-badge-syncing",
+        HomePeerHealth::Online => "mesh-badge-online",
         HomePeerHealth::Removed => "mesh-badge-removed",
         HomePeerHealth::Unreachable => "mesh-badge-offline",
     })
@@ -764,8 +731,7 @@ fn peer_health_badge(health: HomePeerHealth) -> String {
 fn peer_health_detail(health: HomePeerHealth) -> String {
     t(match health {
         HomePeerHealth::Connecting => "mesh-health-connecting",
-        HomePeerHealth::Online { files_ready: true } => "mesh-health-ready",
-        HomePeerHealth::Online { files_ready: false } => "mesh-health-syncing",
+        HomePeerHealth::Online => "mesh-health-ready",
         HomePeerHealth::Removed => "mesh-badge-removed",
         HomePeerHealth::Unreachable => "mesh-health-unreachable",
     })
@@ -988,9 +954,6 @@ impl DeviceMeshModel {
             }
             DeviceMeshEffect::SetDeviceService { service, on } => {
                 match service.as_str() {
-                    "full_content_replication" => {
-                        self.config.services.full_content_replication = *on;
-                    }
                     "inbound_server" => self.config.services.inbound_server = *on,
                     "remote_control_server" => self.config.services.remote_control_server = *on,
                     "app_serving" => self.config.services.app_serving = *on,
@@ -1122,10 +1085,6 @@ impl DeviceMeshModel {
     ) {
         match answer {
             Ok(Some(response)) => {
-                let ready = response
-                    .get("files_ready")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
                 let removed = response
                     .get("decommissioned")
                     .and_then(serde_json::Value::as_bool)
@@ -1136,7 +1095,7 @@ impl DeviceMeshModel {
                         if removed {
                             HomePeerHealth::Removed
                         } else {
-                            HomePeerHealth::Online { files_ready: ready }
+                            HomePeerHealth::Online
                         },
                     );
                     self.home_peer_last_seen
@@ -1192,7 +1151,6 @@ impl DeviceMeshModel {
         // A device that takes no work runs no service for others.
         self.config.services.workspace_replication = takes;
         self.config.services.inbound_server = takes;
-        self.config.services.full_content_replication &= takes;
         self.next_status_refresh = ui::time::now();
         true
     }
@@ -1443,7 +1401,6 @@ impl DeviceMeshModel {
             "identity_root": identity_root(),
             "work": self.config.work,
             "workspace_ids": Vec::<u64>::new(),
-            "full_content_replication": self.config.services.full_content_replication,
             "inbound_server": self.config.services.inbound_server,
             "remote_control_server": self.config.services.remote_control_server,
             "app_serving": self.config.services.app_serving,
@@ -1975,7 +1932,7 @@ mod tests {
                 })
                 .unwrap();
                 pane.apply(&DeviceMeshEffect::SetDeviceService {
-                    service: "full_content_replication".into(),
+                    service: "compute".into(),
                     on: true,
                 })
                 .unwrap();
@@ -1987,7 +1944,7 @@ mod tests {
 
                 let saved = ServerConfig::load(&path).unwrap();
                 assert_eq!(saved.work.from, WorkFrom::Anyone);
-                assert!(saved.services.full_content_replication);
+                assert!(saved.services.compute);
                 assert!(!saved.services.remote_control_server);
             }
 
@@ -2130,16 +2087,9 @@ mod tests {
                     work: "mesh-work-anyone".into(),
                 })
                 .unwrap();
-                pane.apply(&DeviceMeshEffect::SetDeviceService {
-                    service: "full_content_replication".into(),
-                    on: true,
-                })
-                .unwrap();
-
                 let saved = ServerConfig::load(&path).unwrap();
                 assert_eq!(saved.work.from, WorkFrom::Anyone);
                 assert!(saved.services.workspace_replication);
-                assert!(saved.services.full_content_replication);
                 assert!(saved.services.inbound_server);
             }
         }
@@ -2147,14 +2097,7 @@ mod tests {
         phase device_health_and_workspace_status_reflect_fresh_facts;
         {
             {
-                assert_eq!(
-                    peer_health_badge(HomePeerHealth::Online { files_ready: true }),
-                    "Online"
-                );
-                assert_eq!(
-                    peer_health_badge(HomePeerHealth::Online { files_ready: false }),
-                    "Syncing"
-                );
+                assert_eq!(peer_health_badge(HomePeerHealth::Online), "Online");
                 assert_eq!(peer_health_badge(HomePeerHealth::Unreachable), "Offline");
                 assert_eq!(peer_health_badge(HomePeerHealth::Connecting), "Checking");
                 assert_eq!(
@@ -2194,55 +2137,6 @@ mod tests {
                         modified + STATUS_FRESHNESS + Duration::from_secs(1)
                     ),
                     ServerRuntimeStatus::Offline
-                );
-            }
-
-            {
-                let dir = tempfile::tempdir().unwrap();
-                let proof = dir.path().join("full-replica.json");
-                let config = ServerConfig {
-                    state_root: dir.path().to_path_buf(),
-                    full_replica_status: proof.clone(),
-                    work: WorkSetting::own_person(),
-                    services: tilo_server_protocol::ServiceCapabilities::personal_server(),
-                    ..ServerConfig::default()
-                };
-                tilo_server_protocol::metrics::save_metrics(
-                    &config.state_root,
-                    &tilo_server_protocol::metrics::MetricsSnapshot::default(),
-                )
-                .unwrap();
-                let now = std::fs::metadata(
-                    config
-                        .state_root
-                        .join(tilo_server_protocol::metrics::METRICS_FILE),
-                )
-                .unwrap()
-                .modified()
-                .unwrap();
-                let now_ms = now
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis();
-                std::fs::write(
-                    &proof,
-                    format!(
-                        r#"{{"state":"ready","full_content_replication":true,"updated_at_ms":{now_ms}}}"#
-                    ),
-                )
-                .unwrap();
-                assert_eq!(
-                    ServerRuntimeStatus::read(&config, now),
-                    ServerRuntimeStatus::Ready
-                );
-                std::fs::write(
-                    &proof,
-                    r#"{"state":"syncing","full_content_replication":false,"updated_at_ms":0}"#,
-                )
-                .unwrap();
-                assert_eq!(
-                    ServerRuntimeStatus::read(&config, now),
-                    ServerRuntimeStatus::Syncing
                 );
             }
         }
@@ -2298,7 +2192,6 @@ mod tests {
         let state_root = dir.path().join("tilo-server");
         std::fs::create_dir_all(&state_root).unwrap();
         let config = ServerConfig {
-            full_replica_status: state_root.join("full-replica.json"),
             state_root,
             work: WorkSetting::own_person(),
             ..ServerConfig::default()
@@ -2837,7 +2730,7 @@ mod tests {
             let value = if request.target.provider == identity_admin::PROVIDER {
                 match request.target.address.action.as_str() {
                     identity_admin::HOME_PEER_REMOVE => {
-                        serde_json::json!({"decommissioned": true, "files_ready": false})
+                        serde_json::json!({"decommissioned": true})
                     }
                     _ => serde_json::json!({"device": PHONE, "revoked": true}),
                 }

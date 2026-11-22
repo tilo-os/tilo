@@ -16,27 +16,15 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use fuser::{Config, MountOption, SessionACL};
 use mount::{MountConfig, MountOutcome, MountServices, run_mount};
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_action_policy::MemberId;
 use tilo_fs::clock::unix_now_ms;
-use tilo_fs::full_replica::{
-    HomePeerBundle, HomePeerSet, aggregate_status, hydrate_full_workspace,
-    prune_obsolete_workspace_content, save_status, validate_home_peer_set,
-};
 use tilo_fs::namespace::{MountAuthor, ROOT_INO};
-use tilo_fs::sync;
-use tilo_fs::workspace_authority::{
-    WorkspaceAuthority, WorkspaceAuthorityEnvelope, load_persisted_content_peers,
-    local_authority_socket_path, local_content_socket_path, register_local_content_peer,
-    serve_local_authority, serve_local_content_peer,
-};
 use tilo_fs::{
-    AclHandle, CapabilityFile, ContentStore, FsTransportIdentity, Heuristics, Hydrator,
-    IdentityKey, Namespace, QuickFS, Ticket, Workspace, identity_paths,
-    load_certified_mount_identity_once_valid, load_revocation_list,
+    AclHandle, CapabilityFile, ContentStore, Heuristics, Hydrator, IdentityKey, Namespace, QuickFS,
+    identity_paths, load_certified_mount_identity_once_valid,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -49,117 +37,6 @@ struct Cli {
     test_clock_file: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
-}
-
-#[cfg(test)]
-mod namespace_tests {
-    use super::*;
-
-    /// Every change is journaled under the namespace's lock before the request that made it is
-    /// answered, so a process restarted at any instant holds it; saving then costs the documents
-    /// that changed, never the whole tree, and an unchanged tree is not written again.
-    #[test]
-    fn a_change_is_kept_before_it_is_answered_and_costs_its_documents() {
-        let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join("namespace");
-        assert!(!namespace_kept(&dir), "a fresh cache keeps no tree");
-        let (namespace, kept) = open_namespace("keeper".into(), Some(&dir)).unwrap();
-        let kept = kept.expect("a namespace with a directory is kept");
-        let namespace = Arc::new(Mutex::new(namespace));
-
-        namespace
-            .lock()
-            .unwrap()
-            .create_dir(tilo_fs::ROOT_INO, "placed", 1)
-            .unwrap();
-        kept.journal(&mut namespace.lock().unwrap()).unwrap();
-        assert!(namespace_kept(&dir), "the change is journaled");
-
-        let (mut restarted, _) = open_namespace("restarted".into(), Some(&dir)).unwrap();
-        assert!(
-            restarted.lookup(tilo_fs::ROOT_INO, "placed").is_some(),
-            "a process restarted after the change holds it"
-        );
-
-        keep_now(&namespace, &kept);
-        namespace
-            .lock()
-            .unwrap()
-            .create_dir(tilo_fs::ROOT_INO, "saved", 2)
-            .unwrap();
-        kept.journal(&mut namespace.lock().unwrap()).unwrap();
-        keep_now(&namespace, &kept);
-        let (mut again, _) = open_namespace("again".into(), Some(&dir)).unwrap();
-        for name in ["placed", "saved"] {
-            assert!(again.lookup(tilo_fs::ROOT_INO, name).is_some(), "{name}");
-        }
-        drop(again);
-        let kept_heads = namespace.lock().unwrap().document_heads();
-        let digest = keep_generation(&namespace, &kept).unwrap();
-        assert_eq!(
-            keep_generation(&namespace, &kept).unwrap(),
-            digest,
-            "saving an unchanged tree is the same generation"
-        );
-        let (mut third, _) = open_namespace("third".into(), Some(&dir)).unwrap();
-        assert_eq!(
-            third.document_heads(),
-            kept_heads,
-            "the saved documents hold the generation the proof named"
-        );
-    }
-}
-
-#[cfg(test)]
-mod legacy_namespace_tests {
-    use super::*;
-
-    /// A cache a previous build filled has the whole tree in one file beside where the kept
-    /// documents go; the file is set aside and the mount keeps the documents it has.
-    #[test]
-    fn a_previous_build_s_one_file_namespace_is_set_aside() {
-        let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join("namespace");
-        let (namespace, kept) = open_namespace("keeper".into(), Some(&dir)).unwrap();
-        let kept = kept.expect("a namespace with a directory is kept");
-        let namespace = Arc::new(Mutex::new(namespace));
-        namespace
-            .lock()
-            .unwrap()
-            .create_file(tilo_fs::ROOT_INO, "kept.txt", None, 0, 1)
-            .unwrap();
-        kept.journal(&mut namespace.lock().unwrap()).unwrap();
-
-        let legacy = temp.path().join("namespace.bin");
-        std::fs::write(&legacy, b"one whole document").unwrap();
-        let backups = tilo_fs::durable_backup::backup_dir(&legacy).unwrap();
-        std::fs::create_dir_all(&backups).unwrap();
-        std::fs::write(backups.join("generation-1.bak"), b"older").unwrap();
-
-        let (mut reopened, _) = open_namespace("restarted".into(), Some(&dir))
-            .expect("a previous build's file does not keep the mount down");
-        assert!(
-            reopened.lookup(tilo_fs::ROOT_INO, "kept.txt").is_some(),
-            "the kept documents are what the mount reads"
-        );
-        assert!(!legacy.exists(), "the one-file namespace is out of the way");
-        let names: Vec<String> = std::fs::read_dir(temp.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-        assert!(
-            names
-                .iter()
-                .any(|name| name.starts_with("namespace.bin.older-image-")),
-            "the previous build's file is kept: {names:?}"
-        );
-        assert!(
-            names
-                .iter()
-                .any(|name| name.starts_with(".namespace.bin.") && name.contains(".older-image-")),
-            "its generations are kept with it: {names:?}"
-        );
-    }
 }
 
 /// How the mount enforces per-identity file access.
@@ -188,11 +65,6 @@ struct SocketArgs {
     /// Serve the scoped document-media capability here.
     #[arg(long)]
     blob_sock: Option<PathBuf>,
-    /// Reach the network through the session's endpoint, linking to it at this file, instead of
-    /// binding an endpoint of this mount's own under the device key: a device has one endpoint id,
-    /// the session's (see `tilo_fs::net`).
-    #[arg(long, value_name = "FILE")]
-    session_link: Option<PathBuf>,
 }
 
 /// Which local backend serves the workspace.
@@ -296,24 +168,6 @@ enum Command {
         #[command(flatten)]
         backend: BackendArgs,
     },
-    /// Join a workspace shared by a peer (via its ticket) and mount it.
-    Mount {
-        /// Where to mount the workspace.
-        #[arg(short, long)]
-        mount_point: PathBuf,
-        /// The ticket printed by the hosting peer.
-        #[arg(short, long)]
-        ticket: String,
-        /// Persistent content cache directory (the iroh-blobs store root).
-        #[arg(short, long)]
-        cache_dir: Option<PathBuf>,
-        #[command(flatten)]
-        sockets: SocketArgs,
-        #[command(flatten)]
-        acl: AclArgs,
-        #[command(flatten)]
-        backend: BackendArgs,
-    },
     /// Run the per-user cloud account service: one mount per enabled
     /// cloud storage account under `--mounts-root` (`~/Remote`).
     #[cfg(target_os = "linux")]
@@ -350,45 +204,6 @@ enum Command {
         mount_point: PathBuf,
         #[arg(long)]
         state_dir: PathBuf,
-    },
-    /// Keep a complete, authenticated workspace replica without mounting FUSE.
-    Replica {
-        /// A home-peer bundle exported by an existing workspace member.
-        #[arg(long)]
-        config: PathBuf,
-    },
-    /// Export the one-file home-peer bundle for an always-on Tilo host.
-    ExportHomePeer {
-        /// Cache directory of the workspace currently served by this device.
-        #[arg(long)]
-        cache_dir: PathBuf,
-        /// Existing capability list which the home peer must enforce.
-        #[arg(long)]
-        acl: PathBuf,
-        /// Destination bundle to transfer to the home peer.
-        #[arg(long)]
-        output: PathBuf,
-        /// Persistent cache directory on the home peer.
-        #[arg(long, default_value = "/var/lib/tilo/full-replica")]
-        replica_cache_dir: PathBuf,
-        /// Atomic readiness proof read by tilo-server.
-        #[arg(long, default_value = "/var/lib/tilo/full-replica/status.json")]
-        status_file: PathBuf,
-        /// Additional members held by the host identity.
-        #[arg(long = "member")]
-        members: Vec<String>,
-        /// Server workspace shard backed by this filesystem workspace.
-        #[arg(long = "server-workspace-id")]
-        server_workspace_ids: Vec<collab_types::WorkspaceId>,
-    },
-    /// Register a direct filesystem endpoint obtained from authenticated server
-    /// discovery with the running local filesystem daemon.
-    RegisterContentPeer {
-        #[arg(long)]
-        cache_dir: PathBuf,
-        /// Read one JSON-serialized `EndpointAddr` from standard input.
-        #[arg(long)]
-        endpoint_stdin: bool,
     },
     /// Ask the origins of this device's public catalogue copies that are due
     /// whether they changed, through the running daemon.
@@ -467,7 +282,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             cache_dir,
             require_existing,
         } => {
-            let status = workspace_startup::inspect(&cache_dir)?;
+            let status = workspace_startup::inspect(&cache_dir, &tree_socket())?;
             if require_existing {
                 status.require_existing()?;
             }
@@ -490,7 +305,7 @@ async fn run_command(cli: Cli) -> Result<()> {
                 let cache = cache_dir
                     .as_deref()
                     .context("recovery requires --cache-dir")?;
-                workspace_startup::inspect(cache)?.require_existing()?;
+                workspace_startup::inspect(cache, &tree_socket())?.require_existing()?;
             }
             Box::pin(serve(
                 mount_point,
@@ -503,14 +318,6 @@ async fn run_command(cli: Cli) -> Result<()> {
             ))
             .await
         }
-        Command::Mount {
-            mount_point,
-            ticket,
-            cache_dir,
-            sockets,
-            acl,
-            backend,
-        } => mount(mount_point, ticket, cache_dir, sockets, acl, backend).await,
         #[cfg(target_os = "linux")]
         Command::CloudService {
             mounts_root,
@@ -567,28 +374,6 @@ async fn run_command(cli: Cli) -> Result<()> {
             .await??;
             Ok(())
         }
-        Command::Replica { config } => replica(config).await,
-        Command::ExportHomePeer {
-            cache_dir,
-            acl,
-            output,
-            replica_cache_dir,
-            status_file,
-            members,
-            server_workspace_ids,
-        } => export_home_peer(
-            &cache_dir,
-            &acl,
-            &output,
-            &replica_cache_dir,
-            status_file,
-            members,
-            server_workspace_ids,
-        ),
-        Command::RegisterContentPeer {
-            cache_dir,
-            endpoint_stdin,
-        } => register_content_peer(cache_dir, endpoint_stdin).await,
         Command::RefreshPublicContent { blob_sock } => {
             // fs.service starts only on a device with its certified identity, and while it
             // waits for the clock or restarts nobody listens on its socket: no daemon
@@ -622,44 +407,6 @@ async fn run_command(cli: Cli) -> Result<()> {
             Ok(())
         }
     }
-}
-
-async fn register_content_peer(cache_dir: PathBuf, endpoint_stdin: bool) -> Result<()> {
-    anyhow::ensure!(endpoint_stdin, "content endpoint must be supplied on stdin");
-    let mut encoded = Vec::new();
-    std::io::stdin().take(64 * 1024).read_to_end(&mut encoded)?;
-    anyhow::ensure!(
-        !encoded.is_empty() && encoded.len() < 64 * 1024,
-        "content endpoint input is empty or too large"
-    );
-    let registration =
-        serde_json::from_slice::<tilo_fs::workspace_authority::ContentPeerRequest>(&encoded)
-            .or_else(|_| {
-                // The original CLI accepted a raw EndpointAddr. Keep that wire contract
-                // while letting server discovery carry the NAS ticket a stock `fs serve` needs.
-                serde_json::from_slice::<iroh_base::EndpointAddr>(&encoded).map(|endpoint| {
-                    tilo_fs::workspace_authority::ContentPeerRequest {
-                        endpoint,
-                        ticket: None,
-                        server_service_id: None,
-                    }
-                })
-            })
-            .context("parse discovered content endpoint registration")?;
-    let ticket = Ticket::decode(&std::fs::read_to_string(workspace_ticket_path(&cache_dir))?)?;
-    let response = register_local_content_peer(
-        &local_content_socket_path(ticket.workspace_id()),
-        registration.endpoint,
-        registration.ticket,
-        registration.server_service_id,
-    )
-    .await?;
-    if response.rebind_required && !response.restart_scheduled {
-        bail!(
-            "content peer was saved, but this ad-hoc fs daemon must be restarted to join its workspace"
-        );
-    }
-    Ok(())
 }
 
 fn parse_identity(hex_str: &str) -> Result<IdentityKey> {
@@ -821,21 +568,7 @@ impl Drop for ServedSocket {
     }
 }
 
-/// An owner-only socket at `path` for the tokio runtime, replacing a stale one.
-fn bind_private_socket(path: &Path) -> std::io::Result<tokio::net::UnixListener> {
-    let listener = tilo_files::native::private::bind_socket(path)?;
-    listener.set_nonblocking(true)?;
-    tokio::net::UnixListener::from_std(listener)
-}
-
-async fn open_store(cache_dir: Option<PathBuf>) -> Result<ContentStore> {
-    match cache_dir {
-        Some(dir) => ContentStore::open(dir).await,
-        None => Ok(ContentStore::memory()),
-    }
-}
-
-/// [`open_store`] for a mount that may serve the native backend: its file-backed content
+/// The content store for a mount that may serve the native backend: its file-backed content
 /// lives on the store volume next to the workspace, so publishing a file and filling a
 /// placeholder share extents instead of copying them.
 async fn open_workspace_store(
@@ -869,481 +602,6 @@ fn native_content_dir(backend: &BackendArgs, _workspace: uuid::Uuid) -> Option<P
     None
 }
 
-/// A mount's network: the session's endpoint when it was given the session's link, else an
-/// endpoint of its own under the device key ([`tilo_fs::net`]).
-async fn network(
-    secret: &iroh::SecretKey,
-    session_link: Option<&Path>,
-) -> Result<tilo_fs::net::Net> {
-    if let Some(file) = session_link {
-        return Ok(tilo_fs::net::Net::Session(
-            tilo_fs::net::SessionLink::bind(secret.public(), file).await?,
-        ));
-    }
-    let (endpoint, lookup) = sync::bind_endpoint_with_key(secret.clone()).await?;
-    Ok(tilo_fs::net::Net::Direct { endpoint, lookup })
-}
-
-/// Keep the saved ticket naming where peers reach this device: through the session, its address
-/// is the session's, known once the session says hello.
-fn follow_session_address(
-    net: &tilo_fs::net::Net,
-    cache_dir: PathBuf,
-    mut ticket: Ticket,
-) -> Option<tokio::task::JoinHandle<()>> {
-    let tilo_fs::net::Net::Session(link) = net else {
-        return None;
-    };
-    let mut hellos = link.hellos();
-    Some(tokio::spawn(async move {
-        loop {
-            let device = hellos
-                .borrow_and_update()
-                .as_ref()
-                .map(|hello| hello.device.clone());
-            if let Some(device) = device
-                && device != ticket.node
-            {
-                ticket.node = device;
-                if let Err(error) = save_workspace_ticket(&cache_dir, &ticket) {
-                    eprintln!("could not save the workspace ticket: {error:#}");
-                }
-            }
-            if hellos.changed().await.is_err() {
-                return;
-            }
-        }
-    }))
-}
-
-fn workspace_ticket_path(cache_dir: &Path) -> PathBuf {
-    cache_dir.join("workspace-ticket")
-}
-
-/// Record the workspace this cache serves. The person's own tools read the ticket: approving
-/// a home server hands it the ticket, and the session registers server-discovered content
-/// peers against its workspace. The daemon runs as root with a private umask, so the ticket
-/// is made readable to the device-trust group, which the cache directory hands down.
-fn save_workspace_ticket(cache_dir: &Path, ticket: &Ticket) -> Result<()> {
-    let path = workspace_ticket_path(cache_dir);
-    let encoded = ticket.encode()?;
-    #[cfg(unix)]
-    tilo_files::native::atomic::write_with_mode(&path, encoded.as_bytes(), 0o640)?;
-    #[cfg(not(unix))]
-    tilo_files::native::atomic::write(&path, encoded.as_bytes())?;
-    Ok(())
-}
-
-/// The peers a mount of `ticket`'s workspace may take its namespace from: the ticket's node,
-/// then persisted content peers registered for this same workspace. A persisted peer of
-/// another workspace serves content by hash, but never the tree.
-fn bootstrap_peers(
-    ticket: &Ticket,
-    cache_dir: Option<&Path>,
-) -> Result<Vec<iroh_base::EndpointAddr>> {
-    let mut peers = vec![ticket.node.clone()];
-    if let Some(cache_dir) = cache_dir {
-        for peer in load_persisted_content_peers(cache_dir)? {
-            let same_workspace = peer
-                .decoded_ticket()?
-                .is_some_and(|bound| bound.workspace_id() == ticket.workspace_id());
-            if same_workspace && peers.iter().all(|known| known.id != peer.endpoint.id) {
-                peers.push(peer.endpoint);
-            }
-        }
-    }
-    Ok(peers)
-}
-
-/// A daemon can serve either its own workspace or exactly one discovered remote workspace.
-/// Refuse ambiguous persisted state instead of combining record backends: records are signed
-/// against a workspace UUID, so an arbitrary ticket could make a member read the wrong
-/// namespace.
-fn persisted_remote_workspace_ticket(cache_dir: Option<&Path>) -> Result<Option<Ticket>> {
-    let Some(cache_dir) = cache_dir else {
-        return Ok(None);
-    };
-    let mut selected: Option<Ticket> = None;
-    for peer in load_persisted_content_peers(cache_dir)? {
-        let Some(ticket) = peer.decoded_ticket()? else {
-            continue;
-        };
-        if let Some(existing) = &selected {
-            anyhow::ensure!(
-                existing.workspace == ticket.workspace,
-                "content peer cache contains more than one remote workspace; use a separate cache"
-            );
-        } else {
-            selected = Some(ticket);
-        }
-    }
-    Ok(selected)
-}
-
-fn managed_system_service() -> bool {
-    std::env::var_os("INVOCATION_ID").is_some()
-}
-
-/// Export a transfer-ready home-peer bundle from the workspace this device already serves. The
-/// ticket is written by `fs serve`, so nothing has to be copied by hand.
-fn export_home_peer(
-    cache_dir: &Path,
-    acl: &Path,
-    output: &Path,
-    replica_cache_dir: &Path,
-    status_file: PathBuf,
-    members: Vec<String>,
-    mut server_workspace_ids: Vec<collab_types::WorkspaceId>,
-) -> Result<()> {
-    let ticket_path = workspace_ticket_path(cache_dir);
-    let ticket = std::fs::read_to_string(&ticket_path)
-        .with_context(|| format!("read active workspace ticket {}", ticket_path.display()))?;
-    let decoded_ticket =
-        Ticket::decode(ticket.trim()).context("active workspace ticket is invalid")?;
-    if !acl.is_file() {
-        bail!("capability list {} is not a regular file", acl.display());
-    }
-    let capability_json = std::fs::read_to_string(acl)
-        .with_context(|| format!("read capability list {}", acl.display()))?;
-    tilo_fs::caps_file::authority(capability_json.as_bytes(), acl)?;
-    // The person's identity signed the authority this workspace serves; the bundle carries that
-    // revision, since the person's root is never on this device.
-    let person = tilo_device_identity::persist::read_public_key(&identity_paths().user_pubkey)
-        .context("read the person this device is certified for")?;
-    let saved = cache_dir.join("workspace-authority.bin");
-    let authority: WorkspaceAuthorityEnvelope = postcard::from_bytes(
-        &std::fs::read(&saved)
-            .with_context(|| format!("read the signed Files authority {}", saved.display()))?,
-    )
-    .context("the signed Files authority is unreadable")?;
-    authority.verify(decoded_ticket.workspace_id(), person)?;
-    server_workspace_ids.sort_unstable();
-    server_workspace_ids.dedup();
-    let workspace = HomePeerBundle {
-        ticket: ticket.trim().to_owned(),
-        cache_dir: replica_cache_dir.join(decoded_ticket.workspace_id().to_string()),
-        capability_json,
-        authority: Some(authority),
-        members,
-        server_workspace_ids,
-    };
-    let mut bundle = if output.exists() {
-        toml::from_str::<HomePeerSet>(&std::fs::read_to_string(output)?)
-            .context("parse existing home-peer bundle")?
-    } else {
-        HomePeerSet {
-            status_file,
-            workspaces: Vec::new(),
-        }
-    };
-    // Re-exporting refreshes the ticket, ACL and cache assignment for this
-    // workspace instead of leaving duplicate workers in the bundle.
-    bundle.workspaces.retain(|entry| {
-        Ticket::decode(&entry.ticket)
-            .map_or(true, |ticket| ticket.workspace != decoded_ticket.workspace)
-    });
-    bundle.workspaces.push(workspace);
-    tilo_files::native::atomic::write(output, toml::to_string_pretty(&bundle)?.as_bytes())?;
-    println!("exported home-peer bundle to {}", output.display());
-    Ok(())
-}
-
-/// Serve this replica's small file versions to the compute worker beside it
-/// ([`tilo_fs::replica_content`]), owner-only, from the workspace's cache directory; without it
-/// the worker fetches those inputs.
-fn spawn_replica_content(
-    cache_dir: &Path,
-    store: Arc<ContentStore>,
-) -> Option<tokio::task::JoinHandle<()>> {
-    let socket = tilo_fs::replica_content::socket_path(cache_dir);
-    match bind_private_socket(&socket) {
-        Ok(listener) => Some(tokio::spawn(tilo_fs::replica_content::serve(
-            listener, store,
-        ))),
-        Err(error) => {
-            eprintln!(
-                "could not serve replica content at {}: {error}",
-                socket.display()
-            );
-            None
-        }
-    }
-}
-
-/// Join a workspace as a durable, serving peer without a FUSE mount. The workspace router
-/// keeps the live capability policy in front of its blob provider, so a home peer never
-/// becomes an unenforced source.
-async fn replica(config_path: PathBuf) -> Result<()> {
-    let config_text = std::fs::read_to_string(&config_path)
-        .with_context(|| format!("read home-peer bundle {}", config_path.display()))?;
-    let bundle: HomePeerSet = toml::from_str(&config_text)
-        .with_context(|| format!("parse home-peer bundle {}", config_path.display()))?;
-    validate_home_peer_set(&bundle)?;
-    // Held for the life of the process: the server honours a ready status only while this lock
-    // is held (or its stamp is a few seconds old), so the status is written when it changes
-    // rather than every second. Taken before the status is touched, so a second replica
-    // refused here cannot clobber a running one's status.
-    let _alive = tilo_fs::full_replica::ReplicaLiveness::hold(&bundle.status_file)?;
-    save_status(
-        &bundle.status_file,
-        &tilo_fs::full_replica::FullReplicaStatus::syncing(),
-    )?;
-    let workspace_count = bundle.workspaces.len();
-    let (status_tx, mut status_rx) = tokio::sync::mpsc::channel(workspace_count.saturating_mul(2));
-    for (index, workspace) in bundle.workspaces.into_iter().enumerate() {
-        let status_tx = status_tx.clone();
-        tokio::spawn(async move {
-            if let Err(error) = replica_workspace(workspace, index, status_tx.clone()).await {
-                let mut failed = tilo_fs::full_replica::FullReplicaStatus::syncing();
-                failed.state = "failed".into();
-                failed.error = Some(error.to_string());
-                let _ = status_tx.send((index, failed)).await;
-            }
-        });
-    }
-    drop(status_tx);
-    let mut states = vec![tilo_fs::full_replica::FullReplicaStatus::syncing(); workspace_count];
-    loop {
-        let Some((index, worker_status)) = status_rx.recv().await else {
-            bail!("all home-peer workspace workers exited");
-        };
-        let Some(state) = states.get_mut(index) else {
-            bail!("home-peer worker returned an invalid workspace index");
-        };
-        *state = worker_status;
-        let aggregate = aggregate_status(&states);
-        save_status(&bundle.status_file, &aggregate)?;
-    }
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "The home-peer lifecycle keeps authority setup, record reconciliation, hydration, durable checkpointing, and readiness publication in order."
-)]
-async fn replica_workspace(
-    bundle: HomePeerBundle,
-    index: usize,
-    status_tx: tokio::sync::mpsc::Sender<(usize, tilo_fs::full_replica::FullReplicaStatus)>,
-) -> Result<()> {
-    let ticket = Ticket::decode(&bundle.ticket).context("decode home-peer ticket")?;
-    std::fs::create_dir_all(&bundle.cache_dir)?;
-
-    let (transport_switch, _transport_switch_task) = tilo_fs::transport_switch::spawn_from_env()?;
-    let paths = identity_paths();
-    let certified = load_certified_mount_identity_once_valid(&paths).await?;
-    let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
-    let (device, credentials) = certified.into_parts();
-    let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
-        .with_transport_switch(transport_switch);
-    let governor = credentials.user_public_key();
-    let authority = WorkspaceAuthority::open(
-        bundle.cache_dir.join("workspace-authority.bin"),
-        ticket.workspace_id(),
-        governor,
-        governor,
-        bundle
-            .members
-            .iter()
-            .map(|member| parse_member(member))
-            .collect::<Result<Vec<_>>>()?,
-    )?;
-    let envelope = bundle
-        .authority
-        .clone()
-        .context("home-peer bundle requires signed workspace authority")?;
-    // A transferred bundle is bootstrap material, not an authority rollback: a NAS may already
-    // hold a newer signed revision from a previous enrollment. Keep it across re-provisioning
-    // while still rejecting a malformed or wrong-workspace bundle.
-    envelope.verify(ticket.workspace_id(), governor)?;
-    if authority
-        .current()
-        .is_none_or(|current| envelope.revision > current.revision)
-    {
-        authority.apply(envelope)?;
-    }
-    let acl = authority.handle();
-    let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret).await?;
-    let store = Arc::new(open_store(Some(bundle.cache_dir.clone())).await?);
-    let _replica_content = spawn_replica_content(&bundle.cache_dir, Arc::clone(&store));
-    let net = tilo_fs::net::Net::Direct {
-        endpoint: endpoint.clone(),
-        lookup,
-    };
-    let hydrator = Arc::new(
-        Hydrator::new(net.clone(), Arc::clone(&store))
-            .with_identity(Arc::new(transport_identity.clone())),
-    );
-    let namespace_path = namespace_path(Some(&bundle.cache_dir));
-    let bootstrap = bootstrap_peers(&ticket, Some(&bundle.cache_dir))?;
-    for peer in &bootstrap {
-        hydrator.add_peer(peer.clone());
-    }
-    let (namespace_value, kept) = open_namespace(
-        MountAuthor::person(endpoint.id().to_string(), member(governor))
-            .in_workspace(ticket.workspace_id().to_string()),
-        namespace_path.as_deref(),
-    )?;
-    let namespace = Arc::new(Mutex::new(namespace_value));
-    // A home peer keeps the workspace's tree and every byte it names: the
-    // tree is the Files record it follows, and the content it hydrates.
-    let workspace = Workspace::join(
-        sync::SyncNode {
-            net,
-            store,
-            hydrator: Arc::clone(&hydrator),
-            namespace: Arc::clone(&namespace),
-            identity: transport_identity,
-            policy: Some(acl),
-        },
-        &ticket,
-        Some(&Arc::new(authority)),
-    )?;
-    // Compacts the tree's documents while the daemon serves; the record mesh keeps the fresh
-    // ones.
-    let _keeper = kept
-        .clone()
-        .map(|kept| spawn_keeper(Arc::clone(&namespace), kept));
-    println!("Home peer joined workspace; hydrating complete content replica.");
-    let mut hydrated_namespace = None;
-    let mut wait = ReplicaWait::new(&namespace);
-    loop {
-        let before = replica_namespace_fingerprint(&namespace);
-        if hydrated_namespace.as_ref() == Some(&before) {
-            // The proof stands for as long as this process holds its
-            // liveness lock: nothing to restamp. Any namespace delta wakes
-            // the next pass, which withdraws it first.
-            wait.settled().await;
-            continue;
-        }
-        // Withdraw first. A partial or stalled pass must never leave the
-        // previous workspace revision advertised as a complete replica.
-        let _ = status_tx
-            .send((index, tilo_fs::full_replica::FullReplicaStatus::syncing()))
-            .await;
-        let mut status = hydrate_full_workspace(&namespace, &hydrator).await;
-        if status.full_content_replication {
-            status.filesystem_endpoints.push(endpoint.addr());
-        }
-        let after = replica_namespace_fingerprint(&namespace);
-        if status.full_content_replication && before != after {
-            // A reconciliation landed while blobs were downloading. Start a
-            // fresh pass against that exact namespace rather than claiming a
-            // hybrid of two revisions.
-            hydrated_namespace = None;
-            continue;
-        }
-        if status.full_content_replication {
-            // The workspace did not change across this pass. Remove only blobs absent from its
-            // current authenticated root set, then force a fresh pass if a concurrent update
-            // arrives.
-            if let Err(error) = prune_obsolete_workspace_content(&namespace, &hydrator).await {
-                status = tilo_fs::full_replica::FullReplicaStatus::syncing();
-                status.state = "failed".into();
-                status.error = Some(format!("prune obsolete replica content: {error}"));
-            } else if replica_namespace_fingerprint(&namespace) != after {
-                // A new root arrived while obsolete blobs were being released: hydrate it before
-                // publishing another ready proof.
-                hydrated_namespace = None;
-                continue;
-            }
-        }
-        if status.full_content_replication {
-            // Do not advertise a content-complete generation until its namespace roots are
-            // durable too, or it could not prove which retained blobs are live after the owner
-            // goes offline.
-            let Some(kept) = kept.as_ref() else {
-                status = tilo_fs::full_replica::FullReplicaStatus::syncing();
-                status.state = "failed".into();
-                status.error = Some("home peer keeps no durable workspace tree".into());
-                let _ = status_tx.send((index, status)).await;
-                wait.retry().await;
-                continue;
-            };
-            // Unchanged heads before and after the save prove it persisted
-            // exactly the generation just verified.
-            let unchanged_before = replica_namespace_fingerprint(&namespace) == after;
-            match keep_generation(&namespace, kept) {
-                Ok(persisted)
-                    if unchanged_before && replica_namespace_fingerprint(&namespace) == after =>
-                {
-                    status.namespace_generation = Some(hex::encode(persisted));
-                }
-                Ok(_) => {
-                    // A namespace delta raced this pass.  Its checkpoint is
-                    // durable, but it has not yet had its blobs verified.
-                    hydrated_namespace = None;
-                    continue;
-                }
-                Err(error) => {
-                    status = tilo_fs::full_replica::FullReplicaStatus::syncing();
-                    status.state = "failed".into();
-                    status.error = Some(format!("persist replica namespace: {error}"));
-                }
-            }
-        }
-        let ready = status.full_content_replication;
-        let _ = status_tx.send((index, status)).await;
-        hydrated_namespace = ready.then_some(after);
-        if ready {
-            wait.settled().await;
-        } else {
-            wait.retry().await;
-        }
-        let _ = &workspace;
-    }
-}
-
-/// What the home-peer loop sleeps on between passes: a ready replica waits for the namespace to
-/// change; an incomplete or failed pass is retried after 1 s, doubling to a minute, and at once
-/// on a namespace change.
-struct ReplicaWait {
-    changes: tokio::sync::watch::Receiver<()>,
-    retry: Duration,
-}
-
-impl ReplicaWait {
-    const FIRST_RETRY: Duration = Duration::from_secs(1);
-    const MAX_RETRY: Duration = Duration::from_secs(60);
-    /// A ready replica re-projects the signed records this often even with
-    /// no namespace change: a bound for anything that did not announce.
-    const BACKSTOP: Duration = Duration::from_secs(300);
-
-    fn new(namespace: &Arc<Mutex<Namespace>>) -> Self {
-        Self {
-            changes: namespace.lock_recover().subscribe_changes(),
-            retry: Self::FIRST_RETRY,
-        }
-    }
-
-    async fn settled(&mut self) {
-        self.retry = Self::FIRST_RETRY;
-        self.until_change(Self::BACKSTOP).await;
-    }
-
-    async fn retry(&mut self) {
-        let delay = self.retry;
-        self.retry = delay.saturating_mul(2).min(Self::MAX_RETRY);
-        self.until_change(delay).await;
-    }
-
-    async fn until_change(&mut self, at_most: Duration) {
-        tokio::select! {
-            changed = self.changes.changed() => {
-                if changed.is_err() {
-                    tokio::time::sleep(at_most).await;
-                }
-            }
-            () = tokio::time::sleep(at_most) => {}
-        }
-    }
-}
-
-/// The namespace's generation for change detection: its Automerge heads, not a hash of a full
-/// save every heartbeat.
-fn replica_namespace_fingerprint(namespace: &Arc<Mutex<Namespace>>) -> Vec<automerge::ChangeHash> {
-    namespace.lock_recover().heads()
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "Serving assembles certified transport, ACLs, durable record services, namespace recovery, and mount task lifetimes in one ordered lifecycle."
@@ -1360,47 +618,46 @@ async fn serve(
     let SocketArgs {
         storage_sock,
         blob_sock,
-        session_link,
     } = sockets;
-    let (transport_switch, _transport_switch_task) = tilo_fs::transport_switch::spawn_from_env()?;
     let np = namespace_path(cache_dir.as_deref());
     let thumb_dir = thumb_path(cache_dir.as_deref());
     let availability = open_availability(cache_dir.as_deref())?;
     let eviction_queue = open_eviction_queue(cache_dir.as_deref())?;
     let paths = identity_paths();
     let certified = load_certified_mount_identity_once_valid(&paths).await?;
-    let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
-    let (device, credentials) = certified.into_parts();
-    let transport_identity =
-        FsTransportIdentity::new(credentials.clone(), Arc::clone(&revocations))
-            .with_transport_switch(transport_switch);
+    let (_, credentials) = certified.into_parts();
     let actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
     let mount_actor = cache_dir.as_deref().map(|_| actor);
-    let net = network(&device.secret, session_link.as_deref()).await?;
-    // Files act as the certified person by default; transport authorship and
-    // device-specific grants continue to use the endpoint/device key.
+    // Files act as the certified person by default; device-specific grants use the device key.
     let caps = resolve_acl(&acl_args, credentials.user_public_key())?;
     let acl = caps.as_ref().map(|c| (c.handle(), c.identity()));
     let _reload = caps
+        .clone()
         .map(|c| spawn_acl_reload(c, acl_args.acl_once))
         .transpose()?;
-    // A registered NAS ticket changes the workspace identity, not merely a blob source. Joining
-    // it here keeps the record mesh on the NAS UUID after `fs.service` restarts.
-    let remote_ticket = persisted_remote_workspace_ticket(cache_dir.as_deref())?;
-    let workspace_id = remote_ticket.as_ref().map_or_else(
-        || Ticket::workspace_id_for_topic(*net.id().as_bytes()),
-        Ticket::workspace_id,
-    );
+    let workspace_id = mount_id(credentials.device_public_key());
     let store = Arc::new(open_workspace_store(cache_dir.clone(), &backend, workspace_id).await?);
-    let author = net.id().to_string();
-    let managed_service = managed_system_service();
-    let hydrator = Hydrator::new(net.clone(), store.clone())
-        .with_identity(Arc::new(transport_identity.clone()));
-    let hydrator = Arc::new(match workspace_key_socket {
-        Some(socket) => {
+    let author = hex::encode(credentials.device_public_key());
+    let fresh = np.as_ref().is_none_or(|dir| !namespace_kept(dir));
+    // This mount's tree, as the Files resources of the person's own workspace, synced through
+    // this device's workspace service, which the session serves the trees of. This daemon is the
+    // app's endpoint, so what changes here reaches the person's other devices and the members of
+    // a shared workspace. A tree kept here before the person's own workspace had it goes into it
+    // as this device's write the first time the sync runs, signed as every other change of it is.
+    let workspace =
+        tilo_server_protocol::servers::person_workspace_id(&credentials.user_public_key());
+    let (tree, namespace, kept, service) =
+        open_tree(np.as_deref(), workspace, &credentials, author, &store).await?;
+    let hydrator = Hydrator::new(store.clone());
+    let hydrator = match &service {
+        Some(service) => hydrator.with_source(service.source()),
+        None => hydrator,
+    };
+    let hydrator = Arc::new(match (workspace_key_socket, &service) {
+        (Some(socket), _) => {
             let (policy, reader) = acl.as_ref().context("workspace file keys require an ACL")?;
             anyhow::ensure!(
                 backend.backend == BackendChoice::Fuse,
@@ -1408,38 +665,19 @@ async fn serve(
             );
             hydrator.with_scoped_file_keys(socket, policy.clone(), *reader)
         }
-        None if managed_service
-            && session_link.is_some()
-            && mount_point == Path::new(tilo_paths::WORKSPACE_MOUNT) =>
-        {
+        (None, Some(service)) if mount_point == Path::new(tilo_paths::WORKSPACE_MOUNT) => {
             let (policy, reader) = acl.as_ref().context("workspace file keys require an ACL")?;
-            hydrator.with_session_file_keys(policy.clone(), *reader)
+            hydrator.with_tree_file_keys(service.clone(), policy.clone(), *reader)
         }
-        None => hydrator,
+        (None, _) => hydrator,
     });
-    if let Some(cache_dir) = cache_dir.as_deref() {
-        for peer in load_persisted_content_peers(cache_dir)? {
-            hydrator.add_peer(peer.endpoint);
-        }
-    }
-    let fresh = np.as_ref().is_none_or(|dir| !namespace_kept(dir));
-    // This mount's tree, as the Files resources of the workspace it is: the person's own
-    // workspace, or the one a registered NAS ticket names. This daemon is the app's endpoint, so
-    // what changes here reaches the person's other devices and the members of a shared
-    // workspace. A tree kept here before the person's own workspace had it goes into it as this
-    // device's write the first time the sync runs, signed as every other change of it is.
-    let workspace = remote_ticket.as_ref().map_or_else(
-        || tilo_server_protocol::servers::person_workspace_id(&credentials.user_public_key()),
-        |ticket| ticket.workspace_id().to_string(),
-    );
-    let (tree, namespace, kept) = open_tree(
-        np.as_deref(),
-        workspace,
-        &credentials,
-        author.clone(),
-        &store,
-    )
-    .await?;
+    // Who may read and write which folder is the session's to decide, from the workspace's signed
+    // member list: what it says goes in force the moment it is said, and is kept for a start
+    // while the session is away.
+    let _access = match (&service, caps) {
+        (Some(service), Some(caps)) => Some(follow_access(service.access(), caps)),
+        _ => None,
+    };
 
     if fresh {
         if let Some(seed) = seed {
@@ -1450,67 +688,6 @@ async fn serve(
         println!("Restored workspace from {}", p.display());
     }
 
-    // The person's identity publishes the authority's signed revisions; every peer enforces the
-    // durable governor-signed state.
-    let workspace_authority = match cache_dir.as_ref() {
-        Some(cache_dir) => {
-            let members = acl_args
-                .members
-                .iter()
-                .map(|member| parse_member(member))
-                .collect::<Result<Vec<_>>>()?;
-            workspace_startup::owner_authority(
-                cache_dir,
-                workspace_id,
-                credentials.user_public_key(),
-                members,
-            )?
-        }
-        None => None,
-    };
-    // The desktop publishes signed ACL revisions through this group-restricted local socket. It
-    // never receives write access to the daemon cache, and the daemon remains the one authority
-    // writer.
-    let authority_socket = workspace_authority
-        .as_ref()
-        .map(|authority| local_authority_socket_path(authority.workspace()));
-    let authority_socket_task = match (authority_socket.as_ref(), workspace_authority.as_ref()) {
-        (Some(socket), Some(authority)) => {
-            Some(serve_local_authority(socket, Arc::clone(authority))?)
-        }
-        _ => None,
-    };
-    let _authority_socket = authority_socket_task
-        .as_ref()
-        .and(authority_socket)
-        .map(ServedSocket);
-    let content_socket = cache_dir
-        .as_ref()
-        .map(|_| local_content_socket_path(workspace_id));
-    // Only the managed system service may self-restart: an ad-hoc foreground `fs serve` stays
-    // attached to its caller, and `register-content-peer` answers it explicitly instead.
-    let (rebind_tx, rebind_rx) = tokio::sync::mpsc::unbounded_channel();
-    let content_socket_task = match content_socket.as_ref() {
-        Some(socket) => Some(serve_local_content_peer(
-            socket,
-            hydrator.clone(),
-            cache_dir.clone(),
-            workspace_id,
-            managed_service.then_some(rebind_tx),
-        )?),
-        None => None,
-    };
-    let _content_socket = content_socket_task
-        .as_ref()
-        .and(content_socket)
-        .map(ServedSocket);
-    // A discovered NAS ticket changes the namespace and record-backend UUID. FUSE and router state
-    // cannot safely swap that identity in place, so the managed mount acknowledges the durable
-    // registration and returns a rebind outcome; systemd starts the joined service again.
-    let workspace_args = workspace_authority
-        .as_ref()
-        .map(|authority| authority.handle())
-        .or_else(|| acl.as_ref().map(|(handle, _)| handle.clone()));
     let media = blob_sock
         .as_deref()
         .and_then(|socket| spawn_document_media(socket, &store, cache_dir.as_deref()));
@@ -1518,41 +695,6 @@ async fn serve(
         .as_ref()
         .and_then(|_| blob_sock.clone())
         .map(ServedSocket);
-    let node = sync::SyncNode {
-        net: net.clone(),
-        store: store.clone(),
-        hydrator: hydrator.clone(),
-        namespace: namespace.clone(),
-        identity: transport_identity,
-        policy: workspace_args,
-    };
-    let (workspace, ticket, joined_remote) = if let Some(remote) = remote_ticket {
-        (
-            Workspace::join(node, &remote, workspace_authority.as_ref())?,
-            remote,
-            true,
-        )
-    } else {
-        let (workspace, ticket) = Workspace::host(node, workspace_authority.as_ref())?;
-        (workspace, ticket, false)
-    };
-
-    println!("Iroh NodeID: {}", net.id());
-    if joined_remote {
-        println!("Joined workspace from authenticated content discovery.");
-    } else {
-        println!(
-            "Hosting workspace — share this ticket to invite peers:\n{}",
-            ticket.encode()?
-        );
-    }
-    if let Some(cache_dir) = &cache_dir {
-        save_workspace_ticket(cache_dir, &ticket)?;
-    }
-    let _ticket_address = cache_dir
-        .clone()
-        .filter(|_| !joined_remote)
-        .and_then(|cache_dir| follow_session_address(&net, cache_dir, ticket.clone()));
     let keeper = kept
         .clone()
         .map(|kept| spawn_keeper(namespace.clone(), kept));
@@ -1583,7 +725,6 @@ async fn serve(
             availability,
             eviction_queue,
             actor: mount_actor,
-            rebind: managed_service.then_some(rebind_rx),
         },
     )
     .await?;
@@ -1600,174 +741,37 @@ async fn serve(
     }
     final_flush(keeper, &namespace, kept.as_ref()).await;
     trace("tree flushed");
-    if let Some(task) = authority_socket_task {
-        task.abort();
-    }
-    if let Some(task) = content_socket_task {
-        task.abort();
-    }
-    drop(workspace);
-    match mount_outcome {
-        MountOutcome::Unmounted => Ok(()),
-        MountOutcome::RebindRequested => {
-            anyhow::bail!("content peer registration requires a managed fs.service rebind")
-        }
-    }
+    let MountOutcome::Unmounted = mount_outcome;
+    Ok(())
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "Joining a workspace keeps ticket validation, certified transport, record recovery, synchronization, mounting, and final persistence in order."
-)] // Linear CLI assembly keeps resource lifetimes explicit.
-async fn mount(
-    mount_point: PathBuf,
-    ticket: String,
-    cache_dir: Option<PathBuf>,
-    sockets: SocketArgs,
-    acl_args: AclArgs,
-    backend: BackendArgs,
-) -> Result<()> {
-    let SocketArgs {
-        storage_sock,
-        blob_sock,
-        session_link,
-    } = sockets;
-    let (transport_switch, _transport_switch_task) = tilo_fs::transport_switch::spawn_from_env()?;
-    let ticket = Ticket::decode(&ticket)?;
-    if let Some(cache_dir) = &cache_dir {
-        save_workspace_ticket(cache_dir, &ticket)?;
-    }
-    let np = namespace_path(cache_dir.as_deref());
-    let thumb_dir = thumb_path(cache_dir.as_deref());
-    let availability = open_availability(cache_dir.as_deref())?;
-    let eviction_queue = open_eviction_queue(cache_dir.as_deref())?;
-    let paths = identity_paths();
-    let certified = load_certified_mount_identity_once_valid(&paths).await?;
-    let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
-    let (device, credentials) = certified.into_parts();
-    let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
-        .with_transport_switch(transport_switch);
-    let actor = fs_protocol::FileActor {
-        person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
-        device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
-    };
-    let mount_actor = cache_dir.as_deref().map(|_| actor);
-    let net = network(&device.secret, session_link.as_deref()).await?;
-    let caps = resolve_acl(&acl_args, credentials.user_public_key())?;
-    let acl = caps.as_ref().map(|c| (c.handle(), c.identity()));
-    let _reload = caps
-        .map(|c| spawn_acl_reload(c, acl_args.acl_once))
-        .transpose()?;
-    let store =
-        Arc::new(open_workspace_store(cache_dir.clone(), &backend, ticket.workspace_id()).await?);
-    let hydrator = Arc::new(
-        Hydrator::new(net.clone(), store.clone())
-            .with_identity(Arc::new(transport_identity.clone())),
-    );
-    let author = net.id().to_string();
-    let bootstrap = bootstrap_peers(&ticket, cache_dir.as_deref())?;
-    for peer in &bootstrap {
-        hydrator.add_peer(peer.clone());
-    }
+/// The id this device's mount keeps its content and state under: the device's key, as every
+/// earlier run of it kept them.
+fn mount_id(device: [u8; 32]) -> uuid::Uuid {
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&device[..16]);
+    uuid::Uuid::from_bytes(bytes)
+}
 
-    // The shared workspace's Files resources keep this tree for every member: a mount that has
-    // none yet is given it whole.
-    let (tree, namespace, kept) = open_tree(
-        np.as_deref(),
-        ticket.workspace_id().to_string(),
-        &credentials,
-        author,
-        &store,
-    )
-    .await?;
-
-    let workspace_id = ticket.workspace_id();
-    let workspace_args = acl.as_ref().map(|(handle, _)| handle.clone());
-    let media = blob_sock
-        .as_deref()
-        .and_then(|socket| spawn_document_media(socket, &store, cache_dir.as_deref()));
-    let _media = media
-        .as_ref()
-        .and_then(|_| blob_sock.clone())
-        .map(ServedSocket);
-    let workspace = Workspace::join(
-        sync::SyncNode {
-            net: net.clone(),
-            store: store.clone(),
-            hydrator: hydrator.clone(),
-            namespace: namespace.clone(),
-            identity: transport_identity,
-            policy: workspace_args,
-        },
-        &ticket,
-        None,
-    )?;
-
-    println!("Iroh NodeID: {}", net.id());
-    println!("Joined workspace.");
-
-    // A person's first open of a file this device has never fetched should not also pay for
-    // certifying the device and setting up the connection that fetches it: both start now, in
-    // the background, and the first read finds the route ready.
-    for peer in &bootstrap {
-        hydrator.warm_peer(peer.clone());
-    }
-    // The certificate and the connection are not the whole of what a first read pays: the
-    // request that follows them answers slowly on a route nothing has asked through yet, and a
-    // workspace of thousands of files makes that the biggest part of an open. One small read
-    // now asks through the route the person's first open will use.
-    {
-        let hydrator = Arc::clone(&hydrator);
-        let namespace = Arc::clone(&namespace);
-        tokio::spawn(async move {
-            let Some(hash) = first_file_content(&namespace) else {
+/// Put each access list the session says in force, and keep it for the next start.
+fn follow_access(
+    mut told: tokio::sync::watch::Receiver<Option<String>>,
+    caps: Arc<CapabilityFile>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let said = told.borrow_and_update().clone();
+            if let Some(json) = said {
+                match caps.keep(&json) {
+                    Ok(n) => println!("Capability list from the session: {n} in force"),
+                    Err(error) => eprintln!("the session's capability list: {error}"),
+                }
+            }
+            if told.changed().await.is_err() {
                 return;
-            };
-            let _ = hydrator.read(hash, 0, WARM_READ_BYTES).await;
-        });
-    }
-
-    let keeper = kept
-        .clone()
-        .map(|kept| spawn_keeper(namespace.clone(), kept));
-    let shutdown = kept.clone().map(|kept| {
-        let namespace = Arc::clone(&namespace);
-        let store = Arc::clone(&store);
-        Arc::new(move || {
-            let _ = store.sync_pending();
-            keep_now(&namespace, &kept);
-        }) as Arc<dyn Fn() + Send + Sync>
-    });
-    run_mount(
-        MountConfig {
-            workspace_id,
-            mount_point,
-            kept: kept.clone(),
-            shutdown,
-            predictive_cache_root: cache_dir,
-            thumb_dir,
-            storage_sock,
-            read_only: false,
-            backend: Some((backend, *actor.device.as_bytes())),
-        },
-        MountServices {
-            namespace: namespace.clone(),
-            hydrator,
-            acl,
-            availability,
-            eviction_queue,
-            actor: mount_actor,
-            rebind: None,
-        },
-    )
-    .await?;
-    let _ = store.sync_pending();
-    if let Some(tree) = tree {
-        tree.stop(TREE_STOPS_WITHIN).await;
-    }
-    final_flush(keeper, &namespace, kept.as_ref()).await;
-    drop(workspace);
-    Ok(())
+            }
+        }
+    })
 }
 
 /// How long an unmount waits for the tree's sync to keep what it has.
@@ -1786,15 +790,21 @@ async fn open_tree(
     Option<tilo_fs::tree_sync::TreeSync>,
     Arc<Mutex<Namespace>>,
     Option<Arc<KeptTree>>,
+    Option<tilo_fs::tree_sync::remote::Service>,
 )> {
     let Some(dir) = dir else {
         let mount = MountAuthor::person(author, member(credentials.user_public_key()))
             .in_workspace(workspace);
-        return Ok((None, Arc::new(Mutex::new(Namespace::new(mount)?)), None));
+        return Ok((
+            None,
+            Arc::new(Mutex::new(Namespace::new(mount)?)),
+            None,
+            None,
+        ));
     };
     set_aside_older_namespace_file(dir)?;
-    let tree = tilo_fs::tree_sync::remote::start(
-        tilo_paths::xdg::service_socket(tilo_fs::tree_sync::remote::SOCKET),
+    let (tree, service) = tilo_fs::tree_sync::remote::start(
+        tree_socket(),
         workspace,
         (
             credentials.device_public_key(),
@@ -1806,7 +816,12 @@ async fn open_tree(
     .await
     .with_context(|| format!("open the kept workspace tree at {}", dir.display()))?;
     let (namespace, kept) = (Arc::clone(&tree.namespace), tree.kept());
-    Ok((Some(tree), namespace, Some(kept)))
+    Ok((Some(tree), namespace, Some(kept), Some(service)))
+}
+
+/// Where this device's workspace service serves the trees of the workspaces it belongs to.
+fn tree_socket() -> PathBuf {
+    tilo_paths::xdg::service_socket(tilo_fs::tree_sync::remote::SOCKET)
 }
 
 /// The directory the mount keeps its tree's documents in, each with the journal of the changes
@@ -1846,56 +861,6 @@ fn open_eviction_queue(
 }
 
 type KeptTree = tilo_fs::kept_documents::KeptDocuments;
-
-/// Save the tree's documents that changed since their last save, and answer the digest of the
-/// heads they are durable at: what an always-on peer proves the generation it published with, so
-/// a ready device can always reopen the same tree after a power loss.
-fn keep_generation(namespace: &Arc<Mutex<Namespace>>, kept: &KeptTree) -> Result<[u8; 32]> {
-    kept.keep(namespace)?;
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"tilo.fs.namespace-generation.v1\0");
-    let heads = namespace.lock_recover().document_heads();
-    for (chunk, heads) in heads {
-        hasher.update(&chunk.to_le_bytes());
-        hasher.update(&(heads.len() as u64).to_le_bytes());
-        for head in heads {
-            hasher.update(head.as_ref());
-        }
-    }
-    Ok(*hasher.finalize().as_bytes())
-}
-
-/// How much of the first file a joining device reads to warm the route a person's first open
-/// will use: one request's worth, and no more.
-const WARM_READ_BYTES: u64 = 4096;
-
-/// The content of the first file this workspace lists, a few folders deep: what a person
-/// opening the workspace's folder and reading something would touch first.
-fn first_file_content(namespace: &Arc<Mutex<Namespace>>) -> Option<iroh_blobs::Hash> {
-    let mut ns = namespace.lock().ok()?;
-    let mut folders = vec![tilo_fs::ROOT_INO];
-    for _level in 0..3 {
-        let mut deeper = Vec::new();
-        for folder in folders {
-            for (ino, kind, _) in ns.readdir(folder).unwrap_or_default().into_iter().take(64) {
-                match kind {
-                    fuser::FileType::RegularFile => {
-                        if let Some(hash) = ns.hash_for(ino) {
-                            return Some(hash);
-                        }
-                    }
-                    fuser::FileType::Directory => deeper.push(ino),
-                    _ => {}
-                }
-            }
-        }
-        folders = deeper;
-        if folders.is_empty() {
-            return None;
-        }
-    }
-    None
-}
 
 /// Save what changed now; a failure is reported, and the journals keep the changes until the
 /// next save.
@@ -1965,40 +930,6 @@ fn set_aside_older_namespace_file(dir: &Path) -> Result<()> {
         );
     }
     Ok(())
-}
-
-/// A mount's namespace: the documents kept at `dir`, each with its journal of later changes, or
-/// an empty tree the workspace's Files record fills. Every change is journaled before the request
-/// that made it is answered, so a process killed at any instant starts again holding every change
-/// it answered for.
-fn open_namespace(
-    mount: MountAuthor,
-    dir: Option<&Path>,
-) -> Result<(Namespace, Option<Arc<KeptTree>>)> {
-    let Some(dir) = dir else {
-        return Ok((Namespace::new(mount)?, None));
-    };
-    set_aside_older_namespace_file(dir)?;
-    let (kept, documents) = KeptTree::open(dir)
-        .with_context(|| format!("open the kept workspace tree at {}", dir.display()))?;
-    let (mut namespace, read) = if documents.is_empty() {
-        (Namespace::new(mount)?, std::collections::BTreeMap::new())
-    } else {
-        match Namespace::from_documents_read(mount.clone(), documents) {
-            Ok(opened) => opened,
-            Err(error) => {
-                // A document or one of its journals is damaged. The documents' last saves are
-                // whole, so losing only the changes since them beats refusing the workspace.
-                eprintln!(
-                    "the workspace tree at {} does not read ({error}); starting from its last saves",
-                    dir.display()
-                );
-                Namespace::from_documents_read(mount, kept.saved_only()?)?
-            }
-        }
-    };
-    kept.opened(&mut namespace, read)?;
-    Ok((namespace, Some(Arc::new(kept))))
 }
 
 /// Move the namespace file at `path`, and the directory of its retained generations, aside as
@@ -2090,13 +1021,12 @@ fn native_config(
     Ok(Some(cfg))
 }
 
-/// Serves the workspace from the native tree until interrupted, terminated or asked to rebind. The
+/// Serves the workspace from the native tree until interrupted or terminated. The
 /// bind mount lives exactly as long as this call.
 #[cfg(target_os = "linux")]
 async fn run_native(
     fs: QuickFS,
     cfg: tilo_fs::native::NativeConfig,
-    mut rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
     stop: &mut StopSignals,
 ) -> Result<MountOutcome> {
     let fs = Arc::new(fs);
@@ -2112,15 +1042,6 @@ async fn run_native(
             println!("{signal}, exiting...");
             MountOutcome::Unmounted
         }
-        () = async {
-            match rebind.as_mut() {
-                Some(receiver) => { let _ = receiver.recv().await; }
-                None => std::future::pending::<()>().await,
-            }
-        } => {
-            println!("Content peer registration requested a clean workspace rebind.");
-            MountOutcome::RebindRequested
-        }
         () = backend.finished() => {
             eprintln!("the native backend stopped");
             MountOutcome::Unmounted
@@ -2128,7 +1049,9 @@ async fn run_native(
     };
     tokio::task::spawn_blocking(move || backend.stop()).await??;
     let (ranged, blobs) = hydrator.received_bytes();
-    println!("Content received from peers: {ranged} bytes in ranges, {blobs} bytes as blobs");
+    println!(
+        "Content received from the workspace: {ranged} bytes in ranges, {blobs} bytes as blobs"
+    );
     println!("Workspace unmounted.");
     Ok(outcome)
 }
@@ -2305,13 +1228,13 @@ mod tests {
                     .expect("the shipped fs.service must exist");
                 assert!(
                     unit.lines().any(|line| line.trim() == "Restart=always"),
-                    "a daemon-owned rebind must be restarted by the shipped service"
+                    "a daemon that stops must be restarted by the shipped service"
                 );
                 assert!(
                     service_exec_start()
                         .windows(2)
                         .any(|pair| { pair[0].ends_with("fs") && pair[1] == "serve" }),
-                    "the shipped unit must enter the serve startup path that consumes persisted tickets"
+                    "the shipped unit must enter the serve startup path"
                 );
             }
             {
@@ -2468,22 +1391,8 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_command_line_parses_mounts_and_binds_acl_flags;
 
-        phase cli_parses_mount_lines_members_and_persisted_tickets;
+        phase cli_parses_members;
         {
-            {
-                let cli = Cli::try_parse_from([
-                    "fs",
-                    "mount",
-                    "--mount-point",
-                    "/var/workspace",
-                    "--ticket",
-                    "deadbeef",
-                    "--cache-dir",
-                    "/var/cache/quick-fs",
-                ])
-                .expect("mount command line must parse");
-                assert!(matches!(cli.command, Command::Mount { .. }));
-            }
             {
                 assert_eq!(
                     parse_member("person:local").unwrap(),
@@ -2495,34 +1404,6 @@ mod tests {
                 );
                 assert!(parse_member("wizard:merlin").is_err());
                 assert!(parse_member("noseparator").is_err());
-            }
-            {
-                let temp = tempfile::tempdir().unwrap();
-                let owner =
-                    iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x81; 32]).public());
-                let nas =
-                    iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x82; 32]).public());
-                let ticket = Ticket {
-                    node: owner,
-                    workspace: [0x83; 32],
-                }
-                .encode()
-                .unwrap();
-                let peers = vec![tilo_fs::workspace_authority::PersistedContentPeer {
-                    endpoint: nas,
-                    ticket: Some(ticket),
-                    server_service_id: None,
-                }];
-                tilo_files::native::atomic::write(
-                    &tilo_fs::workspace_authority::content_peers_path(temp.path()),
-                    &serde_json::to_vec(&peers).unwrap(),
-                )
-                .unwrap();
-                let selected = persisted_remote_workspace_ticket(Some(temp.path()))
-                    .unwrap()
-                    .expect("NAS ticket is retained for the next fs.service start");
-                assert_eq!(selected.workspace, [0x83; 32]);
-                assert_ne!(selected.node.id, peers[0].endpoint.id);
             }
         }
 
@@ -2553,7 +1434,7 @@ mod tests {
                 let err = resolve_acl(&args, NODE_KEY)
                     .expect_err("a malformed capability list must abort the mount");
                 assert!(
-                    format!("{err:#}").contains("not the governor's file authority"),
+                    format!("{err:#}").contains("is not a file access list"),
                     "expected a parse failure, got: {err:#}"
                 );
             }
@@ -2650,22 +1531,5 @@ mod tests {
                 .unwrap_or_else(|_| panic!("{name} never reached the stop path"));
             assert_eq!(received, name);
         }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn the_workspace_ticket_is_readable_to_the_device_trust_group() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let temp = tempfile::tempdir().unwrap();
-        let ticket = Ticket {
-            node: iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x91; 32]).public()),
-            workspace: [0x92; 32],
-        };
-        save_workspace_ticket(temp.path(), &ticket).unwrap();
-        let path = workspace_ticket_path(temp.path());
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o640, "group-readable, never world-readable");
-        let saved = Ticket::decode(&std::fs::read_to_string(path).unwrap()).unwrap();
-        assert_eq!(saved.workspace, [0x92; 32]);
     }
 }

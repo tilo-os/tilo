@@ -175,8 +175,7 @@ same boundary an always-on board uses for its session). That probe passes when t
 server is active — it notifies readiness only after its iroh endpoint is bound and
 accepting, so peers can dial it, and it keeps writing its metrics snapshot into
 its state root — and `tilo-server-admin status` could open every durable workspace
-store; where the machine runs a filesystem replica (`/etc/tilo/home-peer.toml`),
-that replica is active and publishes complete content. A server that has not
+store. A server that has not
 been paired yet has nothing to serve; it is judged by reaching
 `multi-user.target` alone, so a fresh machine waiting at its pairing prompt is
 never rolled back for it. A server stages an update but does not restart into it

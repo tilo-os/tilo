@@ -45,10 +45,7 @@ impl DeviceMeshProfile {
     /// The server endpoint is deliberately not a fallback: it speaks server
     /// ALPN only and cannot serve authenticated blobs while an owner is away.
     pub fn content_endpoint(&self) -> Option<EndpointAddr> {
-        self.services
-            .full_content_replication
-            .then(|| self.filesystem_endpoints.first().cloned())
-            .flatten()
+        self.filesystem_endpoints.first().cloned()
     }
 }
 
@@ -62,8 +59,6 @@ impl DeviceMeshProfile {
 pub struct ServiceCapabilities {
     /// Pin collaboration state and provide anti-entropy/store-and-forward.
     pub workspace_replication: bool,
-    /// Retain all file blobs requested by the workspace replication policy.
-    pub full_content_replication: bool,
     /// Server end-to-end encrypted collaboration and chat traffic.
     pub inbound_server: bool,
     /// Relay an end-to-end remote-control session when direct reachability
@@ -87,19 +82,6 @@ impl ServiceCapabilities {
     pub const fn relay_only() -> Self {
         Self {
             workspace_replication: true,
-            full_content_replication: false,
-            inbound_server: true,
-            remote_control_server: true,
-            app_serving: false,
-            compute: false,
-        }
-    }
-
-    /// Protocols started by the composite home-peer process.
-    pub const fn home_peer() -> Self {
-        Self {
-            workspace_replication: true,
-            full_content_replication: true,
             inbound_server: true,
             remote_control_server: true,
             app_serving: false,
@@ -110,12 +92,10 @@ impl ServiceCapabilities {
     /// Services expected from a personal always-on server.
     ///
     /// This is a broader policy template for hosts that also run app,
-    /// compute, and remote-control workers. The home-peer deployment uses
-    /// [`Self::home_peer`].
+    /// compute, and remote-control workers.
     pub const fn personal_server() -> Self {
         Self {
             workspace_replication: true,
-            full_content_replication: true,
             inbound_server: true,
             remote_control_server: true,
             app_serving: true,
@@ -129,8 +109,6 @@ impl ServiceCapabilities {
     pub const fn limited_to(&self, available: &Self) -> Self {
         Self {
             workspace_replication: self.workspace_replication && available.workspace_replication,
-            full_content_replication: self.full_content_replication
-                && available.full_content_replication,
             inbound_server: self.inbound_server && available.inbound_server,
             remote_control_server: self.remote_control_server && available.remote_control_server,
             app_serving: self.app_serving && available.app_serving,
@@ -218,7 +196,6 @@ mod tests {
         let services = ServiceCapabilities::relay_only();
         assert!(services.workspace_replication);
         assert!(services.inbound_server);
-        assert!(!services.full_content_replication);
         assert!(services.remote_control_server);
         assert!(!services.app_serving);
         assert!(!services.compute);

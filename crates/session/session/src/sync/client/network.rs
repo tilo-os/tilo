@@ -522,25 +522,6 @@ impl Asking {
     }
 }
 
-/// Where the device's files daemon reaches the network: through this endpoint rather than one of
-/// its own under the same key, since a device has one endpoint id (`fs::net`).
-fn files_link(
-    endpoint: &iroh::Endpoint,
-    reachability: &Reachability,
-) -> tilo_network_actor::own_service::Protocols {
-    let woken = reachability.clone();
-    fs::net::DaemonLink::serve(
-        endpoint.clone(),
-        launcher::services::blob_socket().with_file_name(fs::net::LINK_FILE),
-        Arc::new(move || {
-            woken.wake("the files daemon reaches a peer");
-        }),
-        Some(launcher::services::socket_for(
-            launcher::services::IDENTITY_SERVICE,
-        )),
-    )
-}
-
 /// Wait for `opening`, this device's own workspace service opening, and tell the peer actor once
 /// it opened or failed to: whether it opened.
 async fn own_service_opened(
@@ -653,9 +634,6 @@ async fn listening(
     // What the session serves beside its own peer networks: this device's exit for the person's other
     // devices, when it offers one.
     served.extend(protocols);
-    if identity.is_some() {
-        served.extend(files_link(&endpoint, &reachability));
-    }
     let _ = bound.endpoint.set(endpoint.clone());
     if let Some(identity) = identity {
         serve_device_actions(identity, &endpoint, engine, &mut served, &actions);

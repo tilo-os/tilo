@@ -10,7 +10,6 @@
 use std::path::Path;
 use std::sync::{Arc, Barrier, Mutex};
 
-use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use runtime_fs::blobs::{BlobScope, MAX_BLOB_BYTES, MAX_READ_CHUNK, ReadOutcome};
 use tilo_fs::document_media::DocumentMedia;
 use tilo_fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO};
@@ -74,11 +73,7 @@ async fn mount_ranged_read_under_remote_apply_performance_check() {
         .expect("write chunked fixture")
         .expect("non-empty fixture has a manifest");
     let manifest_len = store.local(manifest).await.expect("local manifest").len() as u64;
-    let endpoint = Endpoint::bind(presets::Minimal)
-        .await
-        .expect("bind local hydration endpoint");
-    let router = Router::builder(endpoint.clone()).spawn();
-    let hydrator = Arc::new(Hydrator::new(endpoint, Arc::clone(&store)));
+    let hydrator = Arc::new(Hydrator::new(Arc::clone(&store)));
 
     let mut source = Namespace::new("perf-source").unwrap();
     source
@@ -149,7 +144,6 @@ async fn mount_ranged_read_under_remote_apply_performance_check() {
         manifest_len,
     );
     drop(mount);
-    router.shutdown().await.expect("stop local endpoint");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -270,11 +264,7 @@ async fn collaborative_fs_release_performance_check() {
         .expect("write chunked fixture")
         .expect("non-empty fixture has a manifest");
     let manifest_len = store.local(manifest).await.expect("local manifest").len() as u64;
-    let endpoint = Endpoint::bind(presets::Minimal)
-        .await
-        .expect("bind local hydration endpoint");
-    let router = Router::builder(endpoint.clone()).spawn();
-    let hydrator = Hydrator::new(endpoint, Arc::clone(&store));
+    let hydrator = Hydrator::new(Arc::clone(&store));
 
     let before = store.read_bytes();
     for index in 0..RANGE_READS {
@@ -287,5 +277,4 @@ async fn collaborative_fs_release_performance_check() {
     }
     let read = store.read_bytes() - before;
     assert_ranged_read_work("local-chunked-64x256k-ranged-read", read, manifest_len);
-    router.shutdown().await.expect("stop local endpoint");
 }

@@ -1313,7 +1313,6 @@ fn take_work_files(
             home,
             own_folder: None,
             store: parts.media.store(),
-            endpoint: parts.workspaces.endpoint(),
             author: parts.author,
             credentials: Box::new(move |workspace| {
                 held.upgrade()

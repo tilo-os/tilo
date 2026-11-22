@@ -411,16 +411,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_read_that_completes_a_file_records_it_stored() {
-        use iroh::endpoint::{Endpoint, presets};
-
         let (_dir, mut note) = note();
         let store = Arc::new(crate::store::ContentStore::memory());
         let data = crate::test_bytes::pseudo(3 * 1024 * 1024, 5);
         let whole = store.write_content(&data).await.unwrap().unwrap();
-        let hydrator = Arc::new(Hydrator::new(
-            Endpoint::bind(presets::Minimal).await.unwrap(),
-            store,
-        ));
+        let hydrator = Arc::new(Hydrator::new(store));
         let stored = Arc::new(StoredWrites::default());
         let content = |hash| {
             Some(NotedContent {
@@ -495,8 +490,6 @@ mod tests {
 
     #[tokio::test]
     async fn files_read_whole_together_are_recorded_in_one_write() {
-        use iroh::endpoint::{Endpoint, presets};
-
         let (_dir, note) = note();
         let store = Arc::new(crate::store::ContentStore::memory());
         let mut files = Vec::new();
@@ -505,10 +498,7 @@ mod tests {
             let hash = store.write_content(&data).await.unwrap().unwrap();
             files.push((FileDocumentId::new(), hash, data.len() as u64));
         }
-        let hydrator = Arc::new(Hydrator::new(
-            Endpoint::bind(presets::Minimal).await.unwrap(),
-            store,
-        ));
+        let hydrator = Arc::new(Hydrator::new(store));
         let stored = Arc::new(StoredWrites::settling_for(Duration::from_secs(3600)));
         let (writes, wakes) = {
             let registry = note.registry.lock_recover();

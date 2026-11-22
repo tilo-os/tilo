@@ -1007,7 +1007,7 @@ mod tests {
             record_path: PathBuf::from("/nonexistent"),
             user_public_key: [0; 32],
         };
-        let (admin, commands) = recording("{\"decommissioned\":true,\"files_ready\":false}\n");
+        let (admin, commands) = recording("{\"decommissioned\":true}\n");
         let device = "AA".repeat(32);
         let service = "bb".repeat(32);
 

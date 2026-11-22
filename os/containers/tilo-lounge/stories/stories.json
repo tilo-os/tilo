@@ -186,24 +186,6 @@
       "needs": "The test tenant's credentials; then the sign-in walked in the browser like any person's."
     },
     {
-      "id": "big-folder",
-      "title": "Copy a big folder in, and it is all there everywhere",
-      "intent": "Ada copies a large folder into their workspace through its mounted folder: a photo library of many small files and a few long videos. The folder lists at once, a second computer joins and shows the workspace in seconds without fetching it all, a photo and a video open there at once, the first computer restarts in seconds, and every file is still there and as copied on both.",
-      "walk": "mount",
-      "driver": "big-folder.mjs",
-      "stack": false,
-      "steps": [
-        "Ada copies the folder into their workspace folder",
-        "Ada browses the big folder",
-        "Ada’s second computer joins and shows the workspace",
-        "Ada opens a photo the second computer never fetched",
-        "Ada starts a video on the second computer",
-        "Ada restarts the first computer",
-        "Every file is still there, on both computers"
-      ],
-      "note": "Walked on the fs daemons and their mounts (two computers, one joining the other over the network) at one affordable size, set in big-folder.json; the terabyte rungs are the fs-workspace-scale check's."
-    },
-    {
       "id": "large-workspace",
       "title": "A large workspace stays fast",
       "intent": "A workspace with years of files, notes and tasks opens, lists, searches and syncs as fast as an empty one.",

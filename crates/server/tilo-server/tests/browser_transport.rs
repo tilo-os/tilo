@@ -27,8 +27,6 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
     let config = ServerConfig {
         state_root: tmp.path().to_owned(),
         identity_root: tmp.path().join("identity"),
-        full_replica_status: tmp.path().join("full-replica/status.json"),
-        home_peer_bundle: tmp.path().join("home-peer.toml"),
         trust_policy: tilo_server::TrustPolicy::AllowList {
             users: vec![hex::encode(user.user_pk)],
         },

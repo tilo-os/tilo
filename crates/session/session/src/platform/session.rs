@@ -1687,7 +1687,7 @@ impl Session {
             workspace_settings,
             ws_settings_fed: Cell::new(None),
             capabilities_fed: Cell::new(None),
-            fs_authority: crate::fs_authority::Publisher::for_session(),
+            files_access: Some(std::sync::Arc::clone(&document_content)),
             workspace_tabs,
             conversations,
             agents,

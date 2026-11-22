@@ -843,7 +843,6 @@ fi
 TILO_FS_FUSE_OWNER_ONLY=1 setsid "$bin/fs" serve --mount-point "$files_mount" --cache-dir "$files_state/cache" \
     --storage-sock "$runtime/tilo/files-storage/storage.sock" \
     --blob-sock "$files_runtime/fs-blobs.sock" \
-    --session-link "$files_runtime/fs-session-link" \
     --backend fuse > "$logs/files-workspace.log" 2>&1 &
 files_pid=$!
 children+=("$files_pid")

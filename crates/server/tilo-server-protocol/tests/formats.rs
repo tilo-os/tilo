@@ -56,14 +56,14 @@ fn json_encodings_are_pinned() {
     // Device mesh profile.
     let profile = DeviceMeshProfile {
         device: [1; 32],
-        services: ServiceCapabilities::home_peer(),
+        services: ServiceCapabilities::relay_only(),
         filesystem_endpoints: Vec::new(),
     };
     assert_json(
         &profile,
         concat!(
             r#"{"device":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"#,
-            r#""services":{"workspace_replication":true,"full_content_replication":true,"#,
+            r#""services":{"workspace_replication":true,"#,
             r#""inbound_server":true,"remote_control_server":true,"app_serving":false,"compute":false},"#,
             r#""filesystem_endpoints":[]}"#,
         ),
@@ -239,7 +239,7 @@ tilo_test_env::scenario! {
     {
         // Management responses and compute worker adverts carry these fields in
         // postcard frames.
-        assert_postcard(&ServiceCapabilities::personal_server(), "010101010101");
+        assert_postcard(&ServiceCapabilities::personal_server(), "0101010101");
 
         // Mesh enums.
         assert_postcard(
@@ -256,7 +256,7 @@ tilo_test_env::scenario! {
         // Mesh profiles may travel in postcard frames as well as JSON.
         let profile = DeviceMeshProfile {
             device: [1; 32],
-            services: ServiceCapabilities::home_peer(),
+            services: ServiceCapabilities::relay_only(),
             filesystem_endpoints: Vec::new(),
         };
         let bytes = postcard::to_stdvec(&profile).unwrap();
@@ -271,8 +271,6 @@ tilo_test_env::scenario! {
         let config = ServerConfig {
             identity_root: PathBuf::from("/var/lib/tilo"),
             state_root: PathBuf::from("/var/lib/tilo-server"),
-            full_replica_status: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
-            home_peer_bundle: PathBuf::from("/etc/tilo/home-peer.toml"),
             iroh_listen: SocketAddr::from(([0, 0, 0, 0], 4919)),
             packet_relay: None,
             packet_relay_url: None,
@@ -281,15 +279,13 @@ tilo_test_env::scenario! {
             },
             work: WorkSetting::own_person(),
             rented: false,
-            services: ServiceCapabilities::home_peer(),
+            services: ServiceCapabilities::relay_only(),
             web_entry: None,
             max_workspace_grants: None,
             relay: None,
         };
         let encoded = r#"identity_root = "/var/lib/tilo"
 state_root = "/var/lib/tilo-server"
-full_replica_status = "/var/lib/tilo/full-replica/status.json"
-home_peer_bundle = "/etc/tilo/home-peer.toml"
 iroh_listen = "0.0.0.0:4919"
 
 [trust_policy]
@@ -312,7 +308,6 @@ free_memory_percent = 0
 
 [services]
 workspace_replication = true
-full_content_replication = true
 inbound_server = true
 remote_control_server = true
 app_serving = false

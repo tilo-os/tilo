@@ -18,28 +18,23 @@ struct Fixture {
 }
 
 impl Fixture {
-    async fn new() -> Self {
-        Self::with(|hydrator| hydrator).await
+    fn new() -> Self {
+        Self::with(|hydrator| hydrator)
     }
 
     /// A workspace whose files are sealed under the keys `read` hands over, each time it is asked.
-    async fn sealed(
+    fn sealed(
         read: impl Fn() -> anyhow::Result<key_group::ContentKeys> + Send + Sync + 'static,
     ) -> Self {
         let workspace = collab_types::WorkspaceId::new();
         Self::with(move |hydrator| {
             hydrator.with_file_keys(crate::hydration::FileKeys::from_session(workspace, read))
         })
-        .await
     }
 
-    async fn with(keys: impl FnOnce(Hydrator) -> Hydrator) -> Self {
+    fn with(keys: impl FnOnce(Hydrator) -> Hydrator) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = test_server::direct_endpoint().await;
-        let hydrator = Arc::new(keys(Hydrator::new(
-            endpoint,
-            Arc::new(ContentStore::memory()),
-        )));
+        let hydrator = Arc::new(keys(Hydrator::new(Arc::new(ContentStore::memory()))));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let actor = FileActor {
             person: Ed25519PublicKey([1; 32]),
@@ -98,7 +93,7 @@ fn pass(imported: usize, exported: usize, removed: usize, renamed: usize) -> Pas
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_file_saved_in_the_folder_becomes_a_workspace_version() {
-    let fx = Fixture::new().await;
+    let fx = Fixture::new();
     let mut folder = fx.folder();
     std::fs::create_dir_all(fx.local("notes")).unwrap();
     std::fs::write(fx.local("notes/plan.txt"), b"first").unwrap();
@@ -115,7 +110,7 @@ async fn a_file_saved_in_the_folder_becomes_a_workspace_version() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_workspace_file_reaches_the_folder_whole() {
-    let fx = Fixture::new().await;
+    let fx = Fixture::new();
     let mut folder = fx.folder();
     let report = vec![7; 70_000];
     fx.write_remote("reports/q3.bin", &report);
@@ -144,7 +139,7 @@ async fn a_workspace_file_reaches_the_folder_whole() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn removals_cross_in_both_directions() {
-    let fx = Fixture::new().await;
+    let fx = Fixture::new();
     let mut folder = fx.folder();
     std::fs::create_dir_all(fx.local("old")).unwrap();
     std::fs::write(fx.local("old/a.txt"), b"a").unwrap();
@@ -163,7 +158,7 @@ async fn removals_cross_in_both_directions() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_edit_wins_over_a_removal_on_the_other_side() {
-    let fx = Fixture::new().await;
+    let fx = Fixture::new();
     let mut folder = fx.folder();
     std::fs::write(fx.local("kept.txt"), b"v1").unwrap();
     std::fs::write(fx.local("restored.txt"), b"v1").unwrap();
@@ -184,7 +179,7 @@ async fn an_edit_wins_over_a_removal_on_the_other_side() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_folder_edit_over_a_workspace_edit_keeps_the_folder_version() {
-    let fx = Fixture::new().await;
+    let fx = Fixture::new();
     let mut folder = fx.folder();
     std::fs::write(fx.local("draft.txt"), b"base").unwrap();
     folder.reconcile().unwrap();
@@ -202,7 +197,7 @@ async fn a_folder_edit_over_a_workspace_edit_keeps_the_folder_version() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn renames_keep_the_record_in_both_directions() {
-    let fx = Fixture::new().await;
+    let fx = Fixture::new();
     let mut folder = fx.folder();
     std::fs::create_dir_all(fx.local("inbox")).unwrap();
     std::fs::write(fx.local("inbox/letter.txt"), b"dear").unwrap();
@@ -226,7 +221,7 @@ async fn renames_keep_the_record_in_both_directions() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_change_made_while_stopped_is_found_after_a_restart() {
-    let fx = Fixture::new().await;
+    let fx = Fixture::new();
     std::fs::write(fx.local_parent_ready("a.txt"), b"before").unwrap();
     fx.folder().reconcile().unwrap();
 
@@ -238,7 +233,7 @@ async fn a_change_made_while_stopped_is_found_after_a_restart() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_emptied_workspace_never_empties_the_folder() {
-    let fx = Fixture::new().await;
+    let fx = Fixture::new();
     let mut folder = fx.folder();
     std::fs::write(fx.local_parent_ready("precious.txt"), b"mine").unwrap();
     folder.reconcile().unwrap();
@@ -251,7 +246,7 @@ async fn an_emptied_workspace_never_empties_the_folder() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn links_and_host_files_stay_out_of_the_workspace() {
-    let fx = Fixture::new().await;
+    let fx = Fixture::new();
     let mut folder = fx.folder();
     let secret = fx.dir.path().join("outside.txt");
     std::fs::write(&secret, b"host secret").unwrap();
@@ -264,7 +259,7 @@ async fn links_and_host_files_stay_out_of_the_workspace() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn watching_carries_changes_without_being_asked() {
-    let fx = Fixture::new().await;
+    let fx = Fixture::new();
     let _watch = fx.folder().watch(Duration::from_millis(100)).unwrap();
     std::fs::write(fx.local("watched.txt"), b"seen").unwrap();
     fx.write_remote("from-workspace.txt", b"arrived");
@@ -308,7 +303,7 @@ fn bytes(seed: u32, length: usize) -> Vec<u8> {
 async fn a_cloned_repository_lands_whole_over_bounded_passes() {
     use std::io::Write as _;
 
-    let fx = Fixture::new().await;
+    let fx = Fixture::new();
     let mut folder = fx.folder();
     let mut passes = Vec::new();
     let pack_dir = fx.local("repo/.git/objects/pack");
@@ -397,7 +392,7 @@ async fn a_cloned_repository_lands_whole_over_bounded_passes() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_path_that_keeps_failing_waits_and_holds_nothing_else_back() {
-    let fx = Fixture::new().await;
+    let fx = Fixture::new();
     let mut folder = fx.folder();
     std::fs::write(fx.local("stuck.txt"), b"first").unwrap();
     assert_eq!(folder.reconcile().unwrap(), pass(1, 0, 0, 0));
@@ -438,7 +433,7 @@ async fn a_path_that_keeps_failing_waits_and_holds_nothing_else_back() {
 async fn a_folder_waiting_for_its_keys_does_not_count_a_path_as_failing() {
     use std::io;
 
-    let fx = Fixture::new().await;
+    let fx = Fixture::new();
     let mut folder = fx.folder();
     let mut budget = super::Budget::new();
     let mut pass = Pass::default();
@@ -521,8 +516,7 @@ async fn a_pass_seals_every_file_under_one_fetch_of_the_keys() {
             asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(keys.clone())
         }
-    })
-    .await;
+    });
     let mut folder = fx.folder();
     std::fs::create_dir_all(fx.local("src")).unwrap();
     for file in 0..40_u32 {
@@ -553,8 +547,7 @@ async fn files_sealed_while_the_keys_moved_are_sealed_again_at_once() {
             let first = asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0;
             Ok(if first { before.clone() } else { after.clone() })
         }
-    })
-    .await;
+    });
     let mut folder = fx.folder();
     for file in 0..5_u32 {
         std::fs::write(fx.local(&format!("f{file}.txt")), bytes(file, 700)).unwrap();

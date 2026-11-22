@@ -393,6 +393,18 @@ fn serve_files_tree(
     };
     let launches = std::sync::Arc::clone(&options.launches);
     let socket = wire.with_file_name(format!("{}.sock", fs::tree_sync::remote::SOCKET));
+    // The keys of a tree's group, as this person's identity service hands them to this device:
+    // only ever for the workspace the connection was admitted for.
+    let identity = tilo_paths::xdg::service_socket("identity");
+    let keys: tilo_workspace_service::files::socket::Keys = std::sync::Arc::new(move |workspace| {
+        let keys = fs::hydration::FileKeys::new(workspace, identity.clone());
+        Box::pin(async move {
+            let keys = keys.access().await.map_err(|error| format!("{error:#}"))?;
+            keys.to_bytes()
+                .map(|bytes| bytes.to_vec())
+                .map_err(|error| format!("{error:#}"))
+        })
+    });
     Ok(Some(tilo_workspace_service::files::socket::serve(
         &socket,
         service,
@@ -400,6 +412,7 @@ fn serve_files_tree(
         std::sync::Arc::new(move |pid, workspace| {
             launches.attest_process(pid, ui::apps::FILE_EXPLORER, workspace)
         }),
+        content.files_offers(keys),
     )?))
 }
 

@@ -351,8 +351,6 @@ pub struct HomePeerManagementResponse {
     pub server_endpoint: iroh_base::EndpointAddr,
     /// Current operator-facing label.
     pub label: String,
-    /// Whether the full filesystem replica currently proves readiness.
-    pub files_ready: bool,
     /// Active service advertisement after capability clamping.
     pub services: crate::mesh::ServiceCapabilities,
     /// Whether this response completed permanent decommissioning.

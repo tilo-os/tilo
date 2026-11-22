@@ -11,11 +11,6 @@
 use super::*;
 use crate::namespace::ROOT_INO;
 use crate::store::ContentStore;
-use iroh::endpoint::{Endpoint, presets};
-use iroh::protocol::Router;
-use iroh_blobs::provider::events::{
-    EventMask, EventSender, ProviderMessage, RequestMode, ThrottleMode,
-};
 use std::time::Instant;
 
 use crate::smart::history::TOGETHER_WINDOW;
@@ -57,52 +52,37 @@ struct Link {
     bytes_per_second: u64,
 }
 
-impl Link {
-    fn events(self) -> EventSender {
-        let mask = EventMask {
-            get: RequestMode::Intercept,
-            get_many: RequestMode::Intercept,
-            throttle: ThrottleMode::Intercept,
-            ..EventMask::DEFAULT
-        };
-        let (sender, mut messages) = EventSender::channel(64, mask);
-        let free_at = Arc::new(Mutex::new(tokio::time::Instant::now()));
-        tokio::spawn(async move {
-            while let Some(message) = messages.recv().await {
-                let round_trip = self.round_trip;
-                match message {
-                    ProviderMessage::GetRequestReceived(request) => {
-                        tokio::spawn(async move {
-                            tokio::time::sleep(round_trip).await;
-                            request.tx.send(Ok(())).await.ok();
-                        });
-                    }
-                    ProviderMessage::GetManyRequestReceived(request) => {
-                        tokio::spawn(async move {
-                            tokio::time::sleep(round_trip).await;
-                            request.tx.send(Ok(())).await.ok();
-                        });
-                    }
-                    ProviderMessage::Throttle(chunk) => {
-                        let on_the_wire = Duration::from_secs_f64(
-                            chunk.inner.size as f64 / self.bytes_per_second as f64,
-                        );
-                        let sent_at = {
-                            let mut free_at = free_at.lock().unwrap();
-                            let sent_at = (*free_at).max(tokio::time::Instant::now()) + on_the_wire;
-                            *free_at = sent_at;
-                            sent_at
-                        };
-                        tokio::spawn(async move {
-                            tokio::time::sleep_until(sent_at).await;
-                            chunk.tx.send(Ok(())).await.ok();
-                        });
-                    }
-                    _ => {}
-                }
+/// The other device, across a link: each fetch waits out a round trip, then its bytes cross
+/// one after another at the link's rate.
+struct OverLink {
+    store: Arc<ContentStore>,
+    link: Option<Link>,
+    free_at: Arc<Mutex<tokio::time::Instant>>,
+}
+
+impl crate::hydration::ContentSource for OverLink {
+    fn fetch(&self, hash: Hash) -> futures_util::future::BoxFuture<'static, Option<bytes::Bytes>> {
+        let (store, link, free_at) = (
+            Arc::clone(&self.store),
+            self.link,
+            Arc::clone(&self.free_at),
+        );
+        Box::pin(async move {
+            let bytes = store.local(hash).await?;
+            if let Some(link) = link {
+                tokio::time::sleep(link.round_trip).await;
+                let on_the_wire =
+                    Duration::from_secs_f64(bytes.len() as f64 / link.bytes_per_second as f64);
+                let sent_at = {
+                    let mut free_at = free_at.lock().unwrap();
+                    let sent_at = (*free_at).max(tokio::time::Instant::now()) + on_the_wire;
+                    *free_at = sent_at;
+                    sent_at
+                };
+                tokio::time::sleep_until(sent_at).await;
             }
-        });
-        sender
+            Some(bytes)
+        })
     }
 }
 
@@ -110,17 +90,12 @@ struct RemoteFolder {
     fs: QuickFS,
     files: Vec<(u64, Hash)>,
     paths: Vec<String>,
-    source_store: ContentStore,
-    router: Router,
-    source: Endpoint,
-    client: Endpoint,
 }
 
 impl RemoteFolder {
     async fn with_files(files: &[(&str, String)], link: Option<Link>) -> Self {
         let files_given = files;
-        let source = Endpoint::bind(presets::Minimal).await.unwrap();
-        let source_store = ContentStore::memory();
+        let source_store = Arc::new(ContentStore::memory());
         let mut hashes = Vec::with_capacity(files.len());
         for index in 0..files.len() {
             hashes.push(
@@ -131,18 +106,13 @@ impl RemoteFolder {
                     .unwrap(),
             );
         }
-        let router = Router::builder(source.clone())
-            .accept(
-                iroh_blobs::ALPN,
-                source_store.blobs_protocol(link.map(Link::events)),
-            )
-            .spawn();
-        let client = Endpoint::bind(presets::Minimal).await.unwrap();
-        let hydrator = Arc::new(Hydrator::new(
-            client.clone(),
-            Arc::new(ContentStore::memory()),
+        let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())).with_source(
+            Arc::new(OverLink {
+                store: source_store,
+                link,
+                free_at: Arc::new(Mutex::new(tokio::time::Instant::now())),
+            }),
         ));
-        hydrator.add_peer(source.addr());
         let namespace = Arc::new(Mutex::new(Namespace::new("prediction").unwrap()));
         let files = {
             let mut ns = namespace.lock().unwrap();
@@ -167,10 +137,6 @@ impl RemoteFolder {
             fs,
             files,
             paths: files_paths(files_given),
-            source_store,
-            router,
-            source,
-            client,
         }
     }
 
@@ -186,15 +152,7 @@ impl RemoteFolder {
     fn restart(self, kept: Option<(&std::path::Path, Duration)>) -> Self {
         let hydrator = Arc::clone(&self.fs.hydrator);
         let saved = self.fs.ns().save();
-        let Self {
-            fs,
-            paths,
-            source_store,
-            router,
-            source,
-            client,
-            ..
-        } = self;
+        let Self { fs, paths, .. } = self;
         drop(fs);
         let mut namespace = Namespace::from_bytes("prediction", &saved).unwrap();
         let mut files: Vec<(u64, Hash)> = paths
@@ -212,15 +170,7 @@ impl RemoteFolder {
             Some((root, delay)) => fs.with_kept_prefetch_history_after(root, WORKSPACE, delay),
             None => fs,
         };
-        Self {
-            fs,
-            files,
-            paths,
-            source_store,
-            router,
-            source,
-            client,
-        }
+        Self { fs, files, paths }
     }
 
     fn kept(&self) -> &KeptHistory {
@@ -266,12 +216,8 @@ impl RemoteFolder {
         self.fs.hydrator.sync_state(self.files[index].1).await == fs_protocol::SyncState::Local
     }
 
-    async fn close(self) {
+    fn close(self) {
         drop(self.fs);
-        self.router.shutdown().await.unwrap();
-        drop(self.source_store);
-        self.source.close().await;
-        self.client.close().await;
     }
 }
 
@@ -288,7 +234,7 @@ async fn paging_through_a_folder_finds_each_next_page_local() {
             index + 1
         );
     }
-    folder.close().await;
+    folder.close();
 }
 
 fn seed_opened_together(fs: &QuickFS, opens: &[(u64, u64)]) {
@@ -324,7 +270,7 @@ async fn a_file_opened_together_before_is_hydrated_with_it_only_if_readable() {
             folder.is_local(1).await,
             "the chart opened with the report twice before arrives with it"
         );
-        folder.close().await;
+        folder.close();
     }
     {
         const ME: [u8; 32] = [0xB7; 32];
@@ -344,7 +290,7 @@ async fn a_file_opened_together_before_is_hydrated_with_it_only_if_readable() {
             !folder.is_local(1).await,
             "the history cannot carry content across the view's boundary"
         );
-        folder.close().await;
+        folder.close();
     }
 }
 
@@ -387,7 +333,7 @@ async fn timed_paging(scenario: &str, order: &[usize], predict: bool) {
         next.len(),
         (ranged + loose) as f64 / (1024.0 * 1024.0),
     );
-    folder.close().await;
+    folder.close();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -425,7 +371,7 @@ async fn files_opened_together_still_predict_each_other_after_a_restart() {
             !predicts(&folder, 0, 1),
             "cold after a restart that forgets"
         );
-        folder.close().await;
+        folder.close();
     }
     {
         let root = tempfile::tempdir().unwrap();
@@ -449,7 +395,7 @@ async fn files_opened_together_still_predict_each_other_after_a_restart() {
             "the chart opened with the report before the restart arrives with it after"
         );
         assert!(predicts(&folder, 1, 0), "and the report with the chart");
-        folder.close().await;
+        folder.close();
     }
 }
 
@@ -466,7 +412,7 @@ async fn opening_files_never_writes_the_kept_history() {
             assert_eq!(folder.kept().writes(), 0, "open {open} wrote");
             assert!(!folder.kept().path().exists(), "open {open} wrote");
         }
-        folder.close().await;
+        folder.close();
     }
     {
         let root = tempfile::tempdir().unwrap();
@@ -481,7 +427,7 @@ async fn opening_files_never_writes_the_kept_history() {
         assert!(!folder.kept().flush().unwrap(), "and only once");
         assert_eq!(folder.kept().writes(), 1, "one burst, one write");
         assert!(folder.kept().path().exists());
-        folder.close().await;
+        folder.close();
     }
     {
         let root = tempfile::tempdir().unwrap();
@@ -497,7 +443,7 @@ async fn opening_files_never_writes_the_kept_history() {
         })
         .await;
         assert!(folder.kept().path().exists());
-        folder.close().await;
+        folder.close();
     }
 }
 
@@ -553,7 +499,7 @@ async fn turning_prefetch_off_forgets_the_kept_history() {
 
     let folder = folder.restart(Some((root.path(), NEVER)));
     assert!(!predicts(&folder, 0, 1), "a restart finds nothing");
-    folder.close().await;
+    folder.close();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -579,7 +525,7 @@ async fn a_corrupt_kept_history_is_discarded() {
         assert!(!path.exists(), "the {case} file is deleted");
         assert_eq!(kept_pairs(&folder), 0, "nothing of the {case} file is used");
     }
-    folder.close().await;
+    folder.close();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -602,7 +548,7 @@ async fn first_read_after_restart() {
             tokio::time::sleep(DWELL).await;
             local += usize::from(folder.is_local(1).await);
             reads.push(folder.open_and_time_first_byte(1).await);
-            folder.close().await;
+            folder.close();
         }
         reads.sort();
         eprintln!(

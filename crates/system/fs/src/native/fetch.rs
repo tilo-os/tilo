@@ -174,6 +174,16 @@ mod tests {
     /// serves is answered, and serves another file's access next.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_given_up_fill_frees_its_worker_while_the_transfer_goes_on() {
+        // The source that holds the bytes never answers.
+        struct Quiet;
+        impl crate::hydration::ContentSource for Quiet {
+            fn fetch(
+                &self,
+                _: Hash,
+            ) -> futures_util::future::BoxFuture<'static, Option<bytes::Bytes>> {
+                Box::pin(std::future::pending())
+            }
+        }
         let len = 3 * 1024 * 1024;
         let elsewhere = ContentStore::memory();
         let quiet_id = elsewhere
@@ -186,9 +196,7 @@ mod tests {
         let here_id = store.write_content(&here).await.unwrap().unwrap();
         let manifest = elsewhere.local(quiet_id).await.unwrap();
         assert_eq!(store.ingest(manifest).await.unwrap(), quiet_id);
-        let quiet = crate::hydration::test_peers::silent().await;
-        let hydrator = Arc::new(Hydrator::new(test_server::direct_endpoint().await, store));
-        hydrator.add_peer(quiet.endpoint().addr());
+        let hydrator = Arc::new(Hydrator::new(store).with_source(Arc::new(Quiet)));
         let fetcher = ContentFetcher::new(
             Arc::clone(&hydrator),
             tokio::runtime::Handle::current(),

@@ -53,17 +53,6 @@ pub struct ServerConfig {
     #[serde(default = "default_state_root")]
     pub state_root: PathBuf,
 
-    /// Atomic readiness proof produced by `fs replica`.  Content-replication
-    /// capacity is advertised only while this says the complete current
-    /// namespace (manifests, chunks, and thumbnails) is resident.
-    #[serde(default = "default_full_replica_status")]
-    pub full_replica_status: PathBuf,
-
-    /// The filesystem home-peer bundle. When present, this server serves
-    /// full-content replication and discovery for the workspaces it names.
-    #[serde(default = "default_home_peer_bundle")]
-    pub home_peer_bundle: PathBuf,
-
     /// Iroh endpoint bind hint. `0.0.0.0:0` = OS-chosen port.
     #[serde(default = "default_iroh_listen")]
     pub iroh_listen: SocketAddr,
@@ -144,14 +133,6 @@ fn default_state_root() -> PathBuf {
     PathBuf::from("/var/lib/tilo-server")
 }
 
-fn default_full_replica_status() -> PathBuf {
-    PathBuf::from("/var/lib/tilo/full-replica/status.json")
-}
-
-fn default_home_peer_bundle() -> PathBuf {
-    PathBuf::from("/etc/tilo/home-peer.toml")
-}
-
 fn default_iroh_listen() -> SocketAddr {
     // Constructed directly rather than parsed — `0.0.0.0:0` is
     // infallible either way, but this has no panic path to document.
@@ -163,8 +144,6 @@ impl Default for ServerConfig {
         Self {
             identity_root: default_identity_root(),
             state_root: default_state_root(),
-            full_replica_status: default_full_replica_status(),
-            home_peer_bundle: default_home_peer_bundle(),
             iroh_listen: default_iroh_listen(),
             packet_relay: None,
             packet_relay_url: None,
@@ -191,7 +170,20 @@ pub enum ConfigError {
     /// TOML serialisation failed (shouldn't happen for our own shape).
     #[error("toml encode: {0}")]
     Encode(#[from] toml::ser::Error),
+    /// The file names a setting this server no longer has.
+    #[error(
+        "`{0}` is no longer a server setting: this server keeps no full copy of a workspace's \
+         files, which sync through the workspace; remove `{0}` from the file"
+    )]
+    Retired(String),
 }
+
+/// Settings an older server read, by section: a file naming one fails to load and says so.
+const RETIRED: [(Option<&str>, &str); 3] = [
+    (None, "full_replica_status"),
+    (None, "home_peer_bundle"),
+    (Some("services"), "full_content_replication"),
+];
 
 impl ServerConfig {
     /// Read a config file from disk.
@@ -202,7 +194,18 @@ impl ServerConfig {
     /// don't parse as valid TOML for this schema.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let bytes = std::fs::read_to_string(path)?;
-        Ok(toml::from_str(&bytes)?)
+        let table: toml::Table = toml::from_str(&bytes)?;
+        let services = table.get("services").and_then(toml::Value::as_table);
+        if let Some(retired) = RETIRED.iter().find(|(section, key)| match section {
+            None => table.contains_key(*key),
+            Some(_) => services.is_some_and(|services| services.contains_key(*key)),
+        }) {
+            return Err(ConfigError::Retired(match retired {
+                (None, key) => (*key).to_owned(),
+                (Some(section), key) => format!("{section}.{key}"),
+            }));
+        }
+        Ok(table.try_into()?)
     }
 
     /// Serialise + write the config to disk. Preserves the exact
@@ -243,7 +246,6 @@ mod tests {
             assert_eq!(cfg.work, WorkSetting::own_person());
             assert!(cfg.services.workspace_replication);
             assert!(cfg.services.inbound_server);
-            assert!(!cfg.services.full_content_replication);
             assert!(cfg.services.remote_control_server);
             assert!(!cfg.services.app_serving);
             assert!(!cfg.services.compute);
@@ -262,6 +264,26 @@ mod tests {
             let cfg = ServerConfig::default();
             cfg.save(&path).unwrap();
             assert_eq!(cfg, ServerConfig::load(&path).unwrap());
+
+            // A file naming a setting an older server had fails to load, and names it.
+            for (retired, line) in [
+                ("full_replica_status", "full_replica_status = \"/var/lib/tilo/full-replica/status.json\"\n"),
+                ("home_peer_bundle", "home_peer_bundle = \"/etc/tilo/home-peer.toml\"\n"),
+            ] {
+                std::fs::write(&path, format!("{line}{}", toml::to_string_pretty(&cfg).unwrap()))
+                    .unwrap();
+                let error = ServerConfig::load(&path).unwrap_err().to_string();
+                assert!(error.contains(retired) && error.contains("remove"), "{error}");
+            }
+            std::fs::write(
+                &path,
+                toml::to_string_pretty(&cfg)
+                    .unwrap()
+                    .replace("[services]\n", "[services]\nfull_content_replication = true\n"),
+            )
+            .unwrap();
+            let error = ServerConfig::load(&path).unwrap_err().to_string();
+            assert!(error.contains("services.full_content_replication"), "{error}");
         }
     }
 }

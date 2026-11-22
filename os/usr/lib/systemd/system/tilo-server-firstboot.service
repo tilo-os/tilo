@@ -3,7 +3,7 @@ Description=Tilo host first-boot — consume enrollment token and mint device ce
 Documentation=file:///usr/share/doc/tilo/server.md
 After=network-online.target
 Wants=network-online.target
-Before=tilo-server.service tilo-fs-replica.service
+Before=tilo-server.service
 # Runs until both the signed device certificate and home-peer bundle
 # are durable, then becomes an immediate no-op on later service starts.
 [Service]

@@ -49,7 +49,6 @@ impl Files {
         state: &Path,
         namespace: NamespaceFile,
         store: Arc<tilo_fs::ContentStore>,
-        endpoint: iroh::Endpoint,
         author: &Author,
         source: Option<(
             Arc<dyn tilo_fs::hydration::ContentSource>,
@@ -58,7 +57,7 @@ impl Files {
     ) -> Self {
         let hydrator = {
             let _entered = tilo_rt::app().handle().enter();
-            let hydrator = Hydrator::new(endpoint, store);
+            let hydrator = Hydrator::new(store);
             Arc::new(match source {
                 Some((source, keys)) => hydrator.with_source(source).with_file_keys(keys),
                 None => hydrator,

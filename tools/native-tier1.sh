@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Run the native backend's privileged acceptance suites on loop-mounted
-# Btrfs store volumes: `fs --test it native_tier1::` (two daemons on two
-# stores: placeholders, leases, SQLite, git sync, crash recovery) and
-# `fs-native --test it` (capture, journal, pre-content hydration).
+# Btrfs store volumes: `fs-native --test it` (capture, journal, pre-content
+# hydration).
 #
 #   tools/native-tier1.sh [TEST_ARGS...]
 #
@@ -25,13 +24,13 @@
 #                       below /var/tmp: daemon socket paths are bounded
 #                       (SUN_LEN).
 #   TILO_NATIVE_TIER1_TARGETS  PACKAGE:TEST[=FILTER] triples to run
-#                       (default "fs:it=native_tier1:: fs-native:it=")
+#                       (default "fs-native:it=")
 set -euo pipefail
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cargo=${TILO_CARGO:-cargo}
 work=${TILO_NATIVE_TIER1_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tilo/native-tier1}
-targets=${TILO_NATIVE_TIER1_TARGETS:-"fs:it=native_tier1:: fs-native:it="}
+targets=${TILO_NATIVE_TIER1_TARGETS:-"fs-native:it="}
 
 as_root=()
 [[ $EUID -eq 0 ]] || as_root=(sudo -n)

@@ -748,7 +748,7 @@ grep -Fq 'journalctl --quiet --boot --dmesg' "$audit" \
 if grep -rIl 'hidepid=' "$repo/os/usr" "$repo/os/Containerfile" 2>/dev/null | grep -q .; then
   bad "a global hidepid /proc remount is back: $(grep -rIl 'hidepid=' "$repo/os/usr" "$repo/os/Containerfile" | tr '\n' ' ')"
 fi
-for unit in tilo-server tilo-fs-replica tilo-local-model; do
+for unit in tilo-server tilo-local-model; do
   grep -Fqx 'ProtectProc=invisible' "$repo/os/usr/lib/systemd/system/$unit.service" \
     || bad "$unit.service can see other users' processes (ProtectProc=invisible missing)"
 done

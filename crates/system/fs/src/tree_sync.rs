@@ -726,7 +726,8 @@ struct Held {
     /// The record's heads this namespace merged last; `None` before the first merge.
     merged: Option<Vec<[u8; 32]>>,
     /// The namespace's heads of this record the peer has: handed to it by this device, or
-    /// merged from it. Every change after them is the next write.
+    /// merged from it, each head standing past every change it was built on. Every change after
+    /// them is the next write.
     sent: Vec<automerge::ChangeHash>,
     /// The record exists at the workspace (merged from it, or founded here), so a write of it is
     /// a change.
@@ -1217,12 +1218,14 @@ impl Sync {
             // record (the tree it starts as, a file copied in while the host had not answered):
             // counted as sent, those changes never reach the host, which then leaves out every
             // later write of this device as building on changes it never got.
-            for merged in &heads {
-                let hash = automerge::ChangeHash(*merged);
-                if !held.sent.contains(&hash) {
-                    held.sent.push(hash);
-                }
-            }
+            //
+            // The heads the workspace's copy answered are what it holds of this record now, and
+            // a head says it holds every change that head was built on. A head this device last
+            // had from the copy, or kept from an earlier run, may be one of those changes now
+            // rather than a head: it goes, or the folder says it is still sending changes the
+            // copy has, forever, since a write has nothing to carry and so never answers new
+            // heads.
+            held.sent = heads.iter().copied().map(automerge::ChangeHash).collect();
             if held.merged.as_ref() != Some(&heads) {
                 held.merged = Some(heads);
                 self.records_changed = true;

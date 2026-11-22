@@ -2486,32 +2486,16 @@ on = ["schedule:40 2 * * *", "dispatch"]
 
 [[check]]
 name = "fs-workspace-scale"
-# The daemon pass mounts FUSE and has one device join another over iroh; the
-# ladder's content stays inside the step's own target directory.
+# The ladder's content stays inside the step's own target directory.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "script=$(cat <<'SCALE'\nexport TILO_FS_LADDER_RUNGS_MIB=${T_INPUT_RUNGS:-10240,20480}\nexport TILO_FS_LADDER_TOTAL_MIB=${T_INPUT_TOTAL_MIB:-10240}\nexport TILO_FS_LADDER_SMALL_FILES=${T_INPUT_SMALL_FILES:-1000}\nexport TILO_FS_LADDER_SMALL_BYTES=${T_INPUT_SMALL_BYTES:-4096}\nexport TILO_FS_COPY_FILES=${T_INPUT_COPY_FILES:-10000}\nexport TILO_FS_COPY_BYTES=${T_INPUT_COPY_BYTES:-4096}\nbash tools/ci/fs-workspace-scale.sh ${T_INPUT_MODE:-all}\nSCALE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
-dispatch_inputs = { mode = "all", rungs = "10240,20480", total_mib = "10240", small_files = "1000", small_bytes = "4096", copy_files = "10000", copy_bytes = "4096" }
-# Every request the daemons answer is named on stderr, so each run prices a listing by the
-# requests it costs as well as by the time it takes.
+run = "script=$(cat <<'SCALE'\nexport TILO_FS_LADDER_RUNGS_MIB=${T_INPUT_RUNGS:-10240,20480}\nexport TILO_FS_LADDER_TOTAL_MIB=${T_INPUT_TOTAL_MIB:-10240}\nexport TILO_FS_LADDER_SMALL_FILES=${T_INPUT_SMALL_FILES:-1000}\nexport TILO_FS_LADDER_SMALL_BYTES=${T_INPUT_SMALL_BYTES:-4096}\nbash tools/ci/fs-workspace-scale.sh ${T_INPUT_MODE:-ladder}\nSCALE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+dispatch_inputs = { mode = "ladder", rungs = "10240,20480", total_mib = "10240", small_files = "1000", small_bytes = "4096" }
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1", TILO_FS_FUSE_REQUESTS = "1" }
 requires = ["/dev/fuse", "disk-100g"]
 isolation = "nested"
 on = ["dispatch"]
 heavy = true
 timeout_secs = 7200
-
-[[check]]
-name = "fs-second-device-open"
-# One device opens a photo another device holds and it never fetched: a
-# quarter-megabyte file crosses on demand through the mount, the size a photo
-# has rather than the few bytes a test file usually has.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "exec unshare --user --map-root-user --mount -- bash tools/ci/fs-workspace-scale.sh photo"
-env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1", TILO_FS_BENCH_VERBOSE = "1" }
-requires = ["/dev/fuse"]
-isolation = "nested"
-on = ["dispatch"]
-timeout_secs = 5400
 
 [[check]]
 name = "native-tier1"
@@ -7034,25 +7018,6 @@ evidence = ["/target/user-stories-shell/{story}/index.html", "/target/user-stori
 timeout_secs = 3000
 [check.matrix]
 story = ["agent-mcp", "second-device", "files-in", "calendar-invite", "nextcloud-files", "mail-password", "shared-mailbox", "desktop-easy"]
-
-# The big-folder user story: a person copies a photo library and a few long videos into their
-# workspace through its mounted folder, browses it, joins from a second computer and restarts the
-# first, on the fs daemons and their FUSE mounts, each step held to a person's budget
-# (stories/big-folder.mjs). Its page is the same as every story's.
-[[check]]
-name = "user-stories/big-folder"
-on = ["schedule:0 7 * * *", "dispatch"]
-# The second computer joins the first over iroh, as the fs-workspace-scale check's does.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "exec unshare --user --map-root-user --mount -- bash os/containers/tilo-lounge/test-user-stories.sh /target/user-stories/big-folder big-folder"
-env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
-requires = ["/dev/fuse", "disk-100g"]
-isolation = "nested"
-heavy = true
-cache = false
-outputs = ["/target/user-stories/big-folder/index.html", "/target/user-stories/big-folder/big-folder/**"]
-evidence = ["/target/user-stories/big-folder/index.html", "/target/user-stories/big-folder/big-folder/**"]
-timeout_secs = 7200
 
 # The two programs the tilo.sh stack's checks run as a release's: tilo-enroll makes the VM host's
 # member device, and tilo-approve answers for the person the startup page made. Built here, once,

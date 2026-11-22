@@ -105,8 +105,6 @@ async fn server(state: &Path, operator: &SigningKey) -> tilo_server::Server {
         tilo_server::ServerConfig {
             state_root: state.join("state"),
             identity_root: state.join("identity"),
-            full_replica_status: state.join("replica/status.json"),
-            home_peer_bundle: state.join("home-peer.toml"),
             ..Default::default()
         },
         tilo_server::daemon::ServerIdentity {

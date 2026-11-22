@@ -79,7 +79,6 @@ fn personal_payload(
         recipient_device_public_key: cert.device_public_key,
         server_node_id: [8; 32],
         cert,
-        home_peer_toml: None,
         public_identity_json: Some(public_identity_document(user, "My Tilo identity")?),
         fleet_json: Some(serde_json::to_vec_pretty(&fleet)?),
         home_peers_json: Some(b"[]".to_vec()),
@@ -254,8 +253,7 @@ tilo_test_env::scenario! {
             recipient_device_public_key: cert.device_public_key,
             server_node_id: [8; 32],
             cert: cert.clone(),
-            home_peer_toml: None,
-            public_identity_json: Some(public_identity_document(user, "My Tilo identity").unwrap()),
+                public_identity_json: Some(public_identity_document(user, "My Tilo identity").unwrap()),
             fleet_json: Some({
                 let mut fleet = DeviceFleet::new(hex::encode(user));
                 fleet.certificates.push(cert);

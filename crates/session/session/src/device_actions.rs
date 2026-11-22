@@ -853,10 +853,10 @@ mod tests {
         while let Ok(outgoing) = said.try_recv() {
             match outgoing {
                 crate::sync::HostCmd::Network(Cmd::Publish { ws, msg }) => {
-                    to.heard(ws, WORKSPACE, from, &msg);
+                    to.heard(ws, WORKSPACE, from, &msg, &|_| true);
                 }
                 crate::sync::HostCmd::Content(RecordContentDelivery { ws, msg, .. }) => {
-                    to.heard(ws, WORKSPACE, from, &msg);
+                    to.heard(ws, WORKSPACE, from, &msg, &|_| true);
                 }
                 _ => {}
             }

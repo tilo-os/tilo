@@ -463,8 +463,6 @@ mod tests {
             crate::ServerConfig {
                 state_root: state.join("server"),
                 identity_root: state.join("identity"),
-                full_replica_status: state.join("status.json"),
-                home_peer_bundle: state.join("home-peer.toml"),
                 ..Default::default()
             },
             crate::daemon::ServerIdentity {

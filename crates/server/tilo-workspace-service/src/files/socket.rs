@@ -6,17 +6,25 @@
 //! as the Files endpoint (`attest`), and it reaches only the Files resources of the one workspace
 //! it names first. What it writes, it writes as this device, as the daemon's own mount did when
 //! it signed the tree's changes itself.
+//!
+//! The connection carries the rest of what the mount needs of the workspace too: the bytes its
+//! files are made of, asked of the workspace on the tree's route ([`super::WorkspaceSource`]);
+//! the keys of the tree's group; who may read and write the tree's folders, told again the moment
+//! the workspace's member list changes; and this device's one store of file bytes, which the
+//! service's record content reads and keeps through the connected daemon ([`Daemons`]).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use fs_protocol::TreeChunk;
 use tilo_fs::tree_sync::TreePeer as _;
 use tilo_fs::tree_sync::remote::{Ask, FRAMING, Told};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use super::{Backend, Copy, FILES_APP};
 use crate::content::RouteContent;
@@ -24,6 +32,30 @@ use crate::service::ServiceSlot;
 
 /// Whether process `pid` is the Files endpoint the session recorded for workspace `workspace`.
 pub type Attest = Arc<dyn Fn(u32, &str) -> bool + Send + Sync>;
+
+/// The encoded content keys of a workspace's tree, or why they are not handed over.
+pub type Keys = Arc<
+    dyn Fn(WorkspaceId) -> futures::future::BoxFuture<'static, Result<Vec<u8>, String>>
+        + Send
+        + Sync,
+>;
+
+/// What the service offers an admitted connection beside its tree.
+#[derive(Clone)]
+pub struct Offers {
+    /// The connected daemons, whose stores the service's record content reads and keeps.
+    pub daemons: Arc<Daemons>,
+    /// The keys of a workspace's tree.
+    pub keys: Keys,
+    /// The capability list (JSON) the mounts enforce, as the workspaces' member lists and the
+    /// shell's grants decide it now; `None` until decided.
+    pub access: watch::Receiver<Option<String>>,
+}
+
+/// How long a want of the workspace waits for its bytes.
+const WANT_WITHIN: Duration = Duration::from_secs(60);
+/// How long the service waits for a daemon to lend what it keeps.
+const LEND_WITHIN: Duration = Duration::from_secs(10);
 
 /// How often what the copy holds is told again when nothing else told it.
 const PEER_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
@@ -49,6 +81,7 @@ pub fn serve(
     service: ServiceSlot,
     content: Arc<RouteContent>,
     attest: Attest,
+    offers: Offers,
 ) -> std::io::Result<Serving> {
     let listener = tilo_files::native::private::bind_socket(path)?;
     listener.set_nonblocking(true)?;
@@ -64,10 +97,14 @@ pub fn serve(
             let Ok((stream, _)) = listener.accept().await else {
                 continue;
             };
-            let (service, content, attest) =
-                (service.clone(), Arc::clone(&content), Arc::clone(&attest));
+            let (service, content, attest, offers) = (
+                service.clone(),
+                Arc::clone(&content),
+                Arc::clone(&attest),
+                offers.clone(),
+            );
             tokio::spawn(async move {
-                if let Err(error) = serve_one(stream, &service, content, &attest).await {
+                if let Err(error) = serve_one(stream, &service, content, &attest, offers).await {
                     tracing::debug!(%error, "a workspace tree's connection ended");
                 }
             });
@@ -82,6 +119,7 @@ async fn serve_one(
     service: &ServiceSlot,
     content: Arc<RouteContent>,
     attest: &Attest,
+    offers: Offers,
 ) -> Result<(), String> {
     let credentials = stream.peer_cred().map_err(|error| error.to_string())?;
     let pid = credentials
@@ -106,12 +144,20 @@ async fn serve_one(
         }
     };
     let governed = workspaces.governed_copy(workspace).await.is_some();
+    let source =
+        super::WorkspaceSource::new(Arc::clone(&content), &workspace.to_string(), WANT_WITHIN);
     let Backend {
         copy,
         reads,
         writer,
         wakes,
     } = Backend::of(&workspaces, workspace, content, governed);
+    let lender = Arc::new(Lender {
+        tell: tell.clone(),
+        lent: Mutex::new(BTreeMap::new()),
+        next: AtomicU64::new(0),
+    });
+    offers.daemons.connected(&workspace.to_string(), &lender);
     Connection {
         copy,
         reads: Arc::new(reads),
@@ -119,8 +165,12 @@ async fn serve_one(
         named: Arc::new(Mutex::new(BTreeSet::new())),
         told: Arc::new(Mutex::new(None)),
         tell,
+        workspace,
+        source: Arc::new(source),
+        keys: offers.keys,
+        lender,
     }
-    .run(reader, wakes)
+    .run(reader, wakes, offers.access)
     .await
 }
 
@@ -178,6 +228,12 @@ struct Connection {
     /// What it was last told the copy holds.
     told: Arc<Mutex<Option<Holding>>>,
     tell: mpsc::UnboundedSender<Told>,
+    workspace: WorkspaceId,
+    /// The workspace as the source of the bytes the daemon lacks.
+    source: Arc<super::WorkspaceSource>,
+    keys: Keys,
+    /// The daemon's store, as the service's record content reaches it.
+    lender: Arc<Lender>,
 }
 
 impl Connection {
@@ -187,10 +243,27 @@ impl Connection {
         self,
         mut reader: tokio::net::unix::OwnedReadHalf,
         mut wakes: mpsc::UnboundedReceiver<tilo_fs::tree_sync::Wake>,
+        mut access: watch::Receiver<Option<String>>,
     ) -> Result<(), String> {
         let mut look = tokio::time::interval(PEER_EVERY);
+        // What the mount enforces goes first, before anything of the tree.
+        access.mark_changed();
+        let mut deciding = true;
         loop {
             tokio::select! {
+                changed = access.changed(), if deciding => {
+                    if changed.is_err() {
+                        // Nothing decides any more: the mount keeps what it was told last.
+                        deciding = false;
+                        continue;
+                    }
+                    let now = access.borrow_and_update().clone();
+                    if let Some(now) = now
+                        && self.tell.send(Told::Access(now)).is_err()
+                    {
+                        return Ok(());
+                    }
+                }
                 asked = FRAMING.read_value_async::<_, Ask>(&mut reader) => {
                     match asked.map_err(|error| error.to_string())? {
                         Some(ask) => self.take(ask)?,
@@ -217,6 +290,17 @@ impl Connection {
     /// Tell what the copy holds, when it changed or `always`.
     fn peer(&self, always: bool) {
         tell_peer(&self.copy, &self.named, &self.told, &self.tell, always);
+    }
+
+    /// Answer ask `id` with the keys of this connection's workspace, once they are handed over.
+    fn send_keys(&self, id: u64) {
+        let (keys, tell) = ((self.keys)(self.workspace), self.tell.clone());
+        tokio::spawn(async move {
+            let _ = tell.send(Told::Keys {
+                id,
+                keys: keys.await,
+            });
+        });
     }
 
     fn take(&self, ask: Ask) -> Result<(), String> {
@@ -281,6 +365,28 @@ impl Connection {
                     let _ = tell.send(Told::Written { id, written });
                 });
             }
+            Ask::Want { id, hash } => {
+                let (source, tell) = (Arc::clone(&self.source), self.tell.clone());
+                tokio::spawn(async move {
+                    let bytes = tilo_fs::hydration::ContentSource::fetch(
+                        &*source,
+                        iroh_blobs::Hash::from_bytes(hash),
+                    )
+                    .await
+                    .map(|bytes| bytes.to_vec());
+                    let _ = tell.send(Told::Content { id, bytes });
+                });
+            }
+            Ask::Keys { id, workspace } => {
+                if WorkspaceId::parse(&workspace) != Some(self.workspace) {
+                    return Err(format!(
+                        "a connection for {} asked for the keys of {workspace}",
+                        self.workspace
+                    ));
+                }
+                self.send_keys(id);
+            }
+            Ask::Lent { id, bytes } => self.lender.lent(id, bytes),
             Ask::Served { id, chunks } => {
                 for chunk in &chunks {
                     self.name(*chunk);
@@ -298,6 +404,127 @@ impl Connection {
             }
         }
         Ok(())
+    }
+}
+
+/// One connected daemon's store, as the service reaches it.
+struct Lender {
+    tell: mpsc::UnboundedSender<Told>,
+    /// The asks for bytes the daemon has not answered yet.
+    lent: Mutex<BTreeMap<u64, std::sync::mpsc::SyncSender<Option<Vec<u8>>>>>,
+    next: AtomicU64,
+}
+
+impl Lender {
+    /// The bytes the daemon keeps under `hash`, waited for on this thread.
+    fn lend(&self, hash: [u8; 32]) -> Option<Vec<u8>> {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let (answer, answered) = std::sync::mpsc::sync_channel(1);
+        self.lent.lock_recover().insert(id, answer);
+        if self.tell.send(Told::Lend { id, hash }).is_err() {
+            self.lent.lock_recover().remove(&id);
+            return None;
+        }
+        let bytes = answered.recv_timeout(LEND_WITHIN).ok().flatten();
+        self.lent.lock_recover().remove(&id);
+        bytes.filter(|bytes| *blake3::hash(bytes).as_bytes() == hash)
+    }
+
+    fn lent(&self, id: u64, bytes: Option<Vec<u8>>) {
+        let answer = self.lent.lock_recover().remove(&id);
+        if let Some(answer) = answer {
+            let _ = answer.try_send(bytes);
+        }
+    }
+
+    fn keep(&self, bytes: &[u8]) -> bool {
+        self.tell
+            .send(Told::Keep {
+                bytes: bytes.to_vec(),
+            })
+            .is_ok()
+    }
+}
+
+/// The Files daemons connected to this service, by the workspace each mounts: the one store of
+/// this device's file bytes, which the service's record content reads and keeps through them.
+#[derive(Default)]
+pub struct Daemons {
+    connected: Mutex<HashMap<String, Vec<Weak<Lender>>>>,
+    /// Called when a daemon connects for a workspace, with what keeps in its store.
+    on_connect: Mutex<Option<OnConnect>>,
+}
+
+/// Hands a daemon that connected for a workspace what is to be kept in its store.
+pub type OnConnect = Arc<dyn Fn(&str, &dyn Fn(&[u8]) -> bool) + Send + Sync>;
+
+impl Daemons {
+    /// Call `on_connect` each time a daemon connects for a workspace, with what keeps bytes in
+    /// that daemon's store: content an earlier store of this device held moves there once.
+    pub fn on_connect(&self, on_connect: OnConnect) {
+        *self.on_connect.lock_recover() = Some(on_connect);
+    }
+
+    fn connected(&self, workspace: &str, lender: &Arc<Lender>) {
+        self.connected
+            .lock_recover()
+            .entry(workspace.to_owned())
+            .or_default()
+            .retain(|lender| lender.strong_count() > 0);
+        self.connected
+            .lock_recover()
+            .entry(workspace.to_owned())
+            .or_default()
+            .push(Arc::downgrade(lender));
+        let on_connect = self.on_connect.lock_recover().clone();
+        if let Some(on_connect) = on_connect {
+            on_connect(workspace, &|bytes| lender.keep(bytes));
+        }
+    }
+
+    fn lenders(&self, workspace: &str) -> Vec<Arc<Lender>> {
+        self.connected
+            .lock_recover()
+            .get(workspace)
+            .map(|lenders| lenders.iter().filter_map(Weak::upgrade).collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether a daemon keeps `workspace`'s file bytes on this device now.
+    #[must_use]
+    pub fn serves(&self, workspace: &str) -> bool {
+        !self.lenders(workspace).is_empty()
+    }
+
+    /// The bytes named `hash` a connected daemon of `workspace` keeps, waited for on this thread:
+    /// never a fetch of what none keeps.
+    #[must_use]
+    pub fn read(&self, workspace: &str, hash: &str) -> Option<Vec<u8>> {
+        let hash: [u8; 32] = hex::decode(hash).ok()?.try_into().ok()?;
+        self.lenders(workspace)
+            .into_iter()
+            .find_map(|lender| lender.lend(hash))
+    }
+
+    /// Keep `bytes`, named `hash`, in the store of a connected daemon of `workspace`.
+    ///
+    /// # Errors
+    /// The bytes are not the ones `hash` names, or no daemon of the workspace is connected.
+    pub fn keep(&self, workspace: &str, hash: &str, bytes: &[u8]) -> Result<(), String> {
+        if blake3::hash(bytes).to_hex().as_str() != hash.to_ascii_lowercase() {
+            return Err("the bytes are not the ones their address names".to_owned());
+        }
+        if self
+            .lenders(workspace)
+            .iter()
+            .any(|lender| lender.keep(bytes))
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "no Files mount of {workspace} runs on this device to keep its files' bytes"
+            ))
+        }
     }
 }
 
@@ -374,6 +601,11 @@ mod tests {
             ServiceSlot::default(),
             RouteContent::new(Arc::new(Nowhere), Arc::new(Nowhere)),
             Arc::new(move |pid, _| endpoint && pid == std::process::id()),
+            Offers {
+                daemons: Arc::default(),
+                keys: Arc::new(|_| Box::pin(async { Err("no keys here".to_owned()) })),
+                access: watch::channel(None).1,
+            },
         )
         .unwrap();
         let stream = tokio::net::UnixStream::connect(&path).await.unwrap();

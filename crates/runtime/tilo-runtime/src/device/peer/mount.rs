@@ -64,7 +64,6 @@ pub(crate) struct Parts<'a> {
     pub(crate) keys: FileKeys,
     pub(crate) replica: &'a TreeSync,
     pub(crate) store: Arc<tilo_fs::ContentStore>,
-    pub(crate) endpoint: iroh::Endpoint,
     /// Where the bytes this device lacks are asked for.
     pub(crate) content: Arc<dyn tilo_fs::hydration::ContentSource>,
     pub(crate) actor: fs_protocol::FileActor,
@@ -81,7 +80,7 @@ pub(crate) struct Parts<'a> {
 /// bytes a crash left unsaved put back. Must be called on a tokio runtime.
 pub(crate) fn filesystem(parts: &Parts<'_>) -> std::io::Result<QuickFS> {
     let hydrator = Arc::new(
-        Hydrator::new(parts.endpoint.clone(), Arc::clone(&parts.store))
+        Hydrator::new(Arc::clone(&parts.store))
             .with_source(Arc::clone(&parts.content))
             .with_file_keys(parts.keys.clone()),
     );

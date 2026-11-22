@@ -122,22 +122,20 @@ mod tests {
     use crate::Hydrator;
     use crate::store::ContentStore;
     use crate::store::area::Retention;
-    use iroh::endpoint::{Endpoint, presets};
 
-    async fn fixture() -> (Endpoint, Arc<Heuristics>, Arc<FileArea>) {
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+    fn fixture() -> (Arc<Heuristics>, Arc<FileArea>) {
         let store = Arc::new(ContentStore::memory());
         let files = Arc::clone(store.files());
-        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
+        let hydrator = Arc::new(Hydrator::new(store));
         let heuristics = Arc::new(Heuristics::new(hydrator));
-        (endpoint, heuristics, files)
+        (heuristics, files)
     }
 
     #[tokio::test]
     async fn the_policy_is_applied_kept_and_restored() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(CACHE_POLICY_FILE);
-        let (endpoint, heuristics, files) = fixture().await;
+        let (heuristics, files) = fixture();
         let default_budget = files.budget();
         let (policies, loaded) = CachePolicies::load(
             Some(path.clone()),
@@ -166,9 +164,9 @@ mod tests {
         assert!(files.entry(&[1; 32]).is_none() && files.entry(&[2; 32]).is_some());
         assert!(!heuristics.prefetch_enabled());
 
-        let (reborn_endpoint, reborn_heuristics, reborn_files) = fixture().await;
+        let (reborn_heuristics, reborn_files) = fixture();
         let (restored, loaded) = CachePolicies::load(
-            Some(path.clone()),
+            Some(path),
             Arc::clone(&reborn_heuristics),
             Arc::clone(&reborn_files),
         );
@@ -180,15 +178,13 @@ mod tests {
         policies.set(CachePolicy::default()).unwrap();
         assert_eq!(files.budget(), default_budget);
         assert!(heuristics.prefetch_enabled());
-        endpoint.close().await;
-        reborn_endpoint.close().await;
     }
 
     #[tokio::test]
     async fn a_budget_below_the_minimum_or_a_broken_file_changes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(CACHE_POLICY_FILE);
-        let (endpoint, heuristics, files) = fixture().await;
+        let (heuristics, files) = fixture();
         let (policies, loaded) = CachePolicies::load(
             Some(path.clone()),
             Arc::clone(&heuristics),
@@ -215,6 +211,5 @@ mod tests {
         assert!(loaded.is_err());
         assert_eq!(policies.current(), CachePolicy::default());
         assert!(heuristics.prefetch_enabled());
-        endpoint.close().await;
     }
 }

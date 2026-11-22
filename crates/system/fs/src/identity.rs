@@ -359,30 +359,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn bound_endpoint_is_named_by_the_device_key() {
-        let tmp = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(tmp.path());
-        let id = load_mount_identity(&paths).unwrap();
-
-        let (endpoint, _lookup) = crate::sync::bind_endpoint_with_key(id.secret.clone())
-            .await
-            .unwrap();
-        assert_eq!(endpoint.id().as_bytes(), &id.public);
-        endpoint.close().await;
-
-        let again = load_mount_identity(&paths).unwrap();
-        let (endpoint2, _l2) = crate::sync::bind_endpoint_with_key(again.secret.clone())
-            .await
-            .unwrap();
-        assert_eq!(
-            endpoint2.id(),
-            endpoint.id(),
-            "authorship and ACL subject must survive a remount"
-        );
-        endpoint2.close().await;
-    }
-
     #[cfg(unix)]
     #[test]
     fn corrupt_device_key_fails_the_mount() {

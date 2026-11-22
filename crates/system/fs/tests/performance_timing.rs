@@ -15,7 +15,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
-use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use runtime_fs::blobs::{BlobScope, MAX_BLOB_BYTES, MAX_READ_CHUNK, ReadOutcome};
 use thumbnail::FileCategory;
 use tilo_fs::document_media::DocumentMedia;
@@ -134,11 +133,7 @@ async fn mount_ranged_read_under_remote_apply_performance_check() {
         .await
         .expect("write chunked fixture")
         .expect("non-empty fixture has a manifest");
-    let endpoint = Endpoint::bind(presets::Minimal)
-        .await
-        .expect("bind local hydration endpoint");
-    let router = Router::builder(endpoint.clone()).spawn();
-    let hydrator = Arc::new(Hydrator::new(endpoint, store));
+    let hydrator = Arc::new(Hydrator::new(store));
 
     let mut source = Namespace::new("perf-source").unwrap();
     source
@@ -208,7 +203,6 @@ async fn mount_ranged_read_under_remote_apply_performance_check() {
         REMOTE_APPLY_RANGED_READ_SLO,
     );
     drop(mount);
-    router.shutdown().await.expect("stop local endpoint");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -361,11 +355,7 @@ async fn collaborative_fs_release_performance_check() {
         .await
         .expect("write chunked fixture")
         .expect("non-empty fixture has a manifest");
-    let endpoint = Endpoint::bind(presets::Minimal)
-        .await
-        .expect("bind local hydration endpoint");
-    let router = Router::builder(endpoint.clone()).spawn();
-    let hydrator = Hydrator::new(endpoint, store);
+    let hydrator = Hydrator::new(store);
 
     let mut ranged_reads = Duration::MAX;
     for _ in 0..ATTEMPTS {
@@ -389,7 +379,6 @@ async fn collaborative_fs_release_performance_check() {
         ranged_reads,
         RANGED_READ_SLO,
     );
-    router.shutdown().await.expect("stop local endpoint");
 
     let thumbnail_dir = tempfile::tempdir().expect("thumbnail cache tempdir");
     let provider = ThumbProvider::open(thumbnail_dir.path()).expect("open thumbnail cache");

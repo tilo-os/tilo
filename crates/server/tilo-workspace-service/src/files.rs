@@ -39,6 +39,7 @@ use crate::content::{ContentScope, ContentShelf, ContentState, CrdtRoute, RouteC
 use crate::device_documents::{ServiceDocuments, ServiceWrites};
 use crate::workspaces::Workspaces;
 
+pub mod access;
 pub mod socket;
 
 /// How long the serving device's word that it holds a write is waited for. It answers only the

@@ -404,9 +404,8 @@ fn payload(root: &ed25519_dalek::SigningKey) -> ResponsePayload {
         recipient_device_public_key: [7; 32],
         server_node_id: [8; 32],
         cert,
-        home_peer_toml: Some("status_file = '/var/lib/tilo/full-replica/status.json'".into()),
         public_identity_json: None,
-        fleet_json: None,
+        fleet_json: Some(b"[]".to_vec()),
         home_peers_json: None,
     }
 }
@@ -463,13 +462,11 @@ fn a_home_peer_keeps_the_persons_devices_from_its_enrollment() {
     )
     .unwrap();
     let token_text = tilo_user_identity::encode_enrollment_token(&token).unwrap();
-    let home_peer_output = dir.path().join("home-peer.toml");
     let options = JoinOptions {
         identity_root: &system,
         label: "NAS",
         timeout: 60,
         kind: EnrollmentKind::HomePeer,
-        home_peer_output: Some(&home_peer_output),
         identity_dir: None,
         requester_lease: None,
         port: 0,
@@ -479,16 +476,11 @@ fn a_home_peer_keeps_the_persons_devices_from_its_enrollment() {
     let prepared = prepare_join(&token_text, options).unwrap();
     let machine = prepared.device.verifying_key().to_bytes();
     let cert = root_signed(&root, machine, "NAS", DeviceCapabilities::member(), now);
-    let home_peer = tilo_fs::full_replica::HomePeerSet {
-        status_file: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
-        workspaces: Vec::new(),
-    };
     let payload = ResponsePayload {
         nonce: token.nonce,
         recipient_device_public_key: machine,
         server_node_id: prepared.request.server_node_id,
         cert: cert.clone(),
-        home_peer_toml: Some(toml::to_string_pretty(&home_peer).unwrap()),
         public_identity_json: None,
         fleet_json: Some(fleet_document(
             &identity_id,
@@ -499,10 +491,6 @@ fn a_home_peer_keeps_the_persons_devices_from_its_enrollment() {
     };
     install_answer(&prepared, options, &payload, b"response", &mut |_| Ok(())).unwrap();
 
-    assert!(
-        home_peer_output.exists(),
-        "the home-peer configuration is written"
-    );
     let paths = IdentityPaths::under(&system);
     assert!(
         tilo_device_identity::persist::read_device_cert(&paths.device_cert)
@@ -599,10 +587,10 @@ tilo_test_env::scenario! {
         let mut response: Response = postcard::from_bytes(&signed).unwrap();
         response
             .payload
-            .home_peer_toml
+            .fleet_json
             .as_mut()
             .unwrap()
-            .push_str("\n# changed");
+            .extend_from_slice(b"\n");
         let changed = postcard::to_stdvec(&response).unwrap();
         assert!(verify_response(&changed, &token(&root)).is_err());
     }
@@ -645,7 +633,7 @@ tilo_test_env::scenario! {
         let request_ephemeral = tilo_seal::SecretKey::from_bytes(request_seed);
         let request_public = request_ephemeral.public_key().unwrap().to_bytes();
         let mut payload = payload(&root);
-        payload.home_peer_toml = Some("ticket = 'secret-ticket-material'".into());
+        payload.fleet_json = Some(b"secret-fleet-material".to_vec());
         let signed = sign_response(payload, Approver::Root(&root)).unwrap();
         let encrypted = encrypt_response(
             &signed,
@@ -659,8 +647,8 @@ tilo_test_env::scenario! {
         assert!(v2_body(&encrypted).is_some());
         assert!(
             !encrypted
-                .windows(b"secret-ticket-material".len())
-                .any(|window| window == b"secret-ticket-material")
+                .windows(b"secret-fleet-material".len())
+                .any(|window| window == b"secret-fleet-material")
         );
         let decrypted = decrypt_response(
             &encrypted,
@@ -727,7 +715,6 @@ fn pair_device_rejects_an_expired_requester_before_creating_identity_state() {
                 label: "New laptop",
                 timeout: 1,
                 kind: EnrollmentKind::PersonalDevice,
-                home_peer_output: None,
                 identity_dir: Some(identity_dir.path()),
                 requester_lease: Some(lease),
                 port: 0,
@@ -863,7 +850,6 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
             label: "New laptop",
             timeout: 60,
             kind: EnrollmentKind::PersonalDevice,
-            home_peer_output: None,
             identity_dir: Some(new_identities.path()),
             requester_lease: Some(requester),
             port,
@@ -1154,8 +1140,8 @@ tilo_test_env::scenario! {
     }
 }
 
-const KAT_RESPONSE_SIGNATURE: &str = "9082279179d565ac7d05ffae71ab9d648f247f8317d3dded09a53162198f72e9\
-    f3ece18c9e83fe35495c6c24192d3ebb9a0e8c6fbc84b24648e51c9c7b375502";
+const KAT_RESPONSE_SIGNATURE: &str = "f2e0f87f43add15a0f50e44ea768db6530e4a7545916d46a7023be012ed07247\
+    867339b34d04722cf575ae4cdba9ac104faa653d23890572c0fae9c2b9aad802";
 const KAT_ACK: &str = "0404040404040404040404040404040417cb79fb2b4120f2b1ec65e4198d6e08\
     b28e813feb01e4a400839b85e18080ce0aa39056fd697d25fd6d7afbe84dbb81\
     f52d9e543b4aa167cf6472c602c8079a402f82443b34fd9707a575979dc100ce\

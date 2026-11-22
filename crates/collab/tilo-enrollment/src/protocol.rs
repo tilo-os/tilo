@@ -92,7 +92,6 @@ pub struct ResponsePayload {
     pub recipient_device_public_key: [u8; 32],
     pub server_node_id: [u8; 32],
     pub cert: DeviceCert,
-    pub home_peer_toml: Option<String>,
     /// A public-only runtime identity file. It deliberately contains no
     /// root signing share; collaboration is authenticated by the separately
     /// certified device key installed in `identity_root`.

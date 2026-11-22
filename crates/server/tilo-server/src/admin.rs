@@ -5,7 +5,6 @@
 //! `status` combines configuration, workspace state, and the daemon's
 //! periodically persisted metrics snapshot.
 
-mod files_probe;
 mod files_setup;
 
 use std::path::PathBuf;
@@ -13,7 +12,6 @@ use std::path::PathBuf;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
-use collab_types::WorkspaceId;
 use tilo_server::ServerConfig;
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/tilo/server.toml";
@@ -34,41 +32,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Prepare an exact enrolled Files binding using existing identity and explicit filesystem permission.
-    FilesWorkspaceJoin {
-        #[command(flatten)]
-        options: files_setup::JoinOptions,
-    },
-    /// Explicitly prepare an empty primary Files namespace for the existing device; never recover or replace saved data.
-    FilesWorkspaceInitialize {
-        #[command(flatten)]
-        options: files_setup::InitializeOptions,
-    },
-    /// Validate existing primary Files state and its signed filesystem permission before service launch.
+    /// Check that the primary Files mount starts as this device's existing certified identity.
     FilesWorkspaceCheck {
         #[arg(long)]
         identity_root: PathBuf,
-        #[arg(long)]
-        cache_dir: PathBuf,
-    },
-    /// Sign an existing Files authority revision through the existing protected person identity.
-    PublishAuthority {
-        #[arg(long)]
-        acl: PathBuf,
-    },
-    /// Query an already-enrolled home peer for public Files binding metadata, without updating local state.
-    HomePeerFilesStatus {
-        #[arg(long)]
-        identity_root: PathBuf,
-        #[arg(long)]
-        device: String,
-        #[arg(long)]
-        service: String,
-        #[arg(long)]
-        workspace_id: WorkspaceId,
-        /// Inspect an existing legacy registry without migrating or copying it.
-        #[arg(long)]
-        registry: Option<PathBuf>,
     },
     /// Retry durable removals queued while a home peer was offline.
     HomePeerRetryRemovals {
@@ -267,26 +234,7 @@ fn cmd_rollout(
 
 fn command(config: &std::path::Path, cmd: Cmd) -> anyhow::Result<()> {
     match cmd {
-        Cmd::FilesWorkspaceJoin { options } => files_setup::join(&options),
-        Cmd::FilesWorkspaceInitialize { options } => files_setup::initialize(&options),
-        Cmd::FilesWorkspaceCheck {
-            identity_root,
-            cache_dir,
-        } => files_setup::check(&identity_root, &cache_dir),
-        Cmd::PublishAuthority { acl } => files_setup::publish(&acl),
-        Cmd::HomePeerFilesStatus {
-            identity_root,
-            device,
-            service,
-            workspace_id,
-            registry,
-        } => files_probe::run(
-            &identity_root,
-            &device,
-            &service,
-            workspace_id,
-            registry.as_deref(),
-        ),
+        Cmd::FilesWorkspaceCheck { identity_root } => files_setup::check(&identity_root),
         Cmd::HomePeerRetryRemovals {
             identity_root,
             identity_dir,
@@ -514,7 +462,6 @@ fn cmd_home_peer_remove(
             &device_key(&intent.service)?,
         )?),
         label: "Removed".into(),
-        files_ready: false,
         services: tilo_server_protocol::ServiceCapabilities::default(),
         decommissioned: false,
     });
@@ -650,17 +597,6 @@ fn cmd_status(config: &std::path::Path) -> anyhow::Result<()> {
     println!("state:     {}", cfg.state_root.display());
     println!("identity:  {}", cfg.identity_root.display());
     println!("iroh:      {}", cfg.iroh_listen);
-    let full_replica = std::fs::read(&cfg.full_replica_status)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .is_some_and(|status| {
-            status
-                .get("full_content_replication")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-                && status.get("state").and_then(serde_json::Value::as_str) == Some("ready")
-        });
-    println!("full_content_replication: {full_replica}");
     let workspace_root = cfg.state_root.join("workspaces");
     let mut durable: Vec<_> = std::fs::read_dir(&workspace_root)
         .into_iter()

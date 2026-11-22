@@ -193,7 +193,6 @@ RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
 
 # ---- Units ------------------------------------------------------------------
 COPY os/usr/lib/systemd/system/tilo-server.service \
-    os/usr/lib/systemd/system/tilo-fs-replica.service \
     os/usr/lib/systemd/system/tilo-server-firstboot.service \
     os/usr/lib/systemd/system/tilo-server-state-migrate.service \
     os/usr/lib/systemd/system/tilo-hosted.service \
@@ -294,7 +293,6 @@ RUN printf 'identity_root = "/var/lib/tilo"\nstate_root = "/var/lib/tilo-server"
 # staged one.
 RUN systemctl enable tilo-server-firstboot.service \
     && systemctl enable tilo-server.service \
-    && systemctl enable tilo-fs-replica.service \
     && systemctl enable tilo-hosted.service \
     && systemctl enable tilo-api.service \
     && systemctl enable chronyd.service \

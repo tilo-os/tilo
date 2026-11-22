@@ -90,7 +90,9 @@ impl Device {
             match outgoing {
                 crate::sync::HostCmd::Network(Cmd::Publish { ws, msg }) => {
                     assert_eq!(ws, topic(), "content on its own workspace's topic");
-                    other.service.heard(ws, WORKSPACE, self.address, &msg);
+                    other
+                        .service
+                        .heard(ws, WORKSPACE, self.address, &msg, &|_| true);
                 }
                 crate::sync::HostCmd::Content(RecordContentDelivery { ws, target, msg }) => {
                     assert_eq!(ws, topic(), "content on its own workspace's topic");
@@ -108,7 +110,9 @@ impl Device {
                         Some(other.address),
                         "the answer names the device that asked"
                     );
-                    other.service.heard(ws, WORKSPACE, self.address, &msg);
+                    other
+                        .service
+                        .heard(ws, WORKSPACE, self.address, &msg, &|_| true);
                 }
                 other => panic!("a record's content says nothing else: {other:?}"),
             }

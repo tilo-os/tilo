@@ -22,7 +22,7 @@ tilo_test_env::scenario! {
             .output_locked()
             .expect("run production Files CLI");
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files authority"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files tree"));
         assert!(!cache.exists());
         assert!(!mount.exists());
         assert!(!identity.exists());
@@ -46,7 +46,7 @@ tilo_test_env::scenario! {
         let status: serde_json::Value =
             serde_json::from_slice(&output.stdout).expect("public status JSON");
         assert_eq!(status["can_resume_existing"], false);
-        assert_eq!(status["saved_authority"], false);
+        assert_eq!(status["workspace_service"], false);
         assert_eq!(status["saved_namespace"], false);
         assert!(!cache.exists());
         assert!(!dir.path().join("identity").exists());
@@ -92,15 +92,6 @@ impl Profile {
         .expect("write a kept document");
     }
 
-    fn save_authority(&self) {
-        std::fs::create_dir_all(self.cache()).expect("create cache");
-        std::fs::write(
-            self.cache().join("workspace-authority.bin"),
-            b"signed authority",
-        )
-        .expect("write authority");
-    }
-
     fn admin_argv(&self) -> Option<Vec<String>> {
         let recorded = std::fs::read_to_string(self.dir.path().join("admin.argv")).ok()?;
         Some(recorded.lines().map(str::to_string).collect())
@@ -136,14 +127,14 @@ fn assert_not_ready(output: &std::process::Output) {
 }
 
 tilo_test_env::scenario! {
-    fn a_primary_launch_checks_its_saved_authority_before_it_serves;
+    fn a_primary_launch_checks_its_identity_before_it_serves;
 
     phase primary_launch_without_a_saved_namespace_creates_nothing;
     {
         let profile = Profile::new(0);
         let output = profile.launch(&[]);
         assert_not_ready(&output);
-        assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files authority"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("no saved Files tree"));
         assert!(
             profile.admin_argv().is_none(),
             "no identity check without saved state"
@@ -153,24 +144,27 @@ tilo_test_env::scenario! {
         assert!(!profile.path("identity").exists());
     }
 
-    phase primary_launch_resumes_a_cache_that_holds_only_its_signed_authority;
+    phase primary_launch_resumes_from_the_workspace_service_without_a_kept_tree;
     {
         let profile = Profile::new(0);
-        profile.save_authority();
+        std::fs::create_dir_all(profile.path("run/tilo/services")).expect("create services dir");
+        let _service =
+            std::os::unix::net::UnixListener::bind(profile.path("run/tilo/services/files-tree.sock"))
+                .expect("stand in for the workspace service");
         let output = profile.launch(&[]);
         assert!(
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(profile.admin_argv().is_some(), "the authority check ran");
+        assert!(profile.admin_argv().is_some(), "the identity check ran");
         assert!(
             !profile.cache().join("namespace").exists(),
-            "the tree arrives with the first mount, from the Files record"
+            "the tree arrives with the first mount, from the workspace service"
         );
     }
 
-    phase primary_launch_refused_by_the_authority_check_never_mounts;
+    phase primary_launch_refused_by_the_identity_check_never_mounts;
     {
         let profile = Profile::new(1);
         profile.save_namespace();
@@ -207,7 +201,7 @@ tilo_test_env::scenario! {
         assert!(profile.admin_argv().is_none());
     }
 
-    phase primary_launch_gives_the_daemon_the_paths_the_authority_check_saw;
+    phase primary_launch_gives_the_daemon_the_paths_the_identity_check_saw;
     {
         use std::os::unix::fs::PermissionsExt as _;
         let profile = Profile::new(0);
@@ -251,18 +245,14 @@ tilo_test_env::scenario! {
                 text(run.join("fs-blobs.sock")),
                 "--workspace-key-socket".into(),
                 text(profile.path("run/tilo/services/identity.sock")),
-                "--session-link".into(),
-                text(run.join("fs-session-link")),
             ]
         );
         assert_eq!(
-            profile.admin_argv().expect("authority check ran"),
+            profile.admin_argv().expect("identity check ran"),
             [
                 "files-workspace-check".to_string(),
                 "--identity-root".into(),
                 text(profile.path("identity")),
-                "--cache-dir".into(),
-                text(cache.clone()),
             ]
         );
         for dir in [cache.join("mount"), run] {
@@ -298,7 +288,7 @@ tilo_test_env::scenario! {
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(
-            defaults.admin_argv().expect("authority check ran")[2],
+            defaults.admin_argv().expect("identity check ran")[2],
             text(defaults.path(".local/share/tilo"))
         );
         let argv: Vec<String> = serde_json::from_slice(&output.stdout).expect("argv JSON");

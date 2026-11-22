@@ -11,7 +11,6 @@
 
 use super::*;
 use crate::store::ContentStore;
-use iroh::endpoint::{Endpoint, presets};
 use std::path::Path;
 
 /// These tests mount a real FUSE filesystem. A machine that cannot (a test sandbox without
@@ -30,21 +29,17 @@ macro_rules! require_fuse {
     };
 }
 
-/// A filesystem over an empty namespace, with the runtime its endpoint runs on, built as the
+/// A filesystem over an empty namespace, with the runtime it runs on, built as the
 /// peer's own mount is: with version history, writer names, pinned hydration and staged writes.
-fn mounted(state: &Path) -> (QuickFS, Endpoint, tokio::runtime::Runtime) {
+fn mounted(state: &Path) -> (QuickFS, tokio::runtime::Runtime) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
         .unwrap();
-    let endpoint = runtime.block_on(Endpoint::bind(presets::Minimal)).unwrap();
     // The store and the mount start tasks on the runtime this test keeps.
     let _entered = runtime.enter();
-    let hydrator = Arc::new(Hydrator::new(
-        endpoint.clone(),
-        Arc::new(ContentStore::memory()),
-    ));
+    let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())));
     let namespace = Arc::new(Mutex::new(Namespace::new("mount-tests").unwrap()));
     let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
     let fs = QuickFS::new(namespace, hydrator, heuristics)
@@ -56,7 +51,7 @@ fn mounted(state: &Path) -> (QuickFS, Endpoint, tokio::runtime::Runtime) {
         .with_pinned_hydration()
         .with_unsaved_store(crate::unsaved::UnsavedStore::open(state.join("unsaved")).unwrap())
         .with_write_stage_dir(state.join("stage"));
-    (fs, endpoint, runtime)
+    (fs, runtime)
 }
 
 /// Mount `fs` at `at`, keeping its session alive while the returned guard lives.
@@ -81,7 +76,7 @@ fn a_name_removed_can_be_made_again_at_once() {
     let tmp = tempfile::tempdir().unwrap();
     let at = tmp.path().join("mnt");
     std::fs::create_dir(&at).unwrap();
-    let (fs, endpoint, runtime) = mounted(tmp.path());
+    let (fs, runtime) = mounted(tmp.path());
     let session = mount(fs, &at);
 
     std::fs::create_dir(at.join("docs")).unwrap();
@@ -95,7 +90,6 @@ fn a_name_removed_can_be_made_again_at_once() {
     );
 
     unmount(session, &at);
-    drop(endpoint);
     drop(runtime);
 }
 
@@ -107,7 +101,7 @@ fn a_name_can_be_made_and_taken_again_and_again() {
     let tmp = tempfile::tempdir().unwrap();
     let at = tmp.path().join("mnt");
     std::fs::create_dir(&at).unwrap();
-    let (fs, endpoint, runtime) = mounted(tmp.path());
+    let (fs, runtime) = mounted(tmp.path());
     let session = mount(fs, &at);
 
     for round in 0..20 {
@@ -126,7 +120,6 @@ fn a_name_can_be_made_and_taken_again_and_again() {
     }
 
     unmount(session, &at);
-    drop(endpoint);
     drop(runtime);
 }
 
@@ -138,7 +131,7 @@ fn a_tree_removed_takes_every_name_with_it() {
     let tmp = tempfile::tempdir().unwrap();
     let at = tmp.path().join("mnt");
     std::fs::create_dir(&at).unwrap();
-    let (fs, endpoint, runtime) = mounted(tmp.path());
+    let (fs, runtime) = mounted(tmp.path());
     let session = mount(fs, &at);
 
     std::fs::create_dir_all(at.join("a/b/c")).unwrap();
@@ -150,7 +143,6 @@ fn a_tree_removed_takes_every_name_with_it() {
     assert!(at.join("a/b/c").is_dir(), "and can be made again");
 
     unmount(session, &at);
-    drop(endpoint);
     drop(runtime);
 }
 
@@ -216,7 +208,7 @@ fn a_desktop_editor_saves_with_its_person_s_access() {
         let tmp = tempfile::tempdir().unwrap();
         let at = tmp.path().join("mnt");
         std::fs::create_dir(&at).unwrap();
-        let (fs, endpoint, runtime) = mounted(tmp.path());
+        let (fs, runtime) = mounted(tmp.path());
         // The file the person opens was already there.
         fs.apply_local_file(Path::new("note.txt"), b"before", 1_000)
             .unwrap();
@@ -240,7 +232,6 @@ fn a_desktop_editor_saves_with_its_person_s_access() {
         })();
         let now = std::fs::read(at.join("note.txt")).unwrap();
         unmount(session, &at);
-        drop(endpoint);
         drop(runtime);
 
         if saves {

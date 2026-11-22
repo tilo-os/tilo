@@ -236,9 +236,7 @@ impl Page<'_> {
         let taking = takes_work(&self.config.work);
         if taking {
             let home_desc = t(match self.runtime_status {
-                ServerRuntimeStatus::Ready => "mesh-home-ready",
                 ServerRuntimeStatus::Online => "mesh-home-online",
-                ServerRuntimeStatus::Syncing => "mesh-home-syncing",
                 ServerRuntimeStatus::Offline => "mesh-home-offline",
                 ServerRuntimeStatus::Unreadable => "mesh-home-unreadable",
             });
@@ -301,15 +299,8 @@ impl Page<'_> {
         ]
     }
 
-    fn service_rows(&self) -> [provider_settings_ui::widgets::Item; 5] {
+    fn service_rows(&self) -> [provider_settings_ui::widgets::Item; 4] {
         [
-            self.service_row(
-                "mesh-svc-files",
-                "mesh-svc-files-desc",
-                "full_content_replication",
-                "device_mesh.full_content_replication",
-                self.config.services.full_content_replication,
-            ),
             self.service_row(
                 "mesh-svc-server",
                 "mesh-svc-server-desc",
@@ -359,7 +350,7 @@ impl Page<'_> {
         let badge = health.map_or_else(|| t("mesh-badge-checking"), peer_health_badge);
         let detail = health.map_or_else(|| t("mesh-checking"), peer_health_detail);
         let tone = match health {
-            Some(HomePeerHealth::Online { .. }) => StatusTone::Success,
+            Some(HomePeerHealth::Online) => StatusTone::Success,
             Some(HomePeerHealth::Connecting) | None => StatusTone::Warning,
             Some(HomePeerHealth::Removed | HomePeerHealth::Unreachable) => StatusTone::Neutral,
         };

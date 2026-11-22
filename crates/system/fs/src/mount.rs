@@ -1,5 +1,5 @@
 //! Where and how a workspace is mounted: what a mount is given, what it serves, and the loop
-//! that runs it until the session ends or a rebind asks for another.
+//! that runs it until the session ends.
 
 use super::{
     AclHandle, Arc, BackendArgs, Config, Heuristics, Hydrator, IdentityKey, KeptTree, MountOption,
@@ -46,7 +46,6 @@ pub(super) struct MountServices {
     pub(super) availability: Option<Arc<Mutex<tilo_fs::AvailabilityRegistry>>>,
     pub(super) eviction_queue: Option<Arc<tokio::sync::Mutex<tilo_fs::eviction::EvictionQueue>>>,
     pub(super) actor: Option<fs_protocol::FileActor>,
-    pub(super) rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
 }
 
 #[allow(
@@ -75,7 +74,6 @@ pub(super) async fn run_mount(
         availability,
         eviction_queue,
         actor,
-        mut rebind,
     } = services;
     let content = Arc::clone(&hydrator.store);
     // Before anything is served: from here on a stop signal ends the mount through the final save
@@ -278,7 +276,7 @@ pub(super) async fn run_mount(
             read_only,
         )?
     {
-        let outcome = run_native(fs, cfg, rebind, &mut stop).await;
+        let outcome = run_native(fs, cfg, &mut stop).await;
         if let Some(task) = predictive_policy_task {
             task.abort();
         }
@@ -406,20 +404,6 @@ pub(super) async fn run_mount(
             let _ = (&mut mount_task).await;
             MountOutcome::Unmounted
         },
-        () = async {
-            match rebind.as_mut() {
-                Some(receiver) => { let _ = receiver.recv().await; }
-                None => std::future::pending::<()>().await,
-            }
-        } => {
-            println!("Content peer registration requested a clean workspace rebind.");
-            if let Some(shutdown) = &shutdown {
-                shutdown();
-            }
-            let _ = unmount_tx.send(session_supervisor::SessionEvent::Unmount);
-            let _ = (&mut mount_task).await;
-            MountOutcome::RebindRequested
-        },
     };
     if let Some(task) = predictive_policy_task {
         task.abort();
@@ -430,5 +414,4 @@ pub(super) async fn run_mount(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MountOutcome {
     Unmounted,
-    RebindRequested,
 }

@@ -1,14 +1,9 @@
 use super::*;
 use crate::namespace::ROOT_INO;
 use crate::store::ContentStore;
-use iroh::endpoint::{Endpoint, presets};
 
-async fn mount() -> (QuickFS, Endpoint, [u64; 3]) {
-    let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-    let hydrator = Arc::new(Hydrator::new(
-        endpoint.clone(),
-        Arc::new(ContentStore::memory()),
-    ));
+fn mount() -> (QuickFS, [u64; 3]) {
+    let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())));
     let namespace = Arc::new(Mutex::new(Namespace::new("staging-limits").unwrap()));
     let inos = ["a.bin", "b.bin", "c.bin"].map(|name| {
         namespace
@@ -18,16 +13,12 @@ async fn mount() -> (QuickFS, Endpoint, [u64; 3]) {
             .unwrap()
     });
     let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-    (
-        QuickFS::new(namespace, hydrator, heuristics),
-        endpoint,
-        inos,
-    )
+    (QuickFS::new(namespace, hydrator, heuristics), inos)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn memory_writes_and_truncates_enforce_limits_without_allocating_holes() {
-    let (fs, endpoint, [a, b, c]) = mount().await;
+    let (fs, [a, b, c]) = mount();
     let huge = MAX_STAGED_FILE_BYTES.saturating_mul(1024);
     assert_eq!(fs.write_buffer(a, huge, b"x"), Err(EFBIG));
     assert_eq!(fs.staged_len(a), Some(0));
@@ -53,12 +44,11 @@ async fn memory_writes_and_truncates_enforce_limits_without_allocating_holes() {
     drop(retained);
     fs.write_buffer(c, 0, b"x").unwrap();
     assert_eq!(fs.staged_bytes(c).unwrap(), b"x");
-    endpoint.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sparse_stages_are_not_subject_to_memory_limits_but_fallback_is() {
-    let (fs, endpoint, [a, b, c]) = mount().await;
+    let (fs, [a, b, c]) = mount();
     let dir = tempfile::tempdir().unwrap();
     let fs = fs.with_write_stage_dir(dir.path().join("stages"));
     let offset = MAX_STAGED_TOTAL_BYTES.saturating_add(1);
@@ -77,5 +67,4 @@ async fn sparse_stages_are_not_subject_to_memory_limits_but_fallback_is() {
     assert_eq!(fs.write_buffer(c, offset, b"x"), Err(EFBIG));
     assert_eq!(fs.truncate_inode(c, offset), Err(EFBIG));
     assert_eq!(fs.staged_len(c), Some(0));
-    endpoint.close().await;
 }

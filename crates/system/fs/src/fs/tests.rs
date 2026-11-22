@@ -4,10 +4,9 @@ use super::*;
 mod availability_control_tests {
     use super::*;
 
+    use crate::hydration::{ContentSource, StoreSource};
     use crate::namespace::ROOT_INO;
     use crate::store::ContentStore;
-    use iroh::endpoint::{Endpoint, presets};
-    use iroh::protocol::Router;
 
     async fn wait_for_availability(
         registry: &Arc<Mutex<AvailabilityRegistry>>,
@@ -41,9 +40,8 @@ mod availability_control_tests {
         .expect("availability state barrier");
     }
 
-    async fn pinned_content_source() -> (Endpoint, Router, Hash, Hash) {
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let store = ContentStore::memory();
+    async fn pinned_content_source() -> (Arc<ContentStore>, Hash, Hash) {
+        let store = Arc::new(ContentStore::memory());
         let first = store
             .write_content(b"first remote version")
             .await
@@ -54,16 +52,21 @@ mod availability_control_tests {
             .await
             .unwrap()
             .unwrap();
-        let router = Router::builder(endpoint.clone())
-            .accept(iroh_blobs::ALPN, store.blobs_protocol(None))
-            .spawn();
-        (endpoint, router, first, second)
+        (store, first, second)
     }
 
-    async fn close_pinned_test_source(router: Router, source: Endpoint, client: Endpoint) {
-        router.shutdown().await.unwrap();
-        source.close().await;
-        client.close().await;
+    /// The other device, reachable only from when it arrives.
+    #[derive(Default)]
+    struct Arriving(Mutex<Option<Arc<ContentStore>>>);
+
+    impl ContentSource for Arriving {
+        fn fetch(
+            &self,
+            hash: Hash,
+        ) -> futures_util::future::BoxFuture<'static, Option<bytes::Bytes>> {
+            let store = self.0.lock_recover().clone();
+            Box::pin(async move { store?.local(hash).await })
+        }
     }
 
     fn current_pinned_candidate(
@@ -170,9 +173,8 @@ mod availability_control_tests {
         }
         {
             let dir = tempfile::tempdir().unwrap();
-            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
             let store = Arc::new(ContentStore::memory());
-            let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
+            let hydrator = Arc::new(Hydrator::new(store));
             let namespace = Arc::new(Mutex::new(Namespace::new("bounded-pins").unwrap()));
             let folder = namespace
                 .lock()
@@ -249,7 +251,6 @@ mod availability_control_tests {
                         && record.transfer.retry_count == 0
                         && record.transfer.retry_at_ms.is_none())
             }));
-            endpoint.close().await;
         }
     }
 
@@ -258,9 +259,8 @@ mod availability_control_tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let registry_path = dir.path().join("availability.json");
-            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
             let store = Arc::new(ContentStore::memory());
-            let hydrator = Arc::new(Hydrator::new(endpoint, store));
+            let hydrator = Arc::new(Hydrator::new(store));
             let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let registry = Arc::new(Mutex::new(
@@ -297,9 +297,8 @@ mod availability_control_tests {
         {
             const READER: [u8; 32] = [0x51; 32];
             let dir = tempfile::tempdir().unwrap();
-            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
             let store = Arc::new(ContentStore::memory());
-            let hydrator = Arc::new(Hydrator::new(endpoint, store));
+            let hydrator = Arc::new(Hydrator::new(store));
             let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
             let ino = namespace
                 .lock_recover()
@@ -355,17 +354,14 @@ mod availability_control_tests {
     #[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
     async fn a_file_freed_by_its_content_hash_is_fetched_again_by_it() {
         let dir = tempfile::tempdir().unwrap();
-        let (source_endpoint, source_router, first, second) = pinned_content_source().await;
-        let client_endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let (source, first, second) = pinned_content_source().await;
         let client_store = Arc::new(ContentStore::memory());
         let bytes = b"first remote version";
         let written = client_store.write_content(bytes).await.unwrap().unwrap();
         assert_eq!(written, first, "the same bytes are the same content");
-        let hydrator = Arc::new(Hydrator::new(
-            client_endpoint.clone(),
-            Arc::clone(&client_store),
-        ));
-        hydrator.add_peer(source_endpoint.addr());
+        let hydrator = Arc::new(
+            Hydrator::new(Arc::clone(&client_store)).with_source(Arc::new(StoreSource(source))),
+        );
         let namespace = Arc::new(Mutex::new(Namespace::new("evicting").unwrap()));
         let (ino, other_ino) = {
             let mut namespace = namespace.lock_recover();
@@ -466,17 +462,19 @@ mod availability_control_tests {
         );
 
         drop(fs);
-        close_pinned_test_source(source_router, source_endpoint, client_endpoint).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pinned_folder_hydrates_future_child_retries_after_restart_and_tracks_new_version() {
         let dir = tempfile::tempdir().unwrap();
         let registry_path = dir.path().join("availability.json");
-        let (source_endpoint, source_router, first, second) = pinned_content_source().await;
-        let client_endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let (source, first, second) = pinned_content_source().await;
         let client_store = Arc::new(ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(client_endpoint.clone(), client_store));
+        let arriving = Arc::new(Arriving::default());
+        let hydrator = Arc::new(
+            Hydrator::new(client_store)
+                .with_source(Arc::clone(&arriving) as Arc<dyn ContentSource>),
+        );
         let namespace = Arc::new(Mutex::new(Namespace::new("pinned-client").unwrap()));
         let folder = namespace
             .lock()
@@ -509,7 +507,7 @@ mod availability_control_tests {
         drop(fs);
         drop(registry);
 
-        hydrator.add_peer(source_endpoint.addr());
+        *arriving.0.lock_recover() = Some(source);
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(&registry_path).unwrap(),
         ));
@@ -538,14 +536,12 @@ mod availability_control_tests {
         .await;
 
         drop(fs);
-        close_pinned_test_source(source_router, source_endpoint, client_endpoint).await;
     }
 
     #[tokio::test]
     async fn keep_offline_holds_bytes_against_the_cache_budget_only_while_pinned() {
         use crate::store::area::Retention;
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let size = crate::content::FILE_BACKED_MIN + 1;
         let bytes = |byte: u8| vec![byte; usize::try_from(size).unwrap()];
@@ -555,7 +551,7 @@ mod availability_control_tests {
             .files()
             .set_retention(read.as_bytes(), Retention::Cached)
             .unwrap();
-        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), Arc::clone(&store)));
+        let hydrator = Arc::new(Hydrator::new(Arc::clone(&store)));
         let namespace = Arc::new(Mutex::new(Namespace::new("keep-offline").unwrap()));
         let (read_ino, authored_ino) = {
             let mut namespace = namespace.lock().unwrap();
@@ -624,7 +620,6 @@ mod availability_control_tests {
         assert!(files.entry(authored.as_bytes()).is_some());
 
         drop(fs);
-        endpoint.close().await;
     }
 
     #[tokio::test]
@@ -632,27 +627,23 @@ mod availability_control_tests {
         use crate::store::area::Retention;
         let size = crate::content::FILE_BACKED_MIN + 1;
         let bytes = |byte: u8| vec![byte; usize::try_from(size).unwrap()];
-        let source_endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let source_store = ContentStore::memory();
+        let source_store = Arc::new(ContentStore::memory());
         let remote = source_store
             .write_content(&bytes(2))
             .await
             .unwrap()
             .unwrap();
-        let source_router = Router::builder(source_endpoint.clone())
-            .accept(iroh_blobs::ALPN, source_store.blobs_protocol(None))
-            .spawn();
 
         let dir = tempfile::tempdir().unwrap();
-        let client_endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let here = store.write_content(&bytes(1)).await.unwrap().unwrap();
         store
             .files()
             .set_retention(here.as_bytes(), Retention::Cached)
             .unwrap();
-        let hydrator = Arc::new(Hydrator::new(client_endpoint.clone(), Arc::clone(&store)));
-        hydrator.add_peer(source_endpoint.addr());
+        let hydrator = Arc::new(
+            Hydrator::new(Arc::clone(&store)).with_source(Arc::new(StoreSource(source_store))),
+        );
         let namespace = Arc::new(Mutex::new(Namespace::new("pinned-download").unwrap()));
         let folder = {
             let mut namespace = namespace.lock().unwrap();
@@ -698,7 +689,6 @@ mod availability_control_tests {
         );
 
         drop(fs);
-        close_pinned_test_source(source_router, source_endpoint, client_endpoint).await;
     }
 
     fn worker_turns(fs: &QuickFS) -> u64 {
@@ -722,11 +712,7 @@ mod availability_control_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pin_worker_idle_tick_does_not_walk_namespace() {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let hydrator = Arc::new(Hydrator::new(
-            endpoint.clone(),
-            Arc::new(ContentStore::memory()),
-        ));
+        let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())));
         let namespace = Arc::new(Mutex::new(Namespace::new("idle-pin").unwrap()));
         let (folder, last) = {
             let mut namespace = namespace.lock().unwrap();
@@ -782,16 +768,14 @@ mod availability_control_tests {
         assert!(walks() > settled);
 
         drop(fs);
-        endpoint.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pins_are_repaired_on_announcements_without_a_tick() {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let local = store.write_content(b"already here").await.unwrap().unwrap();
-        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
+        let hydrator = Arc::new(Hydrator::new(store));
         let namespace = Arc::new(Mutex::new(Namespace::new("announced-pin").unwrap()));
         let (folder, first) = {
             let mut namespace = namespace.lock().unwrap();
@@ -872,16 +856,14 @@ mod availability_control_tests {
         .await;
 
         drop(fs);
-        endpoint.close().await;
     }
 
     #[tokio::test]
     async fn first_pin_pass_persists_registry_once() {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let local = store.write_content(b"already here").await.unwrap().unwrap();
-        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
+        let hydrator = Arc::new(Hydrator::new(store));
         let namespace = Arc::new(Mutex::new(Namespace::new("pin-once").unwrap()));
         let (folder, empty, resident) = {
             let mut namespace = namespace.lock().unwrap();
@@ -960,21 +942,19 @@ mod availability_control_tests {
         );
 
         drop(fs);
-        endpoint.close().await;
     }
 
     #[tokio::test]
     async fn transfer_retries_run_off_thread_and_report_actionable_outcomes() {
         {
             let dir = tempfile::tempdir().unwrap();
-            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
             let store = Arc::new(ContentStore::memory());
             let hash = store
                 .write_content(b"available locally")
                 .await
                 .unwrap()
                 .unwrap();
-            let hydrator = Arc::new(Hydrator::new(endpoint, store));
+            let hydrator = Arc::new(Hydrator::new(store));
             let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let registry = Arc::new(Mutex::new(
@@ -1006,9 +986,8 @@ mod availability_control_tests {
         }
         {
             let dir = tempfile::tempdir().unwrap();
-            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
             let store = Arc::new(ContentStore::memory());
-            let hydrator = Arc::new(Hydrator::new(endpoint, store));
+            let hydrator = Arc::new(Hydrator::new(store));
             let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let registry = Arc::new(Mutex::new(
@@ -1033,9 +1012,8 @@ mod availability_control_tests {
     #[tokio::test]
     async fn retry_failure_is_coarse_and_actionable() {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let hydrator = Arc::new(Hydrator::new(store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let registry = Arc::new(Mutex::new(
@@ -1075,9 +1053,8 @@ mod availability_control_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn restart_does_not_project_completed_old_version_as_not_resident() {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(endpoint, Arc::clone(&store)));
+        let hydrator = Arc::new(Hydrator::new(Arc::clone(&store)));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let ino = namespace
             .lock_recover()
@@ -1141,8 +1118,6 @@ mod thumb_tests {
     use crate::namespace::ROOT_INO;
     use crate::store::ContentStore;
     use crate::thumbs::ThumbProvider;
-    use iroh::endpoint::Endpoint;
-    use iroh::endpoint::presets;
     use std::io::Cursor;
 
     fn solid_png(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
@@ -1157,15 +1132,12 @@ mod thumb_tests {
         out
     }
 
-    async fn fixture(
-        thumb_dir: std::path::PathBuf,
-    ) -> (Arc<Mutex<Namespace>>, Arc<ContentStore>, QuickFS) {
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+    fn fixture(thumb_dir: &std::path::Path) -> (Arc<Mutex<Namespace>>, Arc<ContentStore>, QuickFS) {
         let store = Arc::new(ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
+        let hydrator = Arc::new(Hydrator::new(store.clone()));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let provider = ThumbProvider::open(&thumb_dir).unwrap();
+        let provider = ThumbProvider::open(thumb_dir).unwrap();
         let fs = QuickFS::new(namespace.clone(), hydrator, heuristics).with_thumbs(provider);
         (namespace, store, fs)
     }
@@ -1174,7 +1146,7 @@ mod thumb_tests {
     async fn thumbnails_are_generated_verified_and_published() {
         {
             let dir = tempfile::tempdir().unwrap();
-            let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
+            let (namespace, store, fs) = fixture(&dir.path().join("thumbs"));
 
             let png = solid_png(600, 400, [40, 130, 220]);
             let mh = store.write_content(&png).await.unwrap().unwrap();
@@ -1223,7 +1195,7 @@ mod thumb_tests {
             let png = solid_png(320, 240, [200, 60, 30]);
 
             let thumb = {
-                let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
+                let (namespace, store, fs) = fixture(&dir.path().join("thumbs"));
                 let mh = store.write_content(&png).await.unwrap().unwrap();
                 let ino = {
                     let mut ns = namespace.lock_recover();
@@ -1233,7 +1205,7 @@ mod thumb_tests {
                 fs.thumbnail_for(ino).expect("generated")
             };
 
-            let (namespace2, store2, fs2) = fixture(dir.path().join("thumbs")).await;
+            let (namespace2, store2, fs2) = fixture(&dir.path().join("thumbs"));
             let mh = store2.write_content(&png).await.unwrap().unwrap();
             let ino2 = {
                 let mut ns = namespace2.lock_recover();
@@ -1250,7 +1222,7 @@ mod thumb_tests {
         }
         {
             let dir = tempfile::tempdir().unwrap();
-            let (namespace, _store, fs) = fixture(dir.path().join("thumbs")).await;
+            let (namespace, _store, fs) = fixture(&dir.path().join("thumbs"));
 
             let projected = iroh_blobs::Hash::from([3u8; 32]);
             let img_ino = {
@@ -1278,7 +1250,7 @@ mod thumb_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_replicated_thumbnail_is_served_before_content() {
         let dir = tempfile::tempdir().unwrap();
-        let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
+        let (namespace, store, fs) = fixture(&dir.path().join("thumbs"));
 
         let preview = thumbnail::encode_png(
             &thumbnail::image_thumb(&solid_png(256, 256, [90, 200, 120]), 256).unwrap(),
@@ -1312,12 +1284,10 @@ mod predictive_tests {
     use crate::acl::WorkspaceAcl;
     use crate::namespace::ROOT_INO;
     use crate::store::ContentStore;
-    use iroh::endpoint::{Endpoint, presets};
 
-    async fn fixture() -> (Arc<Mutex<Namespace>>, QuickFS) {
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+    fn fixture() -> (Arc<Mutex<Namespace>>, QuickFS) {
         let store = Arc::new(ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let hydrator = Arc::new(Hydrator::new(store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         (
@@ -1333,7 +1303,7 @@ mod predictive_tests {
     )]
     async fn prediction_selects_visible_siblings_of_the_same_type() {
         {
-            let (namespace, fs) = fixture().await;
+            let (namespace, fs) = fixture();
             let (first, second_hash, third_hash) = {
                 let mut ns = namespace.lock_recover();
                 let first = ns
@@ -1359,7 +1329,7 @@ mod predictive_tests {
         }
         {
             const ME: [u8; 32] = [0xA1; 32];
-            let (namespace, fs) = fixture().await;
+            let (namespace, fs) = fixture();
             let (first, visible_hash) = {
                 let mut ns = namespace.lock_recover();
                 let first = ns
@@ -1398,7 +1368,7 @@ mod predictive_tests {
     async fn record_catalogs_hide_acl_denied_records_and_refuse_stale_v2_pages() {
         {
             const ME: [u8; 32] = [0xA2; 32];
-            let (namespace, fs) = fixture().await;
+            let (namespace, fs) = fixture();
             let (visible_document, hidden_document) = {
                 let mut ns = namespace.lock_recover();
                 let folder = ns.create_dir(ROOT_INO, "folder", 1).unwrap();
@@ -1440,7 +1410,7 @@ mod predictive_tests {
             );
         }
         {
-            let (namespace, fs) = fixture().await;
+            let (namespace, fs) = fixture();
             {
                 let mut ns = namespace.lock_recover();
                 for index in 0..fs_protocol::projection::DOCUMENT_INDEX_PAGE_ENTRIES + 1 {
@@ -1484,7 +1454,7 @@ mod predictive_tests {
         }
         {
             const ME: [u8; 32] = [0xA3; 32];
-            let (namespace, fs) = fixture().await;
+            let (namespace, fs) = fixture();
             namespace
                 .lock_recover()
                 .create_file(ROOT_INO, "visible.txt", Some(&Hash::from([3; 32])), 3, 1)
@@ -1510,7 +1480,7 @@ mod predictive_tests {
     #[tokio::test]
     async fn writes_through_the_mount_leave_the_catalogue_to_its_readers() {
         const ME: [u8; 32] = [0xA9; 32];
-        let (namespace, fs) = fixture().await;
+        let (namespace, fs) = fixture();
         let mut policy = WorkspaceAcl::new();
         policy.grant_read(ME, "/");
         let fs = fs.with_acl(AclHandle::new(policy), ME);
@@ -1561,7 +1531,7 @@ mod predictive_tests {
     async fn v3_record_catalog_hides_denied_rows_and_fails_closed_on_revoke() {
         {
             const ME: [u8; 32] = [0xA4; 32];
-            let (namespace, fs) = fixture().await;
+            let (namespace, fs) = fixture();
             let visible_document = {
                 let mut ns = namespace.lock_recover();
                 for index in 0..(fs_protocol::projection::DOCUMENT_INDEX_PAGE_ENTRIES * 2) {
@@ -1609,7 +1579,7 @@ mod predictive_tests {
         }
         {
             const ME: [u8; 32] = [0xA5; 32];
-            let (namespace, fs) = fixture().await;
+            let (namespace, fs) = fixture();
             let first_document = {
                 let mut ns = namespace.lock_recover();
                 let ino = ns.create_file(ROOT_INO, "first.txt", None, 0, 1).unwrap();
@@ -1668,7 +1638,7 @@ mod predictive_tests {
     async fn v3_record_catalog_pages_large_views_off_the_request_path() {
         {
             const ME: [u8; 32] = [0xA6; 32];
-            let (namespace, fs) = fixture().await;
+            let (namespace, fs) = fixture();
             {
                 let mut ns = namespace.lock_recover();
                 for index in 0..=fs_protocol::projection::DOCUMENT_INDEX_PAGE_ENTRIES {
@@ -1726,7 +1696,7 @@ mod predictive_tests {
         }
         {
             const ME: [u8; 32] = [0xA7; 32];
-            let (namespace, fs) = fixture().await;
+            let (namespace, fs) = fixture();
             let visible_dir = namespace
                 .lock_recover()
                 .create_dir(ROOT_INO, "visible", 1)
@@ -1794,7 +1764,7 @@ mod predictive_tests {
         }
         {
             const ME: [u8; 32] = [0xA8; 32];
-            let (_namespace, fs) = fixture().await;
+            let (_namespace, fs) = fixture();
             let mut policy = WorkspaceAcl::new();
             policy.grant_read(ME, "/");
             let acl = AclHandle::new(policy.clone());
@@ -1815,7 +1785,7 @@ mod predictive_tests {
     #[tokio::test]
     async fn acl_index_incremental_matches_full_rebuild() {
         const ME: [u8; 32] = [0xA9; 32];
-        let (namespace, fs) = fixture().await;
+        let (namespace, fs) = fixture();
         let visible = {
             let mut ns = namespace.lock_recover();
             let visible = ns.create_dir(ROOT_INO, "visible", 1).unwrap();
@@ -1876,44 +1846,28 @@ mod write_stage_tests {
 
     use crate::namespace::ROOT_INO;
     use crate::store::ContentStore;
-    use iroh::endpoint::{Endpoint, presets};
-    use iroh::protocol::Router;
-
     use crate::test_bytes::pseudo;
 
     struct Remote {
         dir: tempfile::TempDir,
-        router: Router,
-        source: Endpoint,
-        client: Endpoint,
-        source_store: ContentStore,
+        source_store: Arc<ContentStore>,
         namespace: Arc<Mutex<Namespace>>,
         fs: QuickFS,
     }
 
     impl Remote {
-        async fn new() -> Self {
+        fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
-            let source = Endpoint::bind(presets::Minimal).await.unwrap();
-            let source_store = ContentStore::memory();
-            let router = Router::builder(source.clone())
-                .accept(iroh_blobs::ALPN, source_store.blobs_protocol(None))
-                .spawn();
-            let client = Endpoint::bind(presets::Minimal).await.unwrap();
-            let hydrator = Arc::new(Hydrator::new(
-                client.clone(),
-                Arc::new(ContentStore::memory()),
+            let source_store = Arc::new(ContentStore::memory());
+            let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())).with_source(
+                Arc::new(crate::hydration::StoreSource(Arc::clone(&source_store))),
             ));
-            hydrator.add_peer(source.addr());
             let namespace = Arc::new(Mutex::new(Namespace::new("stage-client").unwrap()));
             let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
             let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
                 .with_write_stage_dir(dir.path().join("stage"));
             Self {
                 dir,
-                router,
-                source,
-                client,
                 source_store,
                 namespace,
                 fs,
@@ -1949,11 +1903,8 @@ mod write_stage_tests {
             }
         }
 
-        async fn close(self) {
+        fn close(self) {
             drop(self.fs);
-            self.router.shutdown().await.unwrap();
-            self.source.close().await;
-            self.client.close().await;
             drop(self.dir);
         }
     }
@@ -1961,7 +1912,7 @@ mod write_stage_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn append_to_remote_file_fetches_only_the_tail() {
         const LEN: usize = 64 * 1024 * 1024;
-        let remote = Remote::new().await;
+        let remote = Remote::new();
         let original = pseudo(LEN, 0x217);
         let (ino, base) = remote.file("video.mp4", &original).await;
         assert_eq!(remote.fetched(), 0);
@@ -2006,12 +1957,12 @@ mod write_stage_tests {
             blake3::hash(&remote.committed(ino).await),
             blake3::hash(&expected)
         );
-        remote.close().await;
+        remote.close();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn truncate_to_zero_does_not_hydrate() {
-        let remote = Remote::new().await;
+        let remote = Remote::new();
         let (unopened, _) = remote.file("big.iso", &pseudo(3 * 1024 * 1024, 1)).await;
         let (rewritten, _) = remote.file("notes.txt", &pseudo(300_000, 2)).await;
         let (open, _) = remote.file("open.bin", &pseudo(2 * 1024 * 1024, 3)).await;
@@ -2030,12 +1981,12 @@ mod write_stage_tests {
         assert_eq!(remote.fs.ns().getattr(unopened).unwrap().size, 0);
         assert_eq!(remote.fs.ns().hash_for(open), None);
         assert_eq!(remote.committed(rewritten).await, b"fresh");
-        remote.close().await;
+        remote.close();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn truncating_an_unopened_remote_file_reads_only_the_kept_prefix() {
-        let remote = Remote::new().await;
+        let remote = Remote::new();
         let original = pseudo(6 * 1024 * 1024, 4);
         let (ino, _) = remote.file("log.bin", &original).await;
         assert_eq!(remote.fs.truncate_inode(ino, 1000), Ok(()));
@@ -2045,17 +1996,13 @@ mod write_stage_tests {
             "keeping 1000 bytes fetched {fetched}"
         );
         assert_eq!(remote.committed(ino).await, &original[..1000]);
-        remote.close().await;
+        remote.close();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unreachable_base_fails_the_commit_and_never_truncates() {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let hydrator = Arc::new(Hydrator::new(
-            endpoint.clone(),
-            Arc::new(ContentStore::memory()),
-        ));
+        let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())));
         let namespace = Arc::new(Mutex::new(Namespace::new("offline").unwrap()));
         let elsewhere = ContentStore::memory()
             .write_content(&pseudo(200_000, 5))
@@ -2078,17 +2025,12 @@ mod write_stage_tests {
         assert!(fs.read_full_blocking(ino).is_err());
         assert_eq!(fs.staged_len(ino), Some(200_004), "the written bytes stay");
         drop(fs);
-        endpoint.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn large_flush_does_not_block_other_inode_reads() {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let hydrator = Arc::new(Hydrator::new(
-            endpoint.clone(),
-            Arc::new(ContentStore::memory()),
-        ));
+        let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())));
         let namespace = Arc::new(Mutex::new(Namespace::new("contention").unwrap()));
         let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
         let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
@@ -2158,7 +2100,6 @@ mod write_stage_tests {
             blake3::hash(&payload),
             "the large file committed its bytes"
         );
-        endpoint.close().await;
     }
 
     /// What a reader of the mount gets for the whole of `ino`.
@@ -2175,11 +2116,7 @@ mod write_stage_tests {
     /// names. `git reset --hard` once left every `.html` file empty.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_file_reads_back_the_bytes_written_whatever_its_format() {
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let hydrator = Arc::new(Hydrator::new(
-            endpoint.clone(),
-            Arc::new(ContentStore::memory()),
-        ));
+        let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())));
         let namespace = Arc::new(Mutex::new(Namespace::new("formats").unwrap()));
         let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
         let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
@@ -2224,16 +2161,11 @@ mod write_stage_tests {
         })
         .await
         .unwrap();
-        endpoint.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_mode_given_to_a_file_or_directory_is_kept_without_setuid() {
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let hydrator = Arc::new(Hydrator::new(
-            endpoint.clone(),
-            Arc::new(ContentStore::memory()),
-        ));
+        let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())));
         let namespace = Arc::new(Mutex::new(Namespace::new("modes").unwrap()));
         let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
         let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
@@ -2250,7 +2182,6 @@ mod write_stage_tests {
         })
         .await
         .unwrap();
-        endpoint.close().await;
     }
 }
 
@@ -2260,13 +2191,11 @@ mod read_lock_tests {
     use crate::acl::WorkspaceAcl;
     use crate::namespace::ROOT_INO;
     use crate::store::ContentStore;
-    use iroh::endpoint::{Endpoint, presets};
 
     const ME: [u8; 32] = [0xB7; 32];
     const BYTES: &[u8] = b"local bytes served without a peer";
 
     struct Fixture {
-        endpoint: Endpoint,
         namespace: Arc<Mutex<Namespace>>,
         fs: QuickFS,
         shared: u64,
@@ -2274,10 +2203,9 @@ mod read_lock_tests {
     }
 
     async fn fixture() -> Fixture {
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hash = store.write_content(BYTES).await.unwrap().unwrap();
-        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
+        let hydrator = Arc::new(Hydrator::new(store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let (shared, file) = {
             let mut ns = lock_namespace(&namespace);
@@ -2291,7 +2219,6 @@ mod read_lock_tests {
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
         Fixture {
-            endpoint,
             namespace,
             fs,
             shared,
@@ -2330,9 +2257,7 @@ mod read_lock_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn read_after_acl_revoke_is_enoent() {
-        let Fixture {
-            endpoint, fs, file, ..
-        } = fixture().await;
+        let Fixture { fs, file, .. } = fixture().await;
         let handle = AclHandle::new(shared_read_policy());
         let fs = fs.with_acl(handle.clone(), ME);
         assert_eq!(read_all(&fs, file, 0), data());
@@ -2341,13 +2266,11 @@ mod read_lock_tests {
         assert_eq!(read_all(&fs, file, 0), Reply::Errno(ENOENT));
         assert_eq!(fs.attr_for_request(file, None).err(), Some(ENOENT));
         drop(fs);
-        endpoint.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn read_after_rename_out_of_view_is_enoent() {
         let Fixture {
-            endpoint,
             namespace,
             fs,
             shared,
@@ -2367,13 +2290,11 @@ mod read_lock_tests {
             "moving back into the view makes the file readable again"
         );
         drop(fs);
-        endpoint.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unlinked_file_reads_only_through_its_open_handle() {
         let Fixture {
-            endpoint,
             namespace,
             fs,
             file,
@@ -2408,21 +2329,14 @@ mod read_lock_tests {
         );
         assert_eq!(fs.attr_for_request(file, None).err(), Some(ENOENT));
         drop(fs);
-        endpoint.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn read_of_a_directory_is_eisdir() {
-        let Fixture {
-            endpoint,
-            fs,
-            shared,
-            ..
-        } = fixture().await;
+        let Fixture { fs, shared, .. } = fixture().await;
         let fs = fs.with_acl(shared_read_policy(), ME);
         assert_eq!(read_all(&fs, shared, 0), Reply::Errno(EISDIR));
         drop(fs);
-        endpoint.close().await;
     }
 
     /// A closed file's stage becomes its content entry by a link, and a write after that close
@@ -2434,9 +2348,8 @@ mod read_lock_tests {
         use crate::test_bytes::pseudo;
 
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), Arc::clone(&store)));
+        let hydrator = Arc::new(Hydrator::new(Arc::clone(&store)));
         let namespace = Arc::new(Mutex::new(Namespace::new("adopt").unwrap()));
         let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
         let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
@@ -2491,7 +2404,6 @@ mod read_lock_tests {
             changed
         );
         drop(fs);
-        endpoint.close().await;
     }
 
     /// A close needs no async runtime and no thread beside it: the staged photo is read, chunked
@@ -2509,9 +2421,8 @@ mod read_lock_tests {
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let (fs, store) = runtime.block_on(async {
-            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
             let store = Arc::new(ContentStore::memory());
-            let hydrator = Arc::new(Hydrator::new(endpoint, Arc::clone(&store)));
+            let hydrator = Arc::new(Hydrator::new(Arc::clone(&store)));
             let namespace = Arc::new(Mutex::new(Namespace::new("adopt-plain").unwrap()));
             let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
             let fs = QuickFS::new(namespace, hydrator, heuristics)
@@ -2541,15 +2452,13 @@ mod listing_stream_tests {
 
     use crate::namespace::ROOT_INO;
     use crate::store::ContentStore;
-    use iroh::endpoint::{Endpoint, presets};
 
     /// A listing is one pass over its folder: its later pages continue what its first page
     /// listed even while the folder is being filled, and the next listing asks again.
     #[tokio::test]
     async fn a_listing_s_pages_are_one_pass_and_the_next_listing_is_fresh() {
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
-        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let hydrator = Arc::new(Hydrator::new(store));
         let namespace = Arc::new(Mutex::new(Namespace::new("listing-replica").unwrap()));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let flat = {

@@ -1,6 +1,9 @@
 //! The capability list a mount enforces, kept current while it runs.
 //!
-//! `--acl FILE` binds the [`collab_types::FsAuthority`] the governor exports to a mount.
+//! `--acl FILE` binds a [`collab_types::FsAuthority`] to a mount: the list the session last
+//! decided from the workspace's signed member list and told the mount over its tree's
+//! connection ([`CapabilityFile::keep`]), kept here so a mount that starts while the session is
+//! away enforces the last list it was told.
 //! `/var/workspace` stays mounted for the whole session, so binding the list
 //! by value at mount time would make "a later grant needs a remount" mean "a
 //! later grant does not apply". [`CapabilityFile`] owns the file and an
@@ -161,6 +164,32 @@ impl CapabilityFile {
 }
 
 impl CapabilityFile {
+    /// Put `json`, the list the session decides now, in force at once, and keep it where the
+    /// next start of this mount reads it. A list that does not parse changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`CapsError::Parse`] when `json` is no file access list, [`CapsError::Read`] when it is
+    /// in force but could not be kept for the next start.
+    pub fn keep(&self, json: &str) -> Result<usize, CapsError> {
+        let caps = authority(json.as_bytes(), &self.path)?.capabilities;
+        let n = caps.len();
+        self.handle
+            .replace(build(self.identity, &caps, &self.members));
+        tilo_files::native::atomic::write(&self.path, json.as_bytes()).map_err(|source| {
+            CapsError::Read {
+                path: self.path.clone(),
+                source,
+            }
+        })?;
+        if let Ok(meta) = std::fs::metadata(&self.path) {
+            *self.seen.lock_recover() = Some(Stamp::of(&meta));
+        }
+        Ok(n)
+    }
+}
+
+impl CapabilityFile {
     /// Keep the live mount's list current: re-read on every change of the
     /// file, from the host's file events. The first read happens at once, so
     /// a change made between [`Self::load`] and this call is not missed.
@@ -237,7 +266,7 @@ pub enum CapsError {
         #[source]
         source: std::io::Error,
     },
-    #[error("capability list {path} is not the governor's file authority: {source}")]
+    #[error("capability list {path} is not a file access list: {source}")]
     Parse {
         path: PathBuf,
         #[source]

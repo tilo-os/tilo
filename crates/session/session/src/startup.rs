@@ -239,7 +239,6 @@ fn pair_device(
         label: name.as_deref().unwrap_or("Tilo device"),
         timeout: 60,
         kind: tilo_enrollment::EnrollmentKind::PersonalDevice,
-        home_peer_output: None,
         identity_dir: Some(identity_dir),
         requester_lease,
         port: 0,
