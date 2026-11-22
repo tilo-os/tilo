@@ -265,7 +265,7 @@ enum Step {
     Open(Box<Hosted>, Option<OwnedFd>, Option<Box<page::PageWindow>>),
 }
 
-/// Where an instance's patches go, the connection that watches it, and the page window it draws
+/// Where a run's patches go, the connection that watches it, and the page window it draws
 /// into for one that shows a page.
 type Transported = (
     Box<dyn tilo_render_protocol::patch::Transport>,
@@ -898,7 +898,7 @@ impl TilolangProcess {
                 language: request.language,
                 access: request.access,
                 shows: request.shows,
-                for_workspace_server: request.for_workspace_server,
+                carries_migrations: request.carries_migrations,
                 ..Spec::new(
                     request.app,
                     request.workspace,
@@ -1016,7 +1016,7 @@ impl TilolangProcess {
         Ok(Step::Open(Box::new(hosted), watched, page_window))
     }
 
-    /// Where an instance showing `shows` sends its patches. A window's instance draws and hears
+    /// Where a run showing `shows` sends its patches. A window's run draws and hears
     /// its window, watched by its connection; a page's is drawn here, beside the app's code, and
     /// watched by the page's connection; one that shows nothing sends its patches nowhere and
     /// hears nothing.
@@ -1190,7 +1190,7 @@ impl TilolangProcess {
                     app = running.hosted.spec().app,
                     instance = running.hosted.spec().instance,
                     carried,
-                    "instance ended: its window closed, or the server's run carried what it had to"
+                    "a run ended: its window closed, or it carried the migrations it had to"
                 );
                 ended.push(running.hosted.spec().instance);
             }

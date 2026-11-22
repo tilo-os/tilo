@@ -104,10 +104,11 @@ pub struct Spec {
     /// instance that shows nothing draws no window, offers no window verb, and runs the app's
     /// actions on its document alone.
     pub shows: Shows,
-    /// Whether this is a run for the workspace's server (`InstanceRequest::for_workspace_server`):
-    /// the server governs the workspace, so the run is where the package's migrations carry what a
-    /// native app of its id kept there, though it reads the workspace through the server's broker.
-    pub for_workspace_server: bool,
+    /// Whether this run carries the package's migrations (`InstanceRequest::carries_migrations`):
+    /// it carries what a native app of the package's id kept in the workspace, though it reads the
+    /// workspace through a broker. It moves onto the one placement function (`work::takes_turn`)
+    /// once that lands.
+    pub carries_migrations: bool,
 }
 
 impl Spec {
@@ -129,7 +130,7 @@ impl Spec {
             language: String::new(),
             access: None,
             shows: Shows::View,
-            for_workspace_server: false,
+            carries_migrations: false,
         }
     }
 
@@ -147,12 +148,12 @@ impl Spec {
         self
     }
 
-    /// [`Self::new`] for a run for the workspace's server, which shows nothing
-    /// ([`Self::for_workspace_server`]).
+    /// [`Self::new`] for a run that carries the package's migrations and shows nothing
+    /// ([`Self::carries_migrations`]).
     #[must_use]
-    pub fn for_the_workspace_server(mut self) -> Self {
+    pub fn carrying_migrations(mut self) -> Self {
         self.shows = Shows::Nothing;
-        self.for_workspace_server = true;
+        self.carries_migrations = true;
         self
     }
 
@@ -180,7 +181,7 @@ impl Transport for NoView {
 }
 
 /// The documents a native app of the package's id `app` kept in `record`'s workspace on this
-/// device, when this run `governs` the workspace (none elsewhere), each by the id it holds (a
+/// device, when this run `carries` the package's migrations (none elsewhere), each by the id it holds (a
 /// store keys a document by a name made from its id), else by the key it is stored under: its
 /// records, which the package now under that id carries over once with a migration of
 /// its own. They are read under `app`, not under the id of `record`'s route: a package published
@@ -195,12 +196,12 @@ fn earlier_documents(
     documents: Option<&Rc<dyn durable_store::DurableStore>>,
     app: &str,
     record: &InstanceDocument,
-    governs: bool,
+    carries: bool,
 ) -> Vec<(String, automerge::AutoCommit)> {
     let Some(documents) = documents else {
         return Vec::new();
     };
-    if !governs {
+    if !carries {
         return Vec::new();
     }
     let workspace = record.route().cluster_id.to_string();
@@ -1078,17 +1079,13 @@ impl Hosted {
             Rc::new(tilolang_tilo::names::Installed),
             transport,
         );
-        // The device that governs the workspace is its documents' origin: the package's migrations
-        // run there, once, over what a native app of the package's id kept there too. A server
-        // governs its workspaces but reads them through its broker, so its run says so itself.
-        let governs = record.governs() || spec.for_workspace_server;
-        instance.set_origin(governs);
-        instance.set_earlier(earlier_documents(
-            kept.earlier.as_ref(),
-            &spec.app,
-            &record,
-            governs,
-        ));
+        // The document's origin carries the package's migrations, once, over what a native app of
+        // the package's id kept there too. A server's run reads its workspace through a broker, so
+        // its request says itself that it carries them.
+        let carries = record.is_origin() || spec.carries_migrations;
+        instance.set_origin(carries);
+        let earlier = earlier_documents(kept.earlier.as_ref(), &spec.app, &record, carries);
+        instance.set_earlier(earlier);
         // What its runtime offers and invokes is decided by the person's access as the session
         // says it, read at each decision.
         let access = Rc::new(RefCell::new(spec.access.clone()));
@@ -1575,12 +1572,12 @@ impl Hosted {
             .revert_step(&mut self.instance, resource, kind, invoker, ambient, change)
     }
 
-    /// Whether this is a run for the workspace's server whose work is done: the package's
+    /// Whether this is a run that carries the package's migrations whose work is done: the package's
     /// migrations ran (or found their marks) and the workspace was handed what they wrote. Such a
     /// run is never a reader that stays, so it ends then.
     #[must_use]
     pub fn carried(&self) -> bool {
-        self.spec.for_workspace_server
+        self.spec.carries_migrations
             && self.instance.has_migrated()
             && !self.owes_a_frame()
             && self.unsent_parts().is_empty()

@@ -495,25 +495,25 @@ impl LauncherServices for Apps {
         app: &str,
         workspace: &str,
     ) -> Result<Option<tilo_workspace_service::apps::services::WindowlessStart>, String> {
-        self.package_runs().windowless(app, workspace)
+        self.package_runs().run_showing_nothing(app, workspace)
     }
     fn authenticated_launch(
         &self,
         pid: u32,
         app: &str,
         workspace: &str,
-        window_instance: Option<u64>,
+        tab: Option<u64>,
     ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
         #[cfg(target_os = "linux")]
         if let Some(ran) = self
             .package_runs
             .get()
-            .and_then(|runs| runs.authenticated_launch(pid, app, workspace, window_instance))
+            .and_then(|runs| runs.authenticated_launch(pid, app, workspace, tab))
         {
             return Ok(Some(ran));
         }
         #[cfg(not(target_os = "linux"))]
-        let _ = window_instance;
+        let _ = tab;
         if self.serves(pid, app, workspace) {
             return Ok(Some(AuthenticatedApplicationLaunch {
                 continuation_instance: None,

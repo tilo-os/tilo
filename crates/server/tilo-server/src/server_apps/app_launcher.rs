@@ -80,7 +80,7 @@ impl LauncherServices for ServerLauncher {
     }
 
     fn windowless(&self, app: &str, workspace: &str) -> Result<Option<WindowlessStart>, String> {
-        self.runs.windowless(app, workspace)
+        self.runs.run_showing_nothing(app, workspace)
     }
 
     /// The ids the workspace's apps were published under before, as the packages this server

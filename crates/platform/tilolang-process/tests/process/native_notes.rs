@@ -147,7 +147,7 @@ fn notes_started_as_a_session_does_carries_the_native_notebook_over_once() {
     let content = tilo_content::ContentStore::memory();
     let record = InstanceDocument::new(automerge::AutoCommit::new(), manager, route, ADA)
         .keeping_content_in(content.clone());
-    assert!(record.governs(), "this device is the workspace's origin");
+    assert!(record.is_origin(), "this device is the workspace's origin");
     // The native app's data home, of which the session grants the process the store it wrote;
     // the process keeps its own storage beside it.
     let device = tempfile::tempdir().unwrap();
@@ -221,9 +221,9 @@ fn notes_started_as_a_session_does_carries_the_native_notebook_over_once() {
     );
 }
 
-/// Notes as a server runs it for one of its workspaces: the server governs the workspace, but
-/// its process reads it through the server's broker, so the record does not govern by itself.
-/// `for_server` makes it the run for the workspace's server; `record` is the workspace's document
+/// Notes as a server runs it for one of its workspaces: its process reads the workspace through
+/// the server's broker, so the record is not the document's origin by itself.
+/// `for_server` makes it the run that carries the package's migrations; `record` is the workspace's document
 /// as the broker holds it. The server granted the process what the native Notes kept, at `native`.
 /// Answers the host once it settled, and what the run handed the workspace.
 fn run_on_the_server(
@@ -249,13 +249,13 @@ fn run_on_the_server(
     let _ = manager.poll();
     let record = InstanceDocument::new(record, manager, route, ADA)
         .keeping_content_in(tilo_content::ContentStore::memory())
-        .governed_elsewhere();
+        .read_through_a_broker();
     let mut host =
         TilolangProcess::new(Some(storage.to_path_buf()), wake()).reading_earlier(native.into());
     let kept = host.kept(PUBLISHED_BEFORE).unwrap();
     let spec = Spec::new(NOTES, workspace.to_string(), 1, ADA);
     let spec = if for_server {
-        spec.for_the_workspace_server()
+        spec.carrying_migrations()
     } else {
         spec.showing(Shows::Nothing)
     };
@@ -309,7 +309,7 @@ fn notes_held(
 }
 
 #[test]
-fn the_run_for_the_workspace_server_carries_the_native_notebook_once_and_ends() {
+fn the_run_that_carries_migrations_carries_the_native_notebook_once_and_ends() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let workspace = uuid::Uuid::new_v4();
     let device = tempfile::tempdir().unwrap();
@@ -322,7 +322,7 @@ fn the_run_for_the_workspace_server_carries_the_native_notebook_once_and_ends() 
     assert_eq!(
         notes_held(workspace, empty.clone(), &native),
         [],
-        "a run that does not govern the workspace carries nothing of what the native app kept"
+        "a run that carries no migrations carries nothing of what the native app kept"
     );
 
     let (mut first, sent) = run_on_the_server(

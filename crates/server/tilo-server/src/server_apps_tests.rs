@@ -313,7 +313,7 @@ async fn a_server_runs_one_broker_for_each_workspace_while_it_keeps_it() {
     assert_eq!(apps.workspaces(), BTreeSet::from([other]));
 }
 
-/// The system's apps a server ships are installed in every workspace whose apps it governs, the
+/// The system's apps a server ships are installed in every workspace it serves, the
 /// one it was started for or not, once: a later start installs nothing again.
 #[cfg(feature = "agents")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -321,7 +321,7 @@ async fn a_server_runs_one_broker_for_each_workspace_while_it_keeps_it() {
     clippy::significant_drop_tightening,
     reason = "the host serves its workspaces until the test ends"
 )]
-async fn a_server_installs_the_apps_it_ships_in_every_workspace_it_governs() {
+async fn a_server_installs_the_apps_it_ships_in_every_workspace_it_serves() {
     use tilo_desktop_model::WorkspaceId;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = crate::workspaces::fixtures::governor();
@@ -359,7 +359,7 @@ async fn a_server_installs_the_apps_it_ships_in_every_workspace_it_governs() {
     let apps = start();
     apps.reconcile().await;
     assert_eq!(runs(team.clone()).await, [APP]);
-    // A workspace the running server starts governing gets them too.
+    // A workspace the running server starts serving gets them too.
     let later = workspaces.create("Later").await.unwrap().workspace;
     apps.reconcile().await;
     assert_eq!(runs(later.clone()).await, [APP]);

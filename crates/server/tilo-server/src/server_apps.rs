@@ -336,7 +336,7 @@ fn shipped_packages(dir: &Path) -> Result<Vec<Vec<u8>>, String> {
 /// the content store they keep their files in and the identity service that signs their changes
 /// as this device for the callers they serve, both under `state_root` with the sockets of the
 /// workspaces' brokers, and the processes that run each workspace's packages. The packages in
-/// `shipped` are installed in every workspace whose apps this server governs. Their pages show
+/// `shipped` are installed in every workspace whose apps this server sets up. Their pages show
 /// beside those of `pages`, the server's own, when it shows any.
 ///
 /// # Errors

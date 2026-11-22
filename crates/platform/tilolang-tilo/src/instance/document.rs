@@ -117,9 +117,9 @@ pub struct InstanceDocument {
     /// The on-disk copies of the chunks this replica holds, each a document of its own written
     /// as the document's own is; `None` keeps them in memory only.
     writers: Option<Writers>,
-    /// Whether this device governs the workspace: the document's origin (convergence.md §1), whose
-    /// copy needs no committed read from another host.
-    governs: bool,
+    /// Whether this replica is the document's origin (convergence.md §1), whose copy needs no
+    /// committed read from another host.
+    origin: bool,
     /// The document's content store ([`Self::content`]), and the content link it meets the document's route
     /// in: what it keeps is offered on the route, and what it lacks is asked of it.
     content: ContentStore,
@@ -440,24 +440,24 @@ impl InstanceDocument {
             unreadable: None,
             words: HostWords::new("en-US"),
             writers,
-            governs: true,
+            origin: true,
             local: false,
         }
     }
 
-    /// Whether this device governs the workspace, as the document's origin: a document another host
-    /// governs is read from it first ([`Self::open`]). What the origin alone does (a package's
-    /// migrations) runs where this holds.
+    /// Whether this replica is the document's origin: a document whose origin is another host is
+    /// read from it first ([`Self::open`]). What the origin alone does (a package's migrations)
+    /// runs where this holds.
     #[must_use]
-    pub const fn governs(&self) -> bool {
-        self.governs
+    pub const fn is_origin(&self) -> bool {
+        self.origin
     }
 
-    /// This record as a device that does not govern its workspace holds it: read from the host
-    /// that does, through that host's broker, as a server's own process of an app reads it.
+    /// This record as a replica that is not its document's origin holds it: read through a
+    /// broker, as a server's own process of an app reads it.
     #[must_use]
-    pub const fn governed_elsewhere(mut self) -> Self {
-        self.governs = false;
+    pub const fn read_through_a_broker(mut self) -> Self {
+        self.origin = false;
         self
     }
 
@@ -626,7 +626,7 @@ impl InstanceDocument {
         }
         .map_err(DocumentError::Open)?;
         let primary = native_initial::primary(&route.app_id, Some(&workspace));
-        let governs = primary.is_none();
+        let origin = primary.is_none();
         // A document read from the workspace is the workspace's up to what was read. One opened from this
         // replica's own copy was handed to the workspace by nothing yet: its first changes (the
         // copy's creation among them) are made here, and a sealed workspace's channel holds only
@@ -678,7 +678,7 @@ impl InstanceDocument {
             chunks.insert(index, copy);
         }
         let mut record = Self::holding(chunks, Some(writers), manager, route, kind.into(), person);
-        record.governs = governs;
+        record.origin = origin;
         if handed_nothing || restored {
             record.sent.clear();
         }

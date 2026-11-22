@@ -401,7 +401,7 @@ impl Processes {
     /// # Errors
     /// The app does not verify, its module cannot be sealed, or no process takes the instance.
     pub fn hand_over_now(self: &Arc<Self>, instance: Instance) -> std::io::Result<bool> {
-        // An instance with no patch connection draws nothing: it runs the app's actions for
+        // A run with no patch connection draws nothing: it runs the app's actions for
         // whoever invokes them.
         let shows = if instance.patch.is_some() {
             runtime_portal::process_link::Shows::View
@@ -411,19 +411,18 @@ impl Processes {
         self.hand_over_showing(instance, shows, false)
     }
 
-    /// Run `instance`, which shows nothing, for the workspace's server: the server governs the
-    /// workspace, so the run carries over, once, what a native app of the package's id kept there
-    /// ([`Self::keep_earlier`]). It is started as any other run of the package is, with the same
+    /// Run `instance`, which shows nothing and carries the package's migrations: it carries over,
+    /// once, what a native app of the package's id kept in the workspace ([`Self::keep_earlier`]). It is started as any other run of the package is, with the same
     /// sandbox and grants.
     ///
     /// # Errors
     /// As [`Self::hand_over_now`].
-    pub fn run_for_workspace_server(self: &Arc<Self>, instance: Instance) -> std::io::Result<bool> {
+    pub fn run_carrying_migrations(self: &Arc<Self>, instance: Instance) -> std::io::Result<bool> {
         self.hand_over_showing(instance, runtime_portal::process_link::Shows::Nothing, true)
     }
 
     /// Keep `documents`, what a native app of the id `app` kept in `workspace` as the host that
-    /// governs the workspace holds it, each by the key it was stored under, where a process of
+    /// runs this holds it, each by the key it was stored under, where a process of
     /// `app` in `workspace` reads what an earlier version of its app kept ([`Self::earlier`]):
     /// that app's documents of that workspace, and nothing else.
     ///
@@ -463,7 +462,7 @@ impl Processes {
         self: &Arc<Self>,
         instance: Instance,
         shows: runtime_portal::process_link::Shows,
-        for_workspace_server: bool,
+        carries_migrations: bool,
     ) -> std::io::Result<bool> {
         let refused =
             |what: String| std::io::Error::new(std::io::ErrorKind::PermissionDenied, what);
@@ -515,7 +514,7 @@ impl Processes {
                 std::collections::BTreeMap::new()
             },
             access: instance.access,
-            for_workspace_server,
+            carries_migrations,
         };
         let fds = InstanceFds {
             broker: instance.collaboration,

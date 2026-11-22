@@ -222,7 +222,7 @@ pub struct PersistentArgs {
     #[arg(long = "openai-api", value_name = "URL")]
     pub openai_api: Option<String>,
     /// A directory of signed `.tapp` packages: the system's apps this server
-    /// ships, installed in every workspace whose apps it governs.
+    /// ships, installed in every workspace whose apps it sets up.
     #[arg(long = "packages", value_name = "DIR")]
     pub packages: Option<std::path::PathBuf>,
     /// What to install at the workspace's first start, approved by the workspace's
@@ -965,7 +965,7 @@ async fn mark_settled(
 }
 
 /// Seed the workspace's Chat: its record written from its own factory, as
-/// the workspace's governor, and noted in the workspace's [`SETTLED`] record
+/// this server, and noted in the workspace's [`SETTLED`] record
 /// so a later start, on this host or another serving it, seeds it no more.
 ///
 /// A workspace the operator just created holds no channel yet, and its records

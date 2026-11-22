@@ -245,12 +245,12 @@ pub struct InstanceRequest {
     /// where the session holds no policy for the workspace; the broker decides either way.
     #[serde(with = "policy_text")]
     pub access: Option<MemberAccess>,
-    /// Whether this is a run for the workspace's server, which governs the workspace: it shows
-    /// nothing and carries over, once, what a native app of the package's id kept in the workspace
-    /// (the package's migrations that read `earlier(r)`), as a device that governs a workspace does
-    /// when it runs the app itself.
+    /// Whether this run carries the package's migrations: it shows nothing and carries over, once,
+    /// what a native app of the package's id kept in the workspace (the migrations that read
+    /// `earlier(r)`). A server asks it of its own runs, as its configuration says; which run
+    /// carries them moves onto the one placement function (`work::takes_turn`) once it lands.
     #[serde(default)]
-    pub for_workspace_server: bool,
+    pub carries_migrations: bool,
 }
 
 /// The descriptors one instance arrives with.
@@ -638,7 +638,7 @@ mod tests {
                 ),
                 "ada",
             )),
-            for_workspace_server: false,
+            carries_migrations: false,
         }
     }
 

@@ -18,7 +18,7 @@ use tilo_peer_state::owner_commit::{
 use crate::workspaces::Workspaces;
 
 /// A workspace as what its service keeps of it says: its name, its people and the sandbox its
-/// apps are granted. `None` while the service has not admitted the workspace's governance.
+/// apps are granted. `None` while the service has not admitted the workspace.
 #[must_use]
 pub fn describe(workspace: WorkspaceId, name: &str, peer: &StatePeer) -> Option<Workspace> {
     let document = peer.admitted_workspace()?;

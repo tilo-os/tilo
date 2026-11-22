@@ -155,7 +155,7 @@ impl Workspaces {
 
     /// Install `package`, a signed `.tapp`, as the version of its app that
     /// `workspace` runs, as `member`: the host keeps the file and the
-    /// workspace's governance names it, as a member's `upload-app-file` and
+    /// workspace names it as the version it runs, as a member's `upload-app-file` and
     /// `install-app` do. A workspace already running that very package is
     /// left as it is. Answers the app's id.
     ///

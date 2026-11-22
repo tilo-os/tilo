@@ -7,8 +7,8 @@
 //! the workspace's broker socket and believed by the broker as that page or run only, once
 //! ([`PackageRuns::attest_process`], [`PackageRuns::authenticated_launch`]).
 //!
-//! The device that governs a workspace also carries what a native app kept there into the
-//! package that took its id: [`PackageRuns::carry`] runs the package once for that, showing
+//! The device that carries a workspace's migrations also carries what a native app kept there
+//! into the package that took its id: [`PackageRuns::carry`] runs the package once for that, showing
 //! nothing, and the run ends when its migrations ran.
 
 use std::collections::BTreeMap;
@@ -205,7 +205,7 @@ impl PackageRuns {
     ///
     /// # Errors
     /// `workspace` is not these runs' workspace, or the run's connections cannot be made.
-    pub fn windowless(
+    pub fn run_showing_nothing(
         &self,
         app: &str,
         workspace: &str,
@@ -235,8 +235,8 @@ impl PackageRuns {
         Ok(Some(start))
     }
 
-    /// Carry `documents`, what a native app of the id `app` kept in this workspace as the device
-    /// that governs it holds them, each by the key it was stored under, into the package now
+    /// Carry `documents`, what a native app of the id `app` kept in this workspace as this device
+    /// holds them, each by the key it was stored under, into the package now
     /// installed as `app`: they are kept where its process reads what an earlier version of its
     /// app kept, and the package runs once, showing nothing, as the workspace's origin. Its
     /// migrations carry them and mark that they did, so a later carry carries nothing again; the
@@ -258,7 +258,7 @@ impl PackageRuns {
             .map_err(|error| format!("what {app} kept could not be kept for it: {error}"))?;
         let (processes, run) = self.showing_nothing(app)?;
         processes
-            .run_for_workspace_server(run)
+            .run_carrying_migrations(run)
             .map(drop)
             .map_err(|error| format!("{app} did not run: {error}"))
     }

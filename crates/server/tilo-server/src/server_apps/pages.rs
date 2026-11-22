@@ -215,7 +215,7 @@ impl Pages {
     }
 }
 
-/// Whether `access` lets its holder read what `app` keeps in `workspace`.
+/// Whether `access` lets whoever has it read what `app` keeps in `workspace`.
 fn may_read(access: &tilo_action_policy::MemberAccess, workspace: WorkspaceId, app: &str) -> bool {
     access.allows(
         &tilo_action_policy::TreePath::workspace(workspace.to_string()).app(app),

@@ -84,6 +84,7 @@ impl GroupKeySource for () {
     }
 }
 
+#[cfg(unix)]
 /// Who a request to the identity service is decided as, and whose device signs it.
 pub struct Presented {
     /// The person the workspace decides the request as.
@@ -98,6 +99,7 @@ pub struct Presented {
     pub profile: Option<crate::store::IdentityProfile>,
 }
 
+#[cfg(unix)]
 /// Why a request is decided as nobody.
 #[derive(Debug)]
 pub enum Undecided {
@@ -107,6 +109,7 @@ pub enum Undecided {
     Refused(String),
 }
 
+#[cfg(unix)]
 /// Who this device signs as for the requests of its apps, and who each request is decided as.
 pub trait SignerSource: collab_types::signer::MaybeSendSync + 'static {
     /// Who this device is in `workspace` when it acts for nobody in particular: joining the
@@ -150,10 +153,12 @@ pub trait SignerSource: collab_types::signer::MaybeSendSync + 'static {
     fn hands_keys(&self, presented: &Presented, launch: &str) -> Result<(), String>;
 }
 
+#[cfg(unix)]
 /// A device of a person's own: it signs as the identity its person chose for each workspace,
 /// and decides every request as that person.
 pub struct PersonDevice;
 
+#[cfg(unix)]
 impl SignerSource for PersonDevice {
     fn presented(
         &self,

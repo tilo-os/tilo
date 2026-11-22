@@ -74,7 +74,7 @@ package-store = { path = "../../packaging/package-store", features = ["store"] }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 tilo-app-state = { path = "../../system/app-state" }
 # What a native app kept in a workspace, kept where its tilolang successor's process reads it
-# for the host that governs the workspace.
+# for the host that carries its migrations.
 automerge.workspace = true
 durable-store = { path = "../../system/durable-store" }
 hex.workspace = true

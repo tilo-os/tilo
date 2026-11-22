@@ -6,9 +6,9 @@
 //! people and policy ([`ServerWorkspaces`]), the server's commits into it, and the launcher that
 //! runs the workspace's packages in this server's processes ([`ServerLauncher`]).
 //!
-//! The system's apps a server ships are installed in every workspace whose apps it governs, as
-//! the apps they replace were in every workspace: when it starts and finds one that lacks them,
-//! and when it starts governing one. Installing a package is what carries what the native app of
+//! The system's apps a server ships are installed in every workspace it serves whose apps it sets
+//! up, as the apps they replace were in every workspace: when it starts and finds one that lacks
+//! them, and when it starts serving one. Installing a package is what carries what the native app of
 //! its id kept there ([`ServerApps::carry_installed`]).
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -95,7 +95,7 @@ impl ServerWorkspaces {
     /// not read, none are answered: carrying some of them would leave the rest behind for good.
     ///
     /// # Errors
-    /// The workspace is not governed here, or one of the documents does not read.
+    /// The workspace is not kept here, or one of the documents does not read.
     pub fn native_documents(
         &self,
         workspace: WorkspaceId,
@@ -208,7 +208,7 @@ pub struct ServerApps {
 /// The system's apps a server ships, and the packages its workspaces run, which it keeps.
 pub struct Shipped {
     /// The signed packages of the system's apps, each installed in every workspace whose apps
-    /// the server governs.
+    /// the server sets up.
     pub packages: Vec<Vec<u8>>,
     /// The packages kept here: what tells the ids an app was published under before.
     pub kept: Arc<super::WorkspacePackages>,
@@ -222,7 +222,7 @@ pub const CONTENT_SOCKET: &str = "content.sock";
 impl ServerApps {
     /// The apps of the workspaces `workspaces` keeps, signed by this server's device `device`
     /// and run in `processes`, with the system's apps it ships installed in each whose apps it
-    /// governs. Their services listen under `sockets`, and each broker journals under `journals`.
+    /// sets up. Their services listen under `sockets`, and each broker journals under `journals`.
     #[must_use]
     pub fn new(
         workspaces: ServerWorkspaces,
@@ -393,8 +393,8 @@ impl ServerApps {
     }
 
     /// Install each package this server ships that `workspace` does not run yet, when this
-    /// server governs the workspace's apps: as a member installs one, through the workspace's
-    /// governance, signed by this server's device for the person it belongs to.
+    /// server sets up the workspace's apps: as a member installs one, through the workspace's
+    /// install action, signed by this server's device for the person it belongs to.
     async fn install_shipped(&self, workspace: WorkspaceId) {
         if self.shipped.packages.is_empty() {
             return;
