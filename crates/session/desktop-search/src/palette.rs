@@ -7,17 +7,22 @@
 use std::sync::Arc;
 
 use tilo_actions::ResourceSpec;
+use tilo_actions::remote::{Pending, PendingPoll};
 use ui::{ActionPalette, CommandEntry};
 
 use crate::model::{Held, Hit, SearchStream, Source, Target};
 use crate::providers::{
     Actions, Answers, AppEntry, Applications, Captures, CommandSpec, Commands, Content, Published,
-    PublishedActions, Recents, Switches, WebSearch, WindowEntry, Windows,
+    PublishedActions, Recents, ResourceOption, ResourceSource, Switches, WebSearch, WindowEntry,
+    Windows,
 };
 use crate::window::WindowSearch;
 use crate::workers::SearchWorkers;
 use ui::search::system::{KindGroup, ResourceKind};
 use ui::search::{ActivationModifier, Scope};
+
+/// Row id prefix of the pick's items; `pick:{i}` fills the field with `options[i]`.
+const PICK_PREFIX: &str = "pick:";
 
 /// Row id prefix of the row that lists the rest of a group the palette's
 /// height cut short; `more:{i}` expands `more_rows[i]`.
@@ -71,6 +76,10 @@ pub struct SearchData {
     /// What providers publish through the session's action host, run by
     /// address there ([`crate::model::Target::Invoke`]).
     pub published: Vec<PublishedActions>,
+    /// What a resource-kind parameter's field offers, where the host serves the
+    /// workspace's list actions: the kind's items, picked by what they are called
+    /// ([`crate::providers::ResourceSource`]).
+    pub resource_options: Option<Arc<dyn ResourceSource>>,
     /// The search providers open applications publish.
     pub providers: Vec<Box<dyn ui::search::SearchProvider>>,
     /// The exchange rates the host last fetched, which money is answered
@@ -123,6 +132,9 @@ struct Sources {
     answers: Option<(Arc<Answers>, Arc<WebSearch>)>,
     /// The one window searched, when the search is a window's.
     window: Option<WindowSearch>,
+    /// What a resource-kind parameter's field lists, where the host serves the workspace's
+    /// list actions.
+    resource_options: Option<Arc<dyn ResourceSource>>,
     host: Vec<Held>,
     preferences: crate::preferences::SearchPreferences,
     /// Now, in Unix seconds, as the host said when search opened.
@@ -161,6 +173,7 @@ impl Sources {
                 captures: Arc::new(Captures(Vec::new())),
                 answers: None,
                 window: Some(WindowSearch::new(data.resources, data.providers).within(anchor)),
+                resource_options: data.resource_options,
                 // What the host adds for this window: the app's own entries in the session's
                 // index, which is what it holds whether or not it runs.
                 host: data.sources,
@@ -191,6 +204,7 @@ impl Sources {
                 )
             }),
             window: None,
+            resource_options: data.resource_options,
             host: data.sources,
             preferences: data.preferences,
             now: data.now,
@@ -341,8 +355,43 @@ struct NamedField {
     name: String,
     /// What the step asks and the control it uses.
     spec: ui::ArgumentSpec,
-    /// Whether the value is a number, parsed before it is filed.
-    numeric: bool,
+    /// What the step collects.
+    step: FieldStep,
+}
+
+/// How one parameter's step collects its value.
+enum FieldStep {
+    /// Typed into the field: text, a secret, a number.
+    Input {
+        /// Whether the value is a number, parsed before it is filed.
+        numeric: bool,
+    },
+    /// Picked from the workspace's items of the resource kind it names, when the host lists
+    /// them (`vault.item`): the items are rows under the field, and what is typed there narrows
+    /// them.
+    Pick { kind: String },
+}
+
+/// What the pick's list answered since it was last looked at.
+enum PickAnswer {
+    /// Still to come.
+    Waiting,
+    /// Its items came.
+    Arrived,
+    /// It refused, or named nothing to choose from: the field is asked as text instead.
+    Nothing,
+}
+
+/// The pick of a resource-kind parameter, open over the list while the person chooses.
+struct Picking {
+    /// What the field asks, as the rows' group says it.
+    prompt: String,
+    /// The search's query, put back when the pick ends.
+    saved: String,
+    /// The list's answer, while it is still to come.
+    pending: Option<Pending<Result<Vec<ResourceOption>, String>>>,
+    /// What came to choose from.
+    options: Vec<ResourceOption>,
 }
 
 /// An action whose required arguments the palette collects one step at a time
@@ -360,11 +409,18 @@ struct Collecting {
     arguments: serde_json::Map<String, serde_json::Value>,
     /// The modifier the person held over the row.
     held: Option<ActivationModifier>,
+    /// The pick open over the field, when the open step's kind has one.
+    pick: Option<Picking>,
 }
 
 /// What `param` asks for as a palette step, in the control its type takes;
 /// `None` for a type the palette has no control for, which is left to the app.
-fn field_of(param: &tilo_actions::ActionParam) -> Option<NamedField> {
+/// A parameter that names a resource kind ([`tilo_actions::ParamType::Resource`]) is picked from
+/// what `lists` offers, and left to the app when nothing lists that kind.
+fn field_of(
+    param: &tilo_actions::ActionParam,
+    lists: Option<&dyn ResourceSource>,
+) -> Option<NamedField> {
     use tilo_actions::ParamType;
     let name = param.name.to_string();
     let prompt = if param.description.is_empty() {
@@ -379,17 +435,27 @@ fn field_of(param: &tilo_actions::ActionParam) -> Option<NamedField> {
             .and_then(|schema| schema.get(key))
             .and_then(serde_json::Value::as_f64)
     };
-    let (kind, numeric) = match param.ty {
-        ParamType::Text => (ui::ArgumentKind::Text, false),
-        ParamType::Secret => (ui::ArgumentKind::Secret, false),
+    let (kind, step) = match param.ty {
+        ParamType::Text => (ui::ArgumentKind::Text, FieldStep::Input { numeric: false }),
+        ParamType::Secret => (
+            ui::ArgumentKind::Secret,
+            FieldStep::Input { numeric: false },
+        ),
         ParamType::Integer | ParamType::Number => (
             ui::ArgumentKind::Number {
                 min: bound("minimum"),
                 max: bound("maximum"),
                 step: 1.0,
             },
-            true,
+            FieldStep::Input { numeric: true },
         ),
+        ParamType::Resource => {
+            let kind = param.resource_kind()?.to_owned();
+            if !lists.is_some_and(|lists| lists.lists(&kind)) {
+                return None;
+            }
+            (ui::ArgumentKind::Text, FieldStep::Pick { kind })
+        }
         _ => return None,
     };
     Some(NamedField {
@@ -400,7 +466,7 @@ fn field_of(param: &tilo_actions::ActionParam) -> Option<NamedField> {
             prefill: None,
             kind,
         },
-        numeric,
+        step,
     })
 }
 
@@ -408,14 +474,17 @@ fn field_of(param: &tilo_actions::ActionParam) -> Option<NamedField> {
 /// when there is more than the one the palette's own step collects: every
 /// required parameter gets a control, or `None` leaves the row to the app when
 /// one of them is a type the palette cannot ask.
-fn fields_to_collect(invoke: &crate::model::InvokeTarget) -> Option<Vec<NamedField>> {
+fn fields_to_collect(
+    invoke: &crate::model::InvokeTarget,
+    lists: Option<&dyn ResourceSource>,
+) -> Option<Vec<NamedField>> {
     let descriptor = invoke.descriptor.as_ref()?;
     let mut fields = Vec::new();
     for param in &descriptor.params {
         if !param.required || invoke.arguments.contains_key(param.name.as_ref()) {
             continue;
         }
-        fields.push(field_of(param)?);
+        fields.push(field_of(param, lists)?);
     }
     (fields.len() >= 2).then_some(fields)
 }
@@ -719,6 +788,29 @@ impl DesktopSearch {
     }
 
     fn refresh_rows(&mut self) -> bool {
+        // A resource-kind pick is open over the list: its own items answer it, and the search's
+        // sources wait until it is done.
+        if self.collecting.as_ref().is_some_and(|c| c.pick.is_some()) {
+            let query = self.palette.query().to_owned();
+            let answered = match self.poll_pick() {
+                PickAnswer::Arrived => {
+                    self.render_pick(&query);
+                    true
+                }
+                PickAnswer::Nothing => {
+                    self.type_picked_field();
+                    true
+                }
+                PickAnswer::Waiting => {
+                    let moved = self.shown_query.as_deref() != Some(query.as_str());
+                    if moved {
+                        self.render_pick(&query);
+                    }
+                    moved
+                }
+            };
+            return answered;
+        }
         let Some(sources) = &self.sources else {
             return false;
         };
@@ -1095,8 +1187,15 @@ impl DesktopSearch {
         ui::widget::Widget::set_focus(&mut self.palette, true);
     }
 
+    /// What lists a resource-kind parameter's items, where this host serves the workspace's list
+    /// actions.
+    fn resource_options(&self) -> Option<&dyn ResourceSource> {
+        self.sources.as_ref()?.resource_options.as_deref()
+    }
+
     /// Open the step for the current field of the chosen action: the palette's
-    /// own field, in the control that field's type asks for.
+    /// own field, in the control that field's type asks for; a resource kind's
+    /// items are listed under it to pick from.
     fn open_current_field(&mut self) {
         let Some(collecting) = self.collecting.as_ref() else {
             return;
@@ -1105,7 +1204,178 @@ impl DesktopSearch {
             return;
         };
         let (id, spec) = (collecting.hit.id.clone(), field.spec.clone());
-        self.palette.open_argument_step(id, spec);
+        match field.step {
+            FieldStep::Input { .. } => {
+                self.palette.open_argument_step(id, spec);
+                ui::widget::Widget::set_focus(&mut self.palette, true);
+            }
+            FieldStep::Pick { ref kind } => {
+                let kind = kind.clone();
+                self.open_pick(&kind, &spec.prompt);
+            }
+        }
+    }
+
+    /// List the items of `kind` for the open field, and show them as rows: the person picks one
+    /// instead of typing its address. A host with no list for the kind, or one that answers
+    /// nothing, leaves the field as typed text, as before.
+    fn open_pick(&mut self, kind: &str, prompt: &str) {
+        let lists = self
+            .sources
+            .as_ref()
+            .and_then(|sources| sources.resource_options.clone());
+        let Some(pending) = lists.and_then(|lists| lists.ask(kind)) else {
+            self.type_picked_field();
+            return;
+        };
+        // What the search asked, kept aside while the field narrows the items; a text step the
+        // palette was still collecting is done, and the pick takes the field.
+        let saved = self.palette.query().to_owned();
+        self.palette.cancel_host_step();
+        if let Some(collecting) = self.collecting.as_mut() {
+            collecting.pick = Some(Picking {
+                prompt: prompt.to_owned(),
+                saved,
+                pending: Some(pending),
+                options: Vec::new(),
+            });
+        }
+        self.palette.set_query("");
+        self.palette.set_query_placeholder(prompt);
+        self.render_pick("");
+        ui::widget::Widget::set_focus(&mut self.palette, true);
+    }
+
+    /// Ask for the pick's answer again, without waiting: what the host's wake calls for.
+    fn poll_pick(&mut self) -> PickAnswer {
+        let Some(pick) = self.collecting.as_mut().and_then(|c| c.pick.as_mut()) else {
+            return PickAnswer::Nothing;
+        };
+        let Some(mut pending) = pick.pending.take() else {
+            return PickAnswer::Waiting;
+        };
+        match pending.poll_ready() {
+            // Nothing of the kind is kept: the field is asked as text, so its address can still
+            // be typed.
+            PendingPoll::Ready(Ok(options)) if options.is_empty() => PickAnswer::Nothing,
+            PendingPoll::Ready(Ok(options)) => {
+                pick.options = options;
+                PickAnswer::Arrived
+            }
+            PendingPoll::Ready(Err(_)) | PendingPoll::Abandoned => PickAnswer::Nothing,
+            PendingPoll::Waiting => {
+                pick.pending = Some(pending);
+                PickAnswer::Waiting
+            }
+        }
+    }
+
+    /// Show the pick's items, narrowed to what the person typed, under a row that says what the
+    /// field asks.
+    fn render_pick(&mut self, query: &str) {
+        let Some(pick) = self.collecting.as_ref().and_then(|c| c.pick.as_ref()) else {
+            return;
+        };
+        let needle = query.trim().to_lowercase();
+        let entries: Vec<CommandEntry> = pick
+            .options
+            .iter()
+            .enumerate()
+            .filter(|(_, option)| option.matches(&needle))
+            .map(|(index, option)| {
+                let mut entry = CommandEntry::new(format!("{PICK_PREFIX}{index}"), option.label())
+                    .group(pick.prompt.clone());
+                if let Some(subtitle) = option.subtitle() {
+                    entry = entry.description(subtitle);
+                }
+                entry
+            })
+            .collect();
+        self.palette.set_entries(entries);
+        self.palette
+            .set_searching(pick.pending.is_some() && pick.options.is_empty());
+        self.shown_rows.clear();
+        self.rows.clear();
+        self.more_rows.clear();
+        self.shown_query = Some(query.to_owned());
+    }
+
+    /// The row `id` names among the pick's items, when one is open.
+    fn picked_row(&self, id: &str) -> Option<usize> {
+        let pick = self.collecting.as_ref()?.pick.as_ref()?;
+        let index = id.strip_prefix(PICK_PREFIX)?.parse().ok()?;
+        (index < pick.options.len()).then_some(index)
+    }
+
+    /// The person chose the pick's item `index`: it fills the field with the item's reference and
+    /// the next field opens, or the action runs.
+    fn chose_picked(&mut self, index: usize) {
+        let Some(collecting) = self.collecting.as_mut() else {
+            return;
+        };
+        let Some(pick) = collecting.pick.as_ref() else {
+            return;
+        };
+        let Some(option) = pick.options.get(index) else {
+            return;
+        };
+        let value = serde_json::Value::String(option.value.clone());
+        let Some(field) = collecting.fields.get(collecting.index) else {
+            return;
+        };
+        let name = field.name.clone();
+        collecting.arguments.insert(name, value);
+        collecting.index = collecting.index.saturating_add(1);
+        let done = collecting.index >= collecting.fields.len();
+        let saved = collecting
+            .pick
+            .take()
+            .map_or_else(String::new, |pick| pick.saved);
+        self.palette.set_query_placeholder(placeholder());
+        self.palette.set_query(&saved);
+        if done {
+            self.finish_collected();
+        } else {
+            self.restart(&saved);
+            ui::widget::Widget::set_focus(&mut self.palette, true);
+            self.open_current_field();
+        }
+    }
+
+    /// Back out of the open pick: the list is where the person was, and the action is not run.
+    fn leave_pick(&mut self) {
+        let Some(collecting) = self.collecting.as_mut() else {
+            return;
+        };
+        let Some(pick) = collecting.pick.take() else {
+            return;
+        };
+        self.collecting = None;
+        self.palette.set_query_placeholder(placeholder());
+        self.palette.open();
+        self.palette.set_query(&pick.saved);
+        self.restart(&pick.saved);
+        ui::widget::Widget::set_focus(&mut self.palette, true);
+    }
+
+    /// The open field's kind lists nothing here: ask for its address in the field, as a text
+    /// parameter is asked.
+    fn type_picked_field(&mut self) {
+        let Some(collecting) = self.collecting.as_mut() else {
+            return;
+        };
+        let saved = collecting.pick.take().map(|pick| pick.saved);
+        let Some(field) = collecting.fields.get_mut(collecting.index) else {
+            return;
+        };
+        field.step = FieldStep::Input { numeric: false };
+        field.spec.kind = ui::ArgumentKind::Text;
+        self.palette.set_query_placeholder(placeholder());
+        if let Some(saved) = saved {
+            self.palette.set_query(&saved);
+            self.restart(&saved);
+        }
+        self.open_current_field();
         ui::widget::Widget::set_focus(&mut self.palette, true);
     }
 
@@ -1126,7 +1396,11 @@ impl DesktopSearch {
             let Some(field) = collecting.fields.get(collecting.index) else {
                 return false;
             };
-            let json = if field.numeric {
+            let FieldStep::Input { numeric } = &field.step else {
+                return false;
+            };
+            let numeric = *numeric;
+            let json = if numeric {
                 // A text that is not a number runs the action with the words as
                 // typed, which the action then says are no number in its own
                 // words; the step does not refuse it here.
@@ -1187,14 +1461,22 @@ impl DesktopSearch {
         if self.sources.is_none() || self.palette.is_open() {
             return false;
         }
+        // Escape closed the pick: the list is where the person was, and the action it was
+        // collecting for is not run.
+        if self.collecting.as_ref().is_some_and(|c| c.pick.is_some()) {
+            self.leave_pick();
+            return false;
+        }
         self.finish();
         true
     }
 
-    /// Take the row the palette handed out: a step of the action being
+    /// Take the row the palette handed out: a pick's item, a step of the action being
     /// collected, a group asked whole, or a row the person chose.
     fn handle_outcome(&mut self, outcome: ui::CommandOutcome) {
-        if self.answered_collected_field(&outcome) {
+        if let Some(index) = self.picked_row(&outcome.id) {
+            self.chose_picked(index);
+        } else if self.answered_collected_field(&outcome) {
             // A field of the action being collected: the next step, or the run.
         } else if let Some(more) = more_row(&outcome.id) {
             self.expand(more);
@@ -1252,7 +1534,7 @@ impl DesktopSearch {
         // row opens the first step rather than running it short.
         if argument.is_none()
             && let Target::Invoke(invoke) = &hit.target
-            && let Some(fields) = fields_to_collect(invoke)
+            && let Some(fields) = fields_to_collect(invoke, self.resource_options())
         {
             self.remember(&hit);
             self.refusal = None;
@@ -1262,6 +1544,7 @@ impl DesktopSearch {
                 index: 0,
                 arguments: serde_json::Map::new(),
                 held,
+                pick: None,
             });
             self.open_current_field();
             return;

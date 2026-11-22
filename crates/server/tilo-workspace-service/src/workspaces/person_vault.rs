@@ -437,6 +437,7 @@ fn view(facts: ItemFacts) -> Result<ItemView, vault_items::ItemError> {
             vault_items::ItemKind::Value => ItemKind::Value,
         },
         belongs_to: facts.places.into_iter().map(String::from).collect(),
+        title: Some(facts.title).filter(|title| !title.trim().is_empty()),
         added_at: facts.added_unix,
         last_used_at: facts.last_used_unix,
     })

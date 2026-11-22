@@ -57,6 +57,24 @@ fn a_parameter_picking_a_resource_declares_the_picked_reference() {
 }
 
 #[test]
+fn a_string_parameter_picking_a_resource_declares_its_address() {
+    let attr: Attribute = syn::parse_quote!(#[action]);
+    let mut method = syn::parse_quote! {
+        fn hide(&mut self, #[param("The folder", resource = "files.folder")] folder: String) {}
+    };
+    let verb = read_verb(&mut method, &attr).expect("picking action parses");
+    let folder = &verb.params[0];
+    assert_eq!(folder.picks.as_deref(), Some("files.folder"));
+    let declaration = param_decl(folder, &krate()).to_string();
+    assert!(
+        declaration.contains("picked_address_schema")
+            && declaration.contains("\"files.folder\"")
+            && declaration.contains("ParamType :: Resource"),
+        "a string picked from a kind is a resource parameter: {declaration}"
+    );
+}
+
+#[test]
 fn read_verb_preserves_parameter_metadata_and_secret_validation() {
     let attr: Attribute = syn::parse_quote!(#[action]);
     let mut method = syn::parse_quote! {

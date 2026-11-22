@@ -216,7 +216,7 @@ mod tests {
     use super::*;
     use tilo_actions::remote::{
         ActionCallError, CatalogueResource, InvocationReceipt, InvocationState, InvokeRequest,
-        Pending,
+        Pending, person_vault,
     };
     use tilo_actions::{
         ActionKind, ActionParam, ExecutionLocus, InvocationId, OperationKind, ParamType,
@@ -276,7 +276,7 @@ mod tests {
         let mut published = tilo_actions::published::PublishedAction::offered(&offer, "Terminal");
         published.params = vec![
             ActionParam::required("variable", ParamType::Text, "Variable"),
-            ActionParam::required("item", ParamType::Text, "Vault item"),
+            person_vault::item_param("item", "Vault item"),
         ];
         CatalogueRow {
             provider: "application:ws-1:so.tilo.terminal".to_owned(),

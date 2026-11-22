@@ -88,6 +88,11 @@ pub struct SearchHostFeed {
     pub applications: Vec<tilo_desktop_search::providers::AppEntry>,
     /// What providers publish through the host's action host, run by address there.
     pub published: Vec<tilo_desktop_search::providers::PublishedActions>,
+    /// What fills a resource-kind parameter's field: the workspace's items of the kind, by the
+    /// list action the kind names, asked through the host's action host
+    /// ([`tilo_desktop_search::providers::ResourceSource`]).
+    pub resource_options:
+        Option<std::sync::Arc<dyn tilo_desktop_search::providers::ResourceSource>>,
     /// The host's own sources, each over what is published or a service answers.
     pub sources: Vec<tilo_desktop_search::Held>,
     /// The sources the person switched off.
@@ -1097,6 +1102,7 @@ impl DesktopSurface {
             providers: published.providers,
             published: feed.published,
             sources: feed.sources,
+            resource_options: feed.resource_options,
             scope: scope.clone(),
             placeholder: searched.map(|name| {
                 crate::i18n::t_args("search-window-placeholder", &[("searched", name.into())])
@@ -1148,6 +1154,7 @@ impl DesktopSurface {
             scope: scope.clone(),
             published: feed.published,
             sources: feed.sources,
+            resource_options: feed.resource_options,
             preferences: feed.preferences,
             now: feed.now,
             ..SearchData::default()

@@ -276,6 +276,18 @@ pub fn picked_resource_schema(kind: &str) -> serde_json::Value {
     schema
 }
 
+/// The schema of a parameter that picks an existing resource of kind `kind` and names it by its
+/// address (`kind:id`) rather than a reference record: the address it stores, annotated with
+/// what it picks. What a verb whose parameter is a string of the item's address declares.
+#[must_use]
+pub fn picked_address_schema(kind: &str) -> serde_json::Value {
+    let mut schema = serde_json::json!({ "type": "string" });
+    if let serde_json::Value::Object(fields) = &mut schema {
+        fields.insert(RESOURCE_KIND_ANNOTATION.into(), kind.into());
+    }
+    schema
+}
+
 /// The schema of a place inside a resource ([`ActionParam::as_place`]).
 #[must_use]
 pub fn place_schema() -> serde_json::Value {

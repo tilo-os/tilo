@@ -26548,6 +26548,7 @@
             "type": "string"
           },
           "item": {
+            "resource_kind": "vault.item",
             "type": "string"
           }
         },

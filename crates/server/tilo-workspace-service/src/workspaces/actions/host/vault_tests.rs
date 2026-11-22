@@ -198,7 +198,14 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
     assert_eq!(kept["kind"], "login");
     assert_eq!(kept["belongsTo"], json!(["https://www.linkedin.com"]));
     assert!(kept["addedAt"].as_u64().is_some_and(|added| added > 0));
-    assert_eq!(fields(&kept), ["addedAt", "belongsTo", "kind", "reference"]);
+    assert_eq!(
+        kept["title"], "www.linkedin.com",
+        "the item is picked by the title its entry carries"
+    );
+    assert_eq!(
+        fields(&kept),
+        ["addedAt", "belongsTo", "kind", "reference", "title"]
+    );
 
     // Every member of the workspace reads the same item, and none of them
     // reads more than what is safe to say of it.

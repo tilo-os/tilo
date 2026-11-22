@@ -6,8 +6,8 @@
 //! server. Only the person's own device
 //! adds one, lists them or removes one; an agent's request is refused. A
 //! secret travels in with [`ADD`] and never back: a listing says an item's
-//! kind, where it belongs, when it was added and when it was last used, and
-//! nothing else.
+//! title, kind, where it belongs, when it was added and when it was last
+//! used, and nothing else.
 //!
 //! The same vault keeps the entries of the person's Passwords: logins,
 //! keys, notes and Wi-Fi passwords they read and edit themselves, from any
@@ -127,6 +127,20 @@ pub enum ItemKind {
     Value,
 }
 
+impl ItemKind {
+    /// The word a person reads it by ("login", "code-generator").
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Login => "login",
+            Self::Key => "key",
+            Self::CodeGenerator => "code-generator",
+            Self::SshKey => "ssh-key",
+            Self::Value => "value",
+        }
+    }
+}
+
 /// A reference to one item of a person's vault: its address
 /// (`vault.item:<id>`), which names it and is not its secret.
 ///
@@ -206,6 +220,9 @@ pub struct ItemView {
     /// Where it belongs: a site's or a service's origin
     /// (`https://example.com`), or a server (`imap://mail.example.com:993`).
     pub belongs_to: Vec<String>,
+    /// What it is called, where its entry has a title: what a person picks it by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// When it was added, in seconds since the Unix epoch.
     pub added_at: u64,
     /// When it was last handed to something that signs in.
@@ -1290,6 +1307,7 @@ mod tests {
             reference: ItemRef::from_id(ID).unwrap(),
             kind: ItemKind::CodeGenerator,
             belongs_to: vec!["https://example.com".into()],
+            title: Some("Example".into()),
             added_at: 1_800_000_000,
             last_used_at: Some(1_800_000_100),
         };
@@ -1303,7 +1321,14 @@ mod tests {
         fields.sort_unstable();
         assert_eq!(
             fields,
-            ["addedAt", "belongsTo", "kind", "lastUsedAt", "reference"]
+            [
+                "addedAt",
+                "belongsTo",
+                "kind",
+                "lastUsedAt",
+                "reference",
+                "title"
+            ]
         );
         assert_eq!(json["items"][0]["kind"], "code-generator");
         // A view with a field of its own making is not one.

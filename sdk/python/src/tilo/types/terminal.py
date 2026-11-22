@@ -175,7 +175,7 @@ ImportRunArgs = TypedDict("ImportRunArgs", {
 
 AddSecretArgs = TypedDict("AddSecretArgs", {
     "variable": "str",
-    "item": "str",
+    "item": "Any",
 })
 """The arguments of `add-secret`."""
 
@@ -186,7 +186,7 @@ RemoveSecretArgs = TypedDict("RemoveSecretArgs", {
 
 class Session(Resource):
     """Terminal — `terminal.session`."""
-    __surface__ = "so.tilo.terminal@b5c03eeff22a35cf"
+    __surface__ = "so.tilo.terminal@5fd4d562a1b691c0"
     @property
     def target(self) -> str | None:
         """Read only."""
@@ -378,7 +378,7 @@ class Session(Resource):
 
 class History(Resource):
     """Command history — `terminal.history`."""
-    __surface__ = "so.tilo.terminal@b5c03eeff22a35cf"
+    __surface__ = "so.tilo.terminal@5fd4d562a1b691c0"
     @property
     def remembered(self) -> list[Entry[Remembered]]:
         """Read only."""
@@ -449,13 +449,13 @@ class History(Resource):
 
 class MachineSecrets(Resource):
     """Machine secrets — `terminal.machine-secrets`."""
-    __surface__ = "so.tilo.terminal@b5c03eeff22a35cf"
+    __surface__ = "so.tilo.terminal@5fd4d562a1b691c0"
     secrets: list[MachineSecret]
 
     def add_secret(self,
         *,
         variable: str,
-        item: str,
+        item: Any,
     ) -> None:
         """Runs the app's action."""
         return self.action("add-secret", variable=variable, item=item)

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.terminal@b5c03eeff22a35cf";
+export const SURFACE = "so.tilo.terminal@5fd4d562a1b691c0";
 
 export interface Command {
   command: string;
@@ -166,7 +166,7 @@ export interface ImportRunArgs {
 /** The arguments of `add-secret`. */
 export interface AddSecretArgs {
   variable: string;
-  item: string;
+  item: unknown;
 }
 
 /** The arguments of `remove-secret`. */
@@ -298,7 +298,7 @@ export interface MachineSecrets extends tilo.Resource {
   secrets: MachineSecret[];
   addSecret(args: {
     variable: string;
-    item: string;
+    item: unknown;
   }): Promise<void>;
   /** Runs `add-secret` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addSecretMany(items: AddSecretArgs[]): Promise<tilo.ActionAnswer[]>;

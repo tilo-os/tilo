@@ -408,7 +408,8 @@ fn declared_text(text: &str) -> Tokens {
 
 /// `#[param("description", name = "public", example = expr)]`, each part
 /// optional. `resource = "kind"` has a person pick an existing resource of
-/// that kind, the parameter a reference to it (`ResourceAt`).
+/// that kind: a reference to it (`ResourceAt`), or its address
+/// (`kind:id`) when the parameter is a string.
 #[derive(Default)]
 struct ParamOptions {
     description: Option<String>,
@@ -776,7 +777,12 @@ fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
         quote!(::core::option::Option::None)
     };
     let (known, optional) = crate::known_param_type(ty);
-    let param_ty = if param.secret {
+    // A picked resource is a resource parameter: a reference record of its kind, or the
+    // address it is named by when the verb stores a string.
+    let address_pick = param.picks.is_some() && crate::is_address_type(ty);
+    let param_ty = if address_pick {
+        quote!(#krate::__private::ParamTypeOf::Known(#krate::__private::ParamType::Resource))
+    } else if param.secret {
         quote!(#krate::__private::ParamTypeOf::Known(#krate::__private::ParamType::Secret))
     } else {
         known.map_or_else(
@@ -804,10 +810,15 @@ fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
         (None, false) => quote!(#krate::__private::PlaceIn::Nowhere),
     };
     let content = param.role == Role::Content;
-    // A picked resource is a reference to one of its kind.
+    // A picked resource is a reference to one of its kind, or the address that names it.
     let (schema, field_type) = if let Some(kind) = &param.picks {
+        let schema = if crate::is_address_type(ty) {
+            quote!(|| #krate::__private::picked_address_schema(#kind))
+        } else {
+            quote!(|| #krate::__private::picked_resource_schema(#kind))
+        };
         (
-            quote!(|| #krate::__private::picked_resource_schema(#kind)),
+            schema,
             quote!(|_: &mut #krate::TypeSet| {
                 #krate::FieldType::Resource(::std::string::String::from(#kind))
             }),
