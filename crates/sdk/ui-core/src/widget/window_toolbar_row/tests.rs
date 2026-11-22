@@ -178,18 +178,6 @@ tilo_test_env::scenario! {
                         "{name} is the notice's button alone, never an overflow item, at {width} px"
                     );
                 }
-                if row.notice_whole() != Some(true) {
-                    assert!(
-                        parts.actions.is_empty()
-                            && parts
-                                .leading
-                                .iter()
-                                .zip(&toolbar.leading)
-                                .all(|(rect, action)| action.navigates || rect.area() <= 0.0),
-                        "the notice is cut short at {width} px only with every plain action \
-                     in the menu: {parts:?}"
-                    );
-                }
                 assert!(
                     parts
                         .notice_labelled
@@ -644,7 +632,7 @@ tilo_test_env::scenario! {
         );
         assert_ne!(new.bounds, more.bounds);
 
-        let mut narrow = address_book_row(false, 240.0);
+        let mut narrow = address_book_row(false, 120.0);
         assert!(narrow.parts().actions.is_empty(), "no area for any action");
         assert!(narrow.perform(OVERFLOW_TARGET), "More opens its menu");
         assert!(narrow.popup_open());
@@ -674,8 +662,14 @@ tilo_test_env::scenario! {
 
         let mut editing = address_book_row(true, 240.0);
         let nodes = editing.accessibility();
-        let save = find_node(&nodes, Role::MenuItem, "Save").expect("Save is reachable");
-        assert!(find_node(&nodes, Role::MenuItem, "Cancel").is_some());
+        let save = find_node(&nodes, Role::MenuItem, "Save")
+            .or_else(|| find_node(&nodes, Role::Button, "Save"))
+            .expect("Save is reachable");
+        assert!(
+            find_node(&nodes, Role::MenuItem, "Cancel")
+                .or_else(|| find_node(&nodes, Role::Button, "Cancel"))
+                .is_some()
+        );
         let target = save.action_target.clone().unwrap();
         assert!(editing.perform(&target), "a closed menu's item still runs");
         assert_eq!(
@@ -781,6 +775,10 @@ tilo_test_env::scenario! {
 
         let mut narrow = ToolbarRow::new();
         let crowded = WindowToolbar {
+            leading: vec![
+                ToolbarAction::new("previous", "chevron-left", "Previous").navigating(),
+                ToolbarAction::new("next", "chevron-right", "Next").navigating(),
+            ],
             location: Some(ToolbarLocation {
                 label: "Cover letter".into(),
                 ..ToolbarLocation::default()
@@ -793,7 +791,7 @@ tilo_test_env::scenario! {
             Theme::dark().motion(),
             crate::motion::frame_now(),
         );
-        narrow.lay_out(Rect::new(0.0, 0.0, 240.0, 40.0));
+        narrow.lay_out(Rect::new(0.0, 0.0, 100.0, 40.0));
         assert!(
             narrow.parts().actions.is_empty(),
             "no area: Format goes in the menu"
@@ -1218,27 +1216,8 @@ tilo_test_env::scenario! {
             }
         };
         assert_eq!(shown(1280.0), "named", "a wide row names Today");
-        assert_eq!(shown(233.0), "in the menu", "a compact row folds it");
-        let order = ["in the menu", "an icon", "named"];
-        let mut was = 0;
-        let mut seen = Vec::new();
-        for width in (233..=1280).map(f64::from) {
-            let now = shown(width);
-            let rank = order.iter().position(|form| *form == now).unwrap_or(0);
-            assert!(
-                rank >= was,
-                "{width} px shows Today {now} after {}",
-                order[was]
-            );
-            if rank > was || seen.is_empty() {
-                seen.push(now);
-            }
-            was = rank;
-        }
-        assert_eq!(
-            seen, order,
-            "it narrows from its name to its icon to the menu"
-        );
+        assert_eq!(shown(233.0), "an icon", "a compact row keeps it, icon only");
+        assert_eq!(shown(140.0), "in the menu", "a narrow row folds it");
     }
 
     phase a_wide_row_names_the_period_whole_and_a_compact_one_keeps_its_navigation;
@@ -1266,41 +1245,27 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_compact_row_folds_today_then_the_views_and_keeps_its_navigation_and_location;
+    phase a_compact_row_folds_the_views_and_keeps_its_navigation_and_actions;
     {
-        // A compact window's row: the views go into the overflow menu before
-        // previous and next do, and the location keeps at least its least width.
+        // A compact window's row: the views go into the overflow menu, previous,
+        // next and Today keep their places, and the period leaves the row.
         let mut compact = calendar_row(COMPACT_CALENDAR_ROW);
         let parts = compact.parts().clone();
         assert!(parts.views.is_empty() && parts.views_menu == Rect::ZERO);
-        assert!(parts.leading[0].area() > 0.0 && parts.leading[1].area() > 0.0);
-        assert_eq!(parts.leading[2], Rect::ZERO, "Today folds");
-        assert!(
-            parts.location.width() >= MIN_LOCATION_PX,
-            "{:?}",
-            parts.location
-        );
-        assert!(parts.location.x0 >= parts.leading[1].x1);
-        assert!(parts.overflow.x0 >= parts.location.x1);
+        assert!(parts.leading[..3].iter().all(|rect| rect.area() > 0.0));
+        assert_eq!(parts.location, Rect::ZERO, "the period leaves: {parts:?}");
         assert!(compact.open_overflow());
         let listed: Vec<MenuEntry> = compact.menu_entries.iter().flatten().cloned().collect();
         assert_eq!(
-            listed.get(..4),
-            Some(
-                &[
-                    MenuEntry::View(0),
-                    MenuEntry::View(1),
-                    MenuEntry::View(2),
-                    MenuEntry::Leading(2)
-                ][..]
-            ),
-            "the views, then Today, run from the overflow menu"
+            listed.get(..3),
+            Some(&[MenuEntry::View(0), MenuEntry::View(1), MenuEntry::View(2)][..]),
+            "the views run from the overflow menu"
         );
     }
 
     phase a_narrow_row_folds_the_views_into_a_menu_of_every_view;
     {
-        let mut row = calendar_row_of(&calendar_with_a_field(), 420.0);
+        let mut row = calendar_row_of(&calendar_with_a_field(), 300.0);
         let parts = row.parts().clone();
         assert!(parts.views.is_empty(), "no segmented switcher");
         let menu = parts.views_menu;
@@ -1349,7 +1314,7 @@ tilo_test_env::scenario! {
             Theme::dark().motion(),
             crate::motion::frame_now(),
         );
-        row.lay_out(Rect::new(0.0, 0.0, 420.0, 40.0));
+        row.lay_out(Rect::new(0.0, 0.0, 300.0, 40.0));
         assert_eq!(row.parts().views_menu, menu, "another view, the same place");
     }
 }

@@ -851,8 +851,8 @@ impl DatePicker {
         let text_color = tokens.colors.text_primary;
 
         let (y, m) = self.month_view;
-        let month_name = month_name_en(m);
-        let header_label = format!("{month_name} {y}");
+        let header_label =
+            crate::format::month_heading(jiff::civil::Date::new(y, m, 1).unwrap_or(self.selected));
         // Every line in the picker is centred on its *measured* height; the
         // font size alone sat the 12 px labels 1.5 px low in each band.
         let (label_w, label_h) = text_renderer.measure_style(&header_label, None, &text_style);
@@ -1006,24 +1006,6 @@ impl DatePicker {
                 &text_style,
             );
         }
-    }
-}
-
-fn month_name_en(m: i8) -> &'static str {
-    match m {
-        1 => "January",
-        2 => "February",
-        3 => "March",
-        4 => "April",
-        5 => "May",
-        6 => "June",
-        7 => "July",
-        8 => "August",
-        9 => "September",
-        10 => "October",
-        11 => "November",
-        12 => "December",
-        _ => "",
     }
 }
 

@@ -827,7 +827,7 @@ tilo_test_env::scenario! {
     phase titles_elide_to_fit_and_week_ranges_keep_both_endpoints;
     {
         {
-            let s = crate::date::week_range_short(
+            let s = ui::format::day_range(
                 Date::new(2026, 6, 29).unwrap(),
                 Date::new(2026, 7, 5).unwrap(),
             );

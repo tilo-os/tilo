@@ -69,7 +69,8 @@ const SECTION_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 const LOCATION_ICON_PX: f64 = crate::tokens::Metrics::BASE.icon_control as f64;
 /// A location narrower than this is not shown: the bar keeps its buttons.
 pub(crate) const MIN_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_min_width as f64;
-const COMFORTABLE_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_comfortable_width as f64;
+/// The width a location's edited field measures its text in, so its padding stays its own.
+const FIELD_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_comfortable_width as f64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum MenuEntry {

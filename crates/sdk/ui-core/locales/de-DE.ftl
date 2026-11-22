@@ -499,6 +499,8 @@ format-day-heading-short = { $weekday }, { $day }. { $month }
 format-day-range-in-month = { $start }.–{ $end }. { $month }
 # Any span between two dates or times: "29. Juni bis 5. Juli".
 format-range = { $start } bis { $end }
+# A span between two days in a tight space, numbers only: "29.6.–5.7.".
+format-day-range-numeric = { $day }.{ $month }.–{ $day2 }.{ $month2 }.
 # Two already-formatted values in a list: "verschlüsselt, 134 GB frei".
 format-list-join = { $head }, { $tail }
 # The top of a month grid: "June 2026".

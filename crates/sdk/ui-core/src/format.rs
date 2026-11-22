@@ -524,6 +524,12 @@ pub fn day_range(start: Date, end: Date) -> String {
     Formats::current().day_range(start, end)
 }
 
+/// A span of days, numbers only: `6/29–7/5`. See `tilo_formats::day_range_numeric`.
+#[must_use]
+pub fn day_range_numeric(start: Date, end: Date) -> String {
+    tilo_formats::day_range_numeric(start, end, words())
+}
+
 /// How long a permission lasts, as every list of them says it: `Once`, `Always`, and for one that
 /// ends at a time, when it ends in the **day fact** style (`Until Tomorrow 5:30 PM`).
 #[must_use]
@@ -600,10 +606,16 @@ impl Period {
     pub fn forms(self) -> Vec<String> {
         match self {
             Self::Day(day) => vec![day_heading_short(day), month_day(day)],
-            Self::Days(start, end) => vec![
-                range(&day_heading_short(start), &day_heading_short(end)),
-                day_range(start, end),
-            ],
+            Self::Days(start, end) => {
+                let mut forms = vec![
+                    range(&day_heading_short(start), &day_heading_short(end)),
+                    day_range(start, end),
+                ];
+                if start.year() == end.year() && start.month() != end.month() {
+                    forms.push(day_range_numeric(start, end));
+                }
+                forms
+            }
             Self::Month(day) => vec![month_heading(day), month_heading_short(day)],
         }
     }
