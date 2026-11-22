@@ -830,6 +830,9 @@ fn run_parsed(
     if shows || args.first_frame {
         prepare_font_database_beside();
     }
+    // The join starts before this thread waits on the compositor for the early window: its answer is
+    // then in hand when the app is, and no loading window is built for it.
+    let joining = window_join::start_join(spec, &args);
     // A window's GPU device and vello's pipelines are prepared on their own
     // thread while the app constructs, so its first redraw takes them ready
     // instead of starting them after the compositor's first configure. Never
@@ -849,11 +852,11 @@ fn run_parsed(
     // with the join: the window shows its loading state until it is told the
     // join is over.
     #[cfg(any(windows, target_os = "linux"))]
-    let dispatched = dispatch_live(spec, &args, |window| {
+    let dispatched = dispatch_live(spec, &args, joining, |window| {
         window.with_startup_renderer(renderer.take())
     });
     #[cfg(not(any(windows, target_os = "linux")))]
-    let dispatched = dispatch_live(spec, &args, |window| window);
+    let dispatched = dispatch_live(spec, &args, joining, |window| window);
     let Some(dispatched) = dispatched else {
         return Ok(());
     };

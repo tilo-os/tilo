@@ -22,30 +22,14 @@ impl std::fmt::Debug for Arriving {
     }
 }
 
-impl Arriving {
-    /// Wait for `manager`'s join (in `scope`) off this thread.
-    pub(super) fn start(
-        manager: crate::collaboration::CollaborationManager,
-        scope: crate::wake::WakeScope,
-    ) -> Result<Self, LaunchError> {
-        let join = crate::collaboration::NativeJoin::start(manager)?;
-        Ok(Self { join, scope })
-    }
-}
-
 enum LocalFirst {
     Built(Result<DefinitionDispatch, LaunchError>),
     Arriving(Arriving),
 }
 
-/// Dispatch a launch: one that joins its workspace builds at once on the local replica while the join
-/// runs, or, where the record is not on this device, hands back the join to wait for.
-fn dispatch_local_first(spec: &LaunchSpec, args: &LaunchArgs) -> LocalFirst {
-    if !joins_its_workspace(spec, args) {
-        return LocalFirst::Built(super::dispatch_definition(spec, args));
-    }
-    let scope = crate::wake::WakeScope::new();
-    match dispatch_definition_in(spec, args, Some(scope), || {
+/// The join of a live window that joins its workspace, started: `None` for any other launch.
+pub(super) fn start_join(spec: &LaunchSpec, args: &LaunchArgs) -> Option<Joining> {
+    (live_native(spec, args) && spec.attaches_runtime(args)).then(|| {
         crate::collaboration::native_initial::ensure_unoccupied()
             .map_err(LaunchError::Operation)?;
         crate::collaboration::CollaborationManager::join_native(
@@ -53,13 +37,28 @@ fn dispatch_local_first(spec: &LaunchSpec, args: &LaunchArgs) -> LocalFirst {
             native_connection(),
         )
         .map_err(LaunchError::from)
-    }) {
+    })
+}
+
+type Joining = Result<crate::collaboration::CollaborationManager, LaunchError>;
+
+/// Dispatch a launch: one that joins its workspace builds at once on the local replica while the join
+/// runs, or, where the record is not on this device, hands back the join to wait for.
+fn dispatch_local_first(spec: &LaunchSpec, args: &LaunchArgs, join: Option<Joining>) -> LocalFirst {
+    let Some(joining) = join else {
+        return LocalFirst::Built(super::dispatch_definition(spec, args));
+    };
+    let scope = crate::wake::WakeScope::new();
+    match dispatch_definition_in(spec, args, Some(scope), || joining) {
         Ok(dispatched) => LocalFirst::Built(Ok(dispatched)),
         Err(Unbuilt::Failed(error)) => LocalFirst::Built(Err(error)),
-        Err(Unbuilt::NotHere { manager, scope }) => match Arriving::start(manager, scope) {
-            Ok(arriving) => LocalFirst::Arriving(arriving),
-            Err(error) => LocalFirst::Built(Err(error)),
-        },
+        // The join is waited for off this thread.
+        Err(Unbuilt::NotHere { manager, scope }) => {
+            match crate::collaboration::NativeJoin::start(manager) {
+                Ok(join) => LocalFirst::Arriving(Arriving { join, scope }),
+                Err(error) => LocalFirst::Built(Err(error.into())),
+            }
+        }
     }
 }
 
@@ -82,9 +81,10 @@ fn dispatch_arrived(
 pub(super) fn dispatch_live(
     spec: &LaunchSpec,
     args: &LaunchArgs,
+    joining: Option<Joining>,
     dress: impl FnOnce(App) -> App,
 ) -> Option<Result<DefinitionDispatch, LaunchError>> {
-    match dispatch_local_first(spec, args) {
+    match dispatch_local_first(spec, args, joining) {
         LocalFirst::Built(dispatched) => Some(dispatched),
         LocalFirst::Arriving(arriving) => {
             let arrived = wait_in_window(arriving, dress)?;
@@ -140,11 +140,6 @@ pub(crate) fn window_gives_place() -> bool {
     WINDOW_GIVES_PLACE.load(std::sync::atomic::Ordering::Acquire)
 }
 
-/// Whether a launch with `args` opens a live window that joins its workspace.
-pub(crate) fn joins_its_workspace(spec: &LaunchSpec, args: &LaunchArgs) -> bool {
-    live_native(spec, args) && spec.attaches_runtime(args)
-}
-
 /// Whether `args` open a live window of the native component `spec`.
 pub(super) fn live_native(spec: &LaunchSpec, args: &LaunchArgs) -> bool {
     spec.component_native_services && super::opens_native_window(args)
@@ -157,7 +152,7 @@ pub(crate) fn dispatch_window(
     args: &LaunchArgs,
 ) -> Result<WindowBuild, LaunchError> {
     let args = window_args(args);
-    match dispatch_local_first(spec, &args) {
+    match dispatch_local_first(spec, &args, start_join(spec, &args)) {
         LocalFirst::Built(dispatched) => {
             dispatched.map(|dispatched| WindowBuild::Built(dispatched.into_app()))
         }
