@@ -1011,19 +1011,8 @@ class Run:
                 break
         if row is None:
             raise Failed(f"{box.name} lists no {action} action")
-        reply = box.vm.invoke(row["provider"], row["id"], {})
-        job = (reply.get("receipt") or {}).get("broker_invocation_id")
-
-        def state(of: dict) -> str:
-            return str(((of.get("receipt") or {}).get("update") or {}).get("state"))
-
-        def ended():
-            now = box.vm.control_json("actions", "status", str(job))
-            return now if state(now) in ("succeeded", "failed", "cancelled") else None
-
-        if job is not None and state(reply) in ("accepted", "running"):
-            reply = wait_until(ended, 90, 1.0) or reply
-        if state(reply) != "succeeded":
+        reply = box.vm.invoke(row["provider"], row["id"], {}, wait_ms=90_000)
+        if reply["receipt"]["update"]["state"] != "succeeded":
             raise Failed(f"{action} did not answer {box.name}'s person: "
                          f"{json.dumps(reply, ensure_ascii=False)[:1200]}")
         return reply
@@ -1858,20 +1847,10 @@ class Run:
                     raise Failed("B's shell lists no action that answers the form on its "
                                  "Browser's page, so nothing could be changed there")
                 reply = b.vm.invoke(fill["provider"], fill["id"],
-                                    {"form": "form1", "answers": {"Given names": changed}})
-                job = (reply.get("receipt") or {}).get("broker_invocation_id")
-
-                def fill_state(of: dict) -> str:
-                    return str(((of.get("receipt") or {}).get("update") or {}).get("state"))
-
-                def fill_ended():
-                    now = b.vm.control_json("actions", "status", str(job))
-                    return now if fill_state(now) in ("succeeded", "failed", "cancelled") else None
-
-                if job is not None and fill_state(reply) in ("accepted", "running"):
-                    reply = wait_until(fill_ended, 90, 1.0) or reply
+                                    {"form": "form1", "answers": {"Given names": changed}},
+                                    wait_ms=90_000)
                 res.facts["changed_on_b"] = json.dumps(reply, ensure_ascii=False)[:600]
-                if fill_state(reply) != "succeeded":
+                if reply["receipt"]["update"]["state"] != "succeeded":
                     raise Failed("B's person could not answer the form again on B's own page, "
                                  f"so no change was there to carry: {res.facts['changed_on_b']}")
                 arrived = wait_until(lambda: screen_on_a(changed)["also"], 60, 2.0)

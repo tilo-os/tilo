@@ -75,8 +75,8 @@ def _names_check(ctx, res, names):
             wrong.append(f"'{query}' does not list {app} at all ({listed})")
             continue
         rows = _palette_rows(ctx, query)
-        res.metrics[query] = [(r.get("label"), r.get("description")) for r in rows[:3]]
-        if not rows or rows[0].get("label") != title:
+        res.metrics[query] = [(r.get("title"), r.get("subtitle")) for r in rows[:3]]
+        if not rows or rows[0].get("title") != title:
             wrong.append(f"'{query}' -> {res.metrics[query][:2]} (want {title!r} ({app}) first)")
     expect(not wrong, "; ".join(wrong))
 

@@ -119,6 +119,23 @@ fn windows_args() -> &'static [String] {
     })
 }
 
+/// The action frame that opens `app` as the desktop's own open-app does, answered once it is
+/// admitted: what a person's request to open an app sends the session.
+fn open_app_frame(app: &str) -> String {
+    json!({
+        "version": 2,
+        "message": {"Invoke": {
+            "invocation": uuid::Uuid::new_v4().to_string(),
+            "target": {
+                "provider": "so.tilo.session",
+                "address": {"resource": "desktop:chrome", "action": "open-app"},
+            },
+            "argument": {"Json": {"app": app}},
+        }},
+    })
+    .to_string()
+}
+
 fn control_json(
     remote: &mut Remote,
     account: &str,
@@ -5214,6 +5231,24 @@ impl App {
     }
 
     fn control(&mut self, account: Option<String>, args: &[String]) -> Result<Outcome, CliError> {
+        // What the desktop can do is `tilo action list`'s to say, in the account's session.
+        if let [actions, list, filter @ ..] = args
+            && actions == "actions"
+            && list == "list"
+        {
+            let vm = self.resolve_vm(None)?;
+            let command: Vec<String> = ["tilo", "action", "list"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(filter.iter().cloned())
+                .collect();
+            return self.account_exec(
+                &vm,
+                account,
+                tilo_vm_protocol::EXEC_TIMEOUT_SECONDS,
+                &command,
+            );
+        }
         let account = self.account_name(account)?;
         let vm = self.resolve_vm(None)?;
         let result = self.connect(&vm)?.call(Control {
@@ -5286,17 +5321,20 @@ impl App {
         let baseline_ids = window_ids(&baseline);
 
         let launched_at = Instant::now();
-        control_json(
+        let opened = control_json(
             &mut remote,
             &account,
-            &[
-                "actions".into(),
-                "invoke".into(),
-                "applications".into(),
-                desktop_id.into(),
-            ],
+            &["raw".into(), open_app_frame(desktop_id)],
             &mut worst_control,
         )?;
+        let status = opened
+            .pointer("/message/Receipt/status")
+            .ok_or_else(|| flight_failure(format!("opening {desktop_id} answered {opened}")))?;
+        if status.get("Rejected").is_some() || status.get("Failed").is_some() {
+            return Err(flight_failure(format!(
+                "opening {desktop_id} was refused: {status}"
+            )));
+        }
 
         let (surface_id, initial_frame_seq) = loop {
             ensure_before(deadline, "app did not present before the flight deadline")?;

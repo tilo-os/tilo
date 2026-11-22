@@ -263,7 +263,7 @@ so run it as root (`sudo`).\nThe directory holds one `<component>.tar` and `<com
     },
     /// Run the VM's tilo-control against an account's session (the one driving story).
     #[command(
-        after_help = "Examples:\n  tilo-vm control actions list\n  tilo-vm control actions invoke notes new-note\n  tilo-vm control --account review-a state-dump --pretty"
+        after_help = "Examples:\n  tilo-vm control actions list       (tilo action list, in the session)\n  tilo-vm control --account review-a state-dump --pretty\n\nTo do an action: tilo-vm account exec -- tilo do NAME"
     )]
     Control {
         /// The account whose session tilo-control drives (default: your account).

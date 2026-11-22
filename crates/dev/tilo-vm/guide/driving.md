@@ -4,8 +4,8 @@ There is one driving story: `tilo-control`. `tilo-vm control` runs the VM's
 copy against your account's session; it never reimplements it.
 
 ```sh
-tilo-vm control raw '{"version":2,"message":{"CatalogueRequest":{"correlation":1,"query":{}}}}'
-                                             # what this desktop can do: an action frame
+tilo-vm control actions list                 # what this desktop can do (tilo action list)
+tilo-vm account exec -- tilo do NAME         # do it, no coordinates
 tilo-vm control state-dump --pretty          # what it believes is on screen
 tilo-vm control list-targets                 # named rects
 tilo-vm control click NAME                   # also click-at, drag, key, type

@@ -47,12 +47,30 @@ class VmError(RuntimeError):
         return (lines[-1] if lines else str(self).splitlines()[0])[:400]
 
 
+# The kinds the checks group rows by: the workspace's open of an app, and any other action.
+KIND_APPS = "Apps"
+KIND_ACTIONS = "Actions"
+# The fields of a row a query of several words is matched over, as the checks read them.
+MATCHED = ("id", "title", "subtitle", "kind", "application", "operation", "resource")
+# The states an invocation ends in, as the checks read them.
+ENDED = ("succeeded", "failed", "cancelled")
+
+
+def param_of(param: dict) -> dict:
+    """One parameter as the checks read it: its `name`, `type`, whether it is `required`, its
+    `description`, `choices` and whether it is `nullable`."""
+    return {"name": param.get("name"), "type": param.get("ty"),
+            "required": bool(param.get("required")), "description": param.get("description", ""),
+            "choices": param.get("choices") or [], "nullable": bool(param.get("nullable"))}
+
+
 def row_of(row: dict) -> dict | None:
     """A catalogue row as the checks read it, or None for a row of a resource alone. `provider`
-    and `id` name it: the workspace's open of an app is `applications` and the app's id, an
-    app's own action `app-actions` and `provider␟resource␟action`, any other `resource␟action`
-    of its provider. Beside them `application`, `resource` (the row's), `operation`, `title`,
-    `subtitle`, `params`, `contract`, `semantic_identity` and `target`, what it invokes."""
+    and `id` name it: the workspace's open of an app is `applications` and the app's id, of kind
+    `Apps`; an app's own action `app-actions` and `provider␟resource␟action`; any other
+    `resource␟action` of its provider, of kind `Actions`. Beside them `application`, `resource`
+    (the row's), `operation`, `title`, `subtitle`, `params`, `contract`, `semantic_identity`
+    and `target`, what it invokes."""
     action = row.get("action")
     if not action:
         return None
@@ -60,9 +78,10 @@ def row_of(row: dict) -> dict | None:
     resource = row.get("resource") or {}
     provider = row["provider"]
     described = {
-        "provider": provider, "id": f"{at['resource']}{ID_SEP}{at['action']}", "kind": "actions",
+        "provider": provider, "id": f"{at['resource']}{ID_SEP}{at['action']}", "kind": KIND_ACTIONS,
         "operation_kind": action.get("kind"), "title": action.get("action_label"),
-        "subtitle": resource.get("label"), "params": action.get("params") or [],
+        "subtitle": resource.get("label"),
+        "params": [param_of(param) for param in action.get("params") or []],
         "contract": action.get("contract"), "application": row.get("app_id"), "record": "",
         "resource": resource.get("id"), "parent_resource": row.get("parent_resource"),
         "semantic_identity": action.get("semantic_identity"), "operation": at["action"],
@@ -70,7 +89,7 @@ def row_of(row: dict) -> dict | None:
     }
     if (at["action"] == "open" and at["resource"].startswith("app.")
             and provider.startswith("workspace:")):
-        described.update(provider=APPLICATIONS, id=row.get("app_id"), kind="apps",
+        described.update(provider=APPLICATIONS, id=row.get("app_id"), kind=KIND_APPS,
                          title=resource.get("label"))
     elif provider.startswith(("application:", "launch:")):
         described.update(provider=APP_ACTIONS,
@@ -78,17 +97,27 @@ def row_of(row: dict) -> dict | None:
     return described
 
 
+def mentions(row: dict, words: list[str]) -> bool:
+    """Whether `row` mentions every one of `words` in what the checks read of it."""
+    said = [str(row.get(key) or "").lower() for key in MATCHED]
+    return all(any(word in text for text in said) for word in words)
+
+
 def listed(ask, query: str = "") -> list[dict]:
-    """Every action row the session lists for `query`, read as `row_of` reads it. `ask` sends
+    """Every action row the session lists for `query`, read as `row_of` reads it. The session
+    narrows to the query's first word, and its other words narrow what it answered. `ask` sends
     one action frame to the session's control socket and answers the frame that came back. A
     listing that changed while it was paged is read again from its start."""
+    words = query.lower().split()
     for _ in range(LISTING_ATTEMPTS):
         try:
-            return [described for row in real_apps.catalogue(ask, query)
-                    if (described := row_of(row)) is not None]
+            rows = real_apps.catalogue(ask, words[0] if words else "")
         except real_apps.Refused as exc:
             if exc.code != "stale_revision":
                 raise VmError(f"the action listing was refused: {exc}") from exc
+            continue
+        return [described for row in rows
+                if (described := row_of(row)) is not None and mentions(described, words[1:])]
     raise VmError(f"the action listing changed on each of {LISTING_ATTEMPTS} reads while it was paged")
 
 
@@ -103,10 +132,11 @@ def update_of(invocation: str, status) -> dict:
 
 
 def invoked(ask, provider: str, action_id: str, args: dict | None = None, *,
-            confirmed: bool = False, rows=None) -> dict:
+            confirmed: bool = False, rows=None, wait_ms: int = 0) -> dict:
     """Invoke the action the checks name `provider` and `action_id` (see `row_of`), answered
-    once it is admitted: `{"receipt": {"invocation", "update"}}`. A refusal raises, with its
-    code. `rows` lists what the session offers, for the open of an app by its id."""
+    once it is admitted, or, with `wait_ms`, once it ended within that long:
+    `{"receipt": {"invocation", "update"}}`. A refusal raises, with its code. `rows` lists what
+    the session offers, for the open of an app by its id."""
     if provider == APPLICATIONS:
         found = next((row for row in (rows() if rows else listed(ask, action_id))
                       if row["provider"] == APPLICATIONS and row["id"] == action_id), None)
@@ -119,25 +149,39 @@ def invoked(ask, provider: str, action_id: str, args: dict | None = None, *,
         provider, resource, action = action_id.split(ID_SEP, 2)
     else:
         resource, _, action = action_id.rpartition(ID_SEP)
-    frame = real_apps.invocation(provider, resource, action, args, confirmed=confirmed)
+    frame = real_apps.invocation(provider, resource, action, args, wait_ms=wait_ms or None,
+                                 confirmed=confirmed)
     try:
         status = real_apps.receipt(ask(frame))
     except real_apps.Refused as exc:
         raise VmError(f"{exc.code}: {provider} {resource}#{action} was refused: {exc.message}") from exc
     invocation = frame["message"]["Invoke"]["invocation"]
-    return {"receipt": {"invocation": invocation, "update": update_of(invocation, status)}}
+    update = update_of(invocation, status)
+    deadline = time.monotonic() + wait_ms / 1000
+    while wait_ms and update["state"] not in ENDED and time.monotonic() < deadline:
+        left = max(1, int((deadline - time.monotonic()) * 1000))
+        update = observed(ask, invocation, left)
+    return {"receipt": {"invocation": invocation, "update": update}}
 
 
 def observed(ask, invocation: str, wait_ms: int = 0) -> dict:
     """Where `invocation` stands now, as `update_of` reads it; `wait_ms` holds the answer until
-    it moves on."""
+    it moves on. A read that answered is `succeeded`, its answer its output's value; one still
+    going, or an operation partway, is `running`."""
     message = {"correlation": 1, "invocation": invocation}
     if wait_ms:
         message["wait_ms"] = wait_ms
     answer = ask(real_apps.frame({"Observe": message}))["message"]["Update"]
-    if answer.get("state") is None:
+    state = answer.get("state")
+    if state is None:
         raise VmError(f"unknown_invocation: the session follows no invocation {invocation}")
-    return answer["state"]["update"]
+    update = state["update"]
+    if update.get("state") == "item" and state.get("read_answered"):
+        return {"state": "succeeded", "invocation": update.get("invocation"),
+                "output": {"value": update.get("value")}}
+    if update.get("state") in ("item", "progress"):
+        return {**update, "state": "running"}
+    return update
 
 
 def first_json(text: str):
@@ -263,9 +307,9 @@ class TiloVm:
         return listed(self.raw, query)
 
     def invoke(self, provider: str, action_id: str, args: dict | None = None, *,
-               confirmed: bool = False) -> dict:
+               confirmed: bool = False, wait_ms: int = 0) -> dict:
         """Invoke an action the listing names (see `invoked`)."""
-        return invoked(self.raw, provider, action_id, args, confirmed=confirmed)
+        return invoked(self.raw, provider, action_id, args, confirmed=confirmed, wait_ms=wait_ms)
 
     def observe(self, invocation: str, wait_ms: int = 0) -> dict:
         """Where an invocation this desktop admitted stands (see `observed`)."""
@@ -364,8 +408,10 @@ class TiloVm:
 
     def exec(self, script: str, timeout: float = 120, check: bool = True) -> str:
         """Run a POSIX sh script as the account's user, in its session's view."""
-        return self.run("account", "exec", "--", "sh", "-c", script,
-                        timeout=timeout, check=check)
+        # The guest stops the command at its own --timeout: the one asked for here, else its
+        # default would stop it before this side's wait ran out.
+        return self.run("account", "exec", "--timeout", str(int(timeout)), "--", "sh", "-c",
+                        script, timeout=timeout + 15, check=check)
 
     def root_exec(self, script: str, timeout: float = 120, check: bool = True) -> str:
         """Run a POSIX sh script as root in the VM: reads of the compositor's /proc entries
