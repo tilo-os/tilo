@@ -39,6 +39,10 @@ lounge_fail() {
 
 # The Lounge's entrypoint, started on the volume start_lounge laid out.
 run_lounge() {
+  # Every address this deployment serves is loopback, so its endpoint is told
+  # one: a host told one address skips the portmapper (UPnP over SSDP, name
+  # lookups) it would otherwise probe a router with, and a sandboxed check is
+  # refused those.
   # The image's entrypoint, with the environment the check gives the image.
   # `LOUNGE_ADMISSION` is the entry: `open` (the check's own Lounge) or
   # `invite`, which keeps a wait list (`LOUNGE_WAIT_LIST_MAX`, and the mail
@@ -65,9 +69,6 @@ run_lounge() {
     TILO_WORKSPACES_MAIL_TEMPLATES="${LOUNGE_MAIL_TEMPLATES:-}" \
     TILO_WORKSPACES_SERVER_ORIGIN="$server_origin" \
     TILO_WORKSPACES_LIVE="127.0.0.1:$lounge_live_port" \
-    # Every address this deployment has is loopback, and a host told one
-    # address skips the portmapper (UPnP over SSDP, name lookups) it would
-    # otherwise probe a router with: a sandboxed check is refused those.
     TILO_WORKSPACES_IROH_LISTEN="127.0.0.1:0" \
     TILO_WORKSPACES_SERVER_PLAIN="127.0.0.1:$lounge_plain_port" \
     TILO_WORKSPACES_HTTP="127.0.0.1:$lounge_http_port" \
