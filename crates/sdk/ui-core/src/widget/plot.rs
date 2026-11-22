@@ -575,7 +575,9 @@ impl<M: PlotMarks> Widget for Plot<M> {
     ) {
         crate::scene_parts::picture();
         self.marks.paint(scene, transform, tr, theme);
-        if let Some(readout) = self.marks.readout(theme) {
+        if !crate::widget::chart_readout::readouts_left_out()
+            && let Some(readout) = self.marks.readout(theme)
+        {
             readout.paint(scene, transform, tr, theme);
         }
     }

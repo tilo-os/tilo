@@ -357,14 +357,19 @@ impl Page {
                 }
                 element.children.push(body);
             }
-            Some(Own::Painted { version }) => {
-                let mut island = Element::new("canvas");
+            // Its picture, under what the page sets over it; a reader hears the element it fills.
+            Some(Own::Painted {
+                picture: Some(picture),
+                ..
+            }) => {
+                let mut island = Element::new("img");
                 island.id = Some(self.id(&format!("{path}#picture")));
-                island.attr("data-painted", &version.to_string());
-                island.attr("aria-hidden", "true");
+                island.attr("src", picture);
+                island.attr("alt", "");
                 island.attr("style", "display:block;width:100%;height:100%;");
                 element.children.push(island);
             }
+            Some(Own::Painted { picture: None, .. }) | None => {}
             Some(Own::Face(face)) => element.own = face_html(face),
             Some(Own::Control { controls }) => {
                 let target = node
@@ -391,7 +396,6 @@ impl Page {
                     );
                 }
             }
-            None => {}
         }
         let flows = node.flows;
         for child in &node.children {

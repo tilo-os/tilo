@@ -71,8 +71,15 @@ pub enum Own {
     /// variant: a page reads `{kind: "control", controls: [...]}`, and a
     /// tagged newtype holding a list cannot be written at all.
     Control { controls: Vec<Control> },
-    /// The widget paint is it: a host shows it as one picture of the widget's box.
-    Painted { version: u64 },
+    /// The widget paint is it: a host shows it as one picture of the widget's box, drawn again
+    /// when `version` changes.
+    Painted {
+        version: u64,
+        /// The picture a page shows, as a `data:` address of a PNG
+        /// ([`crate::headless::FrameHarness::paint_pictures`]); none until a host draws it.
+        #[serde(skip)]
+        picture: Option<std::sync::Arc<str>>,
+    },
 }
 
 /// The families of control a page gives its own element ([`Own::Control`]): one per kind of thing
@@ -884,6 +891,7 @@ impl Composed {
         self.rect[3].to_bits().hash(&mut hash);
         self.own = Some(Own::Painted {
             version: hash.finish(),
+            picture: None,
         });
     }
 
@@ -1374,6 +1382,7 @@ impl<'a> HtmlCx<'a> {
             .hash(&mut hash);
         self.composed.own = Some(Own::Painted {
             version: hash.finish(),
+            picture: None,
         });
     }
 

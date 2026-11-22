@@ -12,7 +12,8 @@ impl AttachedView {
     /// The view as a page shows it: its composition, laid out with everything
     /// that reached it since its last frame, and with the frames that take up
     /// (a store that opened once the workspace answered, a note an action
-    /// opened) laid out as a window lays them out while it is looked at.
+    /// opened) laid out as a window lays them out while it is looked at, and
+    /// a picture of each part a page shows as one (a chart's marks).
     #[must_use]
     pub fn composition(&self) -> ui_core::composition::Composition {
         drop(self.frame());
@@ -22,7 +23,9 @@ impl AttachedView {
                 break;
             }
         }
-        frame.composition()
+        let mut composition = frame.composition();
+        frame.paint_pictures(&mut composition);
+        composition
     }
 
     /// The theme the view is laid out in: what a page's colours are.

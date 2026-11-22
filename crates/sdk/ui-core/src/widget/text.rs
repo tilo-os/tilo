@@ -1173,7 +1173,10 @@ impl Widget for Text {
                 }
             }
         }
-        self.face.append(scene, transform, self.rect);
+        // Its words are a cached scene: a picture a page sets words over leaves them out.
+        if !crate::text_render::words_left_out() {
+            self.face.append(scene, transform, self.rect);
+        }
         self.draw_writes(scene, transform, text_renderer, theme, presence);
         crate::widget::draw_permission_scrim_and_peer_focus(
             self, scene, transform, theme, presence,

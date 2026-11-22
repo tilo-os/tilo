@@ -23951,6 +23951,7 @@ dependencies = [
 name = "tilolang-app"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "collab-types",
  "collaboration",
  "durable-store",

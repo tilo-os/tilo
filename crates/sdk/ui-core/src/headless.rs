@@ -667,6 +667,9 @@ pub struct FrameHarness {
     placed_focus: Option<NodeId>,
     /// Completed relayout frames since construction.
     relayout_frames: u64,
+    /// The pictures a page was last given, by the part's path, at the version each shows
+    /// ([`Self::paint_pictures`]).
+    pictures: HashMap<String, (u64, std::sync::Arc<str>)>,
     /// Layout nodes built since construction: every node of each rebuilt tree, and those a change
     /// carried out in place mounted.
     layout_nodes_built: u64,
@@ -1554,6 +1557,7 @@ impl FrameHarness {
             placed_all: false,
             placed_focus: None,
             relayout_frames: 0,
+            pictures: HashMap::new(),
             layout_nodes_built: 0,
             retained_frames: 0,
             retained_geometry_check_every: 0,

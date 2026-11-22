@@ -3,10 +3,11 @@
 //! composition is rendered as the HTML the page is sent (`Page::render`), and what changed since
 //! the page last answered is sent as patches onto the elements it holds (`Page::patch`).
 
+use base64::Engine as _;
 use tilolang_app::app::TlApp;
 use ui::a11y::{Action, Role};
 use ui::composition::page::{Page, Patch};
-use ui::composition::{Composed, Composition};
+use ui::composition::{Composed, Composition, Own};
 use ui::framework::testing::TestApp;
 use ui::headless::FrameHarness;
 
@@ -84,6 +85,9 @@ fn every_place_is_picked_and_patched_on_the_page() {
         if place == "Data" {
             rows_under_a_row_stand_below_it(&composition);
         }
+        if place == "Charts and views" {
+            charts_show_their_marks(&composition, &shown);
+        }
     }
 }
 
@@ -120,6 +124,49 @@ fn rows_under_a_row_stand_below_it(composition: &Composition) {
     assert!(holding > 0, "the Data page's tree holds rows under rows");
 }
 
+/// Every part the page shows as a picture (a chart's marks, a sparkline's line) is sent drawn: the
+/// page shows a picture where it stands, and the picture shows something.
+fn charts_show_their_marks(composition: &Composition, shown: &str) {
+    let painted: Vec<(&str, &str)> = nodes(composition)
+        .into_iter()
+        .filter_map(|node| match &node.own {
+            Some(Own::Painted { picture, .. }) => Some((
+                node.path.as_str(),
+                picture
+                    .as_deref()
+                    .unwrap_or_else(|| panic!("{} is drawn for the page", node.path)),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        painted.iter().any(|(path, _)| path.ends_with("#marks")),
+        "the page shows a chart's marks: {painted:?}"
+    );
+    for (path, picture) in painted {
+        assert!(
+            shown.contains("<img data-p=") && shown.contains(picture),
+            "the page shows {path}'s picture"
+        );
+        let png = picture
+            .strip_prefix("data:image/png;base64,")
+            .and_then(|encoded| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .ok()
+            })
+            .unwrap_or_else(|| panic!("{path}'s picture is a PNG"));
+        let drawn = ui::png::decode_rgba8(&png).expect("the picture decodes");
+        assert!(
+            drawn
+                .rgba
+                .chunks_exact(4)
+                .any(|pixel| pixel.get(3) > Some(&0)),
+            "{path}'s picture shows something"
+        );
+    }
+}
+
 /// The view as the page reads it, until `reads` holds of it: what reached it laid out, as a page's
 /// read lays it out. The gallery reads its indexes on workers that wake the view when a read
 /// lands, so the test waits for what it reads, and fails saying so if it never comes.
@@ -135,8 +182,9 @@ fn until(
                 break;
             }
         }
-        let composition = harness.composition();
+        let mut composition = harness.composition();
         if reads(&composition) {
+            harness.paint_pictures(&mut composition);
             return composition;
         }
         assert!(began.elapsed().as_secs() < 60, "{waited}");

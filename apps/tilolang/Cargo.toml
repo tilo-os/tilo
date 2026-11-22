@@ -56,6 +56,8 @@ collab-types = { version = "0.1.0", path = "../../crates/collab/collab-types" }
 # A later build as a development session hands it over the host's socket.
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 automerge.workspace = true
+# The pictures a page is sent are PNGs as `data:` addresses (`tests/gallery_html.rs`).
+base64.workspace = true
 uuid.workspace = true
 # A window's thread that must not wait on storage, as the window closes (`tests/gallery_close.rs`).
 durable-store = { path = "../../crates/system/durable-store" }

@@ -3,12 +3,16 @@
 //! what it shows of its own.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use base64::Engine as _;
 use taffy::{NodeId, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Rect};
 
 use super::FrameHarness;
 use crate::app_core::AppCore as _;
-use crate::composition::{Composed, Composition, HtmlCx, css};
+use crate::composition::{Composed, Composition, HtmlCx, Own, css};
 use crate::widget::Widget;
 
 /// Every widget of the retained tree by its address: the path semantic actions name it by, and the
@@ -338,4 +342,154 @@ impl FrameHarness {
         composition.forget_semantics_children();
         composition
     }
+
+    /// `composition`, read from this frame ([`Self::composition`]), with the picture of each part
+    /// that declares nothing of its own ([`Own::Painted`]): its paint alone, drawn at twice its
+    /// size for a sharp screen, without the words and chart readouts the page sets over it. A
+    /// picture is drawn again only when its part's version changes.
+    pub fn paint_pictures(&mut self, composition: &mut Composition) {
+        let mut wanted = Vec::new();
+        for node in std::iter::once(&composition.root).chain(&composition.layers) {
+            painted_parts(node, &mut wanted);
+        }
+        let mut drawn = std::mem::take(&mut self.pictures);
+        let mut targets = None;
+        let mut shown = HashMap::with_capacity(wanted.len());
+        for (composed, version) in wanted {
+            let kept = drawn
+                .remove(&composed.path)
+                .filter(|(was, _)| *was == version);
+            let picture = match kept {
+                Some((_, picture)) => Some(picture),
+                None => self.picture(composed, &mut targets),
+            };
+            if let Some(picture) = picture {
+                shown.insert(composed.path.clone(), (version, picture));
+            }
+        }
+        for node in std::iter::once(&mut composition.root).chain(&mut composition.layers) {
+            hand_pictures(node, &shown);
+        }
+        self.pictures = shown;
+    }
+
+    /// The picture of `composed`, a PNG as a `data:` address, or none for a part no laid-out widget
+    /// has the path of or that has no area.
+    fn picture(
+        &mut self,
+        composed: &Composed,
+        targets: &mut Option<HashMap<String, NodeId>>,
+    ) -> Option<Arc<str>> {
+        let path = composed.path.as_str();
+        let (scene, [_, _, width, height]) = if path == super::part_row::WINDOW_PARTS {
+            self.paint_part_row(PICTURE_SCALE)?
+        } else {
+            let widget = path.split_once('#').map_or(path, |(widget, _)| widget);
+            let node = *targets
+                .get_or_insert_with(|| self.named_target_nodes())
+                .get(widget)?;
+            self.paint_node(node, composed)?
+        };
+        let pixels = |logical: f64| {
+            let device = (logical * PICTURE_SCALE).ceil();
+            (1.0..=f64::from(u16::MAX))
+                .contains(&device)
+                .then(|| crate::num::u32_of_f64(device))
+        };
+        let (width, height) = (pixels(width)?, pixels(height)?);
+        let rgba = crate::offscreen::render_picture(
+            &scene,
+            width,
+            height,
+            vello::peniko::Color::TRANSPARENT,
+        )
+        .inspect_err(|why| tracing::warn!(path, %why, "a page's picture could not be drawn"))
+        .ok()?;
+        let png = crate::png::encode_rgba8(width, height, &rgba).ok()?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+        Some(format!("data:image/png;base64,{encoded}").into())
+    }
+
+    /// The paint of `composed`, the widget laid out at `node` or a part of it, with its box's top
+    /// left at the origin.
+    fn paint_node(&mut self, node: NodeId, composed: &Composed) -> Option<(Scene, [f64; 4])> {
+        let [x, y, width, height] = composed.rect;
+        let part = composed
+            .path
+            .contains('#')
+            .then(|| Rect::new(x, y, x + width, y + height));
+        // Words the page sets over the picture are left out of it.
+        let words_on_top = composed.children.iter().any(shows_words);
+        let text = &mut self.text;
+        let theme = &self.theme;
+        let presence = &self.presence;
+        // SAFETY: the harness owns the laid-out tree and holds it exclusively
+        // here; no reference into it outlives the call.
+        unsafe {
+            crate::bound_dispatch::mutate_bound_node(
+                &self.bindings,
+                &self.node_map,
+                node,
+                |widget| {
+                    let rect = part.unwrap_or_else(|| widget.get_rect());
+                    let mut scene = Scene::new();
+                    let transform =
+                        Affine::scale(PICTURE_SCALE) * Affine::translate((-rect.x0, -rect.y0));
+                    let mut paint = || {
+                        crate::widget::DrawChild::draw_child(
+                            widget, &mut scene, transform, text, theme, presence,
+                        );
+                    };
+                    // A chart's readout is the page's own elements over its picture.
+                    crate::widget::chart_readout::without_readouts(|| {
+                        if words_on_top {
+                            crate::text_render::without_words(paint);
+                        } else {
+                            paint();
+                        }
+                    });
+                    (scene, [rect.x0, rect.y0, rect.width(), rect.height()])
+                },
+            )
+        }
+        .ok()
+    }
+}
+
+/// Device pixels a page's picture has for each logical pixel of its part: a sharp picture on a
+/// screen of twice the density, scaled down on any other.
+const PICTURE_SCALE: f64 = 2.0;
+
+/// Every part of `node` that shows as a picture, with the version it shows.
+fn painted_parts<'c>(node: &'c Composed, out: &mut Vec<(&'c Composed, u64)>) {
+    if let Some(Own::Painted { version, .. }) = node.own {
+        out.push((node, version));
+    }
+    for child in &node.children {
+        painted_parts(child, out);
+    }
+}
+
+/// `node` with each picture of `shown` handed to the part it is of.
+fn hand_pictures(node: &mut Composed, shown: &HashMap<String, (u64, Arc<str>)>) {
+    if let Some(Own::Painted { picture, .. }) = &mut node.own {
+        *picture = shown.get(&node.path).map(|(_, drawn)| Arc::clone(drawn));
+    }
+    for child in &mut node.children {
+        hand_pictures(child, shown);
+    }
+}
+
+/// Whether `node` or a part of it shows words of its own on a page.
+fn shows_words(node: &Composed) -> bool {
+    matches!(
+        node.own,
+        Some(
+            Own::Text(_)
+                | Own::Field { .. }
+                | Own::Blocks { .. }
+                | Own::Face(_)
+                | Own::Control { .. }
+        )
+    ) || node.children.iter().any(shows_words)
 }

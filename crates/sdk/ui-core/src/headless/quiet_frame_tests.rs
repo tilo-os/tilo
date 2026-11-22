@@ -300,6 +300,11 @@ struct QuietEntry {
 /// [`every_mutable_entry_point_invalidates_local_state`].
 const QUIET_ENTRY_POINTS: &[QuietEntry] = &[
     QuietEntry {
+        file: "headless/composition.rs",
+        entry: "paint_pictures",
+        why: "draws the composition's painted parts into the pictures a page shows, keeping each for its next page; nothing a frame reads changes.",
+    },
+    QuietEntry {
         file: "headless.rs",
         entry: "click_at",
         why: "that move, press and release through `send`, which judges each.",

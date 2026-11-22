@@ -392,6 +392,7 @@ impl FrameHarness {
             format!("{:?}", self.theme.tokens.colors.text_primary).hash(&mut hash);
             row.own = Some(Own::Painted {
                 version: hash.finish(),
+                picture: None,
             });
             row.children = nodes
                 .iter()
@@ -555,6 +556,22 @@ impl FrameHarness {
             strip.children.push(notice);
         }
         Some(strip)
+    }
+
+    /// The row's band alone, at `scale`, for its picture.
+    pub(super) fn paint_part_row(&mut self, scale: f64) -> Option<(vello::Scene, [f64; 4])> {
+        let hosted = self.part_row.as_mut()?;
+        let width = f64::from(self.viewport.0);
+        let mut scene = vello::Scene::new();
+        hosted.row.draw(
+            &mut scene,
+            Affine::scale(scale),
+            &mut self.text,
+            &self.theme,
+            &self.presence,
+            0.0,
+        );
+        Some((scene, [0.0, 0.0, width, hosted.inset]))
     }
 
     /// The window's own actions pressed through the row's semantics since the last call.

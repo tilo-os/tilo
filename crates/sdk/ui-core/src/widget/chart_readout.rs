@@ -5,6 +5,8 @@
 //! over the marks in a window and composes it as the page's own elements on the web, from the
 //! one geometry [`Readout::place`] works out, so both look alike.
 
+use std::cell::Cell;
+
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -627,6 +629,23 @@ pub(crate) fn number(value: f64, unit: &str) -> String {
         Some(first) if first.is_alphanumeric() => format!("{number} {unit}"),
         Some(_) => format!("{number}{unit}"),
     }
+}
+
+thread_local! {
+    static READOUTS_LEFT_OUT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// `paint` with every chart's readout left out: the picture a page lays under the readout it
+/// composes itself ([`Readout::compose`]), so it is not shown twice.
+pub(crate) fn without_readouts<R>(paint: impl FnOnce() -> R) -> R {
+    let before = READOUTS_LEFT_OUT.with(|left| left.replace(true));
+    let out = paint();
+    READOUTS_LEFT_OUT.with(|left| left.set(before));
+    out
+}
+
+pub(crate) fn readouts_left_out() -> bool {
+    READOUTS_LEFT_OUT.with(Cell::get)
 }
 
 #[cfg(test)]
