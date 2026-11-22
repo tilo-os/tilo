@@ -133,6 +133,8 @@ NOT_CONTROL_CALLBACKS = {
     "on_cancel": "drops an edit in progress and puts back what the label showed: what this "
     "window shows, no edit",
     "on_effect": "activates a published native effect action",
+    "on_continue_without": "ends this window's wait for an answer and shows its view, reading "
+    "the answer as missing; changes no resource",
     "on_choose": "publishes the row's own press as its view action `choose`, which a person, "
     "a screen reader, a script and an agent all reach",
     "on_own_device_effect": "activates a published native effect action",
