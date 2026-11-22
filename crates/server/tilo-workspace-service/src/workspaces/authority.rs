@@ -341,9 +341,7 @@ fn decide_by_governance(
     let decided = match op {
         WorkspaceOp::Host(_) => return Err(CollaborationError::new(HOST_PERSON_ONLY)),
         WorkspaceOp::Govern(action) => member.policy.check_action(&authority, action, &cx, false),
-        WorkspaceOp::Invite(role) => member
-            .policy
-            .check_invite(person, &authority, role, &cx, false),
+        WorkspaceOp::Invite(role) => member.policy.check_invite(&authority, role, &cx, false),
         WorkspaceOp::InviteAdministrator => member
             .policy
             .check_administrator_invite(person, &authority, &cx, false),

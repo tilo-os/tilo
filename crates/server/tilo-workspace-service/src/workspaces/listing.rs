@@ -184,27 +184,14 @@ fn faces(members: &[tilo_peer_state::Member], online: &BTreeSet<[u8; 32]>) -> (V
     (faces, count)
 }
 
-/// The part an invitation hands a member who holds `role`, so that redeeming
-/// it leaves them as they are. The owner holds the workspace whatever an
-/// invitation names: none is theirs.
-const fn invited_part(role: Role) -> Option<Role> {
-    match role {
-        Role::Viewer => Some(Role::Viewer),
-        Role::Commenter => Some(Role::Commenter),
-        Role::Editor => Some(Role::Editor),
-        Role::Moderator => Some(Role::Moderator),
-        Role::Owner => None,
-    }
-}
-
 /// The part a listing hands everyone who joins through the entry. A listing hands
-/// out no more than an editor ([`EntryPolicy::checked`] refuses a moderator's or
-/// an owner's), so one written another way still hands out no governance.
-const fn listed_part(role: Role) -> Role {
-    match role {
-        Role::Viewer => Role::Viewer,
-        Role::Commenter => Role::Commenter,
-        Role::Editor | Role::Moderator | Role::Owner => Role::Editor,
+/// out no more than an editor holds ([`EntryPolicy::checked`]), so one written
+/// another way still hands out no governance.
+fn listed_part(role: Role) -> Role {
+    if Role::Editor.includes(role) {
+        role
+    } else {
+        Role::Editor
     }
 }
 
@@ -685,8 +672,10 @@ impl Workspaces {
             if governed.removals.refuses(user, now) {
                 return Err(EntryRefusal::Removed);
             }
+            // A member is handed the part they hold, so that redeeming it leaves them as they
+            // are; the owner holds the workspace whatever an invitation names.
             let role = member
-                .and_then(invited_part)
+                .filter(|role| role.assignable())
                 .unwrap_or_else(|| listed_part(listing.default_role));
             let token = hex::encode(rand::random::<[u8; 32]>());
             let grant = self.entry_grant(workspace, role, now, &token)?;

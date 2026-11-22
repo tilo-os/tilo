@@ -947,6 +947,41 @@ pub fn workspace_role_grants(workspace: &str, granted_by: &Grantee) -> Vec<Grant
         .collect()
 }
 
+/// Whether each of the role `wanted`'s grants gives no more than the role
+/// `held` holds on its node ([`crate::WorkspacePolicy::check_within`]). A
+/// role's grants are the same in every workspace, so each pair is decided
+/// once, in a workspace of no one's.
+pub(crate) fn role_within(wanted: Role, held: Role) -> bool {
+    static WITHIN: std::sync::OnceLock<Vec<(Role, Role)>> = std::sync::OnceLock::new();
+    let grants = |role: Role| {
+        let grantee = Grantee::role(role);
+        role_preset(role, "roles").assign(
+            &role_grant_prefix(role),
+            &grantee,
+            &grantee,
+            &Lifetime::UntilRevoked,
+        )
+    };
+    WITHIN
+        .get_or_init(|| {
+            let pairs = Role::ALL
+                .into_iter()
+                .flat_map(|held| Role::ALL.map(|wanted| (wanted, held)));
+            pairs
+                .filter(|&(wanted, held)| {
+                    let holding = grants(held);
+                    let holder =
+                        Authority::person(crate::Party::new(vec![Grantee::role(held)], &holding));
+                    grants(wanted).iter().all(|grant| {
+                        crate::WorkspacePolicy::check_within(&holder, grant, &Context::at(0))
+                            .is_ok()
+                    })
+                })
+                .collect()
+        })
+        .contains(&(wanted, held))
+}
+
 /// The id prefix of `role`'s built-in grants: `role:<role>`.
 fn role_grant_prefix(role: Role) -> String {
     format!("role:{}", role.key())
@@ -1107,12 +1142,16 @@ pub mod agent_policy {
     /// (open question 2; see the module documentation).
     pub const WITHDRAWAL_IS_FINAL: bool = true;
 
-    /// The role an agent acts with when its person holds `person` and its
-    /// delegation grants it `granted`: the least of the two and [`ROLE_CAP`].
-    /// Never more than either.
+    /// The role an agent acts with when its person holds `person`: theirs
+    /// when [`ROLE_CAP`] holds all of its grants ([`Role::includes`]), and the
+    /// cap otherwise.
     #[must_use]
-    pub fn role(person: Role, granted: Role) -> Role {
-        person.min(granted).min(ROLE_CAP)
+    pub fn role(person: Role) -> Role {
+        if ROLE_CAP.includes(person) {
+            person
+        } else {
+            ROLE_CAP
+        }
     }
 }
 

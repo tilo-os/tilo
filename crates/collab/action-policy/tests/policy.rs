@@ -895,9 +895,9 @@ tilo_test_env::scenario! {
         }
         let bob = Authority::person(workspace.party(BOB));
         workspace
-            .check_invite(BOB, &bob, Role::Editor, &cx(), false)
+            .check_invite(&bob, Role::Editor, &cx(), false)
             .expect("editor invites editor");
-        let refused = workspace.check_invite(BOB, &bob, Role::Owner, &cx(), false);
+        let refused = workspace.check_invite(&bob, Role::Owner, &cx(), false);
         assert_eq!(refused, Err(Refusal::OwnerRole));
         let add = Change::AddMember {
             person: CAROL.into(),
@@ -927,14 +927,11 @@ tilo_test_env::scenario! {
         ));
         let carol = Authority::person(workspace.party(CAROL));
         assert_eq!(
-            workspace.check_invite(CAROL, &carol, Role::Editor, &cx(), false),
-            Err(Refusal::AboveActorRole {
-                actor: Some(Role::Commenter),
-                wanted: Role::Editor
-            })
+            workspace.check_invite(&carol, Role::Editor, &cx(), false),
+            Err(Refusal::AboveActorRole(Role::Editor))
         );
         workspace
-            .check_invite(CAROL, &carol, Role::Viewer, &cx(), false)
+            .check_invite(&carol, Role::Viewer, &cx(), false)
             .expect("commenter invites viewer");
     }
 
@@ -1426,13 +1423,13 @@ tilo_test_env::scenario! {
             Grantee::person(ALICE),
         ));
         let bob = Authority::person(workspace.party(BOB));
-        let refused = workspace.check_invite(BOB, &bob, Role::Viewer, &cx(), false);
+        let refused = workspace.check_invite(&bob, Role::Viewer, &cx(), false);
         assert!(
             matches!(refused, Err(Refusal::NeedsApproval(_))),
             "{refused:?}"
         );
         workspace
-            .check_invite(BOB, &bob, Role::Viewer, &cx(), true)
+            .check_invite(&bob, Role::Viewer, &cx(), true)
             .expect("approved");
     }
 
@@ -1933,31 +1930,28 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_agents_role_never_exceeds_its_person_its_admission_or_the_cap;
-    // An agent's role is the least of its person's, what its admission grants
-    // and the agent cap: it never holds more than either, and never governs.
+    phase each_role_holds_the_grants_of_those_it_hands_out;
+    // A role hands out another when each of that role's grants is within its
+    // own: the built-in roles nest, Viewer to Owner, and none holds a wider one.
+    {
+        for (index, held) in Role::ALL.into_iter().enumerate() {
+            for (other, wanted) in Role::ALL.into_iter().enumerate() {
+                assert_eq!(held.includes(wanted), other <= index, "{held} / {wanted}");
+            }
+        }
+    }
+
+    phase an_agents_role_never_exceeds_its_person_or_the_cap;
+    // An agent acts as its person, within the agent cap, and never governs.
     {
         use roles::agent_policy;
         for person in Role::ALL {
-            for granted in Role::ALL {
-                let role = agent_policy::role(person, granted);
-                assert!(person.includes(role), "{person} / {granted} gave {role}");
-                assert!(granted.includes(role), "{person} / {granted} gave {role}");
-                assert!(agent_policy::ROLE_CAP.includes(role));
-                assert_ne!(role, Role::Owner, "an agent never governs");
-            }
+            let role = agent_policy::role(person);
+            assert!(person.includes(role), "{person} gave {role}");
+            assert!(agent_policy::ROLE_CAP.includes(role), "{person} gave {role}");
         }
-        assert_eq!(agent_policy::role(Role::Owner, Role::Editor), Role::Editor);
-        assert_eq!(agent_policy::role(Role::Owner, Role::Owner), Role::Editor);
-        assert_eq!(
-            agent_policy::role(Role::Owner, Role::Commenter),
-            Role::Commenter
-        );
-        assert_eq!(
-            agent_policy::role(Role::Commenter, Role::Editor),
-            Role::Commenter
-        );
-        assert_eq!(agent_policy::role(Role::Viewer, Role::Editor), Role::Viewer);
+        assert_eq!(agent_policy::role(Role::Owner), Role::Editor);
+        assert_eq!(agent_policy::role(Role::Commenter), Role::Commenter);
     }
 }
 

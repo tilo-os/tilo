@@ -346,7 +346,7 @@ pub fn invitation_admission(
     let cx = Context::at_secs(at_ns / 1_000_000_000);
     let authority = policy.person_on_device(&issuer, foreign);
     policy
-        .check_invite(&issuer, &authority, grant.role, &cx, false)
+        .check_invite(&authority, grant.role, &cx, false)
         .map_err(|refusal| refused(format!("its issuer may not invite: {refusal}")))?;
     if !join.administrator() {
         return Ok(Admitted {
@@ -509,15 +509,15 @@ type Writer<'a> = (
 );
 
 /// The workspace's name and its settings — its saved grant sets and its entry —
-/// as the batch changes them: the name a valid one, given by someone who
-/// governs the workspace (a Moderator or above, or one granted its settings);
-/// the settings by one granted its settings.
+/// as the batch changes them: the name a valid one, given by one granted
+/// renaming the workspace or its settings; the settings by one granted its
+/// settings.
 fn settings(
     workspace: &str,
     at: &AutoCommit,
     after: &AutoCommit,
     held: &WorkspacePolicy,
-    (actor, authority, cx): Writer<'_>,
+    (_, authority, cx): Writer<'_>,
 ) -> Result<(), MembershipRefusal> {
     use tilo_desktop_model::projection::WORKSPACE_NAME_KEY;
     let parts = |doc: &AutoCommit| {
@@ -531,10 +531,10 @@ fn settings(
         .check_action(authority, governance::SETTINGS, cx, false)
         .is_ok();
     if held_name != name {
-        let governs = held
-            .active_role(actor)
-            .is_some_and(|role| role >= Role::Moderator);
-        if !(governs || settles) {
+        let renames = held
+            .check_action(authority, governance::RENAME, cx, false)
+            .is_ok();
+        if !(renames || settles) {
             return Err(MembershipRefusal::Refused(format!(
                 "renaming workspace {workspace} is not the writer's"
             )));

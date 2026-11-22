@@ -77,7 +77,7 @@ impl fmt::Display for Answer {
 
 /// A role preset. A member of a workspace holds one; the workspace keeps the grants each
 /// role carries (see [`crate::roles`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Viewer,
@@ -99,11 +99,12 @@ impl Role {
         Self::Owner,
     ];
 
-    /// Whether a holder of `self` may hand out `other` through an invite: an
-    /// invite never carries more than its inviter's preset.
+    /// Whether each of `other`'s grants is within what a holder of `self`
+    /// holds ([`crate::roles::role_within`]): an invite never carries more
+    /// than its inviter's preset.
     #[must_use]
     pub fn includes(self, other: Self) -> bool {
-        self >= other
+        crate::roles::role_within(other, self)
     }
 
     #[must_use]
@@ -162,13 +163,14 @@ impl fmt::Display for Role {
 }
 
 /// Who a grant is for.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Grantee {
     /// One member.
     Member(crate::MemberId),
-    /// Everyone holding `role` or a higher one: a grant to `Role::Viewer` is
-    /// everyone in the workspace.
+    /// Everyone holding `role`, or a role whose grants hold all of its
+    /// ([`Role::includes`]): a grant to `Role::Viewer` is everyone in the
+    /// workspace.
     Role(Role),
     /// An app, by its id: what it may take of other apps' actions, and of the
     /// desktop's, on its own account.

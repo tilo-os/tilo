@@ -1681,7 +1681,6 @@ impl super::StatePeer {
         member
             .policy
             .check_invite(
-                person_of(&member)?,
                 &member.authority(),
                 role,
                 &tilo_action_policy::Context::at_time(now),

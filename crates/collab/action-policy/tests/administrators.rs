@@ -86,11 +86,11 @@ tilo_test_env::scenario! {
         let carol = Authority::person(workspace.party(CAROL));
         for role in [Role::Viewer, Role::Commenter, Role::Editor, Role::Moderator] {
             workspace
-                .check_invite(CAROL, &carol, role, &cx(), false)
+                .check_invite(&carol, role, &cx(), false)
                 .unwrap();
         }
         assert_eq!(
-            workspace.check_invite(CAROL, &carol, Role::Owner, &cx(), false),
+            workspace.check_invite(&carol, Role::Owner, &cx(), false),
             Err(Refusal::OwnerRole)
         );
         let set = |person: &str, role| Change::SetRole {
@@ -391,7 +391,7 @@ tilo_test_env::scenario! {
             Grantee::person(OWNER),
         ));
         let carol = Authority::person(workspace.party(CAROL));
-        workspace.check_invite(CAROL, &carol, Role::Editor, &cx(), false).unwrap();
+        workspace.check_invite(&carol, Role::Editor, &cx(), false).unwrap();
         assert!(matches!(
             workspace.check_administrator_invite(CAROL, &carol, &cx(), false),
             Err(Refusal::Administrators { unmaking: false, .. })

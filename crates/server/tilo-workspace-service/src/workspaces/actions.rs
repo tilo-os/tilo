@@ -2270,7 +2270,7 @@ impl Workspaces {
     /// What each person among `workspace`'s people publishes (`workspace/members/<person>`) that
     /// `offered` lets the caller ask, when `query` browses the people: moving them to another
     /// place, and removing them. Every member, `own`, is offered removing themselves, leaving,
-    /// but the owner, who cannot be removed.
+    /// the server's person as anyone; the owner is removed by nobody, themselves included.
     fn member_rows(
         &self,
         workspace: &super::GovernedWorkspace,
@@ -2286,6 +2286,7 @@ impl Workspaces {
             .filter(|verb| matches!(verb.id, ADD_MEMBER | governance::REMOVE_MEMBER))
             .map(|verb| (verb, offered(verb)))
             .collect();
+        let owner = workspace.peer().owner();
         let mut rows = Vec::new();
         for member in self.people(workspace).members {
             let Some(root) = member.root().filter(|_| !member.removed) else {
@@ -2298,15 +2299,10 @@ impl Workspaces {
             } else {
                 &member.name
             };
-            let leaves = |verb: &Verb| {
-                verb.id == governance::REMOVE_MEMBER
-                    && root == own
-                    && own != self.inner.host.cert.user_public_key
-            };
-            for (verb, _) in verbs
-                .iter()
-                .filter(|(verb, offered)| *offered || leaves(verb))
-            {
+            let removing = |verb: &Verb| verb.id == governance::REMOVE_MEMBER;
+            for (verb, _) in verbs.iter().filter(|(verb, offered)| {
+                (*offered || (removing(verb) && root == own)) && !(removing(verb) && root == owner)
+            }) {
                 let mut row = verb.row(GOVERNANCE, &resource, label);
                 row.parent_resource.clone_from(&members);
                 if let Some(action) = row.action.as_mut() {

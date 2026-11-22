@@ -116,9 +116,10 @@ fn compare_content_rules(candidate: &Grant, current: &Grant) -> Ordering {
 }
 
 /// Whether `grant` names one of `grantees`. A grant to a role names everyone
-/// holding that role and every higher one, except a built-in role's own grants:
-/// those are the role's rules ([`crate::roles::role_rules`]), each the whole
-/// answer for its role, and a higher role carries them already.
+/// holding that role or one that holds all of its grants ([`crate::Role::includes`]),
+/// except a built-in role's own grants: those are the role's rules
+/// ([`crate::roles::role_rules`]), each the whole answer for its role, and a
+/// role holding them carries them already.
 #[must_use]
 pub fn names(grant: &Grant, grantees: &[Grantee], cx: &Context<'_>) -> bool {
     if cx.grantee_matches(&grant.grantee, grantees) {

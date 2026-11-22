@@ -14,7 +14,7 @@ use super::{
 /// already verified: the agent acts for that person, as the least of the
 /// person's role and the agent cap, in its session alone.
 pub(super) fn admit_agent_cert(admitted: &mut AdmittedJoinIdentity, cert: AgentCert) {
-    admitted.role = roles::agent_policy::role(admitted.role, roles::agent_policy::ROLE_CAP);
+    admitted.role = roles::agent_policy::role(admitted.role);
     admitted.agent_id = Some(cert.agent_id.clone());
     admitted.session_delegated = true;
     admitted.agent_cert = Some(Box::new(cert));
@@ -270,7 +270,7 @@ pub(super) fn admit_listed_agent(
     if !roster.lists(workspace, agent_id) {
         return Err(format!("the workspace keeps no active agent {agent_id}"));
     }
-    admitted.role = roles::agent_policy::role(admitted.role, roles::agent_policy::ROLE_CAP);
+    admitted.role = roles::agent_policy::role(admitted.role);
     admitted.agent_id = Some(agent_id.to_string());
     admitted.session_delegated = true;
     Ok(())

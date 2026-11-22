@@ -193,7 +193,7 @@ async fn a_certified_agent_is_a_member_and_works_in_its_session() {
             let admitted = f.agent_join(&minted).unwrap();
             let current = f.revalidated(&admitted).unwrap();
             assert_eq!(current.agent_id.as_deref(), Some(AGENT));
-            assert!(current.role <= CapRole::Editor);
+            assert!(CapRole::Editor.includes(current.role));
             assert_eq!(current.broker_actor().session(), Some(AGENT_SESSION));
             let route = CrdtRoute::record("so.tilo.agent", workspace_id().to_string(), "main");
             let roster = f.state.native_membership_roster(&route, &admitted).unwrap();

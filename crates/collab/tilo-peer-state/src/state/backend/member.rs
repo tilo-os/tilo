@@ -109,7 +109,7 @@ fn current(
             },
         });
     let role = if delegate.is_some() {
-        crate::state::delegates::agent_role(role)
+        tilo_action_policy::roles::agent_policy::role(role)
     } else {
         role
     };

@@ -215,11 +215,8 @@ pub enum Refusal {
     OwnerRole,
     /// Handing the workspace over is its owner's alone.
     OwnershipByOwner,
-    /// An invite or membership above the actor's own role.
-    AboveActorRole {
-        actor: Option<Role>,
-        wanted: Role,
-    },
+    /// An invite or membership whose role grants more than the actor holds.
+    AboveActorRole(Role),
     /// A grant giving more than the actor holds on its node.
     AboveActorGrant {
         kind: ActionKind,
@@ -277,10 +274,9 @@ impl std::fmt::Display for Refusal {
             Self::OwnershipByOwner => {
                 f.write_str("only the workspace's owner hands the workspace to someone else")
             }
-            Self::AboveActorRole { actor, wanted } => match actor {
-                Some(actor) => write!(f, "a {actor} cannot hand out the {wanted} role"),
-                None => write!(f, "only members can hand out the {wanted} role"),
-            },
+            Self::AboveActorRole(wanted) => {
+                write!(f, "the {wanted} role grants more than the giver holds")
+            }
             Self::AboveActorGrant { kind, held, wanted } => write!(
                 f,
                 "cannot grant \"{wanted}\" for {} while holding \"{held}\"",
@@ -758,18 +754,17 @@ impl WorkspacePolicy {
         self.grants.len() != before
     }
 
-    /// Whether `actor_person` (acting through `actor`) may invite someone with
-    /// `role`. An invite never carries more than the inviter's role.
+    /// Whether `actor` may invite someone with `role`. An invite never
+    /// carries more than the inviter holds ([`Self::check_role_handout`]).
     pub fn check_invite(
         &self,
-        actor_person: &str,
         actor: &Authority<'_>,
         role: Role,
         cx: &Context<'_>,
         approved: bool,
     ) -> Result<(), Refusal> {
         self.check_action(actor, governance::INVITE, cx, approved)?;
-        self.check_role_handout(actor_person, role)
+        self.check_role_handout(actor, role, cx)
     }
 
     /// Whether `actor_person` (acting through `actor`) may invite someone as
@@ -786,7 +781,7 @@ impl WorkspacePolicy {
         cx: &Context<'_>,
         approved: bool,
     ) -> Result<(), Refusal> {
-        self.check_invite(actor_person, actor, Role::Editor, cx, approved)?;
+        self.check_invite(actor, Role::Editor, cx, approved)?;
         self.check_makes_administrators(actor_person, actor, cx, false)
     }
 
@@ -834,23 +829,30 @@ impl WorkspacePolicy {
         target != actor_person && self.is_administrator(target)
     }
 
-    fn check_role_handout(&self, actor_person: &str, role: Role) -> Result<(), Refusal> {
+    /// Whether `actor` may hand out `role`: each of the role's grants is
+    /// within what the actor holds ([`Self::check_within`]), or the actor is
+    /// an administrator. Ownership is handed over, never handed out.
+    fn check_role_handout(
+        &self,
+        actor: &Authority<'_>,
+        role: Role,
+        cx: &Context<'_>,
+    ) -> Result<(), Refusal> {
         if role == Role::Owner {
             return Err(Refusal::OwnerRole);
         }
         // An administrator governs as the owner's equal in all but the
         // owner's place: they hand out every role a workspace hands out.
-        if self.is_administrator(actor_person) && role.assignable() {
+        if self.may_make_administrators(actor, cx) {
             return Ok(());
         }
-        let held = self.role_of(actor_person);
-        if !held.is_some_and(|held| held.includes(role)) {
-            return Err(Refusal::AboveActorRole {
-                actor: held,
-                wanted: role,
-            });
-        }
-        Ok(())
+        let grantee = Grantee::role(role);
+        let lifetime = Lifetime::UntilRevoked;
+        roles::role_preset(role, &self.workspace)
+            .assign("handout", &grantee, &grantee, &lifetime)
+            .iter()
+            .try_for_each(|grant| Self::check_within(actor, grant, cx))
+            .map_err(|_| Refusal::AboveActorRole(role))
     }
 
     /// Whether `actor_person` (acting through `actor`) may make `change`,
@@ -1093,9 +1095,9 @@ impl WorkspacePolicy {
                 self.check_ownership_transfer(actor_person, person)
             }
             Change::AddMember { person, role } => {
-                self.check_member_addition(actor_person, person, *role)
+                self.check_member_addition(actor, person, *role, cx)
             }
-            Change::SetRole { person, role } => self.check_member_role(actor_person, person, *role),
+            Change::SetRole { person, role } => self.check_member_role(actor, person, *role, cx),
             Change::RemoveMember { person } => self.check_member_removal(person),
             Change::Ban { person } => self.check_ban(actor_person, person),
             Change::Unban { person } => self.check_unban(person),
@@ -1137,9 +1139,10 @@ impl WorkspacePolicy {
     /// as banned, at a role the actor may hand out.
     fn check_member_addition(
         &self,
-        actor_person: &str,
+        actor: &Authority<'_>,
         person: &str,
         role: Role,
+        cx: &Context<'_>,
     ) -> Result<(), Refusal> {
         if self.is_member(person) {
             return Err(Refusal::AlreadyAMember(person.to_owned()));
@@ -1147,16 +1150,17 @@ impl WorkspacePolicy {
         if self.is_banned(person) {
             return Err(Refusal::Banned(person.to_owned()));
         }
-        self.check_role_handout(actor_person, role)
+        self.check_role_handout(actor, role, cx)
     }
 
     /// A role changes on someone the membership holds and nobody owns; who may
     /// hand the new role out is the handout's rule.
     fn check_member_role(
         &self,
-        actor_person: &str,
+        actor: &Authority<'_>,
         person: &str,
         role: Role,
+        cx: &Context<'_>,
     ) -> Result<(), Refusal> {
         if self.is_owner(person) {
             return Err(Refusal::Owner);
@@ -1164,7 +1168,7 @@ impl WorkspacePolicy {
         if !self.members.contains_key(person) {
             return Err(Refusal::NotAMember(person.to_owned()));
         }
-        self.check_role_handout(actor_person, role)
+        self.check_role_handout(actor, role, cx)
     }
 
     /// A removal takes the membership and every grant naming them. Someone the

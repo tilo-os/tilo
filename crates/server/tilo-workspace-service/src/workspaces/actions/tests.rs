@@ -10,7 +10,8 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, CatalogueRow, InvokeArgument,
     InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
     WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT,
-    WORKSPACE_MEMBER_PLACED, workspace_governance_operation,
+    WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS,
+    workspace_governance_child, workspace_governance_operation, workspace_member,
 };
 use tilo_peer_state::join::Role;
 use tilo_server_protocol::workspaces::JoinReply;
@@ -790,18 +791,16 @@ async fn a_member_granted_removing_removes_anyone_but_the_owner() {
         invoke(&host, workspace_id, &caller(&ada), remove(&bo)).await,
         Err(ActionCallError::UnknownAction)
     );
-    // Anyone may leave, but the workspace's owner cannot be removed, not even by themselves:
-    // it always keeps one.
-    let cy = admit(workspaces, &workspace, &owner, 3).await;
-    invoke(&host, workspace_id, &caller(&cy), remove(&cy))
-        .await
-        .unwrap();
-    let members = workspaces.summary(&workspace).await.unwrap().members;
-    assert!(
-        members
-            .iter()
-            .any(|member| member.root() == Some(cy.user_public_key) && member.removed),
-        "{members:?}"
+    // The owner, the server's person here, removes the others; nobody is offered removing
+    // them, not even they themselves, and nobody removes them: the workspace keeps one.
+    let member = |workspace: &str, cert: &DeviceCert| workspace_member(workspace, &person(cert));
+    let here = (workspace.as_str(), workspace_id);
+    let mut others = [member(&workspace, &ada), member(&workspace, &bo)];
+    others.sort();
+    assert_eq!(removable(&host, here, &caller(&owner)).await, others);
+    assert_eq!(
+        removable(&host, here, &caller(&ada)).await,
+        [member(&workspace, &ada)]
     );
     assert!(matches!(
         invoke(&host, workspace_id, &caller(&owner), remove(&owner)).await,
@@ -839,7 +838,63 @@ async fn a_member_granted_removing_removes_anyone_but_the_owner() {
             .any(|member| member.root() == Some(ada.user_public_key) && member.removed),
         "{members:?}"
     );
+
+    // A workspace the server makes for Ada is hers. The server's person stays in it, is offered
+    // leaving as any member is, never removing Ada, and leaves.
+    let theirs = workspaces
+        .create_for("Ada's", None, ada.user_public_key)
+        .await
+        .unwrap();
+    let made_for_ada = (theirs.workspace.as_str(), theirs.workspace_id);
+    assert_eq!(
+        removable(&host, made_for_ada, &caller(&owner)).await,
+        [member(&theirs.workspace, &owner)]
+    );
+    let leave = request(
+        &theirs.workspace,
+        governance::REMOVE_MEMBER,
+        json!({ "person": person(&owner) }),
+    );
+    invoke(&host, theirs.workspace_id, &caller(&owner), leave)
+        .await
+        .unwrap();
+    let members = workspaces.summary(&theirs.workspace).await.unwrap().members;
+    assert!(
+        !members
+            .iter()
+            .any(|member| member.root() == Some(owner.user_public_key) && !member.removed),
+        "{members:?}"
+    );
     server.shutdown().await;
+}
+
+/// The people of `workspace` that `caller` is offered removing, by the resource each is.
+async fn removable(
+    host: &ServiceWorkspaceActions,
+    (workspace, workspace_id): (&str, WorkspaceId),
+    caller: &Caller,
+) -> Vec<String> {
+    let query = CatalogueQuery {
+        provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
+        parent_resource: Some(workspace_governance_child(
+            workspace,
+            Some(WORKSPACE_MEMBERS),
+        )),
+        max_results: 100,
+        ..CatalogueQuery::default()
+    };
+    let page = settled(host.in_workspace(workspace_id).query(caller, query))
+        .await
+        .unwrap();
+    let mut removable: Vec<String> = page
+        .rows
+        .into_iter()
+        .filter_map(|row| row.action)
+        .filter(|action| action.address.action == WORKSPACE_MEMBER_REMOVED)
+        .map(|action| action.address.resource)
+        .collect();
+    removable.sort();
+    removable
 }
 
 /// The per-person `role` request that changes `cert`'s place in `workspace` to `place`: the
