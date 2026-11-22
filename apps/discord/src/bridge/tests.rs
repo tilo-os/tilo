@@ -127,7 +127,9 @@ tilo_test_env::scenario! {
         let removed = planned(&g, &deleted);
         assert_eq!(
             removed.chat_removes,
-            [json!({"message": at("m1"), "channel": at("c1"), "reason": "deleted in Discord"})],
+            [json!({"message": at("m1"), "channel": at("c1"),
+                    "channel_kind": "tl.so.tilo.chat.TextChannel",
+                    "reason": "deleted in Discord"})],
             "{removed:?}"
         );
         assert!(removed.sends.is_empty(), "never sent again: {removed:?}");
