@@ -521,6 +521,18 @@ def lint_runs(root: Path, selection: Selection, formatting: list[str],
     return runs
 
 
+def surface_checks(files: Iterable[str]) -> list[str]:
+    """t's checks over what an app's surface writes, when a push changes an app.
+
+    The app-fleet catalogue and the SDK's generated types are written from the
+    apps' manifests, surfaces and tilolang packages: a push that changes one
+    without regenerating them refuses here, not on main.
+    """
+    if any(path.startswith(("apps/", "crates/packaging/app-fleet/")) for path in files):
+        return ["sdk-policy", "sdk-types"]
+    return []
+
+
 def rustfmt_available() -> bool:
     """Whether the repository's format check can run here.
 
@@ -734,6 +746,7 @@ def main(argv: list[str]) -> int:
         try:
             members = set(package_maps(selection.metadata, root)[0])
             checks, uncovered = t_checks(root, selection.native, members)
+            checks += [name for name in surface_checks(push.files) if name not in checks]
         except (OSError, ValueError, KeyError) as error:
             say(f"pre-push: cannot read which of t's checks lint these packages from {T_TOML}: {error}")
             return 1
