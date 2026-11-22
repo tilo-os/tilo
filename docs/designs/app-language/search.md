@@ -56,6 +56,27 @@ type Message {
   filter, and the first time field is the default sort. A Todo with `done` and `due` gets "Done"
   and "Due" filters with no code.
 - The first filters are shown as chips; the rest go under "More filters".
+- `kind conversation` says what a resource is to the system's search: `conversation`,
+  `message`, `person` or `agent`. The shell draws a row of that kind as one (a message by who
+  wrote it and how long ago), and a box that sends a message lists conversations, people and
+  agents to send to. A direct conversation with one other person or agent is listed as them.
+- `people field` names who the resource is with: an `Actor` field, an option of one or a set of
+  them, one line each. An entry's people are who made the resource (its first version's author),
+  then the people these fields name, each once; its time is when it was made.
+- A block of only `kind` and `people` lines keeps the default filters and order.
+
+```
+type Direct {
+    name: Text
+    person: Actor
+    messages: Collection<Message>
+
+    search {
+        kind conversation
+        people person
+    }
+}
+```
 
 ## 3. Types, references and paths
 

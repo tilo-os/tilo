@@ -1282,7 +1282,8 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `search { ... }`: one `filter`, `sort` or `hide` per line (search.md, "What a type declares").
+    /// `search { ... }`: one `filter`, `sort`, `hide`, `kind` or `people` per line (search.md, "What a
+    /// type declares").
     fn search_block(&mut self) -> PResult<SearchBlock> {
         let start = self.bump().span;
         self.expect(&Tok::LBrace)?;
@@ -1316,7 +1317,7 @@ impl<'a> Parser<'a> {
 
     fn search_entry(&mut self) -> PResult<SearchEntry> {
         let start = self.span();
-        let word = self.ident("`filter`, `sort` or `hide`")?;
+        let word = self.ident("`filter`, `sort`, `hide`, `kind` or `people`")?;
         let kind = match word.name.as_str() {
             "filter" => {
                 if matches!(self.peek(), Tok::Str(_)) {
@@ -1353,11 +1354,17 @@ impl<'a> Parser<'a> {
             "hide" => SearchEntryKind::Hide {
                 field: self.ident("the field to keep out of filters")?,
             },
+            "kind" => SearchEntryKind::Kind {
+                kind: self.ident("`conversation`, `message`, `person` or `agent`")?,
+            },
+            "people" => SearchEntryKind::People {
+                field: self.ident("the field naming who the resource is with")?,
+            },
             other => {
                 return self.fail(
                     word.span,
                     format!(
-                        "a search block holds `filter`, `sort` and `hide` lines; `{other}` is none of them"
+                        "a search block holds `filter`, `sort`, `hide`, `kind` and `people` lines; `{other}` is none of them"
                     ),
                 );
             }

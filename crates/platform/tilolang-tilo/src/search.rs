@@ -7,6 +7,11 @@
 //! [`crate::effects::OpenEffect`]). A package will be able to say which fields to index; until
 //! then all of them are, the most useful default for a notes app and a chat alike.
 //!
+//! A type says what its resources are to search and who they are with (`search { kind
+//! conversation; people person }`): an entry of one carries that kind, those people with who made
+//! it (its first version's author) first, and when it was made, so the shell draws a conversation
+//! or a message as one and a box sends to a conversation and the people in it.
+//!
 //! Search is the system's: a window publishes every hit to the session's search index, which
 //! finds them as every Tilo surface finds things, and keeps them after the app closes. The hits
 //! are read from each package's index ([`crate::index`]), the one the store's lists read: one
@@ -18,7 +23,7 @@ use crate::host::Host;
 use crate::publish::resource_id;
 use crate::resource::{DynResource, DynValue};
 use tilo_resource::search_index::{
-    IndexAction, IndexDelta, IndexEntry, IndexState, IndexWeight, Publisher,
+    IndexAction, IndexDelta, IndexEntry, IndexKind, IndexPerson, IndexState, IndexWeight, Publisher,
 };
 
 /// One searchable resource.
@@ -38,6 +43,121 @@ pub struct Hit {
     /// The resources its rich text refers to, in the one form (`tilo_reference::embed`): the
     /// system's index finds it by what they are called now, and keeps its backlinks.
     pub references: Vec<String>,
+    /// What its type says it is to search, who it is with and when it was made ([`Facts`]).
+    pub facts: Facts,
+}
+
+/// What a resource's type says it is to search (`kind`), who it is with (`people`: who made it,
+/// then the people its type's `people` fields name, each once) and when it was made, in seconds
+/// since the Unix epoch.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Facts {
+    pub kind: Option<IndexKind>,
+    pub people: Vec<IndexPerson>,
+    pub when: Option<i64>,
+}
+
+impl Facts {
+    /// The facts of the resource at `path`, of type `schema`, as `view` holds it: none for a type
+    /// that declares no kind.
+    fn of(
+        view: &crate::index::view::View<'_>,
+        path: &str,
+        schema: &crate::schema::TypeSchema,
+    ) -> Self {
+        use crate::index::reflect::{CREATED, Stamp};
+        let Some(kind) = schema.search_kind else {
+            return Self::default();
+        };
+        let kind = match kind {
+            tilolang::meta::SearchKind::Conversation => IndexKind::Conversation,
+            tilolang::meta::SearchKind::Message => IndexKind::Message,
+            tilolang::meta::SearchKind::Person => IndexKind::Person,
+            tilolang::meta::SearchKind::Agent => IndexKind::Agent,
+        };
+        let made = tilo_failure::ignored!(
+            "a resource whose first version cannot be read is told as made by nobody, at no time",
+            view.field(path, CREATED).ok()
+        )
+        .flatten()
+        .as_ref()
+        .and_then(Stamp::of_value)
+        .map(|stamp| stamp.version);
+        let mut members: Vec<tilo_actions::MemberId> = Vec::new();
+        let mut add = |member: &tilo_actions::MemberId| {
+            if !members.contains(member) {
+                members.push(member.clone());
+            }
+        };
+        if let Some(member) = made
+            .as_ref()
+            .and_then(|made| made.who.as_ref())
+            .and_then(|who| who.member_id())
+        {
+            add(member);
+        }
+        for field in &schema.people {
+            let value = tilo_failure::ignored!(
+                "a field of people that cannot be read names nobody",
+                view.field(path, field).ok()
+            )
+            .flatten();
+            for member in members_in(value.as_ref()) {
+                add(&member);
+            }
+        }
+        Self {
+            kind: Some(kind),
+            people: members.iter().filter_map(person_of).collect(),
+            when: made.and_then(|made| tilolang::calendar::instant(&made.at)),
+        }
+    }
+}
+
+/// The members a stored `Actor` field (or an option or a set of them) names.
+fn members_in(value: Option<&tilolang_runtime::store::FieldValue>) -> Vec<tilo_actions::MemberId> {
+    use tilolang_runtime::store::{FieldValue, Scalar};
+    let of_json = |json: &serde_json::Value| match tilolang_runtime::value::from_json(json) {
+        Ok(tilolang_runtime::value::Value::Actor(actor)) => actor.member_id().cloned(),
+        Ok(tilolang_runtime::value::Value::Opt(Some(inner))) => match *inner {
+            tilolang_runtime::value::Value::Actor(actor) => actor.member_id().cloned(),
+            _ => None,
+        },
+        _ => None,
+    };
+    let of_text = |text: &str| {
+        tilo_failure::ignored!(
+            "a stored text that is no encoded actor names nobody",
+            serde_json::from_str(text).ok()
+        )
+        .as_ref()
+        .and_then(of_json)
+    };
+    match value {
+        Some(FieldValue::Scalar(Scalar::Json(json))) => of_json(json).into_iter().collect(),
+        Some(FieldValue::Scalar(Scalar::Text(text))) => of_text(text).into_iter().collect(),
+        Some(FieldValue::Keys(keys)) => keys.iter().filter_map(|key| of_text(key)).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `member` as an entry names them: a person by their root key, an agent as `agent:<id>`, named by
+/// what they are called now.
+fn person_of(member: &tilo_actions::MemberId) -> Option<IndexPerson> {
+    if let Some(agent) = member.agent_id() {
+        return Some(IndexPerson {
+            name: String::new(),
+            anchor: String::new(),
+            identity: format!("agent:{agent}"),
+            agent: true,
+        });
+    }
+    Some(IndexPerson {
+        name: String::new(),
+        anchor: String::new(),
+        identity: member.person_id()?.to_owned(),
+        agent: false,
+    })
 }
 
 /// The searchable resources of the resource `doc` and the items below it, read from the resource
@@ -108,6 +228,7 @@ fn collect(
             title,
             texts,
             references,
+            facts: Facts::default(),
         });
     }
     for field in &record.schema().fields {
@@ -177,6 +298,7 @@ fn hits_of(snapshot: &crate::store::Snapshot, catalogue: &[(String, String)]) ->
                 title: texts.first()?.clone(),
                 texts,
                 references: held.references,
+                facts: Facts::of(&view, &held.path, held.schema),
             })
         }));
     }
@@ -206,6 +328,7 @@ fn entries_of(
                 &hit.app_title,
                 &hit.texts,
                 &hit.references,
+                hit.facts,
             )
         })
         .collect()
@@ -219,7 +342,9 @@ pub fn index_entry_at(host: &Host, meta: &Meta, path: &str) -> Option<IndexEntry
     let snapshot = host.store().snapshot();
     let _schemas = snapshot.scoped();
     let reader: &crate::store::Snapshot = &snapshot;
-    let held = snapshot.view(&meta.app)?.texts_at(path).ok()??;
+    let view = snapshot.view(&meta.app)?;
+    let held = view.texts_at(path).ok()??;
+    let facts = Facts::of(&view, &held.path, held.schema);
     let texts: Vec<String> = held
         .texts
         .into_iter()
@@ -234,6 +359,7 @@ pub fn index_entry_at(host: &Host, meta: &Meta, path: &str) -> Option<IndexEntry
         &app_title,
         &texts,
         &held.references,
+        facts,
     )
 }
 
@@ -249,6 +375,7 @@ fn entry(
     app_title: &str,
     texts: &[String],
     references: &[String],
+    facts: Facts,
 ) -> Option<IndexEntry> {
     let mut fields: Vec<(String, IndexWeight)> = texts
         .iter()
@@ -278,6 +405,9 @@ fn entry(
         fields,
         secret: false,
         references: references.to_vec(),
+        kind: facts.kind,
+        people: facts.people,
+        when: facts.when,
         ..IndexEntry::default()
     };
     entry.bounded()

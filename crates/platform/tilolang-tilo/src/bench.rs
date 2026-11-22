@@ -2611,6 +2611,8 @@ mod tests {
             origin: None,
             title: None,
             untitled: None,
+            search_kind: None,
+            people: Vec::new(),
         }));
         DynResource::empty(schema).unwrap_or_else(|e| panic!("{e}"))
     }

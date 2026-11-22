@@ -206,6 +206,10 @@ pub struct TypeSchema {
     /// What one of its documents is called while its title is empty, as the app wrote it
     /// (`(untitled: "Untitled")`); its type's name when it declares none.
     pub untitled: Option<String>,
+    /// What a resource of it is to the system's search (`search { kind conversation }`).
+    pub search_kind: Option<tilolang::meta::SearchKind>,
+    /// The fields naming who a resource of it is with (`search { people person }`), by id.
+    pub people: Vec<String>,
 }
 
 /// A type's name as a sentence says it: `TodoList` as "Todo list".
@@ -248,6 +252,8 @@ impl TypeSchema {
             origin: None,
             title: None,
             untitled: None,
+            search_kind: None,
+            people: Vec::new(),
         }
     }
 

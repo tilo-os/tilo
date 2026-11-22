@@ -35,6 +35,10 @@ type TextChannel {
     /// The threads its messages started, each the one a message's `thread` names.
     /// TODO(language): an owned `Option<Thread>` on the message; a reference needs a home.
     threads: Collection<Thread>
+
+    search {
+        kind conversation
+    }
 }
 
 /// A message. Who wrote it, when, and its edits come from the log.
@@ -66,6 +70,7 @@ type Message {
     reacted: Text = ""
 
     search {
+        kind message
         filter pinned (icon: .pin)
     }
 }
@@ -88,6 +93,11 @@ type Direct {
     person: Actor
     messages: Collection<Message>
     threads: Collection<Thread>
+
+    search {
+        kind conversation
+        people person
+    }
 }
 
 /// A piece of a message kept as parts rather than as rich text: its text, or a block's source.
@@ -346,14 +356,16 @@ action send(
             // Writing to an agent asks it, made from the message, whose replies stand under it.
             // Nothing said goes to an agent that may not read it.
             if d.person.kind() == .agent {
-                agent.ask(
-                    agent.agents,
-                    d.person,
-                    if std.may_read(d.person, sent) { body } else { RichText("") },
-                ).made_from(sent)
+                agent
+                    .ask(
+                        agent.agents,
+                        d.person,
+                        if std.may_read(d.person, sent) { body } else { RichText("") },
+                    )
+                    .made_from(sent)
             }
             sent
-        },
+        }
     }
 }
 
