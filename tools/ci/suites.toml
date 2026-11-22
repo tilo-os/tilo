@@ -1384,13 +1384,10 @@ readers = ["crates/packaging/tilo-app-package-cli/src/main.rs"]
 
 [[cargo]]
 package = "tilo-imager-profile"
-# Compiles the imager's profile modules, whose rules include the locale list.
-inputs = [
-  "apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs",
-  "crates/session/install-profile-model/src/lib.rs", "crates/session/install-profile-model/locales.txt",
-  "os/usr/libexec/tilo-installer-profile-extract",
-]
-readers = ["tools/imager-profile/src/main.rs", "tools/imager-profile/tests/embed.rs"]
+# Takes the profile model and codec as a crate dependency; its tests run the
+# live media's extractor beside it.
+inputs = ["os/usr/libexec/tilo-installer-profile-extract"]
+readers = ["tools/imager-profile/tests/embed.rs"]
 
 [[cargo]]
 package = "disks"
