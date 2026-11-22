@@ -517,18 +517,14 @@ pub(super) fn bounded(
         });
     }
     let agent = caller.acting().agent_id()?;
-    // An agent the person's device handed its session to acts on
-    // that device's admission; an agent device the person
-    // certified, on its own device's: either is bounded by the
+    // An agent acts on the admission of the key its person certified for it, bounded by the
     // person it acts for.
-    let person_caller = caller.delegating_person().or_else(|| {
-        let person =
-            Caller::authenticated(*caller.user_public_key()?, *caller.device_public_key()?);
-        Some(match caller.workspace() {
-            Some(workspace) => person.in_workspace(workspace),
-            None => person,
-        })
-    })?;
+    let person_caller =
+        Caller::authenticated(*caller.user_public_key()?, *caller.device_public_key()?);
+    let person_caller = match caller.workspace() {
+        Some(workspace) => person_caller.in_workspace(workspace),
+        None => person_caller,
+    };
     let person = person_caller.acting().person_id()?.into();
     Some(Bounded {
         caller: caller.clone(),
@@ -588,11 +584,11 @@ pub(super) fn policy_for(
         }
         Some(_) | None => return Err(not_admitted(shared, workspace_id, who)),
     };
-    // An agent a person's device handed its session to is held to the bound the workspace's
-    // list of its agents keeps for it: the own person's agents as much as anyone's, so what
+    // An agent a person's own device runs is held to the bound the workspace's list of its
+    // agents keeps for it: the own person's agents as much as anyone's, so what
     // the person sets for it in the workspace holds on their own server too.
     if who.agent.is_some()
-        && who.caller.is_session_delegated()
+        && who.caller.is_device_agent()
         && let Some(link) = shared.link.get()
     {
         policy.agent_bound = link.workspace_agent(workspace_id, &who.caller);

@@ -13,7 +13,6 @@
 //!
 //! A workspace is named by its [`WorkspaceId`] everywhere here.
 
-pub mod agent_cert;
 pub mod delegation;
 pub mod invitations;
 pub mod native;

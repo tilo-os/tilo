@@ -286,16 +286,15 @@ impl AppBrokerState {
                             surface.actions.clear();
                         }
                         // Listed when the actor may take it, or would be asked
-                        // first; how an agent answers a turn is the host's to invoke.
+                        // first.
                         surface.actions.retain(|action| {
-                            !turns::is_answer(&surface.app_id, action)
-                                && actor.action_answer_in(
-                                    workspace,
-                                    &surface.app_id,
-                                    (&action.resource_kind, &action.resource, &action.action),
-                                    &action.contract.need(),
-                                    now,
-                                ) != Answer::Deny
+                            actor.action_answer_in(
+                                workspace,
+                                &surface.app_id,
+                                (&action.resource_kind, &action.resource, &action.action),
+                                &action.contract.need(),
+                                now,
+                            ) != Answer::Deny
                         });
                         surface
                     })

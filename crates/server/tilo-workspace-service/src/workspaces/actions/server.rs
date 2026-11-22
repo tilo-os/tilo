@@ -257,7 +257,11 @@ impl Workspaces {
             || caller.device_public_key() != Some(&certificate.device_public_key)
             || workspace_id.to_string()
                 != tilo_server_protocol::servers::person_workspace_id(person)
-            || !(caller.acting().is_person() || caller.is_session_delegated())
+            || !(caller.acting().is_person() || caller.is_device_agent())
+            || certificate
+                .capabilities
+                .agent
+                .is_some_and(|scope| !scope.reaches(&workspace_id.to_string()))
         {
             return None;
         }
