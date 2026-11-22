@@ -36,7 +36,7 @@ mod indexes;
 /// The native Notes app's notebook, carried over once by the tilolang Notes a session starts.
 #[path = "process/native_notes.rs"]
 mod native_notes;
-/// An instance's window laid out in its own process and asked for as a page.
+/// A viewer's page, laid out in the app's own process and asked for there.
 #[path = "process/page.rs"]
 mod page;
 /// Tasks in a hosted window, and Today reading it from Tasks' own document.

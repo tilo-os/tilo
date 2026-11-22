@@ -1,8 +1,8 @@
-//! The pages of a workspace's apps that this server runs itself: each page one instance of the
-//! app in the workspace's process of it, laid out there and asked for on a connection of its
+//! The pages of a workspace's apps that this server runs itself: each one a viewer's page, run in
+//! the workspace's process of the app, laid out there and asked for on a connection of its
 //! own ([`tilo_server_protocol::page_window`]).
 //!
-//! A page is read by the one person who opened it, and everything its instance asks of the
+//! A page is read by the one person who opened it, and everything its app's code asks of the
 //! identity service is decided as them: its connection serves the page's call alone, and the call
 //! names them only while the page is open ([`Readers`]). The keys that open what the workspace
 //! keeps sealed are handed to the page while that person may read it, decided again each time it
@@ -21,7 +21,7 @@ use tilo_workspace_service::apps::caller_signer::{Callers, VerifiedCaller};
 
 use super::{ServerApps, WorkspacePackages};
 
-/// How long a page's process may take to answer: the first ask waits for its instance to open.
+/// How long a page's process may take to answer: the first ask waits for the page to open.
 const ANSWER_WITHIN: Duration = Duration::from_secs(60);
 
 /// Who reads each page open here, by the call its identity connection serves.
@@ -29,7 +29,7 @@ const ANSWER_WITHIN: Duration = Duration::from_secs(60);
 pub struct Readers(Mutex<HashMap<[u8; 16], (WorkspaceId, String, VerifiedCaller)>>);
 
 impl Readers {
-    fn held(
+    fn named(
         &self,
     ) -> std::sync::MutexGuard<'_, HashMap<[u8; 16], (WorkspaceId, String, VerifiedCaller)>> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
@@ -45,7 +45,7 @@ impl Readers {
         reader: VerifiedCaller,
     ) -> Reading {
         let call: [u8; 16] = rand::random();
-        self.held()
+        self.named()
             .insert(call, (workspace, app.to_owned(), reader));
         Reading {
             call,
@@ -71,13 +71,13 @@ impl Reading {
 impl Drop for Reading {
     /// The reader has left: the call names nobody from now on.
     fn drop(&mut self) {
-        self.readers.held().remove(&self.call);
+        self.readers.named().remove(&self.call);
     }
 }
 
 impl Callers for Readers {
     fn caller(&self, workspace: &WorkspaceId, app: &str, call: [u8; 16]) -> Option<VerifiedCaller> {
-        self.held()
+        self.named()
             .get(&call)
             .filter(|(read_in, read_app, _)| read_in == workspace && read_app == app)
             .map(|(_, _, reader)| *reader)
@@ -156,10 +156,12 @@ impl Pages {
         reader: VerifiedCaller,
         show: Option<String>,
     ) -> Result<HostedOpened, PageRefusal> {
+        // A page names the app by its id, and only that app is shown: two apps may share any
+        // other part of a name.
         let (app, title) = self
             .hosted(workspace)
             .into_iter()
-            .find(|(id, _)| id == app || id.rsplit_once('.').is_some_and(|(_, last)| last == app))
+            .find(|(id, _)| id == app)
             .ok_or(PageRefusal::NoSuchApp)?;
         self.apps
             .server_workspaces()
@@ -246,7 +248,7 @@ impl HostedPages for ServerPages {
     }
 }
 
-/// One page open here: its connection to the process laying it out, whose instance ends once it
+/// One page open here: its connection to the process laying it out, which ends the page once it
 /// closes, and its reader, named by the page's call while it is open.
 struct ServerPage {
     connection: Arc<Mutex<UnixStream>>,

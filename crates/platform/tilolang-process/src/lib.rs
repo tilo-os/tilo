@@ -178,7 +178,7 @@ fn chooser_of(fd: Option<OwnedFd>) -> Option<Arc<dyn tilo_dialogs::FilePicker>> 
 struct Running {
     hosted: Hosted,
     window: Option<OwnedFd>,
-    /// The window it draws into here, written as a page, for an instance that shows a page.
+    /// The window it draws into here, written as a page, when it is a viewer's page.
     page: Option<page::PageWindow>,
     /// Its page's connection broke: it ends as one whose window closed.
     broken: bool,
@@ -195,7 +195,7 @@ struct Opening {
     /// The window's connection, until the instance runs: `None` for an instance that shows
     /// nothing ([`Shows::Nothing`]).
     window: Option<Channel>,
-    /// The page's connection, until the instance runs, for an instance that shows a page.
+    /// The page's connection, until its app's code runs, when it is a viewer's page.
     page: Option<std::os::unix::net::UnixStream>,
     identity: Option<OwnedFd>,
     /// The connection to the app's origin connector, for an app whose types hold an outside
@@ -974,7 +974,7 @@ impl TilolangProcess {
                     let transport = ChannelTransport::new(window).map_err(AdmitError::Window)?;
                     (Box::new(transport), Some(watched))
                 }
-                // A page's window is drawn here, beside its instance, and watched by its
+                // A page's window is drawn here, beside the app's code, and watched by its
                 // connection.
                 Shows::Page => {
                     let connection = opening
@@ -1141,7 +1141,7 @@ impl TilolangProcess {
             changed |= match &mut running.page {
                 Some(page) => match page.turn(&mut running.hosted) {
                     Ok(changed) => changed,
-                    // A page whose connection broke is gone: its instance ends as a closed
+                    // A page whose connection broke is gone: it ends as a closed
                     // window's does.
                     Err(error) => {
                         tracing::info!(%error, "a page's connection broke");

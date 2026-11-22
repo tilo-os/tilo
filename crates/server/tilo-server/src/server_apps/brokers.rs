@@ -191,7 +191,7 @@ impl ServerApps {
         &self.workspaces
     }
 
-    /// The launcher of `workspace`'s broker, while it runs.
+    /// The launcher of `workspace`'s apps, while they run here.
     #[must_use]
     pub fn launcher(&self, workspace: WorkspaceId) -> Option<Arc<ServerLauncher>> {
         self.running()
