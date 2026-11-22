@@ -1329,7 +1329,7 @@ view editor(d: Draft) {
         field("From") {
             // One account a draft goes from is said; with more, or none of them chosen yet, each
             // is offered. With no account at all, nothing can send it: the person is told so and
-            // taken to where an account is added.
+            // offered the way to where an account is added.
             if mail.accounts.is_empty() {
                 stack(gap: .tight) {
                     text("No mail account to send from")
@@ -1357,12 +1357,17 @@ view editor(d: Draft) {
         ui.BlockEditor(bind: d.body, placeholder: "Write your message")
         // The message's own Send: a composer sends from where it is written, and the window's
         // bar keeps it once for the draft it shows.
-        if sender != .none {
-            row {
-                spacer()
-                ui.Button("Send", icon: .send) {
-                    on press: send(d)
-                }
+        // With no account to send it from, Send stands unavailable where a person looks for it,
+        // saying why in the words `send` refuses it with.
+        row {
+            spacer()
+            ui.Button(
+                "Send",
+                icon: .send,
+                enabled: sender != .none,
+                description: "Add a mail account in Settings first",
+            ) {
+                on press: send(d)
             }
         }
     }
@@ -1663,6 +1668,34 @@ scenario "a reply being written" -> Draft {
     )
     a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox", total: 1))
     a.mailboxes.insert(Mailbox(key: "drafts", name: "Drafts", role: "drafts"))
+    // The conversation the reply answers stands in the inbox beside it.
+    let launch = a.threads.insert(
+        Thread(
+            key: "launch@rivera.example",
+            account: a.key,
+            subject: "Launch plan for the autumn release",
+            latest: 2026-06-30T08:20,
+            snippet: "Here is the draft plan.",
+            senders: "Grace Hopper",
+            count: 1,
+        ),
+    )
+    launch.boxes.add("inbox")
+    launch.messages.insert(
+        Message(
+            key: "launch@rivera.example",
+            account: a.key,
+            subject: "Launch plan for the autumn release",
+            from: "grace@hopper.example",
+            from_name: "Grace Hopper",
+            to: "sam@rivera.example, ada@analytical.example",
+            received: 2026-06-30T08:20,
+            snippet: "Here is the draft plan.",
+            body: "Hi both,\n\nHere is the draft plan for the autumn release. The beta goes out on the fifth, the release on the twelfth if nothing turns up.\n\nCould you each look at your part by Wednesday?\n\nGrace",
+            message_id: "launch@rivera.example",
+            mailbox: "inbox",
+        ),
+    )
     m.drafts.insert(
         Draft(
             from: a.key,

@@ -1723,29 +1723,48 @@ fn a_reply_with_no_account_to_send_it_says_so_and_does_not_send() {
             "{said:?} in {shown:?}"
         );
     }
-    // The window's own Send stands unavailable, saying why; the composer keeps none of its own.
+    // The composer's Send stands where a person looks for it, unavailable, saying why: what
+    // `send` refuses it with.
     let window = session
         .instance_host()
         .open_resource(&draft, None)
         .expect("its window opens");
     let sends = labelled(window.tree(), "Send");
-    let [send] = sends.as_slice() else {
-        panic!("one Send: {shown:?}");
-    };
+    let composer = sends
+        .iter()
+        .find(|node| node.kind == "ui.Button")
+        .unwrap_or_else(|| panic!("the composer's Send: {shown:?}"));
     assert_eq!(
-        send.props.get("disabled"),
-        Some(&RtValue::Int(1)),
-        "Send is unavailable: {:?}",
-        send.props
+        composer.props.get("enabled"),
+        Some(&RtValue::Int(0)),
+        "the composer's Send is unavailable: {:?}",
+        composer.props
     );
     assert_eq!(
-        send.props.get("reason"),
+        composer.props.get("description"),
         Some(&RtValue::Text(
             "Add a mail account in Settings first".to_owned()
         )),
-        "Send says why: {:?}",
-        send.props
+        "the composer's Send says why: {:?}",
+        composer.props
     );
+    // So is the window's, in its menu.
+    for send in sends.iter().filter(|node| node.kind != "ui.Button") {
+        assert_eq!(
+            send.props.get("disabled"),
+            Some(&RtValue::Int(1)),
+            "{:?}",
+            send.props
+        );
+        assert_eq!(
+            send.props.get("reason"),
+            Some(&RtValue::Text(
+                "Add a mail account in Settings first".to_owned()
+            )),
+            "{:?}",
+            send.props
+        );
+    }
     let refused = session
         .try_call("send", &draft, &json!({}))
         .expect_err("a draft with no account is not sent");
