@@ -923,13 +923,7 @@ async fn carry_out(
             })
             .await
             .is_ok(),
-        Cmd::Connect(addr) => network
-            .send(NetCmd::ConnectHost {
-                addr,
-                expectation: None,
-            })
-            .await
-            .is_ok(),
+        Cmd::Connect(addr) => network.send(NetCmd::ConnectHost { addr }).await.is_ok(),
         Cmd::WatchSiblings => network
             .send(NetCmd::WatchSiblings {
                 on_event: events.clone(),
