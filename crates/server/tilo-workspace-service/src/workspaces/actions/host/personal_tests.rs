@@ -145,9 +145,14 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
     )
     .unwrap();
     let here = &created.workspace.workspace;
+    let own = tilo_server_protocol::servers::person_workspace_id(&root.verifying_key().to_bytes());
     let listed = read(&host, &agent).await;
-    assert_eq!(listed.workspaces.len(), 1, "{listed:?}");
-    assert_eq!(&listed.workspaces[0].workspace, here);
+    let ids: Vec<_> = listed
+        .workspaces
+        .iter()
+        .map(|one| one.workspace.as_str())
+        .collect();
+    assert_eq!(ids, [here.as_str(), own.as_str()], "{listed:?}");
     assert_eq!(listed.workspaces[0].role.as_deref(), Some("owner"));
     let address = listed.workspaces[0].host.as_ref().unwrap();
     assert_eq!(address.name, "tilo.test");
@@ -185,8 +190,9 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
             (SHELL, None),
             (LAPTOP, None),
             (here.as_str(), Some("tilo.test")),
+            (own.as_str(), Some("tilo.test")),
         ],
-        "the person's order, each workspace here as this host knows it"
+        "the person's order, each workspace here as this host knows it, then their own workspace kept here"
     );
 
     // Asked for one workspace it keeps, the host signs where it is entered, and the entry's
@@ -294,7 +300,7 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
         .unwrap();
     let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
-    assert_eq!(read(&host, &agent).await.workspaces.len(), 3);
+    assert_eq!(read(&host, &agent).await.workspaces.len(), 4);
     server.shutdown().await;
 }
 
@@ -1153,10 +1159,11 @@ async fn a_workspace_governed_here_is_listed_only_as_its_governance_has_the_pers
         .into_iter()
         .map(|one| one.workspace)
         .collect();
+    let own = tilo_server_protocol::servers::person_workspace_id(&root.verifying_key().to_bytes());
     assert_eq!(
         listed,
-        [SHELL.to_owned()],
-        "the workspace governed here that the person is not in is not listed from what a device kept"
+        [SHELL.to_owned(), own],
+        "the workspace governed here that the person is not in is not listed from what a device kept; their own workspace kept here is"
     );
     server.shutdown().await;
 }

@@ -85,6 +85,29 @@ async fn invoke(
     }
 }
 
+/// What the host offers its person's devices, in the order it lists them.
+const HOST_OPERATIONS: [&str; 19] = [
+    CREATE_WORKSPACE,
+    tilo_server_session::workspaces::CREATE_OWN_WORKSPACE,
+    DELETE_WORKSPACE,
+    tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE,
+    LIST_WORKSPACES,
+    tilo_server_session::workspaces::LIST_PERSONAL,
+    tilo_server_session::workspaces::KEEP_PERSONAL,
+    tilo_server_session::workspaces::PERSONAL_DEVICE_NAME,
+    LIST_REVOCATIONS,
+    ENTER_WORKSPACE,
+    HOST_WORKSPACE,
+    UNHOST_WORKSPACE,
+    tilo_server_session::workspaces::CATCH_UP_WORKSPACE,
+    super::PLAN_MACHINE,
+    super::LIST_MACHINES,
+    super::SHOW_MACHINE,
+    super::LIST_SERVERS,
+    super::ADMIT_MACHINE,
+    super::ADMIT_SERVER,
+];
+
 #[tokio::test]
 async fn the_servers_person_creates_and_lists_workspaces_as_actions() {
     let dir = tempfile::tempdir().unwrap();
@@ -96,27 +119,7 @@ async fn the_servers_person_creates_and_lists_workspaces_as_actions() {
     let laptop = owners_laptop();
     assert_eq!(
         offered(&host, &laptop, &caller(&laptop)).await,
-        [
-            CREATE_WORKSPACE,
-            tilo_server_session::workspaces::CREATE_OWN_WORKSPACE,
-            DELETE_WORKSPACE,
-            tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE,
-            LIST_WORKSPACES,
-            tilo_server_session::workspaces::LIST_PERSONAL,
-            tilo_server_session::workspaces::KEEP_PERSONAL,
-            tilo_server_session::workspaces::PERSONAL_DEVICE_NAME,
-            LIST_REVOCATIONS,
-            ENTER_WORKSPACE,
-            HOST_WORKSPACE,
-            UNHOST_WORKSPACE,
-            tilo_server_session::workspaces::CATCH_UP_WORKSPACE,
-            super::PLAN_MACHINE,
-            super::LIST_MACHINES,
-            super::SHOW_MACHINE,
-            super::LIST_SERVERS,
-            super::ADMIT_MACHINE,
-        ]
-        .map(str::to_owned)
+        HOST_OPERATIONS.map(str::to_owned)
     );
 
     // Creating the workspace issues the invitation the share is for, with
