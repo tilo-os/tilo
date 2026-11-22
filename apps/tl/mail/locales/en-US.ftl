@@ -584,3 +584,4 @@ d-oqpazwvc = Editor
     .w-cc = Cc
     .w-subject = Subject
     .w-write-your-message = Write your message
+    .w-send = Send

@@ -1437,6 +1437,14 @@ view editor(d: Draft) {
         }
         input(bind: d.subject, placeholder: "Subject")
         ui.BlockEditor(bind: d.body, placeholder: "Write your message")
+        // The message's own Send: a composer sends from where it is written, and the window's
+        // bar keeps it once for the draft it shows.
+        row {
+            spacer()
+            ui.Button("Send", icon: .send) {
+                on press: send(d)
+            }
+        }
     }
 }
 
