@@ -1707,3 +1707,161 @@ fn a_layout_whose_keys_arrive_late_is_waited_for_and_never_written_over() {
     );
     assert!(after.all_read(&login), "and the layout is read");
 }
+
+/// A device's workspace service that takes a record's founding write and answers every write after
+/// it that the writes wait for changes it does not hold yet, counting the writes it was handed.
+struct WaitingWrites {
+    inner: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
+    waited: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl tilo_peer_state::workspace_documents::DeviceWrites for WaitingWrites {
+    fn write(
+        &self,
+        workspace: &str,
+        changes: &[u8],
+        writing: tilo_peer_state::workspace_documents::DocumentWriting<'_>,
+    ) -> tilo_peer_state::workspace_documents::DocumentWrite {
+        if writing.snapshot {
+            return self.inner.write(workspace, changes, writing);
+        }
+        self.waited
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(std::future::ready(Err(
+            tilo_peer_state::owner::WriteRefusal::Waiting(
+                tilo_peer_state::MissingPrerequisite::CausalDependencies,
+            ),
+        )))
+    }
+}
+
+/// A change of the person's view the workspace says waits for changes it does not hold yet is no
+/// refusal: the person hears nothing of it, the change stays this device's, and it is not written
+/// again until the record moves.
+#[test]
+fn a_view_write_that_waits_is_no_refusal_and_waits_for_the_record_to_move() {
+    use crate::engine::Engine;
+    use ed25519_dalek::SigningKey;
+
+    let state = tempfile::tempdir().expect("a state directory");
+    let root = SigningKey::from_bytes(&[0x70; 32]);
+    let key = SigningKey::from_bytes(&[0x71; 32]);
+    let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
+    let engine = Arc::new(
+        Engine::open(
+            tilo_identity::identity_store::DeviceIdentity::kept(
+                cert.clone(),
+                HeldSigner {
+                    key,
+                    hold: Arc::new(Hold::default()),
+                },
+            ),
+            Some(state.path()),
+            std::iter::empty(),
+            crate::platform::membership_check::of_this_session(),
+        )
+        .expect("this device's engine opens"),
+    );
+    let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
+    let person = hex::encode(cert.user_public_key);
+    let service = crate::founding_fixture::serve(&engine);
+    let workspace = WorkspaceId::new();
+    pollster::block_on(engine.found(workspace, "Layout")).expect("the workspace is founded");
+    engine.bind(workspace);
+    service.hand_keys(&engine, workspace, service.keys_of(workspace));
+
+    let mut shown = one_window_of_notes(workspace, salt);
+
+    let (wake, _heard) = woken();
+    let desktops = Layouts::new(
+        Arc::new(crate::continuations::Continuations::default()),
+        wake,
+        person,
+        Some(state.path()),
+    );
+    let waited = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> =
+        Arc::new(WaitingWrites {
+            inner: service.writes(),
+            waited: Arc::clone(&waited),
+        });
+    desktops.attach(&engine, &service.reads(), &writes);
+    let patience = std::time::Duration::from_secs(10);
+    desktops.follow(&engine, "", &mut shown);
+    // The view's first write founds its record, which the workspace takes.
+    desktops.finish_view(&engine, &shown, patience);
+    assert_eq!(
+        waited.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the founding write is taken"
+    );
+
+    // The person makes the window as large as its display: a change of the view the record holds,
+    // which the workspace says waits.
+    shown.workspaces[0].strips[0].window_groups[0].maximized = true;
+    desktops.finish_view(&engine, &shown, patience);
+    assert_eq!(
+        waited.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the change is written on the record its founding made"
+    );
+    assert_eq!(
+        desktops.take_refusal(),
+        None,
+        "a write that waits is not said to have been refused"
+    );
+
+    // The record did not move: a look writes nothing, and the person still hears nothing.
+    desktops.finish_view(&engine, &shown, patience);
+    assert_eq!(
+        waited.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the change is not written again while the record stands"
+    );
+    assert_eq!(
+        desktops.take_refusal(),
+        None,
+        "nor said to have been refused"
+    );
+}
+
+/// One strip of one Notes window in `workspace`, the strip in front, as a device of `salt` shows it.
+fn one_window_of_notes(workspace: WorkspaceId, salt: u16) -> Layout {
+    use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+
+    let mut ids = tilo_desktop_model::IdMinter::new(salt);
+    let (strip, group, tab) = (ids.mint(), ids.mint(), ids.mint());
+    let mut workspace_layout = Workspace::new(workspace, "Home");
+    workspace_layout.strips = vec![Strip {
+        id: StripId(strip),
+        name: "Main".to_owned(),
+        window_groups: vec![WindowGroup {
+            id: group,
+            tabs: vec![Tab {
+                id: tab,
+                title: "Notes".to_owned(),
+                tile: TileContent::LocalApp {
+                    app_id: "so.tilo.notes".to_owned(),
+                    label: "Notes".to_owned(),
+                    note: String::new(),
+                },
+                app_title: None,
+                view: String::new(),
+                pinned: false,
+            }],
+            active_tab: tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        }],
+    }];
+    let mut layout = Layout {
+        workspaces: vec![workspace_layout],
+        active: workspace,
+        salt,
+        ..Layout::default()
+    };
+    layout.active_strip.insert(workspace, StripId(strip));
+
+    layout
+}

@@ -30,6 +30,7 @@ use ui::state::UndoLog;
 
 use crate::engine::{Engine, SealKeys};
 use tilo_desktop_surface::DesktopHandle;
+use tilo_peer_state::owner::WriteRefusal;
 
 /// The person `person`, as a history names them.
 fn user(person: &str) -> MemberId {
@@ -142,6 +143,17 @@ struct Held {
     /// that skips the record (its write under way) or a write of it that finished leaves it behind
     /// the engine, so the record is read again however the rest of the workspace moved meanwhile.
     read_at: Option<EngineVersion>,
+    /// The revision the record was read at when the workspace answered that a write of it waits
+    /// for changes it does not hold yet: the write is made again once the record moves past it,
+    /// not on every look.
+    waits: Option<Waits>,
+}
+
+/// Where a record stood when the workspace answered that this device's write of it waits.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Waits {
+    /// The revision the record was read at then; `None` when nothing of it was read yet.
+    at: Option<[u8; 32]>,
 }
 
 /// Where the workspaces' documents stood at a look: the engine's revision, the generation of the
@@ -1518,10 +1530,11 @@ impl Layouts {
         // the look that can write it, never dropped with the session.
         let kept_back = changed || (shares && !self.held(&key, |held| held.folded.is_some()));
         // The layout the person changes while a write of it is under way is written on the look after
-        // the workspace answered that one. An arranging action's change keeps its name until then:
-        // it is the write that says what was done.
-        if !self.settle_one(&key) {
-            self.unwritten(workspace_id, Some("its last write is under way"));
+        // the workspace answered that one, and one whose last write waits for the record on the look
+        // after the record moved. An arranging action's change keeps its name until then: it is the
+        // write that says what was done.
+        if let Some(why) = self.held_back(&key) {
+            self.unwritten(workspace_id, Some(why));
             if kept_back {
                 self.remember(&key, workspace, acted, person);
             }
@@ -1747,6 +1760,17 @@ impl Layouts {
                         }
                     });
                     self.keep(key, *taken.record, laying.revision);
+                }
+                Err(WriteRefusal::Waiting(_)) => {
+                    // Nothing was refused: the workspace does not hold what the write builds on
+                    // yet. The steps stay this device's, and are written once the record moves.
+                    let steps = laying.pending.clone();
+                    self.held(key, |held| {
+                        held.written = None;
+                        held.waits = Some(Waits { at: held.revision });
+                        held.pending_steps.restore(steps);
+                    });
+                    self.keep_pending();
                 }
                 Err(error) => {
                     // The record is not the workspace's until it takes it: the next write is made
@@ -2208,6 +2232,15 @@ impl Layouts {
                 });
                 continue;
             };
+            if self.waits(&key) {
+                // The record has not moved since the workspace said the last write waits for it.
+                self.held(&key, |held| {
+                    held.written = None;
+                    held.pending = None;
+                    held.pending_view.restore(steps);
+                });
+                continue;
+            }
             let Some((mut held, revision)) = self.copy(&key) else {
                 // The view the workspace keeps cannot be read here yet: the steps wait for the look
                 // that reads it.
@@ -2427,8 +2460,18 @@ impl Layouts {
                 let Some(written) = replaced else {
                     return;
                 };
+                tracing::debug!(%workspace_id, "the view's write was taken");
                 self.held(key, |held| held.written = Some(written));
                 self.keep(key, candidate, revision);
+            }
+            Err(WriteRefusal::Waiting(_)) => {
+                // Nothing was refused: the workspace does not hold what the write builds on yet.
+                // The view stays this device's, and is written once the record moves.
+                self.held(key, |held| {
+                    held.written = None;
+                    held.pending = None;
+                    held.waits = Some(Waits { at: held.revision });
+                });
             }
             Err(error) => {
                 // The record is not the workspace's until it takes it: the next write is made on
@@ -2448,6 +2491,31 @@ impl Layouts {
                 );
             }
         }
+    }
+
+    /// Why this look does not write `key`'s record: its last write is under way, or waits for the
+    /// record to move.
+    fn held_back(&self, key: &Key) -> Option<&'static str> {
+        if !self.settle_one(key) {
+            Some("its last write is under way")
+        } else if self.waits(key) {
+            Some("its last write waits for the record")
+        } else {
+            None
+        }
+    }
+
+    /// Whether the last write of `key`'s record waits for changes the workspace does not hold yet,
+    /// and the record has not moved since: a write made now would wait the same way.
+    fn waits(&self, key: &Key) -> bool {
+        self.held(key, |held| match held.waits {
+            Some(Waits { at }) if at == held.revision => true,
+            Some(_) => {
+                held.waits = None;
+                false
+            }
+            None => false,
+        })
     }
 
     /// Say why a workspace's record was not kept or published, for the caller to tell the person:
