@@ -70,10 +70,10 @@ pub use spotify_identity::{SpotifyIdentity, with_verified_spotify_access_token};
 pub use clients::{COPILOT_TOKEN_ENDPOINT, ClientEntry, ClientTable, Scopes};
 #[cfg(feature = "store")]
 pub use credential_store::{
-    CredentialError, CredentialStore, GrantState, ImportedRegistration, RenewedGrant,
-    SIGN_IN_TIMEOUT, copied_secret, copied_source_matches, icloud_apple_id, icloud_secret,
-    imported_oauth_matches, imported_oauth_secret, is_cloud_type, is_copied_secret, oauth_secret,
-    oauth_tokens, password_credential, protected_grant_protocol, requires_protected_consumer,
+    CredentialError, CredentialStore, GrantState, RenewedGrant, SIGN_IN_TIMEOUT, copied_secret,
+    copied_source_matches, icloud_apple_id, icloud_secret, is_cloud_type, is_copied_secret,
+    oauth_secret, oauth_tokens, password_credential, protected_grant_protocol,
+    requires_protected_consumer,
 };
 pub use providers::{
     Capability, OAuthCloud, OAuthIssuer, OAuthUse, WebClient, web_client, web_client_id_key,

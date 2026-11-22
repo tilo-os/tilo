@@ -854,73 +854,6 @@ tilo_test_env::scenario! {
     /// Grants that came from another install or another account.
     fn imported_and_copied_grants_keep_their_provenance_and_format;
 
-    phase imported_cloud_clients_remain_per_grant_and_detach_never_revokes_source_sessions;
-    {
-        for cloud in [
-            OAuthCloud::GoogleDrive,
-            OAuthCloud::OneDrive,
-            OAuthCloud::Dropbox,
-        ] {
-            let directory = tempfile::tempdir().unwrap();
-            let root = directory.path().join("ownership");
-            let issuer = FakeAuthorizationServer::start();
-            issuer.require_client_secret("original-public-client-secret");
-            issuer.accept_refresh_token("original-refresh-token");
-            let mut client = crate::Registration::public("original-public-client-id");
-            client.client_secret = Some("original-public-client-secret".into());
-            let registration =
-                crate::ImportedRegistration::new(cloud, client, "consented-source".into()).unwrap();
-            let tokens = tilo_oauth::TokenSet {
-                refresh_token: "original-refresh-token".into(),
-                ..Default::default()
-            };
-            let id = AccountId::new(format!("imported-{}", cloud.type_id()));
-            save(
-                &root,
-                &id,
-                cloud.type_id(),
-                &crate::imported_oauth_secret(&tokens, &registration),
-                serde_json::json!({}),
-            );
-            let credential_store = CredentialStore::for_root(Some(root.clone())).with_provider(
-                cloud,
-                issuer.provider(),
-                "different-current-client",
-            );
-            credential_store
-                .oauth_access_token(&id, cloud.oauth_use(), true)
-                .unwrap();
-            credential_store
-                .oauth_access_token(&id, cloud.oauth_use(), true)
-                .unwrap();
-            assert_eq!(issuer.refreshes(), 2);
-            for request in issuer.requests() {
-                let body = request.body_text();
-                let form: std::collections::BTreeMap<_, _> =
-                    url::form_urlencoded::parse(body.as_bytes()).collect();
-                assert_eq!(
-                    form.get("client_id").map(AsRef::as_ref),
-                    Some("original-public-client-id")
-                );
-                assert_eq!(
-                    form.get("client_secret").map(AsRef::as_ref),
-                    Some("original-public-client-secret")
-                );
-            }
-            let secret = SecretVault::open_in(&root).get(&id).unwrap();
-            assert!(crate::imported_oauth_matches(&secret, &registration));
-            let account = AccountStore::load_in(&root).get(&id).cloned().unwrap();
-            credential_store.revoke(&account, &secret);
-            assert!(issuer.revoked().is_empty());
-            issuer.accept_refresh_token("original-refresh-token");
-            assert!(
-                credential_store
-                    .refresh_imported_cloud(cloud, &tokens, &registration)
-                    .is_ok()
-            );
-        }
-    }
-
     phase copied_password_and_icloud_grants_preserve_credentials_and_detach_provenance;
     {
         let password = Secret::password("existing-nextcloud-app-password");
@@ -946,19 +879,13 @@ tilo_test_env::scenario! {
         assert!(!crate::is_copied_secret(&original));
     }
 
-    phase invalid_grant_clearing_cannot_satisfy_imported_or_copied_source_retry;
+    phase invalid_grant_clearing_cannot_satisfy_a_copied_source_retry;
     {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("ownership");
         let cloud = OAuthCloud::GoogleDrive;
         let issuer = FakeAuthorizationServer::start();
         issuer.accept_refresh_token("source-refresh");
-        let registration = crate::ImportedRegistration::new(
-            cloud,
-            crate::Registration::public("original-client"),
-            "source-binding".into(),
-        )
-        .unwrap();
         let source_tokens = tilo_oauth::TokenSet {
             refresh_token: "source-refresh".into(),
             ..Default::default()
@@ -968,41 +895,33 @@ tilo_test_env::scenario! {
             issuer.provider(),
             "tilo-client",
         );
-        for (name, source) in [
-            (
-                "original-client",
-                crate::imported_oauth_secret(&source_tokens, &registration),
-            ),
-            ("copied-tilo", oauth_secret(&source_tokens)),
-        ] {
-            let id = AccountId::new(name);
-            let account = Account::new(id.clone(), cloud.type_id());
-            let expected = crate::copied_secret(&account, &source);
-            save(
-                &root,
-                &id,
-                cloud.type_id(),
-                &expected,
-                serde_json::json!({}),
-            );
-            issuer.accept_refresh_token("source-refresh");
-            credential_store
-                .oauth_access_token(&id, cloud.oauth_use(), true)
-                .unwrap();
-            assert!(crate::copied_source_matches(
-                &SecretVault::open_in(&root).get(&id).unwrap(),
-                &expected
-            ));
-            issuer.revoke_all_refresh_tokens();
-            assert_eq!(
-                credential_store.oauth_access_token(&id, cloud.oauth_use(), true),
-                Err(CredentialError::NeedsAuthentication)
-            );
-            let cleared = SecretVault::open_in(&root).get(&id).unwrap();
-            assert!(crate::is_copied_secret(&cleared));
-            assert!(!crate::copied_source_matches(&cleared, &expected));
-            assert!(!crate::imported_oauth_matches(&cleared, &registration));
-        }
+        let id = AccountId::new("copied-tilo");
+        let source = oauth_secret(&source_tokens);
+        let account = Account::new(id.clone(), cloud.type_id());
+        let expected = crate::copied_secret(&account, &source);
+        save(
+            &root,
+            &id,
+            cloud.type_id(),
+            &expected,
+            serde_json::json!({}),
+        );
+        issuer.accept_refresh_token("source-refresh");
+        credential_store
+            .oauth_access_token(&id, cloud.oauth_use(), true)
+            .unwrap();
+        assert!(crate::copied_source_matches(
+            &SecretVault::open_in(&root).get(&id).unwrap(),
+            &expected
+        ));
+        issuer.revoke_all_refresh_tokens();
+        assert_eq!(
+            credential_store.oauth_access_token(&id, cloud.oauth_use(), true),
+            Err(CredentialError::NeedsAuthentication)
+        );
+        let cleared = SecretVault::open_in(&root).get(&id).unwrap();
+        assert!(crate::is_copied_secret(&cleared));
+        assert!(!crate::copied_source_matches(&cleared, &expected));
     }
 
     phase protected_copies_refuse_legacy_decoders_but_canonical_dav_ownership_still_publishes;
@@ -1039,15 +958,8 @@ tilo_test_env::scenario! {
         assert_eq!(apple_id, "ada@example.test");
         assert_eq!(parsed, "source-session");
         let account = Account::new("source-cloud", GOOGLE_DRIVE_TYPE);
-        let registration = crate::ImportedRegistration::new(
-            OAuthCloud::GoogleDrive,
-            tilo_oauth::Registration::public("original-client"),
-            "source-binding".into(),
-        )
-        .unwrap();
         for protected in [
             crate::copied_secret(&account, &fresh),
-            crate::imported_oauth_secret(&tokens, &registration),
             crate::copied_secret(&account, &fresh_icloud),
         ] {
             let raw = protected.token.as_deref().unwrap();

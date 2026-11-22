@@ -99,8 +99,6 @@ enum Grant {
     #[serde(alias = "protected_oauth2")]
     Oauth2 {
         tokens: TokenSet,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        registration: Option<ImportedRegistration>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         copied: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,11 +132,10 @@ impl Serialize for Grant {
         match self {
             Self::Oauth2 {
                 tokens,
-                registration,
                 copied,
                 copy_origin,
             } => {
-                let protected = *copied || registration.is_some() || copy_origin.is_some();
+                let protected = *copied || copy_origin.is_some();
                 map.serialize_entry(
                     "kind",
                     if protected {
@@ -149,7 +146,6 @@ impl Serialize for Grant {
                 )?;
                 map.serialize_entry("tokens", tokens)?;
                 if protected {
-                    map.serialize_entry("registration", registration)?;
                     map.serialize_entry("copied", copied)?;
                     map.serialize_entry("copy_origin", copy_origin)?;
                 }
@@ -204,90 +200,16 @@ struct CopyOrigin {
     account_sha256: [u8; 32],
 }
 
-/// Original installed-app client registration, sealed with an imported cloud
-/// grant. It never contains provider endpoints and cannot override another
-/// issuer or use.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImportedRegistration {
-    issuer: String,
-    client_id: String,
-    client_secret: Option<String>,
-    source_binding: String,
-}
-
-impl Drop for ImportedRegistration {
-    fn drop(&mut self) {
-        if let Some(secret) = &mut self.client_secret {
-            secret.zeroize();
-        }
-    }
-}
-
-impl ImportedRegistration {
-    /// Bind an explicitly imported Files grant to its original client and source.
-    pub fn new(
-        cloud: OAuthCloud,
-        client: Registration,
-        source_binding: String,
-    ) -> Result<Self, CredentialError> {
-        let value = Self {
-            issuer: cloud.issuer().id().into(),
-            client_id: client.client_id,
-            client_secret: client.client_secret,
-            source_binding,
-        };
-        value.validate(cloud.oauth_use())?;
-        Ok(value)
-    }
-
-    fn validate(&self, oauth_use: OAuthUse) -> Result<(), CredentialError> {
-        let valid = |s: &str| !s.is_empty() && s.len() <= 4096 && !s.chars().any(char::is_control);
-        if oauth_use.capability != crate::Capability::Files
-            || self.issuer != oauth_use.issuer.id()
-            || !matches!(
-                oauth_use.issuer,
-                OAuthIssuer::Google | OAuthIssuer::Microsoft | OAuthIssuer::Dropbox
-            )
-            || !valid(&self.client_id)
-            || !valid(&self.source_binding)
-            || self.client_secret.as_deref().is_some_and(|s| !valid(s))
-        {
-            return Err(CredentialError::NeedsAuthentication);
-        }
-        Ok(())
-    }
-}
-
-fn registered_secret(
-    tokens: &TokenSet,
-    registration: Option<ImportedRegistration>,
-    copied: bool,
-    copy_origin: Option<CopyOrigin>,
-) -> Secret {
+fn registered_secret(tokens: &TokenSet, copied: bool, copy_origin: Option<CopyOrigin>) -> Secret {
     Secret {
         password: String::new(),
         token: serde_json::to_string(&Grant::Oauth2 {
             tokens: tokens.clone(),
-            registration,
             copied,
             copy_origin,
         })
         .ok(),
     }
-}
-
-/// Seal the original client registration with its cloud grant.
-pub fn imported_oauth_secret(tokens: &TokenSet, registration: &ImportedRegistration) -> Secret {
-    registered_secret(tokens, Some(registration.clone()), true, None)
-}
-
-/// Test an existing sealed imported grant's exact original source and client
-/// binding.
-pub fn imported_oauth_matches(secret: &Secret, registration: &ImportedRegistration) -> bool {
-    matches!(grant_of(secret), Some(Grant::Oauth2 { tokens, registration: Some(stored), .. })
-        if !tokens.refresh_token.is_empty() && stored.issuer == registration.issuer && stored.client_id == registration.client_id
-        && stored.client_secret == registration.client_secret && stored.source_binding == registration.source_binding)
 }
 
 /// The tokens a sealed `OAuth` grant holds, when the secret is one: what a
@@ -306,7 +228,6 @@ pub fn oauth_secret(tokens: &TokenSet) -> Secret {
         password: String::new(),
         token: serde_json::to_string(&Grant::Oauth2 {
             tokens: tokens.clone(),
-            registration: None,
             copied: false,
             copy_origin: None,
         })
@@ -367,13 +288,8 @@ pub fn copied_secret(account: &Account, secret: &Secret) -> Secret {
     };
     let mut copy = secret.clone();
     let grant = match grant_of(secret) {
-        Some(Grant::Oauth2 {
+        Some(Grant::Oauth2 { tokens, .. }) => Some(Grant::Oauth2 {
             tokens,
-            registration,
-            ..
-        }) => Some(Grant::Oauth2 {
-            tokens,
-            registration,
             copied: true,
             copy_origin: Some(origin),
         }),
@@ -472,17 +388,18 @@ pub fn password_credential(secret: &Secret) -> Zeroizing<String> {
 /// Whether preserving this grant's client and copy authority requires protocol 1.
 pub fn requires_protected_consumer(secret: &Secret) -> bool {
     match grant_of(secret) {
-        Some(Grant::Oauth2 {
-            registration,
-            copied,
-            copy_origin,
-            ..
-        }) => copied || registration.is_some() || copy_origin.is_some(),
-        Some(Grant::Icloud {
-            copied,
-            copy_origin,
-            ..
-        }) => copied || copy_origin.is_some(),
+        Some(
+            Grant::Oauth2 {
+                copied,
+                copy_origin,
+                ..
+            }
+            | Grant::Icloud {
+                copied,
+                copy_origin,
+                ..
+            },
+        ) => copied || copy_origin.is_some(),
         Some(Grant::CopiedPassword { .. }) => true,
         None => false,
     }
@@ -518,7 +435,6 @@ fn decode_grant(secret: &Secret) -> Option<(Grant, bool)> {
         (
             Grant::Oauth2 {
                 tokens,
-                registration: None,
                 copied: false,
                 copy_origin: None,
             },
@@ -829,95 +745,6 @@ impl CredentialStore {
         Ok((descriptor, registration))
     }
 
-    fn grant_config(
-        &self,
-        oauth_use: OAuthUse,
-        imported: Option<&ImportedRegistration>,
-    ) -> Result<(Provider, Registration), CredentialError> {
-        let Some(imported) = imported else {
-            return self.use_config(oauth_use);
-        };
-        imported.validate(oauth_use)?;
-        let provider = self
-            .overrides
-            .get(&oauth_use)
-            .map(|(provider, _)| provider.clone())
-            .or_else(|| self.endpoints.get(&oauth_use.issuer).cloned())
-            .unwrap_or_else(|| oauth_use.issuer.endpoints());
-        let mut client = Registration::public(imported.client_id.clone());
-        client.client_secret.clone_from(&imported.client_secret);
-        Ok((provider, client))
-    }
-
-    /// Resolve the same selected remote root using the canonical provider consumer.
-    pub fn resolve_imported_storage(
-        &self,
-        cloud: OAuthCloud,
-        tokens: &TokenSet,
-        root: Option<&str>,
-        drive: Option<&str>,
-    ) -> Result<serde_json::Value, CredentialError> {
-        let mut config =
-            self.storage
-                .get(cloud.type_id())
-                .cloned()
-                .unwrap_or_else(|| match cloud {
-                    OAuthCloud::GoogleDrive => {
-                        serde_json::to_value(cloud_source_gdrive::DriveConfig::my_drive())
-                            .unwrap_or_default()
-                    }
-                    OAuthCloud::OneDrive => {
-                        serde_json::to_value(cloud_source_onedrive::OneDriveConfig::me())
-                            .unwrap_or_default()
-                    }
-                    OAuthCloud::Dropbox => {
-                        serde_json::to_value(cloud_source_dropbox::DropboxConfig::new(""))
-                            .unwrap_or_default()
-                    }
-                });
-        if root.is_some() || drive.is_some() {
-            if config.is_null() {
-                config = serde_json::json!({});
-            }
-            let fields = config
-                .as_object_mut()
-                .ok_or(CredentialError::NeedsAuthentication)?;
-            if let Some(root) = root {
-                fields.insert(
-                    "root".into(),
-                    match cloud {
-                        OAuthCloud::OneDrive => serde_json::json!({"Item":root}),
-                        OAuthCloud::GoogleDrive | OAuthCloud::Dropbox => serde_json::json!(root),
-                    },
-                );
-            }
-            if let Some(drive) = drive {
-                let (key, value) = match cloud {
-                    OAuthCloud::GoogleDrive => ("shared_drive", serde_json::json!(drive)),
-                    OAuthCloud::OneDrive => ("drive", serde_json::json!({"Id":drive})),
-                    OAuthCloud::Dropbox => return Err(CredentialError::NeedsAuthentication),
-                };
-                fields.insert(key.into(), value);
-            }
-        }
-        crate::storage::resolve(cloud, Some(&config), &tokens.access_token)
-    }
-
-    pub fn refresh_imported_cloud(
-        &self,
-        cloud: OAuthCloud,
-        tokens: &TokenSet,
-        registration: &ImportedRegistration,
-    ) -> Result<TokenSet, CredentialError> {
-        if tokens.refresh_token.is_empty() {
-            return Err(CredentialError::NeedsAuthentication);
-        }
-        let (provider, client) = self.grant_config(cloud.oauth_use(), Some(registration))?;
-        Ok(OAuthClient::new()?
-            .refresh(&provider, &client, &tokens.refresh_token)?
-            .stamp_now())
-    }
-
     pub fn is_configured(&self, oauth_use: OAuthUse) -> bool {
         self.use_config(oauth_use).is_ok()
     }
@@ -1196,7 +1023,6 @@ impl CredentialStore {
         let Some((
             Grant::Oauth2 {
                 mut tokens,
-                registration,
                 copied,
                 copy_origin,
             },
@@ -1205,15 +1031,12 @@ impl CredentialStore {
         else {
             return Err(CredentialError::NeedsAuthentication);
         };
-        if let Some(imported) = &registration {
-            imported.validate(oauth_use)?;
-        }
         let mut keep = legacy.then(|| oauth_secret(&tokens));
         if tokens.refresh_token.is_empty() {
             return Ok(RenewedGrant { tokens: None, keep });
         }
         if force || tokens.needs_refresh() {
-            let (provider, client) = self.grant_config(oauth_use, registration.as_ref())?;
+            let (provider, client) = self.use_config(oauth_use)?;
             let mut renewed =
                 match OAuthClient::new()?.refresh(&provider, &client, &tokens.refresh_token) {
                     Ok(renewed) => renewed.stamp_now(),
@@ -1222,7 +1045,6 @@ impl CredentialStore {
                             tokens: None,
                             keep: Some(registered_secret(
                                 &TokenSet::default(),
-                                registration,
                                 copied,
                                 copy_origin,
                             )),
@@ -1234,12 +1056,7 @@ impl CredentialStore {
                 renewed.scope = tokens.scope;
             }
             tokens = renewed;
-            keep = Some(registered_secret(
-                &tokens,
-                registration,
-                copied,
-                copy_origin,
-            ));
+            keep = Some(registered_secret(&tokens, copied, copy_origin));
         }
         Ok(RenewedGrant {
             tokens: Some(tokens),
@@ -1387,20 +1204,10 @@ impl CredentialStore {
         }
         let type_id = account.type_id.as_str();
         if let Some(cloud) = OAuthCloud::from_type_id(type_id) {
-            let Some(Grant::Oauth2 {
-                tokens,
-                registration,
-                ..
-            }) = grant_of(secret)
-            else {
+            let Some(Grant::Oauth2 { tokens, .. }) = grant_of(secret) else {
                 return;
             };
-            if registration.is_some() {
-                return;
-            }
-            let Ok((provider, registration)) =
-                self.grant_config(cloud.oauth_use(), registration.as_ref())
-            else {
+            let Ok((provider, registration)) = self.use_config(cloud.oauth_use()) else {
                 return;
             };
             if tokens.access_token.is_empty() && tokens.refresh_token.is_empty() {
