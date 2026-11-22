@@ -45,7 +45,7 @@ import time
 import yaml
 
 APPS = ("apps/tilo-sh-relay", "apps/tilo-api", "apps/tilo-web")
-# The ConfigMaps the relay mounts from the VM hosts' app (members.json, plans.json).
+# The ConfigMap the relay mounts from the VM hosts' app (plans.json).
 SHARED = ("apps/tilo-sh-vm-host",)
 # Each Secret the pods name, by the sops file that holds it: its keys are in clear there.
 SECRET_FILES = {

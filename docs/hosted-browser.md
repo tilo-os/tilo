@@ -389,8 +389,7 @@ fifteenth of a cent on demand, and a hundred-and-fiftieth of a cent on Spot.
 ## Running it
 
 A host that places workspaces (`tilo-server workspace … --workspace-documents`) serves
-their Browser with `TILO_HOSTED_PLACER`, `TILO_HOSTED_MEMBERS`,
-`TILO_HOSTED_ACCOUNT` and `TILO_HOSTED_VM_SIZE` (as for shells), plus
+their Browser with `TILO_HOSTED_ACCOUNT` and `TILO_HOSTED_VM_SIZE` (as for shells), plus
 `TILO_HOSTED_BROWSER_SERVER` (`KEY@HOST:PORT`, the public address sessions
 reach it at), `TILO_SERVER_BROWSER_ACTIONS` (the action log) and
 `TILO_HOSTED_PLANS`. A host that holds its person's root makes itself their
