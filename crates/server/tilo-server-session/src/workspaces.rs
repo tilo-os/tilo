@@ -511,6 +511,12 @@ pub struct CaughtUpWorkspace {
     /// host still lacks, kept apart from the writes that name them.
     #[serde(default)]
     pub content_missing: u32,
+    /// Whether the answering host took in content while it answered. What it
+    /// lacks is counted over the resources that open there, which grow while
+    /// it takes in the workspace, so a count above the last answer's can still
+    /// follow content it fetched.
+    #[serde(default)]
+    pub fetched: bool,
 }
 
 /// One workspace a server governs, as its host actions answer it.

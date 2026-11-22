@@ -1448,7 +1448,7 @@ impl Workspaces {
                 if self.speaks_no_catch_up_now() {
                     return Err(ActionCallError::UnknownAction);
                 }
-                let (cursors, content_missing) = Box::pin(self.catch_up_from(
+                let (cursors, content_missing, fetched) = Box::pin(self.catch_up_from(
                     device,
                     args.required_text("workspace")?,
                     args.flag("names_content")?,
@@ -1459,6 +1459,7 @@ impl Workspaces {
                 answer(&CaughtUpWorkspace {
                     cursors: hex_postcard(&cursors)?,
                     content_missing,
+                    fetched,
                 })
             }
             _ => Err(ActionCallError::UnknownAction),

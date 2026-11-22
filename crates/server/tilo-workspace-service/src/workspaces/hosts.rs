@@ -357,15 +357,18 @@ impl Workspaces {
     /// and see in where its store stands then that it keeps every change of
     /// this device's it may read, and in what it says it lacks that it keeps
     /// all the content those changes name. The server is asked again only
-    /// after an answer that narrowed what it lacks, for what reached this
-    /// device while it took in the rest: an answer that narrowed nothing is
-    /// its last.
+    /// after an answer that narrowed what it lacks, or that says it fetched
+    /// content while it answered, for what reached this device while it took
+    /// in the rest: an answer that did neither is its last. What it lacks may
+    /// count more than the last answer did and still follow content fetched:
+    /// it counts over the resources that open there, which grow as the
+    /// workspace's arrive.
     ///
     /// # Errors
     ///
     /// The server did not answer the ask (a build before it, or one that
     /// could not reach this device), or an answer left it lacking changes or
-    /// content and narrowed nothing of it.
+    /// content and neither narrowed it nor fetched any.
     async fn caught_up_with_this(
         &self,
         workspace: &str,
@@ -416,7 +419,7 @@ impl Workspaces {
             let narrowed = before.is_none_or(|(lacked_before, missing_before)| {
                 lacked < lacked_before || content_missing < missing_before
             });
-            if !narrowed {
+            if !narrowed && !caught_up.fetched {
                 return Err(format!(
                     "the server {} still lacks {lacked} of the changes this device keeps and \
                      {content_missing} blobs of the content they name",
@@ -434,7 +437,8 @@ impl Workspaces {
     /// device's store stands then, and how many blobs of the content the
     /// workspace's resources name it still lacks once the caller may have
     /// handed them ([`Self::content_settled`]), beside what `absent`
-    /// addresses: the content the caller keeps none of either.
+    /// addresses: the content the caller keeps none of either. Says too
+    /// whether it fetched any while it answered.
     ///
     /// [`DirectSync::take_store`]: tilo_peer_state::direct::DirectSync::take_store
     ///
@@ -448,7 +452,7 @@ impl Workspaces {
         workspace: &str,
         names_content: bool,
         absent: &BTreeSet<String>,
-    ) -> Result<(Vec<tilo_peer_state::store::Cursor>, u32), String> {
+    ) -> Result<(Vec<tilo_peer_state::store::Cursor>, u32, bool), String> {
         let workspace_id = WorkspaceId::parse(workspace)
             .ok_or_else(|| "a workspace is named by its id".to_owned())?;
         let state = self
@@ -482,10 +486,14 @@ impl Workspaces {
                 address.device_certificate.device_public_key,
             )
             .await?;
-        let content_missing = self
+        let (content_missing, fetched) = self
             .content_settled(workspace, caller.device_public_key, names_content, absent)
             .await;
-        Ok((cursors, u32::try_from(content_missing).unwrap_or(u32::MAX)))
+        Ok((
+            cursors,
+            u32::try_from(content_missing).unwrap_or(u32::MAX),
+            fetched,
+        ))
     }
 
     /// How many blobs of the content `workspace`'s resources name this device
@@ -497,14 +505,15 @@ impl Workspaces {
     /// which `from` keeps none of either, is not counted. The workspace's members are
     /// asked again for all this device lacks first, and each count after that
     /// follows an answer to those asks, a write to the workspace, or a change
-    /// to its member list.
+    /// to its member list. Says too whether that count is below the first:
+    /// content arrived while it waited.
     async fn content_settled(
         &self,
         workspace: &str,
         from: [u8; 32],
         names_content: bool,
         absent: &BTreeSet<String>,
-    ) -> usize {
+    ) -> (usize, bool) {
         use tokio::sync::broadcast::error::RecvError;
         // Subscribed before the asks go out, so no answer to them is missed.
         let mut answers = self.content_answers();
@@ -544,7 +553,7 @@ impl Workspaces {
                 break;
             }
         }
-        lacking
+        (lacking, lacking < asked)
     }
 
     /// Take in what `device` at `addr`, one keeping `workspace`
