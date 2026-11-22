@@ -816,7 +816,7 @@ waits on, if anything.
 | App framework | Rust Chat (71k), Rust Tasks (13.5k), `apps/tilolang` (21k), 65 `*-model` crates, `tilo-view`, `tilo-app` `framework/` (64k) after the ports, the Rust shell, the toolkit's second action path | Chat −80k (three agent branches, one deletion), Tasks with Notes on the web −11.7k, shell context menu | Delete Rust Chat; Rust apps to tilolang; cleanup; legacy readers |
 | Agents | `coding_agents` (4k) and every Claude-specific path, the other agent engines | C −6k | Agent engines |
 | Workspace | `PersonalStore`, `AccountStore` and the `accounts` crate, the second workspace list, the person document of `settings-store`, governor role, `Membership`/`WorkspaceRuntime` | `one-workspace-stores` −11.8k | one workspace |
-| Hosting | `Standalone`, `tilo-runtime-mcp`, the CLI holder, `tilo-api`'s grant file, the separate binaries | one daemon | hosting |
+| Hosting | `tilo-server` as a second host wrapping the workspace service (it becomes the one daemon keeping more), `tilo-api`'s grant file, the separate binaries | `tilo-server` onto the one daemon (one daemon landed in b7531f9ff4f) | hosting |
 | Actions | device-mcp and `OnDevice`, the REST-to-MCP bridge and intercepts, tilo-control's row dialect, the hand-typed vocabularies, the hand-written REST clients | device-mcp and `OnDevice` out (waits on hosting's and per-person's pushes), then the tool builders and the bridge | actions everywhere |
 
 Progress is measured as net lines removed on `origin/main` in each piece's
