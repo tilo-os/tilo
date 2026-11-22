@@ -251,7 +251,7 @@ impl Session {
         })
         .map_err(|error| tracing::warn!(%error, "settings are not watched"))
         .ok();
-        let presentation = (options.presentation)();
+        let mut presentation = (options.presentation)();
         tilo_startup_metrics::mark("session-presentation-done");
         let overview = crate::overview::Overview::new(
             presentation.theme.motion(),
@@ -339,6 +339,9 @@ impl Session {
         // settings as they are now; the shell wears the same theme.
         let warmth =
             crate::window_warmth::Windows::new(presentation.theme.clone(), &options.person);
+        // The shell wears the person's own colour, as every app window does: a theme whose accent is
+        // the person's draws it, and their focus ring is the same on the shell as in their apps.
+        presentation.theme = warmth.theme().clone();
         desktop.set_theme(presentation.theme.clone());
         tilo_startup_metrics::mark("shell-build-done");
         let handle = desktop.with_policy(|policy| policy.handle().clone());

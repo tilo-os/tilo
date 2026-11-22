@@ -23,6 +23,8 @@ use tilo_session::{Options, Session};
 
 /// The person's appearance section, as the settings service publishes it.
 const APPEARANCE: &str = "settings:settings.appearance";
+/// Who the person is to others, with the colour they wear, as the settings service publishes it.
+const IDENTITY: &str = "settings:settings.identity";
 /// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
 
@@ -90,6 +92,11 @@ fn rect(session: &Session, tab: u64) -> ui::kurbo::Rect {
 /// Set the field `field` of the appearance section through its own published `field-edit`, as
 /// Settings' Appearance page and an agent both do.
 fn set_field(session: &mut Session, field: &str, value: &Value) {
+    set_field_of(session, APPEARANCE, field, value);
+}
+
+/// Set the field `field` of the settings section `section` through its own `field-edit`.
+fn set_field_of(session: &mut Session, section: &str, field: &str, value: &Value) {
     let arguments: Map<String, Value> = json!({
         "edit": {"path": [{"field": field}], "op": "set", "value": value}
     })
@@ -97,12 +104,12 @@ fn set_field(session: &mut Session, field: &str, value: &Value) {
     .expect("an object")
     .clone();
     session
-        .invoke(APPEARANCE, "field-edit", &arguments)
+        .invoke(section, "field-edit", &arguments)
         .unwrap_or_else(|error| panic!("set {field}: {error:?}"));
 }
 
-/// The window in front's edge is the accent the person picks, and it follows a pick under the
-/// window it already stands around.
+/// The window in front's edge is the person's own colour while they picked no accent, the accent
+/// they pick once they do, and it follows a pick under the window it already stands around.
 #[test]
 fn the_window_in_fronts_edge_follows_the_accent_the_person_picks() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
@@ -112,6 +119,24 @@ fn the_window_in_fronts_edge_follows_the_accent_the_person_picks() {
     for _ in 0..40 {
         step(&mut session);
     }
+
+    // With no accent picked, the theme's own is the person's colour, as Settings shows it and every
+    // app draws it: the shell's ring is that colour too, never a default of its own.
+    let own = ui::tokens::PresenceHue::Olive;
+    set_field_of(&mut session, IDENTITY, "colour", &json!(own.id()));
+    for _ in 0..40 {
+        step(&mut session);
+    }
+    let shot = frame(&mut session);
+    let colour = ui::color::Oklch::from_color(ring_at(&shot, rect(&session, notes)));
+    assert!(
+        hue_distance(colour.h, own.degrees()) <= 15.0,
+        "with no accent picked, the window in front's edge is the person's own colour ({}°); it is \
+         at {}° (chroma {:.3})",
+        own.degrees(),
+        colour.h,
+        colour.c
+    );
 
     let mut seen = Vec::new();
     for (accent, hue) in [("teal", 175.0), ("pink", 355.0)] {
