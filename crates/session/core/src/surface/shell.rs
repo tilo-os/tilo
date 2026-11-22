@@ -8,7 +8,8 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::task::Waker;
 
 use super::{
     BackdropImage, BackdropRequest, CursorIcon, KeyClaim, KeyModifiers, Region, Scroll, SurfaceKey,
@@ -315,6 +316,39 @@ struct Held {
     /// The buffers a frame drawn on the GPU is shown from.
     #[cfg(unix)]
     gpu: Option<OnGpu>,
+    /// The draws of it handed to another thread, and how far they have come.
+    draws: Draws,
+}
+
+/// The draws of a frame a surface hands to another thread ([`SurfaceFrame::drawing`]): the shell goes
+/// on with what the frame showed before, and hears when one of them finished.
+#[derive(Debug, Default)]
+struct Draws {
+    /// The last draw handed over.
+    asked: u64,
+    /// The last draw finished: every one up to it is in the pixels.
+    finished: u64,
+    /// A draw finished since the shell last asked ([`SurfaceFrame::take_finished`]).
+    unseen: bool,
+    /// Who is woken when a draw finished: the shell's loop, which then shows it.
+    waker: Option<Waker>,
+}
+
+/// A frame's pixels and what is waiting for a draw of them to finish.
+#[derive(Debug)]
+struct Shared {
+    held: Mutex<Held>,
+    /// Told each time a draw finished.
+    finished: Condvar,
+}
+
+impl Shared {
+    fn new(held: Held) -> Arc<Self> {
+        Arc::new(Self {
+            held: Mutex::new(held),
+            finished: Condvar::new(),
+        })
+    }
 }
 
 /// The pixels a surface shows: premultiplied RGBA, kept by the surface and taken by the shell
@@ -325,7 +359,7 @@ struct Held {
 /// an opaque part of it is drawn.
 #[derive(Clone, Debug)]
 pub struct SurfaceFrame {
-    held: Arc<Mutex<Held>>,
+    held: Arc<Shared>,
     size: (u32, u32),
 }
 
@@ -334,13 +368,14 @@ impl SurfaceFrame {
     #[must_use]
     pub fn new(size: (u32, u32)) -> Self {
         Self {
-            held: Arc::new(Mutex::new(Held {
+            held: Shared::new(Held {
                 pixels: vec![0; pixels_in(size)],
                 coverage: Some(Coverage::new(size)),
                 damage: Vec::new(),
                 #[cfg(unix)]
                 gpu: None,
-            })),
+                draws: Draws::default(),
+            }),
             size,
         }
     }
@@ -351,7 +386,7 @@ impl SurfaceFrame {
     #[must_use]
     pub fn on_gpu(size: (u32, u32), buffers: Arc<SurfaceBuffers>) -> Self {
         Self {
-            held: Arc::new(Mutex::new(Held {
+            held: Shared::new(Held {
                 pixels: Vec::new(),
                 coverage: Some(Coverage::new(size)),
                 damage: Vec::new(),
@@ -360,7 +395,8 @@ impl SurfaceFrame {
                     shown: None,
                     taken: [None; 2],
                 }),
-            })),
+                draws: Draws::default(),
+            }),
             size,
         }
     }
@@ -398,13 +434,14 @@ impl SurfaceFrame {
     #[must_use]
     pub fn from_pixels(size: (u32, u32), pixels: Vec<u8>) -> Self {
         Self {
-            held: Arc::new(Mutex::new(Held {
+            held: Shared::new(Held {
                 pixels,
                 coverage: None,
                 damage: vec![Region::new(0, 0, size.0, size.1)],
                 #[cfg(unix)]
                 gpu: None,
-            })),
+                draws: Draws::default(),
+            }),
             size,
         }
     }
@@ -506,15 +543,96 @@ impl SurfaceFrame {
         })
     }
 
+    /// A draw of the frame is handed to another thread, which says [`Self::finished`] with the
+    /// number this returns once its pixels are in. Until then the shell shows what the frame showed
+    /// before, and the thread that asked goes on.
+    #[must_use]
+    pub fn drawing(&self) -> u64 {
+        let mut held = self.held();
+        held.draws.asked = held.draws.asked.saturating_add(1);
+        held.draws.asked
+    }
+
+    /// The draw `ticket` names, and every one asked before it, is in the pixels: whoever waits for
+    /// it hears, and the shell's loop is woken to show it.
+    pub fn finished(&self, ticket: u64) {
+        let waker = {
+            let mut held = self.held();
+            held.draws.finished = held.draws.finished.max(ticket);
+            held.draws.unseen = true;
+            held.draws.waker.clone()
+        };
+        self.held.finished.notify_all();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    /// Whether a draw handed to another thread finished since the shell last asked: the frame it
+    /// shows next is one to draw.
+    pub fn take_finished(&self) -> bool {
+        std::mem::take(&mut self.held().draws.unseen)
+    }
+
+    /// Whether a draw handed to another thread is still to be shown: drawing, or finished since the
+    /// shell last asked ([`Self::take_finished`]).
+    #[must_use]
+    pub fn unshown(&self) -> bool {
+        let held = self.held();
+        held.draws.unseen || held.draws.finished < held.draws.asked
+    }
+
+    /// Whether a draw handed to another thread has not finished yet.
+    #[must_use]
+    pub fn in_flight(&self) -> bool {
+        let held = self.held();
+        held.draws.finished < held.draws.asked
+    }
+
+    /// Whether a draw handed to another thread ever finished in it: until one has, a frame drawn
+    /// that way shows nothing.
+    #[must_use]
+    pub fn drawn_elsewhere(&self) -> bool {
+        self.held().draws.finished > 0
+    }
+
+    /// Wake `waker` whenever a draw of the frame finishes on another thread: the shell's loop, which
+    /// draws what changed on its next turn instead of waiting for a turn to come for another reason.
+    pub fn wake_on_change(&self, waker: &Waker) {
+        let mut held = self.held();
+        if !held
+            .draws
+            .waker
+            .as_ref()
+            .is_some_and(|known| known.will_wake(waker))
+        {
+            held.draws.waker = Some(waker.clone());
+        }
+    }
+
+    /// Wait until every draw handed to another thread so far is in the pixels: what a look at what a
+    /// surface shows now waits for, where the shell's own frames never do.
+    pub fn wait_drawn(&self) {
+        let held = self
+            .held
+            .finished
+            .wait_while(self.held(), |held| held.draws.finished < held.draws.asked)
+            .unwrap_or_else(PoisonError::into_inner);
+        drop(held);
+    }
+
     fn held(&self) -> MutexGuard<'_, Held> {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner)
+        self.held
+            .held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 /// Whether the pixels of a frame the shell drew still stand: it stops being live once the surface that
 /// drew them lets go of the frame.
 #[derive(Clone, Debug)]
-pub struct FrameWatch(std::sync::Weak<Mutex<Held>>);
+pub struct FrameWatch(std::sync::Weak<Shared>);
 
 impl FrameWatch {
     /// Whether the frame these pixels belong to still stands.
@@ -777,6 +895,26 @@ pub trait ShellSurface {
     /// new; a shell that never knows draws every frame (`true`).
     fn prepare_frame(&mut self) -> bool {
         true
+    }
+
+    /// Wait until every frame of its layers that a draw on another thread was handed shows that
+    /// draw: what a look at what the surface shows (a check, a screenshot) waits for, where the
+    /// shell's own frames never do.
+    fn wait_drawn(&self) {
+        loop {
+            let drawing: Vec<SurfaceFrame> = self
+                .layers()
+                .into_iter()
+                .map(|layer| layer.frame)
+                .filter(SurfaceFrame::in_flight)
+                .collect();
+            if drawing.is_empty() {
+                return;
+            }
+            for frame in &drawing {
+                frame.wait_drawn();
+            }
+        }
     }
 
     /// Keep what it holds in step without drawing any of it: what a surface the shell stands in

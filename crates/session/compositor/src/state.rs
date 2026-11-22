@@ -339,6 +339,9 @@ pub struct State {
     /// Whether the pointer waits out of sight at the edge it left this machine's screens by, while
     /// the person's keyboard and pointer drive another of their devices.
     pub(crate) pointer_parked: bool,
+    /// The person's pointer is somewhere they put it: it moved, pressed or scrolled since the
+    /// session started. One that never did is nowhere a person points.
+    pointer_placed: bool,
     /// Super alone, as the person presses and lets go of it: the desktop reads what it asked for
     /// on its own pass. `None` when nobody asks.
     pub(crate) super_tap: Option<Rc<RefCell<SuperTap>>>,
@@ -504,6 +507,7 @@ impl State {
             display_changes: crate::display_change::DisplayChanges::default(),
             input_observer: None,
             pointer_parked: false,
+            pointer_placed: false,
             super_tap: None,
             redraw: Vec::new(),
             loop_handle: None,
@@ -956,6 +960,23 @@ impl State {
         })
     }
 
+    /// A surface's frame drawn on another thread came in: where it now shows something (or no
+    /// longer does) under a pointer that stayed still, the pointer is routed by what it is over now,
+    /// as it would be had it just moved there.
+    pub(crate) fn follow_drawn_under_pointer(&mut self) {
+        // A pointer no one has put anywhere is not over what was drawn: routing it would tell the
+        // surface under its resting place that a person points there.
+        if !self.pointer_placed || self.pressed_surface.is_some() {
+            return;
+        }
+        let under = self
+            .shell_surface_under(self.pointer)
+            .map_or(PointerTarget::Clients, PointerTarget::Surface);
+        if under != self.pointer_target {
+            self.refocus_pointer();
+        }
+    }
+
     /// Route one input event to the surface or client it belongs to.
     pub(crate) fn handle_input(&mut self, event: InputEvent) {
         self.handle_input_at(event, tilo_clock::now());
@@ -1000,7 +1021,36 @@ impl State {
         self.route_input(event, now);
     }
 
+    /// Wait for the shell's frames drawing on other threads to be in their pixels. The pointer goes
+    /// where a frame shows something, so a press made while a frame draws (a panel that just
+    /// opened, a bar that just changed) is routed by the pixels the shell was asked to show, not
+    /// the ones it showed before. Only a press waits, and only for the draws already handed over.
+    fn wait_for_shell_draws(&self) {
+        for surface in &self.surfaces {
+            for layer in surface.layers() {
+                layer.frame.wait_drawn();
+            }
+        }
+    }
+
+    /// Route `event` by what the surfaces show.
     pub(crate) fn route_input(&mut self, event: InputEvent, at: Instant) {
+        match event {
+            // The pointer that stayed still is routed by what is under it once those draws are in.
+            InputEvent::PointerButton { pressed: true, .. } => {
+                self.wait_for_shell_draws();
+                self.follow_drawn_under_pointer();
+            }
+            InputEvent::TouchDown { .. } => self.wait_for_shell_draws(),
+            _ => {}
+        }
+        self.pointer_placed |= matches!(
+            event,
+            InputEvent::PointerMotion { .. }
+                | InputEvent::PointerMotionRelative { .. }
+                | InputEvent::PointerButton { .. }
+                | InputEvent::PointerAxis(_)
+        );
         self.note_input();
         // What a capture takes never reaches the desktop.
         if let Some(observed) = event.clone().observed((self.pointer.x, self.pointer.y))

@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
+use tilo_compositor::{Compositor, InputEvent, OutputConfig, StackPolicy};
 use tilo_session_core::surface::{LayerPose, Region, ShellSurface, SurfaceFrame, SurfaceLayer};
 
 /// A surface that fills its frame row by row, the way a toolkit app draws into one:
@@ -290,6 +290,156 @@ tilo_test_env::scenario! {
             compositor.next_wait() <= Some(Duration::from_millis(1)),
             "a frame a surface asks for now is drawn now"
         );
+    }
+
+    phase a_program_opening_a_window_is_answered_while_a_surface_draws_elsewhere;
+    // A surface drawing on the CPU hands its picture to a thread of its own, so the loop goes on
+    // answering programs while it draws: a window opened during the draw is configured before the
+    // draw finishes, and the finished draw wakes the loop and is shown.
+    {
+        use crate::harness::{TestClient, pump_one};
+
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let surface = DrawnElsewhere::new((640, 480), released);
+        let frame = surface.frame.clone();
+        let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+            .expect("output");
+        compositor.add_surface(Rc::new(RefCell::new(surface)));
+        let mut client = TestClient::connect(&mut compositor);
+        compositor.render().expect("a frame");
+        assert!(
+            frame.in_flight(),
+            "the frame was handed to another thread, and drawing it did not hold up the loop"
+        );
+
+        pump_one(&mut compositor, &mut client, |_, client| {
+            client.seen.compositor.is_some() && client.seen.wm_base.is_some()
+        });
+        client.open_window("drawn.elsewhere");
+        pump_one(&mut compositor, &mut client, |_, client| client.seen.configured);
+        assert!(
+            frame.in_flight(),
+            "the program that connected and opened a window during the draw was answered before \
+             the draw finished"
+        );
+
+        release.send(()).expect("the drawing thread waits");
+        // The finished draw ends a wait that has no limit: the loop is woken for it, never polled.
+        while frame.in_flight() {
+            compositor.dispatch(None).expect("dispatch");
+        }
+        compositor.render().expect("a frame");
+        let shot = compositor.screenshot("HEADLESS-1").unwrap();
+        let middle = shot.pixel(320, 240).unwrap();
+        assert!(
+            middle[1] > 128 && middle[0] < 128 && middle[2] < 128,
+            "the frame drawn elsewhere is shown once it is done: {middle:?}"
+        );
+    }
+
+    phase a_press_while_a_panel_draws_its_first_frame_reaches_the_panel;
+    // The pointer goes where a surface's frame shows something. A panel that just opened shows
+    // nothing until its first frame is drawn on another thread: a press made meanwhile waits for
+    // that draw, so it reaches the panel the person pressed on rather than passing through to
+    // what was there before.
+    {
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let surface = Rc::new(RefCell::new(DrawnElsewhere::new((640, 480), released)));
+        let frame = surface.borrow().frame.clone();
+        let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+            .expect("output");
+        compositor.add_surface(Rc::clone(&surface) as Rc<RefCell<dyn ShellSurface>>);
+        compositor.render().expect("a frame");
+        assert!(frame.in_flight(), "the panel's first frame is drawing");
+
+        compositor
+            .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
+            .expect("the pointer moves onto the panel");
+        release.send(()).expect("the drawing thread waits");
+        compositor
+            .input(InputEvent::PointerButton { button: 0x110, pressed: true })
+            .expect("a press");
+        compositor
+            .input(InputEvent::PointerButton { button: 0x110, pressed: false })
+            .expect("its release");
+        assert_eq!(
+            surface.borrow().buttons,
+            vec![true, false],
+            "the press and then its release reach the panel"
+        );
+    }
+}
+
+/// A surface whose frames another thread draws, as a surface drawing on the CPU draws them: the
+/// thread paints the frame green once the test lets it.
+struct DrawnElsewhere {
+    frame: SurfaceFrame,
+    size: (i32, i32),
+    released: Option<std::sync::mpsc::Receiver<()>>,
+    /// The buttons that reached it, pressed or released.
+    buttons: Vec<bool>,
+}
+
+impl DrawnElsewhere {
+    fn new(size: (i32, i32), released: std::sync::mpsc::Receiver<()>) -> Self {
+        let frame = SurfaceFrame::new((
+            u32::try_from(size.0).unwrap(),
+            u32::try_from(size.1).unwrap(),
+        ));
+        Self {
+            frame,
+            size,
+            released: Some(released),
+            buttons: Vec::new(),
+        }
+    }
+}
+
+impl ShellSurface for DrawnElsewhere {
+    fn layers(&self) -> Vec<SurfaceLayer> {
+        vec![SurfaceLayer {
+            pose: LayerPose::SETTLED,
+            location: (0, 0),
+            size: self.size,
+            frame: self.frame.clone(),
+        }]
+    }
+
+    fn prepare_frame(&mut self) -> bool {
+        let Some(released) = self.released.take() else {
+            return false;
+        };
+        let ticket = self.frame.drawing();
+        let frame = self.frame.clone();
+        std::thread::spawn(move || {
+            released.recv().expect("the test lets the draw finish");
+            let (width, height) = frame.size();
+            let green = [0, 255, 0, 255].repeat((width * height) as usize);
+            frame.set_pixels(&green, &[Region::new(0, 0, width, height)]);
+            frame.finished(ticket);
+        });
+        false
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a point on the output, inside the surface"
+    )]
+    fn accepts_pointer(&self, x: f64, y: f64) -> bool {
+        self.frame
+            .alpha(x as u32, y as u32)
+            .is_some_and(|alpha| alpha > 0)
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, pressed: bool) {
+        self.buttons.push(pressed);
     }
 }
 

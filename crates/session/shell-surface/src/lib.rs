@@ -13,6 +13,7 @@ mod desktop;
 mod frames;
 mod i18n;
 pub mod part_view;
+mod raster;
 mod session_platform;
 pub mod shell_part;
 mod well_policy;

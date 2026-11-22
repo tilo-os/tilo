@@ -155,7 +155,7 @@ pub use typing::TypedMark;
 use smithay::utils::{Point, Rectangle};
 pub use switch_scan::{Scan, SwitchConfig, SwitchPair};
 pub use text_input::{TextCaret, TextEntry, TextField, TextFieldRefusal, TextInsertion};
-use tilo_session_core::surface::{LayerPose, ShellSurface, SurfaceDrag};
+use tilo_session_core::surface::{LayerPose, ShellSurface, SurfaceDrag, SurfaceLayer};
 pub use toplevel_icon::{IconArtwork, IconImage, WindowIcon};
 pub use window_frame::{Edge, Shadow, WindowFrame};
 pub use x11::X11Displays;
@@ -414,6 +414,9 @@ pub struct Compositor {
     /// spent before the session waits again, would leave what it brought unread until something
     /// else ends the wait.
     woken: Arc<std::sync::atomic::AtomicBool>,
+    /// What the surfaces' frames drawn on other threads wake the loop with as each finishes
+    /// ([`tilo_session_core::surface::SurfaceFrame::wake_on_change`]).
+    frame_waker: std::task::Waker,
 }
 
 impl Compositor {
@@ -442,6 +445,11 @@ impl Compositor {
         state.loop_handle = Some(event_loop.handle());
         state.x11 = Some(X11Displays::new(event_loop.handle(), display.handle()));
         let backend = make_backend(&event_loop.handle(), &mut state)?;
+        let woken = Arc::default();
+        let frame_waker = std::task::Waker::from(Arc::new(LoopWaker {
+            signal: event_loop.get_signal(),
+            woken: Arc::clone(&woken),
+        }));
         let mut compositor = Self {
             event_loop,
             display,
@@ -454,7 +462,8 @@ impl Compositor {
             recorder: tilo_frame_metrics::FrameRecorder::from_env(),
             ticking: false,
             published_display: None,
-            woken: Arc::default(),
+            woken,
+            frame_waker,
         };
         compositor.publish_displays();
         Ok(compositor)
@@ -2120,6 +2129,72 @@ impl Compositor {
         self.data.state.input_method_connected()
     }
 
+    /// Bring every surface's frame up to date for the frame about to be drawn: whether any of them
+    /// drew or changed what it shows, and the layers each shows now.
+    fn prepare_surfaces(&mut self) -> (bool, Vec<(usize, Vec<SurfaceLayer>)>) {
+        let mut drew = false;
+        // The surfaces' own frames (their layout and scene) are this tick's
+        // `surfaces_us`: the session's shell is drawn here, before the submit.
+        let hosting = Instant::now();
+        // The displays hold each frame for this long: a surface whose content only moves draws one
+        // frame per one of these, so what the person sees runs at the screens' rate rather than at
+        // the loop's.
+        let interval = self.data.state.frame_interval();
+        // The draws the surfaces hand to other threads start as each surface is prepared, but
+        // those of a surface drawing translucent material wait for the material: it draws again
+        // in this frame once its backdrop is blurred, and only that last picture is drawn and
+        // shown, never the stand-in it drew first.
+        let mut material = Vec::new();
+        for surface in &mut self.data.state.surfaces {
+            surface.set_frame_interval(interval);
+            let preparing = tilo_session_core::surface::drawing::preparing();
+            drew |= surface.prepare_frame();
+            let draws = preparing.hold();
+            if surface.backdrops().is_empty() {
+                draws.start();
+            } else {
+                material.push(draws);
+            }
+        }
+        // A surface drawing the translucent material fills it with the opaque stand-in of what lies
+        // below it, and gets the blurred pixels in place of them: the pass draws and blurs that
+        // backdrop before the frame is shown, and the surfaces just handed one draw their material
+        // in this same turn. Presenting the stand-in would flash a flat card over the shell, which a
+        // still shell would keep until the next input.
+        for index in self.data.backend.serve_backdrops(&mut self.data.state) {
+            if let Some(surface) = self.data.state.surfaces.get_mut(index) {
+                drew |= surface.prepare_frame();
+            }
+        }
+        for draws in material {
+            draws.start();
+        }
+        self.recorder.add_surfaces(hosting.elapsed());
+        let layers: Vec<(usize, Vec<SurfaceLayer>)> = self
+            .data
+            .state
+            .surfaces
+            .iter()
+            .enumerate()
+            .map(|(index, surface)| (index, surface.layers()))
+            .collect();
+        // A surface drawing on the CPU draws its frames on other threads, so this one goes on
+        // answering clients and the session while they draw: a frame whose draw finished since
+        // the last is shown in this one, and one still drawing wakes the loop when it is done.
+        let mut finished = false;
+        for (_, layers) in &layers {
+            for layer in layers {
+                layer.frame.wake_on_change(&self.frame_waker);
+                finished |= layer.frame.take_finished();
+            }
+        }
+        if finished {
+            drew = true;
+            self.data.state.follow_drawn_under_pointer();
+        }
+        (drew, layers)
+    }
+
     /// Draw a frame on every output that can take one and tell clients it was shown.
     pub fn render(&mut self) -> Result<(), Error> {
         self.sync_text_input();
@@ -2132,29 +2207,7 @@ impl Compositor {
         if a11y::flashing(&self.data.state, Instant::now()) {
             self.data.state.mark_redraw_all();
         }
-        let mut drew = false;
-        // The surfaces' own frames (their layout and scene) are this tick's
-        // `surfaces_us`: the session's shell is drawn here, before the submit.
-        let hosting = Instant::now();
-        // The displays hold each frame for this long: a surface whose content only moves draws one
-        // frame per one of these, so what the person sees runs at the screens' rate rather than at
-        // the loop's.
-        let interval = self.data.state.frame_interval();
-        for surface in &mut self.data.state.surfaces {
-            surface.set_frame_interval(interval);
-            drew |= surface.prepare_frame();
-        }
-        // A surface drawing the translucent material fills it with the opaque stand-in of what lies
-        // below it, and gets the blurred pixels in place of them: the pass draws and blurs that
-        // backdrop before the frame is shown, and the surfaces just handed one draw their material
-        // in this same turn. Presenting the stand-in would flash a flat card over the shell, which a
-        // still shell would keep until the next input.
-        for index in self.data.backend.serve_backdrops(&mut self.data.state) {
-            if let Some(surface) = self.data.state.surfaces.get_mut(index) {
-                drew |= surface.prepare_frame();
-            }
-        }
-        self.recorder.add_surfaces(hosting.elapsed());
+        let (drew, layers) = self.prepare_surfaces();
         if drew {
             self.data.state.mark_redraw_all();
         }
@@ -2163,13 +2216,9 @@ impl Compositor {
         // the screen it stood on: the display keeps its last frame, the card at whatever it had
         // faded to, until the next thing that happens to damage it. What the surfaces draw now is
         // compared with the last frame, and a screen that lost a layer is drawn again.
-        let layer_counts: Vec<(usize, usize)> = self
-            .data
-            .state
-            .surfaces
+        let layer_counts: Vec<(usize, usize)> = layers
             .iter()
-            .enumerate()
-            .map(|(index, surface)| (index, surface.layers().len()))
+            .map(|(index, layers)| (*index, layers.len()))
             .filter(|(_, count)| *count > 0)
             .collect();
         if layer_counts != self.data.state.layer_counts {
@@ -2248,6 +2297,7 @@ impl Compositor {
     /// # Errors
     /// The display is gone or asleep, or nothing could be rendered.
     pub fn read_back_shown(&mut self, target: &capture::Target) -> Result<Screenshot, Error> {
+        self.settle_surface_draws()?;
         Ok(self
             .data
             .backend
@@ -2293,15 +2343,59 @@ impl Compositor {
             .read_back_scaled(&mut self.data.state, target, max)?)
     }
 
-    /// The last frame drawn on the output named `name` .
+    /// The last frame drawn on the output named `name` , once the surfaces' draws asked so far are
+    /// in it.
     pub fn screenshot(&mut self, name: &str) -> Result<Screenshot, Error> {
+        self.settle_surface_draws()?;
         Ok(self.data.backend.screenshot(&mut self.data.state, name)?)
+    }
+
+    /// Wait for the surfaces' frames still drawing on other threads and draw what they drew: a
+    /// look at what the displays show (a screenshot, a check) sees what was last asked of them,
+    /// where the loop's own frames never wait for a surface to draw.
+    ///
+    /// # Errors
+    /// The frame they drew could not be drawn.
+    pub fn settle_surface_draws(&mut self) -> Result<(), Error> {
+        let drawing = self
+            .data
+            .state
+            .surfaces
+            .iter()
+            .any(|surface| surface.layers().iter().any(|layer| layer.frame.unshown()));
+        if !drawing {
+            return Ok(());
+        }
+        for surface in &self.data.state.surfaces {
+            surface.wait_drawn();
+        }
+        // The frame that shows them is drawn at the display's next blank, as every frame is.
+        self.draw_frame()?;
+        // That frame blurred what the translucent surfaces show through from the pixels just
+        // drawn below them, and their draws of it start there: they are drawn, and shown, too.
+        // What stands below a translucent surface never reads it, so no further draw follows.
+        let translucent = || {
+            self.data
+                .state
+                .surfaces
+                .iter()
+                .filter(|surface| !surface.backdrops().is_empty())
+        };
+        if !translucent().any(|surface| surface.layers().iter().any(|layer| layer.frame.unshown()))
+        {
+            return Ok(());
+        }
+        for surface in translucent() {
+            surface.wait_drawn();
+        }
+        self.draw_frame()
     }
 
     /// What `name` shows with the pointer and every pen's cursor in front, read back: what the
     /// display draws, where [`Compositor::screenshot`] leaves cursors out so a scene can be
     /// compared on its own.
     pub fn screenshot_with_cursor(&mut self, name: &str) -> Result<Screenshot, Error> {
+        self.settle_surface_draws()?;
         Ok(self
             .data
             .backend

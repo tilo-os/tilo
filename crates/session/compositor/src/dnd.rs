@@ -787,7 +787,7 @@ impl State {
     }
 
     /// Route the pointer by what is under it now.
-    fn refocus_pointer(&mut self) {
+    pub(crate) fn refocus_pointer(&mut self) {
         let time = self.now_ms();
         self.pointer_motion(self.pointer, SERIAL_COUNTER.next_serial(), time);
     }

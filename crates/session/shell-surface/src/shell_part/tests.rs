@@ -1488,8 +1488,12 @@ fn a_part_on_a_scaled_output_paints_at_that_scale() {
         (one.scale - 1.0).abs() < f64::EPSILON && (two.scale - 2.0).abs() < f64::EPSILON,
         "each part draws at its own output's scale: {one:?} then {two:?}"
     );
-    // The layer is the frame the tree paints: at 2 it is twice as wide.
-    let width = |part: &mut ShellPart| part.layers()[0].frame.size().0;
+    // The layer is the frame the tree paints: at 2 it is twice as wide, once the frame of that
+    // size is drawn on the threads that draw it.
+    let width = |part: &mut ShellPart| {
+        part.wait_drawn();
+        part.layers()[0].frame.size().0
+    };
     let plain_width = width(&mut plain);
     let wide_width = width(&mut twice);
     assert_eq!(

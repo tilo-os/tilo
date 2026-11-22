@@ -8,7 +8,9 @@
 //! hold anything, which are opaque, which pixels take the pointer) is read on
 //! the GPU too, and only that comes back. Where the machine has no GPU the
 //! compositor reads them from, the toolkit's CPU rasterizer draws the frame,
-//! exactly as it draws a normal app's frame there. A device lost under the
+//! exactly as it draws a normal app's frame there, on threads of its own
+//! ([`crate::raster`]) so the loop answering the session's requests never waits
+//! for it. A device lost under the
 //! renderer gives way to the same CPU rasterizer, so a GPU that stops leaves
 //! the surface slower rather than stopped. Only what changed is drawn, so a
 //! moved cursor, a new time or a resized panel costs what it changed rather
@@ -20,6 +22,7 @@ use tilo_render_protocol::control::DmabufFormat;
 use tilo_render_service::buffers::{self as delivery, Allocator, BufferSet, History, Memory};
 use tilo_session_core::surface::{CELL, Region, SurfaceBuffer, SurfaceBuffers, SurfaceFrame};
 
+use crate::raster::OffThread;
 use ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::Rect;
@@ -45,6 +48,10 @@ pub(crate) struct Frames {
     /// What the compositor draws: the surface's pixels, changed where it
     /// changed.
     frame: SurfaceFrame,
+    /// The frame shown before a resize, while the first frame of the new
+    /// size is still drawing on the CPU: the surface keeps its old pixels
+    /// rather than showing nothing for as long as the new ones take.
+    before: Option<SurfaceFrame>,
 }
 
 impl Frames {
@@ -59,6 +66,7 @@ impl Frames {
             target: None,
             chosen: false,
             frame: SurfaceFrame::new(size),
+            before: None,
         }
     }
 
@@ -71,12 +79,16 @@ impl Frames {
         self.size = size;
         self.target = None;
         self.chosen = false;
+        self.before = Some(self.frame());
         self.frame = SurfaceFrame::new(size);
     }
 
     /// The frame as the compositor shows it.
     pub(crate) fn frame(&self) -> SurfaceFrame {
-        self.frame.clone()
+        match &self.before {
+            Some(before) if !self.frame.drawn_elsewhere() => before.clone(),
+            _ => self.frame.clone(),
+        }
     }
 
     pub(crate) const fn size(&self) -> (u32, u32) {
@@ -98,8 +110,12 @@ impl Frames {
     pub(crate) fn present(&mut self, scene: &Scene, damage: Option<&[Rect]>) {
         if !self.chosen {
             self.chosen = true;
-            self.target = Target::new(self.size);
+            self.target = Target::new(self.size, self.before.clone());
             self.frame = frame_of(self.target.as_ref(), self.size);
+            // Only a frame drawn elsewhere takes a while to show: one drawn here shows at once.
+            if !matches!(self.target, Some(Target::Cpu(_))) {
+                self.before = None;
+            }
         }
         // A device that stopped working is noticed where the frames are
         // drawn, and the frames go on: on the software rasteriser where the
@@ -122,15 +138,12 @@ impl Frames {
                         .map(|region| (region.x, region.y, region.width, region.height))
                         .collect::<Vec<_>>()
                 });
-                if let Some(drawn) = cpu.draw(scene, asked.as_deref()) {
-                    let drawn: Vec<Region> = drawn
-                        .into_iter()
-                        .map(|(x, y, width, height)| Region::new(x, y, width, height))
-                        .collect();
-                    self.frame.set_pixels(cpu.pixels(), &drawn);
-                }
+                cpu.draw(scene, asked);
             }
             None => {}
+        }
+        if self.frame.drawn_elsewhere() {
+            self.before = None;
         }
     }
 }
@@ -140,7 +153,8 @@ impl Frames {
 fn frame_of(target: Option<&Target>, size: (u32, u32)) -> SurfaceFrame {
     match target {
         Some(Target::Gpu(gpu)) => SurfaceFrame::on_gpu(size, Arc::clone(&gpu.shared)),
-        _ => SurfaceFrame::new(size),
+        Some(Target::Cpu(cpu)) => cpu.frame().clone(),
+        None => SurfaceFrame::new(size),
     }
 }
 
@@ -148,7 +162,7 @@ fn frame_of(target: Option<&Target>, size: (u32, u32)) -> SurfaceFrame {
 /// rasterizer where the machine has no GPU to draw them on.
 enum Target {
     Gpu(Box<Gpu>),
-    Cpu(Box<ui::offscreen::CpuSurface>),
+    Cpu(OffThread),
 }
 
 impl Target {
@@ -156,7 +170,7 @@ impl Target {
     /// draw on and the compositor composites from buffers on it, on the CPU
     /// otherwise; `None` where this build's toolkit has no rasterizer to draw
     /// one with.
-    fn new(size: (u32, u32)) -> Option<Self> {
+    fn new(size: (u32, u32), replaces: Option<SurfaceFrame>) -> Option<Self> {
         let node = tilo_compositor::gpu_frames_node().filter(|node| {
             // The renderer draws on the GPU the compositor composites on:
             // memory one GPU allocated is not another's to draw into.
@@ -166,16 +180,20 @@ impl Target {
         if let Some(gpu) = node.and_then(|node| Gpu::new(size, node)) {
             return Some(Self::Gpu(Box::new(gpu)));
         }
-        Self::cpu(size)
+        Self::cpu(size, replaces)
     }
 
     /// The toolkit's CPU rasterizer drawing a `size` surface: what a machine
     /// with no GPU to draw on draws with, and what a surface draws with once
     /// its GPU cannot be brought back. `None` where this build has no
     /// rasterizer.
-    fn cpu(size: (u32, u32)) -> Option<Self> {
+    fn cpu(size: (u32, u32), replaces: Option<SurfaceFrame>) -> Option<Self> {
         let canvas = ui::offscreen::CpuSurface::new(size.0, size.1, RASTER_THREADS)?;
-        Some(Self::Cpu(Box::new(canvas)))
+        Some(Self::Cpu(OffThread::new(
+            Box::new(canvas),
+            SurfaceFrame::new(size),
+            replaces,
+        )))
     }
 
     /// Why this target's GPU device is gone, while it is: what the next frame
@@ -193,7 +211,7 @@ impl Target {
     /// GPU again after a reset that left it working.
     fn after_loss(self, reason: &str, size: (u32, u32)) -> Option<Self> {
         let Self::Gpu(gpu) = self else {
-            return Self::new(size);
+            return Self::new(size, None);
         };
         let recovery = ui::gpu::recover(&gpu.adapter, gpu.finished_frames, reason);
         tracing::error!(%reason, ?recovery, "a hosted surface's GPU device was lost");
@@ -201,11 +219,11 @@ impl Target {
             // The GPU was reset and works again: open a renderer on it. A
             // device that stays lost ends here again on the next pass, then
             // with no frame finished and gives way to the CPU.
-            ui::gpu::Recovery::SameAdapter => Self::new(size),
+            ui::gpu::Recovery::SameAdapter => Self::new(size, None),
             // The surface draws on the CPU from here on, which the error above
             // already said: nothing more to report until a size or a device
             // changes again.
-            ui::gpu::Recovery::Software => Self::cpu(size),
+            ui::gpu::Recovery::Software => Self::cpu(size, None),
         }
     }
 }
@@ -866,6 +884,7 @@ mod tests {
             matches!(frames.target, Some(Target::Cpu(_))),
             "the surface draws on the CPU rasterizer once its GPU is given up"
         );
+        frames.frame().wait_drawn();
         assert!(
             frames.covers(32, 24),
             "the frames are still drawn, in software"

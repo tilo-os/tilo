@@ -4,6 +4,7 @@
 //! The shell draws the surfaces and hands them their input; the roles above the boundary only speak
 //! the vocabulary here, so the same role runs on the Linux desktop's compositor and on the page.
 
+pub mod drawing;
 mod shell;
 
 pub use cursor_icon::CursorIcon;
