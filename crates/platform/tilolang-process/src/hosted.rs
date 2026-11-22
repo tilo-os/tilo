@@ -165,9 +165,12 @@ impl Transport for NoView {
     }
 }
 
-/// The documents a native app of `record`'s app id kept in its workspace on this device, when
-/// this device governs the workspace (none elsewhere), each by the key it is stored under: its
-/// records, which the package now under that id carries over once with a migration of its own.
+/// The documents a native app of the package's id `app` kept in `record`'s workspace on this
+/// device, when this device governs the workspace (none elsewhere), each by the key it is stored
+/// under: its records, which the package now under that id carries over once with a migration of
+/// its own. They are read under `app`, not under the id of `record`'s route: a package published
+/// under another id before keeps its own documents there, while the native app it took the id
+/// from wrote under the id the package has now.
 /// Read from the store an earlier version wrote, and never written: the host keeps no live copy
 /// of a document, and this is the one remaining read of what a version before it left behind.
 /// While one of them does not read, or the store cannot list them, none are handed over: carrying
@@ -175,6 +178,7 @@ impl Transport for NoView {
 /// reads them all.
 fn earlier_documents(
     documents: Option<&Rc<dyn durable_store::DurableStore>>,
+    app: &str,
     record: &InstanceDocument,
 ) -> Vec<(String, automerge::AutoCommit)> {
     let Some(documents) = documents else {
@@ -183,8 +187,7 @@ fn earlier_documents(
     if !record.governs() {
         return Vec::new();
     }
-    let route = record.route();
-    let (app, workspace) = (route.app_id.as_str(), route.cluster_id.to_string());
+    let workspace = record.route().cluster_id.to_string();
     let workspace = workspace.as_str();
     let keys = match documents.documents(app, workspace) {
         Ok(keys) => keys,
@@ -1045,7 +1048,7 @@ impl Hosted {
         // The device that governs the workspace is its documents' origin: the package's migrations
         // run there, once, over what a native app of the package's id kept there too.
         instance.set_origin(record.governs());
-        instance.set_earlier(earlier_documents(kept.earlier.as_ref(), &record));
+        instance.set_earlier(earlier_documents(kept.earlier.as_ref(), &spec.app, &record));
         // What its runtime offers and invokes is decided by the person's access as the session
         // says it, read at each decision.
         let access = Rc::new(RefCell::new(spec.access.clone()));

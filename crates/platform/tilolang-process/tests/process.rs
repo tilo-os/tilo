@@ -34,6 +34,9 @@ use tilolang_tilo::runtime::Value;
 mod content;
 #[path = "process/indexes.rs"]
 mod indexes;
+/// The native Notes app's notebook, carried over once by the tilolang Notes a session starts.
+#[path = "process/native_notes.rs"]
+mod native_notes;
 /// Tasks in a hosted window, and Today reading it from Tasks' own document.
 #[path = "process/tasks.rs"]
 mod tasks;
