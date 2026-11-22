@@ -374,54 +374,11 @@ impl crate::Shared {
         let Some(personal) = self.sync.as_ref().and_then(|sync| sync.personal()) else {
             return;
         };
-        // A machine planned ahead comes with a token whose nonce names its entry in the person's
-        // Servers workspace; admitting it there is what makes its entry its own and hands it the
-        // workspace, so it reads its plan. Read before the answer leaves the store, which takes
-        // the ask with it.
-        let planned = approve
-            .then(|| {
-                crate::enrollment::held(personal.sync())
-                    .waiting
-                    .into_iter()
-                    .find(|waiting| waiting.ask == ask)
-            })
-            .flatten();
         if let Err(error) = crate::enrollment::answer(personal.sync(), ask, approve) {
             tracing::warn!(%error, "a machine was not answered");
             return;
         }
-        if let Some(machine) = planned {
-            self.admit_planned(&machine);
-        }
         self.telling().withdraw(&crate::enrollment::tag(ask));
-    }
-
-    /// Take the machine `machine` the person approved into its waiting entry in their Servers
-    /// workspace, through this device's own workspace service: the entry becomes the machine's
-    /// under its device key, and the device that governs the workspace hands it over from there.
-    /// A machine that came with no token is no planned machine.
-    fn admit_planned(&self, machine: &crate::enrollment::Waiting) {
-        if machine.nonce.is_empty() {
-            return;
-        }
-        let Some(engine) = self.engine.clone() else {
-            return;
-        };
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("device".to_owned(), machine.device.clone().into());
-        arguments.insert("nonce".to_owned(), machine.nonce.clone().into());
-        drop(crate::landing::off_loop(async move {
-            let Some(asked) = engine.ask_own_host("machine.admit", arguments) else {
-                tracing::info!(
-                    "this device's workspace service is not open, so the machine waits to be taken in where it is held"
-                );
-                return;
-            };
-            match asked.await {
-                Ok(_) => {}
-                Err(error) => tracing::warn!(%error, "a planned machine was not taken in"),
-            }
-        }));
     }
 
     /// When the sheet next changes on its own while it is up: its minutes count down, and the link

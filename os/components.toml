@@ -604,7 +604,7 @@ scope = "vm"
 packages = ["tilo-server"]
 # As the image builds it: the server serves browsers (`run --web`, a node).
 features = ["tilo-server/web"]
-bins = ["tilo-server", "tilo-server-admin", "tilo-enroll", "tilo-home-peer-control"]
+bins = ["tilo-server", "tilo-server-admin", "tilo-home-peer-control"]
 units = ["tilo-server.service"]
 layer = "desktop-binaries"
 files = [
@@ -612,8 +612,6 @@ files = [
   { link = "tilo", to = "/usr/bin/tilo-server" },
   { from = "tilo-server-admin", to = "/usr/libexec/tilo/tilo-server-admin", mode = "0755" },
   { link = "tilo", to = "/usr/bin/tilo-server-admin" },
-  { from = "tilo-enroll", to = "/usr/libexec/tilo/tilo-enroll", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-enroll" },
   { from = "tilo-home-peer-control", to = "/usr/libexec/tilo-home-peer-control", mode = "0755" },
   # A node.
   { from = "@manifest/usr/lib/tilo/node-server.toml", to = "/usr/lib/tilo/node-server.toml", mode = "0644", layer = "desktop-files" },
@@ -635,7 +633,7 @@ kind = "userspace"
 scope = "vm"
 images = ["host"]
 packages = ["tilo-server"]
-bins = ["tilo-server", "tilo-server-admin", "tilo-enroll"]
+bins = ["tilo-server", "tilo-server-admin"]
 units = ["tilo-server.service"]
 layer = "host-binaries"
 files = [
@@ -643,8 +641,6 @@ files = [
   { link = "../libexec/tilo/tilo-server", to = "/usr/bin/tilo-server" },
   { from = "tilo-server-admin", to = "/usr/libexec/tilo/tilo-server-admin", mode = "0755" },
   { link = "../libexec/tilo/tilo-server-admin", to = "/usr/bin/tilo-server-admin" },
-  { from = "tilo-enroll", to = "/usr/libexec/tilo/tilo-enroll", mode = "0755" },
-  { link = "../libexec/tilo/tilo-enroll", to = "/usr/bin/tilo-enroll" },
 ]
 
 [[component]]

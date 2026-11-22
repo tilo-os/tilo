@@ -49,7 +49,7 @@ inside efibootmgr --version >/dev/null || die 'no efibootmgr, so a server cannot
 
 # The programs, at the paths their units and scripts name.
 for bin in usr/libexec/tilo/tilo-server usr/libexec/tilo/tilo-server-admin \
-  usr/libexec/tilo/tilo-enroll usr/bin/fs usr/libexec/tilo/tilo-api \
+  usr/bin/fs usr/libexec/tilo/tilo-api \
   usr/libexec/tilo/tilolang-process \
   usr/libexec/tilo/tilo-linux-vm usr/libexec/tilo-esp-write \
   usr/libexec/tilo-image-policy-check usr/libexec/tilo-board-successor \

@@ -44,13 +44,6 @@ pub const DEVICE: &[Verb] = &[
         needs: "a TPM-sealed disk",
     },
     Verb {
-        name: "enroll",
-        program: "tilo-enroll",
-        prefix: &[],
-        about: "Certify this device as one of yours, or approve another",
-        needs: "Tilo's device enrollment",
-    },
-    Verb {
         name: "unlock-from",
         program: "tilo-auth",
         prefix: &["sibling"],
