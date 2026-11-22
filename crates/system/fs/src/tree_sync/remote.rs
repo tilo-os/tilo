@@ -84,7 +84,10 @@ pub enum Told {
     },
     /// What the service has now: the parts of the tree it has anything of, among those
     /// this connection named, and how many of this device's writes it still keeps.
-    Peer { holds: Vec<TreeChunk>, pending: u64 },
+    Peer {
+        holds: Vec<TreeChunk>,
+        pending: u64,
+    },
     Wake(Wake),
 }
 
@@ -231,8 +234,11 @@ async fn linked_once(
     socket: &std::path::Path,
     wakes: &mpsc::UnboundedSender<Wake>,
 ) -> Result<(), String> {
-    let stream = tokio::net::UnixStream::connect(socket)
-        .await
+    let stream = tilo_files::native::socket::connect(socket)
+        .and_then(|stream| {
+            stream.set_nonblocking(true)?;
+            tokio::net::UnixStream::from_std(stream)
+        })
         .map_err(|error| format!("connect to {}: {error}", socket.display()))?;
     let (mut reader, mut writer) = stream.into_split();
     FRAMING
@@ -268,7 +274,10 @@ async fn linked_once(
             };
             if let Told::Wake(wake) = told {
                 if let Wake::Opened { chunk, answer } = &wake {
-                    link.state.lock_recover().answers.insert(*chunk, Some(*answer));
+                    link.state
+                        .lock_recover()
+                        .answers
+                        .insert(*chunk, Some(*answer));
                 }
                 if wakes.send(wake).is_err() {
                     return Ok(());

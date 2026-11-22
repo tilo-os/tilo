@@ -851,6 +851,12 @@ readers = [
 ]
 
 [[cargo]]
+package = "tilolang-web"
+# The page's tests compile and run every app below apps/tl from its sources, as a page holds them.
+inputs = ["apps/tl/"]
+readers = ["crates/lang/tilolang-web/tests/apps.rs"]
+
+[[cargo]]
 package = "tilolang-youtube"
 # The origin's tests compile tube's package from its source and ids lock.
 inputs = ["apps/tl/tube/"]
@@ -864,13 +870,14 @@ readers = [
 package = "tilolang-process"
 # The host compiles built-in packages and embeds the app window's catalogues and the toolkit's (the
 # words its dates and clocks are written in), and its task's tests hold native apps' packages from
-# their surfaces, as a session hands them.
+# their surfaces, as a session hands them, and the notebooks the native Notes app kept.
 inputs = [
   "apps/tl/",
   "apps/tl/gallery/",
   "apps/chat/",
   "apps/tasks/",
   "crates/platform/tilo-app-window/locales/",
+  "crates/platform/tilolang-tilo/tests/legacy/rust_notes.hex",
   "crates/sdk/ui-core/locales/",
 ]
 readers = [
@@ -879,6 +886,7 @@ readers = [
   "crates/platform/tilolang-process/src/phrases.rs",
   "crates/platform/tilolang-process/tests/process.rs",
   "crates/platform/tilolang-process/tests/own_resources.rs",
+  "crates/platform/tilolang-process/tests/process/native_notes.rs",
 ]
 
 
@@ -1558,7 +1566,6 @@ readers = [
   "crates/session/session/tests/common/people.rs",
   "crates/session/session/tests/firstboot.rs",
   "crates/session/session/tests/session_package.rs",
-  "crates/session/session/tests/files_tree.rs",
 ]
 
 [[cargo]]
