@@ -1,9 +1,6 @@
 ## What the records are called, and the actions on them
 settings-accessibility = Accessibility
 settings-accessibility-device = Accessibility on this device
-settings-mcp-server = Agents from your other devices
-settings-mcp-server-set-accept-own-devices = Accept agents from my other devices
-settings-mcp-server-set-act-without-asking = Let them act without asking
 settings-continuity = Continuity
 settings-continuity-allow-continuity = Allow Continuity
 settings-continuity-allow-capability = Allow a kind of Continuity
