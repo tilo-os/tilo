@@ -1,7 +1,6 @@
 //! The layer list stands as a tree: grouped layers under their folder, folded away and
 //! opened again, each row choosing what the brush paints.
 
-
 use canvas::App;
 use serde_json::json;
 use ui::a11y::Action;

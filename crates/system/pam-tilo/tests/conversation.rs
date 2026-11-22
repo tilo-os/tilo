@@ -9,7 +9,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};

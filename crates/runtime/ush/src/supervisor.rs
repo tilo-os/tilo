@@ -747,8 +747,7 @@ fn session_limit_reached(
     transport: &SessionTransport<'_>,
     writer: &mut UnixStream,
 ) -> anyhow::Result<bool> {
-    if transport.active.load(std::sync::atomic::Ordering::Acquire) < MAX_ACTIVE_SESSIONS
-    {
+    if transport.active.load(std::sync::atomic::Ordering::Acquire) < MAX_ACTIVE_SESSIONS {
         return Ok(false);
     }
     reply(

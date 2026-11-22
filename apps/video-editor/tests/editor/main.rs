@@ -1,4 +1,3 @@
-
 //! The editor as a person and a screen reader meet it: hosted by the app
 //! framework, driven through keys, pointer and the accessibility tree, and
 //! read back through the project the host holds. One binary, so the editor

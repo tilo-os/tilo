@@ -1312,10 +1312,9 @@ fn pages_in_tree_order(pages: &[IncomingPage]) -> Vec<&IncomingPage> {
     while !remaining.is_empty() {
         let before = remaining.len();
         remaining.retain(|page| {
-            let ready = page
-                .parent
-                .as_deref()
-                .is_none_or(|parent| placed.contains(parent) || !pages.iter().any(|p| p.key == parent));
+            let ready = page.parent.as_deref().is_none_or(|parent| {
+                placed.contains(parent) || !pages.iter().any(|p| p.key == parent)
+            });
             if ready {
                 placed.insert(page.key.as_str());
                 ordered.push(page);
@@ -1342,7 +1341,8 @@ fn page_path(pages: &[IncomingPage], page: &IncomingPage) -> String {
     };
     let mut path = vec![name(page)];
     let mut parent = page.parent.as_deref();
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::from([page.key.as_str()]);
+    let mut seen: std::collections::HashSet<&str> =
+        std::collections::HashSet::from([page.key.as_str()]);
     while let Some(key) = parent {
         let Some(above) = pages.iter().find(|above| above.key == key) else {
             break;

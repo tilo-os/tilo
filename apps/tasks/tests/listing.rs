@@ -10,7 +10,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 mod common;
 
 use std::collections::BTreeSet;

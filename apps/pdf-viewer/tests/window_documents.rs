@@ -1,4 +1,3 @@
-
 use ui::framework::testing::TestApp;
 use ui::widget::Widget as _;
 

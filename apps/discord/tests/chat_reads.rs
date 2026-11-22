@@ -1,4 +1,3 @@
-
 //! What the bridge reads of a real Chat record: the ids a verb created come
 //! back in its answer, and Chat's resources as the resource api reads them are
 //! what the planners read.

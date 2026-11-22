@@ -1032,4 +1032,3 @@ fn median_ms(times: &[std::time::Duration]) -> f64 {
     sorted.sort_by(f64::total_cmp);
     sorted.get(sorted.len() / 2).copied().unwrap_or_default()
 }
-

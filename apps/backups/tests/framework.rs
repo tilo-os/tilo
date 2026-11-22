@@ -1,4 +1,3 @@
-
 //! Backups on the framework: the retention controls edit the document through the
 //! resource's action, and backing up, verifying and restoring are effects every caller
 //! reaches the same way, with jobs that run off the UI thread against this device's

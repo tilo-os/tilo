@@ -7,7 +7,6 @@
 //! app ever draws (every message longer, every label wider), so a capture
 //! that survives it survives every translation.
 
-
 use git_client::i18n::t;
 use git_client::resource::GitClientShell;
 use ui::framework::ResourceApp as _;

@@ -7,7 +7,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use speed_test::SpeedTestShell;
 use ui::framework::testing::HeadlessApp;
 use ui::vello::kurbo::Rect;

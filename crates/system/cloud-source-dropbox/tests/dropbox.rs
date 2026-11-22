@@ -10,7 +10,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use std::io::Read;
 use std::sync::Arc;
 use std::time::Duration;

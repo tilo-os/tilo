@@ -6,7 +6,6 @@
 //! With `TILO_FORMS_SHOTS=<dir>` the test `shots` writes the open form at desktop and phone
 //! sizes, light and dark.
 
-
 use crate::change_marks::right_click;
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;

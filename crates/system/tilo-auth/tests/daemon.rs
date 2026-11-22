@@ -10,7 +10,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use settings_store::sign_in_comforts::SignInComforts;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

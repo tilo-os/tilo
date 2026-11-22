@@ -9,7 +9,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use api_tester::ApiTesterShell;
 use api_tester::actions::ApiTesterEffect;
 use ui::a11y::Role;

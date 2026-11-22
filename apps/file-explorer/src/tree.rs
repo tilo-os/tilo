@@ -1718,17 +1718,13 @@ mod tests {
 
     #[test]
     fn the_handoff_opens_the_app_the_bytes_name_with_the_files_content_and_name() {
-        let handoff =
-            TreeBrowser::handoff("so.tilo.notes", "Open").expect("the handoff binds");
+        let handoff = TreeBrowser::handoff("so.tilo.notes", "Open").expect("the handoff binds");
         let hash = "ab".repeat(32);
         let invocation = handoff
             .binding()
             .invoke((hash.clone(), "plan.txt".to_owned()))
             .expect("the row's click is one invocation");
-        assert_eq!(
-            invocation.address.resource.as_str(),
-            "so.tilo.notes.app"
-        );
+        assert_eq!(invocation.address.resource.as_str(), "so.tilo.notes.app");
         assert_eq!(invocation.address.action.as_str(), "open");
         let arguments = serde_json::Value::Object(invocation.arguments);
         assert_eq!(arguments["content_hash"].as_str(), Some(hash.as_str()));

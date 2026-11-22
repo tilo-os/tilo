@@ -2,7 +2,6 @@
 //! each card's included, is bound to an action the window publishes, so the window's actions
 //! reach agents and `tilo-control actions`; and a card's context menu offers its actions.
 
-
 use crate::change_marks::{flattened, menu_items, right_click};
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;

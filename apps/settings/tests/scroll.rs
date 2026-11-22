@@ -1,6 +1,5 @@
 //! Driven scrolling test for the settings content pane.
 
-
 use settings::categories::Category;
 use ui::theme::Theme;
 use ui::widget::Widget;

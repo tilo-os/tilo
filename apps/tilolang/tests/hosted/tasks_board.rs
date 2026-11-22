@@ -7,7 +7,6 @@
 //! With `TILO_TASKS_SHOTS=<dir>` the test `shots` writes the board at desktop and phone sizes,
 //! light and dark, before and after a drag.
 
-
 use crate::change_marks::Driven as _;
 use tilolang_app::app::TlApp;
 use ui::a11y::Role;

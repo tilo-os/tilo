@@ -1,4 +1,3 @@
-
 //! An agent's card: the resource Console publishes for each client, the card its face in
 //! the workspace's presence opens, and what that face asks of it (Stop, Revoke) reaching
 //! the MCP server once the card has read it.

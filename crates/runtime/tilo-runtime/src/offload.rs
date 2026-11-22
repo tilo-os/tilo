@@ -42,8 +42,8 @@ use tilo_workspace_service::content::{ContentState, RouteContent};
 // A host that keeps the workspaces' content itself implements the media a
 // route binds its inputs from in the same scope the apps' own content is
 // addressed in, and hands it to [`offer_offload`] beside the peers it asks.
-pub use runtime_fs::blobs::BlobScope;
 pub use media::{BindError, MediaFuture, WorkspaceMedia};
+pub use runtime_fs::blobs::BlobScope;
 
 mod media;
 

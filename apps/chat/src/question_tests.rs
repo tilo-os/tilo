@@ -655,22 +655,36 @@ fn a_part_whose_answer_kept_typed_words_migrates_and_keeps_the_answer() {
         let message = evolution::collection_items(doc, &ROOT, "messages")
             .unwrap()
             .into_iter()
-            .find(|message| evolution::map_at(doc, message, "question").unwrap().is_some())
+            .find(|message| {
+                evolution::map_at(doc, message, "question")
+                    .unwrap()
+                    .is_some()
+            })
             .expect("a message asks");
-        let question = evolution::map_at(doc, &message, "question").unwrap().unwrap();
-        evolution::map_at(doc, &question, "answered").unwrap().expect("it is answered")
+        let question = evolution::map_at(doc, &message, "question")
+            .unwrap()
+            .unwrap();
+        evolution::map_at(doc, &question, "answered")
+            .unwrap()
+            .expect("it is answered")
     };
     let mut old = part.doc.clone();
     let answered = answered_at(&old);
     old.put(&answered, "detail", "and the drafts too").unwrap();
     evolution::write_version(&mut old, 1).unwrap();
 
-    assert!(evolution::migrate::<ChatMessages>(&mut old).unwrap(), "version 1 migrates");
+    assert!(
+        evolution::migrate::<ChatMessages>(&mut old).unwrap(),
+        "version 1 migrates"
+    );
     assert!(
         old.get(answered_at(&old), "detail").unwrap().is_none(),
         "the typed words are gone"
     );
     let migrated = ChatMessages::read(&old).expect("the migrated part reads");
     let before = ChatMessages::read(&part.doc).expect("the part reads");
-    assert_eq!(migrated.messages, before.messages, "every message reads as it was");
+    assert_eq!(
+        migrated.messages, before.messages,
+        "every message reads as it was"
+    );
 }

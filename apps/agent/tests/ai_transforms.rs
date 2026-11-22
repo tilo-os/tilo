@@ -6,7 +6,6 @@
 //! checker reads the real published parameters and result specs, and the
 //! interpreter holds the real answers to them.
 
-
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Mutex;

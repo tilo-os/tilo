@@ -46,14 +46,13 @@ fn message(id: &str, channel: &str, text: &str, parent: Option<&str>) -> NewMess
     }
 }
 
-fn post(
-    workspace: &mut Workspace,
-    by: &MemberId,
-    at: i64,
-    message: NewMessage,
-) {
+fn post(workspace: &mut Workspace, by: &MemberId, at: i64, message: NewMessage) {
     workspace
-        .apply_part_at(by, at, ChatMessages::POST.with(chat_messages::Post { message }))
+        .apply_part_at(
+            by,
+            at,
+            ChatMessages::POST.with(chat_messages::Post { message }),
+        )
         .unwrap();
 }
 
@@ -117,7 +116,12 @@ fn channels(workspace: &mut Workspace) {
         ),
         ("c_release", "release", Some(team), None),
         ("c_weekend", "weekend", Some(social), None),
-        ("c_plans", "old-plans", None, Some("What we planned last year")),
+        (
+            "c_plans",
+            "old-plans",
+            None,
+            Some("What we planned last year"),
+        ),
     ] {
         apply(
             workspace,

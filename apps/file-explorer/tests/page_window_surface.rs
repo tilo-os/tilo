@@ -1,4 +1,3 @@
-
 // A page shows Files through a window of its own, whose resource a workspace decides by the
 // app's committed surface: one missing from it is held by the workspace for good, and every
 // other device and person finds no resource to open the window on.

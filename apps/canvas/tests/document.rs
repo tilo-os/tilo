@@ -1,4 +1,3 @@
-
 use canvas::App;
 use ui::prelude::TestApp;
 

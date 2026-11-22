@@ -136,9 +136,7 @@ impl InternalTransport {
         if expected == 0 || expected > MAX_MANIFEST_BYTES as u64 {
             return Err("Invalid selected manifest size".into());
         }
-        let mut response = self
-            .request(url, 0, cancel, None)
-            .map_err(|e| e.detail())?;
+        let mut response = self.request(url, 0, cancel, None).map_err(|e| e.detail())?;
         cancelled(cancel)?;
         self.response_identity(&response)?;
         if response.status() != reqwest::StatusCode::OK {

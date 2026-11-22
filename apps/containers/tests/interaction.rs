@@ -9,7 +9,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use containers::ContainersShell;
 use containers::app::ContainersApp;
 use containers::draft::{CreateDraft, CreateField};

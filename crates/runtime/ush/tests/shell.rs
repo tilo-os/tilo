@@ -3,7 +3,6 @@
 //! program that is none of them run on the machine, and a file command
 //! carried out outside a guest, keeping what it replaced.
 
-
 use std::path::Path;
 use std::process::{Command, Output};
 use tilo_test_env::SpawnUnderEnvLock as _;

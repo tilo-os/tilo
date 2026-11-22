@@ -336,7 +336,10 @@ pub struct NewMessage {
 /// Bring a part of version 1 up: an answered question kept what its person typed beside a
 /// choice (`question.answered.detail`), and a question is now answered only with one of its
 /// choices, so that field goes.
-fn upgrade(doc: &mut ui::tilo_resource::Doc, from: u32) -> Result<(), ui::tilo_resource::ModelError> {
+fn upgrade(
+    doc: &mut ui::tilo_resource::Doc,
+    from: u32,
+) -> Result<(), ui::tilo_resource::ModelError> {
     use automerge::transaction::Transactable as _;
     use automerge::{ROOT, ReadDoc as _};
     use ui::tilo_resource::evolution;

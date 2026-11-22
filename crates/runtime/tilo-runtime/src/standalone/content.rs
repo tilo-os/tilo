@@ -104,7 +104,9 @@ impl ContentShelf for ProfileShelf {
 
     fn keep(&self, scope: &ContentScope, hash: &str, bytes: &[u8]) -> Result<(), String> {
         let kept = self
-            .on(scope, |scoped| scoped.put(bytes, "application/octet-stream"))
+            .on(scope, |scoped| {
+                scoped.put(bytes, "application/octet-stream")
+            })
             .map_err(|error| error.to_string())?;
         if kept.hash == hash {
             Ok(())

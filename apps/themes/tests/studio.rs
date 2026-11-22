@@ -8,7 +8,6 @@
     clippy::indexing_slicing,
     reason = "a failed unwrap or index in a test is its assertion"
 )]
-
 #![allow(
     clippy::cast_possible_truncation,
     reason = "column positions are rounded to whole pixels to count them"

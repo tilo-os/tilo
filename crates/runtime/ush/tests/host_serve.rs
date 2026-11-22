@@ -2,7 +2,6 @@
 //! Terminal, refused until the device owner allowed it once, then a login
 //! shell on a pty.
 
-
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;

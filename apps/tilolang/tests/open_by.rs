@@ -3,7 +3,6 @@
 //! Both are the window's detail level, in the app's plain window with no session
 //! (`tilolang dev`'s) — the same one path a session's window takes.
 
-
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
 

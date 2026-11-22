@@ -8,7 +8,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use backups::BackupsShell;
 use ui::accesskit::Role;
 use ui::framework::testing::TestApp;

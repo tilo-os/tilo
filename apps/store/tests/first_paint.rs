@@ -9,7 +9,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use std::time::{Duration, Instant};
 
 use store::StoreApp;

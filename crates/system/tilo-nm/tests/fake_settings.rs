@@ -8,7 +8,6 @@
     clippy::indexing_slicing,
     reason = "a failed unwrap or index in a test is its assertion"
 )]
-
 #![allow(
     clippy::unused_self,
     clippy::needless_pass_by_value,

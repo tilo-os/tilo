@@ -1,4 +1,3 @@
-
 use std::time::Duration;
 use tilo_content::ContentStore;
 use ui::framework::testing::TestApp;

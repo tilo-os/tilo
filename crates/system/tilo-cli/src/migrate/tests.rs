@@ -439,7 +439,10 @@ fn a_stopped_run_resumes_where_it_stopped() {
     let journal = run_once(&home, &place, &mut again).unwrap();
     assert!(again.actions.is_empty(), "{:?}", again.actions);
     assert!(journal.brought.is_empty(), "{journal:?}");
-    assert_eq!(journal.already_there, 2, "its two contacts are there already");
+    assert_eq!(
+        journal.already_there, 2,
+        "its two contacts are there already"
+    );
 }
 
 #[test]

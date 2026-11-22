@@ -1,4 +1,3 @@
-
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::presence::PresenceKey;
 

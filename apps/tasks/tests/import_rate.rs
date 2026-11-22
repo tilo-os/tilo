@@ -92,4 +92,3 @@ fn each_list_reads_back_each_description_it_wrote_once() {
         "no list reads an issue back from the tracker, its own or an earlier list's"
     );
 }
-

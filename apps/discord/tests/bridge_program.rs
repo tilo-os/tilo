@@ -1,4 +1,3 @@
-
 //! The Discord bridge bot's program (discord-bridge.md §3), built here and
 //! kept as the canonical file `bridge/program.json` that the bot directory
 //! publishes. The test checks it against the real Chat and Discord action

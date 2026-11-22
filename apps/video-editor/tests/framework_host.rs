@@ -1,4 +1,3 @@
-
 //! The editor hosted by the app framework: its custom timeline keeps its own
 //! rendering and input, and every edit it makes takes the host's path —
 //! permission-checked, one undo step, attributed, replayable.

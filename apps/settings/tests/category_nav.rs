@@ -1,6 +1,5 @@
 //! Click-driven navigation proof.
 
-
 use settings::categories::Category;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;

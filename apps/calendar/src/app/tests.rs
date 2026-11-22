@@ -1713,7 +1713,10 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
             .as_array()
             .unwrap()
             .iter()
-            .find(|verb| verb.get("name").and_then(toml::Value::as_str) == Some(super::store::MAIL_INVITATION))
+            .find(|verb| {
+                verb.get("name").and_then(toml::Value::as_str)
+                    == Some(super::store::MAIL_INVITATION)
+            })
             .expect("Mail's mailbox offers the invitation");
         let mut taken: Vec<&str> = verb["params"]
             .as_array()

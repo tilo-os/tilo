@@ -154,16 +154,12 @@ impl ChatApp {
                 }
                 item
             })
-            .chain(
-                self.agents_unlisted()
-                    .into_iter()
-                    .map(|(id, name, agent)| {
-                        NavItem::new(channel_place(id.as_str()), &name)
-                            .icon(Icon::Users)
-                            .person(agent.clone(), Some(self.identity_colour(&agent)), false)
-                            .person_face(&name, None)
-                    }),
-            )
+            .chain(self.agents_unlisted().into_iter().map(|(id, name, agent)| {
+                NavItem::new(channel_place(id.as_str()), &name)
+                    .icon(Icon::Users)
+                    .person(agent.clone(), Some(self.identity_colour(&agent)), false)
+                    .person_face(&name, None)
+            }))
             .collect()
     }
 

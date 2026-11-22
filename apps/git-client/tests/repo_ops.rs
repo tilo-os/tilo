@@ -3,7 +3,6 @@
 //! tree, branches or stash list changed: nothing here is a tautology over in-memory
 //! state. Fixtures and checks use libgit2 directly and never shell out to `git`.
 
-
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};

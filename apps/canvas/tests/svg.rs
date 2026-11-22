@@ -1,4 +1,3 @@
-
 use canvas::model::Shape;
 use canvas::{App, Artwork};
 use serde_json::Value;
