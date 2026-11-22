@@ -8,24 +8,14 @@
 //! resource takes ([`tilo_actions::Pick::Resource`]). It names no workspace: a reference is
 //! resolved within the workspace whose document holds it. Its label is the run, so the mark
 //! carries none.
-//!
-//! Older text wrote a resource two other ways, which still read, as the reference they meant
-//! ([`Embed::of_mark`]): a native link (`tilo://open#…`) and a tilolang resource's published
-//! id (`tl:<app>:<id>`). Nothing rewrites them; text written from now on uses the one form.
 
 use serde_json::{Map, Value as Json};
 use tilo_actions::MemberId;
 
-use crate::link::{Link, ResourceSegment};
 use crate::{ResourceAt, ResourceRef};
 
 /// The mark a reference's run carries, valued with what it refers to ([`Embed::mark_value`]).
 pub const MARK: &str = "mention";
-
-/// The prefix of a native link, an older form of a resource reference.
-const NATIVE_LINK: &str = "tilo://open#";
-/// The prefix of a tilolang resource's published id, an older form of a resource reference.
-const PUBLISHED_PREFIX: &str = "tl:";
 
 /// What a reference refers to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,8 +42,8 @@ impl Embed {
         })
     }
 
-    /// What a [`MARK`] mark's value refers to, whichever form it was written in; `None` for an
-    /// empty value or a malformed reference.
+    /// What a [`MARK`] mark's value refers to; `None` for an empty value or a malformed
+    /// reference.
     #[must_use]
     pub fn of_mark(value: &str) -> Option<Self> {
         if value.is_empty() {
@@ -64,19 +54,6 @@ impl Embed {
                 return Some(Self::Member(member));
             }
             return resource_of_json(value).map(Self::Resource);
-        }
-        if value.starts_with(NATIVE_LINK) {
-            return resource_of_link(value).map(Self::Resource);
-        }
-        if let Some(rest) = value.strip_prefix(PUBLISHED_PREFIX) {
-            // `tl:<app>:<id>`: the app id is dotted and never holds a `:`. The published id is
-            // the catalogue's id of the resource; its kind is its type's, which only the
-            // package knows, so it reads empty until the reference is resolved.
-            let (app, id) = rest.split_once(':')?;
-            if app.is_empty() || id.is_empty() {
-                return None;
-            }
-            return Some(Self::resource(app, String::new(), value));
         }
         None
     }
@@ -187,7 +164,7 @@ pub fn read_text<'a>(
     out
 }
 
-/// Whether a [`MARK`] mark's value names a resource rather than a member, in any form.
+/// Whether a [`MARK`] mark's value names a resource rather than a member.
 #[must_use]
 pub fn names_resource(value: &str) -> bool {
     matches!(Embed::of_mark(value), Some(Embed::Resource(_)))
@@ -203,23 +180,6 @@ fn resource_of_json(value: &str) -> Option<ResourceAt> {
     fields.entry("span").or_insert(Json::Null);
     let at: ResourceAt = serde_json::from_value(Json::Object(fields)).ok()?;
     (!at.app.is_empty() && !at.reference.id.is_empty()).then_some(at)
-}
-
-/// The resource a native link names, read within the workspace holding the text: its app,
-/// record and item. A link naming no item names no resource.
-fn resource_of_link(value: &str) -> Option<ResourceAt> {
-    let link = Link::parse_native(value).ok()?;
-    let target = link.target;
-    let app = target.app?;
-    let resource = target.resource?;
-    Some(ResourceAt {
-        app: app.as_str().to_owned(),
-        record: match target.record {
-            Some(ResourceSegment::Id(id)) => Some(id),
-            Some(ResourceSegment::Primary) | None => None,
-        },
-        reference: resource.into_ref(String::new()),
-    })
 }
 
 #[cfg(test)]
@@ -308,35 +268,5 @@ mod tests {
             ),
             "xcd"
         );
-    }
-
-    #[test]
-    fn older_forms_still_read_as_the_resource_they_meant() {
-        assert_eq!(
-            Embed::of_mark("tl:so.tilo.lang.chat:doc1/f2:m3"),
-            Some(Embed::resource(
-                "so.tilo.lang.chat",
-                "",
-                "tl:so.tilo.lang.chat:doc1/f2:m3"
-            ))
-        );
-        assert_eq!(
-            Embed::of_mark("tilo://open#/me/so.tilo.chat/-/chat.channel:general"),
-            Some(Embed::resource(
-                "so.tilo.chat",
-                "chat.channel",
-                "chat.channel:general"
-            ))
-        );
-        let in_resource = Embed::of_mark("tilo://open#/me/so.tilo.notes/note:plan/notes.block/b7")
-            .and_then(|e| e.as_resource().cloned())
-            .expect("a resource");
-        assert_eq!(in_resource.record.as_deref(), Some("note:plan"));
-        assert_eq!(in_resource.reference.kind, "notes.block");
-        assert_eq!(in_resource.reference.id, "b7");
-        // A link that names no item, and malformed references, refer to nothing.
-        assert_eq!(Embed::of_mark("tilo://open#/me/so.tilo.notes"), None);
-        assert_eq!(Embed::of_mark("tl:nothing"), None);
-        assert_eq!(Embed::of_mark("{\"app\":\"\"}"), None);
     }
 }

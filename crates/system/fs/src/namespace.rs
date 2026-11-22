@@ -24,10 +24,8 @@ pub use fs_protocol::tree::ROOT_ID;
 // The document's layout is `fs_protocol::tree`'s: the record that carries the tree reads
 // the same document the mount writes.
 use fs_protocol::tree::{
-    DOCUMENT_ID_KEY, NODES_KEY, PLACEMENT_NAME_KEY, ROOT_DOCUMENT_ID_KEY, TRASH_ID,
-    document_node_id,
+    DOCUMENT_ID_KEY, PLACEMENT_NAME_KEY, ROOT_DOCUMENT_ID_KEY, TRASH_ID, document_node_id,
 };
-const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"tilo.collaborative-fs.namespace-record-id.v1";
 /// Bounded fixed-point rounds for sibling name conflicts: each round gives a losing
 /// record a longer, record-id-specific name, so a directory settles in a few dozen rounds.
 const MAX_STRUCTURAL_CONFLICT_ROUNDS: usize = 64;
@@ -429,10 +427,6 @@ pub struct Namespace {
     document_index_ambiguous: HashSet<FileDocumentId>,
     document_index_digest: DocumentIndexDigest,
     tree: TreeIndex,
-    /// Every node carries a record id. Local creation always writes one, so only a
-    /// document import can clear this (and each import re-runs the migration), which keeps
-    /// `save_incremental` from rescanning all nodes.
-    document_ids_complete: bool,
     /// Nodes a delta placed since the last resolution: the only nodes a cycle can newly
     /// run through. The next resolution clears it, and it never holds more than the tree.
     placed_since_resolve: HashSet<String>,
@@ -605,7 +599,6 @@ impl Namespace {
             document_index_ambiguous: HashSet::new(),
             document_index_digest: DocumentIndexDigest::default(),
             tree: TreeIndex::default(),
-            document_ids_complete: false,
             placed_since_resolve: HashSet::new(),
             cycle_scan_pending: true,
             #[cfg(test)]
@@ -1742,7 +1735,6 @@ impl Namespace {
     /// does not know (the asker's own changes) are ignored, so an asker that
     /// shares no history receives everything.
     pub fn changes_since(&mut self, heads: &[automerge::ChangeHash]) -> Vec<u8> {
-        self.note_change();
         let records = self
             .doc
             .each_mut()

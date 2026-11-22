@@ -99,33 +99,6 @@ fn validate_enrollment(
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-/// Rewrite every stored enrollment intent a build wrote before the join
-/// version bump in this build's form. The signed Complete stays exactly as
-/// the device signed it - nothing here can sign for it again - and the
-/// record around it takes this build's version, so what is left on disk is
-/// the shape this build writes.
-pub(crate) fn migrate_intents(storage: &mut NativeAuthorityStorage) -> Result<bool, String> {
-    let mut changed = false;
-    for record in storage.workspaces.values_mut() {
-        if let Some(enrollment) = &mut record.enrollment {
-            let bytes = VerifiedNativeEnrollmentIntent::restore(&enrollment.enrollment_intent)?
-                .durable_bytes()?;
-            if bytes != enrollment.enrollment_intent {
-                enrollment.enrollment_intent = bytes;
-                changed = true;
-            }
-        }
-    }
-    for pending in storage.pending.values_mut() {
-        let bytes = VerifiedNativeEnrollmentIntent::restore(&pending.intent)?.durable_bytes()?;
-        if bytes != pending.intent {
-            pending.intent = bytes;
-            changed = true;
-        }
-    }
-    Ok(changed)
-}
 impl NativeWorkspaceOwner {
     /// Persist the signed Complete proof before it is sent, so a lost
     /// response is retried with the exact same proof. `local` is the

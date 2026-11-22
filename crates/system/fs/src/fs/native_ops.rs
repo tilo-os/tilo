@@ -149,7 +149,6 @@ impl QuickFS {
             if !ns.put_posix_attrs(record, &attrs) {
                 return Err(EIO);
             }
-            ns.note_change();
         }
         self.publish();
         Ok(())
@@ -451,7 +450,6 @@ impl QuickFS {
             if !ns.put_changeset_mark(device, mark) {
                 return;
             }
-            ns.note_change();
         }
         self.publish();
     }
@@ -683,7 +681,6 @@ impl QuickFS {
             if ns.lease_authority() == Some(me) || !ns.put_lease_authority(me) {
                 return;
             }
-            ns.note_change();
         }
         self.publish();
     }
@@ -731,7 +728,6 @@ impl QuickFS {
             if !ns.put_lease_request(record, me, LeaseRequest { nonce }) {
                 return Err(None);
             }
-            ns.note_change();
         }
         self.publish();
         let before = current.map_or(0, |l| l.epoch);
@@ -754,7 +750,6 @@ impl QuickFS {
         {
             let mut ns = self.ns();
             ns.remove_lease_request(record, me);
-            ns.note_change();
         }
         self.publish();
         match answer {
@@ -803,11 +798,7 @@ impl QuickFS {
                     granted.push((path, lease));
                 }
             }
-            let any = !granted.is_empty();
-            if any {
-                ns.note_change();
-            }
-            any
+            !granted.is_empty()
         };
         if granted_any {
             self.publish();
@@ -833,10 +824,11 @@ impl QuickFS {
             if current == Some(lease) {
                 return Ok(lease);
             }
-            if !ns.put_write_lease(record, &lease) {
+            let written = ns.put_write_lease(record, &lease);
+            drop(ns);
+            if !written {
                 return Err(None);
             }
-            ns.note_change();
             lease
         };
         self.publish();
@@ -862,10 +854,11 @@ impl QuickFS {
             if current == Some(lease) {
                 return Ok(lease);
             }
-            if !ns.put_write_lease(record, &lease) {
+            let written = ns.put_write_lease(record, &lease);
+            drop(ns);
+            if !written {
                 return Err(None);
             }
-            ns.note_change();
             lease
         };
         self.publish();
@@ -895,7 +888,6 @@ impl QuickFS {
                     if !ns.put_write_lease(record, &released) {
                         return;
                     }
-                    ns.note_change();
                 }
                 _ => return,
             }

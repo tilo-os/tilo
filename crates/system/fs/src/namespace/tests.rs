@@ -115,42 +115,6 @@ tilo_test_env::scenario! {
             );
         }
         {
-            let mut legacy = Namespace::new("legacy").unwrap();
-            legacy
-                .create_file(ROOT_INO, "old.txt", Some(&h(2)), 2, 1)
-                .unwrap();
-            let ids: Vec<_> = legacy.doc.sorted_node_ids();
-            let _ = legacy.doc.delete(&Obj::index(), ROOT_DOCUMENT_ID_KEY);
-            for id in ids {
-                let node = legacy.node(&id).unwrap();
-                let _ = legacy.doc.delete(&node, DOCUMENT_ID_KEY);
-            }
-            let legacy_bytes = legacy.save();
-
-            let mut first = Namespace::from_bytes("first", &legacy_bytes).unwrap();
-            let mut second = Namespace::from_bytes("second", &legacy_bytes).unwrap();
-            let first_ino = first.lookup(ROOT_INO, "old.txt").unwrap().ino.0;
-            let second_ino = second.lookup(ROOT_INO, "old.txt").unwrap().ino.0;
-            assert_eq!(
-                first.document_id_for(ROOT_INO),
-                second.document_id_for(ROOT_INO),
-                "root migration must not depend on the loading peer"
-            );
-            assert_eq!(
-                first.document_id_for(first_ino),
-                second.document_id_for(second_ino),
-                "node migration must not depend on the loading peer"
-            );
-
-            let expected_root = first.document_id_for(ROOT_INO).unwrap();
-            let expected_file = first.document_id_for(first_ino).unwrap();
-            let migrated_bytes = first.save();
-            let mut persisted = Namespace::from_bytes("third", &migrated_bytes).unwrap();
-            let persisted_ino = persisted.lookup(ROOT_INO, "old.txt").unwrap().ino.0;
-            assert_eq!(persisted.document_id_for(ROOT_INO), Some(expected_root));
-            assert_eq!(persisted.document_id_for(persisted_ino), Some(expected_file));
-        }
-        {
             let mut ns = Namespace::new("a").unwrap();
             let original = ns.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
             let original_document = ns.document_id_for(original).unwrap();
@@ -163,7 +127,6 @@ tilo_test_env::scenario! {
             let mut ns = Namespace::new("a").unwrap();
             ns.create_file(ROOT_INO, "x", Some(&h(1)), 1, 1).unwrap();
             let mut copy = ns.clone_doc();
-            assert!(copy.document_ids_complete);
             let copied = copy.lookup(ROOT_INO, "x").unwrap().ino.0;
             let original = ns.lookup(ROOT_INO, "x").unwrap().ino.0;
             assert_eq!(copy.document_id_for(copied), ns.document_id_for(original));
@@ -1234,7 +1197,6 @@ fn the_trees_own_document_names_its_changes_as_the_making_they_are_part_of() {
 
 /// Each chunk's heads, the tree's own document first.
 fn chunk_heads(ns: &mut Namespace) -> BTreeMap<fs_protocol::TreeChunk, Vec<automerge::ChangeHash>> {
-    ns.note_change();
     ns.doc.heads()
 }
 

@@ -1139,7 +1139,6 @@
    "an_administrators_own_device_changes_the_workspaces_settings_and_an_editors_cannot",
    "an_agents_run_on_a_persons_own_device_reads_their_list_and_asks_before_changing_it",
    "an_attended_or_own_device_effect_needs_no_workspace_consent",
-   "an_earlier_login_on_a_computer_with_its_own_device_key_logs_in_again",
    "an_own_device_invocation_is_for_the_person_here_and_their_apps",
    "an_own_device_invocation_round_trips_through_its_argument",
    "an_own_device_invocation_travels_in_its_argument",

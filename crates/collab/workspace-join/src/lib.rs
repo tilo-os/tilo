@@ -224,8 +224,7 @@ impl VerifiedJoin {
     }
 
     /// The device that issued the invitation: the device of a member the
-    /// workspace's policy let invite, or, for an invitation issued before
-    /// grants named no authority, the authority its issuer was delegated from.
+    /// workspace's policy let invite.
     pub fn workspace_authority(&self) -> &DeviceCert {
         &self.grant.issuer
     }
@@ -326,7 +325,6 @@ pub struct MembershipChallenge {
     pub version: u32,
     pub workspace_id: WorkspaceId,
     /// The device answering: a device of the workspace's owner.
-    #[serde(alias = "authority_device_public_key")]
     pub host_device_public_key: [u8; 32],
     pub user_public_key: [u8; 32],
     pub device_public_key: [u8; 32],
@@ -466,7 +464,6 @@ pub struct JoinBootstrap {
     pub role: Role,
     pub workspace_id: WorkspaceId,
     /// The device that answered: a device of the workspace's owner.
-    #[serde(alias = "authority")]
     pub host: DeviceCert,
     pub certified_roster: Vec<DeviceCert>,
     pub revocations: Vec<RevocationEntry>,
@@ -483,7 +480,6 @@ pub struct OwnerBootstrapV1 {
     pub device_cert: DeviceCert,
     pub workspace_id: WorkspaceId,
     /// The device that answered: a device of the workspace's owner.
-    #[serde(alias = "authority")]
     pub host: DeviceCert,
     pub certified_roster: Vec<DeviceCert>,
     pub revocations: Vec<RevocationEntry>,

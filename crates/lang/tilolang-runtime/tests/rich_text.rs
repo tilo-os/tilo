@@ -347,33 +347,6 @@ mod cases {
             assert_eq!(b.int("task_count", &post), 1);
         }
 
-        phase text_stored_with_an_older_reference_form_still_refers_to_its_resource;
-        {
-            let b = Workspace::on(&AmStore::new(), None);
-            let task = b.task("Fix the build");
-            let post = b.say_text("placeholder");
-            // As the first rich text wrote a resource: its published id as the mark's value.
-            let mut old = RichValue::from_text("see ");
-            old.blocks[0].text.push_str("Fix the build");
-            old.blocks[0].marks.push(tilo_doc::document::MarkSpan {
-                start: 4,
-                end: 17,
-                name: "mention".into(),
-                value: tilo_doc::document::MarkValue::Str(format!(
-                    "tl:so.tilo.lang.richtext:{}",
-                    task.id_string()
-                )),
-            });
-            b.call("edit", vec![Value::resource(&post), Value::Rich(old)]);
-            let refs = b.body(&post).references();
-            assert_eq!(refs.len(), 1, "{refs:?}");
-            assert_eq!(
-                tilolang_runtime::rich::resource_id(&refs[0]),
-                Some(task.id_string().as_str())
-            );
-            assert_eq!(b.int("task_count", &post), 1, "it still reads as the task");
-        }
-
         phase a_time_in_rich_text_is_a_run_marked_with_the_moment;
         {
             let b = Workspace::on(&AmStore::new(), None);

@@ -123,9 +123,6 @@ pub struct OutputDescriptor {
     /// card-qualified key only when another card exposes the same label.
     pub connector: String,
     /// Raw connector label exposed by DRM, e.g. `eDP-1` or `HDMI-A-1`.
-    /// Older compositor snapshots omit this field; consumers must then use
-    /// [`Self::connector`] as the user-facing fallback.
-    #[serde(default)]
     pub connector_label: String,
     pub modes: Vec<OutputMode>,
     pub hdr: bool,
@@ -2596,14 +2593,6 @@ mod tests {
                 assert!(config.output_for(&second.connector).is_none());
                 assert_eq!(first.label(), "HDMI-A-1");
                 assert_eq!(first.card_qualifier(), Some("pci:0000:01:00.0"));
-
-                let legacy: OutputDescriptor = serde_json::from_value(serde_json::json!({
-                    "connector": "HDMI-A-1",
-                    "modes": [], "hdr": false, "vrr": false, "color_profiles": []
-                }))
-                .expect("old snapshot remains compatible");
-                assert_eq!(legacy.label(), "HDMI-A-1");
-                assert_eq!(legacy.card_qualifier(), None);
             }
             {
                 let mut cfg = DisplayConfig::default();
