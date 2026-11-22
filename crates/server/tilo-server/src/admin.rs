@@ -767,7 +767,7 @@ mod tests {
             assert!(!pending_decommissions_path(&temp.path().join("tilo")).exists());
         }
 
-        phase a_revocation_named_no_identity_directory_reaches_the_persons_own_fleet;
+        phase a_revocation_named_no_identity_directory_reaches_the_persons_devices;
         {
             let temp = tempfile::tempdir().unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -785,13 +785,13 @@ mod tests {
             let user = tilo_device_identity::persist::read_public_key(&paths.user_pubkey).unwrap();
             let revocation = sign_host_revocation(&identity_root, &identities, [74; 32]).unwrap();
             persist_fleet_revocation(&identity_root, &identities, &revocation).unwrap();
-            let fleet = tilo_identity::device_fleet::DeviceFleetStore::at(&identities, paths)
+            let devices = tilo_identity::device_fleet::DeviceFleetStore::at(&identities, paths)
                 .load(&hex::encode(user))
                 .unwrap();
             assert_eq!(
-                fleet.revocations,
+                devices.revocations,
                 vec![revocation],
-                "the fleet the person's devices read holds the revocation"
+                "the list of the person's devices holds the revocation"
             );
             drop(env);
         }

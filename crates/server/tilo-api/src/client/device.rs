@@ -31,7 +31,7 @@ const EARLIER_KEY: &str = "key";
 const EARLIER_LOGIN: &str = "device.json";
 
 /// Where this account keeps its login and what the login keeps on this computer (its folders,
-/// its holder's state): `$XDG_STATE_HOME/tilo/device`. The device key and its certificates are
+/// its background process's state): `$XDG_STATE_HOME/tilo/device`. The device key and its certificates are
 /// this computer's, kept where its session keeps them.
 #[derive(Clone, Debug)]
 pub struct Place {

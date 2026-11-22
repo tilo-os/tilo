@@ -95,9 +95,8 @@ account key            person-scoped, restorable from its 24 recovery words
 
 Created once, with the person, not with the machine, and kept by `tilo_identity::store`: one
 Ed25519 key in the person's identity directory (`$XDG_CONFIG_HOME/tilo/identity`), its secret in
-the Secret Service or a 0600 file ([identity-security.md](../identity-security.md)). The record
-format has room for a threshold key, but every identity today is a single key held whole on each
-computer the person keeps it on. Losing one such computer loses nothing, and losing all of them is
+the Secret Service or a 0600 file ([identity-security.md](../identity-security.md)). It is one
+key, held whole on each computer the person keeps it on. Losing one such computer loses nothing, and losing all of them is
 what the recovery words are for (§3.5).
 
 The account key's only jobs: sign device certificates, and sign revocations.
@@ -112,9 +111,9 @@ No device key is generated in or sealed to a TPM or FIDO2 token today. If one is
 keeps the same shape, so no consumer of identity has to know what holds the key.
 
 The set of authorised devices is one signed list per person, never a scalar and never a
-distinguished "owner" field: `DeviceFleetStore` keeps it in the person's identity directory and
-`CertifiedFleet` verifies it. A device joins it one way, `tilo-enrollment`'s `join_with_token`;
-a login code, a pairing code, a QR code and a boot-key request only supply the token.
+distinguished "owner" field. It is kept in the person's identity directory and checked against
+their root on every read. A device is added one way, `join_with_token`: a code one of the
+person's devices approves, and a login code, a QR code and a boot-key request only supply it.
 
 A certificate that carries an expiry is renewed before it runs out — by a device holding the
 account key, or, for a device that holds none, through the person's other devices that do. How
