@@ -69,7 +69,6 @@ TOOLS = [
         ("question", "choices"),
         {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
     ),
-    tool("tilo_devices", "List your other devices.", {}, (), {"readOnlyHint": True, "openWorldHint": True}),
 ]
 
 
@@ -116,10 +115,7 @@ class McpToolsReferenceTests(unittest.TestCase):
         )
         self.assertIn("### tilo_ask\n", page)
         self.assertIn("| `question` | string | yes | What to ask. |", page)
-        self.assertIn("### tilo_devices\n", page)
-        self.assertIn("It takes no arguments.", page)
         self.assertLess(page.index("## Workspace tools"), page.index("## Files"))
-        self.assertLess(page.index("## Files"), page.index("## Devices"))
 
     def test_an_array_says_what_it_holds(self) -> None:
         tools = json.loads(json.dumps(TOOLS))
@@ -152,10 +148,10 @@ class McpToolsReferenceTests(unittest.TestCase):
         self.assertIn("no group holds: tilo_extra", result.stderr)
 
     def test_a_tool_the_server_stopped_serving_is_an_error(self) -> None:
-        tools = [one for one in json.loads(json.dumps(TOOLS)) if one["name"] != "tilo_devices"]
+        tools = [one for one in json.loads(json.dumps(TOOLS)) if one["name"] != "tilo_get"]
         result = self.generate(tools)
         self.assertEqual(result.returncode, 1)
-        self.assertIn("groups name tools the server does not serve: tilo_devices", result.stderr)
+        self.assertIn("groups name tools the server does not serve: tilo_get", result.stderr)
 
 
 if __name__ == "__main__":

@@ -30,36 +30,13 @@ use tilo_peer_state::actions::{
 use tilo_power_mgmt::InhibitToken;
 use tilo_power_mgmt::inhibit::INHIBIT_SUSPEND;
 use tilo_runtime::offload::{ActionServicePeers, turn_offload};
-use tilo_runtime::other_devices::{OtherDevices, Whereabouts};
 
-use crate::device_agents::{HandedAgents, Host};
 use crate::engine::Engine;
 
 /// This device's action service, as the session serves it and reaches the person's other devices
 /// through it.
 #[derive(Clone)]
 pub(crate) struct DeviceActions(Arc<Inner>);
-
-/// The workspaces whose devices this session heard of, and which of them it reaches now.
-impl Whereabouts for DeviceActions {
-    fn workspaces(&self) -> Vec<String> {
-        self.0.here.lock_recover().keys().cloned().collect()
-    }
-
-    fn reachable(&self, workspace: &str, device: [u8; 32]) -> bool {
-        Self::reachable(self, workspace, device)
-    }
-
-    /// The address this session was told, else the endpoint's own discovery of its key.
-    fn addr(&self, id: EndpointId) -> EndpointAddr {
-        self.0
-            .addresses
-            .lock_recover()
-            .get(&id)
-            .cloned()
-            .unwrap_or_else(|| EndpointAddr::new(id))
-    }
-}
 
 struct Inner {
     action_service: ActionService,
@@ -76,8 +53,6 @@ struct Inner {
     dispatch: DeviceDispatch,
     /// The runtime the action service answers on, where its asks and runs are carried out.
     runtime: tokio::runtime::Handle,
-    /// The person this device is, and its own key.
-    whose: ([u8; 32], [u8; 32]),
 }
 
 impl DeviceActions {
@@ -102,39 +77,7 @@ impl DeviceActions {
             here: Mutex::default(),
             dispatch,
             runtime: tokio::runtime::Handle::current(),
-            whose: (
-                identity.device_cert.user_public_key,
-                identity.device_cert.device_public_key,
-            ),
         }))
-    }
-
-    /// Work with the agents the person's other devices hand requests to through the MCP server
-    /// whose pass `wake` starts, as sessions of `sessions` ([`crate::device_agents`]).
-    pub(crate) fn hear_agents(
-        &self,
-        wake: tilo_service::Wake,
-        sessions: Arc<crate::agent_sessions::AgentSessions>,
-    ) -> Arc<HandedAgents> {
-        let handed = HandedAgents::new(
-            wake,
-            sessions,
-            self.0.action_service.clone(),
-            self.0.runtime.clone(),
-        );
-        *self.0.dispatch.0.handed.lock_recover() = Some(Arc::clone(&handed));
-        handed
-    }
-
-    /// The person's other devices, as an agent of this login works on one of them.
-    pub(crate) fn other_devices(&self) -> OtherDevices {
-        OtherDevices::new(
-            self.0.action_service.clone(),
-            self.0.endpoint.clone(),
-            self.0.runtime.clone(),
-            self.0.whose,
-            Arc::new(self.clone()),
-        )
     }
 
     /// The action service the collaboration endpoint serves.
@@ -209,9 +152,15 @@ impl DeviceActions {
         turn_offload(media, Arc::new(peers))
     }
 
-    /// Where `id` of the person's devices is reached.
+    /// Where `id` of the person's devices is reached: the address this session was told, else
+    /// the endpoint's own discovery of its key.
     fn addr(&self, id: EndpointId) -> EndpointAddr {
-        Whereabouts::addr(self, id)
+        self.0
+            .addresses
+            .lock_recover()
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| EndpointAddr::new(id))
     }
 
     /// The device an app's action is for, with where it is reached.
@@ -319,9 +268,6 @@ struct DispatchInner {
     power: Mutex<Option<tilo_session_power::PowerLink>>,
     /// The suspend lease the person's other devices hold, renewed in place.
     remote_use: Mutex<Option<InhibitToken>>,
-    /// The agents the person's other devices hand requests to, once this session's MCP server
-    /// works with them.
-    handed: Mutex<Option<Arc<HandedAgents>>>,
 }
 
 impl DeviceDispatch {
@@ -332,7 +278,6 @@ impl DeviceDispatch {
             user,
             power: Mutex::default(),
             remote_use: Mutex::default(),
-            handed: Mutex::default(),
         }))
     }
 
@@ -386,35 +331,19 @@ impl DeviceDispatch {
 }
 
 impl DeviceDispatch {
-    /// Run `act` on what answers `caller` here, as whom: an agent another of the person's devices
-    /// handed its requests to as that agent's session here, through the broker connection its
-    /// session has ([`crate::device_agents`]), refused where this session works with no such
-    /// agents; anyone else as they are, through the broker.
+    /// Run `act` on what answers a request here: the broker, once it serves.
     fn through<T: Send + 'static>(
         &self,
         caller: &Caller,
-        act: impl FnOnce(&Host, &Caller) -> Pending<Result<T, ActionCallError>> + Send + 'static,
+        act: impl FnOnce(
+            &Arc<dyn ActionProvider + Send + Sync>,
+            &Caller,
+        ) -> Pending<Result<T, ActionCallError>>,
     ) -> Pending<Result<T, ActionCallError>> {
-        if !crate::device_agents::handed(caller) {
-            return match self.provider() {
-                Ok(provider) => act(&provider, caller),
-                Err(error) => Pending::ready(Err(error)),
-            };
+        match self.provider() {
+            Ok(provider) => act(&provider, caller),
+            Err(error) => Pending::ready(Err(error)),
         }
-        let handed = self.0.handed.lock_recover().clone();
-        match handed {
-            Some(handed) => handed.through(caller, act),
-            None => Pending::ready(Err(crate::device_agents::not_accepted())),
-        }
-    }
-
-    /// What answers `caller` here already, as whom, for a read that does not wait
-    /// ([`Self::through`]): nothing for a handed agent whose session does not work here yet.
-    fn known(&self, caller: &Caller) -> Option<(Caller, Host)> {
-        if !crate::device_agents::handed(caller) {
-            return Some((caller.clone(), self.provider().ok()?));
-        }
-        self.0.handed.lock_recover().as_ref()?.known(caller)
     }
 }
 
@@ -434,10 +363,9 @@ impl ActionProvider for DeviceDispatch {
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.note_remote_use(caller);
         // The workspaces' governance, and the turns of work this device takes, are its workspace
-        // service's to answer, unless an agent this device handed its requests to asks.
-        if (request.target.provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
-            || request.target.provider == tilo_workspace_service::work::WORK_PROVIDER)
-            && !crate::device_agents::handed(caller)
+        // service's to answer.
+        if request.target.provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+            || request.target.provider == tilo_workspace_service::work::WORK_PROVIDER
         {
             let governance = self.0.governance.lock_recover().clone();
             return match governance {
@@ -449,15 +377,15 @@ impl ActionProvider for DeviceDispatch {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        let (caller, host) = self.known(caller)?;
         let governance = self.0.governance.lock_recover().clone();
-        host.observe(&caller, id)
-            .or_else(|| governance?.observe(&caller, id))
+        self.provider()
+            .ok()?
+            .observe(caller, id)
+            .or_else(|| governance?.observe(caller, id))
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        let (caller, host) = self.known(caller)?;
-        host.next_change(&caller, id)
+        self.provider().ok()?.next_change(caller, id)
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {

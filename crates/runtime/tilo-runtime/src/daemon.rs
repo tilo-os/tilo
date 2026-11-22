@@ -51,10 +51,7 @@ pub struct Args {
     /// that profile even inside a Tilo login, where it otherwise relays to
     /// the desktop's MCP server ([`crate::session_api`]).
     pub standalone: bool,
-    /// `--device NAME [--workspace ID]`, for `--connect` only: carry the
-    /// client to that device instead of working here ([`crate::other_devices`]).
-    pub forward: Option<tilo_mcp::devices::Forward>,
-    /// `--workspace ID` without `--device`, for `--connect` only: the
+    /// `--workspace ID`, for `--connect` only: the
     /// workspace the client asks this desktop's MCP server to let it work in,
     /// rather than the one in front of the person. The person decides; it is
     /// never authority.
@@ -98,12 +95,10 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
     let mut mode = None;
     let mut dev = false;
     let mut standalone = false;
-    let mut device = None;
     let mut workspace = None;
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
             Some("--dev") if !dev => dev = true,
-            Some("--device") if device.is_none() => device = Some(device_named(arguments.next())?),
             Some("--workspace") if workspace.is_none() => {
                 workspace = Some(workspace_named(arguments.next())?);
             }
@@ -147,9 +142,11 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
             "--standalone chooses where --connect goes: use it with --connect",
         ));
     }
-    let local = device.is_none();
-    let forward = forward_of(&mode, device, workspace.clone())?;
-    let workspace = workspace.filter(|_| local);
+    if workspace.is_some() && mode != Mode::Connect {
+        return Err(invalid(
+            "--workspace chooses where --connect goes: use it with --connect",
+        ));
+    }
     if workspace.is_some() && (standalone || explicit_profile) {
         return Err(invalid(
             "--workspace asks the desktop's MCP server for a workspace, not a standalone runtime",
@@ -160,33 +157,8 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
         mode,
         dev,
         standalone: standalone || explicit_profile,
-        forward,
         workspace,
     })
-}
-
-/// Where `--connect --device NAME [--workspace ID]` goes: `None` without a
-/// device, where `--workspace` asks this desktop's own server for the workspace.
-fn forward_of(
-    mode: &Mode,
-    device: Option<String>,
-    workspace: Option<String>,
-) -> io::Result<Option<tilo_mcp::devices::Forward>> {
-    if (device.is_some() || workspace.is_some()) && *mode != Mode::Connect {
-        return Err(invalid(
-            "--device and --workspace choose where --connect goes: use them with --connect",
-        ));
-    }
-    Ok(device.map(|device| tilo_mcp::devices::Forward { device, workspace }))
-}
-
-/// The device `--device` names, by its name or its endpoint id.
-fn device_named(argument: Option<OsString>) -> io::Result<String> {
-    argument
-        .and_then(|arg| arg.into_string().ok())
-        .map(|name| name.trim().to_owned())
-        .filter(|name| !name.is_empty() && name.len() <= 256)
-        .ok_or_else(|| invalid("--device requires a device's name or endpoint id"))
 }
 
 /// The workspace `--workspace` names, by its id.
@@ -789,7 +761,6 @@ pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
         },
         search,
         media: session.media(),
-        other_devices: session.other_devices(),
     };
     native.serve_the_person(endpoint);
     // The device is served until the daemon is told to stop, or another takes the device over:
@@ -837,7 +808,6 @@ impl Native {
                 },
                 search: Arc::new(OnceLock::new()),
                 media: None,
-                other_devices: None,
             },
             person: OnceLock::new(),
         }
@@ -916,8 +886,6 @@ struct Endpoint<H> {
     search: Arc<OnceLock<Arc<tilo_os_search::OsSearch>>>,
     /// Where answers read the content actions produced.
     media: Option<Arc<dyn tilo_mcp::MediaReader>>,
-    /// The person's other devices, as this runtime asks them.
-    other_devices: Option<crate::other_devices::OtherDevices>,
 }
 
 /// The sessions of the native endpoint, each admitted to `session`'s workspace when its
@@ -988,10 +956,6 @@ fn search_once_held(
     Ok(())
 }
 
-/// The longest first line a native connection is read for before it is
-/// served: a forward to another device, or the first request of any other.
-const FIRST_LINE: u64 = 64 * 1024;
-
 /// Connections the native endpoint serves at once.
 const MAX_CONNECTIONS: usize = 64;
 /// What a connection past [`MAX_CONNECTIONS`] is told before it is closed.
@@ -1020,54 +984,19 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         let status = self.status.clone();
         let search = Arc::clone(&self.search);
         let media = self.media.clone();
-        let other_devices = self.other_devices.clone();
         std::thread::Builder::new()
             .name("tilo-native-mcp".into())
             .spawn(move || {
                 let _slot = slot;
-                // The first line says whether the client asks to be
-                // carried to another device's MCP server; anything else
-                // is served here, that line first.
-                let mut reader = match stream.try_clone() {
-                    Ok(clone) => BufReader::new(clone),
+                let input = match stream.try_clone() {
+                    Ok(clone) => clone,
                     Err(error) => {
                         tracing::debug!(%error, "native runtime client socket");
                         return;
                     }
                 };
-                let mut first = Vec::new();
-                if let Err(error) = (&mut reader).take(FIRST_LINE).read_until(b'\n', &mut first) {
-                    tracing::debug!(%error, "native runtime client disconnected");
-                    return;
-                }
-                if let Some(forward) = first
-                    .strip_suffix(b"\n")
-                    .and_then(tilo_mcp::devices::forward_request)
-                {
-                    match &other_devices {
-                        // A client asks for nothing more before it is told
-                        // whether the connection opened.
-                        Some(other_devices) if reader.buffer().is_empty() => {
-                            other_devices.serve_forward(stream, &forward);
-                        }
-                        Some(_) => tilo_mcp::devices::refuse_forward(
-                            stream,
-                            "a forward is the only line before its answer".into(),
-                        ),
-                        None => tilo_mcp::devices::refuse_forward(
-                            stream,
-                            "this runtime reaches none of your other devices".into(),
-                        ),
-                    }
-                    return;
-                }
-                let input = io::Cursor::new(first).chain(reader);
                 let server = match factory() {
-                    Ok(server) => Arc::new(server.with_media(media).with_devices(
-                        other_devices.map(|other_devices| {
-                            Arc::new(other_devices) as Arc<dyn tilo_mcp::devices::DeviceDirectory>
-                        }),
-                    )),
+                    Ok(server) => Arc::new(server.with_media(media)),
                     Err(error) => {
                         tracing::debug!(%error, "native MCP session admission unavailable");
                         return;
@@ -1172,17 +1101,9 @@ pub(crate) async fn answer_open(search: &tilo_os_search::OsSearch, request: &Val
 /// started when none runs. EOF closes only this client's connection; neither
 /// applications nor the daemon are owned here.
 ///
-/// With `forward`, the host this process belongs to serves it as the person's agent working on
-/// the device it names, sending that device each of its requests, once it said it would
-/// ([`tilo_mcp::devices::ask_forward`]). `workspace` is
-/// the workspace the client asks this desktop's MCP server for, written into
+/// `workspace` is the workspace the client asks this desktop's MCP server for, written into
 /// its `initialize`.
-pub fn connect(
-    profile: &Path,
-    standalone: bool,
-    forward: Option<&tilo_mcp::devices::Forward>,
-    workspace: Option<&str>,
-) -> io::Result<()> {
+pub fn connect(profile: &Path, standalone: bool, workspace: Option<&str>) -> io::Result<()> {
     let route = tilo_mcp::session_api::route(
         standalone,
         tilo_mcp::session_api::environment_server(std::env::var_os(
@@ -1194,7 +1115,7 @@ pub fn connect(
         ),
         Path::exists,
     )?;
-    let mut stream = match route {
+    let stream = match route {
         tilo_mcp::session_api::Route::Session(server) => {
             tilo_files::native::socket::connect(&server)
                 .map_err(|error| tilo_mcp::session_api::unreachable_server(&server, &error))?
@@ -1210,9 +1131,6 @@ pub fn connect(
             tilo_files::native::socket::connect(&profile.join("native.sock"))?
         }
     };
-    if let Some(forward) = forward {
-        tilo_mcp::devices::ask_forward(&mut stream, forward)?;
-    }
     bridge_stdio(
         stream,
         Asking {

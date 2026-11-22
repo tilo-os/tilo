@@ -14,13 +14,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// # Errors
     /// `caller` is not an agent acting for a person in a workspace.
     pub fn for_delegated(host: H, caller: Caller) -> std::io::Result<Self> {
-        let (Some(_), Some(person)) = (caller.acting().agent_id(), caller.acting_for_person())
-        else {
+        if caller.acting().agent_id().is_none() || caller.acting_for_person().is_none() {
             return Err(std::io::Error::other(
                 "a delegated server is an agent's acting for a person",
             ));
-        };
-        let person = person.to_owned();
+        }
         let workspace = caller
             .workspace()
             .ok_or_else(|| std::io::Error::other("a delegated agent names its workspace"))?
@@ -28,7 +26,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         Ok(Self::from_caller(
             host,
             workspace,
-            person,
             caller.in_new_execution(),
         ))
     }
