@@ -11,10 +11,6 @@ pub(super) fn record_id(workspace: &str) -> DocumentId {
     )
 }
 
-pub(super) fn read(bytes: &[u8]) -> Result<Learned, String> {
-    open(bytes)?.state().map_err(|error| error.to_string())
-}
-
 fn open(bytes: &[u8]) -> Result<Replica<Learned>, String> {
     let mut doc = automerge::AutoCommit::load(bytes).map_err(|error| error.to_string())?;
     tilo_resource::evolution::migrate::<Learned>(&mut doc).map_err(|error| error.to_string())?;
@@ -29,16 +25,6 @@ fn keep(store: &crate::person_resources::PersonResources, id: &DocumentId, bytes
             .map_err(|error| error.to_string())?;
         Ok(())
     });
-}
-
-pub(super) fn restore(
-    store: &crate::person_resources::PersonResources,
-    id: &DocumentId,
-    earlier: Vec<u8>,
-) {
-    if store.document((CHAT_OWNER, id.as_str())).is_none() {
-        keep(store, id, earlier);
-    }
 }
 
 pub(super) fn change(

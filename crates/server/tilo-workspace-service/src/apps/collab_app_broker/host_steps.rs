@@ -75,7 +75,6 @@ pub(super) fn is_local_host_caller(
                 !certificate.capabilities.foreign
                     && if caller.device_public_key().is_none() {
                         original.native_projection_verified
-                            && original.delegated.is_none()
                             && caller.user_public_key().is_none()
                             && caller.acting().person_id()
                                 == Some(

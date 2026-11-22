@@ -729,8 +729,8 @@ pub struct ProcessServices {
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
     /// The workspaces' agents, as their records name them; without it no agent joins.
     pub agents: Option<Arc<dyn AgentRoster>>,
-    /// The agent sessions this host serves; without it no certified agent joins and no agent is
-    /// handed a turn.
+    /// The agent sessions this host serves: the MCP connections a person admitted, each with what
+    /// its person allowed it.
     pub agent_sessions: Option<Arc<dyn AgentSessions>>,
     pub native_certificates:
         Option<Arc<dyn crate::apps::certificate_authority::CertificateAuthority>>,

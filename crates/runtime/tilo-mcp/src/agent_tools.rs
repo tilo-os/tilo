@@ -132,6 +132,8 @@ pub struct Step<'a> {
     pub workspace: &'a str,
     /// The agent, by its bare id.
     pub agent: &'a str,
+    /// The person the agent works for, by their person id.
+    pub person: &'a str,
     pub session: &'a str,
     /// The session's own API: every call is made through it.
     pub provider: Provider,
@@ -205,10 +207,11 @@ impl AgentTools {
             return Arc::clone(server);
         }
         let latest = Arc::new(Latest(Mutex::new(Arc::clone(&step.provider))));
-        let server = Arc::new(McpServer::new(
+        let server = Arc::new(McpServer::for_agent(
             Arc::clone(&latest),
             step.workspace.to_owned(),
-            step.agent.to_owned(),
+            step.agent,
+            step.person,
         ));
         sessions.insert(key, (latest, Arc::clone(&server)));
         server

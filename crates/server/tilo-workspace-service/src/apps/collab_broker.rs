@@ -486,24 +486,6 @@ impl AppActionBroker {
             .certified_local_action_provider(caller, presentation)
     }
 
-    /// [`Self::certified_local_action_provider`] handed to agent `agent` by the
-    /// person's own device; see
-    /// [`AppBrokerState::certified_local_agent_provider`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::certified_local_action_provider`].
-    pub fn certified_local_agent_provider(
-        &self,
-        caller: &tilo_actions::remote::Caller,
-        presentation: &[u8],
-        agent: &str,
-    ) -> Result<std::sync::Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>, String>
-    {
-        self.state
-            .certified_local_agent_provider(caller, presentation, agent)
-    }
-
     /// Reuse the checked signed personal-cluster admission for native owner checks.
     pub fn certified_person_context(
         &self,
