@@ -364,11 +364,10 @@ if (!checked.stdout.includes(`holds the MCP server tilo`) || !/tilo_[a-z]+/.test
 const steps = await following;
 report.steps = steps;
 if (steps.length < 2) await fail(`the tab showed no steps as the agent went: ${JSON.stringify(steps)}`);
-// The tab shows what its host witnessed: the computer logged in as the person and entered
-// their workspace. What the agent added to its own configuration the tab does not claim to
-// read; the agent's configuration and its own check, above, are what confirm it.
-if (!steps.some(line => line.includes('logged in as you'))) {
-  await fail(`the tab never showed the agent logged in as the person: ${JSON.stringify(steps)}`);
+// The tools the tab says are added are the ones the agent's check found in
+// its own configuration; a step the command did not report is never claimed.
+if (!steps.some(line => line.includes(`Tilo’s tools are added to ${agentName}`))) {
+  await fail(`the tab never showed Tilo's tools added, though the agent's check confirmed them: ${JSON.stringify(steps)}`);
 }
 
 // The screen leaves for the person's own workspace.
