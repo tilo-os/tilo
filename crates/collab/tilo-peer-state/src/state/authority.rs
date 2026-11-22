@@ -1633,21 +1633,21 @@ fn refused_change(
 pub struct DocumentKeysBasis<'p> {
     peer: &'p StatePeer,
     now: SystemTime,
-    holders: std::cell::OnceCell<Result<KeyHolderAccess, String>>,
+    holders: std::cell::OnceCell<Result<KeyAccess, String>>,
 }
 
 /// Every device holding a workspace's keys, and the access of each that is a member's.
-type KeyHolderAccess = (
+type KeyAccess = (
     Vec<[u8; 32]>,
     std::collections::BTreeMap<[u8; 32], MemberAccess>,
 );
 
 impl DocumentKeysBasis<'_> {
     /// The workspace's key holders and their access, read on the first document that needs them.
-    fn holders(&self) -> Result<&KeyHolderAccess, String> {
+    fn holders(&self) -> Result<&KeyAccess, String> {
         self.holders
             .get_or_init(|| {
-                crate::governance_work::key_holders_read();
+                crate::governance_work::key_access_read();
                 let governance = self.peer.governance();
                 let devices: Vec<_> = governance.key_holders(self.now)?.into_iter().collect();
                 let access = governance.access_of(&devices, self.now)?;

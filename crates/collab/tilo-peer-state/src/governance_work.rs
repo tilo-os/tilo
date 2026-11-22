@@ -33,7 +33,7 @@ pub struct GovernanceWork {
     /// Readings of who holds the workspace's keys and what each may do, which
     /// deciding whether a record needs keys of its own reads
     /// ([`crate::DocumentKeysBasis`]).
-    pub key_holder_reads: u64,
+    pub key_access_reads: u64,
 }
 
 thread_local! {
@@ -45,7 +45,7 @@ thread_local! {
         receipts_read: 0,
         security_bases: 0,
         grant_walks: 0,
-        key_holder_reads: 0,
+        key_access_reads: 0,
     }) };
 }
 
@@ -100,6 +100,6 @@ pub(crate) fn grants_walked() {
     add(|work| work.grant_walks = work.grant_walks.saturating_add(1));
 }
 
-pub(crate) fn key_holders_read() {
-    add(|work| work.key_holder_reads = work.key_holder_reads.saturating_add(1));
+pub(crate) fn key_access_read() {
+    add(|work| work.key_access_reads = work.key_access_reads.saturating_add(1));
 }

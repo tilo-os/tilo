@@ -357,17 +357,17 @@ fn entered_work(members: u32, records: usize) -> crate::governance_work::Governa
 /// holds, not once a record. Each person and each record costs a lookup, a
 /// bound the work does not grow past however many members there are.
 #[test]
-fn an_entry_reads_the_grants_and_the_key_holders_once() {
+fn an_entry_reads_the_grants_and_the_keys_once() {
     let small = entered_work(30, 40);
     let large = entered_work(300, 40);
     assert_eq!(
-        (large.grant_walks, large.key_holder_reads),
-        (small.grant_walks, small.key_holder_reads),
+        (large.grant_walks, large.key_access_reads),
+        (small.grant_walks, small.key_access_reads),
         "grant walks and key-holder readings, at 300 members against 30: {large:?} against \
          {small:?}"
     );
     assert_eq!(
-        large.key_holder_reads, 1,
+        large.key_access_reads, 1,
         "40 records' keys read off one reading of the key holders: {large:?}"
     );
 }
