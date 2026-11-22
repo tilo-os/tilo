@@ -171,26 +171,6 @@ impl Caller {
         )
     }
 
-    /// An agent acting inside a turn: `person`'s message in `turn`'s
-    /// conversation caused it, and the agent takes part there. It may do
-    /// exactly what that person may, held to the editor preset and to the
-    /// bound its own record carries, and nothing outside a turn. Every op it
-    /// makes carries the turn, so the receiving device checks the cause it
-    /// arrived with. Set only by the provider that admitted the turn.
-    #[must_use]
-    pub fn agent_turn(
-        agent_id: impl Into<String>,
-        person: impl Into<tilo_action_policy::PersonId>,
-        turn: tilo_action_policy::turn::Turn,
-    ) -> Self {
-        let acting = Acting::agent(agent_id.into()).acting_for(Acting::person(person.into()));
-        Self {
-            session_delegated: true,
-            turn: Some(turn),
-            ..Self::admitted(acting, None)
-        }
-    }
-
     /// A bot device whose certificate chains to `user_public_key` (its
     /// installer) and whose root-signed delegation names it installation
     /// `installation`. It acts for its installer and is never that person.
@@ -309,12 +289,10 @@ impl Caller {
         self
     }
 
-    /// This person's own device hands the connection to agent `agent_id`,
-    /// acting for them: an MCP client, a local assistant. The agent is the
-    /// actor (its edits, presence and history are the agent's, for the
-    /// person) and it may do only what both the person and the delegation a
-    /// device gives its agents allow. A caller that is not a person is
-    /// returned as it is. Set only by the provider that admitted the person.
+    /// This person's own device hands the connection to agent `agent_id`, acting for them: a
+    /// program in the workspace's machine its person let in, which has no key of its own yet.
+    /// The agent is the actor, and it may do only what both the person and the delegation a
+    /// device gives its agents allow. A caller that is not a person is returned as it is.
     #[must_use]
     pub fn delegated_to(mut self, agent_id: impl Into<String>) -> Self {
         let Some(person) = self.acting.person_id().map(str::to_owned) else {

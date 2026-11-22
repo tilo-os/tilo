@@ -437,47 +437,41 @@ tilo_test_env::scenario! {
     // The person told the agent not to change the app: its change is refused
     // before the app hears of it, the action not offered to the agent at all.
     {
-        for api in mcp_servers() {
-            let (answered, heard) = agent_answered(tilo_action_policy::Answer::Deny, api);
-            assert!(
-                matches!(
-                    answered,
-                    PendingPoll::Ready(Err(ActionCallError::UnknownAction))
-                ),
-                "{answered:?}"
-            );
-            assert!(!heard, "the app never hears of it");
-        }
+        let (answered, heard) = agent_answered(tilo_action_policy::Answer::Deny, mcp_server);
+        assert!(
+            matches!(
+                answered,
+                PendingPoll::Ready(Err(ActionCallError::UnknownAction))
+            ),
+            "{answered:?}"
+        );
+        assert!(!heard, "the app never hears of it");
     }
 
     phase an_agents_change_the_person_asks_about_waits_for_them;
     // The person told the agent to ask first: its change waits for the
     // person's confirmation.
     {
-        for api in mcp_servers() {
-            let (answered, heard) = agent_answered(tilo_action_policy::Answer::Ask, api);
-            assert!(
-                matches!(
-                    answered,
-                    PendingPoll::Ready(Err(ActionCallError::ConfirmationRequired { .. }))
-                ),
-                "{answered:?}"
-            );
-            assert!(!heard, "the app never hears of it");
-        }
+        let (answered, heard) = agent_answered(tilo_action_policy::Answer::Ask, mcp_server);
+        assert!(
+            matches!(
+                answered,
+                PendingPoll::Ready(Err(ActionCallError::ConfirmationRequired { .. }))
+            ),
+            "{answered:?}"
+        );
+        assert!(!heard, "the app never hears of it");
     }
 
     phase an_agents_change_the_person_allowed_runs;
     // The person allowed the agent the app's changes: its change runs.
     {
-        for api in mcp_servers() {
-            let (answered, heard) = agent_answered(tilo_action_policy::Answer::Allow, api);
-            assert!(
-                matches!(answered, PendingPoll::Ready(Ok(_))),
-                "{answered:?}"
-            );
-            assert!(heard, "the app runs it");
-        }
+        let (answered, heard) = agent_answered(tilo_action_policy::Answer::Allow, mcp_server);
+        assert!(
+            matches!(answered, PendingPoll::Ready(Ok(_))),
+            "{answered:?}"
+        );
+        assert!(heard, "the app runs it");
     }
 
     phase an_admitted_agent_acting_for_its_person_holds_only_its_own_grants;
@@ -538,15 +532,23 @@ tilo_test_env::scenario! {
     }
 
     phase an_agent_carries_the_turn_that_caused_its_ops;
-    // An agent inside a turn carries the message that caused it to every op it
-    // makes, so the receiving device decides it against that message and
-    // presence can show what the agent would click. An agent no turn carries
+    // An agent bound to its roster entry carries the message that caused its turn
+    // to every op it makes, so the receiving device decides it against that message
+    // and presence can show what the agent would click. An agent no turn carries
     // holds no authority of its own: agents are not members.
     {
         let turn = tilo_action_policy::turn::Turn::new("chat/workspace/channels/1", "m1");
-        let handed = Caller::agent_turn("scribe", "ada", turn.clone()).in_workspace("w");
+        let person = [0x33; 32];
+        let handed = Caller::delegated_agent("scribe", person, [0x34; 32])
+            .on_roster(0, person)
+            .on_roster_turn(turn.clone())
+            .in_workspace("w");
         assert_eq!(handed.turn(), Some(&turn));
-        assert!(handed.is_session_delegated());
+        assert_eq!(
+            handed.turn_person(),
+            Some(&person),
+            "the turn answers the person whose message caused it"
+        );
         let actor = super::BrokerActor::for_caller(&handed);
         assert_eq!(actor.turn(), Some(&turn), "the broker keeps the cause");
 
@@ -1821,27 +1823,13 @@ fn agent_answered(
     (answered, app.try_recv().is_ok())
 }
 
-/// The agents a person's answers bind: one the person's own device handed its
-/// session, and one inside a turn their message caused. An agent that no
-/// person's turn carries holds nothing.
-fn mcp_servers() -> [fn(&str) -> Caller; 2] {
-    [
-        |workspace| {
-            Caller::local_person("a1".repeat(32))
-                .in_workspace(workspace.to_owned())
-                .in_new_execution()
-                .delegated_to("scribe")
-        },
-        |workspace| {
-            Caller::agent_turn(
-                "scribe",
-                "a1".repeat(32),
-                tilo_action_policy::turn::Turn::new("chat/workspace/channels/1", "m1"),
-            )
-            .in_workspace(workspace.to_owned())
-            .in_new_execution()
-        },
-    ]
+/// The agent a person's answers bind: the one their device admitted, acting for them. An
+/// agent that no person stands behind holds nothing.
+fn mcp_server(workspace: &str) -> Caller {
+    Caller::local_person("a1".repeat(32))
+        .in_workspace(workspace.to_owned())
+        .in_new_execution()
+        .delegated_to("scribe")
 }
 
 /// A Store disclosure whose `operation` does not decode is refused with

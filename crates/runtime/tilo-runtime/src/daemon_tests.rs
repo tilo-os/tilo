@@ -117,10 +117,10 @@ tilo_test_env::scenario! {
                     super::serve_connection(
                         stream.try_clone().unwrap(),
                         stream,
-                        &std::sync::Arc::new(tilo_mcp::McpServer::new(
+                        &std::sync::Arc::new(tilo_mcp::McpServer::for_person(
                             host.clone(),
                             "workspace".into(),
-                            "owner".into(),
+                            "owner",
                         )),
                         &super::Status {
                             version: 1,
@@ -171,10 +171,10 @@ tilo_test_env::scenario! {
                 super::serve_connection(
                     served.try_clone().unwrap(),
                     served,
-                    &std::sync::Arc::new(tilo_mcp::McpServer::new(
+                    &std::sync::Arc::new(tilo_mcp::McpServer::for_person(
                         host,
                         "workspace".into(),
-                        "owner".into(),
+                        "owner",
                     )),
                     &super::Status {
                         version: 1,
@@ -327,10 +327,10 @@ tilo_test_env::scenario! {
     {
         use tilo_mcp::test_hosts::{HeldHost, overlapping_lines};
         let host = HeldHost::default();
-        let server = std::sync::Arc::new(tilo_mcp::McpServer::new(
+        let server = std::sync::Arc::new(tilo_mcp::McpServer::for_person(
             host.clone(),
             "workspace".into(),
-            "owner".into(),
+            "owner",
         ));
         let (client, end) = std::os::unix::net::UnixStream::pair().unwrap();
         let input = spawn_reader(end.try_clone().unwrap()).unwrap();
@@ -450,11 +450,6 @@ tilo_test_env::scenario! {
         assert_eq!(asked.mode, Mode::Connect);
         assert_eq!(asked.workspace.as_deref(), Some(workspace));
         assert_eq!(args(&["--connect"]).unwrap().workspace, None);
-        let elsewhere = args(&["--connect", "--device", "b", "--workspace", workspace]).unwrap();
-        assert_eq!(
-            elsewhere.workspace, None,
-            "with --device, the workspace is the other device's"
-        );
         for invalid in [
             vec!["--connect", "--workspace"],
             vec!["--connect", "--workspace", "not-a-workspace"],

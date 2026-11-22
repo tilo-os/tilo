@@ -738,11 +738,11 @@ impl crate::apps::services::HostStepServices for TurnSteps {
     }
 }
 
-/// A step marked for turns is an agent session's step, as an app action is: the agent answering a
-/// turn takes it on the workspace's grants while its session goes, and an agent in no session that
-/// goes — or one the grants refuse — takes none.
+/// A step marked for turns is an agent session's step, as an app action is: the agent takes it on
+/// the workspace's grants while its session goes, and an agent in no session that goes — or one
+/// the grants refuse — takes none.
 #[tokio::test(flavor = "current_thread")]
-async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
+async fn an_agents_session_steps_are_taken_while_it_goes_and_nobody_elses_are() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let steps = Arc::new(TurnSteps::default());
@@ -753,24 +753,23 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
                 crate::apps::services::GoingSession::default(),
             ));
             grant_the_layout(&f, true);
-            let turn =
-                tilo_action_policy::turn::Turn::new("chat.workspace/channels/c_tide", "message-1");
             let person = hex::encode(f.native.certificate.user_public_key);
 
-            // The agent answering the person's turn, in its session.
-            let agent = Caller::agent_turn("scribe", person.clone(), turn.clone())
+            // The agent working in its session, answering for the person.
+            let agent = Caller::local_person(person.clone())
+                .delegated_to("scribe")
                 .in_workspace(workspace_id().to_string())
                 .in_agent_session(SESSION)
                 .in_new_execution();
-            stray_invoke(&f.state, &agent, 92).expect("the turn takes the session's step");
+            stray_invoke(&f.state, &agent, 92).expect("the session takes the session's step");
             assert_eq!(
                 steps.taken.lock().unwrap().as_slice(),
                 [tilo_actions::MemberId::agent("scribe")],
-                "the step ran once, as the turn's agent"
+                "the step ran once, as the session's agent"
             );
 
-            // A turn's step is listed to the agent working the turn, and to the person at this
-            // device as their other steps are: the REPL types what the agent would.
+            // A turn's step is listed to the agent working in its session, and to the person at
+            // this device as their other steps are: the REPL types what the agent would.
             let listed = |caller: &Caller| {
                 let actor = BrokerActor::for_caller(caller);
                 f.state
@@ -784,7 +783,7 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
             };
             assert!(
                 listed(&agent),
-                "the agent working the turn is offered the session's step"
+                "the agent working in its session is offered the session's step"
             );
             let local =
                 Caller::local_person(person.clone()).in_workspace(workspace_id().to_string());
@@ -794,14 +793,15 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
             );
 
             // An agent whose session is over takes no step.
-            let ended = Caller::agent_turn("scribe", person, turn)
+            let ended = Caller::local_person(person)
+                .delegated_to("scribe")
                 .in_workspace(workspace_id().to_string())
                 .in_agent_session("so.tilo.session/agent-session/over")
                 .in_new_execution();
             let refused = stray_invoke(&f.state, &ended, 93);
             assert!(
                 matches!(refused, Err(ActionCallError::Refused { .. })),
-                "an agent whose turn is over takes no step: {refused:?}"
+                "an agent whose session is over takes no step: {refused:?}"
             );
             assert_eq!(steps.taken.lock().unwrap().len(), 1, "nothing ran for it");
 

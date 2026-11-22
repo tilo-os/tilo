@@ -60,26 +60,33 @@ fn conversation_with(root: &SigningKey, agent: &str) -> Id {
     chat::Chat::direct_id([MemberId::person(person_of(root)), MemberId::agent(agent)])
 }
 
-/// `person`'s session handed to the agent `agent` on a turn that `cause` gave it in
-/// `conversation`, held to `rules`: the caller the tools of such a turn act as on a server.
+/// The roster agent `agent` on a turn that `cause` gave it in `conversation`, held to `rules`:
+/// the caller the tools of such a turn act as on a server.
 fn on_a_turn(
     person: &Caller,
     agent: &str,
     (conversation, cause): (&Id, &Id),
     rules: Vec<tilo_action_policy::Rule>,
 ) -> Caller {
-    person
-        .clone()
-        .delegated_to(agent.to_owned())
+    let user = *person
+        .user_public_key()
+        .expect("a person's caller names their key");
+    let device = *person
+        .device_public_key()
+        .expect("a person's caller names their device");
+    let mut caller = Caller::delegated_agent(agent, user, device)
         .named(agent)
         .in_agent_session(format!("agent-session:test-{agent}"))
-        .on_turn(
-            tilo_action_policy::turn::Turn::new(
-                chat::summons::conversation_address(conversation),
-                cause.to_string(),
-            ),
-            rules,
-        )
+        .on_roster(0, user)
+        .on_roster_turn(tilo_action_policy::turn::Turn::new(
+            chat::summons::conversation_address(conversation),
+            cause.to_string(),
+        ))
+        .held_to(rules);
+    if let Some(workspace) = person.workspace() {
+        caller = caller.in_workspace(workspace);
+    }
+    caller
 }
 
 /// A model that searches for each of `queries` at once and then answers. Every request it was

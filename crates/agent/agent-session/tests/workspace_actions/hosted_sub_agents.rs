@@ -936,7 +936,15 @@ async fn its_person_asks_for_a_sub_agent_and_the_server_starts_it() {
     // An agent's ask under that kind starts nothing: the sub-agent asks in its starter's thread.
     // Outside a turn nothing is taken in a sub-agent's name but what its own rules let it, and
     // asking an agent is none of that.
-    let outside = ada.clone().delegated_to(id.clone()).named("Find the deck");
+    let person_key = *ada
+        .user_public_key()
+        .expect("the person's caller names their key");
+    let device_key = *ada
+        .device_public_key()
+        .expect("the person's caller names their device");
+    let outside = Caller::delegated_agent(id.clone(), person_key, device_key)
+        .in_workspace(ada.workspace().unwrap_or_default())
+        .named("Find the deck");
     let refused = asks_for_one(
         &actions,
         &workspace,
@@ -949,13 +957,13 @@ async fn its_person_asks_for_a_sub_agent_and_the_server_starts_it() {
     assert!(refused.contains("may not invoke"), "{refused}");
     // What the server writes for a sub-agent it writes on the turn it worked, with the bound its
     // person set: an ask made that way is taken, and starts nothing either.
-    let beside = outside.on_turn(
-        tilo_action_policy::turn::Turn::new(
+    let beside = outside
+        .on_roster(0, person_key)
+        .on_roster_turn(tilo_action_policy::turn::Turn::new(
             chat::summons::conversation_address(&own),
             jobs[0].0.to_string(),
-        ),
-        Vec::new(),
-    );
+        ))
+        .held_to(Vec::new());
     asks_for_one(
         &actions,
         &workspace,

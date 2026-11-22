@@ -352,7 +352,7 @@ async fn her_agent_asks_her_first(
 
 /// Nobody but the workspace's members on their own sessions reaches `ada`'s list with any of
 /// `asks`: a member of another workspace and a device of nobody (`strangers`), a session that is
-/// not the caller's own, a bare agent turn with no member's device behind it, and an app.
+/// not the caller's own, an agent no person stands behind, and an app.
 async fn nobody_else_reaches_it(
     provider: &Asking<'_>,
     ada: &DeviceCert,
@@ -390,14 +390,9 @@ async fn nobody_else_reaches_it(
         }
     }
 
-    // A bare agent turn with no device of a member's behind it, and an app.
+    // An agent no person stands behind, and an app.
     let person = hex::encode(ada.user_public_key);
     let nobodied = [
-        Caller::agent_turn(
-            SCOUT,
-            person.clone(),
-            tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
-        ),
         Caller::local_agent(SCOUT),
         Caller::local_app("so.tilo.chat").acting_for(person),
     ];
@@ -415,8 +410,8 @@ async fn nobody_else_reaches_it(
 }
 
 /// Nobody outside the workspace reaches its list. Another member reads and
-/// changes only his own facts in it, never hers; a member of another workspace, a device of nobody,
-/// a bare agent turn with no device of a member's behind it and an app are
+/// changes only their own facts in it, never Ada's; a member of another workspace, a device of
+/// nobody, an agent no person stands behind and an app are
 /// answered nothing; and an agent a member's session was handed to reads,
 /// while its changes ask that member first.
 #[tokio::test]

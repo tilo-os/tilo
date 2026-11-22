@@ -29,7 +29,7 @@ async fn a_computers_own_tasks_are_made_and_answered_done() {
     let device = Browser::open(&hosted, &computer, &node).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let session = SessionActions::new(&device.peer, device.workspace, node.cert.device_public_key);
-    let mcp = McpServer::new(session, WORKSPACE.into(), person);
+    let mcp = McpServer::for_person(session, WORKSPACE.into(), &person);
     for title in ["First", "Second", "Third"] {
         let mut answer = tool(
             &mcp,

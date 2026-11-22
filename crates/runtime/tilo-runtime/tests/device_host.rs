@@ -365,10 +365,11 @@ async fn a_key_lists_enters_and_acts_in_a_workspace_its_persons_device_hosts() {
     );
 
     // Its agent surface acts there, on the device's broker, in a run of its own.
-    let entered = tilo_mcp::McpServer::new(
+    let entered = tilo_mcp::McpServer::for_agent(
         key.actions(workspace_id),
         device.workspace.clone(),
-        hex::encode(agent.1.user_public_key),
+        &tilo_mcp::devices::agent_id("agent", &agent.1),
+        &hex::encode(agent.1.user_public_key),
     );
     let apps = entered
         .handle(tool(2, "tilo_ls", &json!({})))

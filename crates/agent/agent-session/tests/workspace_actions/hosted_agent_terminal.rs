@@ -873,10 +873,10 @@ async fn identity_in_the_vm() {
                 hosted.page.workspace,
                 hosted.server_device,
             );
-            let mcp = tilo_mcp::McpServer::new(
+            let mcp = tilo_mcp::McpServer::for_person(
                 actions,
                 hosted.page.workspace.to_string(),
-                hex::encode(hosted.ada.verifying_key().to_bytes()),
+                &hex::encode(hosted.ada.verifying_key().to_bytes()),
             );
             let asked_before = person.questions();
             let (text, failed) = beside(

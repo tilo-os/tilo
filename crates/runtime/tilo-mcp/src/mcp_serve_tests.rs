@@ -15,7 +15,7 @@ tilo_test_env::scenario! {
             ..StubHost::default()
         };
         let invoked = host.invoked.clone();
-        let server = McpServer::new(host, "workspace".into(), "owner".into());
+        let server = McpServer::for_person(host, "workspace".into(), "owner");
         assert_eq!(run(server.activate_existing("so.tilo.test")).unwrap(), None);
         assert!(invoked.lock().unwrap().is_empty());
     }
@@ -27,7 +27,7 @@ tilo_test_env::scenario! {
             ..StubHost::default()
         };
         let invoked = host.invoked.clone();
-        let server = McpServer::new(host, "workspace".into(), "owner".into());
+        let server = McpServer::for_person(host, "workspace".into(), "owner");
         run(async {
             assert_eq!(
                 server.activate_existing("so.tilo.test").await.unwrap(),
@@ -60,7 +60,7 @@ tilo_test_env::scenario! {
             },
         ] {
             let invoked = host.invoked.clone();
-            let server = McpServer::new(host, "workspace".into(), "owner".into());
+            let server = McpServer::for_person(host, "workspace".into(), "owner");
             run(async {
                 assert_eq!(
                     server.activate_existing("so.tilo.test").await.unwrap(),
@@ -81,7 +81,7 @@ tilo_test_env::scenario! {
             },
         ] {
             let invoked = host.invoked.clone();
-            let server = McpServer::new(host, "workspace".into(), "owner".into());
+            let server = McpServer::for_person(host, "workspace".into(), "owner");
             run(async {
                 assert!(server.activate_existing("so.tilo.test").await.is_err());
             });

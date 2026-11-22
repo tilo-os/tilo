@@ -567,22 +567,25 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
 
     // An agent whose turn denies changes is refused before the module is called,
     // and nothing is recorded.
-    let denied = Caller::authenticated(
-        root.verifying_key().to_bytes(),
+    let person_key = root.verifying_key().to_bytes();
+    let denied = Caller::delegated_agent(
+        "assistant",
+        person_key,
         server_device.cert.device_public_key,
     )
-    .delegated_to("assistant")
     .named("Claude Code")
     .in_workspace(&created.workspace)
     .in_new_execution()
-    .on_turn(
-        tilo_action_policy::turn::Turn::new("chat.workspace/denied", "m1"),
-        vec![Rule::new(
-            TreePath::workspace(&created.workspace).rest(),
-            KindSet::UNDOABLE,
-            PolicyAnswer::Deny,
-        )],
-    );
+    .on_roster(0, person_key)
+    .on_roster_turn(tilo_action_policy::turn::Turn::new(
+        "chat.workspace/denied",
+        "m1",
+    ))
+    .held_to(vec![Rule::new(
+        TreePath::workspace(&created.workspace).rest(),
+        KindSet::UNDOABLE,
+        PolicyAnswer::Deny,
+    )]);
     let refused = super::request(
         &provider(&route),
         ActionAddress::new(TRACKER, "create-area"),
@@ -613,22 +616,24 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
         .find(|(_, area)| area.name.as_str() == "Ship it")
         .map(|(id, _)| id.to_string())
         .expect("the tracker holds the area the agent made");
-    let asking = Caller::authenticated(
-        root.verifying_key().to_bytes(),
+    let asking = Caller::delegated_agent(
+        "assistant",
+        person_key,
         server_device.cert.device_public_key,
     )
-    .delegated_to("assistant")
     .named("Claude Code")
     .in_workspace(&created.workspace)
     .in_new_execution()
-    .on_turn(
-        tilo_action_policy::turn::Turn::new("chat.workspace/asking", "m1"),
-        vec![Rule::new(
-            TreePath::workspace(&created.workspace).rest(),
-            KindSet::UNDOABLE,
-            PolicyAnswer::Ask,
-        )],
-    );
+    .on_roster(0, person_key)
+    .on_roster_turn(tilo_action_policy::turn::Turn::new(
+        "chat.workspace/asking",
+        "m1",
+    ))
+    .held_to(vec![Rule::new(
+        TreePath::workspace(&created.workspace).rest(),
+        KindSet::UNDOABLE,
+        PolicyAnswer::Ask,
+    )]);
     let mut delete = serde_json::Map::new();
     delete.insert("area".into(), serde_json::Value::String(area.clone()));
     let asking_request = super::request(

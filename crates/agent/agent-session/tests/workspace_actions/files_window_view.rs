@@ -139,10 +139,11 @@ async fn agent_viewing_files(
     // Its session is the agent's, as `tilo login` makes it say.
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
-    let server = McpServer::new(
+    let server = McpServer::for_agent(
         SessionActions::new(&agent.peer, agent.workspace, home.cert.device_public_key),
         WORKSPACE.into(),
-        person.clone(),
+        "claude-code",
+        &person,
     );
     (hosted, person, server, page)
 }

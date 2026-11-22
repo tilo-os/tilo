@@ -292,12 +292,9 @@ fn whoever_may_not_read_the_app_asking_gets_no_password() {
             tilo_action_policy::Rule::new(node, read, tilo_action_policy::Answer::Deny)
         });
         let key = |seed| ed25519_dalek::SigningKey::from_bytes(&[seed; 32]).verifying_key();
-        let agent = Caller::authenticated(key(0x30).to_bytes(), key(0x31).to_bytes())
-            .delegated_to("scout".to_owned())
-            .on_turn(
-                tilo_action_policy::turn::Turn::new("chat", "1"),
-                rules.collect(),
-            );
+        let agent = Caller::delegated_agent("scout", key(0x30).to_bytes(), key(0x31).to_bytes())
+            .in_workspace(WORKSPACE)
+            .held_to(rules.collect());
         let (workspaces, changes) = (served.device.workspaces(), served.device.changes());
         let item = entry.to_owned();
         let ask = Ask::SignIn {

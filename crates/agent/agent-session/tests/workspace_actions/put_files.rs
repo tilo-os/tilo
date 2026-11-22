@@ -247,10 +247,10 @@ async fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
     .await;
     let agent = Browser::open(&hosted, &computer, &host).await;
     let person = hex::encode(root.verifying_key().to_bytes());
-    let server = McpServer::new(
+    let server = McpServer::for_person(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
-        person,
+        &person,
     );
 
     // A PDF at the workspace's root: the node names its content, and the
@@ -374,10 +374,10 @@ async fn a_folder_put_is_one_run_and_one_write_per_chunk() {
     .await;
     let agent = Browser::open(&hosted, &computer, &device).await;
     let person = hex::encode(root.verifying_key().to_bytes());
-    let server = McpServer::new(
+    let server = McpServer::for_person(
         SessionActions::new(&agent.peer, agent.workspace, device.cert.device_public_key),
         WORKSPACE.into(),
-        person,
+        &person,
     );
 
     // Many small files are kept whole in one call, each answered by the reference that opens
@@ -508,10 +508,10 @@ async fn a_resumed_upload_of_a_large_file_lands_once_and_whole() {
     .await;
     let agent = Browser::open(&hosted, &computer, &host).await;
     let person = hex::encode(root.verifying_key().to_bytes());
-    let server = McpServer::new(
+    let server = McpServer::for_person(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
-        person,
+        &person,
     );
 
     // A file of many pieces, its upload interrupted after the first ones and
@@ -581,10 +581,10 @@ async fn a_put_file_makes_no_app_record_where_opening_it_in_an_app_does() {
     .await;
     let agent = Browser::open(&hosted, &computer, &host).await;
     let person = hex::encode(root.verifying_key().to_bytes());
-    let server = McpServer::new(
+    let server = McpServer::for_person(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
-        person,
+        &person,
     );
 
     // The same bytes put into the workspace make no app's record: the
@@ -708,10 +708,10 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
         &host,
     )
     .await;
-    let server = McpServer::new(
+    let server = McpServer::for_person(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
-        hex::encode(root.verifying_key().to_bytes()),
+        &hex::encode(root.verifying_key().to_bytes()),
     );
     let notice = form_pdf("Notice of termination");
     let content = content_in(&put(&server, &notice).await);
@@ -860,14 +860,14 @@ async fn a_tree_a_computer_founds_after_the_service_found_none_is_read_and_writt
     );
     let laptop =
         super::resource_support::open_admitted_peer(&hosted, &computer, &serving, &workspace).await;
-    let server = McpServer::new(
+    let server = McpServer::for_person(
         SessionActions::new(
             &laptop.peer,
             laptop.workspace,
             serving.cert.device_public_key,
         ),
         workspace.clone(),
-        hex::encode(owner.verifying_key().to_bytes()),
+        &hex::encode(owner.verifying_key().to_bytes()),
     );
 
     // The service looks at the workspace's files before any folder wrote them: it finds none.

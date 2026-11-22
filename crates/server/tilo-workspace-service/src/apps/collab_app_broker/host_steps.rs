@@ -1581,12 +1581,9 @@ mod settings_documents_tests {
             },
         );
         let person = Caller::local_person(owner.clone()).in_workspace(workspace_id.clone());
-        let agent = Caller::agent_turn(
-            "scribe",
-            owner,
-            tilo_action_policy::turn::Turn::new("chat/workspace/channels/1", "m1"),
-        )
-        .in_workspace(workspace_id);
+        let agent = Caller::local_person(owner)
+            .delegated_to("scribe")
+            .in_workspace(workspace_id);
         let minutes = || *host.minutes.lock().unwrap();
 
         invoked(&state, &person, &lock_after(1, None)).expect("locking sooner asks nothing");

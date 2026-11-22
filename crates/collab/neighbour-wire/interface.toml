@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the server session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 65
+version = 66
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -114,7 +114,6 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "DeltaSegment::Copy.offset" = "#0 u32"
 "DeltaSegment::Literal" = "#1 tuple(Vec<u8>)"
 "DeviceAction" = "struct"
-"DeviceAction.agent" = "#6 Option<HandedAgent>"
 "DeviceAction.message" = "#4 RemoteActionMessage with=message_frame"
 "DeviceAction.placement" = "#5 Option<Vec<u8>> with=serde_bytes"
 "DeviceAction.request_id" = "#1 Uuid"
@@ -341,9 +340,6 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "FrameworkChange::structure" = "#2 unit"
 "FrameworkChange::transfer" = "#3 unit"
 "FrameworkChange::upgrade" = "#4 unit"
-"HandedAgent" = "struct"
-"HandedAgent.client" = "#0 String"
-"HandedAgent.session" = "#1 String"
 "Hdr10Metadata" = "struct"
 "Hdr10Metadata.light" = "#1 ContentLightLevel"
 "Hdr10Metadata.mastering" = "#0 MasteringDisplayColorVolume"

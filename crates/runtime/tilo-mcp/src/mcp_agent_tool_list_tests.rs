@@ -25,7 +25,7 @@ fn an_agent_is_offered_the_small_tools_it_can_use_and_no_classic_ones() {
         let size = serde_json::to_string(tools).unwrap().len();
         assert!(size < 5_000, "the tool list is {size} bytes");
         // One tool set: a session that names no surface offers the agent's.
-        let other = McpServer::new(host.clone(), "workspace".into(), "owner".into())
+        let other = McpServer::for_person(host.clone(), "workspace".into(), "owner")
             .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
             .await
             .unwrap();
