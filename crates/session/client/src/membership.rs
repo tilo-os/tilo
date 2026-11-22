@@ -255,19 +255,6 @@ impl<'a> Membership<'a> {
         .await
     }
 
-    /// Revoke this device's delegation of its person's work to the server
-    /// `server`: the member's own device signed it, so only this one can take
-    /// it back, and every holder refuses the server's work for the person from
-    /// then on.
-    ///
-    /// # Errors
-    /// This device signed no live delegation to `server`, or the workspace
-    /// could not publish the revocation.
-    pub async fn revoke_delegation(&self, server: [u8; 32]) -> Result<(), String> {
-        self.command(WorkspaceMembershipCommand::RevokeWorkDelegation { server })
-            .await
-    }
-
     /// Write `command` into the workspace's governance as this device, signed by its ownership,
     /// saying why when the workspace refuses it or cannot publish it.
     async fn command(&self, command: WorkspaceMembershipCommand) -> Result<(), String> {

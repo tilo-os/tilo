@@ -1061,7 +1061,7 @@ tilo_test_env::scenario! {
         let opened = {
             let mut read_write = |op: &SignedOp| Ok(plaintexts[&op.seq].clone());
             assert_eq!(
-                sealed_compaction::merge_sealed(&document, &mut read_write).unwrap_err(),
+                sealed_compaction::merge_sealed(&document, &mut read_write, &mut |_, _| Ok(())).unwrap_err(),
                 "sealed history does not merge into a complete record",
                 "as the workspace service refused to start on it"
             );
@@ -1098,7 +1098,9 @@ tilo_test_env::scenario! {
         // The same record as the whole history merged at once: the same changes, so the same
         // heads and the same contents. Its bytes may order them otherwise, as a compaction loaded
         // on its own and merged into does.
-        let merged = sealed_compaction::merge_sealed(&document, &mut read_write).unwrap();
+        let merged =
+            sealed_compaction::merge_sealed(&document, &mut read_write, &mut |_, _| Ok(()))
+                .unwrap();
         let (mut opened, mut merged) = (
             AutoCommit::load(&opened.document).unwrap(),
             AutoCommit::load(&merged).unwrap(),

@@ -38,8 +38,6 @@ mod removed_names_tests;
 #[cfg(test)]
 mod shared_desktop_tests;
 #[cfg(test)]
-mod withdrawal_base_tests;
-#[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 /// Actions between the devices of a workspace, with no host in between.
 #[cfg(not(target_arch = "wasm32"))]
@@ -70,9 +68,7 @@ pub mod store;
 pub mod workspace;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;
-pub use collab_types::work_delegation::WorkDelegation;
 pub use state::ChangeRefused;
-pub use state::DelegatedWork;
 pub use state::DocumentKeysBasis;
 /// A state of a workspace's governance, kept to ask which heads it holds.
 pub use state::GovernanceHeads;
@@ -96,8 +92,8 @@ pub use state::{
     SeedState, Shortfall, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite, WIFI_KIND,
     WORKSPACE_KEEPING_DEVICES_KEY, WORKSPACES_KIND, WaitingForUpdate, committed_document_revision,
     decide_with_surfaces, default_surfaces, holder_role, keeping_devices_of, peer_handle,
-    seed_workspace, seed_workspace_at, trigger_mark, unranked, work_delegations_of,
-    workspace_grants_of, workspace_host_actor, workspace_seed,
+    seed_workspace, seed_workspace_at, trigger_mark, unranked, workspace_grants_of,
+    workspace_host_actor, workspace_seed,
 };
 pub use state::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept, Refusal};
 /// The durable layout a replica's state is written in ([`StatePeer::durable`]).

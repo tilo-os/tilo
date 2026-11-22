@@ -310,11 +310,6 @@ pub enum WorkspaceMembershipCommand {
         ttl_ms: u64,
         rank: neighbour_wire::placement::Rank,
     },
-    /// Revoke the caller's delegation of their own work to the server
-    /// `server`, as the member's device that signed it: the delegation is
-    /// that device's to take back, so it travels from the member's own device
-    /// and no other ([`crate::WorkDelegation`]).
-    RevokeWorkDelegation { server: [u8; 32] },
     /// Hold the person whose user root is `person` in the workspace at `place`,
     /// whether or not a device of theirs has joined yet: a role, one of its
     /// administrators, or its owner, whom the caller then hands it to. A member

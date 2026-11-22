@@ -158,8 +158,7 @@ pub(crate) fn refresh(state: Option<&sheet::WorkspaceSettingsState>, fed: &Feedi
 }
 
 /// What the sheet's panes are built from, as it stands: the shell the person
-/// sees, and the workspace state every member's change moves — a delegation
-/// given or taken back among them.
+/// sees, and the workspace state every member's change moves.
 fn fed_revision(fed: &Feeding<'_>) -> (u64, u64) {
     (
         fed.handle.revision(),
@@ -286,7 +285,6 @@ fn ask(
         | sheet::WorkspaceSettingsEffect::RemoveCustomRole { .. }
         | sheet::WorkspaceSettingsEffect::SetDocumentAccess { .. }
         | sheet::WorkspaceSettingsEffect::RemoveMember { .. }
-        | sheet::WorkspaceSettingsEffect::RevokeDelegation { .. }
         | sheet::WorkspaceSettingsEffect::Grant { .. }
         | sheet::WorkspaceSettingsEffect::SetModeration { .. }
         | sheet::WorkspaceSettingsEffect::Revoke { .. } => governance_ask(state, fed, effect),
@@ -381,9 +379,6 @@ fn governance_ask(
             govern(state, fed, move |ws, actor| {
                 domain::remove_member(ws, actor, &member)
             });
-        }
-        sheet::WorkspaceSettingsEffect::RevokeDelegation { server } => {
-            revoke_delegation(state, fed, &server);
         }
         sheet::WorkspaceSettingsEffect::Grant {
             subject,
@@ -493,39 +488,6 @@ fn withdraw_bot(state: &sheet::WorkspaceSettingsState, fed: &Feeding<'_>, entry:
             refused(&state, &reason);
         }
     });
-}
-
-/// Take back this device's delegation of its person's work to the server
-/// `server`: only the device that signed it can, so the sheet offers it only
-/// there and the change is this device's own.
-fn revoke_delegation(state: &sheet::WorkspaceSettingsState, fed: &Feeding<'_>, server: &str) {
-    let Some(workspace_id) = fed
-        .handle
-        .read(|tree| tree.active_workspace().map(Workspace::id))
-    else {
-        return;
-    };
-    let Some(engine) = governing(fed, workspace_id) else {
-        tracing::debug!("this device holds no workspace state to revoke a delegation in");
-        return;
-    };
-    let Some(server) = device_key(server) else {
-        tracing::debug!(%server, "not a device key: nothing revoked");
-        return;
-    };
-    let revoked = crate::landing::off_loop(async move {
-        crate::membership::Membership::of(&engine, workspace_id)
-            .revoke_delegation(server)
-            .await
-    });
-    let state = state.clone();
-    fed.landings
-        .then(revoked, move |revoked| match answered(revoked) {
-            // What the workspace took shows on the next pass, which reads the
-            // delegations as they stand.
-            Ok(()) => state.dismiss_notice(),
-            Err(reason) => refused(&state, &reason),
-        });
 }
 
 /// This device's engine, when it holds the governance of `workspace`.
@@ -840,9 +802,6 @@ fn settings(
                 &names,
                 person,
                 &engine.map_or_else(Vec::new, |engine| engine.holders(&workspace)),
-                &engine.map_or_else(Vec::new, |engine| {
-                    crate::workspace_people::held_delegations(&engine.delegations(&workspace))
-                }),
             )
         }),
         permissions: workspace.map_or_else(sheet::Permissions::default, |ws| {
@@ -1124,14 +1083,12 @@ fn own_name() -> Option<String> {
 }
 
 /// The People tab: who shares the workspace, their roles, the holders of
-/// the workspace with what each can read, and the work its members gave
-/// servers.
+/// the workspace with what each can read.
 fn people(
     ws: &Workspace,
     names: &PeopleNames,
     person: &UserId,
     holders: &[Holder],
-    delegations: &[domain::people::MemberDelegation],
 ) -> sheet::People {
     let kept: Vec<domain::people::MemberHolder> = holders
         .iter()
@@ -1148,7 +1105,6 @@ fn people(
         person,
         ws.is_owner(person),
         &kept,
-        delegations,
     ))
 }
 

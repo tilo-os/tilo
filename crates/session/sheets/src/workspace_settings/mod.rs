@@ -32,7 +32,7 @@ pub use agents::{
 pub use apps::{AppRow, Apps};
 pub use emoji::{Emoji, EmojiPane, Notice, Picture};
 pub use general::{Device, General, Group, Server, Servers};
-pub use people::{Decision, Delegation, Holder, Offers, People, Person, RoleChoice, RoleEditor};
+pub use people::{Decision, Holder, Offers, People, Person, RoleChoice, RoleEditor};
 pub use permissions::{Choice, Composer, DocumentAccess, Holders, Permission, Permissions};
 
 /// The app the shell mounts the sheet as.
@@ -162,13 +162,6 @@ pub enum WorkspaceSettingsEffect {
     RemoveMember {
         #[param("The member, by their key in the list")]
         member: String,
-    },
-    /// Take back your delegation of your own work to a server
-    #[effect(kind = "outside")]
-    #[effect(own_device)]
-    RevokeDelegation {
-        #[param("The server, by its device key in the list")]
-        server: String,
     },
     /// Look at what was done in the workspace
     #[effect(own_device, kind = "read")]
@@ -386,8 +379,6 @@ pub enum Confirm {
     RemoveMember { member: String, name: String },
     /// Remove the custom role named here.
     RemoveRole { role: String, name: String },
-    /// Revoke the delegation of `name`'s work to the server `server`.
-    RevokeDelegation { server: String, name: String },
     /// Revoke the permission `grant`, which `holder` holds.
     Revoke { grant: String, holder: String },
     /// Delete the workspace, with everything in it.
@@ -610,7 +601,6 @@ impl ResourceApp for WorkspaceSettingsApp {
             "people-member",
             "people-removing",
             "people-refused",
-            "people-revoking",
             "agents",
             "agents-empty",
             "agents-moderation",
@@ -660,15 +650,6 @@ impl ResourceApp for WorkspaceSettingsApp {
             fixture.provide(Local {
                 confirming: Some(Confirm::RemoveMember {
                     member: "ada".to_owned(),
-                    name: "Ada Lovelace-Byron".to_owned(),
-                }),
-                ..Local::default()
-            });
-        }
-        if fixture.scenario() == Some("people-revoking") {
-            fixture.provide(Local {
-                confirming: Some(Confirm::RevokeDelegation {
-                    server: "nas".to_owned(),
                     name: "Ada Lovelace-Byron".to_owned(),
                 }),
                 ..Local::default()
@@ -772,7 +753,7 @@ pub fn scenario(name: Option<&str>) -> Settings {
             emoji: emoji::sample_refused(),
             ..sample()
         },
-        Some("people-member" | "people-revoking") => Settings {
+        Some("people-member") => Settings {
             tab: Tab::People,
             role: "Editor".to_owned(),
             people: people::sample_member(),
@@ -1040,9 +1021,6 @@ impl Confirm {
             Self::RemoveMember { member, .. } => WorkspaceSettingsEffect::RemoveMember {
                 member: member.clone(),
             },
-            Self::RevokeDelegation { server, .. } => WorkspaceSettingsEffect::RevokeDelegation {
-                server: server.clone(),
-            },
             Self::Revoke { grant, .. } => WorkspaceSettingsEffect::Revoke {
                 grant: grant.clone(),
             },
@@ -1057,7 +1035,6 @@ impl Confirm {
     fn question<'a>(&self, settings: &'a Settings) -> (&'a Decision, String) {
         match self {
             Self::RemoveMember { name, .. } => (&settings.people.remove_decision, name.clone()),
-            Self::RevokeDelegation { name, .. } => (&settings.people.revoke_decision, name.clone()),
             Self::Revoke { holder, .. } => (&settings.permissions.revoke_decision, holder.clone()),
             Self::RemoveRole { name, .. } => {
                 (&settings.people.role_editor.remove_decision, name.clone())

@@ -164,7 +164,6 @@ fn admit(
             owner,
             administrators: &[],
             now_ns: crate::workspace::saved_shortcut::ns_at(NOW),
-            keeps_delegations: false,
         },
         changes,
     )
@@ -686,8 +685,7 @@ tilo_test_env::scenario! {
                 owner: &owner_root(),
                 administrators: &[],
                 now_ns: NOW_NS + 700_000_000,
-                keeps_delegations: false,
-            },
+                },
             &batch,
         )
         .expect("the certificate is valid at the instant the save arrives");

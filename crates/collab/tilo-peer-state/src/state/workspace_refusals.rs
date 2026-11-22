@@ -66,7 +66,8 @@ impl ChangeRefused {
             document_id: document_id.to_owned(),
             changes,
             refusal: match refusal {
-                collab_types::ReceiptRefusal::NotGranted { .. } => {
+                collab_types::ReceiptRefusal::NotGranted { .. }
+                | collab_types::ReceiptRefusal::CallerNotGranted { .. } => {
                     tilo_server_protocol::refusal::Refusal::NotGranted(refusal.to_string())
                 }
                 other => tilo_server_protocol::refusal::Refusal::NotAllowed(other.to_string()),

@@ -123,6 +123,10 @@ pub enum ClaimError {
     /// A group with more distinct members than its entry records.
     #[error("the group records {recorded} of its {count} members")]
     GroupTooLarge { recorded: usize, count: u32 },
+    /// A resource store's stamp names no invoker: no person or agent it was
+    /// made as.
+    #[error("the change's stamp names no invoker")]
+    NoInvoker,
 }
 
 impl ClaimedAction {
@@ -274,30 +278,49 @@ impl ChangeClaim {
         units: Vec<UnitPath>,
     ) -> Result<Self, ClaimError> {
         let message = message.ok_or(ClaimError::Unnamed)?;
+        let mut stamp: Option<crate::Stamp> = None;
         let action = match FrameworkChange::from_change_message(message) {
             Some(FrameworkChange::Native) => ClaimedAction::whole_resource_edit(String::new()),
             Some(change) => ClaimedAction::Framework(change),
             None if message.starts_with(tilo_actions::context::CONTINUATION_PREFIX) => {
                 ClaimedAction::of_continuation(message).ok_or(ClaimError::Unnamed)?
             }
-            None => match ActionContext::from_change_message(message) {
-                Some(context) => ClaimedAction::of(&context)?,
-                // A resource store's change names its verb in its stamp, and the store that
-                // takes it judges that verb's write-set against it: the claim is an edit of the
-                // resource, as a native write's is.
-                None if crate::Stamp::of_message(message).is_some() => {
+            None => {
+                if let Some(context) = ActionContext::from_change_message(message) {
+                    ClaimedAction::of(&context)?
+                } else {
+                    // A resource store's change names its verb in its stamp, and the store
+                    // that takes it judges that verb's write-set against it: the claim is an
+                    // edit of the resource, as a native write's is.
+                    let parsed = crate::Stamp::of_message(message).ok_or(ClaimError::Unnamed)?;
+                    stamp_invoker(&parsed)?;
+                    stamp = Some(parsed);
                     ClaimedAction::whole_resource_edit(String::new())
                 }
-                None => return Err(ClaimError::Unnamed),
-            },
+            }
         };
         Ok(Self {
             change: hash,
             action,
             units,
-            invoker: invoker_of_message(message),
+            invoker: match &stamp {
+                Some(stamp) => Some(stamp_invoker(stamp)?),
+                None => invoker_of_message(message),
+            },
         })
     }
+}
+
+/// The invoker a resource store's [`crate::Stamp`] names: a person, or an
+/// agent or automation acting for one. A stamp names none: the change says
+/// who made it or it is refused.
+fn stamp_invoker(stamp: &crate::Stamp) -> Result<tilo_action_policy::Acting, ClaimError> {
+    if stamp.invoker.is_empty() {
+        return Err(ClaimError::NoInvoker);
+    }
+    let actor = tilo_action_policy::Actor::of_actor_bytes(stamp.invoker.as_bytes())
+        .ok_or(ClaimError::NoInvoker)?;
+    Ok(tilo_action_policy::Acting::from(actor))
 }
 
 /// Who made the change whose commit message is `message`, as its history
@@ -308,9 +331,10 @@ fn invoker_of_message(message: &str) -> Option<tilo_action_policy::Acting> {
     if message.starts_with(tilo_actions::context::CONTINUATION_PREFIX) {
         return ContinuedAction::invoker_of_message(message);
     }
-    ActionContext::from_change_message(message)
-        .and_then(|context| context.invoker)
-        .map(|invoker| invoker.acting)
+    if let Some(context) = ActionContext::from_change_message(message) {
+        return context.invoker.map(|invoker| invoker.acting);
+    }
+    crate::Stamp::of_message(message).and_then(|stamp| stamp_invoker(&stamp).ok())
 }
 
 /// Who made `change` ([`invoker_of_message`]).
@@ -497,9 +521,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_resource_store_change_is_claimed_by_its_stamp_and_an_unnamed_one_is_not() {
+    fn a_resource_store_change_is_claimed_by_its_stamp_and_one_naming_no_invoker_is_refused() {
+        let person = "ab".repeat(32);
         let stamp = crate::Stamp {
             verb: "$origin".into(),
+            invoker: person.clone(),
             invocation: "i1".into(),
             ..crate::Stamp::default()
         };
@@ -509,8 +535,21 @@ mod tests {
             ClaimedAction::whole_resource_edit(String::new())
         );
         assert_eq!(
-            claim.invoker, None,
-            "decided as the person whose device signed it"
+            claim
+                .invoker
+                .and_then(|invoker| invoker.person_id().map(str::to_owned)),
+            Some(person),
+            "the stamp's invoker is the claim's"
+        );
+        let unnamed = crate::Stamp {
+            verb: "$origin".into(),
+            invocation: "i1".into(),
+            ..crate::Stamp::default()
+        };
+        assert_eq!(
+            ChangeClaim::of_change([7; 32], Some(&unnamed.message()), Vec::new()),
+            Err(ClaimError::NoInvoker),
+            "a change that names no invoker is refused"
         );
         assert_eq!(
             ChangeClaim::of_change([7; 32], Some(r#"{"verb":"add"}"#), Vec::new()),

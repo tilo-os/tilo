@@ -15,9 +15,6 @@ impl StatePeer {
             return Ok(false);
         }
         let actor = self.workspace_actor_for(&self.core.owner);
-        // A row two devices wrote at once holds both their forms, and a base
-        // keeps one value of a row: it is the form that row holds.
-        super::work_delegations::settle(&mut doc, &actor).map_err(err)?;
         let base = workspace::base::rebase(&doc, actor).map_err(err)?;
         self.core.workspace_doc = Some(base.into());
         Ok(true)

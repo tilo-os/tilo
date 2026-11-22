@@ -9,7 +9,6 @@ pub(crate) mod read;
 pub mod rows;
 pub mod saved_shortcut;
 pub mod share;
-pub(crate) use admit::writes as writes_workspace;
 pub use admit::{
     AdmissionFailure, AdmittedWorkspace, SenderAccess, WorkspaceAdmission, WorkspaceRefusal,
     Writer, admit_workspace_changes,

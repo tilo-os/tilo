@@ -1242,19 +1242,6 @@ pub(super) fn person_device_in(
         .map(|cert| cert.device_public_key)
 }
 
-/// Whether the member delegated `person`'s work to `server`, this device, as `actor`
-/// ([`collab_types::work_delegation::WorkDelegation`]) in the workspace `peer` holds.
-fn delegated_in(
-    peer: &super::StatePeer,
-    person: &[u8; 32],
-    actor: &tilo_action_policy::MemberId,
-    server: &[u8; 32],
-) -> bool {
-    peer.workspace()
-        .work_delegation(server, person, tilo_clock::wall())
-        .is_some_and(|delegation| delegation.actor() == *actor)
-}
-
 impl Workspaces {
     /// [`person_device_in`] the workspace `workspace` governed here: `None` for
     /// a workspace not governed here, or a person it admits on no device of their own. The
@@ -1318,38 +1305,6 @@ impl Workspaces {
         })
         .await
         .unwrap_or(false)
-    }
-
-    /// The device the workspace `workspace` admits `person`'s work on for a turn
-    /// acting as `actor`: this server's own device where they delegated that work
-    /// to it as `actor`, else the newest of their own devices it admits now.
-    /// `None` for a workspace not governed here, or a person whose work no device
-    /// here is admitted on: a turn of theirs does not start. On a device of the person's own, the
-    /// turn is this device's: what it writes for the agent is this device's member write.
-    pub async fn work_device(
-        &self,
-        workspace: WorkspaceId,
-        person: [u8; 32],
-        actor: &tilo_action_policy::MemberId,
-    ) -> Option<[u8; 32]> {
-        if let Ok(device) = self.member_identity()
-            && device.cert.user_public_key == person
-        {
-            return Some(device.cert.device_public_key);
-        }
-        let placed = &self.inner.host.environments;
-        let now_ns = tilo_clock::unix_now_ns();
-        let server = self.governor().device_public_key;
-        self.governing(workspace, |governance| {
-            if delegated_in(governance.peer, &person, actor, &server) {
-                return Some(server);
-            }
-            person_device_in(governance.peer, &person, |device| {
-                placed.of(device, now_ns).is_some()
-            })
-        })
-        .await
-        .flatten()
     }
 }
 

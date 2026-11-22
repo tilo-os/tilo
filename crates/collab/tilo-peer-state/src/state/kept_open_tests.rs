@@ -457,6 +457,7 @@ tilo_test_env::scenario! {
             super::super::sealed_compaction::merge_sealed(
                 &peer.core.documents[&route()],
                 &mut |op| open(&keys, op),
+                &mut |_, _| Ok(()),
             )
         };
         assert!(
@@ -481,6 +482,123 @@ tilo_test_env::scenario! {
             assert!(document.get(ROOT, "file").unwrap().is_none());
         }
     }
+
+    phase a_sealed_change_made_for_a_caller_is_checked_when_a_key_holder_opens_it;
+    {
+        let mut f = fixture();
+        let keys = f.keys();
+        let caller = f
+            .replica
+            .owner_certificates()
+            .into_iter()
+            .find(|cert| cert.device_public_key == f.owner.verifying_key().to_bytes())
+            .unwrap();
+        let reader = f.authority.device_public_key;
+
+        let plaintext = caller_edit(&f.replica, &caller, &f.owner, f.now, "forged", false);
+        let message = write(&f.replica, &f.owner, &keys, &plaintext, f.now);
+        admit(&mut f.replica, &f.owner, message, f.now);
+        let read = read_kept(&f.replica, reader, &[&keys], &mut KeptDocument::default());
+        assert!(
+            matches!(read, Err(crate::PeerDocumentReadError::Refused(_))),
+            "an unsigned caller's sealed change is refused when it is opened: {:?}",
+            read.map(|_| ())
+        );
+
+        let mut f = fixture();
+        let keys = f.keys();
+        let caller = f
+            .replica
+            .owner_certificates()
+            .into_iter()
+            .find(|cert| cert.device_public_key == f.owner.verifying_key().to_bytes())
+            .unwrap();
+        let plaintext = caller_edit(&f.replica, &caller, &f.owner, f.now, "signed", true);
+        let message = write(&f.replica, &f.owner, &keys, &plaintext, f.now);
+        admit(&mut f.replica, &f.owner, message, f.now);
+        let (document, _) = read_kept(
+            &f.replica,
+            f.authority.device_public_key,
+            &[&keys],
+            &mut KeptDocument::default(),
+        )
+        .expect("a sealed change its caller signed reads");
+        assert_eq!(
+            document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("signed")
+        );
+    }
+}
+
+/// The plaintext of a change by `key`'s device for the caller its entry names,
+/// on the record: `cert`'s device signs the invocation when `signed`.
+fn caller_edit(
+    peer: &StatePeer,
+    cert: &DeviceCert,
+    key: &SigningKey,
+    now: SystemTime,
+    value: &str,
+    signed: bool,
+) -> Vec<u8> {
+    use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget, SignedCall};
+    use tilo_actions::{ActionAddress, ActionContext, ActionInvoker, InvocationId, InvokerDevice};
+
+    let mut author = Author::new(peer);
+    let heads = author.0.get_heads();
+    author.0.put(ROOT, "value", value).unwrap();
+    let invocation = InvocationId::new();
+    let mut request = InvokeRequest {
+        invocation,
+        target: RemoteActionTarget {
+            provider: "so.tilo.test".into(),
+            address: ActionAddress::new(RECORD, "field-edit"),
+        },
+        argument: InvokeArgument::Text(value.into()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let signed = signed
+        .then(|| {
+            request.signed = Some(Box::new(
+                tilo_server_protocol::invocation::sign_invocation_now(
+                    peer.workspace_id(),
+                    &request,
+                    cert,
+                    key,
+                    u64::try_from(
+                        now.duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap()
+                            .as_nanos(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap(),
+            ));
+            SignedCall::of(&request).map(Box::new)
+        })
+        .flatten();
+    let context = ActionContext {
+        invoker: Some(
+            ActionInvoker::person(hex::encode(cert.user_public_key)).from_device(Some(
+                InvokerDevice::certified(cert.device_public_key, "the caller's device"),
+            )),
+        ),
+        source_invocation: Some(invocation),
+        signed,
+        ..ActionContext::for_resource(RECORD, "test", "Test")
+    };
+    author.0.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(context.change_message().unwrap()),
+    );
+    DocumentMutation::Incremental(author.0.save_after(&heads))
+        .encode()
+        .unwrap()
 }
 
 /// What one read of the document made within a turn did.

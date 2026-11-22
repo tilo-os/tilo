@@ -282,11 +282,7 @@ impl MachineAgentsServer {
             Some(device) => device,
             None => bound
                 .runtime
-                .block_on(bound.workspaces.work_device(
-                    workspace_id,
-                    starter.person,
-                    &tilo_action_policy::MemberId::agent(agent.clone()),
-                ))
+                .block_on(bound.workspaces.person_device(workspace_id, starter.person))
                 .ok_or("the person who started the session is admitted here on no device")?,
         };
         let session = format!("machine-{}", uuid::Uuid::new_v4().simple());

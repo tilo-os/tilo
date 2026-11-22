@@ -64,29 +64,6 @@ pub struct Holder {
     pub can_read: String,
 }
 
-/// One member's delegation of their own work to a server: who gave it, what
-/// the server may take, and until when.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Delegation {
-    /// What its row is keyed by: the server's device key and the member's,
-    /// hex.
-    pub key: String,
-    /// The server that may take the work, by its device key: what revoking it
-    /// asks for.
-    pub server: String,
-    /// Who gave the work, as the row says them.
-    pub who: String,
-    /// Whether that is the person reading the sheet.
-    pub you: bool,
-    /// What the server may take, in the person's words.
-    pub detail: String,
-    /// When it stops, in the person's words.
-    pub until: String,
-    /// Whether the person reading the sheet may revoke it: only the device that
-    /// signed it can, so no other device is offered it.
-    pub revocable: bool,
-}
-
 /// A question the sheet asks before it changes something that cannot be
 /// taken back with a press: keep things as they are, look at what was
 /// done first, or go ahead.
@@ -133,12 +110,6 @@ pub struct People {
     /// The holders of the workspace, under their own heading.
     pub holders_header: String,
     pub holders: Vec<Holder>,
-    /// The work the members gave servers, under their own heading, the word
-    /// that takes one back, and the question that word asks.
-    pub delegated_header: String,
-    pub delegated: Vec<Delegation>,
-    pub revoke: String,
-    pub revoke_decision: Decision,
 }
 
 /// The People tab of `settings`.
@@ -169,16 +140,6 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
     }
     if let Some(note) = &people.note {
         groups.push(caption(note));
-    }
-    if !people.delegated.is_empty() {
-        groups.push(Box::new(Section::titled(
-            people.delegated_header.clone(),
-            people
-                .delegated
-                .iter()
-                .map(|delegation| delegation_row(people, delegation, parts))
-                .collect(),
-        )));
     }
     if !people.holders.is_empty() {
         groups.push(Box::new(Section::titled(
@@ -356,45 +317,6 @@ fn row(people: &People, person: &Person, parts: &Parts) -> Element {
     Box::new(row.trailing(Box::new(controls)))
 }
 
-/// One delegation's row: who gave the work, what it lets the server take and
-/// until when, with Revoke only on the device that signed it.
-fn delegation_row(people: &People, delegation: &Delegation, parts: &Parts) -> Element {
-    let mut row = ListRow::new(
-        format!("ws-people-delegation-{}", delegation.key),
-        delegation.who.clone(),
-    )
-    .two_line_title()
-    .avatar(delegation.who.clone(), delegation.who.clone())
-    .secondary(delegation.detail.clone())
-    .two_line_secondary();
-    if delegation.you {
-        row = row.tags(&[(people.you_tag.as_str(), ChipStyle::Neutral)]);
-    }
-    let mut controls = Row::new()
-        .with_rhythm(Rhythm::Related)
-        .align_start()
-        .push(caption(&delegation.until));
-    if delegation.revocable {
-        let confirm = parts.clone();
-        let (server, name) = (delegation.server.clone(), delegation.who.clone());
-        controls = controls.push(Box::new(
-            Button::new(
-                &format!("ws-people-delegation-revoke-{}", delegation.key),
-                &people.revoke,
-            )
-            .role(ButtonRole::Destructive)
-            .control_size(ControlSize::Small)
-            .on_effect(move || {
-                confirm.confirm(Confirm::RevokeDelegation {
-                    server: server.clone(),
-                    name: name.clone(),
-                });
-            }),
-        ));
-    }
-    Box::new(row.trailing(Box::new(controls)))
-}
-
 /// One holder's row: what it goes by, and what it can read of the workspace
 /// under it.
 fn holder_row(holder: &Holder) -> Element {
@@ -484,37 +406,6 @@ pub(super) fn sample() -> People {
                 can_read: "Keeps an encrypted copy and reads none of it".to_owned(),
             },
         ],
-        delegated_header: "Work given to servers".to_owned(),
-        delegated: vec![
-            Delegation {
-                key: "nas/ada".to_owned(),
-                server: "nas".to_owned(),
-                who: "Ada Lovelace-Byron".to_owned(),
-                you: false,
-                detail: "Mail: reading and undoable changes allowed, taken by Kitchen NAS"
-                    .to_owned(),
-                until: "Until 3 December 2026".to_owned(),
-                revocable: false,
-            },
-            Delegation {
-                key: "cloud/bo".to_owned(),
-                server: "cloud".to_owned(),
-                who: "Bo Li Andersson".to_owned(),
-                you: false,
-                detail: "Browser: reading and undoable changes allowed, taken by tilo.sh"
-                    .to_owned(),
-                until: "Until 9 December 2026".to_owned(),
-                revocable: false,
-            },
-        ],
-        revoke: "Take back".to_owned(),
-        revoke_decision: Decision {
-            title: "Take back this work?".to_owned(),
-            description: "The server stops taking your work at once.".to_owned(),
-            keep: "Keep it".to_owned(),
-            review: "Review activity first".to_owned(),
-            confirm: "Take back".to_owned(),
-        },
     }
 }
 
@@ -527,12 +418,6 @@ pub(super) fn sample_member() -> People {
         if person.you {
             person.offers = Offers::Role;
         }
-    }
-    // One delegation is this person's own, given on this device: theirs to take
-    // back from here.
-    if let Some(delegation) = people.delegated.first_mut() {
-        delegation.you = true;
-        delegation.revocable = true;
     }
     people.note = Some("Only admins can change roles or remove people.".to_owned());
     people

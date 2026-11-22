@@ -89,9 +89,6 @@ mod native_publication;
 mod publication;
 mod workspace_grants;
 pub use workspace_grants::workspace_grants_of;
-mod work_delegations;
-pub(crate) use work_delegations::rows_kept as work_delegation_rows_kept;
-pub use work_delegations::{DelegatedWork, work_delegations_of};
 mod keeping_devices;
 pub use keeping_devices::{
     WORKSPACE_KEEPING_DEVICES_KEY, holder_role, keeping_device_keys_of, keeping_devices_of,
@@ -377,15 +374,8 @@ pub struct StatePeer {
     workspace_host: bool,
     /// The device whose copy this is, once the device's own program said so
     /// ([`Self::write_as_device`]): what lets the copy keep, as that device's
-    /// own change, a work delegation's form that a base it adopts lacks.
     /// Never persisted.
     own_device: Option<[u8; 32]>,
-    /// The newest base of its governor this copy refused, by its generation.
-    /// While the workspace document the copy holds is of an earlier one, its
-    /// governor governs by roles and grants the copy does not hold, and the
-    /// copy takes in no write on those it holds
-    /// ([`Self::behind_its_governor`]). Never persisted.
-    refused_base: Option<u64>,
     /// The governance this copy holds now, when this peer is the copy as it
     /// judges a write by the governance the write was written under
     /// ([`Self::judged_under`]): what a cut kept since is read from. Boxed:

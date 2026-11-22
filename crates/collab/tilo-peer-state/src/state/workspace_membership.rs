@@ -380,19 +380,6 @@ impl PeerWorkspaceMut<'_> {
         if let WorkspaceMembershipCommand::Unshare { share } = command {
             return self.peer.apply_unshare(caller, share, key, now);
         }
-        if let WorkspaceMembershipCommand::RevokeWorkDelegation { server } = command {
-            // A delegation is the member's own device's: only that device can
-            // take it back, so it is revoked where it was signed.
-            if key.device_public_key() != caller.device_public_key {
-                return Err("a delegation is revoked by the device that signed it".into());
-            }
-            return self.peer.workspace_mut().revoke_work_delegation(
-                server,
-                &caller.user_public_key,
-                key,
-                now,
-            );
-        }
         if let WorkspaceMembershipCommand::Lease { id, ttl_ms, rank } = command {
             // A claim is the claiming device's own: no other signs for it.
             if key.device_public_key() != caller.device_public_key {
