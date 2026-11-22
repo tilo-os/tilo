@@ -12,7 +12,6 @@ use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use std::sync::Arc;
-use std::time::Duration;
 use tilo_desktop_model::WorkspaceId;
 
 /// The bytes of one part's text: eighty of them are more than a link takes
@@ -144,26 +143,27 @@ fn join(parts: usize) -> (u64, u64, usize) {
         let member_endpoint = endpoint(&member_key()).await;
         let mut caught_up = member.caught_up();
         let start = bytes_moved();
-        let linking = tokio::spawn({
+        let mut linking = tokio::spawn({
             let member = member.clone();
             let member_endpoint = member_endpoint.clone();
             let host_addr = addr(&host_endpoint);
             async move { member.connect(&member_endpoint, host_addr).await }
         });
-        let caught = tokio::time::timeout(Duration::from_secs(600), caught_up.wait_for(|up| *up))
-            .await
-            .map(|_| bytes_moved().saturating_sub(start));
-        let ended = if linking.is_finished() {
-            Some(linking.await)
-        } else {
-            linking.abort();
-            None
-        };
-        router.shutdown().await.unwrap();
-        member_endpoint.close().await;
-        caught.unwrap_or_else(|_| {
-            panic!("a newcomer to {parts} parts never took the host's records in: {ended:?}")
+        let took_in = format!("a newcomer to {parts} parts to take the host's records in");
+        tilo_test_env::within(took_in, async {
+            tokio::select! {
+                up = caught_up.wait_for(|up| *up) => drop(up.unwrap()),
+                ended = &mut linking => panic!("the link to {parts} parts ended first: {ended:?}"),
+            }
         })
+        .await;
+        let moved = bytes_moved().saturating_sub(start);
+        linking.abort();
+        tilo_test_env::within("the host to stop serving", router.shutdown())
+            .await
+            .unwrap();
+        tilo_test_env::within("the newcomer to close", member_endpoint.close()).await;
+        moved
     });
     let held = (0..parts)
         .filter(|part| {
