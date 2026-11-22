@@ -853,6 +853,7 @@ pub fn replace_networks(
 ) -> Result<()> {
     let mut token = luks::sibling(runner, device)?
         .ok_or_else(|| anyhow!("{} has no sibling unlock", device.display()))?;
+    token.validate()?;
     let mut material = Material::from_json(&tpm::unseal_material(
         runner,
         token.sealing,
@@ -976,6 +977,7 @@ fn dashed_uuid(hex_uuid: &str) -> Option<String> {
 pub fn status(runner: &dyn Runner, device: &Path) -> Result<Status> {
     let token = luks::sibling(runner, device)?
         .ok_or_else(|| anyhow!("{} has no sibling unlock", device.display()))?;
+    token.validate()?;
     status_of(runner, &token)
 }
 
@@ -1079,6 +1081,53 @@ mod tests {
             ])
         );
         assert!(relays(Some("not a relay")).is_err());
+    }
+
+    /// A header as `cryptsetup luksDump --dump-json-metadata` prints it.
+    struct Header(serde_json::Value);
+
+    impl Runner for Header {
+        fn run(
+            &self,
+            program: &str,
+            _args: &[&std::ffi::OsStr],
+            _stdin: Option<&[u8]>,
+        ) -> Result<tilo_rollback::exec::Output> {
+            if program != "cryptsetup" {
+                bail!("no {program} here");
+            }
+            Ok(tilo_rollback::exec::Output {
+                code: 0,
+                stdout: serde_json::to_vec(&self.0)?,
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_token_an_older_tilo_wrote_is_reported_as_set_up_again_not_described() {
+        let token = serde_json::json!({
+            "type": TOKEN_TYPE,
+            "keyslots": ["3"],
+            "tilo_version": TOKEN_VERSION - 1,
+            "cert": "",
+            "siblings": [{ "device": "cc".repeat(32), "label": "Tower" }],
+            "sealing": "cleartext",
+            "material": "e30=",
+        });
+        let header = Header(serde_json::json!({ "tokens": { "0": token } }));
+        let device = Path::new("/dev/vda3");
+        let refused = status(&header, device).expect_err("an old token has no status");
+        assert!(
+            refused.to_string().contains("set it up again"),
+            "{refused:#}"
+        );
+        let refused = replace_networks(&header, device, Vec::new())
+            .expect_err("an old token's networks are not chosen again");
+        assert!(
+            refused.to_string().contains("set it up again"),
+            "{refused:#}"
+        );
     }
 
     #[test]
