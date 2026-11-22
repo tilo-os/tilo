@@ -667,6 +667,65 @@ async fn a_member_copy_says_when_it_caught_up_with_its_serving_device() {
     member.shutdown().await;
 }
 
+/// A folder whose workspace this device does not hold says it waits for it, and starts by
+/// itself once the workspace arrives: no timer, the arrival wakes it.
+#[cfg(feature = "files")]
+#[tokio::test]
+async fn a_folder_waits_for_a_workspace_this_device_does_not_hold_yet() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Waiting", 46).await;
+    let (member_key, member_cert) = device;
+    let workspace_id =
+        WorkspaceId::parse(&created.workspace).expect("the serving device's workspace id");
+    let member = member_service(member_state.path(), (member_key, member_cert.clone())).await;
+    let copies = member.workspaces().clone();
+    let kept = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        tilo_fs::ContentStore::open(kept.path().join("content"))
+            .await
+            .expect("a content store for the folder"),
+    );
+    let folder = crate::files::start(
+        &copies,
+        workspace_id,
+        &kept.path().join("tree"),
+        (member_cert.device_public_key, member_cert.user_public_key),
+        store,
+        crate::content::tests::hosts(false, false).a,
+    )
+    .await
+    .expect("the folder opens");
+    tilo_test_env::within(
+        "the folder says it waits for a workspace this device does not hold",
+        async {
+            while !folder.status().waiting_for_workspace {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
+    let joined = copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    assert_eq!(joined, workspace_id);
+    catching_up(&copies, workspace_id).await;
+    tilo_test_env::within(
+        "the folder stops waiting when the workspace arrives",
+        async {
+            while folder.status().waiting_for_workspace {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
+    drop(folder);
+    drop(copies);
+    drop(serving);
+    member.shutdown().await;
+}
+
 /// A write the device serving a member copy makes is told to whoever follows the copy's
 /// records, naming its app and document: what a folder's sync wakes on instead of reading every
 /// record again to notice the serving device's edits.

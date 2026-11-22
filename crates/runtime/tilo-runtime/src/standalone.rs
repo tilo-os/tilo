@@ -1251,6 +1251,13 @@ impl Standalone {
     pub fn joined_files_folder(&self, workspace: &str) -> Option<PathBuf> {
         self.replicas.as_ref()?.folder(workspace)
     }
+
+    /// Where the sync of the folder of `workspace`, a workspace this profile joined, stands,
+    /// while its files are held: what `tilo folders` tells the person of it.
+    #[must_use]
+    pub fn joined_files_status(&self, workspace: &str) -> Option<tilo_fs::tree_sync::Status> {
+        self.replicas.as_ref()?.status(workspace)
+    }
 }
 
 /// The workspace service this device keeps for the profile, and this device's

@@ -868,6 +868,19 @@ impl Workspaces {
         reading.member.then(|| named_copy(&reading))
     }
 
+    /// Where `workspace`'s copies stand, as this device's member copy reads its holders' word:
+    /// what tells a folder whether the workspace's servers keep what it holds. `None` for a
+    /// workspace this service does not hold as a member copy.
+    pub async fn member_copies(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Option<tilo_peer_state::CopyStatus> {
+        let reading = self.reading(workspace).await?;
+        reading
+            .member
+            .then(|| reading.replica.read(|peer| peer.workspace().copies()))
+    }
+
     /// `workspace`'s copy as this device holds it, when this device governs
     /// it here rather than as a member: the name its governance gives it and
     /// the replica it keeps. `None` for a member copy or a workspace not held

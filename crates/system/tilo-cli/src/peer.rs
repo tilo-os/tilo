@@ -479,13 +479,12 @@ impl Peer {
                 None => anyhow::bail!("the Files content keys are not ready"),
             }
         });
-        let content: Arc<dyn tilo_fs::hydration::ContentSource> = Arc::new(
-            files::WorkspaceSource::new(
+        let content: Arc<dyn tilo_fs::hydration::ContentSource> =
+            Arc::new(files::WorkspaceSource::new(
                 Arc::clone(&routed.content),
                 &workspace.to_string(),
                 CONTENT_WAIT,
-            ),
-        );
+            ));
         let parts = mount::Parts {
             keys,
             replica: &replica,
@@ -823,18 +822,21 @@ pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
         .get("stuck")
         .and_then(serde_json::Value::as_str)
         .map(|why| format!("changes made here wait: {why}"));
-    let state = if field("paused") {
-        "paused"
-    } else if !connected {
-        "not connected to the workspace; changes made here wait to go out"
-    } else if !field("opened") {
-        "waiting for the workspace's files"
-    } else if field("sent") && field("durable") {
-        "in sync"
-    } else if let Some(stuck) = &stuck {
-        stuck
-    } else {
-        "sending changes"
+    // The folder says what it is doing as one state; only whether this computer reaches the
+    // workspace at all is the holder's own word beside it.
+    let said = workspace
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("opening");
+    let state = match said {
+        "paused" => "paused",
+        "waiting-for-workspace" => "waiting for the workspace to reach this computer",
+        _ if !connected => "not connected to the workspace; changes made here wait to go out",
+        "opening" => "waiting for the workspace's files",
+        "stuck" => stuck.as_deref().unwrap_or("sending changes"),
+        "content-going-out" => "the workspace's server doesn't have all its files yet",
+        "in-sync" => "in sync",
+        _ => "sending changes",
     };
     let read_only = if field("read_only") {
         ", read-only"
@@ -857,34 +859,92 @@ mod tests {
     use super::*;
     use tilo_server_session::workspaces::{KeepingDeviceAddress, PersonalWorkspace};
 
+    /// What `tilo folders` says of a folder whose sync stands as `status`, on a computer that
+    /// reaches the workspace or not.
+    fn said(mut status: tilo_fs::tree_sync::Status, connected: bool) -> String {
+        status.files = 1;
+        status.bytes = 1;
+        status.state = status.folder_state();
+        let mut folder = serde_json::to_value(&status).unwrap();
+        folder["name"] = serde_json::json!("Tilo");
+        folder["at"] = serde_json::json!("/home/ada/Tilo");
+        folder["connected"] = serde_json::json!(connected);
+        describe_folder(&folder)
+    }
+
+    /// A folder whose every change went out and whose content a holder keeps whole.
+    fn whole() -> tilo_fs::tree_sync::Status {
+        tilo_fs::tree_sync::Status {
+            opened: true,
+            sent: true,
+            durable: true,
+            host_lacks: Some(0),
+            ..tilo_fs::tree_sync::Status::default()
+        }
+    }
+
     /// A folder whose device has no live session with the workspace is never "in sync": what it
     /// last sent says nothing of what is written there since.
     #[test]
     fn a_folder_without_a_session_is_not_in_sync() {
-        let folder = |connected: bool| {
-            serde_json::json!({"name": "Tilo", "at": "/home/ada/Tilo", "opened": true,
-                "sent": true, "durable": true, "files": 1, "bytes": 1, "connected": connected})
-        };
-        assert!(describe_folder(&folder(true)).contains("(in sync;"));
-        let offline = describe_folder(&folder(false));
+        assert!(said(whole(), true).contains("(in sync;"));
+        let offline = said(whole(), false);
         assert!(!offline.contains("in sync"), "{offline}");
         assert!(offline.contains("not connected"), "{offline}");
+    }
+
+    /// A folder whose changes all went out is not "in sync" while the workspace's server still
+    /// lacks some of its files' content: wiping this computer then could lose them.
+    #[test]
+    fn a_folder_the_server_lacks_files_of_is_not_in_sync() {
+        let lacking = said(
+            tilo_fs::tree_sync::Status {
+                host_lacks: Some(3),
+                ..whole()
+            },
+            true,
+        );
+        assert!(
+            lacking.contains("(the workspace's server doesn't have all its files yet;"),
+            "{lacking}"
+        );
+    }
+
+    /// A folder whose workspace is not on this computer says it waits for it, rather than
+    /// reading as sending changes forever.
+    #[test]
+    fn a_folder_waiting_for_its_workspace_says_so() {
+        let waiting = said(
+            tilo_fs::tree_sync::Status {
+                opened: false,
+                waiting_for_workspace: true,
+                ..whole()
+            },
+            true,
+        );
+        assert!(
+            waiting.contains("(waiting for the workspace to reach this computer;"),
+            "{waiting}"
+        );
+        assert!(said(whole(), true).contains("(in sync;"));
     }
 
     /// A folder whose changes wait for part of the workspace's file list that has not arrived
     /// says so and why, rather than that it is sending changes for as long as that lasts.
     #[test]
     fn a_folder_whose_changes_wait_says_why() {
-        let folder = |stuck: Option<&str>| {
-            let mut folder = serde_json::json!({"name": "Tilo", "at": "/home/ada/Tilo",
-                "opened": true, "sent": false, "durable": true, "files": 1, "bytes": 1});
-            if let Some(stuck) = stuck {
-                folder["stuck"] = serde_json::json!(stuck);
-            }
-            folder
+        let sending = tilo_fs::tree_sync::Status {
+            sent: false,
+            ..whole()
         };
-        assert!(describe_folder(&folder(None)).contains("(sending changes;"));
-        let waiting = describe_folder(&folder(Some("a part has not arrived")));
+        assert!(said(sending.clone(), true).contains("(sending changes;"));
+        let waiting = said(
+            tilo_fs::tree_sync::Status {
+                stuck: Some("a part has not arrived".to_owned()),
+                ..sending
+            },
+            true,
+        );
         assert!(
             waiting.contains("(changes made here wait: a part has not arrived;"),
             "{waiting}"

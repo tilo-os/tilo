@@ -84,7 +84,7 @@ pub(in crate::standalone) struct ReplicaParts<'a> {
 pub(in crate::standalone) struct ReplicaFiles {
     folder: PathBuf,
     _watch: Watch,
-    _tree: TreeSync,
+    tree: TreeSync,
     keeper: tokio::task::JoinHandle<()>,
 }
 
@@ -144,7 +144,7 @@ impl ReplicaFiles {
         Ok(Self {
             folder: parts.folder.to_path_buf(),
             _watch: watch,
-            _tree: tree,
+            tree,
             keeper,
         })
     }
@@ -152,6 +152,11 @@ impl ReplicaFiles {
     /// The folder that mirrors the workspace.
     pub(in crate::standalone) fn folder(&self) -> &Path {
         &self.folder
+    }
+
+    /// Where the folder's sync stands.
+    pub(in crate::standalone) fn status(&self) -> tilo_fs::tree_sync::Status {
+        self.tree.status()
     }
 }
 
@@ -284,6 +289,17 @@ impl Replicas {
             .lock_recover()
             .get(workspace)
             .map(|replica| replica.folder().to_path_buf())
+    }
+
+    /// Where the sync of `workspace`'s folder stands, while its files are held.
+    pub(in crate::standalone) fn status(
+        &self,
+        workspace: &str,
+    ) -> Option<tilo_fs::tree_sync::Status> {
+        self.held
+            .lock_recover()
+            .get(workspace)
+            .map(ReplicaFiles::status)
     }
 }
 

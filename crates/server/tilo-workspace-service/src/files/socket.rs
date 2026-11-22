@@ -163,8 +163,9 @@ async fn send(
     }
 }
 
-/// The parts of the tree the service has anything of, and how many writes it still keeps.
-type Holding = (Vec<TreeChunk>, u64);
+/// The parts of the tree the service has anything of, how many writes it still keeps, whether
+/// this device holds the workspace, and how much of its content the workspace's holders lack.
+type Holding = (Vec<TreeChunk>, u64, bool, Option<u32>);
 
 /// One admitted connection's copy, and what it was told.
 struct Connection {
@@ -314,7 +315,9 @@ fn tell_peer(
         .filter(|chunk| copy.holds(*chunk))
         .collect();
     let pending = u64::try_from(copy.pending()).unwrap_or(u64::MAX);
-    let now = (holds, pending);
+    let workspace = copy.workspaces.member_caught_up(copy.workspace).is_some();
+    let lacks = tilo_fs::tree_sync::TreePeer::host_lacks(copy);
+    let now = (holds, pending, workspace, lacks);
     let mut told = told.lock_recover();
     if !always && told.as_ref() == Some(&now) {
         return;
@@ -322,13 +325,19 @@ fn tell_peer(
     let _ = tell.send(Told::Peer {
         holds: now.0.clone(),
         pending: now.1,
+        workspace: now.2,
+        lacks: now.3,
     });
     *told = Some(now);
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::panic, reason = "a failed step is the assertion")]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::panic,
+        reason = "a failed step is the assertion"
+    )]
 
     use super::*;
     use crate::content::{ContentPeer, ContentPeers, ContentPiece, ContentScope, ContentShelf};

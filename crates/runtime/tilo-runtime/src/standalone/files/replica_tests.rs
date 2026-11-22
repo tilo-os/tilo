@@ -551,13 +551,30 @@ fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
     );
 
     // The member comes back; the server asks it for the draft its tree names
-    // and keeps it again.
+    // and keeps it again. The member's folder says it is in sync only once
+    // the server says it lacks none of the files: until then the draft is on
+    // the member alone, and wiping it would lose it.
     let member = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
     wait_for_kept(
         &kept,
         length,
         "the draft the server let go of, taken back from its writer",
     );
+    let back = std::time::Instant::now();
+    loop {
+        let status = member.joined_files_status(&workspace);
+        if status.as_ref().is_some_and(|status| {
+            status.state == tilo_fs::tree_sync::FolderState::InSync && status.host_lacks == Some(0)
+        }) {
+            break;
+        }
+        assert!(
+            back.elapsed() <= tilo_test_env::hang_bound(),
+            "the member's folder never says it is in sync, with the server's word that it lacks \
+             none of the files, once the server keeps the draft: {status:?}",
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     drop(member);
     run(server.shutdown());
 }

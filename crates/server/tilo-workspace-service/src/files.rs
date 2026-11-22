@@ -47,6 +47,9 @@ pub mod socket;
 /// as nothing) rather than counting them held.
 const SERVED_WITHIN: Duration = Duration::from_secs(20);
 
+/// How often the workspace's holders' word on its content is read for a folder.
+const HOLDERS_EVERY: Duration = Duration::from_millis(250);
+
 /// The route a record of the tree is kept under.
 fn route(
     workspace: WorkspaceId,
@@ -109,6 +112,7 @@ impl Backend {
             unserved: Arc::new(AtomicUsize::new(0)),
             content,
             asked: tokio::sync::Notify::new(),
+            lacks: Mutex::new(None),
         });
         let (wakes, wake_events) = tokio::sync::mpsc::unbounded_channel();
         // Follow the copy's news before the sync reads a resource, so a write the serving device
@@ -145,6 +149,9 @@ struct Copy {
     content: Arc<RouteContent>,
     /// Poked when the sync opens a record, so its answer comes now rather than at the next look.
     asked: tokio::sync::Notify,
+    /// What the workspace's holders lack of its content, as [`Copy::read_host_lacks`] last read
+    /// it.
+    lacks: Mutex<Option<u32>>,
 }
 
 impl Copy {
@@ -173,6 +180,30 @@ impl Copy {
             Some(served) => matches!(futures::FutureExt::now_or_never(served), Some(Ok(()))),
         };
         held.then_some(DocumentAnswer::Sent { frames: 1 })
+    }
+
+    /// How many blobs of the workspace's content the holder that keeps the most of it still
+    /// lacks, by the word of the holders this member copy reads: what a folder says is only
+    /// here until it reaches a holder. `None` while no holder said.
+    async fn read_host_lacks(&self) -> Option<u32> {
+        let copies = self.workspaces.member_copies(self.workspace).await?;
+        copies
+            .holders
+            .iter()
+            .map(|holder| {
+                copies
+                    .shortfall
+                    .iter()
+                    .map(|short| match short {
+                        tilo_peer_state::Shortfall::Holder {
+                            device,
+                            missing: tilo_peer_state::Missing::Content { blobs },
+                        } if *device == holder.device => *blobs,
+                        _ => 0,
+                    })
+                    .sum::<u32>()
+            })
+            .min()
     }
 
     /// Answer each record the sync opened that has no answer yet and can have one now.
@@ -250,6 +281,16 @@ impl tilo_fs::tree_sync::TreePeer for Copy {
 
     fn reask_content(&self) {
         self.content.retry(tilo_clock::unix_now_ms());
+    }
+
+    fn host_lacks(&self) -> Option<u32> {
+        *self.lacks.lock_recover()
+    }
+
+    /// The folder waits for the workspace until this device takes it in as a member copy:
+    /// the same link, kept up or not, whose answers [`Self::answer_now`] reads.
+    fn holds_workspace(&self) -> Option<bool> {
+        Some(self.workspaces.member_caught_up(self.workspace).is_some())
     }
 }
 
@@ -373,9 +414,22 @@ async fn follow(
     let mut answered = copy.workspaces.member_writes_answered();
     let mut caught_up: Option<tokio::sync::watch::Receiver<bool>> = None;
     let mut was_caught_up = false;
+    // The holders' word arrives in the workspace's own state, which says nothing when it moves:
+    // it is read now and then, and the sync told only when it changed.
+    let mut look = tokio::time::interval(HOLDERS_EVERY);
     loop {
         let mut told = Vec::new();
         tokio::select! {
+            _ = look.tick() => {
+                let lacks = copy.read_host_lacks().await;
+                if std::mem::replace(&mut *copy.lacks.lock_recover(), lacks) == lacks {
+                    continue;
+                }
+                if wakes.send(Wake::Holders).is_err() {
+                    return;
+                }
+                continue;
+            }
             written = writes.recv() => match written {
                 Ok(written) => {
                     if written.workspace == copy.name
@@ -444,8 +498,7 @@ impl StoreShelf {
     /// and the store is never read by blocking a runtime worker on another runtime.
     fn on_store<T: Send>(
         &self,
-        work: impl FnOnce(Arc<tilo_fs::ContentStore>) -> futures::future::BoxFuture<'static, T>
-        + Send,
+        work: impl FnOnce(Arc<tilo_fs::ContentStore>) -> futures::future::BoxFuture<'static, T> + Send,
     ) -> Option<T> {
         let store = Arc::clone(&self.0);
         std::thread::scope(|scope| {

@@ -157,6 +157,19 @@ pub trait TreePeer: collab_types::signer::MaybeSendSync {
 
     /// Ask the peer again for file content whose answer stalled.
     fn reask_content(&self);
+
+    /// How many blobs of the workspace's content the holder that keeps the most of it still
+    /// lacks, as the peer last heard: `None` while no holder said.
+    fn host_lacks(&self) -> Option<u32> {
+        None
+    }
+
+    /// Whether this device holds the workspace the tree is part of, as the peer knows it:
+    /// `Some(false)` while it does not, so the folder says it waits for the workspace to
+    /// arrive. `None` when the peer cannot say.
+    fn holds_workspace(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// A write of one record under way, for the tree sync's own task.
@@ -205,6 +218,9 @@ pub enum Wake {
         chunk: TreeChunk,
         answer: DocumentAnswer,
     },
+    /// The workspace's holders said anew what they keep of its content: the folder's state is
+    /// said again, and no record is read for it.
+    Holders,
 }
 
 /// Where the replica stands, as `tilo status` says it.
@@ -216,6 +232,9 @@ pub enum Wake {
 pub struct Status {
     /// The workspace's host answered for the tree: what it holds is merged.
     pub opened: bool,
+    /// This device does not hold the workspace yet: the folder waits for it to arrive, and
+    /// starts by itself when it does.
+    pub waiting_for_workspace: bool,
     /// Every change made here was handed to the peer.
     pub sent: bool,
     /// The peer holds nothing of this device's that its host has not answered for.
@@ -233,6 +252,56 @@ pub struct Status {
     /// while they do.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stuck: Option<String>,
+    /// How many blobs of the workspace's content the holder that keeps the most of it still
+    /// lacks, by the holders' own word: `None` while none said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_lacks: Option<u32>,
+    /// What the folder is doing, from the facts above: the one thing a person is told of it.
+    pub state: FolderState,
+}
+
+/// What a folder is doing, as a person is told it: one state, the first that holds of these.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FolderState {
+    /// Not syncing, as the person asked.
+    Paused,
+    /// The workspace has not arrived on this device; the folder starts by itself when it does.
+    WaitingForWorkspace,
+    /// The workspace has not said what its file list holds yet.
+    #[default]
+    Opening,
+    /// Changes made here wait, for the reason [`Status::stuck`] gives.
+    Stuck,
+    /// Changes made here are going out to the workspace.
+    Sending,
+    /// Every change went out, and the workspace's holders still lack some of the content:
+    /// files whose bytes may be on this device alone.
+    ContentGoingOut,
+    /// Every change went out, and a holder keeps all of the content.
+    InSync,
+}
+
+impl Status {
+    /// The state these facts say.
+    #[must_use]
+    pub fn folder_state(&self) -> FolderState {
+        if self.paused {
+            FolderState::Paused
+        } else if self.waiting_for_workspace {
+            FolderState::WaitingForWorkspace
+        } else if !self.opened {
+            FolderState::Opening
+        } else if self.stuck.is_some() {
+            FolderState::Stuck
+        } else if !(self.sent && self.durable) {
+            FolderState::Sending
+        } else if self.host_lacks.is_some_and(|blobs| blobs > 0) {
+            FolderState::ContentGoingOut
+        } else {
+            FolderState::InSync
+        }
+    }
 }
 
 /// How a tree sync is started: the workspace it holds, the peer it reaches, where it keeps its
@@ -402,6 +471,7 @@ impl TreeSync {
             dirty_since: None,
             kept: Arc::clone(&kept),
             ordered: BTreeSet::new(),
+            ordered_for: BTreeSet::new(),
             pacing: Paced::new(KEEP_EVERY),
             counting: Paced::new(COUNT_EVERY),
             counted_heads: None,
@@ -471,7 +541,10 @@ impl TreeSync {
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Relaxed);
         // Said at once rather than at the next pass: the pass may wait for a step over the tree.
-        self.status.lock_recover().paused = paused;
+        let mut status = self.status.lock_recover();
+        status.paused = paused;
+        status.state = status.folder_state();
+        drop(status);
         self.wake.notify_waiters();
     }
 }
@@ -747,6 +820,8 @@ struct Sync {
     records_changed: bool,
     /// The documents whose wait for another to reach the workspace was said, once each.
     ordered: BTreeSet<TreeChunk>,
+    /// The chunks the documents of `ordered` wait for, as the last look found them.
+    ordered_for: BTreeSet<TreeChunk>,
     /// How often the tree may be kept, since it costs what the tree costs.
     pacing: Paced,
     counting: Paced,
@@ -774,8 +849,9 @@ impl Sync {
         let mut session_moved = true;
         loop {
             while let Ok(wake) = self.wakes.try_recv() {
+                // The holders' word changes only what the folder says of itself.
+                session_moved |= !matches!(wake, Wake::Holders);
                 self.take(wake);
-                session_moved = true;
             }
             if self.stopping.load(Ordering::Relaxed) {
                 // The holder is stopping: keep what this tree changed and end, rather than
@@ -834,8 +910,8 @@ impl Sync {
             }
             match received {
                 Some(Some(wake)) => {
+                    session_moved = !matches!(wake, Wake::Holders);
                     self.take(wake);
-                    session_moved = true;
                 }
                 // The peer is gone: nothing more will come.
                 Some(None) => break,
@@ -888,20 +964,37 @@ impl Sync {
         }
     }
 
-    /// Why changes made here wait, once they waited for longer than [`STUCK_AFTER`] for documents
-    /// of the tree that do not read here; `None` while they go out or have not waited that long.
+    /// Why changes made here wait, once they waited for longer than [`STUCK_AFTER`]: for the
+    /// workspace's word of whether it holds a part of the tree, for a part that does not read
+    /// here, or for the parts a part names to reach the workspace first; `None` while they go out
+    /// or have not waited that long.
     fn stuck(&self, opened: bool) -> Option<String> {
-        self.dirty_since?;
-        let waiting = self
+        let since = self.dirty_since?;
+        let long = |since: Instant| since.elapsed() >= STUCK_AFTER;
+        // A part waits long either for the workspace's first word of whether it holds it, or,
+        // once it said it does, for the part itself to arrive here.
+        let long_waits: Vec<&TreeChunk> = self
             .again
-            .values()
-            .filter(|again| again.since.elapsed() >= STUCK_AFTER)
+            .iter()
+            .filter(|(_, again)| long(again.since))
+            .map(|(chunk, _)| chunk)
+            .collect();
+        let unanswered = long_waits
+            .iter()
+            .filter(|chunk| {
+                self.documents
+                    .get(**chunk)
+                    .is_some_and(|held| held.answered.is_none())
+            })
             .count();
+        let waiting = long_waits.len().saturating_sub(unanswered);
         let lacking = self.lacking.len();
+        let ordered = if long(since) { self.ordered.len() } else { 0 };
         let unopened = !opened;
-        if waiting == 0 && lacking == 0 && !unopened {
+        if unanswered == 0 && waiting == 0 && lacking == 0 && ordered == 0 && !unopened {
             return None;
         }
+        let parts = |count: usize| if count == 1 { "part" } else { "parts" };
         let mut why = Vec::new();
         if unopened {
             why.push(
@@ -910,20 +1003,35 @@ impl Sync {
                     .to_owned(),
             );
         }
+        if unanswered > 0 {
+            why.push(format!(
+                "the workspace has not said whether it holds {unanswered} {} of the file list",
+                parts(unanswered),
+            ));
+        }
         if waiting > 0 {
             why.push(format!(
-                "{waiting} part{} of the workspace's file list {} not arrived on this computer yet \
+                "{waiting} {} of the workspace's file list {} not arrived on this computer yet \
                  and {} asked for again every few minutes",
-                if waiting == 1 { "" } else { "s" },
+                parts(waiting),
                 if waiting == 1 { "has" } else { "have" },
                 if waiting == 1 { "is" } else { "are" },
             ));
         }
+        if ordered > 0 {
+            let first = self.ordered_for.len();
+            why.push(format!(
+                "{ordered} {} of the file list {} for {first} other {} to reach the workspace first",
+                parts(ordered),
+                if ordered == 1 { "waits" } else { "wait" },
+                parts(first),
+            ));
+        }
         if lacking > 0 {
             why.push(format!(
-                "the file list names {lacking} part{} that neither this computer nor the workspace \
+                "the file list names {lacking} {} that neither this computer nor the workspace \
                  holds",
-                if lacking == 1 { "" } else { "s" },
+                parts(lacking),
             ));
         }
         Some(format!(
@@ -978,6 +1086,7 @@ impl Sync {
                     self.status.lock_recover().opened = true;
                 }
             }
+            Wake::Holders => {}
         }
     }
 
@@ -1253,6 +1362,8 @@ impl Sync {
         // other document of the tree waits until the server holds them, since it may name them.
         let unheld = unheld_chunks(&self.documents, held_now);
         self.ask_after(&unheld, held_here);
+        self.ordered_for.clone_from(&unheld);
+        self.ordered.retain(|chunk| dirty.contains(chunk));
         for chunk in dirty {
             if !self.documents.contains_key(&chunk) {
                 self.open(chunk);
@@ -1448,7 +1559,10 @@ impl Sync {
         status.paused = self.paused.load(Ordering::Relaxed);
         status.sent = sent;
         status.durable = durable;
+        status.waiting_for_workspace = self.peer.holds_workspace() == Some(false);
         status.stuck = self.stuck(opened);
+        status.host_lacks = self.peer.host_lacks();
+        status.state = status.folder_state();
     }
 
     /// The files, bytes and local bytes as last counted, with the local bytes counted again when

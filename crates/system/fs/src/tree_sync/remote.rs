@@ -83,10 +83,13 @@ pub enum Told {
         served: Result<(), String>,
     },
     /// What the service has now: the parts of the tree it has anything of, among those
-    /// this connection named, and how many of this device's writes it still keeps.
+    /// this connection named, how many of this device's writes it still keeps, whether this
+    /// device holds the workspace, and how many blobs of its content its holders lack.
     Peer {
         holds: Vec<TreeChunk>,
         pending: u64,
+        workspace: bool,
+        lacks: Option<u32>,
     },
     Wake(Wake),
 }
@@ -133,6 +136,11 @@ struct PeerState {
     answers: BTreeMap<TreeChunk, Option<DocumentAnswer>>,
     holds: BTreeSet<TreeChunk>,
     pending: usize,
+    /// Whether this device holds the workspace, as the session last said: `None` before it
+    /// said.
+    workspace: Option<bool>,
+    /// How many blobs of the workspace's content its holders lack, as the session last said.
+    lacks: Option<u32>,
 }
 
 /// The connection to the session, while there is one.
@@ -173,14 +181,27 @@ impl Link {
     fn take(&self, told: Told, wakes: &mpsc::UnboundedSender<Wake>) -> Result<bool, String> {
         let id = match &told {
             Told::Refused(why) => return Err(why.clone()),
-            Told::Peer { holds, pending } => {
+            Told::Peer {
+                holds,
+                pending,
+                workspace,
+                lacks,
+            } => {
                 let holds = holds.iter().copied().collect();
                 let pending = usize::try_from(*pending).unwrap_or(usize::MAX);
                 let mut state = self.state.lock_recover();
                 state.holds = holds;
                 state.pending = pending;
+                let arrived = state.workspace != Some(*workspace);
+                state.workspace = Some(*workspace);
+                state.lacks = *lacks;
                 drop(state);
-                return Ok(true);
+                // The workspace came to this device: the tree is read again from the start, as
+                // on a connection that just opened, and the folder stops waiting at once.
+                if arrived {
+                    let _ = wakes.send(Wake::HostReady);
+                }
+                return Ok(!wakes.is_closed());
             }
             Told::Wake(_) => return Ok(true),
             Told::Read { id, .. } | Told::Written { id, .. } | Told::Served { id, .. } => *id,
@@ -202,6 +223,8 @@ impl Link {
         }
         state.holds.clear();
         state.pending = 0;
+        state.workspace = None;
+        state.lacks = None;
     }
 }
 
@@ -356,6 +379,14 @@ impl TreePeer for Remote {
 
     fn reask_content(&self) {
         self.0.send(Ask::ReaskContent);
+    }
+
+    fn holds_workspace(&self) -> Option<bool> {
+        self.0.state.lock_recover().workspace
+    }
+
+    fn host_lacks(&self) -> Option<u32> {
+        self.0.state.lock_recover().lacks
     }
 }
 
