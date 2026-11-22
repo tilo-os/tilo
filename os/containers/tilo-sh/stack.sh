@@ -843,7 +843,7 @@ vm_host_running() { [[ -n $(vm_host status 2>/dev/null | sed -n 's/^tilo-sh-vm-h
 # Who the server is and where it is dialled, as it wrote it in its state when its browser
 # listener started (the web entry's `TILO_WEB_HOME_HOST_INFO`).
 host_info() {
-  local kept=$state/server/lounge/server/web-host.json
+  local kept=$state/server/lounge/server/server/web-host.json
   [[ -r $kept ]] || die "the server said nothing of itself ($kept): is it up?"
   cat "$kept"
 }
