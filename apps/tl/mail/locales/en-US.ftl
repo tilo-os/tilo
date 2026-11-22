@@ -227,14 +227,7 @@ d-gkuo27e6 = Drafts
 d-z3zcztpz = Labels
 
 d-bag7bf25 = Recovered mail
-    .doc = Conversations retained from an earlier mailbox, outside the IMAP account collections.
-
-d-fezdozrd = Recovered conversations
-
-d-swilesl6 = Recovered signatures
-
-d-5upxgb6g = Recovered drafts
-    .doc = Previously imported drafts, including ones subsequently deleted.
+    .doc = Conversations kept outside the IMAP account collections: messages delivered from outside an account's server, and the mail of an account that is gone.
 
 d-4ow5ydy5 = Hold
     .doc = How many seconds members have to undo a send.
@@ -260,17 +253,6 @@ d-eon6gbrn = New message
 
 d-v7wxxiaj = Carry native mail
     .doc = The mailbox the native Mail kept before this app took its id over, carried into this one once: every draft it was writing and every message still waiting in its outbox is a draft here, from the same account, to the same people, with the same subject, body and invitation.
-
-d-y6hvqjbf = Recover previous mail
-    .doc = Copies data from the earlier private mailbox into this workspace.
-
-d-y6hvqjbf-drafts = Drafts
-
-d-y6hvqjbf-labels = Labels
-
-d-y6hvqjbf-conversations = Conversations
-
-d-y6hvqjbf-signatures = Signatures
 
 d-ygbvdl5l = New message
     .doc = Starts a message from the first account.

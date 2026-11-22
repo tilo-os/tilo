@@ -36,10 +36,10 @@ fn package() -> (&'static str, &'static str) {
 
 /// The client with its root made, over a workspace of its own.
 fn workspace() -> tilolang_tilo::host::Host {
-    let doc = tilo_resource::Doc::new();
-    let host = tilolang_tilo::host::Host::new(
-        &doc,
+    let host = tilolang_tilo::host::Host::open(
+        tilolang_tilo::resources::ResourceStore::in_memory(),
         tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("Ada")),
+        None,
         || None,
     )
     .unwrap();

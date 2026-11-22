@@ -124,7 +124,11 @@ fn desk_picture(documents: &[(String, AutoCommit)]) -> Vec<u8> {
 /// Ada's workspace with the tilolang Notes on `device`, the native app's `documents` beside it,
 /// and its notebook as the window opens it.
 fn opened(documents: &[(String, AutoCommit)], device: &Device) -> (Replica, ResourceRef) {
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, NOTES]);
+    let (ada, _) = Replica::new(
+        "ada",
+        crate::fixtures::Workspace::new(),
+        &[DISCUSSION, NOTES],
+    );
     ada.host.runtime().set_blobs(device.clone());
     ada.host.runtime().set_earlier(NOTES_APP, documents);
     let notebook = ada.host.root_of(NOTES_APP).expect("the notebook");
@@ -334,7 +338,7 @@ fn a_native_notebook_is_carried_over_once_as_one_change() {
         .map(|(_, doc)| doc.clone().get_heads())
         .collect();
     let device = Device::default();
-    let (mut ada, notebook) = opened(&documents, &device);
+    let (ada, notebook) = opened(&documents, &device);
     assert!(
         listed(&ada, &notebook, "notes").is_empty(),
         "nothing is carried before the migration runs"
@@ -384,28 +388,21 @@ fn a_native_notebook_is_carried_over_once_as_one_change() {
     assert_eq!(before, after, "the native app's documents are not written");
 
     // Undo takes the whole carrying back as one step, and redo makes it again.
-    step(&mut ada, false);
+    step(&ada, false);
     assert!(
         listed(&ada, &notebook, "notes").is_empty(),
         "undone at once"
     );
-    step(&mut ada, true);
+    step(&ada, true);
     assert_carried(&ada, &notebook, &device, &picture);
 }
 
 /// The person of `replica` takes their last step back, or makes it again.
-fn step(replica: &mut Replica, again: bool) {
-    use collaboration::history_source::verbs::HistoryEdit;
-    replica.history(&if again {
-        HistoryEdit::Redo { steps: None }
+fn step(replica: &Replica, again: bool) {
+    assert!(if again {
+        replica.redo_last()
     } else {
-        HistoryEdit::Undo {
-            steps: None,
-            invocation: None,
-            by: None,
-            to: None,
-            step: None,
-        }
+        replica.undo_last()
     });
 }
 
@@ -457,7 +454,7 @@ fn a_notebook_kept_before_pages_had_parts_is_carried_over_too() {
     let picture = desk_picture(&documents);
     let record = version_two(&documents);
     let device = Device::default();
-    let (mut ada, notebook) = opened(&[(RECORD.to_owned(), record)], &device);
+    let (ada, notebook) = opened(&[(RECORD.to_owned(), record)], &device);
     assert_eq!(ada.host.migrate(), 1);
     assert_eq!(ada.commit(), 1);
     assert_carried(&ada, &notebook, &device, &picture);
@@ -489,7 +486,7 @@ fn a_page_under_a_deleted_note_is_set_aside_and_a_document_of_no_known_layout_is
     ));
 
     let device = Device::default();
-    let (mut ada, notebook) = opened(&documents, &device);
+    let (ada, notebook) = opened(&documents, &device);
     assert_eq!(ada.host.migrate(), 1);
     assert_eq!(ada.commit(), 1);
     let ids: Vec<String> = listed(&ada, &notebook, "notes").iter().map(id_of).collect();
@@ -539,14 +536,18 @@ fn a_notebook_another_device_made_first_still_receives_the_native_pages() {
     // Grace opens the tilolang Notes first, on a device that is not the workspace's origin and
     // holds none of the native app's documents: her notebook starts empty, its carrying still to
     // run.
-    let (mut grace, _) = Replica::new("grace", AutoCommit::new(), &[DISCUSSION, NOTES]);
+    let (grace, _) = Replica::new(
+        "grace",
+        crate::fixtures::Workspace::new(),
+        &[DISCUSSION, NOTES],
+    );
     let notebook = grace.host.root_of(NOTES_APP).expect("the notebook");
     grace.commit();
     assert!(listed(&grace, &notebook, "notes").is_empty());
 
     // Ada's device, the origin, comes back with the native app's documents and Grace's notebook.
     let device = Device::default();
-    let mut ada = grace.fork("ada", &[DISCUSSION, NOTES]);
+    let ada = grace.fork("ada", &[DISCUSSION, NOTES]);
     ada.host.runtime().set_blobs(device.clone());
     ada.host.runtime().set_earlier(NOTES_APP, &documents);
     assert_eq!(
@@ -571,7 +572,7 @@ fn a_notebook_opened_before_the_native_pages_arrived_receives_them_once_they_do(
     // Ada's device opens the tilolang Notes before the native app's documents reached it: there
     // is nothing to carry, and finding nothing is not the carrying done.
     let device = Device::default();
-    let (mut ada, notebook) = opened(&[], &device);
+    let (ada, notebook) = opened(&[], &device);
     assert_eq!(ada.host.migrate(), 0, "nothing to carry yet");
     assert_eq!(ada.commit(), 0, "and nothing recorded");
     assert!(listed(&ada, &notebook, "notes").is_empty());
@@ -629,7 +630,7 @@ fn a_notebook_whose_pages_are_still_arriving_is_carried_once_they_all_are() {
     // The record and the chain's newest part are here, its first part still on its way: what is
     // here is not carried, since the carrying would be done and part 0's pages left behind.
     let arriving = vec![parts[0].clone(), parts[2].clone()];
-    let (mut ada, notebook) = opened(&arriving, &device);
+    let (ada, notebook) = opened(&arriving, &device);
     assert!(!ada.host.runtime().has_earlier(NOTES_APP));
     assert_eq!(ada.host.migrate(), 0, "the carrying waits");
     assert_eq!(ada.commit(), 0);

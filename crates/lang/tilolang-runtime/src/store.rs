@@ -1714,6 +1714,22 @@ pub trait Store {
         ))
     }
 
+    /// What of the type `ty` links to the resource `at`: [`Self::linked`]'s links whose resource
+    /// is of `ty`, in its order. A store with an index asks it of `ty`'s resources alone, so
+    /// what a row draws of the suggestions waiting on its resource costs the suggestions, not
+    /// every type that could link to it.
+    ///
+    /// # Errors
+    ///
+    /// A store that cannot answer it.
+    fn linked_by(&self, at: &ResourceRef, ty: &str) -> Result<Vec<Link>, StoreError> {
+        Ok(self
+            .linked(at)?
+            .into_iter()
+            .filter(|link| link.of.ty == ty)
+            .collect())
+    }
+
     /// The notes of a document's changes, oldest first.
     ///
     /// # Errors

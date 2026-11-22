@@ -1,26 +1,9 @@
-//! One undo, as the document's platform history verb (`collaboration::history_source::verbs`):
-//! `undo(v)` on a step and `undo(invocation)` on an agent's invocation, which the tilolang host
-//! running the instance applies to the document.
-
-use tilolang_tilo::DynValue;
-use ui::tilo_actions::{ActionContext, ActionInvoker};
+//! One undo, as the platform's history verb (`collaboration::history_source::verbs`): `undo(v)`
+//! on a step, which the tilolang host running the instance applies to the workspace's store.
 
 use super::Session;
 
 const TASKS: &str = "so.tilo.lang.tasks";
-const RUN: &str = "issue-7@8000000000000001";
-
-/// An agent's run of `issue-7`, acting for ada, as the broker stamps its changes.
-fn marked_run() -> (ActionInvoker, ActionContext) {
-    (
-        ActionInvoker::agent("helper").acting_for("ada"),
-        ActionContext::default().with_group(
-            RUN,
-            "Tidy the tasks",
-            ui::tilo_actions::context::AGENT_SESSION_GROUP,
-        ),
-    )
-}
 
 fn titled(title: &str) -> serde_json::Map<String, serde_json::Value> {
     let mut arguments = serde_json::Map::new();
@@ -29,58 +12,74 @@ fn titled(title: &str) -> serde_json::Map<String, serde_json::Value> {
 }
 
 /// The titles of the tasks in the root, in order.
-fn titles(doc: &mut ui::tilo_resource::Doc) -> Vec<String> {
-    let root = tilolang_tilo::action::resource_ids(doc, TASKS).remove(0);
-    let chunks = tilolang_tilo::chunk::Chunks::of(doc.clone());
-    let record =
-        tilolang_tilo::action::read_resource(&chunks, TASKS, &root).expect("the root reads");
-    record
-        .schema()
-        .fields
-        .iter()
-        .filter_map(|field| match record.get(&field.id) {
-            Some(DynValue::Collection(items)) => Some(items),
-            _ => None,
-        })
-        .flat_map(|items| items.iter())
-        .filter_map(|(_, item)| {
-            let title = item
-                .schema()
-                .fields
-                .iter()
-                .find(|field| field.kind == tilolang_tilo::MergeKind::Text)?;
-            match item.get(&title.id) {
-                Some(DynValue::Text(title)) => Some(title.clone()),
+fn titles(session: &mut Session) -> Vec<String> {
+    use tilolang_tilo::runtime::Value;
+    session.settle();
+    let host = session.instance_host();
+    let root = host.root_of(TASKS).expect("the tasks root");
+    let Ok(Value::List(items)) = host.runtime().read(&root, "items") else {
+        return Vec::new();
+    };
+    items
+        .into_iter()
+        .filter_map(|item| match item {
+            Value::Ref(item) => match host.runtime().read(&item.target, "title") {
+                Ok(Value::Text(title)) => Some(title),
                 _ => None,
-            }
+            },
+            _ => None,
         })
         .collect()
 }
 
-/// The change id of the person's own step whose arguments name `title`, outside any run.
-fn persons_step(doc: &mut ui::tilo_resource::Doc, title: &str) -> String {
-    ui::tilo_resource::history::versions(doc)
+/// The task titled `title`, as the workspace's store holds it.
+fn task(session: &Session, title: &str) -> tilolang_tilo::runtime::value::ResourceRef {
+    use tilolang_tilo::runtime::Value;
+    let host = session.instance_host();
+    let root = host.root_of(TASKS).expect("the tasks root");
+    let Ok(Value::List(items)) = host.runtime().read(&root, "items") else {
+        panic!("the workspace lists its tasks");
+    };
+    items
         .into_iter()
+        .find_map(|item| match item {
+            Value::Ref(item)
+                if matches!(
+                    host.runtime().read(&item.target, "title"),
+                    Ok(Value::Text(said)) if said == title
+                ) =>
+            {
+                Some((*item.target).clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the task naming {title}"))
+}
+
+/// The versions of the task titled `title`, oldest first.
+fn versions_of(session: &Session, title: &str) -> Vec<tilolang_tilo::runtime::store::Version> {
+    use tilolang_tilo::runtime::store::Store as _;
+    session
+        .instance_host()
+        .store()
+        .versions(&task(session, title))
+        .expect("the task's history")
+}
+
+/// The invocation of the person's own step whose arguments name `title`.
+fn persons_step(session: &Session, title: &str) -> String {
+    versions_of(session, title)
+        .into_iter()
+        .rev()
         .find(|version| {
-            version.context.as_ref().is_some_and(|context| {
-                context.group.is_none()
-                    && context.what.as_ref().is_some_and(|did| {
-                        format!("{did:?}").contains(&format!("String({title:?})"))
-                    })
-            })
+            version.gesture.is_some()
+                && version.who.as_ref().is_some_and(|who| {
+                    let who = format!("{who:?}");
+                    who.contains("ada") && !who.contains("helper")
+                })
         })
-        .unwrap_or_else(|| {
-            panic!(
-                "the person's own step naming {title}: {:?}",
-                ui::tilo_resource::history::versions(&mut doc.clone())
-                    .iter()
-                    .filter_map(|version| version.context.as_ref())
-                    .map(|context| format!("{:?}", context.what))
-                    .collect::<Vec<_>>()
-            )
-        })
-        .hash
-        .to_string()
+        .and_then(|version| version.gesture)
+        .unwrap_or_else(|| panic!("the person's own step naming {title}"))
 }
 
 /// The root the window shows (`tl:<app>:<id>`), once published.
@@ -110,10 +109,9 @@ fn action(session: &Session, resource: &str, name: &str) -> String {
         )
 }
 
-/// The person adds a task and takes back exactly that step with `undo(v)`; an agent's invocation
-/// adds three and `undo(invocation)` takes back all three, leaving the person's own.
+/// The person adds a task and takes back exactly that step with `undo(v)`, as a view names it.
 #[test]
-fn undo_named_from_a_view_takes_back_a_step_and_an_invocation() {
+fn undo_named_from_a_view_takes_back_that_step() {
     let mut window = Session::tasks();
     let root = root(&mut window);
     let add = action(&window, &root, "new_task");
@@ -122,49 +120,18 @@ fn undo_named_from_a_view_takes_back_a_step_and_an_invocation() {
     window
         .invoke(None, None, &root, &add, &titled("Call the landlord"))
         .unwrap();
-    assert_eq!(window.read(titles), ["Call the landlord"]);
+    assert_eq!(titles(&mut window), ["Call the landlord"]);
 
     // `undo(v)` on the person's own step: exactly that step comes back, and nothing else.
-    let person = window.read(|doc| persons_step(doc, "Call the landlord"));
+    let person = persons_step(&window, "Call the landlord");
     let mut undo_step = serde_json::Map::new();
     undo_step.insert("step".to_owned(), person.into());
     window
         .invoke(None, None, &record, "undo", &undo_step)
         .unwrap();
     assert_eq!(
-        window.read(titles),
+        titles(&mut window),
         Vec::<String>::new(),
         "`undo(v)` takes back exactly the step the history named"
-    );
-
-    // They add one again, and an agent's run adds three: one step of theirs, one run.
-    window
-        .invoke(None, None, &root, &add, &titled("Call the landlord"))
-        .unwrap();
-    let (agent, ambient) = marked_run();
-    for title in ["Book the dentist", "Pay the rent", "Water the plants"] {
-        window
-            .invoke(
-                Some(agent.clone()),
-                Some(&ambient),
-                &root,
-                &add,
-                &titled(title),
-            )
-            .unwrap();
-    }
-    assert_eq!(window.read(titles).len(), 4);
-
-    // `undo(invocation)`: every step of the invocation comes back together, and the person's own
-    // step stays.
-    let mut undo_invocation = serde_json::Map::new();
-    undo_invocation.insert("invocation".to_owned(), RUN.into());
-    window
-        .invoke(None, None, &record, "undo", &undo_invocation)
-        .unwrap();
-    assert_eq!(
-        window.read(titles),
-        ["Call the landlord"],
-        "the run's three adds are one step: all of them back, the person's own task kept"
     );
 }

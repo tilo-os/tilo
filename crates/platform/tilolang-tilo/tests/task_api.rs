@@ -7,18 +7,15 @@ use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use automerge::AutoCommit;
 use serde_json::{Value as Json, json};
 use tilolang_runtime::Actor;
 use tilolang_runtime::reads::ReadRequest;
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::host::Host;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{PlanRequest, edit_action, resource_id};
 use tilolang_tilo::task::{Answered, TaskApi, TaskSession};
-use tilolang_tilo::task_documents::{DocumentReads, DocumentSource};
 
-use crate::fixtures::Replica;
+use crate::fixtures::{Replica, Workspace};
 
 /// The apps of a workspace, each group of packages run by one host.
 pub struct Apps {
@@ -31,11 +28,6 @@ pub struct Apps {
     pub refused: Vec<&'static str>,
     /// Apps the API cannot reach (not open), and why.
     pub unreachable: Vec<(&'static str, &'static str)>,
-    /// The apps whose document a task fetched, in order.
-    pub fetched: RefCell<Vec<String>>,
-    /// The copy of an app's document the API hands over while it lags the app's host: the
-    /// document as it was when [`Self::lag`] froze it.
-    lagging: RefCell<HashMap<String, Vec<u8>>>,
     /// The readings the session publishes of its own resources, by the resource's id (the
     /// device's styles, the session's windows): what a program reads within a call, as the
     /// session's services answer it.
@@ -48,15 +40,17 @@ impl Apps {
     /// Hosts for `groups` of packages (source and ids lock), each package compiled once, after
     /// the ones before it, and its root made.
     pub fn new(groups: &[&[(&str, &str)]]) -> Self {
-        let mut metas = Vec::new();
         let mut replicas = Vec::new();
         let mut by_app = HashMap::new();
         let mut bundles = Vec::new();
+        // Each package compiles once, after the ones before it, whichever group runs it.
+        let mut metas: Vec<tilolang::PackageMeta> = Vec::new();
         for group in groups {
-            let doc = AutoCommit::new();
-            let host = Host::new(
-                &doc,
+            let doc = Workspace::new();
+            let host = tilolang_tilo::host::Host::open(
+                doc.store(),
                 Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+                None,
                 || None,
             )
             .unwrap();
@@ -65,12 +59,6 @@ impl Apps {
                 let compiled = tilolang::compile_package(source, &lock, &metas).unwrap();
                 host.load_compiled(&compiled).unwrap();
                 host.root_of(&compiled.meta.app).unwrap();
-                if !metas
-                    .iter()
-                    .any(|meta: &tilolang::PackageMeta| meta.app == compiled.meta.app)
-                {
-                    metas.push(compiled.meta.clone());
-                }
                 by_app.insert(compiled.meta.app.clone(), replicas.len());
                 bundles.push(Bundle {
                     wasm: compiled.wasm.clone(),
@@ -78,15 +66,11 @@ impl Apps {
                     ids: String::new(),
                     imports: Vec::new(),
                 });
+                if !metas.iter().any(|meta| meta.app == compiled.meta.app) {
+                    metas.push(compiled.meta.clone());
+                }
             }
-            let mut replica = Replica {
-                name: "ada".to_owned(),
-                doc,
-                host,
-                log: Vec::new(),
-            };
-            replica.commit();
-            replicas.push(RefCell::new(replica));
+            replicas.push(RefCell::new(Replica::with_host("ada", doc, host)));
         }
         Self {
             replicas,
@@ -95,46 +79,14 @@ impl Apps {
             invoked: RefCell::default(),
             refused: Vec::new(),
             unreachable: Vec::new(),
-            fetched: RefCell::default(),
-            lagging: RefCell::default(),
             readings: RefCell::default(),
             read_for: RefCell::default(),
         }
     }
 
-    /// From now on the API hands over `app`'s document as it is now, whatever its host applies
-    /// later: the workspace's copy lagging the document's origin.
-    pub fn lag(&self, app: &str) {
-        let copy = self.replica(app).doc.save();
-        self.lagging.borrow_mut().insert(app.to_owned(), copy);
-    }
-
     /// The host of `app`.
     pub fn replica(&self, app: &str) -> RefMut<'_, Replica> {
         self.replicas[self.by_app[app]].borrow_mut()
-    }
-
-    /// A task of these apps acting for ada, reading their documents itself as the session's
-    /// api hands them over ([`DocumentReads`]): no app's host answers its reads, only its
-    /// invocations.
-    pub fn document_task(self: &Rc<Self>) -> (TaskSession, Rc<DocumentsApi>) {
-        let api = Rc::new(DocumentsApi {
-            apps: Rc::clone(self),
-            reads: DocumentReads::new(
-                &self.bundles,
-                std::collections::BTreeMap::new(),
-                Some("ada"),
-                Rc::clone(self) as Rc<dyn DocumentSource>,
-            ),
-        });
-        let task = TaskSession::new(
-            Some("ada"),
-            &(Rc::clone(&api) as Rc<dyn TaskApi>),
-            &self.bundles,
-            Rc::new(tilolang_tilo::native::Native::of(&self.bundles, &[])),
-        )
-        .unwrap();
-        (task, api)
     }
 
     /// A task of these apps, acting for ada.
@@ -146,61 +98,6 @@ impl Apps {
             Rc::new(tilolang_tilo::native::Native::of(&self.bundles, &[])),
         )
         .unwrap()
-    }
-}
-
-impl DocumentSource for Apps {
-    fn record(&self, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
-        if !record.is_empty() {
-            return Err(format!(
-                "the test's apps keep their documents in the workspace's document, not in {record}"
-            ));
-        }
-        if let Some((_, why)) = self.unreachable.iter().find(|(gone, _)| *gone == app) {
-            return Err((*why).to_owned());
-        }
-        self.fetched.borrow_mut().push(app.to_owned());
-        if let Some(copy) = self.lagging.borrow().get(app) {
-            return Ok(Some(copy.clone()));
-        }
-        let index = *self.by_app.get(app).ok_or("no such app")?;
-        Ok(Some(self.replicas[index].borrow_mut().doc.save()))
-    }
-}
-
-/// A task's api that reads documents itself: what [`Apps::document_task`] runs over.
-pub struct DocumentsApi {
-    apps: Rc<Apps>,
-    pub reads: DocumentReads,
-}
-
-impl TaskApi for DocumentsApi {
-    fn read(&self, app: &str, item: &str, _: &str) -> Result<Json, String> {
-        self.reads.read(app, item)
-    }
-
-    fn query(&self, app: &str, request: &Json) -> Result<Json, String> {
-        self.reads.query(app, request)
-    }
-
-    fn begin_program(&self) {
-        self.reads.forget();
-    }
-
-    fn invoke(&self, call: &Json) -> Answered {
-        let app = call["app"].as_str().unwrap();
-        let before = self.apps.replica(app).doc.get_heads();
-        let answered = self.apps.invoke(call);
-        // The document's origin says what it wrote, which the task's reads take in, as the
-        // session's task host does.
-        let wrote = self.apps.replica(app).doc.save_after(&before);
-        if let Err(why) = (!wrote.is_empty())
-            .then(|| self.reads.take_in(app, &wrote))
-            .transpose()
-        {
-            panic!("what the origin wrote applies to the document the task read: {why}");
-        }
-        answered
     }
 }
 
@@ -238,6 +135,10 @@ impl TaskApi for Apps {
     fn query(&self, app: &str, request: &Json) -> Result<Json, String> {
         let request: ReadRequest =
             serde_json::from_value(request.clone()).map_err(|error| error.to_string())?;
+        // An app no host here runs (the device's own resources) has nothing to answer from.
+        if !self.by_app.contains_key(app) {
+            return Err("no such app".to_owned());
+        }
         self.replica(app).host.runtime().answer_read(&request)
     }
 
@@ -262,7 +163,7 @@ impl TaskApi for Apps {
         if self.refused.contains(&named) {
             return Answered::Refused(format!("{named}: denied by the workspace's policy"));
         }
-        let mut replica = self.replica(app);
+        let replica = self.replica(app);
         let prefix = resource_id(app, "");
         let resource = call["resource"].as_str().unwrap().strip_prefix(&prefix);
         let arguments = call["arguments"].as_object().unwrap();
@@ -281,6 +182,7 @@ impl TaskApi for Apps {
                 return Answered::Failed(format!("invoke: {action}: {error}"));
             }
         }
+        let caller = task_caller();
         let planned = if action == "edit-text" || action == "edit-flag" {
             let package = replica.host.package(app).unwrap();
             let id = resource.unwrap();
@@ -290,29 +192,28 @@ impl TaskApi for Apps {
                 .to_owned();
             let declared = package.meta.types.iter().find(|t| t.id == ty).unwrap();
             edit_action(
+                replica.host.store(),
                 &package.meta,
                 &declared.name,
                 id,
                 arguments["field"].as_str().unwrap(),
                 &arguments["value"],
+                Some(&caller.actor),
             )
         } else {
-            replica.host.plan(&PlanRequest {
+            let request = PlanRequest {
                 app,
                 kind: "",
                 action_id: action,
                 resource,
                 args: arguments,
-                caller: Some(&task_caller()),
+                caller: Some(&caller),
                 from: None,
-            })
+            };
+            replica.carry_out(&request)
         };
         match planned {
-            Ok(planned) => {
-                // The broker delivers it as the task's.
-                let person = std::mem::replace(&mut replica.name, "task-1".to_owned());
-                replica.apply(&planned);
-                replica.name = person;
+            Ok(_) => {
                 let returned = replica
                     .host
                     .take_returned(action)

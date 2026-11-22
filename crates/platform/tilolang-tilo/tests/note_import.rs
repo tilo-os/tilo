@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Value};
@@ -98,7 +98,7 @@ impl BlobHost for Device {
 
 /// Ada's workspace with its notebook, on `device` for its files.
 fn notebook(device: &Device) -> (Replica, Vec<Package>) {
-    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, NOTES]);
+    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[DISCUSSION, NOTES]);
     ada.host.set_clock(|| "2026-11-02T09:00:00Z".to_owned());
     ada.host.runtime().set_blobs(device.clone());
     ada.host.root_of(APP).unwrap();
@@ -183,7 +183,7 @@ fn parent_of(r: &Replica, note: &ResourceRef) -> Option<ResourceRef> {
 }
 
 /// `text` imported as the file `name` of the media type a Markdown file has.
-fn imported(r: &mut Replica, device: &Device, name: &str, text: &str) -> ResourceRef {
+fn imported(r: &Replica, device: &Device, name: &str, text: &str) -> ResourceRef {
     let file = Value::file(device.keeping(name, "text/markdown", text.as_bytes()));
     let nb = r.host.root_of(APP).unwrap();
     call(r, "import_markdown", vec![Value::resource(&nb), file]);
@@ -193,7 +193,7 @@ fn imported(r: &mut Replica, device: &Device, name: &str, text: &str) -> Resourc
 }
 
 /// A note the app makes, under `parent`, titled `title`.
-fn note(r: &mut Replica, parent: Option<&ResourceRef>, titled: &str) -> ResourceRef {
+fn note(r: &Replica, parent: Option<&ResourceRef>, titled: &str) -> ResourceRef {
     let nb = r.host.root_of(APP).unwrap();
     let made = match parent {
         Some(p) => call(r, "new_child", vec![Value::resource(p)]),
@@ -213,7 +213,7 @@ fn note(r: &mut Replica, parent: Option<&ResourceRef>, titled: &str) -> Resource
 }
 
 /// `bytes` put in `note` as the picture `name`, as a person choosing it would.
-fn picture_in(r: &mut Replica, device: &Device, note: &ResourceRef, name: &str, bytes: &[u8]) {
+fn picture_in(r: &Replica, device: &Device, note: &ResourceRef, name: &str, bytes: &[u8]) {
     let file = Value::file(device.keeping(name, "image/png", bytes));
     call(r, "insert_image", vec![Value::resource(note), file]);
     r.commit();
@@ -272,8 +272,8 @@ tilo_test_env::scenario! {
     phase a_note_exported_and_imported_again_is_the_same_note;
     {
         let device = Device::default();
-        let (mut ada, _loaded) = notebook(&device);
-        let first = imported(&mut ada, &device, "Groceries.md", DOCUMENT);
+        let (ada, _loaded) = notebook(&device);
+        let first = imported(&ada, &device, "Groceries.md", DOCUMENT);
         assert_eq!(title(&ada, &first), "Groceries", "its title is its heading");
         let held = body(&ada, &first);
         let kinds: Vec<&str> = held
@@ -314,7 +314,7 @@ tilo_test_env::scenario! {
             "a picture keeps the address of its bytes: {markdown}"
         );
 
-        let again = imported(&mut ada, &device, "Groceries again.md", &markdown);
+        let again = imported(&ada, &device, "Groceries again.md", &markdown);
         assert_eq!(title(&ada, &again), "Groceries");
         assert_eq!(
             exported(&ada, &again),
@@ -326,9 +326,9 @@ tilo_test_env::scenario! {
     phase importing_the_same_file_twice_makes_one_note;
     {
         let device = Device::default();
-        let (mut ada, _loaded) = notebook(&device);
-        let first = imported(&mut ada, &device, "Groceries.md", DOCUMENT);
-        let twice = imported(&mut ada, &device, "Groceries.md", DOCUMENT);
+        let (ada, _loaded) = notebook(&device);
+        let first = imported(&ada, &device, "Groceries.md", DOCUMENT);
+        let twice = imported(&ada, &device, "Groceries.md", DOCUMENT);
         assert_eq!(first.id_string(), twice.id_string(), "the note it made");
         assert_eq!(written(&ada, &ada.host.root_of(APP).unwrap()).len(), 1);
     }
@@ -336,8 +336,8 @@ tilo_test_env::scenario! {
     phase a_whole_file_is_exported_under_the_name_it_asks_for;
     {
         let device = Device::default();
-        let (mut ada, _loaded) = notebook(&device);
-        let note = imported(&mut ada, &device, "Groceries.md", DOCUMENT);
+        let (ada, _loaded) = notebook(&device);
+        let note = imported(&ada, &device, "Groceries.md", DOCUMENT);
         let text = exported(&ada, &note);
         assert!(text.contains("# Groceries"), "{text}");
     }
@@ -345,7 +345,7 @@ tilo_test_env::scenario! {
     phase a_notion_export_becomes_notes_in_one_change;
     {
         let device = Device::default();
-        let (mut ada, _loaded) = notebook(&device);
+        let (ada, _loaded) = notebook(&device);
         let exported = archive(&[
             ("Reading list.md", b"# Reading list\n\nBooks to read.\n"),
             (
@@ -356,13 +356,13 @@ tilo_test_env::scenario! {
         ]);
         let file = Value::file(device.keeping("Reading list.zip", "application/zip", &exported));
         let nb = ada.host.root_of(APP).unwrap();
-        let before = ada.log.len();
+        let before = ada.versions(&nb).len();
         call(&ada, "import_archive", vec![Value::resource(&nb), file]);
         ada.commit();
         assert_eq!(
-            ada.log.len(),
+            ada.versions(&nb).len(),
             before.saturating_add(1),
-            "the whole import is one change"
+            "the whole import is one change of the notebook"
         );
 
         let all = written(&ada, &nb);
@@ -491,13 +491,13 @@ fn notebook_export(r: &Replica, device: &Device) -> Vec<(String, Vec<u8>)> {
 #[test]
 fn a_notebook_exported_and_imported_again_is_the_same_notebook() {
     let device = Device::default();
-    let (mut ada, _loaded) = notebook(&device);
-    let plan = note(&mut ada, None, "Q3 plan");
-    picture_in(&mut ada, &device, &plan, "arch.png", ARCH);
-    let standups = note(&mut ada, Some(&plan), "Standups");
-    let monday = note(&mut ada, Some(&standups), "Monday");
-    picture_in(&mut ada, &device, &monday, "fox.png", PIXELS);
-    let _home = note(&mut ada, None, "Home");
+    let (ada, _loaded) = notebook(&device);
+    let plan = note(&ada, None, "Q3 plan");
+    picture_in(&ada, &device, &plan, "arch.png", ARCH);
+    let standups = note(&ada, Some(&plan), "Standups");
+    let monday = note(&ada, Some(&standups), "Monday");
+    picture_in(&ada, &device, &monday, "fox.png", PIXELS);
+    let _home = note(&ada, None, "Home");
 
     let file = exported_notebook(&ada);
     let exported = held(&device, &file);
@@ -539,7 +539,7 @@ fn a_notebook_exported_and_imported_again_is_the_same_notebook() {
     );
 
     // The notebook the export makes, imported into an empty one: the tree comes back.
-    let (mut ben, _loaded) = notebook(&device);
+    let (ben, _loaded) = notebook(&device);
     let nb = ben.host.root_of(APP).unwrap();
     call(
         &ben,
@@ -598,12 +598,12 @@ tilo_test_env::scenario! {
     // folder the export is read into.
     {
         let device = Device::default();
-        let (mut ada, _loaded) = notebook(&device);
-        let plan = note(&mut ada, None, "Plan");
-        note(&mut ada, Some(&plan), "Monday");
-        note(&mut ada, Some(&plan), "Monday");
-        note(&mut ada, None, "../../etc/passwd");
-        note(&mut ada, None, "..");
+        let (ada, _loaded) = notebook(&device);
+        let plan = note(&ada, None, "Plan");
+        note(&ada, Some(&plan), "Monday");
+        note(&ada, Some(&plan), "Monday");
+        note(&ada, None, "../../etc/passwd");
+        note(&ada, None, "..");
 
         let exported = notebook_export(&ada, &device);
         let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
@@ -629,8 +629,8 @@ tilo_test_env::scenario! {
     // pictures when it does.
     {
         let device = Device::default();
-        let (mut ada, _loaded) = notebook(&device);
-        let groceries = note(&mut ada, None, "Groceries");
+        let (ada, _loaded) = notebook(&device);
+        let groceries = note(&ada, None, "Groceries");
 
         let plain = made_file(&ada, "export_note", vec![Value::resource(&groceries)]);
         assert_eq!(plain.name, "Groceries.md");
@@ -641,7 +641,7 @@ tilo_test_env::scenario! {
             "a note of words alone is the Markdown itself"
         );
 
-        picture_in(&mut ada, &device, &groceries, "fox.png", PIXELS);
+        picture_in(&ada, &device, &groceries, "fox.png", PIXELS);
         let zipped = made_file(&ada, "export_note", vec![Value::resource(&groceries)]);
         assert_eq!(zipped.name, "Groceries.zip");
         assert_eq!(zipped.media, "application/zip");
@@ -662,16 +662,16 @@ tilo_test_env::scenario! {
     // named the same way, so no file of a folder stands over another.
     {
         let device = Device::default();
-        let (mut ada, _loaded) = notebook(&device);
-        let plan = note(&mut ada, None, "Q3 plan");
-        let monday = note(&mut ada, Some(&plan), "Monday");
-        let _tuesday = note(&mut ada, Some(&plan), "Tuesday");
-        let again = note(&mut ada, Some(&plan), "Monday");
+        let (ada, _loaded) = notebook(&device);
+        let plan = note(&ada, None, "Q3 plan");
+        let monday = note(&ada, Some(&plan), "Monday");
+        let _tuesday = note(&ada, Some(&plan), "Tuesday");
+        let again = note(&ada, Some(&plan), "Monday");
         // Two titles that a file name cannot tell apart, `/` for `-`.
-        let _slash = note(&mut ada, Some(&plan), "a/b");
-        let _dash = note(&mut ada, Some(&plan), "a-b");
-        picture_in(&mut ada, &device, &monday, "fox.png", PIXELS);
-        picture_in(&mut ada, &device, &again, "fox.png", ARCH);
+        let _slash = note(&ada, Some(&plan), "a/b");
+        let _dash = note(&ada, Some(&plan), "a-b");
+        picture_in(&ada, &device, &monday, "fox.png", PIXELS);
+        picture_in(&ada, &device, &again, "fox.png", ARCH);
 
         let exported = notebook_export(&ada, &device);
         let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
@@ -705,7 +705,7 @@ tilo_test_env::scenario! {
     // same note rather than the first one of that title.
     {
         let device = Device::default();
-        let (mut ada, _loaded) = notebook(&device);
+        let (ada, _loaded) = notebook(&device);
         let file = Value::file(device.keeping("Notes.zip", "application/zip", &archive(LINKED)));
         let nb = ada.host.root_of(APP).unwrap();
         call(&ada, "import_archive", vec![Value::resource(&nb), file]);
@@ -746,7 +746,7 @@ tilo_test_env::scenario! {
 
         // The export imported again is the notebook it was, the link reaching the second `Ideas`
         // again, and exporting that one gives the same files.
-        let (mut ben, _loaded) = notebook(&device);
+        let (ben, _loaded) = notebook(&device);
         let nb = ben.host.root_of(APP).unwrap();
         call(
             &ben,
@@ -783,12 +783,12 @@ tilo_test_env::scenario! {
     // two notes without a title are two files as well.
     {
         let device = Device::default();
-        let (mut ada, _loaded) = notebook(&device);
-        note(&mut ada, None, "Ideas");
-        note(&mut ada, None, "Ideas (2)");
-        note(&mut ada, None, "Ideas");
-        note(&mut ada, None, "");
-        note(&mut ada, None, "");
+        let (ada, _loaded) = notebook(&device);
+        note(&ada, None, "Ideas");
+        note(&ada, None, "Ideas (2)");
+        note(&ada, None, "Ideas");
+        note(&ada, None, "");
+        note(&ada, None, "");
 
         let exported = notebook_export(&ada, &device);
         let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();

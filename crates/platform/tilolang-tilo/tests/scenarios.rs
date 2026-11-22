@@ -1,7 +1,7 @@
 //! Every app's scenarios run against its root resource and fill its window: the seed data shots,
 //! tests and benchmarks start from.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::Actor;
 
 use tilolang_tilo::used::{UsedApp, answer};
@@ -60,7 +60,7 @@ fn apps() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
 fn every_scenario_of_every_app_seeds_its_root_and_the_first_fills_a_list_past_a_screen() {
     for (app, packages) in apps() {
         let meta = {
-            let (replica, loaded) = Replica::new("ada", AutoCommit::new(), &packages);
+            let (replica, loaded) = Replica::new("ada", Workspace::new(), &packages);
             drop(replica);
             loaded.last().unwrap().meta.clone()
         };
@@ -69,7 +69,7 @@ fn every_scenario_of_every_app_seeds_its_root_and_the_first_fills_a_list_past_a_
         assert!(!meta.scenarios.is_empty(), "{app} declares a scenario");
         for (i, scenario) in meta.scenarios.iter().enumerate() {
             // Each scenario in a workspace of its own, as a shot starts from one.
-            let (mut replica, loaded) = Replica::new("ada", AutoCommit::new(), &packages);
+            let (replica, loaded) = Replica::new("ada", Workspace::new(), &packages);
             // A scenario may attach the roots of the packages it uses (Today's apps).
             for package in &loaded {
                 if package.meta.app != app {
@@ -105,7 +105,7 @@ fn every_scenario_of_every_app_seeds_its_root_and_the_first_fills_a_list_past_a_
 #[test]
 fn a_scenarios_named_person_is_a_member_of_the_workspace() {
     let packages = vec![app!("discussion"), app_and_scenarios!("tasks")];
-    let (mut replica, loaded) = Replica::new("ada", AutoCommit::new(), &packages);
+    let (replica, loaded) = Replica::new("ada", Workspace::new(), &packages);
     replica.host.root_of("so.tilo.lang.tasks").unwrap();
     replica.commit();
     let scenario = loaded
@@ -148,12 +148,12 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
     ]
     .iter()
     .map(|packages| {
-        let (replica, loaded) = Replica::new("ada", AutoCommit::new(), packages);
+        let (replica, loaded) = Replica::new("ada", Workspace::new(), packages);
         replica.host.set_clock(clock);
         (replica, loaded)
     })
     .collect();
-    let (mut today, discussion) = Replica::new("ada", AutoCommit::new(), &[app!("discussion")]);
+    let (today, discussion) = Replica::new("ada", Workspace::new(), &[app!("discussion")]);
     today.host.set_clock(clock);
     let mut metas = vec![discussion[0].meta.clone()];
     for (_, loaded) in &owners {
@@ -195,9 +195,7 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
                 .iter()
                 .map(|package| (&*package.wasm, &package.meta))
                 .collect();
-            let used = UsedApp::new(&packages, "ada").unwrap();
-            used.host().sync_from(&owner.doc);
-            used
+            UsedApp::new(owner.doc.store(), &packages, "ada").unwrap()
         })
         .collect();
     for _ in 0..16 {
@@ -211,7 +209,13 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
         let app = &loaded.last().unwrap().meta;
         for root in &app.roots {
             assert!(
-                !today.host.store().contains(&format!("root-{root}")),
+                !today
+                    .host
+                    .store()
+                    .contains(&tilolang_runtime::value::ResourceRef::root(
+                        format!("root-{root}"),
+                        root.clone()
+                    )),
                 "Today's document holds no root of {}",
                 app.app
             );

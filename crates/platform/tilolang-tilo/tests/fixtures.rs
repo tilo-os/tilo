@@ -1,14 +1,14 @@
 //! Packages compiled from source, and replicas of one workspace that run them.
 
-use automerge::AutoCommit;
-use tilo_actions::{ActionContext, ActionEnvelope, ActionInvoker};
-use tilo_automerge::ApplyIncoming as _;
+use std::rc::Rc;
+
 use tilolang_runtime::meta::Meta;
 use tilolang_runtime::value::Value;
-use tilolang_runtime::{Actor, ViewInstance};
+use tilolang_runtime::{Actor, ResourceRef, ViewInstance};
 use tilolang_tilo::action::DynAction;
 use tilolang_tilo::host::{Host, Package};
-use tilolang_tilo::resource::{DynResource, DynValue};
+use tilolang_tilo::publish::PlanRequest;
+use tilolang_tilo::resources::{LocalPort, ResourceStore, Watch};
 
 /// The counter package (`apps/tl/counter`): the first package of the host.
 pub const COUNTER: &str = include_str!("../../../../apps/tl/counter/app.tl");
@@ -65,8 +65,6 @@ view main(l: TodoList) {
 }
 "#;
 
-pub const APP: &str = "so.tilo.lang.counter";
-
 /// Who acts in a test: a person by their id, or any actor.
 pub trait AsActor {
     fn actor(&self) -> Actor;
@@ -84,18 +82,69 @@ impl AsActor for Actor {
     }
 }
 
-/// One member's machine: a copy of the workspace document and a host over it.
+/// One member's machine's resources: the store a replica's host writes into. A clone is a copy
+/// of it, as a fork of the workspace on another device is: what one writes after reaches the
+/// other only by [`Replica::sync_with`].
+pub struct Workspace(Rc<LocalPort>);
+
+impl Workspace {
+    /// An empty workspace.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Rc::new(LocalPort::in_memory()))
+    }
+
+    /// A copy of every document this workspace holds, as another device holds it.
+    #[must_use]
+    pub fn fork(&self) -> Self {
+        let copy = Self::new();
+        copy.take_in(self);
+        copy
+    }
+
+    /// Take in every document `other` holds, as sync does: each merged into this one's own.
+    /// Whether anything changed here.
+    pub fn take_in(&self, other: &Self) -> bool {
+        let mut changed = false;
+        for doc in other.0.documents() {
+            if let Some(bytes) = other.0.save(&doc) {
+                changed |= self.0.merge(&doc, &bytes).unwrap();
+            }
+        }
+        changed
+    }
+
+    /// The store over this workspace, as a host opens it.
+    #[must_use]
+    pub fn store(&self) -> ResourceStore {
+        ResourceStore::new(Rc::clone(&self.0) as Rc<dyn tilolang_tilo::resources::Port>)
+    }
+}
+
+impl Default for Workspace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clone for Workspace {
+    fn clone(&self) -> Self {
+        self.fork()
+    }
+}
+
+/// One member's machine: a copy of the workspace and a host over it.
 pub struct Replica {
     pub name: String,
-    pub doc: AutoCommit,
+    pub doc: Workspace,
     pub host: Host,
-    /// The envelope of every action committed here, for a peer to replay.
-    pub log: Vec<ActionEnvelope>,
+    /// What moved in the store since [`Self::commit`] last looked.
+    watch: Watch,
 }
 
 impl Replica {
     /// A replica of `doc` for `name`, with `packages` (source and ids lock) loaded.
-    pub fn new(name: &str, doc: AutoCommit, packages: &[(&str, &str)]) -> (Self, Vec<Package>) {
+    pub fn new(name: &str, doc: Workspace, packages: &[(&str, &str)]) -> (Self, Vec<Package>) {
         Self::access(name, doc, packages, None)
     }
 
@@ -103,13 +152,16 @@ impl Replica {
     /// in the workspace; without one, the API decides the person's own part.
     pub fn access(
         name: &str,
-        doc: AutoCommit,
+        doc: Workspace,
         packages: &[(&str, &str)],
         access: Option<tilo_action_policy::MemberAccess>,
     ) -> (Self, Vec<Package>) {
-        let host = Host::new(
-            &doc,
+        let store = doc.store();
+        let watch = store.watch();
+        let host = Host::open(
+            store,
             Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name)),
+            None,
             move || access.clone(),
         )
         .unwrap();
@@ -117,137 +169,60 @@ impl Replica {
             .iter()
             .map(|(source, ids)| host.load_builtin(source, ids).unwrap())
             .collect();
+        let _ = watch.take();
         (
             Self {
                 name: name.to_owned(),
                 doc,
                 host,
-                log: Vec::new(),
+                watch,
             },
             loaded,
         )
     }
 
     /// A second replica of this one's workspace, for `name`, running the same packages.
-    pub fn fork(&mut self, name: &str, packages: &[(&str, &str)]) -> Self {
+    pub fn fork(&self, name: &str, packages: &[(&str, &str)]) -> Self {
         Self::new(name, self.doc.fork(), packages).0
     }
 
-    /// Commit one planned action through the executor, as the host does for a window: it is
-    /// the change's recorded action, attributed to this replica's person.
-    pub fn apply(&mut self, action: &DynAction) {
-        let invoker = ActionInvoker::person(self.name.clone());
-        self.apply_as(action, invoker, None);
+    /// Carry out the action `request` plans, as this replica's person: what the API does when
+    /// it is invoked. The action it ran.
+    pub fn carry_out(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
+        let actor = self.host.viewer().clone();
+        let host = &self.host;
+        let action = host.carrying_out(&actor, || host.plan(request))?;
+        if let Some(refused) = host.store().take_refusal() {
+            return Err(refused);
+        }
+        Ok(action)
     }
 
-    /// Commit what the runtime committed on its own as the agent `agent`'s steps in the task
-    /// run `group` (`runtime_collab::task_run_group`), titled `title`: what the broker stamps
-    /// each change of an agent's run with.
-    pub fn commit_in_run(&mut self, agent: &(impl AsActor + ?Sized), group: &str, title: &str) {
-        for committed in self.host.take_committed() {
-            let ambient = ActionContext::default().with_group(
-                group,
-                title,
-                tilo_actions::context::AGENT_SESSION_GROUP,
-            );
-            self.apply_as(
-                &committed.action,
-                ActionInvoker::admitted(&agent.actor().into()),
-                Some(&ambient),
-            );
+    /// How many documents the runtime wrote in since the last call: its writes go to the store
+    /// as it makes them, so this only says what they were. A document whose resources only
+    /// heard that something now links to them was not written in.
+    pub fn commit(&self) -> usize {
+        if let Some(refused) = self.host.store().take_refusal() {
+            panic!("the store refused a write: {refused}");
         }
-    }
-
-    /// Commit what the runtime committed on its own as `who`'s steps, as another person at their
-    /// window made them.
-    pub fn commit_as(&mut self, who: &(impl AsActor + ?Sized)) {
-        for committed in self.host.take_committed() {
-            self.apply_as(
-                &committed.action,
-                ActionInvoker::admitted(&who.actor().into()),
-                None,
-            );
-        }
-    }
-
-    fn apply_as(
-        &mut self,
-        action: &DynAction,
-        invoker: ActionInvoker,
-        ambient: Option<&ActionContext>,
-    ) {
-        // Recorded in this thread's window, whose store keeps an action's large parts.
-        let _window = crate::window::store();
-        let mut context = context_of(action, "so.tilo.lang").with_invoker(invoker);
-        // As the document does: every change of a run names it, so the workspace commits the
-        // action and its calls as one, and one undo takes the whole of it back.
-        if let Some(run) = &action.authorship.invocation {
-            context =
-                context.with_source_invocation(Some(tilolang_tilo::action::invocation_id(run)));
-        }
-        if let Some(ambient) = ambient {
-            context = context.enriched_by(ambient);
-        }
-        // A change one part of the person's act names its gesture, as the document records it: the
-        // changes of one gesture are one step of theirs.
-        context = context.in_gesture(action.authorship.gesture);
-        // Applied as the host does: a record's type id resolves by the package versions the
-        // host loaded (`Host::with_schemas`).
-        let envelope = self
-            .host
-            .with_schemas(|| {
-                tilo_actions::apply_local_with_context(
-                    &mut self.doc,
-                    action,
-                    action.encode().unwrap(),
-                    Some(self.name.as_bytes()),
-                    context,
-                )
+        // The agents what was written mentions are asked, as a window's frame asks them.
+        self.host.ask_from_mentions();
+        let moved = self.watch.take();
+        moved
+            .docs
+            .iter()
+            .filter(|doc| {
+                moved.fields.get(*doc).is_none_or(|fields| {
+                    fields
+                        .iter()
+                        .any(|(_, field)| field != tilolang_runtime::store::LINKS)
+                })
             })
-            .unwrap();
-        self.log.push(envelope);
-        self.doc.commit();
-        self.host.sync_from(&self.doc);
-    }
-
-    /// Apply the history verb `edit` to the document as this replica's person, as the workspace does
-    /// for a window: a step of their own, recorded like any action.
-    #[cfg(feature = "document")]
-    pub fn history(&mut self, edit: &collaboration::history_source::verbs::HistoryEdit) {
-        let action: tilolang_tilo::instance::document::HostHistoryEdit =
-            serde_json::from_value(serde_json::to_value(edit).unwrap()).unwrap();
-        let encoded = tilo_actions::EncodedAction {
-            type_id: collaboration::history_source::verbs::EDIT_TYPE.to_owned(),
-            payload: serde_json::to_vec(edit).unwrap(),
-        };
-        let context = ActionContext::for_resource("workspace", "workspace", "workspace")
-            .with_app("so.tilo.lang", "tilolang")
-            .with_invoker(ActionInvoker::person(self.name.clone()));
-        tilo_actions::apply_local_with_context(
-            &mut self.doc,
-            &action,
-            encoded,
-            Some(self.name.as_bytes()),
-            context,
-        )
-        .unwrap();
-        self.doc.commit();
-        self.host.sync_from(&self.doc);
-    }
-
-    /// Commit what the runtime committed on its own (a press, a created root), answering how
-    /// many changes it was.
-    pub fn commit(&mut self) -> usize {
-        let committed = self.host.take_committed();
-        let count = committed.len();
-        for entry in committed {
-            self.apply(&entry.action);
-        }
-        count
+            .count()
     }
 
     /// Exchange every change with `other`, as sync does.
-    pub fn sync_with(&mut self, other: &mut Self) {
+    pub fn sync_with(&self, other: &Self) {
         self.send_to(other);
         other.send_to(self);
     }
@@ -255,9 +230,11 @@ impl Replica {
     /// Hand this replica's changes to `other`, as a sync does from one side: the order two
     /// replicas receive each other's changes in is theirs, so what they read must not depend
     /// on it.
-    pub fn send_to(&mut self, other: &mut Self) {
-        other.doc.merge_incoming(&mut self.doc).unwrap();
-        other.host.sync_from(&other.doc);
+    pub fn send_to(&self, other: &Self) {
+        if other.doc.take_in(&self.doc) {
+            other.host.store().moved();
+            let _ = other.watch.take();
+        }
     }
 
     /// Open the `main` view of `app`.
@@ -265,39 +242,119 @@ impl Replica {
         self.host.open_main(app).unwrap()
     }
 
-    /// The root resource of `app` as the runtime reads it now.
-    pub fn root(&self, app: &str) -> DynResource {
-        let root = self.host.root_of(app).unwrap();
-        self.host.store().record(&root.doc).unwrap()
+    /// The root resource of `app`.
+    pub fn root(&self, app: &str) -> ResourceRef {
+        self.host.root_of(app).unwrap()
     }
 
-    /// The document this replica holds, taken out for a `ResourceService` over it, which the
-    /// session keeps in the workspace: the app it publishes and the person it acts for named
-    /// as the service wants them.
+    /// The field `field` (by name or id) of `at` as the runtime reads it now.
+    pub fn read(&self, at: &ResourceRef, field: &str) -> Value {
+        self.host.runtime().read(at, field).unwrap()
+    }
+
+    /// The service a session keeps in the workspace over this replica's host, for `person`, with
+    /// the workspace still reachable as the other devices' sync takes it in.
+    pub fn into_service_with_workspace(
+        self,
+        person: &str,
+    ) -> (tilolang_tilo::resource_service::ResourceService, Workspace) {
+        let Self { host, doc, .. } = self;
+        (
+            tilolang_tilo::resource_service::ResourceService::new(host, person),
+            doc,
+        )
+    }
+
+    /// The service a session keeps in the workspace over this replica's host, for `person`.
     pub fn into_service(self, person: &str) -> tilolang_tilo::resource_service::ResourceService {
         let Self { host, .. } = self;
         tilolang_tilo::resource_service::ResourceService::new(host, person)
     }
 }
 
-/// The context `action` is recorded under for `app`: what it acts on, its kind, and the app whose
-/// code ran it.
-pub fn context_of(action: &DynAction, app: &str) -> ActionContext {
-    ActionContext::for_resource(
-        action.resources().first().copied().unwrap_or("workspace"),
-        &action.kind,
-        &action.kind,
-    )
-    .with_app(app, "tilolang")
+impl Replica {
+    /// A replica of `doc` for `name` whose host `host` runs, as a test that builds the host
+    /// itself does.
+    pub fn with_host(name: &str, doc: Workspace, host: Host) -> Self {
+        let watch = host.store().watch();
+        let _ = watch.take();
+        Self {
+            name: name.to_owned(),
+            doc,
+            host,
+            watch,
+        }
+    }
+
+    /// Carry out the action `action_id` of `app` on `resource` (when the action has one) as this
+    /// replica's person, with `args` by parameter name, made from `from` when one is given.
+    pub fn carry(
+        &self,
+        app: &str,
+        kind: &str,
+        action_id: &str,
+        resource: Option<&str>,
+        args: &serde_json::Map<String, serde_json::Value>,
+        caller: Option<&tilolang_tilo::publish::Caller>,
+        from: Option<&ResourceRef>,
+    ) -> Result<DynAction, String> {
+        let request = PlanRequest {
+            app,
+            kind,
+            action_id,
+            resource,
+            args,
+            caller,
+            from,
+        };
+        self.carry_out(&request)
+    }
+
+    /// Set the field `field` (a field id) of `at` to `value`, as the control bound to it in the
+    /// resource's own view does when the person edits it.
+    pub fn edit(&self, at: &ResourceRef, field: &str, value: &Value) {
+        let view = self.host.open_resource(at, None).unwrap();
+        let key = bound_key(&view, field);
+        view.edit(&key, value).unwrap();
+    }
+
+    /// The versions of the resource `at`, oldest first, as the store keeps them.
+    pub fn versions(&self, at: &ResourceRef) -> Vec<tilolang_runtime::store::Version> {
+        use tilolang_runtime::store::Store as _;
+        self.host.store().versions(at).unwrap()
+    }
+
+    /// Take back the last change written here, as the window's undo does: as the person at it.
+    pub fn undo_last(&self) -> bool {
+        self.host
+            .store()
+            .undo_last(Some(&tilolang_tilo::personal::actor(&self.name)))
+            .unwrap()
+    }
+
+    /// Make again the last change taken back here, as the window's redo does.
+    pub fn redo_last(&self) -> bool {
+        self.host
+            .store()
+            .redo_last(Some(&tilolang_tilo::personal::actor(&self.name)))
+            .unwrap()
+    }
 }
 
-/// The id of the type `ty` of `meta`.
-pub fn type_id(meta: &Meta, ty: &str) -> String {
-    meta.types
-        .iter()
-        .find(|declared| declared.name == ty)
-        .map(|declared| declared.id.clone())
-        .unwrap()
+/// The key of the control in `view` bound to the field `field` (a field id).
+pub fn bound_key(view: &ViewInstance, field: &str) -> String {
+    fn find(node: &tilolang_runtime::UiNode, field: &str) -> Option<String> {
+        if node
+            .binding
+            .as_ref()
+            .and_then(|binding| binding.field())
+            .is_some_and(|(_, bound)| bound == field)
+        {
+            return Some(node.key.clone());
+        }
+        node.children.iter().find_map(|child| find(child, field))
+    }
+    find(view.tree(), field).unwrap_or_else(|| panic!("the view binds {field}"))
 }
 
 /// The resource `value` refers to.
@@ -318,6 +375,15 @@ pub fn action_id(meta: &Meta, name: &str) -> String {
         .clone()
 }
 
+/// The id the type `ty` of `meta` is stored by.
+pub fn type_id(meta: &Meta, ty: &str) -> String {
+    meta.types
+        .iter()
+        .find(|declared| declared.name == ty)
+        .map(|declared| declared.id.clone())
+        .unwrap()
+}
+
 pub fn field_id(meta: &Meta, ty: &str, field: &str) -> String {
     meta.types
         .iter()
@@ -325,14 +391,6 @@ pub fn field_id(meta: &Meta, ty: &str, field: &str) -> String {
         .and_then(|declared| declared.fields.iter().find(|f| f.name == field))
         .map(|f| f.id.clone())
         .unwrap()
-}
-
-/// The counter's value in a root document.
-pub fn count(record: &DynResource, meta: &Meta) -> i64 {
-    match record.get(&field_id(meta, "Counter", "value")) {
-        Some(DynValue::Counter(counter)) => counter.get(),
-        other => panic!("not a counter: {other:?}"),
-    }
 }
 
 /// The key of the button that adds: the counter's `Increment`, else the first button of a view.

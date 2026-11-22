@@ -1239,7 +1239,7 @@ impl Session {
                 sync: sync.as_deref(),
                 documents,
                 resources,
-                service: workspace_service,
+                service: workspace_service.clone(),
                 engine: engine.as_ref().map(std::sync::Arc::clone),
                 sealed: crate::app_wire::Sealed {
                     broker: std::sync::Arc::clone(&channels_broker),
@@ -1734,6 +1734,7 @@ impl Session {
             engine,
             document_reads,
             document_writes: writes,
+            held_stores: crate::engine_records::held_stores(workspace_service),
             desktops,
             notes,
             membership_fed: std::cell::RefCell::new(None),

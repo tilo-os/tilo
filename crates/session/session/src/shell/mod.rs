@@ -7,6 +7,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::platform::surfaces::{SessionLink, ShellPart, ShellWork};
+
+/// Each of the shell's documents with its heads ([`crate::shell_document::ShellRecord::heads`]).
+type ShellHeads = Vec<(String, Vec<automerge::ChangeHash>)>;
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_compositor::Compositor;
@@ -114,11 +117,9 @@ pub(crate) struct Shell {
     /// Lent last to every part, by the workspace in front and the media it was opened over: a
     /// part told the same one again keeps the store it has.
     lent_content: Option<(String, Option<ui::content::ContentStore>)>,
-    /// The shell's record, shared by every part: one display draws what another wrote, so a change
-    /// any part commits is the whole shell's.
-    record: Rc<RefCell<tilo_resource::Doc>>,
-    /// The same record as it is kept: where its document lives on this device and how it reaches
-    /// the person's other devices ([`crate::shell_document`]).
+    /// The shell's own resources, shared by every part: one display draws what another wrote, so
+    /// a change any part writes is the whole shell's. Where they live on this device and how they
+    /// reach the person's other devices ([`crate::shell_document`]).
     record_kept: crate::shell_document::ShellRecord,
     /// One part per output, in the order the outputs are known: each stands on its own display, and
     /// a display added (or taken away) has its part made (or dropped) to follow.
@@ -135,10 +136,10 @@ pub(crate) struct Shell {
     /// The services' revision the platform readings were last read at: they are read again only
     /// when it moved.
     services_seen: Option<u64>,
-    /// The person's store's revision the shell's record was last published at, and the record's own
-    /// heads then: an unchanged pair is neither read from their store nor published to it, which is
-    /// what every pass runs.
-    record_synced: std::cell::RefCell<Option<(u64, Vec<automerge::ChangeHash>)>>,
+    /// The person's store's revision the shell's resources were last published at, and their
+    /// documents' heads then: an unchanged pair is neither read from their store nor published to
+    /// it, which is what every pass runs.
+    record_synced: std::cell::RefCell<Option<(u64, ShellHeads)>>,
     /// The theme the person's appearance settings make: every part draws in it, and a part made for
     /// a display plugged in later starts in it.
     theme: ui::Theme,
@@ -166,7 +167,6 @@ impl Shell {
         // kept and carried to their other devices as one: read back from what an earlier session
         // kept, or the shell's defaults on a device that never showed the shell.
         let record = crate::shell_document::ShellRecord::open(state, &lists.person);
-        let shared = record.record();
         let mut shell = Self {
             lists,
             announced: std::cell::RefCell::new(std::collections::BTreeSet::new()),
@@ -177,7 +177,6 @@ impl Shell {
             needed: std::collections::BTreeSet::new(),
             republish: false,
             rounds: 0,
-            record: shared,
             record_kept: record,
             parts: Vec::new(),
             lent_content: None,
@@ -263,9 +262,9 @@ impl Shell {
                 packages: self.packages.clone(),
                 person: &self.person,
                 link: Rc::clone(&self.link),
-                record: Rc::clone(&self.record),
-                // The first part of the shell makes the shell's record and seeds it; every other
-                // display's part draws the one the shell already has.
+                store: self.record_kept.store(),
+                // The first part of the shell makes the shell's roots and seeds them; every other
+                // display's part draws the ones the shell already has.
                 seed: self.parts.is_empty(),
             },
             scale,
@@ -698,53 +697,25 @@ impl Shell {
         self.link.has_asks()
     }
 
-    /// The shell's own record (`root shell: Shell`, `root viewing: Viewing` ,
-    /// `root layout: Layout` ), as the shell's parts keep it: the document every part
-    /// commits into and draws from, shared by them. It exists as soon as the shell does, before any
-    /// display's part is made.
-    pub(crate) fn records(&self) -> Rc<RefCell<tilo_resource::Doc>> {
-        Rc::clone(&self.record)
-    }
-
-    /// Keep what the shell's parts committed into the record's copy on this device, appending only
-    /// what changed. What every pass runs: cheap when nothing changed.
-    pub(crate) fn follow_record(&self) {
-        self.record_kept.follow();
-    }
-
-    /// Write the record's copy out and wait for it to land: what ends the session, so the next one
-    /// starts from the shell this one left.
-    pub(crate) fn flush_record(&self) {
-        self.record_kept.flush();
-    }
-
-    /// Take in what another of the person's devices holds of the record. Whether it changed.
-    pub(crate) fn take_record(&self, other: &mut tilo_resource::Doc) -> bool {
-        self.record_kept.take_in(other)
-    }
-
-    /// Why the record this device kept was not opened, once: the person is told, and not again.
+    /// Why the shell's resources this device kept were not opened, once: the person is told, and
+    /// not again.
     pub(crate) fn take_record_refusal(&self) -> Option<String> {
         self.record_kept.take_refusal()
     }
 
-    /// Where the shell's record is kept on this device: the document a test reads back to prove a
+    /// Where the shell's resources are kept on this device: what a test reads back to prove a
     /// shell choice was persisted. `None` on a session that keeps no copy.
     #[must_use]
     pub fn resource_path(&self) -> Option<&std::path::Path> {
         self.record_kept.path()
     }
 
-    /// The shell's own record's field `field` (a field of one of its roots: `dock_edge` and
-    /// `frames_snap` of the `Shell` root, `style` of the `Viewing` one) as its own record holds it
-    /// now: what a test proves a shell choice survived a session by, read the way the shell's views
-    /// read it.
+    /// The shell's own field `field` (a field of one of its roots: `dock_edge` and `frames_snap`
+    /// of the `Shell` root, `style` of the `Viewing` one) as its store holds it now: what a test
+    /// proves a shell choice survived a session by, read the way the shell's views read it.
     pub(crate) fn record_setting(&self, field: &str) -> Option<Value> {
-        use tilo_resource::Model as _;
         let compiled = self.packages.last()?;
         let meta = &compiled.meta;
-        let doc = self.record.try_borrow().ok()?.clone();
-        let chunks = tilolang_tilo::chunk::Chunks::of(doc);
         // The root that declares the field, as the shell's named roots name them.
         let (root, held) = meta.named_roots.iter().find_map(|root| {
             let field = meta
@@ -756,25 +727,38 @@ impl Shell {
                 .find(|held| held.name == field)?;
             Some((root, field))
         })?;
-        let id = format!("root-{}", root.ty);
-        let record = tilolang_tilo::action::read_resource(&chunks, &meta.app, &id).ok()?;
-        record.to_json().get(&held.id).cloned()
+        let host = tilolang_tilo::host::Host::open(
+            self.record_kept.store(),
+            tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person(
+                self.person.as_str(),
+            )),
+            None,
+            || None,
+        )
+        .ok()?;
+        host.load_module(&compiled.wasm, meta.clone(), String::new())
+            .ok()?;
+        let at = tilolang_tilo::runtime::value::ResourceRef::root(
+            format!("root-{}", root.ty),
+            root.ty.clone(),
+        );
+        let value = host.runtime().read(&at, &held.id).ok()?;
+        tilolang_tilo::runtime::value::to_json(&value).ok()
     }
 
-    /// Carry the shell's record to the person's other devices and take in what theirs holds: the
-    /// record is the person's, on the cluster their own store derives from their root, so their
-    /// store (`personal`) carries it exactly as it carries every app's own record of theirs. What
-    /// this device arranged since the last pass is published there; what another of their devices
-    /// arranged is merged here, so the shell this session draws is the one they have everywhere.
+    /// Carry the shell's resources to the person's other devices and take in what theirs hold:
+    /// they are the person's, on the cluster their own store derives from their root, so their
+    /// store (`personal`) carries each of the shell's documents exactly as it carries every app's
+    /// own record of theirs. What this device arranged since the last pass is published there;
+    /// what another of their devices arranged is merged here, so the shell this session draws is
+    /// the one they have everywhere.
     ///
-    /// Cheap when nothing moved, which is what every pass runs. `None` on a session that takes part
-    /// in no peer network of the person's.
+    /// Cheap when nothing moved, which is what every pass runs.
     pub(crate) fn sync_resource(&self, personal: &tilo_peer_state::PersonalSync) {
-        let id = self.record_kept.id().to_owned();
         let app = self.app.as_str();
-        // The store's revision, which moves when it takes a write from any of the person's devices,
-        // and the record's own heads: an unchanged pair means neither this device's record nor their
-        // store moved since the last look, so nothing is read or published.
+        // The store's revision, which moves when it takes a write from any of the person's
+        // devices, and the documents' own heads: an unchanged pair means neither this device's
+        // shell nor their store moved since the last look, so nothing is read or published.
         let revision = *personal.changes().borrow();
         let own = self.record_kept.heads();
         if self
@@ -785,59 +769,55 @@ impl Shell {
         {
             return;
         }
-        // What another device of theirs wrote since the last look is taken in first, so what this
-        // device publishes next carries it rather than opening a rival branch. Each part notices
-        // the record's heads moved on its next turn, and draws what the person arranged.
-        if let Some(bytes) = personal.read(|store| store.document(app, &id))
-            && let Ok(mut theirs) = automerge::AutoCommit::load(&bytes)
-        {
-            let heads = theirs.get_heads();
-            if heads != self.record_kept.heads() {
-                self.take_record(&mut theirs);
+        // The documents their store holds that this device has none of yet: a shell arranged on
+        // another device, which this one has not drawn.
+        let prefix = format!("{}/", self.record_kept.id());
+        let mut docs: std::collections::BTreeSet<String> =
+            own.iter().map(|(doc, _)| doc.clone()).collect();
+        docs.extend(
+            personal
+                .read(tilo_peer_state::PersonalStore::rows)
+                .into_iter()
+                .filter(|row| row.app_id == app)
+                .filter_map(|row| row.document_id.strip_prefix(&prefix).map(str::to_owned)),
+        );
+        for doc in &docs {
+            let id = format!("{prefix}{doc}");
+            // What another device of theirs wrote since the last look is taken in first, so what
+            // this device publishes next carries it rather than opening a rival branch.
+            let theirs = personal.read(|store| store.document(app, &id));
+            if let Some(bytes) = &theirs {
+                self.record_kept.take_in(doc, bytes);
             }
-        }
-        let Some((bytes, heads)) = self.record_kept.snapshot() else {
-            return;
-        };
-        // What is published, if anything: the whole document when their store holds none of the
-        // record yet, else only what moved since the copy it holds, so an unchanged record costs
-        // nothing.
-        let founding = personal.read(|store| !store.holds_document(app, &id));
-        let mutation = if founding {
-            Some(collab_types::DocumentMutation::Snapshot(bytes))
-        } else {
-            self.record_base(personal).and_then(|base| {
-                if base == heads {
-                    return None;
+            let Some(whole) = self.record_kept.save(doc) else {
+                continue;
+            };
+            // What is published, if anything: the whole document when their store holds none of
+            // it yet, else only what moved since the copy it holds.
+            let mutation = match theirs
+                .as_deref()
+                .and_then(|bytes| automerge::AutoCommit::load(bytes).ok())
+            {
+                None => Some(collab_types::DocumentMutation::Snapshot(whole)),
+                Some(mut held) => {
+                    let base = held.get_heads();
+                    self.record_kept
+                        .since(doc, &base)
+                        .filter(|delta| !delta.is_empty())
+                        .map(collab_types::DocumentMutation::Incremental)
                 }
-                let delta = self.record_kept.since(&base)?;
-                (!delta.is_empty()).then_some(collab_types::DocumentMutation::Incremental(delta))
-            })
-        };
-        if let Some(mutation) = mutation
-            && let Err(error) =
-                personal.publish(|store, key, now| store.publish(app, &id, &mutation, key, now))
-        {
-            tracing::warn!(%error, "the shell's record did not reach the person's other devices");
+            };
+            if let Some(mutation) = mutation
+                && let Err(error) =
+                    personal.publish(|store, key, now| store.publish(app, &id, &mutation, key, now))
+            {
+                tracing::warn!(%error, "the shell's resources did not reach the person's other devices");
+            }
         }
         // What was read and published is what the next pass finds unchanged: its own heads, with
         // the store's revision they were published at.
         let revision = *personal.changes().borrow();
         *self.record_synced.borrow_mut() = Some((revision, self.record_kept.heads()));
-    }
-
-    /// The heads the person's store holds of the shell's record, as the base a publish's change is
-    /// made on: what this device last wrote there, merged with what their other devices did. `None`
-    /// for a record the store holds nothing of, which the publish founds whole.
-    fn record_base(
-        &self,
-        personal: &tilo_peer_state::PersonalSync,
-    ) -> Option<Vec<automerge::ChangeHash>> {
-        let id = self.record_kept.id();
-        let bytes = personal.read(|store| store.document(self.app.as_str(), id))?;
-        automerge::AutoCommit::load(&bytes)
-            .ok()
-            .map(|mut doc| doc.get_heads())
     }
 
     /// The shell's package as the session runs it, its compiled module and description: what its
@@ -858,11 +838,11 @@ impl Shell {
         let Some(compiled) = self.package() else {
             return;
         };
-        let records = self.records();
+        let store = self.record_kept.store();
         let taken = services.borrow_mut().share(&tilo_service::Share {
             app: &compiled.meta.app,
             wasm: &compiled.wasm,
-            documents: &records,
+            store: &store,
         });
         match taken {
             Ok(()) => surfaces.keep_records_of(&compiled.meta.app),
@@ -1530,11 +1510,7 @@ impl crate::Session {
                 .borrow()
                 .tell(&crate::notices::record_not_opened_notice(&reason));
         }
-        // What the shell's parts committed into its own record this turn is written to the copy
-        // the person's shell is kept in, appending only what changed: this is what survives the
-        // session ending.
-        shell.follow_record();
-        // The record is the person's on every device of theirs: what they arranged here reaches
+        // The shell's resources is the person's on every device of theirs: what they arranged here reaches
         // their others through their own store, and what they arranged there reaches this session.
         if let Some(personal) = personal {
             shell.sync_resource(personal);

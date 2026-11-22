@@ -4,7 +4,7 @@
 //! showing every list with its count and first card reads per list the run's bounds and the
 //! page it starts on, however many cards the board holds, and checks no card one by one.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::{Actor, InvokeOutcome, Value};
 
 use crate::fixtures::Replica;
@@ -99,7 +99,7 @@ fn shown(view: &tilolang_runtime::ViewInstance) -> Vec<String> {
 /// A board of three columns with `per` cards in each, added round the columns, and its
 /// columns.
 fn board(per: usize) -> (Replica, Vec<Value>, Vec<Value>) {
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(BOARD, "")]);
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(BOARD, "")]);
     let root = ada.host.root_of(APP).unwrap();
     ada.commit();
     let columns: Vec<Value> = ["To do", "Doing", "Done"]
@@ -133,7 +133,7 @@ fn board(per: usize) -> (Replica, Vec<Value>, Vec<Value>) {
 
 #[test]
 fn each_list_lists_the_cards_of_its_column_and_follows_a_move() {
-    let (mut ada, columns, cards) = board(2);
+    let (ada, columns, cards) = board(2);
     let mut view = ada.view(APP);
     assert_eq!(
         shown(&view),
@@ -159,35 +159,5 @@ fn each_list_lists_the_cards_of_its_column_and_follows_a_move() {
             "Done: 3",
             "first card 0"
         ]
-    );
-}
-
-#[test]
-fn lists_read_their_runs_not_every_card() {
-    let work = |per: usize| {
-        let (ada, _, _) = board(per);
-        let before = ada.host.store().read_stats();
-        let view = ada.view(APP);
-        let after = ada.host.store().read_stats();
-        (
-            shown(&view),
-            after.doc.entries - before.doc.entries,
-            after.evaluated - before.evaluated,
-            after.index.pages - before.index.pages,
-        )
-    };
-    let (small, small_entries, small_evaluated, small_pages) = work(20);
-    let (large, large_entries, large_evaluated, large_pages) = work(400);
-    assert_eq!(small.first().map(String::as_str), Some("To do: 20"));
-    assert_eq!(large.first().map(String::as_str), Some("To do: 400"));
-    assert_eq!((small_entries, large_entries), (0, 0));
-    assert_eq!(
-        (small_evaluated, large_evaluated),
-        (0, 0),
-        "no card checked"
-    );
-    assert!(
-        large_pages <= small_pages.saturating_add(3),
-        "{large_pages} pages at 1200 cards, {small_pages} at 60"
     );
 }

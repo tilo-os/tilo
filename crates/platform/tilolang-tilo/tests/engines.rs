@@ -29,7 +29,12 @@ fn mix(x: i64) -> i64 {
 
 #[test]
 fn the_compute_workload_computes_what_rust_does() {
-    let package = tilolang_tilo::bench::compute_package().unwrap();
+    let package = tilolang::compile_package(
+        include_str!("../bench/compute/app.tl"),
+        &tilolang::IdsLock::new(),
+        &[],
+    )
+    .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
     let action = |name: &str| {
         let found = package.meta.actions.iter().find(|a| a.name == name);
         found.unwrap().id.clone()

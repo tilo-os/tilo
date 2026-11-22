@@ -781,6 +781,43 @@ mod store {
             .collect()
     }
 
+    /// What a write costs follows what it touched, never how much its kind holds: retitling one
+    /// issue of a hundred and one of three thousand writes one change to one document, of the
+    /// same operations, and the index answers the new title either way.
+    #[test]
+    fn a_write_costs_what_it_touched_whatever_its_kind_holds() {
+        let retitled = |held: usize| {
+            let mut store = Store::new();
+            for n in 0..held {
+                put(
+                    &mut store,
+                    &format!("i{n}"),
+                    resource("board", &format!("a{n:05}"), "Issue", "open"),
+                );
+            }
+            let written = put(
+                &mut store,
+                "i7",
+                resource("board", "a00007", "Renamed", "open"),
+            );
+            assert_eq!(written.len(), 1, "one document is written");
+            let found = store.query(
+                &Query::of(ISSUE, 10).filter(Filter::Is("title".to_owned(), "Renamed".into())),
+                &anyone,
+            );
+            assert_eq!(found.ids().collect::<Vec<_>>(), ["i7"]);
+            let change = &written[0].change;
+            (change.len(), change.raw_bytes().len())
+        };
+        let (small_ops, small_bytes) = retitled(100);
+        let (large_ops, large_bytes) = retitled(3_000);
+        assert_eq!(large_ops, small_ops, "the same operations at either size");
+        assert!(
+            large_bytes.abs_diff(small_bytes) <= 8,
+            "the change is as large at 3000 issues ({large_bytes} bytes) as at 100 ({small_bytes})"
+        );
+    }
+
     /// A write taken back leaves the store as it stood before it: a changed resource reads
     /// its earlier fields, one the write made is gone and not counted as removed, and an open
     /// query over the kind is told.

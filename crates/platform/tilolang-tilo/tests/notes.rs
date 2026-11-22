@@ -2,7 +2,7 @@
 //! it lands on and among its own, a branch copies whole, a branch is deleted as one change a
 //! person takes back at once, and a note's own follow their titles when the person asks it.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::{Actor, ResourceRef, Value, ViewInstance};
 
 use crate::fixtures::{Replica, target};
@@ -20,7 +20,7 @@ const NOTES: (&str, &str) = (
 
 /// Ada's workspace with the notes app, and its notebook.
 fn workspace() -> (Replica, ResourceRef) {
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, NOTES]);
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[DISCUSSION, NOTES]);
     ada.commit();
     let notebook = ada.host.root_of(NOTES_APP).expect("the notebook");
     (ada, notebook)
@@ -40,7 +40,7 @@ fn notes(ada: &Replica, notebook: &ResourceRef) -> Vec<ResourceRef> {
 }
 
 /// A note called `title`, at the top of the tree until something moves it.
-fn note(ada: &mut Replica, notebook: &ResourceRef, title: &str) -> ResourceRef {
+fn note(ada: &Replica, notebook: &ResourceRef, title: &str) -> ResourceRef {
     let made = target(&call(
         ada,
         "ada",
@@ -62,7 +62,7 @@ fn note(ada: &mut Replica, notebook: &ResourceRef, title: &str) -> ResourceRef {
 /// Put `moved` at the end of `under`'s own (the top level for none), or where `before` stands:
 /// what the tree reports of a drop, and of `Tab` and the moves the keyboard makes.
 fn move_to(
-    ada: &mut Replica,
+    ada: &Replica,
     notebook: &ResourceRef,
     moved: &ResourceRef,
     under: Option<&ResourceRef>,
@@ -115,12 +115,12 @@ tilo_test_env::scenario! {
 
     phase a_note_dropped_on_a_row_stands_inside_it;
     {
-        let (mut ada, notebook) = workspace();
-        let plan = note(&mut ada, &notebook, "Q3 plan");
-        let meetings = note(&mut ada, &notebook, "Meetings");
-        let monday = note(&mut ada, &notebook, "Monday");
-        move_to(&mut ada, &notebook, &monday, Some(&meetings), None);
-        assert_eq!(parent_of(&ada, &monday), Some(meetings.clone()));
+        let (ada, notebook) = workspace();
+        let plan = note(&ada, &notebook, "Q3 plan");
+        let meetings = note(&ada, &notebook, "Meetings");
+        let monday = note(&ada, &notebook, "Monday");
+        move_to(&ada, &notebook, &monday, Some(&meetings), None);
+        assert_eq!(parent_of(&ada, &monday).as_ref(), Some(&meetings));
         assert_eq!(
             titles(&ada, &notebook),
             ["Q3 plan", "Meetings", "Monday"],
@@ -128,12 +128,12 @@ tilo_test_env::scenario! {
         );
 
         // One moved out from under its note, after it, stands among the top-level notes again.
-        move_to(&mut ada, &notebook, &monday, None, None);
+        move_to(&ada, &notebook, &monday, None, None);
         assert_eq!(parent_of(&ada, &monday), None);
         assert_eq!(titles(&ada, &notebook), ["Q3 plan", "Meetings", "Monday"]);
 
         // Dropped before one, it takes that one's place among its own.
-        move_to(&mut ada, &notebook, &monday, None, Some(&plan));
+        move_to(&ada, &notebook, &monday, None, Some(&plan));
         assert_eq!(titles(&ada, &notebook), ["Monday", "Q3 plan", "Meetings"]);
     }
 
@@ -141,10 +141,10 @@ tilo_test_env::scenario! {
     // A note cannot be moved inside itself, nor inside anything of its own: the move is refused,
     // so two people moving notes at once never leave one in two places.
     {
-        let (mut ada, notebook) = workspace();
-        let plan = note(&mut ada, &notebook, "Q3 plan");
-        let meetings = note(&mut ada, &notebook, "Meetings");
-        move_to(&mut ada, &notebook, &meetings, Some(&plan), None);
+        let (ada, notebook) = workspace();
+        let plan = note(&ada, &notebook, "Q3 plan");
+        let meetings = note(&ada, &notebook, "Meetings");
+        move_to(&ada, &notebook, &meetings, Some(&plan), None);
         assert_eq!(parent_of(&ada, &meetings), Some(plan.clone()));
         let id = ada
             .host
@@ -180,12 +180,12 @@ tilo_test_env::scenario! {
 
     phase a_branch_copies_with_every_note_under_it;
     {
-        let (mut ada, notebook) = workspace();
-        let plan = note(&mut ada, &notebook, "Q3 plan");
-        let meetings = note(&mut ada, &notebook, "Meetings");
-        let monday = note(&mut ada, &notebook, "Monday");
-        move_to(&mut ada, &notebook, &meetings, Some(&plan), None);
-        move_to(&mut ada, &notebook, &monday, Some(&meetings), None);
+        let (ada, notebook) = workspace();
+        let plan = note(&ada, &notebook, "Q3 plan");
+        let meetings = note(&ada, &notebook, "Meetings");
+        let monday = note(&ada, &notebook, "Monday");
+        move_to(&ada, &notebook, &meetings, Some(&plan), None);
+        move_to(&ada, &notebook, &monday, Some(&meetings), None);
         let copy = target(&call(
             &ada,
             "ada",
@@ -219,13 +219,13 @@ tilo_test_env::scenario! {
     // A note deleted takes every note under it, as one action of the app's: what it held goes with
     // it, and the notes beside it stay.
     {
-        let (mut ada, notebook) = workspace();
-        let plan = note(&mut ada, &notebook, "Q3 plan");
-        let meetings = note(&mut ada, &notebook, "Meetings");
-        let monday = note(&mut ada, &notebook, "Monday");
-        note(&mut ada, &notebook, "Groceries");
-        move_to(&mut ada, &notebook, &meetings, Some(&plan), None);
-        move_to(&mut ada, &notebook, &monday, Some(&meetings), None);
+        let (ada, notebook) = workspace();
+        let plan = note(&ada, &notebook, "Q3 plan");
+        let meetings = note(&ada, &notebook, "Meetings");
+        let monday = note(&ada, &notebook, "Monday");
+        note(&ada, &notebook, "Groceries");
+        move_to(&ada, &notebook, &meetings, Some(&plan), None);
+        move_to(&ada, &notebook, &monday, Some(&meetings), None);
         call(
             &ada,
             "ada",
@@ -245,11 +245,11 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_notes_own_follow_their_titles_when_a_person_sorts_them() {
-    let (mut ada, notebook) = workspace();
-    let plan = note(&mut ada, &notebook, "Q3 plan");
+    let (ada, notebook) = workspace();
+    let plan = note(&ada, &notebook, "Q3 plan");
     for title in ["Wednesday", "Monday", "Tuesday"] {
-        let child = note(&mut ada, &notebook, title);
-        move_to(&mut ada, &notebook, &child, Some(&plan), None);
+        let child = note(&ada, &notebook, title);
+        move_to(&ada, &notebook, &child, Some(&plan), None);
     }
     assert_eq!(
         titles(&ada, &notebook),
@@ -283,9 +283,9 @@ tilo_test_env::scenario! {
     // The tree's page is the notebook's own: a row pressed opens the note beside the tree and
     // nothing of the window's, and the tree highlights the note its page shows.
     {
-        let (mut ada, notebook) = workspace();
-        let plan = note(&mut ada, &notebook, "Q3 plan");
-        let groceries = note(&mut ada, &notebook, "Groceries");
+        let (ada, notebook) = workspace();
+        let plan = note(&ada, &notebook, "Q3 plan");
+        let groceries = note(&ada, &notebook, "Groceries");
         let mut window = ada.view(NOTES_APP);
         window.poll_patches().unwrap();
         let tree = window.tree().first_of_kind("ui.TreeView").expect("the notebook's tree");
@@ -351,8 +351,8 @@ tilo_test_env::scenario! {
     // Who else is at a note shows on its tree row, as it does on a list's: the notebook's tree reads
     // the lenses on each note and the row says them.
     {
-        let (mut ada, notebook) = workspace();
-        let plan = note(&mut ada, &notebook, "Q3 plan");
+        let (ada, notebook) = workspace();
+        let plan = note(&ada, &notebook, "Q3 plan");
         let mut window = ada.view(NOTES_APP);
         window.poll_patches().unwrap();
         // Who the tree's row for the note says is at it, as the tree builds its rows.

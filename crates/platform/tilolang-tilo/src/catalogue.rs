@@ -401,15 +401,9 @@ fn action_name(id: &str) -> String {
     id.replace(['-', '.', ':'], "_")
 }
 
-/// The verbs only the platform invokes: a tilolang host's own commit, creation and bound edits.
+/// The verbs only the platform invokes: creation and bound edits.
 fn platform_verb(verb: &VerbSurface) -> bool {
-    [
-        CREATE_ACTION,
-        EDIT_TEXT_ACTION,
-        EDIT_FLAG_ACTION,
-        crate::surface::COMMIT,
-    ]
-    .contains(&verb.id.as_str())
+    [CREATE_ACTION, EDIT_TEXT_ACTION, EDIT_FLAG_ACTION].contains(&verb.id.as_str())
 }
 
 const fn effect_class(kind: ActionKind) -> EffectClass {

@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::{Actor, ResourceRef, Value};
 use tilolang_tilo::publish::{PlanRequest, Planner, Publications};
 
@@ -30,7 +30,7 @@ impl Planner for Refusing {
 /// The seeded Chat workspace: the team's channels and their messages, as its first scenario makes
 /// them, and the root document's id.
 fn seeded_chat() -> (Replica, String) {
-    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[crate::fixtures::AGENT, CHAT]);
+    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[crate::fixtures::AGENT, CHAT]);
     let meta = loaded.last().unwrap().meta.clone();
     let root = ada.host.root_of(APP).unwrap();
     ada.commit();
@@ -70,7 +70,7 @@ fn published_rows() -> Vec<Row> {
     let (replica, root) = seeded_chat();
     let planner: Arc<dyn Planner> = Arc::new(Refusing);
     let mut published = Publications::new(&replica.host);
-    published.settle(&replica.host, &planner);
+    published.update(&replica.host, &planner);
     let mut rows = Vec::new();
     collect(&published.trees()[&root], &mut rows);
     rows
@@ -130,10 +130,10 @@ fn no_container_is_named_by_a_message_it_holds() {
 const NOTES_APP: &str = "so.tilo.notes";
 
 /// Ada's notebook, with a note she has not named yet: a new note's title starts empty.
-fn a_new_note() -> (Replica, String, ResourceRef) {
-    let (mut ada, _) = Replica::new(
+fn a_new_note() -> (Replica, ResourceRef, ResourceRef) {
+    let (ada, _) = Replica::new(
         "ada",
-        AutoCommit::new(),
+        Workspace::new(),
         &[
             (
                 include_str!("../../../../apps/tl/discussion/app.tl"),
@@ -158,16 +158,16 @@ fn a_new_note() -> (Replica, String, ResourceRef) {
     };
     let note = (*note.target).clone();
     ada.commit();
-    (ada, root.doc, note)
+    (ada, root, note)
 }
 
 /// The published tree of the notebook, as rows.
-fn published_notes(ada: &Replica, root: &str) -> Vec<Row> {
+fn published_notes(ada: &Replica, root: &ResourceRef) -> Vec<Row> {
     let planner: Arc<dyn Planner> = Arc::new(Refusing);
     let mut published = Publications::new(&ada.host);
-    published.settle(&ada.host, &planner);
+    published.update(&ada.host, &planner);
     let mut rows = Vec::new();
-    collect(&published.trees()[root], &mut rows);
+    collect(&published.trees()[&root.id_string()], &mut rows);
     rows
 }
 
@@ -176,7 +176,7 @@ tilo_test_env::scenario! {
 
     phase a_note_with_no_title_is_called_the_words_its_type_declares;
     {
-        let (mut ada, root, note) = a_new_note();
+        let (ada, root, note) = a_new_note();
         let rows = published_notes(&ada, &root);
         let notes: Vec<&Row> = rows
             .iter()
@@ -193,7 +193,7 @@ tilo_test_env::scenario! {
             "every surface that names it reads the same words"
         );
         assert_eq!(
-            ada.host.label_of(&root),
+            ada.host.label_at(&root),
             "Notes",
             "its notebook reads as the app's title"
         );
@@ -213,7 +213,7 @@ tilo_test_env::scenario! {
             "typed first, its title names it instead: {rows:#?}"
         );
         assert_eq!(
-            ada.host.label_of(&root),
+            ada.host.label_at(&root),
             "Notes",
             "a note's title names the note, never the notebook"
         );
@@ -260,7 +260,7 @@ const MAIL_APP: &str = "so.tilo.mail";
 
 /// A mail workspace staged from the scenario `name`, and the resource it made.
 fn mail_staged(name: &str) -> (Replica, Option<ResourceRef>) {
-    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[MAIL]);
+    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[MAIL]);
     let meta = loaded.last().unwrap().meta.clone();
     ada.host.root_of(MAIL_APP).unwrap();
     ada.commit();

@@ -1,32 +1,26 @@
 //! An app instance: one window of a tilolang app as its app host runs it, without the toolkit.
 //!
-//! The instance holds what the window shows and does, as data: the host over the workspace document
-//! (or its indexes, before the document), the window's two views (the root, and the view of the
-//! resource `open(r)` or a row went to), the rows of their virtual lists, what bound controls
-//! show, and the commits waiting for the API. It sends its window component patches and hears
+//! The instance holds what the window shows and does, as data: the host over the device's store,
+//! the window's two views (the root, and the view of the resource `open(r)` or a row went to),
+//! the rows of their virtual lists, and what bound controls show. It sends its window component patches and hears
 //! what the person did, over the patch protocol (`tilo_render_protocol::patch`), through any
 //! transport: a queue beside a window in one process, the UI host's socket, or `postMessage`
 //! from a worker. What builds, lays out, draws and takes input is the window's.
 //!
 //! Each frame the instance
 //!
-//! 1. brings the runtime's mirror of the workspace document up to date with the document,
-//! 2. takes what the person did and runs it in the runtime, which plans the change,
-//! 3. re-runs a view if what it read changed, and sends the window the patches that bring its
-//!    copy of the view's tree up to date, and
-//! 4. queues what the runtime planned for the API, as an invocation of the host's `commit`
-//!    action, so the change is attributed, undoable and replayed by every peer.
+//! 1. takes what the person did and runs it in the runtime, which writes it to the store as one
+//!    attributed, undoable change of the person's,
+//! 2. re-runs a view if what it read changed, and sends the window the patches that bring its
+//!    copy of the view's tree up to date.
 //!
 //! What holds for every window is the platform's, and so the instance's: the lenses on each
 //! resource are what presence reports; a destructive action a person runs offers Undo; a
 //! primary action a person runs shows what it made.
 
 mod convert;
-#[cfg(feature = "document")]
-pub mod document;
 mod facts;
 pub mod form;
-pub mod memory;
 mod patches;
 mod person_state;
 pub use patches::spliced;
@@ -47,13 +41,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use serde_json::Value as Json;
-use tilo_actions::{ActionAddress, ControlInvocation, InvocationId};
+use tilo_actions::ActionAddress;
 use tilo_render_protocol::patch::{self as ui, Level, ToApp, ToUi, Transport, Words};
 
 use crate::bundle::Bundle;
-use crate::host::{Host, Opening, Package, RootView};
-use crate::publish::{COMMIT, HOST_RESOURCE};
+use crate::host::{Host, Package, RootView};
+use crate::resources::ResourceStore;
 use crate::runtime::ids::MemberId;
 use crate::runtime::meta::{Meta, TypeMeta};
 use crate::runtime::{
@@ -196,11 +189,8 @@ pub struct Config {
     pub mode: Mode,
     /// The device that carries out the outside effects the workspace queues.
     pub device: Option<String>,
-    /// Where the indexes of the workspace are kept; `None` keeps them in memory.
-    pub index_dir: Option<std::path::PathBuf>,
-    /// Reads the workspace record when the instance opens over the indexes before it: a write, or a
-    /// field no index holds, waits for it.
-    pub document_loader: Option<Box<dyn Fn() -> Option<tilo_resource::Doc>>>,
+    /// The store the workspace's resources are read from and written to.
+    pub store: ResourceStore,
     /// Where outside effects go; the development log when `None`.
     pub sink: Option<Box<dyn OutsideSink>>,
     /// The root and the view the window opens over, each by name. A package with more than one
@@ -208,30 +198,6 @@ pub struct Config {
     /// [`RootView::default`] takes the package's first root and its default view, as the
     /// launcher opens an app.
     pub root: RootView,
-}
-
-/// Commits waiting to be handed to the API, each tagged with the invocation of the API that
-/// made it, when one did: the API applies it for the invoker it admitted.
-pub type Outgoing = Rc<RefCell<VecDeque<(ControlInvocation, Option<InvocationId>)>>>;
-
-/// Hand everything the runtime committed under a ticket of `first` or later to the API.
-/// Returns the tickets handed over.
-pub fn queue_commits(
-    host: &Host,
-    outgoing: &Outgoing,
-    first: u64,
-    origin: Option<InvocationId>,
-) -> Vec<u64> {
-    let mut tickets = Vec::new();
-    for committed in host.take_committed_from(first) {
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("ticket".to_owned(), Json::from(committed.ticket));
-        if let Some(invocation) = ControlInvocation::from_parts(HOST_RESOURCE, COMMIT, arguments) {
-            outgoing.borrow_mut().push_back((invocation, origin));
-            tickets.push(committed.ticket);
-        }
-    }
-    tickets
 }
 
 /// The names of the workspace, as the runtime asks for them.
@@ -330,13 +296,6 @@ impl Shown {
     }
 }
 
-/// What a person's action, run from a control, waits for the API to commit: the notice of a
-/// destructive one, which offers Undo once it is committed.
-#[derive(Default)]
-struct Pending {
-    undo: HashMap<u64, Words>,
-}
-
 /// An action the window ran: what it was, what it returned, and the title of what it was run on,
 /// read before it ran, as a destructive one takes its target away.
 struct Ran {
@@ -357,21 +316,14 @@ pub struct Instance {
     me: PersonId,
     mode: Mode,
     device: Option<String>,
-    index_dir: Option<std::path::PathBuf>,
-    document_loader: Option<Box<dyn Fn() -> Option<tilo_resource::Doc>>>,
+    store: ResourceStore,
     /// Where the host reads the person's access in the workspace, once its embedder has one.
     access: Rc<RefCell<Option<Rc<crate::authority::AccessSource>>>>,
-    /// Whether the instance shows the workspace before its document, over its indexes.
-    opening: bool,
     platform: Rc<dyn Platform>,
     names: Rc<dyn NameHost>,
     /// What the workspace's member list calls people, which `names` reads first.
     told: Rc<crate::names::Told>,
     host: Rc<RefCell<Option<Host>>>,
-    /// The chunks of the document the frame before the host opened handed over: the store reads and
-    /// writes the resources the document's manifest places in them, and an index is built over them
-    /// all rather than over the document's own chunk alone ([`Host::open`]).
-    document_chunks: Option<crate::chunk::Chunks>,
     publication: Option<Box<dyn Publication>>,
     root: Option<Shown>,
     detail: Option<Shown>,
@@ -394,13 +346,6 @@ pub struct Instance {
     /// The person's environment moved: their language, their formats, or what the member list
     /// calls someone. What a view shows of any of them is shown again, and what it sent is sent again.
     person_changed: bool,
-    outgoing: Outgoing,
-    in_flight: VecDeque<u64>,
-    /// Whether the window was told the person has changes the workspace has not taken yet
-    /// ([`ToUi::Kept`]).
-    kept: bool,
-    /// Whether the person asked to save again since the document last looked.
-    save_again: bool,
     open_requests: Rc<RefCell<Vec<crate::effects::OpenEffect>>>,
     /// Whether the view of a shell places what it opens on the canvas, rather than opening a
     /// detail level of the shell's own window ([`Instance::place_opens`]).
@@ -419,7 +364,6 @@ pub struct Instance {
     sink: Option<Box<dyn OutsideSink>>,
     /// The outside services the package's types with an origin are kept in step with.
     origins: crate::origin::Origins,
-    pending: Pending,
     /// The undos and redos the person asked for, in order, not yet taken.
     history: Vec<HistoryAsk>,
     /// The window's notice offers to take back the marks the person just moved seen, not the
@@ -430,6 +374,9 @@ pub struct Instance {
     chosen: VecDeque<(u64, ActionAddress, Option<String>)>,
     /// The scenario a capture stages, until the host runs it.
     staged: Option<String>,
+    /// The staged scenario's sample data is dated before the story it dates
+    /// ([`Instance::stage_story`]).
+    story: bool,
     /// Why the scenario a capture staged did not run whole, until the capture takes it: a
     /// capture of a half-run scenario is no picture of it.
     stage_failed: Option<String>,
@@ -500,15 +447,12 @@ impl Instance {
             me: config.me,
             mode: config.mode,
             device: config.device,
-            index_dir: config.index_dir,
-            opening: config.document_loader.is_some(),
-            document_loader: config.document_loader,
+            store: config.store,
             access: Rc::default(),
             platform,
             names: Rc::clone(&told) as Rc<dyn NameHost>,
             told,
             host: Rc::default(),
-            document_chunks: None,
             publication: None,
             root: None,
             detail: None,
@@ -522,10 +466,6 @@ impl Instance {
             lenses_changed: false,
             members_from: None,
             person_changed: false,
-            outgoing: Rc::default(),
-            in_flight: VecDeque::new(),
-            kept: false,
-            save_again: false,
             open_requests: Rc::default(),
             place_opens: false,
             opens_to_place: Vec::new(),
@@ -539,11 +479,11 @@ impl Instance {
                     .unwrap_or_else(|| Box::new(crate::sink::LogSink::dev())),
             ),
             origins: Rc::default(),
-            pending: Pending::default(),
             history: Vec::new(),
             seen_offer: false,
             chosen: VecDeque::new(),
             staged: None,
+            story: false,
             stage_failed: None,
             started: false,
             rootless: false,
@@ -576,11 +516,6 @@ impl Instance {
         self.device = device;
     }
 
-    /// Keep the workspace's indexes in `dir` (`None` keeps them in memory). Before the host starts.
-    pub fn set_index_dir(&mut self, dir: Option<std::path::PathBuf>) {
-        self.index_dir = dir;
-    }
-
     /// Run a package that has no root view of its own: what it shows is opened in a level by its
     /// embedder ([`Self::open_with`]), as a view of another app's state is. Before the host
     /// starts.
@@ -608,8 +543,7 @@ impl Instance {
 
     /// Poll each origin: what the services said is written and handed to the API.
     fn poll_origins(&mut self) -> bool {
-        if self.opening
-            || self.mode != Mode::Live
+        if self.mode != Mode::Live
             || !self
                 .origins
                 .borrow()
@@ -628,7 +562,6 @@ impl Instance {
             waker: &waker,
             now: self.platform.now(),
         };
-        let first = host.next_ticket();
         let mut wrote = false;
         let origins: Vec<_> = self.origins.borrow().clone();
         for origin in &origins {
@@ -640,7 +573,7 @@ impl Instance {
             self.settle_due |= polled.settle;
         }
         if wrote {
-            queue_commits(&host, &self.outgoing, first, None);
+            self.commit_planned();
         }
         wrote
     }
@@ -684,13 +617,7 @@ impl Instance {
         self.pressed_shows.push((self.taken_press, anchor));
     }
 
-    /// The commits waiting for the API.
-    #[must_use]
-    pub fn outgoing(&self) -> Outgoing {
-        Rc::clone(&self.outgoing)
-    }
-
-    /// The host, once the instance has the document or its indexes.
+    /// The host, once the instance opened it.
     #[must_use]
     pub fn host(&self) -> Option<Host> {
         self.host.borrow().clone()
@@ -854,6 +781,15 @@ impl Instance {
     pub fn stage(&mut self, scenario: Option<&str>) {
         self.staged = scenario.map(str::to_owned);
         self.stage_failed = None;
+        self.story = false;
+    }
+
+    /// Run the scenario `scenario` once the host runs, as a capture of the story it tells
+    /// stages it: what it writes without a time of its own is its sample data, the workspace
+    /// the story happens to, and is dated a second before the earliest change it dates.
+    pub fn stage_story(&mut self, scenario: Option<&str>) {
+        self.stage(scenario);
+        self.story = true;
     }
 
     /// Why the scenario [`stage`](Self::stage) named failed, or a package it uses failed its
@@ -903,20 +839,12 @@ impl Instance {
 
     // ----- the host ------------------------------------------------------------------------
 
-    /// The host over the workspace document `doc`, built with the package the first time; without the
-    /// document (while it is read off the frame), over the workspace's indexes.
-    fn host_for(&mut self, doc: Option<&tilo_resource::Doc>, had: bool) -> Option<Host> {
+    /// The host over the store, built with the package the first time.
+    fn host_for(&mut self) -> Option<Host> {
         if let Some(host) = self.host.borrow().as_ref() {
-            // An index built off the frame changes what every view reads, as a change does.
-            // The store takes in only what the document holds that it lacks: a frame over a
-            // record that did not move merges nothing.
-            let synced = doc.is_some_and(|doc| host.sync_from(doc));
-            if synced | host.poll_index() {
-                self.moved = true;
-            }
             // Opened on what an earlier version wrote, the package brings it to where it keeps
-            // it now, once the document is had; what they commit goes as any action does.
-            if had && !self.migrated && self.origin && self.mode == Mode::Live {
+            // it now; what that writes is written as any change is.
+            if !self.migrated && self.origin && self.mode == Mode::Live {
                 self.migrated = true;
                 if host.migrate() > 0 {
                     self.moved = true;
@@ -924,51 +852,20 @@ impl Instance {
             }
             return Some(host.clone());
         }
-        let index_dir = if self.mode == Mode::Live {
-            self.index_dir.clone()
-        } else {
-            // A past version is read once and kept nowhere, and a capture shows its scenario
-            // on a profile of its own: their indexes are built in memory, at once.
-            None
-        };
-        // The chunks are the host's from here on: the store holds the one copy of each.
-        let chunks = self.document_chunks.take();
-        let loader = match (doc.is_some() || chunks.is_some(), self.opening, &index_dir) {
-            (true, _, _) => None,
-            (false, true, Some(_)) => Some(self.document_loader.take()?),
-            // Without the document, a window opens over the indexes it keeps or not at all.
-            (false, _, _) => return None,
-        };
-        let opening = Opening {
-            record: doc,
-            index_dir,
-            device: self.device.as_deref(),
-            // A window's index is derived off its frames, which the waker brings back. A past
-            // version is drawn from its index in the frame that opens it: no later frame wakes.
-            wake: (self.mode != Mode::Past).then(|| self.platform.waker()),
-        };
         let access = Rc::clone(&self.access);
-        let built = {
-            let _phase = tilo_resource::profiling::Phase::start("tl.store.open");
-            Host::open(opening, self.me_actor(), move || {
-                access.borrow().as_ref().and_then(|source| source())
-            })
-        };
+        let built = Host::open(
+            self.store.clone(),
+            self.me_actor(),
+            self.device.as_deref(),
+            move || access.borrow().as_ref().and_then(|source| source()),
+        );
         let host = match built {
             Ok(host) => host,
             Err(error) => {
                 tracing::error!(%error, "the tilolang runtime could not be set up");
-                self.document_chunks = chunks;
                 return None;
             }
         };
-        if let Some(chunks) = chunks {
-            host.adopt(chunks);
-        }
-        if let Some(loader) = loader {
-            // A write, or a field no index holds, waits for the document and lands on it.
-            host.set_document_loader(Box::new(loader));
-        }
         host.runtime()
             .set_name_host(SharedNames(Rc::clone(&self.names)));
         let runtime = host.runtime();
@@ -1007,7 +904,7 @@ impl Instance {
             // What is published and found of the workspace is read off the frame the first time;
             // the instance takes it in when it is ready.
             let _phase = tilo_resource::profiling::Phase::start("tl.publication.start");
-            self.publication = self.platform.publish(&host, self.platform.waker());
+            self.publication = self.platform.publish(&host);
         }
         *self.host.borrow_mut() = Some(host.clone());
         Some(host)
@@ -1038,10 +935,9 @@ impl Instance {
     // ----- later builds --------------------------------------------------------------------
 
     /// Take over the latest later build of the package, when this instance runs an older one:
-    /// in place when it reads the state the old one wrote, and otherwise by starting over on
-    /// the workspace document `doc` with it, as the app's next start would. The host the instance runs
-    /// on afterwards.
-    fn follow_updates(&mut self, doc: Option<&tilo_resource::Doc>, host: Host) -> Host {
+    /// in place when it reads the state the old one wrote, and otherwise by starting over with
+    /// it, as the app's next start would. The host the instance runs on afterwards.
+    fn follow_updates(&mut self, host: Host) -> Host {
         let Some(update) = self
             .platform
             .builds()
@@ -1074,7 +970,7 @@ impl Instance {
                     "tilolang: {title}: {reason}; it starts over on the new build, with its data"
                 );
                 let old = host.clone();
-                self.start_over(doc, &old).unwrap_or_else(|| {
+                self.start_over().unwrap_or_else(|| {
                     *self.host.borrow_mut() = Some(old.clone());
                     old
                 })
@@ -1115,17 +1011,15 @@ impl Instance {
         self.lenses_changed = true;
         // What is published and offered follows the new build's declarations.
         if self.publication.take().is_some() {
-            self.publication = self.platform.publish(host, self.platform.waker());
+            self.publication = self.platform.publish(host);
         }
         self.commit_planned();
     }
 
-    /// Start over on the workspace document `doc`: a new runtime that loads the latest build and reads
-    /// the document afresh, as a start of the app does. View state and the open detail start
-    /// over; the document, and so every resource, is the one the instance had.
-    fn start_over(&mut self, doc: Option<&tilo_resource::Doc>, old: &Host) -> Option<Host> {
-        // The document the store held goes over to the new host's store: one copy of it, still.
-        let held = doc.is_none().then(|| old.store().release());
+    /// Start over: a new runtime that loads the latest build and reads the store afresh, as a
+    /// start of the app does. View state and the open detail start over; every resource is the
+    /// one the instance had.
+    fn start_over(&mut self) -> Option<Host> {
         self.publication = None;
         self.root = None;
         if self.detail.take().is_some() | self.facts.take().is_some() {
@@ -1136,15 +1030,8 @@ impl Instance {
             self.sink = Some(Box::new(crate::sink::LogSink::dev()));
         }
         self.started = false;
-        self.document_chunks = held;
-        let host = self.host_for(doc, true);
-        if host.is_none()
-            && let Some(chunks) = self.document_chunks.take()
-        {
-            // No new host: the old one keeps the document.
-            old.adopt(chunks);
-        }
-        host
+        self.store.moved();
+        self.host_for()
     }
 
     // ----- presence ------------------------------------------------------------------------
@@ -1206,6 +1093,11 @@ impl Instance {
             self.stage_failed = Some(format!("{} has no scenario \"{name}\"", self.app));
             return;
         };
+        // What the scenarios write without a time of their own is their sample data, and what
+        // they date is the story they tell: the store dates the one before the other.
+        if self.story {
+            host.store().hold_sample(&self.platform.now());
+        }
         // The packages this one points into (a board's apps) are staged first, each with its
         // first scenario, so a scenario that attaches their roots shows them filled.
         let mut failed = Vec::new();
@@ -1223,6 +1115,11 @@ impl Instance {
                 None
             }
         };
+        if let Err(error) = host.store().release_sample() {
+            failed.push(format!(
+                "the store refused what the scenario wrote: {error}"
+            ));
+        }
         if !failed.is_empty() {
             self.stage_failed = Some(failed.join("; "));
         }
@@ -1398,13 +1295,12 @@ impl Instance {
 
     fn settle_outbox(&mut self) -> bool {
         // What waits in the document is settled once the instance reads the document.
-        if self.opening || !std::mem::take(&mut self.settle_due) || self.mode != Mode::Live {
+        if !std::mem::take(&mut self.settle_due) || self.mode != Mode::Live {
             return false;
         }
         let Some(host) = self.host() else {
             return false;
         };
-        let first = host.next_ticket();
         match host.settle_outbox() {
             Ok(settled) => {
                 // What was marked as being handed over is handed over by the next settle,
@@ -1413,7 +1309,7 @@ impl Instance {
                 if settled.written == 0 {
                     return false;
                 }
-                queue_commits(&host, &self.outgoing, first, None);
+                self.commit_planned();
                 true
             }
             Err(error) => {
@@ -1423,42 +1319,21 @@ impl Instance {
         }
     }
 
-    /// Queue what the runtime committed for the API. Returns the tickets queued.
-    pub fn commit_planned(&mut self) -> Vec<u64> {
-        // A past version shows what it held; nothing it does is committed.
+    /// What follows the runtime's writes: a write the store refused is said, and the outside
+    /// effects they queued are settled.
+    pub fn commit_planned(&mut self) {
         if self.mode == Mode::Past {
-            return Vec::new();
+            return;
         }
-        let Some(ready) = self.host() else {
-            return Vec::new();
-        };
-        let tickets = queue_commits(&ready, &self.outgoing, 0, None);
+        if let Some(why) = self.store.take_refusal() {
+            self.notice(Words::Plain(why), ui::NoticeKind::Error);
+        }
         self.settle_due = true;
-        tickets
     }
 
-    /// The next invocation for the API, with the invocation of the API that made it.
-    pub fn take_invocation(&mut self) -> Option<(ControlInvocation, Option<InvocationId>)> {
-        let (invocation, origin) = self.outgoing.borrow_mut().pop_front()?;
-        if invocation.address.resource == HOST_RESOURCE {
-            let ticket = invocation
-                .arguments
-                .get("ticket")
-                .and_then(Json::as_u64)
-                .unwrap_or_default();
-            self.in_flight.push_back(ticket);
-        }
-        Some((invocation, origin))
-    }
-
-    /// The API answered an invocation the instance handed over: done, or refused with
-    /// `error`. Whether it was the instance's own.
+    /// The API refused an action the window asked it to run: say why. Whether it was one of
+    /// this window's.
     pub fn answered(&mut self, address: &ActionAddress, error: Option<String>) -> bool {
-        if address.resource == HOST_RESOURCE && address.action == COMMIT {
-            self.api_answered(error);
-            self.flush();
-            return true;
-        }
         if let Some(error) = error
             && address.resource.starts_with("tl:")
         {
@@ -1467,30 +1342,6 @@ impl Instance {
             return true;
         }
         false
-    }
-
-    /// The API answered the oldest commit handed over.
-    fn api_answered(&mut self, error: Option<String>) {
-        let Some(ticket) = self.in_flight.pop_front() else {
-            return;
-        };
-        if let Some(host) = self.host() {
-            let _ = host.store().take_ticket(ticket);
-        }
-        let undo = self.pending.undo.remove(&ticket);
-        match (error, undo) {
-            (Some(error), _) => self.notice(Words::Plain(error), ui::NoticeKind::Error),
-            (None, Some(words)) => {
-                // A destructive action is undone rather than confirmed.
-                self.seen_offer = false;
-                self.out.push(ToUi::Notice {
-                    words,
-                    kind: ui::NoticeKind::Info,
-                    undo: true,
-                });
-            }
-            (None, None) => {}
-        }
     }
 
     // ----- what the person did -------------------------------------------------------------
@@ -1573,8 +1424,8 @@ impl Instance {
             ToApp::Redo => self.history.push(HistoryAsk::Redo),
             ToApp::Focus { at } => self.focus = at,
             ToApp::Composing(composing) => self.composing = composing,
-            // Handed on by the next frame ([`Self::take_save_again`]).
-            ToApp::SaveAgain => self.save_again = true,
+            // Every write is sent as it is made; one the store refused is said, not kept.
+            ToApp::SaveAgain => {}
             ToApp::Space {
                 level,
                 width,
@@ -1587,10 +1438,12 @@ impl Instance {
     /// Carry out `message`, one thing the window told of the person at it, as a step of theirs,
     /// and send what followed it: what a press made, and what the window hears after a press.
     fn event(&mut self, message: ToApp) {
-        let first = self.host().map(|host| host.next_ticket());
         let mut ran: Option<Ran> = None;
         let pressed = matches!(message, ToApp::Fire { .. });
-        let outcome = self.carry_out(message, &mut ran);
+        let outcome = {
+            let _phase = tilo_resource::profiling::Phase::start("instance.event.carry_out");
+            self.carry_out(message, &mut ran)
+        };
         if let Err(words) = outcome {
             self.notice(words, ui::NoticeKind::Error);
             // What the controls show goes back to what they are bound to.
@@ -1601,12 +1454,17 @@ impl Instance {
                 self.send_bound(level);
             }
         }
-        let tickets = self.commit_planned();
-        if let (Some(ran), Some(first)) = (ran, first) {
-            self.after_action(ran, tickets.into_iter().filter(|t| *t >= first));
+        {
+            let _phase = tilo_resource::profiling::Phase::start("instance.event.commit");
+            self.commit_planned();
+        }
+        if let Some(ran) = ran {
+            let _phase = tilo_resource::profiling::Phase::start("instance.event.after_action");
+            self.after_action(ran);
         }
         self.follow_opens();
         if pressed {
+            let _phase = tilo_resource::profiling::Phase::start("instance.event.pressed");
             // What the press made opens now, and the window hears right after it that the press
             // ran: what the person typed after it goes to what it opened, never to what a later
             // press of the same batch opens.
@@ -1771,10 +1629,17 @@ impl Instance {
         let Some(rows) = view.lists.get_mut(list) else {
             return;
         };
-        let requested = rows.request(range, open);
-        let message = rows_message(&host, &*names, &handle, level, list, requested);
+        let requested = {
+            let _phase = tilo_resource::profiling::Phase::start("instance.rows.request");
+            rows.request(range, open)
+        };
+        let message = {
+            let _phase = tilo_resource::profiling::Phase::start("instance.rows.message");
+            rows_message(&host, &*names, &handle, level, list, requested)
+        };
         self.out.push(message);
         // The rows rendered can hold lists of their own, and those scrolled away took theirs.
+        let _phase = tilo_resource::profiling::Phase::start("instance.rows.track");
         self.track_lists(level);
         self.send_bound(level);
     }
@@ -2280,10 +2145,9 @@ impl Instance {
         self.commit_planned();
     }
 
-    /// What follows an action a person ran from a control: a destructive one offers Undo once
-    /// its commits (`tickets`) are in, naming what it was run on; what a primary one made is
-    /// shown.
-    fn after_action(&mut self, ran: Ran, tickets: impl Iterator<Item = u64>) {
+    /// What follows an action a person ran from a control: a destructive one offers Undo,
+    /// naming what it was run on; what a primary one made is shown.
+    fn after_action(&mut self, ran: Ran) {
         let Ran {
             aref,
             result,
@@ -2314,9 +2178,13 @@ impl Instance {
                     },
                     None => Words::Plain(label),
                 };
-                if let Some(last) = tickets.max() {
-                    self.pending.undo.insert(last, words);
-                }
+                // A destructive action is undone rather than confirmed.
+                self.seen_offer = false;
+                self.out.push(ToUi::Notice {
+                    words,
+                    kind: ui::NoticeKind::Info,
+                    undo: true,
+                });
             }
             (Some("primary"), _) => {
                 // What a primary action made opens beside the list, as the person asked for it.
@@ -2341,70 +2209,30 @@ impl Instance {
 
     // ----- frames --------------------------------------------------------------------------
 
-    /// Open the instance over the document's chunks, the store holding them from then on: the
-    /// host opens over them, or the one opened over the workspace's indexes takes them. The
-    /// chunks back when no host could be had, for the next frame to try again.
-    pub fn open_over(&mut self, chunks: crate::chunk::Chunks) -> Option<crate::chunk::Chunks> {
-        let host = self.host.borrow().as_ref().cloned();
-        match host {
-            Some(host) => host.adopt(chunks),
-            None => self.document_chunks = Some(chunks),
-        }
-        self.sync_held(true);
-        self.read_short();
-        self.document_chunks.take()
+    /// Something other than this window changed what the store holds: what it read is read
+    /// again by the next frame.
+    pub fn store_moved(&mut self) {
+        self.store.moved();
+        self.moved = true;
     }
 
-    /// Have the store read the chunks the lists a window opens over need: an index that
-    /// reflects fewer chunks than the document's manifest names cannot say the rows it lacks.
-    fn read_short(&mut self) {
-        let host = self.host.borrow().as_ref().cloned();
-        if host.is_some_and(|host| host.store().load_short()) {
-            self.moved = true;
-        }
+    /// The first half of a frame: open the host and the root, stage a scenario, and send the
+    /// window what changed.
+    pub fn sync(&mut self) {
+        self.frame();
     }
 
-    /// The first half of a frame over the document the store holds ([`Self::open_over`]):
-    /// `moved` when a write of the document's since the last frame moved what the store reads.
-    pub fn sync_held(&mut self, moved: bool) {
-        if moved {
-            self.moved = true;
-        }
-        self.read_short();
-        self.frame(None, true);
-    }
-
-    /// The first half of a frame: bring the runtime up to date with the workspace document `document`
-    /// (`None` while the instance opens over the workspace's indexes), open the root once the
-    /// indexes are read, stage a scenario, and send the window what changed.
-    pub fn sync(&mut self, record: Option<&tilo_resource::Doc>) {
-        self.frame(record, record.is_some());
-    }
-
-    /// [`Self::sync`]; `had` when the document is had, as `document` or in the store.
-    fn frame(&mut self, record: Option<&tilo_resource::Doc>, had: bool) {
-        let Some(host) = self.host_for(record, had) else {
+    fn frame(&mut self) {
+        let Some(host) = self.host_for() else {
             return;
         };
-        let host = if had {
-            self.follow_updates(record, host)
-        } else {
-            host
-        };
+        let host = self.follow_updates(host);
         if !self.started {
-            // Until the indexes hold rows to read, the lists would show nothing: the window
-            // shows the platform's loading state. Once the first step of a build is taken in
-            // it opens over those rows, and the rest of the document is read under them.
-            if host.index_answers() {
-                self.started = true;
-                self.loading = false;
-                if !self.rootless {
-                    let _phase = tilo_resource::profiling::Phase::start("tl.view.open_root");
-                    self.open_root(&host);
-                }
-            } else if !self.loading {
-                self.loading = true;
-                self.out.push(ToUi::Loading);
+            self.started = true;
+            self.loading = false;
+            if !self.rootless {
+                let _phase = tilo_resource::profiling::Phase::start("tl.view.open_root");
+                self.open_root(&host);
             }
         }
         // Only the origin runs the packages' triggers: every change is ordered there, and each
@@ -2418,6 +2246,11 @@ impl Instance {
         }
         if self.staged.is_some() {
             self.run_staged(&host);
+        }
+        // The agents what was written since the last frame mentions are asked, in the mode a
+        // person writes in.
+        if self.mode == Mode::Live && host.ask_from_mentions() > 0 {
+            self.moved = true;
         }
         if std::mem::take(&mut self.moved) {
             self.settle_due = true;
@@ -2435,52 +2268,40 @@ impl Instance {
         self.flush();
     }
 
-    /// Whether work is still under way off the frame that changes what the window shows: an
-    /// index the store is deriving, or records the publication is reading. A window drawn while
-    /// it is has not read the workspace the document holds.
+    /// Whether work is still under way off the frame that changes what the window shows: records
+    /// the publication is reading.
     #[must_use]
     pub fn pending(&self) -> bool {
-        self.host().is_some_and(|host| host.index_pending())
-            || self
-                .publication
-                .as_ref()
-                .is_some_and(|publication| publication.pending())
+        self.publication
+            .as_ref()
+            .is_some_and(|publication| publication.pending())
     }
 
     /// Whether a frame has work the window has not seen: a change no sync has sent it yet
-    /// (`moved`: the document moved, an index was taken in), an invocation the window handed the
-    /// host (`outgoing`), a write the document's
-    /// outbox owes ([`Self::settle_owed`]), or work under way off the frame
-    /// ([`Self::pending`]). A frame taken while any of it holds shows what the workspace held
-    /// before it, so a window that owes one syncs — and the host runs what it is owed — before it
-    /// rests.
+    /// (`moved`), a write the outbox owes ([`Self::settle_owed`]), or work under way off the
+    /// frame ([`Self::pending`]). A window that owes one syncs before it rests.
     #[must_use]
     pub fn owes_a_frame(&self) -> bool {
-        self.moved || self.settle_owed() || !self.outgoing.borrow().is_empty() || self.pending()
+        self.moved || self.settle_owed() || self.pending()
     }
 
     /// Whether the document's outbox owes a settlement a frame would take in: only a live window
     /// settles it, only once it reads the document, and only while the outbox holds an effect (a
     /// window that commits after every frame, and committed nothing, rests).
     fn settle_owed(&self) -> bool {
-        self.settle_due
-            && !self.opening
-            && self.mode == Mode::Live
-            && self.host().is_some_and(|ready| ready.outbox_waits())
+        self.settle_due && self.mode == Mode::Live
     }
 
     /// Wait for the work under way off the frame and take it in, so that what the window shows
-    /// next is read from indexes and a publication that cover the document: for an embedder with
-    /// no frame to take them in on. Whether what the window shows may have moved.
+    /// next is read from a publication that covers the store: for an embedder with no frame to
+    /// take it in on. Whether what the window shows may have moved.
     pub fn settle_pending(&mut self) -> bool {
-        let indexed = self.host().is_some_and(|host| host.wait_index());
         let published = self
             .publication
             .as_ref()
             .is_some_and(|publication| publication.settle());
-        let moved = indexed || published;
-        self.moved |= moved;
-        moved
+        self.moved |= published;
+        published
     }
 
     /// The second half of a frame: what the person did and what the API answered, run in the
@@ -2544,22 +2365,6 @@ impl Instance {
         let _phase = tilo_resource::profiling::Phase::start("instance.flush");
         self.flush();
         changed
-    }
-
-    /// The workspace refuses the document's changes, or takes them again: the window marks them
-    /// unsaved, and offers to try again, while it does.
-    pub fn refused_by_workspace(&mut self, refused: bool) {
-        if refused != self.kept {
-            self.kept = refused;
-            self.out.push(ToUi::Kept(refused));
-            self.flush();
-        }
-    }
-
-    /// Whether the person asked to try saving again since the last ask: the document then hands
-    /// the workspace what it refused.
-    pub fn take_save_again(&mut self) -> bool {
-        std::mem::take(&mut self.save_again)
     }
 
     /// Give the runtime the workspace's members as the workspace's policy has them now, when it
@@ -2646,16 +2451,6 @@ impl Instance {
                 Err(error) => tracing::warn!(%error, "the window's connection failed"),
             },
             Err(error) => tracing::error!(%error, "a frame's batch did not encode"),
-        }
-    }
-}
-
-impl Drop for Instance {
-    /// What the indexes hold reaches the disk as the instance ends: the next window of the workspace
-    /// opens over them before its document.
-    fn drop(&mut self) {
-        if let Some(host) = self.host() {
-            host.persist_index();
         }
     }
 }

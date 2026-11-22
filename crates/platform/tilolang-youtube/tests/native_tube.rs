@@ -55,9 +55,7 @@ fn native_documents() -> Vec<(String, automerge::AutoCommit)> {
 /// Ada's workspace with the tilolang Tube, the native app's `documents` beside it, migrated as
 /// the workspace's origin migrates it when the app starts.
 fn opened(documents: &[(String, automerge::AutoCommit)]) -> Host {
-    let doc = tilo_resource::Doc::new();
     let host = Host::new(
-        &doc,
         tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("Ada")),
         || None,
     )

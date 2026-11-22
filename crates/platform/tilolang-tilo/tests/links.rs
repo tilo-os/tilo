@@ -1,19 +1,15 @@
 //! What links to a resource: what was made from it, what mentions it and what names it in a
-//! field, read from the index of every app of the workspace, and what a resource was made from.
+//! field, read from the store of every app of the workspace, and what a resource was made from.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use serde_json::json;
-use tilo_resource::{Collection, Id, Model as _};
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::{Actor, InvokeOutcome, Value, ViewInstance};
-use tilolang_tilo::action::{DynAction, DynEdit};
 use tilolang_tilo::host::Package;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::PlanRequest;
-use tilolang_tilo::resource::{DynResource, DynValue};
-use tilolang_tilo::{Authorship, schema};
 
-use crate::fixtures::{Replica, field_id};
+use crate::fixtures::Replica;
 
 const LINKS: &str = include_str!("../../../lang/tilolang/tests/fixtures/links.tl");
 const APP: &str = "so.tilo.links";
@@ -78,39 +74,33 @@ fn root(replica: &Replica) -> ResourceRef {
     replica.host.root_of(APP).unwrap()
 }
 
-/// `action` as the API plans it, made from `from` when one is given.
-fn planned(
-    replica: &Replica,
-    action: &str,
-    args: serde_json::Value,
-    from: Option<&ResourceRef>,
-) -> DynAction {
-    let package = replica.host.package(APP).unwrap();
-    let meta = &package.meta;
+/// Invoke `action` on the board as the API does, made from `from` when one is given.
+fn invoke(replica: &Replica, action: &str, args: &serde_json::Value, from: Option<&ResourceRef>) {
+    let meta = replica.host.package(APP).unwrap().meta;
     let id = meta
         .actions
         .iter()
         .find(|a| a.name == action)
-        .unwrap()
+        .unwrap_or_else(|| panic!("the action {action}"))
         .id
         .clone();
+    let kind = meta.kind_of("Board");
     let root = root(replica).id_string();
-    replica
-        .host
-        .plan(&PlanRequest {
-            app: APP,
-            kind: &meta.kind_of("Board"),
-            action_id: &id,
-            resource: Some(&root),
-            args: args.as_object().unwrap(),
-            caller: None,
-            from,
-        })
-        .unwrap()
+    let request = PlanRequest {
+        app: APP,
+        kind: &kind,
+        action_id: &id,
+        resource: Some(&root),
+        args: args.as_object().unwrap(),
+        caller: None,
+        from,
+    };
+    replica.carry_out(&request).unwrap();
+    replica.commit();
 }
 
 fn board() -> (Replica, Vec<Package>) {
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(LINKS, "")]);
+    let (ada, packages) = Replica::new("ada", Workspace::new(), &[(LINKS, "")]);
     // The root is made on its first reading, as a window opens its app.
     let _ = root(&ada);
     ada.commit();
@@ -118,9 +108,28 @@ fn board() -> (Replica, Vec<Package>) {
 }
 
 /// Adds a note as the API does, from `from` when one is given, and answers its reference.
-fn add_note(replica: &mut Replica, title: &str, from: Option<&ResourceRef>) -> ResourceRef {
-    let action = planned(replica, "add_note", json!({"title": title}), from);
-    replica.apply(&action);
+fn add_note(replica: &Replica, title: &str, from: Option<&ResourceRef>) -> ResourceRef {
+    let meta = replica.host.package(APP).unwrap().meta;
+    let id = meta
+        .actions
+        .iter()
+        .find(|a| a.name == "add_note")
+        .unwrap()
+        .id
+        .clone();
+    let kind = meta.kind_of("Board");
+    let root = root(replica).id_string();
+    let args = json!({"title": title});
+    let request = PlanRequest {
+        app: APP,
+        kind: &kind,
+        action_id: &id,
+        resource: Some(&root),
+        args: args.as_object().unwrap(),
+        caller: None,
+        from,
+    };
+    replica.carry_out(&request).unwrap();
     replica.commit();
     notes(replica).pop().unwrap()
 }
@@ -130,9 +139,9 @@ tilo_test_env::scenario! {
 
     phase a_note_made_from_another_says_so;
     {
-        let (mut ada, loaded) = board();
-        let source = add_note(&mut ada, "A", None);
-        let made = add_note(&mut ada, "B", Some(&source));
+        let (ada, loaded) = board();
+        let source = add_note(&ada, "A", None);
+        let made = add_note(&ada, "B", Some(&source));
         assert_eq!(
             text(call(&ada, "made_from", vec![Value::resource(&made)])),
             "A"
@@ -141,37 +150,32 @@ tilo_test_env::scenario! {
             text(call(&ada, "made_from", vec![Value::resource(&source)])),
             ""
         );
-        // It is a fact of the change, so another replica reads it from the document.
+        // It is a fact of the change, so another replica reads it from its store.
         let ben = ada.fork("ben", &[(LINKS, &loaded[0].ids)]);
-        ben.host.sync_from(&ben.doc);
         assert_eq!(
             text(call(&ben, "made_from", vec![Value::resource(&made)])),
             "A"
         );
     }
 
-    phase what_links_to_a_note_is_read_from_the_index;
+    phase what_links_to_a_note_is_read_from_the_store;
     {
-        let (mut ada, _) = board();
-        let source = add_note(&mut ada, "A", None);
-        let made = add_note(&mut ada, "B", Some(&source));
+        let (ada, _) = board();
+        let source = add_note(&ada, "A", None);
+        let made = add_note(&ada, "B", Some(&source));
         // An item whose field names the note, and a note whose text mentions it.
-        let action = planned(
+        invoke(
             &ada,
             "item_about",
-            json!({"n": source.id_string(), "title": "I"}),
+            &json!({"n": source.id_string(), "title": "I"}),
             None,
         );
-        ada.apply(&action);
-        ada.commit();
-        let action = planned(
+        invoke(
             &ada,
             "note_about",
-            json!({"n": source.id_string(), "title": "M"}),
+            &json!({"n": source.id_string(), "title": "M"}),
             None,
         );
-        ada.apply(&action);
-        ada.commit();
         assert_eq!(
             lines(call(&ada, "links_of", vec![Value::resource(&source)])),
             [
@@ -195,90 +199,11 @@ tilo_test_env::scenario! {
         let shown = |view: &ViewInstance| format!("{:?}", view.tree());
         assert!(shown(&view).contains("created_from B"), "{}", shown(&view));
         let mut view = view;
-        add_note(&mut ada, "C", Some(&source));
+        add_note(&ada, "C", Some(&source));
         assert!(
             !view.poll_patches().unwrap().is_empty(),
             "the view runs again when what links to the note changes"
         );
         assert!(shown(&view).contains("created_from C"), "{}", shown(&view));
     }
-}
-
-/// A board of `n` notes, made whole in one change as a workspace is seeded.
-fn seeded(n: usize) -> (Replica, Vec<Package>) {
-    let (mut ada, packages) = board();
-    let meta = packages[0].meta.clone();
-    let board = root(&ada);
-    let board_ty = meta.types.iter().find(|t| t.name == "Board").unwrap();
-    let note_ty = meta.types.iter().find(|t| t.name == "Note").unwrap();
-    let note_schema = schema::lookup(&note_ty.id).unwrap();
-    let mut notes = Collection::default();
-    for i in 0..n {
-        let mut item = DynResource::empty(note_schema).unwrap();
-        if let Some(DynValue::Text(title)) = item.get_mut(&field_id(&meta, "Note", "title")) {
-            *title = format!("Note {i:05}");
-        }
-        notes.push(Id::from_raw(format!("note-{i:05}")), item);
-    }
-    let mut record = DynResource::empty(schema::lookup(&board_ty.id).unwrap()).unwrap();
-    if let Some(DynValue::Collection(slot)) = record.get_mut(&field_id(&meta, "Board", "notes")) {
-        *slot = notes;
-    }
-    let create = DynAction {
-        app: APP.to_owned(),
-        kind: meta.kind_of("Board"),
-        action_id: "$create".to_owned(),
-        args: serde_json::Value::Null,
-        authorship: Authorship::default(),
-        edits: vec![DynEdit::Create {
-            id: board.id_string(),
-            record: record.to_json(),
-        }],
-    };
-    ada.apply(&create);
-    ada.commit();
-    (ada, packages)
-}
-
-/// The index and item reads `action` does at the size the workspace is.
-fn reads_of(ada: &Replica, action: &str, args: Vec<Value>) -> (u64, u64) {
-    let _ = call(ada, action, args.clone());
-    let before = ada.host.store().read_stats();
-    let _ = call(ada, action, args);
-    let after = ada.host.store().read_stats();
-    let index: u64 = [
-        after.index.dirs.saturating_sub(before.index.dirs),
-        after.index.pages.saturating_sub(before.index.pages),
-        after.index.fields.saturating_sub(before.index.fields),
-    ]
-    .into_iter()
-    .sum();
-    (index, after.evaluated.saturating_sub(before.evaluated))
-}
-
-#[test]
-fn what_links_to_a_note_is_read_at_the_same_cost_at_any_size() {
-    let work = |n: usize| {
-        let (mut ada, _) = seeded(n);
-        let source = add_note(&mut ada, "A", None);
-        add_note(&mut ada, "B", Some(&source));
-        let action = planned(
-            &ada,
-            "note_about",
-            json!({"n": source.id_string(), "title": "M"}),
-            None,
-        );
-        ada.apply(&action);
-        ada.commit();
-        reads_of(&ada, "links_of", vec![Value::resource(&source)])
-    };
-    // A thousand notes span two index pages of 512 entries, four thousand eight: what links to
-    // a note is read from its own list at either size.
-    let small = work(1_000);
-    let large = work(4_000);
-    assert_eq!(
-        small, large,
-        "what links to a note is read from its own list, not the workspace: {small:?} then {large:?}"
-    );
-    assert!(small.0 > 0, "the read comes from the index: {small:?}");
 }

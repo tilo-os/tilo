@@ -3,18 +3,14 @@
 //! with no code in the app. Edits, undo and redo of the same text ask nothing new; removing the
 //! mention withdraws a waiting ask, and putting it back asks again.
 
-use automerge::AutoCommit;
-use collaboration::history_source::verbs::HistoryEdit;
-use serde_json::Value as Json;
-use tilo_resource::{Edit, EditOp, Id, Segment};
+use tilo_doc::document::{MarkSpan, MarkValue};
 use tilolang_runtime::rich::{Reference, RichValue};
 use tilolang_runtime::store::Store as _;
 use tilolang_runtime::{ResourceRef, Value};
-use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::runtime::Actor;
 use tilolang_tilo::runtime::ids::MemberId;
 
-use crate::fixtures::{Replica, field_id, target};
+use crate::fixtures::{Replica, target};
 use crate::legibility::call;
 
 const DISCUSSION: (&str, &str) = (
@@ -44,7 +40,11 @@ fn helper() -> MemberId {
 /// Ada's workspace with Notes, Chat and the agents' asks, the helper agent a member of it: it
 /// reads everything when `reads`, and nothing otherwise, as the workspace's grants say.
 fn workspace(reads: bool) -> Replica {
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, NOTES, AGENT, CHAT]);
+    let (ada, _) = Replica::new(
+        "ada",
+        crate::fixtures::Workspace::new(),
+        &[DISCUSSION, NOTES, AGENT, CHAT],
+    );
     ada.host.set_clock(|| "2026-11-21T09:00:00Z".to_owned());
     let grants: std::rc::Rc<tilolang_runtime::members::Reads> =
         std::rc::Rc::new(move |who: &Actor, _: &ResourceRef| {
@@ -120,7 +120,7 @@ fn asks(r: &Replica) -> Vec<Asked> {
 }
 
 /// Commit everything the runtime committed, the asks its mentions made included.
-fn settle(r: &mut Replica) {
+fn settle(r: &Replica) {
     while r.commit() > 0 {}
 }
 
@@ -131,29 +131,20 @@ fn rich_of(r: &Replica, item: &ResourceRef, field: &str) -> RichValue {
     }
 }
 
-/// Ada edits the note's body with the rich edit `action`, as her editor does: one step of hers.
-fn edit_body(r: &mut Replica, note: &ResourceRef, action: &tilo_document::RichTextAction) {
-    let meta = r.host.package(NOTES_APP).unwrap().meta;
-    let path = vec![
-        Segment::Item(Id::from_raw(note.item.as_deref().unwrap())),
-        Segment::Field(field_id(&meta, "Note", "body")),
-    ];
-    let rich = serde_json::to_value(action).unwrap();
-    r.apply(&DynAction {
-        app: NOTES_APP.to_owned(),
-        kind: format!("tl.{NOTES_APP}.Note"),
-        action_id: "$edit".to_owned(),
-        args: Json::Null,
-        // The person at the window writes it, as every edit a window plans is theirs.
-        authorship: Authorship {
-            invoker: Some(ada_person()),
-            ..Authorship::default()
-        },
-        edits: vec![DynEdit::Edit {
-            id: note.doc.clone(),
-            edit: Edit::new(path, EditOp::Rich { rich }),
-        }],
-    });
+/// Ada writes the note's body as `change` makes it of what it says now, through the body's
+/// editor, as her window does: one step of hers.
+fn edit_body(r: &Replica, note: &ResourceRef, change: impl FnOnce(&mut RichValue)) {
+    let mut body = rich_of(r, note, "body");
+    change(&mut body);
+    let page = r.host.open_resource(note, None).expect("the note's page");
+    let editor = page
+        .tree()
+        .first_of_kind("ui.BlockEditor")
+        .expect("the body's editor")
+        .key
+        .clone();
+    page.edit(&editor, &Value::Rich(body))
+        .expect("the editor's write lands");
     settle(r);
 }
 
@@ -171,84 +162,66 @@ fn find(r: &Replica, note: &ResourceRef, said: &str) -> (String, usize) {
         .unwrap_or_else(|| panic!("the body says {said}: {:?}", body.written_text()))
 }
 
-fn type_after(r: &mut Replica, note: &ResourceRef, after: &str, typed: &str) {
+fn type_after(r: &Replica, note: &ResourceRef, after: &str, typed: &str) {
     let (block, at) = find(r, note, after);
-    edit_body(
-        r,
-        note,
-        &tilo_document::RichTextAction::SpliceText {
-            region: tilo_document::action::RegionKind::Body,
-            block,
-            at: at.saturating_add(after.chars().count()),
-            del: 0,
-            ins: typed.to_owned(),
-        },
-    );
+    let at = at.saturating_add(after.chars().count());
+    edit_body(r, note, |body| {
+        let block = body.blocks.iter_mut().find(|b| b.id == block).unwrap();
+        let byte = block
+            .text
+            .char_indices()
+            .nth(at)
+            .map_or(block.text.len(), |(i, _)| i);
+        block.text.insert_str(byte, typed);
+        let grown = typed.chars().count();
+        for mark in &mut block.marks {
+            if mark.start >= at {
+                mark.start = mark.start.saturating_add(grown);
+            }
+            if mark.end >= at {
+                mark.end = mark.end.saturating_add(grown);
+            }
+        }
+    });
 }
 
 /// Ada marks `name` in the note as a mention of `member` (`None` takes the mention away), as the
 /// composer does when she picks them from its suggestions.
-fn mark(r: &mut Replica, note: &ResourceRef, name: &str, member: Option<&MemberId>) {
+fn mark(r: &Replica, note: &ResourceRef, name: &str, member: Option<&MemberId>) {
     let (block, start) = find(r, note, name);
-    edit_body(
-        r,
-        note,
-        &tilo_document::RichTextAction::SetMark {
-            region: tilo_document::action::RegionKind::Body,
-            spans: vec![tilo_document::action::Span {
-                block,
+    let end = start.saturating_add(name.chars().count());
+    edit_body(r, note, |body| {
+        let block = body.blocks.iter_mut().find(|b| b.id == block).unwrap();
+        block.marks.retain(|m| {
+            m.name != tilolang_runtime::rich::MENTION || m.end <= start || m.start >= end
+        });
+        if let Some(member) = member {
+            block.marks.push(MarkSpan {
                 start,
-                end: start.saturating_add(name.chars().count()),
-            }],
-            name: tilolang_runtime::rich::MENTION.to_owned(),
-            value: member.map(|member| {
-                tilo_document::action::MarkVal::Str(Reference::Member(member.clone()).mark_value())
-            }),
-            also_clear: Vec::new(),
-        },
-    );
+                end,
+                name: tilolang_runtime::rich::MENTION.to_owned(),
+                value: MarkValue::Str(Reference::Member(member.clone()).mark_value()),
+            });
+        }
+    });
 }
 
-fn history(r: &mut Replica, edit: &HistoryEdit) {
-    r.history(edit);
+fn undo(r: &Replica) {
+    assert!(r.undo_last(), "a step to take back");
     settle(r);
 }
 
-fn undo(r: &mut Replica) {
-    history(
-        r,
-        &HistoryEdit::Undo {
-            steps: None,
-            invocation: None,
-            by: None,
-            to: None,
-            step: None,
-        },
-    );
-}
-
-fn redo(r: &mut Replica) {
-    history(r, &HistoryEdit::Redo { steps: None });
+fn redo(r: &Replica) {
+    assert!(r.redo_last(), "a step to make again");
+    settle(r);
 }
 
 /// A note of Ada's saying `body`.
-fn note(ada: &mut Replica, body: &str) -> ResourceRef {
+fn note(ada: &Replica, body: &str) -> ResourceRef {
     let root = Value::resource(&ada.host.root_of(NOTES_APP).unwrap());
     let note = target(&call(ada, "ada", NOTES_APP, "new_note", vec![root]));
     settle(ada);
-    let blocks: Vec<tilo_document::ClipBlock> = tilo_document::blocks_of_plain(body)
-        .iter()
-        .map(tilo_document::ClipBlock::from_view)
-        .collect();
-    edit_body(
-        ada,
-        &note,
-        &tilo_document::RichTextAction::SyncClips {
-            blocks,
-            replace: None,
-            at: 0,
-        },
-    );
+    edit_body(ada, &note, |rich| *rich = RichValue::from_text(body));
     note
 }
 
@@ -258,12 +231,12 @@ fn ada_person() -> Actor {
 
 #[test]
 fn mentioning_an_agent_in_a_note_asks_it_once_however_often_the_paragraph_is_edited() {
-    let mut ada = workspace(true);
-    let note = note(&mut ada, "Could Helper sum this up");
+    let ada = workspace(true);
+    let note = note(&ada, "Could Helper sum this up");
     assert!(asks(&ada).is_empty(), "nobody is mentioned yet");
-    mark(&mut ada, &note, "Helper", Some(&helper()));
-    type_after(&mut ada, &note, "sum this up", " please");
-    type_after(&mut ada, &note, "please", ", by Friday");
+    mark(&ada, &note, "Helper", Some(&helper()));
+    type_after(&ada, &note, "sum this up", " please");
+    type_after(&ada, &note, "please", ", by Friday");
 
     let asked = asks(&ada);
     assert_eq!(asked.len(), 1, "{asked:#?}");
@@ -282,22 +255,22 @@ fn mentioning_an_agent_in_a_note_asks_it_once_however_often_the_paragraph_is_edi
 
 #[test]
 fn removing_the_mention_withdraws_the_ask_and_undo_asks_again() {
-    let mut ada = workspace(true);
-    let note = note(&mut ada, "Helper, a summary please");
-    mark(&mut ada, &note, "Helper", Some(&helper()));
+    let ada = workspace(true);
+    let note = note(&ada, "Helper, a summary please");
+    mark(&ada, &note, "Helper", Some(&helper()));
     assert_eq!(asks(&ada).len(), 1);
 
-    mark(&mut ada, &note, "Helper", None);
+    mark(&ada, &note, "Helper", None);
     let asked = asks(&ada);
     assert_eq!(asked.len(), 1, "{asked:#?}");
     assert_eq!(asked[0].state, "withdrawn");
 
-    undo(&mut ada);
+    undo(&ada);
     let asked = asks(&ada);
     assert_eq!(asked.len(), 1, "still the one ask: {asked:#?}");
     assert_eq!(asked[0].state, "waiting", "the mention is back");
 
-    redo(&mut ada);
+    redo(&ada);
     let asked = asks(&ada);
     assert_eq!(asked.len(), 1, "{asked:#?}");
     assert_eq!(asked[0].state, "withdrawn", "the mention is gone again");
@@ -305,7 +278,7 @@ fn removing_the_mention_withdraws_the_ask_and_undo_asks_again() {
 
 #[test]
 fn a_chat_message_mentioning_an_agent_asks_it_about_that_message() {
-    let mut ada = workspace(true);
+    let ada = workspace(true);
     let all = Value::resource(&ada.host.root_of(CHAT_APP).unwrap());
     let design = call(
         &ada,
@@ -314,7 +287,7 @@ fn a_chat_message_mentioning_an_agent_asks_it_about_that_message() {
         "new_channel",
         vec![all, Value::text("design")],
     );
-    settle(&mut ada);
+    settle(&ada);
     let mut body = RichValue::from_text("Can ");
     body.push_reference("@Helper", &Reference::Member(helper()));
     body.push_text(" review the shots?");
@@ -325,7 +298,7 @@ fn a_chat_message_mentioning_an_agent_asks_it_about_that_message() {
         "send",
         vec![design, Value::Rich(body), Value::Opt(None)],
     );
-    settle(&mut ada);
+    settle(&ada);
 
     let asked = asks(&ada);
     assert_eq!(asked.len(), 1, "{asked:#?}");
@@ -343,9 +316,9 @@ fn a_chat_message_mentioning_an_agent_asks_it_about_that_message() {
 
 #[test]
 fn an_agent_that_may_not_read_the_note_is_asked_with_nothing_of_it() {
-    let mut ada = workspace(false);
-    let note = note(&mut ada, "Helper, the salaries are in here");
-    mark(&mut ada, &note, "Helper", Some(&helper()));
+    let ada = workspace(false);
+    let note = note(&ada, "Helper, the salaries are in here");
+    mark(&ada, &note, "Helper", Some(&helper()));
     let asked = asks(&ada);
     assert_eq!(asked.len(), 1, "{asked:#?}");
     assert_eq!(asked[0].said, None, "nothing of the note is copied");
@@ -354,8 +327,8 @@ fn an_agent_that_may_not_read_the_note_is_asked_with_nothing_of_it() {
 
 #[test]
 fn mentioning_a_person_asks_nobody() {
-    let mut ada = workspace(true);
-    let note = note(&mut ada, "Grace, have a look");
-    mark(&mut ada, &note, "Grace", Some(&MemberId::person("grace")));
+    let ada = workspace(true);
+    let note = note(&ada, "Grace, have a look");
+    mark(&ada, &note, "Grace", Some(&MemberId::person("grace")));
     assert!(asks(&ada).is_empty(), "{:#?}", asks(&ada));
 }

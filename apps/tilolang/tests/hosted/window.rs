@@ -3,8 +3,6 @@
 //! and runs through the Action API, and a send that leaves the workspace only once a person
 //! allows it.
 
-use std::sync::atomic::Ordering;
-
 use serde_json::{Map, Value as Json, json};
 use tilo_app_window::reconcile::{UiEvent, display};
 use tilo_app_window::{UiNode, Value};
@@ -463,9 +461,7 @@ fn an_empty_notebook_says_so_in_both_columns_and_its_states_action_makes_the_fir
 #[test]
 fn what_an_agent_or_a_script_creates_through_the_api_moves_nobodys_view() {
     let mut session = Session::notes();
-    let root = session
-        .read(|doc| tilolang_tilo::action::resource_ids(doc, NOTES))
-        .remove(0);
+    let root = super::root_id(&session, NOTES);
     let notebook = format!("tl:{NOTES}:{root}");
     let new_note = action_id(&mut session, &notebook, "New note");
     press_new_note(&mut session);
@@ -515,9 +511,7 @@ fn what_an_agent_or_a_script_creates_through_the_api_moves_nobodys_view() {
 #[test]
 fn a_change_marks_item_opens_the_note_it_names() {
     let mut session = Session::notes();
-    let root = session
-        .read(|doc| tilolang_tilo::action::resource_ids(doc, NOTES))
-        .remove(0);
+    let root = super::root_id(&session, NOTES);
     let notebook = format!("tl:{NOTES}:{root}");
     let new_note = action_id(&mut session, &notebook, "New note");
     press_new_note(&mut session);
@@ -567,8 +561,15 @@ fn a_scenario_stages_exactly_its_data_however_many_frames_run() {
     assert_eq!(items_of(&mut session, NOTES, "notes").len(), staged);
     assert_eq!(listed(&mut session).len(), staged);
     assert_eq!(
-        session
-            .read(|doc| tilolang_tilo::action::resource_ids(doc, NOTES))
+        super::store(&session)
+            .resources_of(
+                &session
+                    .instance_host()
+                    .root_of(NOTES)
+                    .expect("the notebook")
+                    .ty
+            )
+            .expect("the store answers")
             .len(),
         1,
         "one notebook"
@@ -618,8 +619,6 @@ fn typing_in_the_window_s_search_narrows_a_tree_to_what_matches() {
 #[test]
 fn find_in_an_open_note_counts_its_matches_and_replaces_them_all_in_one_change() {
     let mut session = Session::notes();
-    // What the person types is one step once they pause, as a pause ends a burst of typing.
-    super::store(&session).set_edit_pause(std::time::Duration::from_millis(200));
     super::new_note(&mut session, "Cargo");
     session
         .window
@@ -629,8 +628,6 @@ fn find_in_an_open_note_counts_its_matches_and_replaces_them_all_in_one_change()
         super::body_text(&mut session),
         "Ship the boat. Ship the crew. Ship the cargo."
     );
-    // The person stops typing before they search: what they typed is a step of its own.
-    std::thread::sleep(std::time::Duration::from_millis(400));
     let (mut driver, _) = search(&mut session);
     let mut find_step = |session: &mut Session, step| {
         driver.drive(
@@ -1048,138 +1045,6 @@ fn approving_a_pressed_send_through_the_ask_bar_sends_the_letter_once() {
             .is_empty(),
         "the document says it was delivered, so no device queues it again"
     );
-}
-
-// USER REQUIREMENT: a note the workspace does not take yet is kept, never lost: it stands in the
-// window at once, the window's bar says once, in plain words, that it is unsaved, and the window
-// rests instead of trying again every frame: no spinning CPU, no drained battery. Once the
-// workspace takes changes again, "Try again" saves it, once, without pressing New note again, and
-// a peer replaying the workspace gets it, and the title typed into it.
-#[test]
-fn a_note_the_workspace_cannot_keep_is_said_once_and_the_window_rests() {
-    let workspace = super::WorkspaceEnd::default();
-    let mut session = Session::crowded_notes(&workspace);
-    let notes = session.titles().len();
-    let before = workspace.heads();
-    let replayed = |session: &Session| {
-        let mut held = workspace.held.lock().unwrap().clone();
-        super::replayed(&mut held, &before, &session.instance_host())
-    };
-    workspace.refusing.store(true, Ordering::SeqCst);
-    let plus = session.control(&session.doing("Notebook", "new_note"));
-    session.window.click_at(plus.0, plus.1);
-    // The host comes to rest: `settle` returns only once a turn reports no change.
-    session.settle();
-    let turns_at_rest = (0..5).filter(|_| session.host.turn()).count();
-    assert_eq!(
-        turns_at_rest, 0,
-        "the window rests while the workspace refuses"
-    );
-    assert_eq!(
-        session.titles().len(),
-        notes + 1,
-        "the new note stands, kept on this device"
-    );
-    assert_eq!(workspace.heads(), before, "nothing reached the workspace");
-    let said = ui::window_toolbar::notice().expect("the window says the note is not saved");
-    assert_eq!(said.kind, ui::widget::toast::ToastKind::Error, "{said:?}");
-    assert!(said.text.contains("kept on this device"), "{said:?}");
-    assert!(
-        !said.text.contains("refused") && !said.text.contains("grants"),
-        "it says it in the person's words, not the workspace's: {said:?}"
-    );
-    assert!(ui::window_toolbar::edited(), "the window marks it unsaved");
-
-    // The workspace takes changes again: "Try again" saves the note.
-    workspace.refusing.store(false, Ordering::SeqCst);
-    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
-        id: ui::SAVE_RETRY_ACTION.to_owned(),
-    });
-    session.settle();
-    let titles = session.titles();
-    assert_eq!(titles.len(), notes + 1, "the note is made once: {titles:?}");
-    assert!(
-        !ui::window_toolbar::edited() && ui::window_toolbar::notice().is_none(),
-        "nothing is marked unsaved any more"
-    );
-    assert!(workspace.holds(&session), "the workspace holds the note");
-    assert_eq!(
-        replayed(&session),
-        1,
-        "a peer replaying the workspace gets the note"
-    );
-    // The person names the note they kept: the title reaches the workspace, letter by letter.
-    let title = session.field("title");
-    session.window.click_at(title.0 + 40.0, title.1);
-    session.window.type_text("Groceries");
-    session.settle();
-    assert_eq!(
-        replayed(&session),
-        1 + "Groceries".len(),
-        "a peer replaying the workspace gets every letter of the title"
-    );
-}
-
-// USER REQUIREMENT: a change the workspace refuses never stays on this device unsaid. The window
-// marks it unsaved in plain words at once, and rests instead of sending it again every frame.
-// Every later change builds on the refused one, so the workspace can take none of them alone:
-// once it takes changes again, the person's next step, or "Try again", hands it the document whole,
-// and it holds every letter typed meanwhile.
-fn a_refused_title_is_said_and_reaches_the_workspace_once_it_takes_changes(try_again: bool) {
-    let workspace = super::WorkspaceEnd::default();
-    let mut session = Session::crowded_notes(&workspace);
-    let plus = session.control(&session.doing("Notebook", "new_note"));
-    session.window.click_at(plus.0, plus.1);
-    session.settle();
-    assert!(workspace.holds(&session), "the workspace has the note");
-    assert!(!ui::window_toolbar::edited(), "the note is saved");
-
-    // The workspace refuses the title typed into it.
-    workspace.refusing.store(true, Ordering::SeqCst);
-    let title = session.field("title");
-    session.window.click_at(title.0 + 40.0, title.1);
-    session.window.type_text("Gro");
-    session.settle();
-    let said = ui::window_toolbar::notice().expect("the window says the title is not saved");
-    assert!(said.text.contains("kept on this device"), "{said:?}");
-    assert!(ui::window_toolbar::edited(), "the window marks it unsaved");
-    let turns_at_rest = (0..5).filter(|_| session.host.turn()).count();
-    assert_eq!(
-        turns_at_rest, 0,
-        "the window rests while the workspace refuses"
-    );
-
-    // The workspace takes changes again.
-    workspace.refusing.store(false, Ordering::SeqCst);
-    if try_again {
-        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
-            id: ui::SAVE_RETRY_ACTION.to_owned(),
-        });
-    } else {
-        session.window.type_text("ceries");
-    }
-    session.settle();
-    assert!(
-        workspace.holds(&session),
-        "the workspace holds every letter typed since it refused one"
-    );
-    assert!(
-        !ui::window_toolbar::edited() && ui::window_toolbar::notice().is_none(),
-        "nothing is marked unsaved any more"
-    );
-    let titles = session.titles();
-    let wanted = if try_again { "Gro" } else { "Groceries" };
-    assert!(titles.iter().any(|title| title == wanted), "{titles:?}");
-}
-
-#[test]
-fn a_refused_title_reaches_the_workspace_with_the_next_letter() {
-    a_refused_title_is_said_and_reaches_the_workspace_once_it_takes_changes(false);
-}
-
-#[test]
-fn a_refused_title_reaches_the_workspace_with_try_again() {
-    a_refused_title_is_said_and_reaches_the_workspace_once_it_takes_changes(true);
 }
 
 // ----- an app's own window ----------------------------------------------------------------

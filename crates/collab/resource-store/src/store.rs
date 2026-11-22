@@ -1230,8 +1230,17 @@ impl Store {
             if let Some(doc) = self.docs.get(doc_id) {
                 let read = touches.entry(doc_id.clone()).or_default();
                 read.read(doc, doc_id);
+                // A document's changes stand in the order it took them in, which on a replica
+                // that took another's change after its own is not when they were written.
                 let own = read.versions_of(id).map(Vec::as_slice).unwrap_or_default();
-                ends.extend(if last { own.last() } else { own.first() }.cloned());
+                ends.extend(
+                    if last {
+                        own.iter().max_by_key(|version| order(version))
+                    } else {
+                        own.first()
+                    }
+                    .cloned(),
+                );
             }
         }
         let none = BTreeSet::new();
@@ -1250,10 +1259,16 @@ impl Store {
         drop(touches);
         // As [`Self::versions`] orders them: by when their writer wrote them, a document's own
         // in its order, so the same one ends it.
+        // The first is its making, whatever its content's document numbers that change.
         let mut end = if last {
             ends.into_iter().max_by_key(order)
         } else {
-            ends.into_iter().min_by_key(order)
+            ends.into_iter().min_by_key(|version| {
+                (
+                    version.kind != crate::history::VersionKind::Made,
+                    order(version),
+                )
+            })
         }?;
         if last
             && end.kind == crate::history::VersionKind::Removed

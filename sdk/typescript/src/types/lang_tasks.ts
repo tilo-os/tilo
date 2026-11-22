@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.lang.tasks@f9e05c2089d3c07d";
+export const SURFACE = "so.tilo.lang.tasks@a752568a2db0d838";
 
 /** How much a task matters, most urgent last. One of "none", "low", "medium", "high", "urgent". */
 export type Priority = "none" | "low" | "medium" | "high" | "urgent";

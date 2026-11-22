@@ -483,18 +483,26 @@ pub(crate) mod testing {
         }
 
         /// Keep `doc` as `app`'s `record` of `workspace`, written into the workspace as a service of
-        /// the session writes it, once the session's copies next replicate ([`Self::until`]).
+        /// the session writes it, once the session's copies next replicate ([`Self::until`]). A
+        /// record the workspace holds no copy of is founded with `initialize`, as `doc` was.
         pub(crate) fn keep(
             &self,
             workspace: &str,
             (app, record): (&str, &str),
-            doc: automerge::AutoCommit,
+            mut doc: automerge::AutoCommit,
+            initialize: &dyn Fn(&mut automerge::AutoCommit) -> Result<(), String>,
         ) {
-            self.records.keep_document(
-                workspace,
-                (app, record),
-                std::rc::Rc::new(std::cell::RefCell::new(doc)),
-            );
+            let held = collab_types::document::identity::identity(&doc)
+                .expect("the record says what it is");
+            let stored = self
+                .records
+                .in_workspace(workspace, MemberId::person(PERSON.to_owned()))
+                .open_resource_at(app, record, held.kind.as_str(), initialize)
+                .expect("the record opens in the workspace");
+            stored
+                .merge_peer_document(doc.save())
+                .expect("the record takes what it holds");
+            stored.flush();
         }
 
         /// What reads the documents of the workspaces this device's service holds.

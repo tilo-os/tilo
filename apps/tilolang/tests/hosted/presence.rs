@@ -5,7 +5,6 @@
 
 use super::*;
 use tilolang_process::testing::Bus;
-use tilolang_tilo::chunk::Chunks;
 
 /// Whether the window says someone is typing.
 fn says_typing(session: &mut Session) -> Option<String> {
@@ -41,12 +40,7 @@ fn ada_and_bo_in_design() -> (Session, Session) {
     bus.member(ui::tilo_actions::MemberId::person("ada"), "Ada");
     bus.member(ui::tilo_actions::MemberId::person("bo"), "Bo");
     let route = RouteSpec::app(CHAT, uuid::Uuid::new_v4());
-    let mut ada = Session::on_bus(
-        &bus,
-        &route,
-        spec_of(&route, "ada"),
-        Chunks::of(automerge::AutoCommit::new()),
-    );
+    let mut ada = Session::on_bus(&bus, &route, spec_of(&route, "ada"));
     let new_channel = ada.identity_doing("Conversations", "new_channel");
     let made = ada.invoke_doing(&new_channel, &serde_json::json!({ "name": "design" }));
     assert!(
@@ -54,8 +48,8 @@ fn ada_and_bo_in_design() -> (Session, Session) {
         "the channel was made: {made:?}"
     );
     ada.settle();
-    // Bo's device holds the workspace's document as Ada's does.
-    let mut bo = Session::on_bus(&bus, &route, spec_of(&route, "bo"), record(&ada));
+    // Bo's window reads and writes the workspace's one store, as Ada's does.
+    let mut bo = Session::on_bus(&bus, &route, spec_of(&route, "bo"));
     for session in [&mut ada, &mut bo] {
         let (x, y) = shown_at(session, "design");
         session.window.click_at(x, y);

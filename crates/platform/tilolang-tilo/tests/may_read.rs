@@ -2,7 +2,6 @@
 //! policy, as the host gives it to the runtime for `members(r)`. A member the grants let read
 //! reads, one they keep out does not, and someone who is no member of the workspace never does.
 
-use automerge::AutoCommit;
 use tilo_action_policy::{
     Answer, Grant, Grantee, KindSet, MemberAccess, PersonId, Role, TreePath, WorkspacePolicy,
 };
@@ -122,7 +121,7 @@ fn may_read(
 
 #[test]
 fn may_read_answers_what_the_workspace_grants() {
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(READS, "")]);
+    let (ada, packages) = Replica::new("ada", crate::fixtures::Workspace::new(), &[(READS, "")]);
     let meta = packages[0].meta.clone();
     let board = ada.host.root_of(APP).unwrap();
     let note_ty = type_id(&meta, "Note");
@@ -177,7 +176,7 @@ fn may_read_answers_what_the_workspace_grants() {
     );
 
     // A runtime the host gave no members answers no for everyone.
-    let (mut lone, packages) = Replica::new("ada", AutoCommit::new(), &[(READS, "")]);
+    let (lone, packages) = Replica::new("ada", crate::fixtures::Workspace::new(), &[(READS, "")]);
     let meta = packages[0].meta.clone();
     let board = lone.host.root_of(APP).unwrap();
     let note = lone.host.runtime().create(&type_id(&meta, "Note")).unwrap();
@@ -196,7 +195,7 @@ fn may_read_answers_what_the_workspace_grants() {
 
 #[test]
 fn a_read_refuses_what_the_reader_may_not_read() {
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(READS, "")]);
+    let (ada, packages) = Replica::new("ada", crate::fixtures::Workspace::new(), &[(READS, "")]);
     let meta = packages[0].meta.clone();
     ada.host.root_of(APP).unwrap();
     let note_ty = type_id(&meta, "Note");

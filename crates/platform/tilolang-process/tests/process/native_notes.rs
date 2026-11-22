@@ -145,30 +145,32 @@ fn notes_started_as_a_session_does_carries_the_native_notebook_over_once() {
     // The device's content store, which the session opens for the app: the pictures of the
     // pages are carried into it.
     let content = tilo_content::ContentStore::memory();
-    let record = InstanceDocument::new(automerge::AutoCommit::new(), manager, route, ADA)
-        .keeping_content_in(content.clone());
-    assert!(record.governs(), "this device is the workspace's origin");
+    let connection = Connection::new(manager).expect("the connection joined its route");
+    assert!(
+        connection.governs(),
+        "this device is the workspace's origin"
+    );
+    let store = ResourceStore::new(Rc::new(connection.port(None)));
     // The native app's data home, of which the session grants the process the store it wrote;
     // the process keeps its own storage beside it.
     let device = tempfile::tempdir().unwrap();
     let native = device.path().join("native");
     native_notes_kept(&native, workspace);
-    let mut host =
-        TilolangProcess::new(Some(device.path().join("storage")), wake()).reading_earlier(native);
+    let mut host = TilolangProcess::new(wake()).reading_earlier(native);
     let kept = tilolang_process::hosted::Kept {
-        content: Some(content),
-        ..host.kept(PUBLISHED_BEFORE).unwrap()
+        content: Some(content.clone()),
+        ..host.kept(PUBLISHED_BEFORE)
     };
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
-    let hosted = Hosted::with_document(
+    let hosted = Hosted::new(
         Spec::new(NOTES, workspace.to_string(), 1, ADA),
-        record,
+        connection,
+        (store, content),
         Arc::new(bundle),
         &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
-        &Rc::new(Phrases::new("en-US")),
-        host.formats(),
+        (&Rc::new(Phrases::new("en-US")), host.formats()),
         wake(),
     );
     host.add(hosted, Some(watched));

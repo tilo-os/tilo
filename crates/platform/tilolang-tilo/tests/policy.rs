@@ -1,7 +1,7 @@
 //! What the runtime invokes is decided by the workspace's one policy: the person's access, the
 //! answers they gave their agents, and the authors of the code, the minimum winning.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use serde_json::json;
 use tilo_action_policy::agent_answers::{self, AnswerScope};
 use tilo_action_policy::{ActionKind, Answer, Grantee, MemberAccess, WorkspacePolicy};
@@ -63,9 +63,9 @@ fn an_agent_the_person_denied_the_app_is_denied() {
         Answer::Deny,
         Grantee::person("ada"),
     );
-    let (mut ada, packages) = Replica::access(
+    let (ada, packages) = Replica::access(
         "ada",
-        AutoCommit::new(),
+        Workspace::new(),
         &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
         Some(access(vec![answer])),
     );
@@ -89,7 +89,7 @@ fn an_agent_the_person_denied_the_app_is_denied() {
     let refused = plan(Some(&agent())).unwrap_err();
     assert!(refused.contains("not allowed"), "{refused}");
     // The person herself, and the app's own code for her, may.
-    assert!(!plan(None).unwrap().edits.is_empty());
+    assert!(plan(None).is_ok());
     // What the agent writes in a block is denied the same.
     ada.host.admit_agent(&agent());
     let block = ada
@@ -108,9 +108,9 @@ tilo_test_env::scenario! {
 
     phase untrusted_code_asks_and_the_persons_agents_code_runs;
     {
-        let (mut ada, _) = Replica::access(
+        let (ada, _) = Replica::access(
             "ada",
-            AutoCommit::new(),
+            Workspace::new(),
             &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
             Some(access(Vec::new())),
         );
@@ -141,9 +141,9 @@ tilo_test_env::scenario! {
 
     phase reaching_outside_from_untrusted_or_an_agents_code_asks;
     {
-        let (mut ada, packages) = Replica::access(
+        let (ada, packages) = Replica::access(
             "ada",
-            AutoCommit::new(),
+            Workspace::new(),
             &[(LETTERS, LETTERS_IDS)],
             Some(access(Vec::new())),
         );

@@ -81,7 +81,7 @@ SupersedeArgs = TypedDict("SupersedeArgs", {
 
 class Claim(Resource):
     """Claim — `tl.so.tilo.lang.agent.Claim`."""
-    __surface__ = "so.tilo.lang.agent@720753c002644518"
+    __surface__ = "so.tilo.lang.agent@a4cfbb45d30ca102"
     @property
     def _6qikspks(self) -> str:
         """device (`6qikspks` on the wire)."""
@@ -102,7 +102,7 @@ class Claim(Resource):
 
 class Ask(Resource):
     """Ask — `tl.so.tilo.lang.agent.Ask`."""
-    __surface__ = "so.tilo.lang.agent@720753c002644518"
+    __surface__ = "so.tilo.lang.agent@a4cfbb45d30ca102"
     mcsi6vp5: str  # agent
     @property
     def _7j5pok54(self) -> str | None:
@@ -163,7 +163,7 @@ class Ask(Resource):
 
 class Step(Resource):
     """Step — `tl.so.tilo.lang.agent.Step`."""
-    __surface__ = "so.tilo.lang.agent@720753c002644518"
+    __surface__ = "so.tilo.lang.agent@a4cfbb45d30ca102"
     ippal7k2: str  # called
     cyu3le2j: str  # answered
     cma7vgpx: bool  # failed
@@ -171,7 +171,7 @@ class Step(Resource):
 
 class Reply(Resource):
     """Reply — `tl.so.tilo.lang.agent.Reply`."""
-    __surface__ = "so.tilo.lang.agent@720753c002644518"
+    __surface__ = "so.tilo.lang.agent@a4cfbb45d30ca102"
     gjd462ep: Ask  # ask
     oka345cb: str  # body
     hzlmnzzw: AskState  # state
@@ -228,7 +228,7 @@ class Reply(Resource):
 
 class Agents(Resource):
     """Agents — `tl.so.tilo.lang.agent.Agents`."""
-    __surface__ = "so.tilo.lang.agent@720753c002644518"
+    __surface__ = "so.tilo.lang.agent@a4cfbb45d30ca102"
     mzzoxssv: list[Entry[Ask]]  # asks
     @property
     def _353i7jsi(self) -> list[Entry[Reply]]:
@@ -260,5 +260,5 @@ class Agents(Resource):
 
 class Agent(Resource):
     """Agents — `tl.so.tilo.lang.agent`."""
-    __surface__ = "so.tilo.lang.agent@720753c002644518"
+    __surface__ = "so.tilo.lang.agent@a4cfbb45d30ca102"
 

@@ -159,6 +159,7 @@ fn a_held_ask_is_answered_once_the_workspace_keeps_a_file_account() {
         WORKSPACE,
         (ACCOUNTS_OWNER, &accounts_document()),
         accounts_keeping(&account),
+        &|doc| PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
     );
     let held = std::cell::RefCell::new(None);
     served.device.until(|| {
@@ -221,6 +222,7 @@ fn a_connector_is_told_its_workspaces_accounts_and_asks_their_sign_ins_only() {
         WORKSPACE,
         (ACCOUNTS_OWNER, &accounts_document()),
         accounts_keeping(&account),
+        &|doc| PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
     );
     let (session, connector) = std::os::unix::net::UnixStream::pair().unwrap();
     let (workspaces, changes) = (served.device.workspaces(), served.device.changes());

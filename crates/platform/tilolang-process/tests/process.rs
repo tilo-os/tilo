@@ -1,5 +1,5 @@
 //! A tilolang app process runs an app's instance without the toolkit: it drives a window in another
-//! end of a patch connection, commits what the person did there to the workspace document on the
+//! end of a patch connection, writes what the person did there to the workspace's store on the
 //! instance's own connection, takes it back on the person's Undo, publishes the app's actions on
 //! that connection and runs what the broker delivers there as its invoker's step. An instance ends
 //! when its window closes.
@@ -14,29 +14,28 @@ use collaboration::action_directory::{
 };
 use collaboration::{
     ActionDirectoryRequest, CollabEvent, CollabRequest, CollaborationManager, PeerTransport,
-    RouteSpec, WorkspaceCommit,
+    RouteSpec,
 };
 use runtime_portal::process_link::Shows;
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilo_render_protocol::patch::{self, Level, ToApp, ToUi, Transport as _};
 use tilolang_process::TilolangProcess;
+use tilolang_process::connection::Connection;
 use tilolang_process::hosted::{Hosted, Spec};
 use tilolang_process::phrases::Phrases;
-use tilolang_process::testing::{Actions, Broker, Directory, Inbox, Sent};
+use tilolang_process::testing::{Broker, Bus, Directory, Inbox, Sent};
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::instance::document::InstanceDocument;
+use tilolang_tilo::resources::ResourceStore;
 use tilolang_tilo::runtime::Value;
 
-/// What an action too large to record whole keeps as content, on its device and its peer's.
-#[path = "process/content.rs"]
-mod content;
-#[path = "process/indexes.rs"]
-mod indexes;
 /// The native Notes app's notebook, carried over once by the tilolang Notes a session starts.
 #[path = "process/native_notes.rs"]
 mod native_notes;
-/// Tasks in a hosted window, and Today reading it from Tasks' own document.
+/// A paste past a mebibyte, kept and undone.
+#[path = "process/paste.rs"]
+mod paste;
+/// Tasks in a hosted window, and Today reading Tasks' resources from the workspace's store.
 #[path = "process/tasks.rs"]
 mod tasks;
 #[path = "process/wakes.rs"]
@@ -213,27 +212,27 @@ fn running_with(
     bundle: Bundle,
     directory: Rc<RefCell<Directory>>,
 ) -> (TilolangProcess, Window, Sent, Inbox, RouteSpec) {
-    running_on(person, app, bundle, directory, automerge::AutoCommit::new())
+    running_on(person, app, bundle, directory, &Rc::default())
 }
 
-/// [`running_with`], the document holding `doc` as the workspace handed it.
+/// [`running_with`], the workspace `bus` is its store and its members: an instance the test runs
+/// beside another's writes the store both read.
 fn running_on(
     person: &str,
     app: &str,
     bundle: Bundle,
     directory: Rc<RefCell<Directory>>,
-    doc: automerge::AutoCommit,
+    bus: &Rc<Bus>,
 ) -> (TilolangProcess, Window, Sent, Inbox, RouteSpec) {
     let route = RouteSpec::app(app, uuid::Uuid::new_v4());
-    let mut host = TilolangProcess::new(None, wake());
+    let mut host = TilolangProcess::new(wake());
     let (window, sent, inbox) = instance_on(
         &mut host,
         spec(1, person, &route),
         bundle,
         &route,
         directory,
-        Rc::default(),
-        doc,
+        bus,
     );
     (host, window, sent, inbox, route)
 }
@@ -248,63 +247,43 @@ fn spec(number: u64, person: &str, route: &RouteSpec) -> Spec {
     )
 }
 
-/// The instance `attributes` names, of `bundle`, in `host` on `route`, over `doc` as the workspace
-/// handed it: its window, what its connection sent and what the broker holds for it. The broker
-/// keeps the actions it learns in `actions`.
+/// The instance `attributes` names, of `bundle`, in `host` on `route`, over the workspace `bus` is
+/// its store of: its window, what its connection sent and what the broker holds for it. The broker
+/// keeps the actions it learns in `directory`.
 fn instance_on(
     host: &mut TilolangProcess,
     attributes: Spec,
     bundle: Bundle,
     route: &RouteSpec,
     directory: Rc<RefCell<Directory>>,
-    actions: Actions,
-    doc: automerge::AutoCommit,
-) -> (Window, Sent, Inbox) {
-    let content = tilo_content::ContentStore::memory();
-    instance_keeping(
-        host, attributes, bundle, route, directory, actions, doc, content,
-    )
-}
-
-/// [`instance_on`], the document's content kept in `content`, as the device's content store keeps
-/// it.
-fn instance_keeping(
-    host: &mut TilolangProcess,
-    attributes: Spec,
-    bundle: Bundle,
-    route: &RouteSpec,
-    directory: Rc<RefCell<Directory>>,
-    actions: Actions,
-    doc: automerge::AutoCommit,
-    content: tilo_content::ContentStore,
+    bus: &Rc<Bus>,
 ) -> (Window, Sent, Inbox) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    let broker = Broker::new(route.clone())
-        .with_directory(directory)
-        .with_actions(actions);
+    let broker = Broker::on(bus, route.clone(), &attributes.person).with_directory(directory);
     let (sent, inbox) = (broker.sent(), broker.inbox());
     let mut manager = CollaborationManager::with_peer_transport(broker);
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
-        record: None,
+        record: route.document.clone(),
         resource_type: None,
         handle: Some(attributes.person.clone()),
     }));
     let _ = manager.poll();
-    let record = InstanceDocument::new(doc, manager, route.clone(), &attributes.person)
-        .keeping_content_in(content);
-    let kept = host.kept(&attributes.app).unwrap();
+    let connection = Connection::new(manager).expect("the connection joined its route");
+    // The store is the workspace's, over the connection: every command waits for the broker's
+    // answer (`testing::Workspace`).
+    let store = ResourceStore::new(Rc::new(connection.port(None)));
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
-    let hosted = Hosted::with_document(
+    let hosted = Hosted::new(
         attributes,
-        record,
+        connection,
+        (store, tilolang_process::hosted::memory_content()),
         Arc::new(bundle),
-        &kept,
+        &tilolang_process::hosted::Kept::default(),
         Box::new(ChannelTransport::new(ours).unwrap()),
-        &Rc::new(Phrases::new("en-US")),
-        host.formats(),
+        (&Rc::new(Phrases::new("en-US")), host.formats()),
         wake(),
     );
     host.add(hosted, Some(watched));
@@ -358,182 +337,52 @@ fn settle(host: &mut TilolangProcess, window: &mut Window) {
     settle_all(host, &mut [window], |_| false);
 }
 
-fn documents_sent(sent: &Sent) -> usize {
+/// The store command a request carries, when it carries one.
+fn command_of(request: &CollabRequest) -> Option<tilo_resource_store::wire::Command> {
+    match request {
+        CollabRequest::ResourceCommand { command, .. } => serde_json::from_slice(command).ok(),
+        _ => None,
+    }
+}
+
+/// How many writes the instance's connection made of the workspace's store.
+fn writes_sent(sent: &Sent) -> usize {
     sent.borrow()
         .iter()
-        .filter(|request| matches!(request, CollabRequest::Document { .. }))
+        .filter(|request| command_of(request).is_some_and(|command| command.writes()))
         .count()
 }
 
-/// A host whose counter instance opens its document as the host does, joined on a broker the test
-/// plays, from the copy `documents` keeps: no committed read, as a sealed workspace's document the workspace
-/// does not hold yet opens.
-fn opened_from_own_copy(
-    person: &str,
-    documents: &Rc<dyn durable_store::DurableStore>,
-) -> (TilolangProcess, Window, Sent, RouteSpec) {
-    opened_from_own_copy_in(person, documents, RouteSpec::app(APP, uuid::Uuid::new_v4()))
+/// The stamp of the write `command` carries, or of the last write in its batch.
+fn stamp_of(
+    command: &tilo_resource_store::wire::Command,
+) -> Option<&tilo_resource_store::admit::Stamp> {
+    use tilo_resource_store::wire::Command;
+    match command {
+        Command::Put { stamp, .. }
+        | Command::Remove { stamp, .. }
+        | Command::Edit { stamp, .. }
+        | Command::Undo { stamp, .. } => Some(stamp),
+        Command::Batch(commands) => commands.iter().rev().find_map(stamp_of),
+        _ => None,
+    }
 }
 
-/// [`opened_from_own_copy`], on `route`.
-fn opened_from_own_copy_in(
-    person: &str,
-    documents: &Rc<dyn durable_store::DurableStore>,
-    route: RouteSpec,
-) -> (TilolangProcess, Window, Sent, RouteSpec) {
-    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    let broker = Broker::new(route.clone());
-    let sent = broker.sent();
-    let mut manager = CollaborationManager::with_peer_transport(broker);
-    assert!(manager.send(CollabRequest::Hello {
-        app_id: route.app_id.clone(),
-        cluster_id: route.cluster_id,
-        record: None,
-        resource_type: None,
-        handle: Some(person.to_owned()),
-    }));
-    let _ = manager.poll();
-    let record = InstanceDocument::open_read(manager, None, documents, person, "tl.test").unwrap();
-    let mut host = TilolangProcess::new(None, wake());
-    let kept = host.kept(APP).unwrap();
-    let (ours, theirs) = Channel::pair().unwrap();
-    let watched = ours.as_fd().try_clone_to_owned().unwrap();
-    let hosted = Hosted::with_document(
-        Spec::new(APP, route.cluster_id.to_string(), 1, person),
-        record,
-        Arc::new(counter()),
-        &kept,
-        Box::new(ChannelTransport::new(ours).unwrap()),
-        &Rc::new(Phrases::new("en-US")),
-        host.formats(),
-        wake(),
-    );
-    host.add(hosted, Some(watched));
-    let window = Window::over(ChannelTransport::new(theirs).unwrap());
-    (host, window, sent, route)
+/// Who the last write the instance's connection made names as its invoker, as the store's stamp
+/// carries it.
+fn last_writer(sent: &Sent) -> Option<String> {
+    sent.borrow().iter().rev().find_map(|request| {
+        let command = command_of(request).filter(tilo_resource_store::wire::Command::writes)?;
+        Some(stamp_of(&command)?.invoker.clone())
+    })
 }
 
-/// What the workspace holds of the document: every change the instance sent on its connection, and
-/// nothing else, as a sealed workspace's channel keeps it.
-fn workspace_copy(sent: &Sent) -> automerge::AutoCommit {
-    let mut workspace = automerge::AutoCommit::new();
-    for request in sent.borrow().iter() {
-        if let CollabRequest::Document { mutation, .. } = request {
-            let bytes = match mutation {
-                collab_types::DocumentMutation::Incremental(bytes)
-                | collab_types::DocumentMutation::Snapshot(bytes) => bytes,
-            };
-            tilo_automerge::ApplyIncoming::load_incoming(&mut workspace, bytes).unwrap();
-        }
-    }
-    workspace
-}
-
-tilo_test_env::scenario! {
-    fn a_document_the_host_made_or_found_stamped_reaches_its_workspace_whole;
-
-    phase a_document_made_from_the_hosts_own_copy_reopens_from_what_its_workspace_holds;
-    {
-        // A document the workspace did not hold opens from the host's own copy, whose making (its schema
-        // stamp) is a change of this replica's. A press is the instance's first change to the workspace.
-        let documents: Rc<dyn durable_store::DurableStore> =
-            Rc::new(durable_store::MemoryStore::default());
-        let (mut host, mut window, sent, _route) = opened_from_own_copy("ada", &documents);
-        settle(&mut host, &mut window);
-        let (key, event) = window.increment();
-        window.send(&[ToApp::Fire {
-            level: Level::Root,
-            key,
-            event,
-            value: None,
-            gesture: None,
-        }]);
-        settle(&mut host, &mut window);
-        assert_eq!(value_of(host.instances().next().unwrap()), 1);
-
-        // The workspace's copy alone is the whole document: nothing it holds builds on a change that never
-        // reached it, so a reader that has only the workspace's writes can read it back.
-        let workspace = workspace_copy(&sent);
-        assert_eq!(
-            automerge::ReadDoc::get_missing_deps(&workspace, &[]),
-            Vec::new(),
-            "every change the workspace's writes build on reached the workspace"
-        );
-
-        // A fresh host, opened on the workspace's copy as a reopen reads it, shows the press.
-        let (mut reopened, mut window, _sent, _inbox, _route) =
-            running_on("ada", APP, counter(), Rc::default(), workspace);
-        settle(&mut reopened, &mut window);
-        assert_eq!(
-            value_of(reopened.instances().next().unwrap()),
-            1,
-            "the reopened instance shows the document as it was"
-        );
-    }
-
-    phase a_document_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_workspace_whole;
-    // A document an older store wrote, whose first change is its schema stamp committed with no
-    // message, is handed to its workspace whole on the next send, every change of it claimed: the
-    // stamp, a root change with no deps that only sets the schema version, as the document's
-    // genesis. No change is rewritten and no id changes.
-    {
-        let documents: Rc<dyn durable_store::DurableStore> =
-            Rc::new(durable_store::MemoryStore::default());
-        let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
-        // The document as the store wrote it before a document's first change named itself: its layout
-        // version, put on the root by the store that created it, and nothing else.
-        let stamp = {
-            use automerge::transaction::Transactable as _;
-            let mut store = collaboration::document::save::workspace_document(
-                &documents,
-                APP,
-                &route.cluster_id.to_string(),
-            )
-            .unwrap();
-            let mut doc = store.new_document();
-            doc.put(automerge::ROOT, "tilo:schema_version", 1_u64)
-                .unwrap();
-            let stamp = doc.commit().unwrap();
-            store.save(&mut doc).unwrap();
-            stamp
-        };
-        let (mut host, mut window, sent, _route) = opened_from_own_copy_in("ada", &documents, route);
-        settle(&mut host, &mut window);
-        let (key, event) = window.increment();
-        window.send(&[ToApp::Fire {
-            level: Level::Root,
-            key,
-            event,
-            value: None,
-            gesture: None,
-        }]);
-        settle(&mut host, &mut window);
-        assert_eq!(value_of(host.instances().next().unwrap()), 1);
-        let workspace = workspace_copy(&sent);
-        assert!(
-            automerge::ReadDoc::get_change_by_hash(&workspace, &stamp).is_some(),
-            "the stamp, unchanged, reached the workspace"
-        );
-        assert_eq!(
-            automerge::ReadDoc::get_missing_deps(&workspace, &[]),
-            Vec::new(),
-            "the workspace holds the whole document"
-        );
-        for request in sent.borrow().iter() {
-            if let CollabRequest::Document { mutation, .. } = request {
-                let claims =
-                    collab_types::app_surface::claims_of(APP, mutation).unwrap_or_else(|error| {
-                        panic!("every change the workspace is handed is claimed: {error}")
-                    });
-                if let Some(claim) = claims.iter().find(|claim| claim.change == stamp.0) {
-                    assert_eq!(
-                        claim.action,
-                        collab_types::ClaimedAction::Framework(collab_types::FrameworkChange::Genesis)
-                    );
-                }
-            }
-        }
-    }
+/// Who a write of `person`'s own is stamped as, in the store's stamp.
+fn writer(person: &str) -> String {
+    serde_json::to_string(&tilolang_tilo::runtime::Actor::Member(
+        tilolang_tilo::runtime::ids::MemberId::person(person),
+    ))
+    .expect("an actor writes")
 }
 
 tilo_test_env::scenario! {
@@ -567,50 +416,49 @@ tilo_test_env::scenario! {
         );
 
         // The person presses + in the window: its control is bound to the instance's own action, so
-        // the window sends the invocation, and the instance runs it and commits it as their step.
-        let before = documents_sent(&sent);
+        // the window sends the invocation, and the instance runs it and writes it to the workspace's
+        // store as their step.
+        let before = writes_sent(&sent);
         press_increment(&mut host, &mut window);
         let hosted = host.instances().next().unwrap();
         assert_eq!(value_of(hosted), 1, "the press reached the runtime");
         assert!(
-            documents_sent(&sent) > before,
+            writes_sent(&sent) > before,
             "the change went out on the connection"
         );
         assert_eq!(
-            hosted.record().can_undo(),
-            (true, false),
+            last_writer(&sent).as_deref(),
+            Some(writer("ada").as_str()),
             "it is ada's step"
         );
+        assert!(
+            hosted.store().last_written().is_some(),
+            "the store holds a step ada can undo"
+        );
 
-        // Undo from the window takes it back, as a change of its own sent on the connection.
-        let before = documents_sent(&sent);
+        // Undo from the window takes it back, as a write of its own sent on the connection.
+        let before = writes_sent(&sent);
         window.send(&[ToApp::Undo]);
         settle(&mut host, &mut window);
         let hosted = host.instances().next().unwrap();
         assert_eq!(value_of(hosted), 0, "undo took the press back");
         assert!(
-            documents_sent(&sent) > before,
+            writes_sent(&sent) > before,
             "the undo went out on the connection"
-        );
-        assert!(
-            hosted.record().can_undo().1,
-            "the window's Undo is ada's history undo: she can redo it"
         );
 
         // Redo from the window brings it back, the same way.
-        let before = documents_sent(&sent);
+        let before = writes_sent(&sent);
         window.send(&[ToApp::Redo]);
         settle(&mut host, &mut window);
-        let hosted = host.instances().next().unwrap();
-        assert_eq!(value_of(hosted), 1, "redo brought the press back");
-        assert!(
-            documents_sent(&sent) > before,
-            "the redo went out on the connection"
-        );
         assert_eq!(
-            hosted.record().can_undo(),
-            (true, false),
-            "and it is ada's to undo again"
+            value_of(host.instances().next().unwrap()),
+            1,
+            "redo brought the press back"
+        );
+        assert!(
+            writes_sent(&sent) > before,
+            "the redo went out on the connection"
         );
     }
 
@@ -647,125 +495,36 @@ tilo_test_env::scenario! {
         assert_eq!(window.took, 1, "and that it ran, in the same frame");
     }
 
-    phase another_devices_edit_shows_in_a_hosted_window_beside_its_own;
-    // What grace did in her window on another device reaches ada's hosted window as the workspace's
-    // committed read of the document: ada sees it, beside the press she made meanwhile, and the read
-    // is acknowledged, so her connection's reader confirms it and the document takes her next change.
+    phase an_edit_another_device_made_shows_in_a_hosted_window;
+    // What grace did in her window on another device is written to the workspace's store; the
+    // broker tells ada's connection the workspace's documents arrived, and ada's window shows what
+    // grace wrote.
     {
-        let (mut host, mut window, _sent, inbox, route) = running("ada");
+        let bus = Rc::new(Bus::default());
+        let (mut host, mut window, _sent, inbox, _route) =
+            running_on("ada", APP, counter(), Rc::default(), &bus);
         settle(&mut host, &mut window);
-        let held = host.instances().next().unwrap().record().doc();
-        let (mut elsewhere, mut graces, _, _, _) =
-            running_on("grace", APP, counter(), Rc::default(), held);
+        assert_eq!(value_of(host.instances().next().unwrap()), 0);
+
+        // Grace presses + in her window, on the same workspace: her write is the store's.
+        let (mut elsewhere, mut graces, _sent, _inbox, _route) =
+            running_on("grace", APP, counter(), Rc::default(), &bus);
         settle(&mut elsewhere, &mut graces);
         press_increment(&mut elsewhere, &mut graces);
-        let theirs = elsewhere.instances().next().unwrap().record().doc().save();
+        assert_eq!(value_of(elsewhere.instances().next().unwrap()), 1);
 
-        press_increment(&mut host, &mut window);
-        let mine = host.instances().next().unwrap().record().doc().get_heads();
-        let read = collaboration::CommittedDocument::for_test(theirs, None);
-        inbox
-            .borrow_mut()
-            .push_back(CollabEvent::CommittedDocument {
-                route,
-                read: read.clone(),
-            });
+        // The broker hands ada's connection the workspace's documents, as it does when another
+        // device wrote them.
+        let records = bus.workspace().documents();
+        assert!(!records.is_empty(), "the workspace's store holds them");
+        inbox.borrow_mut().push_back(CollabEvent::ResourcesArrived { records });
         settle(&mut host, &mut window);
 
-        let hosted = host.instances().next().unwrap();
-        assert_eq!(value_of(hosted), 2, "grace's press shows beside ada's");
-        let mut record = hosted.record().doc();
-        assert!(
-            mine.iter()
-                .all(|head| record.get_change_by_hash(head).is_some()),
-            "ada's own press is kept"
-        );
-        assert!(read.was_applied(), "the read is acknowledged once merged");
-    }
-
-    phase one_undo_takes_back_every_unit_of_an_action_and_sends_the_reverts_as_one_action;
-    {
-        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-        let cluster = uuid::Uuid::new_v4();
-        let mut host = TilolangProcess::new(None, wake());
-        let actions: Actions = Rc::default();
-        // The person's one action wrote both units, as a run does: each document holds the change
-        // the action's invocation names. The endpoint restarted since, so no log remembers it.
-        let invocation = tilo_actions::InvocationId::new();
-        let first_route = RouteSpec::document(APP, cluster, "a");
-        let (mut first, first_sent, _) = instance_on(
-            &mut host,
-            spec(1, "ada", &first_route),
-            counter(),
-            &first_route,
-            Rc::default(),
-            Rc::clone(&actions),
-            seeded("ada", invocation),
-        );
-        let second_route = RouteSpec::document(APP, cluster, "b");
-        let (mut second, second_sent, _) = instance_on(
-            &mut host,
-            spec(2, "ada", &second_route),
-            counter(),
-            &second_route,
-            Rc::default(),
-            Rc::default(),
-            seeded("ada", invocation),
-        );
-        settle(&mut host, &mut first);
-        second.take();
         assert_eq!(
-            values(&host),
-            vec![1, 1],
-            "both units hold the action's change"
+            value_of(host.instances().next().unwrap()),
+            1,
+            "grace's press shows in ada's window"
         );
-
-        // One undo, asked at one window: every unit the action wrote takes its step back, and the
-        // reverts go out as one action of their own.
-        first.send(&[ToApp::Undo]);
-        settle(&mut host, &mut first);
-        second.take();
-        assert_eq!(
-            values(&host),
-            vec![0, 0],
-            "one undo took the action back in both units"
-        );
-        let (undo_a, undo_b) = (
-            sent_under(&first_sent).expect("the first unit's revert is part of an action"),
-            sent_under(&second_sent).expect("the second unit's revert is part of an action"),
-        );
-        assert_eq!(
-            undo_a.id(),
-            undo_b.id(),
-            "both units reverted as one action"
-        );
-        assert_eq!(
-            undo_a.parts.len(),
-            2,
-            "the undo names both units it reverted"
-        );
-        assert_eq!(undo_a.parts, undo_b.parts);
-        assert_ne!(
-            undo_a.invocation,
-            Some(invocation.0),
-            "the undo ran under an invocation of its own"
-        );
-        // The two units reverted through their own live instances: each document holds the undo as its
-        // own step, which the person can redo.
-        let redoable: Vec<bool> = host
-            .instances()
-            .map(|hosted| hosted.record().can_undo().1)
-            .collect();
-        assert_eq!(redoable, vec![true, true], "each unit can redo its revert");
-
-        // The workspace was handed the undo as one action naming both units it reverted.
-        let history = actions.borrow();
-        assert!(!history.is_empty(), "the undo reached the workspace");
-        for action in history.iter() {
-            assert_eq!(action.workspace, cluster);
-            assert_eq!(action.commit, undo_a.id());
-            assert_eq!(action.parts.len(), 2, "the undo names both units");
-        }
     }
 
     phase what_the_broker_delivers_runs_as_its_invokers_step;
@@ -791,7 +550,6 @@ tilo_test_env::scenario! {
             })
             .address
             .clone();
-        let ada_could = hosted.record().can_undo();
         let invocation = tilo_actions::InvocationId::new();
         inbox.borrow_mut().push_back(CollabEvent::Invocation {
             id: 7,
@@ -816,14 +574,9 @@ tilo_test_env::scenario! {
             "the broker is told it succeeded"
         );
         assert_eq!(
-            hosted.record().can_undo_as(&tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("grace"))),
-            (true, false),
+            last_writer(&sent).as_deref(),
+            Some(writer("grace").as_str()),
             "the step is grace's, who invoked it"
-        );
-        assert_eq!(
-            hosted.record().can_undo(),
-            ada_could,
-            "it gives ada nothing more to undo"
         );
     }
 }
@@ -845,86 +598,6 @@ fn press_increment(host: &mut TilolangProcess, window: &mut Window) {
         argument: None,
     }]);
     settle(host, window);
-}
-
-/// The last change a window's press sent the workspace.
-/// The last commit the connection sent a change under.
-fn sent_under(sent: &Sent) -> Option<WorkspaceCommit> {
-    sent.borrow()
-        .iter()
-        .rev()
-        .find_map(|request| match request {
-            CollabRequest::Document {
-                commit: Some(commit),
-                ..
-            } => Some(commit.clone()),
-            _ => None,
-        })
-}
-
-/// A counter document holding one change of the action `invocation` names, as an action that wrote
-/// the unit left it: the endpoints restarted since, so nothing but the document remembers it.
-fn seeded(person: &str, invocation: tilo_actions::InvocationId) -> automerge::AutoCommit {
-    let mut doc = automerge::AutoCommit::new();
-    let actor = tilolang_tilo::runtime::Actor::Member(
-        tilolang_tilo::runtime::ids::MemberId::person(person),
-    );
-    let host = tilolang_tilo::host::Host::new(&doc, actor.clone(), || None).unwrap();
-    let package = host
-        .load_builtin(
-            include_str!("../../../../apps/tl/counter/app.tl"),
-            include_str!("../../../../apps/tl/counter/app.ids"),
-        )
-        .unwrap();
-    let root = host.root_of(APP).unwrap();
-    for committed in host.take_committed() {
-        applied(&mut doc, &committed.action, person, None);
-    }
-    let increment = package
-        .meta
-        .actions
-        .iter()
-        .find(|action| action.name == "increment")
-        .unwrap()
-        .id
-        .clone();
-    host.runtime()
-        .invoke_action(&actor, (increment.as_str(), vec![Value::resource(&root)]))
-        .unwrap();
-    for committed in host.take_committed() {
-        applied(&mut doc, &committed.action, person, Some(invocation));
-    }
-    doc
-}
-
-/// Apply `action` to `doc` as the document does: for `person`, in the invocation `invocation` when
-/// the change is part of an action's.
-fn applied(
-    doc: &mut automerge::AutoCommit,
-    action: &tilolang_tilo::action::DynAction,
-    person: &str,
-    invocation: Option<tilo_actions::InvocationId>,
-) {
-    let context = tilo_actions::ActionContext::for_resource(
-        action.resources().first().copied().unwrap_or("workspace"),
-        &action.kind,
-        &action.kind,
-    )
-    .with_source_invocation(invocation)
-    .with_invoker(tilo_actions::ActionInvoker::person(person));
-    tilo_actions::apply_local_with_context(
-        doc,
-        action,
-        action.encode().unwrap(),
-        Some(person.as_bytes()),
-        context,
-    )
-    .unwrap();
-    doc.commit();
-}
-
-fn values(host: &TilolangProcess) -> Vec<i64> {
-    host.instances().map(value_of).collect()
 }
 
 /// The answer the broker was told for invocation `id`.
@@ -981,7 +654,9 @@ tilo_test_env::scenario! {
                 .address
                 .clone()
         };
-        let (undo, redo, history) = (find("Undo"), find("Redo"), find("History"));
+        let (undo, redo) = (find("Undo"), find("Redo"));
+        // History is offered with them, as every app's is.
+        find("History");
         let increment = hosted
             .published()
             .iter()
@@ -994,6 +669,11 @@ tilo_test_env::scenario! {
         deliver(&inbox, 1, &increment, "grace");
         settle(&mut process, &mut window);
         assert_eq!(value_of(process.instances().next().unwrap()), 1);
+        assert_eq!(
+            last_writer(&sent).as_deref(),
+            Some(writer("grace").as_str()),
+            "the count is grace's, who invoked it"
+        );
         deliver(&inbox, 2, &undo, "grace");
         settle(&mut process, &mut window);
         let hosted = process.instances().next().unwrap();
@@ -1001,76 +681,67 @@ tilo_test_env::scenario! {
         match answered(&sent, 2) {
             Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
                 let value = output.value.expect("undo says what it took back");
-                assert_eq!(value["undone"].as_array().map(Vec::len), Some(1), "{value}");
+                assert_eq!(value["undone"], 1, "{value}");
             }
             other => panic!("undo was answered {other:?}"),
         }
-        assert_eq!(hosted.record().can_undo_as(&tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("grace"))), (false, true));
 
         // Ada's one step is the counter she created. Grace counted in it, but took that back, so
-        // nothing of anyone's holds the counter any more: Ada's Undo takes it away whole.
+        // nothing of anyone's holds the counter any more: ada's Undo takes it away whole.
+        let root = process
+            .instances()
+            .next()
+            .unwrap()
+            .instance()
+            .host()
+            .expect("the runtime")
+            .root_of(APP)
+            .expect("the counter's root");
         deliver(&inbox, 3, &undo, "ada");
         settle(&mut process, &mut window);
         match answered(&sent, 3) {
             Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
                 let value = output.value.expect("undo says what it took back");
-                assert_eq!(value["undone"][0]["sentence"], "Created Counter", "{value}");
+                assert_eq!(value["undone"], 1, "{value}");
             }
             other => panic!("ada's undo is never refused: {other:?}"),
         }
-        // Read what the workspace holds: asking the instance for the root would make a new one in
-        // its place.
-        let counters = |sent: &Sent| tilolang_tilo::reads::held_ids(&workspace_copy(sent));
-        assert!(counters(&sent).is_empty(), "ada's undo took the counter away");
+        // Read what the store holds: asking the instance for the root would make a new one in its
+        // place.
         assert!(
             !process
                 .instances()
                 .next()
                 .unwrap()
-                .record()
-                .can_undo_as(&tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("ada")))
-                .0
+                .store()
+                .contains(&root),
+            "ada's undo took the counter away"
         );
 
-        // Grace's redo brings her count back, and with it the counter it was counted in: one
-        // step of hers, which brings back Ada's making too. History lists all three steps as
-        // hers.
+        // Grace's redo brings back what ada's undo took away: the counter, with nothing counted in
+        // it.
         deliver(&inbox, 4, &redo, "grace");
         settle(&mut process, &mut window);
-        assert!(!counters(&sent).is_empty(), "the counter is back");
+        assert!(
+            process
+                .instances()
+                .next()
+                .unwrap()
+                .store()
+                .contains(&root),
+            "the counter is back"
+        );
         assert_eq!(
             value_of(process.instances().next().unwrap()),
-            1,
-            "redo brought it back"
+            0,
+            "what was taken back is back, and what grace took back stays back"
         );
         match answered(&sent, 4) {
             Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
                 let value = output.value.expect("redo says what it brought back");
-                let sentences: Vec<&str> = value["redone"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|step| step["sentence"].as_str())
-                    .collect();
-                assert_eq!(sentences.len(), 2, "her count and ada's making: {value}");
-                assert!(sentences.contains(&"Created Counter"), "{value}");
+                assert_eq!(value["redone"], 1, "{value}");
             }
             other => panic!("grace's redo was answered {other:?}"),
-        }
-        deliver(&inbox, 5, &history, "grace");
-        settle(&mut process, &mut window);
-        match answered(&sent, 5) {
-            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
-                let value = output.value.expect("history lists the versions");
-                let hers = value["versions"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter(|version| version["actor"]["by"]["member"]["person"] == "grace")
-                    .count();
-                assert_eq!(hers, 3, "{value}");
-            }
-            other => panic!("history was answered {other:?}"),
         }
     }
 
@@ -1158,36 +829,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_instance_answers_a_late_joiners_snapshot_request_with_its_document;
-    {
-        let (mut host, mut window, sent, inbox, route) = running("ada");
-        settle(&mut host, &mut window);
-        let snapshots = |sent: &Sent| {
-            sent.borrow()
-                .iter()
-                .filter(|request| {
-                    matches!(
-                        request,
-                        CollabRequest::Document {
-                            mutation: collaboration::DocumentMutation::Snapshot(_),
-                            ..
-                        }
-                    )
-                })
-                .count()
-        };
-        let before = snapshots(&sent);
-        inbox
-            .borrow_mut()
-            .push_back(CollabEvent::DocumentSnapshotRequested { route });
-        settle(&mut host, &mut window);
-        assert_eq!(
-            snapshots(&sent),
-            before + 1,
-            "the document went to the late joiner"
-        );
-    }
-
     phase the_instance_answers_every_handoff_step_the_shell_asks;
     {
         use collaboration::handoff::{HandoffReport, HandoffRequest, Successor};
@@ -1255,11 +896,8 @@ tilo_test_env::scenario! {
         // A second instance whose workspace has not answered its join yet.
         let answer = Rc::new(std::cell::Cell::new(false));
         let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
-        let mut manager = CollaborationManager::with_peer_transport(SlowBroker {
-            route: route.clone(),
-            answer: Rc::clone(&answer),
-            asked: false,
-        });
+        let mut manager =
+            CollaborationManager::with_peer_transport(SlowBroker::new(route.clone(), Rc::clone(&answer)));
         assert!(manager.send(CollabRequest::Hello {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
@@ -1318,11 +956,27 @@ tilo_test_env::scenario! {
 }
 
 /// A broker that answers the join only once the test lets it: an instance whose workspace is slow
-/// to answer.
+/// to answer. Its store answers the instance's resource commands as the workspace's does once it
+/// runs.
 struct SlowBroker {
     route: RouteSpec,
     answer: Rc<std::cell::Cell<bool>>,
     asked: bool,
+    inbox: Inbox,
+    workspace: Rc<tilolang_process::testing::Workspace>,
+}
+
+impl SlowBroker {
+    /// A connection to `route`, whose join is answered once `answer` is set.
+    fn new(route: RouteSpec, answer: Rc<std::cell::Cell<bool>>) -> Self {
+        Self {
+            route,
+            answer,
+            asked: false,
+            inbox: Inbox::default(),
+            workspace: Rc::default(),
+        }
+    }
 }
 
 impl PeerTransport for SlowBroker {
@@ -1331,14 +985,29 @@ impl PeerTransport for SlowBroker {
     }
 
     fn send(&mut self, request: CollabRequest) -> Result<(), String> {
-        if matches!(request, CollabRequest::Hello { .. }) {
-            self.asked = true;
+        match request {
+            CollabRequest::Hello { .. } => self.asked = true,
+            CollabRequest::ResourceCommand {
+                request_id,
+                command,
+            } => {
+                let result = serde_json::from_slice(&command)
+                    .map_err(|error| error.to_string())
+                    .and_then(|command| self.workspace.command(command))
+                    .and_then(|reply| {
+                        serde_json::to_vec(&reply).map_err(|error| error.to_string())
+                    });
+                self.inbox
+                    .borrow_mut()
+                    .push_back(CollabEvent::ResourceCommandResult { request_id, result });
+            }
+            _ => {}
         }
         Ok(())
     }
 
     fn poll(&mut self) -> Vec<CollabEvent> {
-        Vec::new()
+        self.inbox.borrow_mut().drain(..).collect()
     }
 
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
@@ -1348,7 +1017,7 @@ impl PeerTransport for SlowBroker {
         })
     }
 
-    /// The documents every app of the workspace opens beside its own are joined too.
+    /// The other documents of the workspace are joined too, so a connection's routes open.
     fn join_route(
         &mut self,
         _: RouteSpec,
@@ -1821,7 +1490,7 @@ fn typing(notes: &Bundle, held: usize, field: &str, typed: &str) -> Typed {
         .in_place
         .clone()
         .expect("the press showed the note beside the list");
-    let documents = documents_sent(&sent);
+    let writes = writes_sent(&sent);
     let (mut built, mut relabeled) = (0, 0);
     let mut seen: u64 = 0;
     let mut sweeps: u64 = 0;
@@ -1841,7 +1510,7 @@ fn typing(notes: &Bundle, held: usize, field: &str, typed: &str) -> Typed {
         relabeled = calls(&phases, "tl.host.relabel").saturating_add(relabeled);
     }
     assert!(
-        documents_sent(&sent) > documents,
+        writes_sent(&sent) > writes,
         "the typing went out on the connection"
     );
     let labels = host
@@ -1991,7 +1660,7 @@ fn an_edit_lands_in_the_note_it_was_typed_into_whatever_the_window_shows_when_it
         .clone()
         .expect("the first note shows beside the list");
     let title = node_with(window.root.as_ref().unwrap(), "placeholder", "Untitled")
-        .expect("the note has its title field")
+        .unwrap_or_else(|| panic!("DEBUGDUMP {:#?}", window.root))
         .key
         .clone();
     // The person typed into the first note's title; the window sent it just as their next
@@ -2036,11 +1705,16 @@ fn running_with_no_view(
     app: &str,
     bundle: Bundle,
     access: Option<tilo_action_policy::MemberAccess>,
-) -> (TilolangProcess, Sent, Inbox, RouteSpec) {
+) -> (
+    TilolangProcess,
+    Sent,
+    Inbox,
+    Rc<tilolang_process::testing::Workspace>,
+) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let route = RouteSpec::app(app, uuid::Uuid::new_v4());
     let broker = Broker::new(route.clone());
-    let (sent, inbox) = (broker.sent(), broker.inbox());
+    let (sent, inbox, workspace) = (broker.sent(), broker.inbox(), broker.workspace());
     let mut manager = CollaborationManager::with_peer_transport(broker);
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
@@ -2050,30 +1724,27 @@ fn running_with_no_view(
         handle: Some(person.to_owned()),
     }));
     let _ = manager.poll();
-    let record =
-        InstanceDocument::new(automerge::AutoCommit::new(), manager, route.clone(), person);
-    let mut host = TilolangProcess::new(None, wake());
-    let kept = host.kept(app).unwrap();
+    let connection = Connection::new(manager).expect("the connection joined its route");
+    let store = ResourceStore::new(Rc::new(connection.port(None)));
+    let mut host = TilolangProcess::new(wake());
     let mut spec = Spec::new(app, route.cluster_id.to_string(), 1, person).showing(Shows::Nothing);
     if let Some(access) = access {
         spec = spec.access(access);
     }
-    let hosted = Hosted::with_document(
+    let hosted = Hosted::new(
         spec,
-        record,
+        connection,
+        (store, tilolang_process::hosted::memory_content()),
         Arc::new(bundle),
-        &kept,
+        &tilolang_process::hosted::Kept::default(),
         Box::new(tilolang_process::hosted::NoView),
-        &Rc::new(Phrases::new("en-US")),
-        host.formats(),
+        (&Rc::new(Phrases::new("en-US")), host.formats()),
         wake(),
     );
     host.add(hosted, None);
-    (host, sent, inbox, route)
+    (host, sent, inbox, workspace)
 }
 
-/// Run a host whose instances show nothing until it owes nothing: the same frames as one with a
-/// window, with nothing sent to draw.
 fn settle_with_no_view(host: &mut TilolangProcess) {
     let mut windows: [&mut Window; 0] = [];
     settle_all(host, &mut windows, |_| false);
@@ -2136,30 +1807,13 @@ fn published_as(host: &TilolangProcess, label: &str) -> tilo_actions::ActionAddr
         .clone()
 }
 
-/// What the document `hosted` holds says of the change it wrote last: the context recorded on it,
-/// the invoker and the invocation whose step it is.
-fn last_context(hosted: &Hosted) -> tilo_actions::ActionContext {
-    let doc = hosted.record().doc();
-    doc.committed_document()
-        .get_changes_meta(&[])
-        .iter()
-        .rev()
-        .find_map(|change| {
-            change
-                .message
-                .as_deref()
-                .and_then(tilo_actions::ActionContext::from_change_message)
-        })
-        .expect("a change of the document says whose step it is")
-}
-
 tilo_test_env::scenario! {
     fn an_instance_that_shows_nothing_runs_the_apps_actions_for_whoever_invokes_them;
 
     phase a_tasks_action_with_no_window_is_applied_as_its_invocers_step;
     {
         let (app, bundle) = shipped(&shipped_dir().join("tasks"));
-        let (mut host, sent, inbox, _route) = running_with_no_view("ada", &app, bundle, None);
+        let (mut host, sent, inbox, workspace) = running_with_no_view("ada", &app, bundle, None);
         settle_with_no_view(&mut host);
         // An instance that shows nothing has no window to bring forward: it offers no such verb.
         assert!(
@@ -2172,31 +1826,25 @@ tilo_test_env::scenario! {
             "an instance with no window offers no window verb"
         );
         let new_task = published_as(&host, "New task");
-        let before = documents_sent(&sent);
+        let before = workspace.written().len();
         let (actor, context) = agent_step("scribe", "ada");
         let invocation = tilo_actions::InvocationId::new();
         deliver_as(&inbox, 1, invocation, &new_task, actor, context);
         settle_with_no_view(&mut host);
-        let hosted = host.instances().next().expect("the instance runs");
         let answer = answered(&sent, 1).expect("the broker hears how the step ended");
         assert!(
             matches!(answer, tilo_actions::InvocationUpdate::Succeeded { .. }),
             "the agent's step ran: {answer:?}"
         );
-        // What it wrote says whose step it is: the agent that invoked it, acting for ada, and the
-        // invocation the broker admitted.
-        let written = last_context(hosted);
-        let invoker = written.invoker.as_ref().expect("the step names its invoker");
-        assert_eq!(
-            invoker.acting.by,
-            tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")),
-            "the change is the agent's step"
-        );
-        assert!(written.source_invocation.is_some(), "{written:?}");
-        assert!(
-            documents_sent(&sent) > before,
-            "what the step wrote was handed to the workspace"
-        );
+        // What it wrote reached the workspace, and says whose step it is: the agent that
+        // invoked it, and the invocation the broker admitted.
+        let written = workspace.written();
+        let step = written.get(before..).unwrap_or_default();
+        assert!(!step.is_empty(), "what the step wrote was handed to the workspace");
+        for stamp in step {
+            assert!(stamp.invoker.contains("scribe"), "the change is the agent's step: {stamp:?}");
+            assert_eq!(stamp.invocation, invocation.0.to_string(), "{stamp:?}");
+        }
     }
 
     phase a_member_whose_access_denies_it_is_refused_and_nothing_is_written;
@@ -2206,17 +1854,10 @@ tilo_test_env::scenario! {
         let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace.to_string(), ADA);
         policy.members.insert(BO.to_owned(), tilo_action_policy::Role::Viewer);
         let access = tilo_action_policy::MemberAccess::person(policy, ADA);
-        let (mut host, sent, inbox, _route) = running_with_no_view("ada", &app, bundle, Some(access));
+        let (mut host, sent, inbox, workspace) = running_with_no_view("ada", &app, bundle, Some(access));
         settle_with_no_view(&mut host);
         let new_task = published_as(&host, "New task");
-        let before = host
-            .instances()
-            .next()
-            .expect("the instance runs")
-            .record()
-            .doc()
-            .get_heads();
-        let sent_before = documents_sent(&sent);
+        let before = workspace.written().len();
         // Bo is a viewer and Tasks lets one make no task: the step is refused, and the document
         // holds nothing of it.
         let (actor, context) = (tilo_actions::Actor::Member(tilo_actions::MemberId::person(BO)), None);
@@ -2236,36 +1877,19 @@ tilo_test_env::scenario! {
             "Bo is refused, with why: {said}"
         );
         assert_eq!(
-            host.instances()
-                .next()
-                .expect("the instance runs")
-                .record()
-                .doc()
-                .get_heads(),
+            workspace.written().len(),
             before,
-            "the refused step wrote nothing"
-        );
-        assert_eq!(
-            documents_sent(&sent),
-            sent_before,
-            "nothing of the refused step was handed to the workspace"
+            "the refused step wrote nothing in the workspace"
         );
     }
 
     phase a_cancelled_invocation_writes_nothing;
     {
         let (app, bundle) = shipped(&shipped_dir().join("tasks"));
-        let (mut host, sent, inbox, _route) = running_with_no_view("ada", &app, bundle, None);
+        let (mut host, _, inbox, workspace) = running_with_no_view("ada", &app, bundle, None);
         settle_with_no_view(&mut host);
         let new_task = published_as(&host, "New task");
-        let before = host
-            .instances()
-            .next()
-            .expect("the instance runs")
-            .record()
-            .doc()
-            .get_heads();
-        let sent_before = documents_sent(&sent);
+        let before = workspace.written().len();
         // The caller stopped waiting before the frame that would run it: both reach the instance
         // at once, and the invocation never runs.
         let (actor, context) = agent_step("scribe", "ada");
@@ -2282,19 +1906,9 @@ tilo_test_env::scenario! {
             .push_back(CollabEvent::InvocationCancellation { id: 1 });
         settle_with_no_view(&mut host);
         assert_eq!(
-            host.instances()
-                .next()
-                .expect("the instance runs")
-                .record()
-                .doc()
-                .get_heads(),
+            workspace.written().len(),
             before,
-            "the cancelled step wrote nothing"
-        );
-        assert_eq!(
-            documents_sent(&sent),
-            sent_before,
-            "nothing of the cancelled step was handed to the workspace"
+            "the cancelled step wrote nothing in the workspace"
         );
     }
 }
@@ -2781,25 +2395,23 @@ fn a_window_opened_with_a_markdown_file_imports_it_into_notes() {
     // The content store the session opens for the app in its workspace: what the file the window
     // was opened with is read from, and what its own `file.text()` reads.
     let kept = tilolang_process::hosted::Kept {
-        documents: Rc::new(durable_store::MemoryStore::default()),
-        indexes: None,
         earlier: None,
         content: Some(content.clone()),
         chooser: None,
     };
-    let record = InstanceDocument::new(automerge::AutoCommit::new(), manager, route.clone(), "ada")
-        .keeping_content_in(content);
-    let mut host = TilolangProcess::new(None, wake());
+    let connection = Connection::new(manager).expect("the connection joined its route");
+    let store = ResourceStore::new(Rc::new(connection.port(None)));
+    let mut host = TilolangProcess::new(wake());
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
-    let mut hosted = Hosted::with_document(
+    let mut hosted = Hosted::new(
         Spec::new(NOTES, route.cluster_id.to_string(), 1, "ada"),
-        record,
+        connection,
+        (store, content),
         Arc::new(notes_bundle()),
         &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
-        &Rc::new(Phrases::new("en-US")),
-        host.formats(),
+        (&Rc::new(Phrases::new("en-US")), host.formats()),
         wake(),
     );
     hosted.open_file(runtime_portal::process_link::OpenedFile {
@@ -2878,165 +2490,6 @@ fn a_note_an_action_made_opens_where_the_window_shows_it() {
         parent_of(&host, &made).as_deref(),
         Some(above.id.as_str()),
         "the note made stands under the note that was open"
-    );
-}
-
-/// What opening a document of `n` items costs the process when it keeps no copy of its own: the
-/// host's committed read hands it over whole, as the bytes the document is, and the instance over
-/// it is built. Answered in milliseconds for each step, and how large the document was.
-fn opening_cost(app: &str, n: usize) -> (u128, u128, usize) {
-    let dir = shipped_dir().join(app);
-    let packages = tilolang_tilo::bench::compile(&dir).expect("the package compiles");
-    let package = packages.last().expect("a package").meta.app.clone();
-    let document = tilolang_tilo::bench::seeded_record(&packages, n).expect("the workspace seeds");
-    // What the host's read carries, and nothing of it on this device.
-    let mut document = document;
-    let bytes = document.save();
-    let route = RouteSpec::app(&package, uuid::Uuid::new_v4());
-    let broker = Broker::new(route.clone());
-    let mut manager = CollaborationManager::with_peer_transport(broker);
-    assert!(manager.send(CollabRequest::Hello {
-        app_id: route.app_id.clone(),
-        cluster_id: route.cluster_id,
-        record: None,
-        resource_type: None,
-        handle: Some("ada".to_owned()),
-    }));
-    let _ = manager.poll();
-    let mut host = TilolangProcess::new(None, wake());
-    let kept = host.kept(&package).unwrap();
-    let began = std::time::Instant::now();
-    let doc = tilo_resource::Doc::load(&bytes).expect("the document the read hands over");
-    let loaded = began.elapsed();
-    let built_began = std::time::Instant::now();
-    let record = InstanceDocument::new(doc, manager, route.clone(), "ada");
-    let hosted = Hosted::with_document(
-        Spec::new(&package, route.cluster_id.to_string(), 1, "ada").showing(Shows::Nothing),
-        record,
-        Arc::new(shipped(&dir).1),
-        &kept,
-        Box::new(tilolang_process::hosted::NoView),
-        &Rc::new(Phrases::new("en-US")),
-        host.formats(),
-        wake(),
-    );
-    host.add(hosted, None);
-    let built = built_began.elapsed();
-    (loaded.as_millis(), built.as_millis(), bytes.len())
-}
-
-/// The biggest documents a person's first hour touches open with no copy of the process's own: a
-/// long conversation, a full mailbox, and a notebook of notes, each read whole from its host.
-#[test]
-fn a_large_document_opens_from_the_hosts_read() {
-    for (app, n, what) in [
-        ("chat", 10_000, "a conversation of 10k messages"),
-        ("mail", 10_000, "a mailbox of 10k messages"),
-        ("notes", 10_000, "a notebook of 10k notes"),
-    ] {
-        let (loaded, built, bytes) = opening_cost(app, n);
-        println!(
-            "{what}: read {loaded} ms, instance {built} ms, {} KiB",
-            bytes / 1024
-        );
-    }
-}
-
-/// A host keeping what it keeps under `storage`, running a counter's window instance whose
-/// document it opens from the store an earlier version left — the one the host keeps now holding
-/// nothing, as a process that keeps no copy of its own.
-fn running_from_the_store(
-    storage: &std::path::Path,
-    person: &str,
-) -> (TilolangProcess, Window, Sent, Inbox, RouteSpec) {
-    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
-    let broker = Broker::new(route.clone());
-    let (sent, inbox) = (broker.sent(), broker.inbox());
-    let mut manager = CollaborationManager::with_peer_transport(broker);
-    assert!(manager.send(CollabRequest::Hello {
-        app_id: route.app_id.clone(),
-        cluster_id: route.cluster_id,
-        record: None,
-        resource_type: None,
-        handle: Some(person.to_owned()),
-    }));
-    let _ = manager.poll();
-    let mut host = TilolangProcess::new(Some(storage.to_path_buf()), wake());
-    let kept = host.kept(APP).unwrap();
-    // What the host's read hands over, and nothing of it on this device.
-    let record =
-        InstanceDocument::open_read(manager, None, &kept.documents, person, "tl.test.counter")
-            .expect("the document opens");
-    let (ours, theirs) = Channel::pair().unwrap();
-    let watched = ours.as_fd().try_clone_to_owned().unwrap();
-    let hosted = Hosted::with_document(
-        Spec::new(APP, route.cluster_id.to_string(), 1, person),
-        record,
-        Arc::new(counter()),
-        &kept,
-        Box::new(ChannelTransport::new(ours).unwrap()),
-        &Rc::new(Phrases::new("en-US")),
-        host.formats(),
-        wake(),
-    );
-    host.add(hosted, Some(watched));
-    let window = Window::over(ChannelTransport::new(theirs).unwrap());
-    (host, window, sent, inbox, route)
-}
-
-/// A process keeps no copy of its own: its document lives in memory, the workspace is the store,
-/// and a write it makes reaches the workspace. A process started again reads what the workspace
-/// holds and is the same document; nothing is written under the app's documents directory.
-#[test]
-fn a_process_keeps_no_documents_copy_and_reads_what_it_holds_from_the_workspace() {
-    let home = tempfile::tempdir().unwrap();
-    let storage = home.path();
-    let (mut host, mut window, sent, _inbox, route) = running_from_the_store(storage, "ada");
-    settle(&mut host, &mut window);
-    let began = value_of(host.instances().next().expect("the instance runs"));
-    let (key, event) = window.increment();
-    window.send(&[ToApp::Fire {
-        level: Level::Root,
-        key,
-        event,
-        value: None,
-        gesture: None,
-    }]);
-    settle(&mut host, &mut window);
-    let wrote = value_of(host.instances().next().expect("the instance runs"));
-    assert_eq!(wrote, began.saturating_add(1), "the press ran");
-    assert!(
-        documents_sent(&sent) > 0,
-        "what the instance wrote reached the workspace"
-    );
-    drop(host);
-    drop(window);
-    // The directory an earlier version kept documents in holds nothing the host wrote.
-    let documents = storage.join(APP).join("documents");
-    assert!(
-        !documents.exists(),
-        "the process wrote a copy of its own: {}",
-        documents.display()
-    );
-
-    // Started again, with nothing in memory, the workspace's document is the one it runs: the
-    // count the press made is there.
-    let mut workspace = workspace_copy(&sent);
-    let (mut again, mut second, _sent, inbox, started_on) = running_from_the_store(storage, "ada");
-    assert_eq!(started_on.app_id, route.app_id);
-    let mut held = workspace.save();
-    let delivered = tilolang_process::testing::delivered(
-        &started_on,
-        &collab_types::DocumentMutation::Snapshot(std::mem::take(&mut held)),
-    )
-    .expect("the workspace's document travels as a change");
-    inbox.borrow_mut().push_back(delivered);
-    settle(&mut again, &mut second);
-    assert_eq!(
-        value_of(again.instances().next().expect("the instance runs")),
-        wrote,
-        "the process started again holds what the workspace holds"
     );
 }
 

@@ -347,6 +347,10 @@ pub(crate) struct Shared {
     #[cfg(target_os = "linux")]
     pub(crate) document_writes:
         std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
+    /// The store of a workspace this device's own service holds, once it is open: where the apps
+    /// the session runs itself keep their resources, as the apps' windows do.
+    #[cfg(target_os = "linux")]
+    pub(crate) held_stores: crate::engine_records::HeldStores,
     /// The workspaces' shared desktops, as their records hold them: what each
     /// device that shows a workspace puts on its own session, and what this one
     /// writes back.

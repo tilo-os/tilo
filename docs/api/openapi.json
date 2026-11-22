@@ -28503,57 +28503,23 @@
         "required": [],
         "description": ""
       },
-      "tl.host.commit.Arguments": {
-        "type": "object",
-        "properties": {
-          "ticket": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "ticket"
-        ],
-        "description": "Commit a planned action"
-      },
       "tilolang.personal.view-state.Arguments": {
         "type": "object",
-        "properties": {
-          "keep": {}
-        },
-        "required": [
-          "keep"
-        ],
+        "properties": {},
+        "required": [],
         "description": "Keep a view's state"
       },
       "tilolang.personal.seen.Arguments": {
         "type": "object",
-        "properties": {
-          "keep": {}
-        },
-        "required": [
-          "keep"
-        ],
+        "properties": {},
+        "required": [],
         "description": "Keep what is seen"
       },
       "tilolang.personal.seen-runs.Arguments": {
         "type": "object",
-        "properties": {
-          "keep": {}
-        },
-        "required": [
-          "keep"
-        ],
+        "properties": {},
+        "required": [],
         "description": "Keep reviewed runs"
-      },
-      "tilolang.personal.reminded.Arguments": {
-        "type": "object",
-        "properties": {
-          "keep": {}
-        },
-        "required": [
-          "keep"
-        ],
-        "description": "Keep a reminder delivered"
       },
       "tl.so.tilo.lang.agent.Claim.$create.Arguments": {
         "type": "object",
@@ -32233,49 +32199,6 @@
           "seconds"
         ],
         "description": "Sets how many seconds a sent message waits before it goes, so it can be taken back: no wait\nat all at zero."
-      },
-      "tl.so.tilo.mail.Mail.recover_previous.Arguments": {
-        "type": "object",
-        "properties": {
-          "drafts": {
-            "items": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "type": "array"
-          },
-          "labels": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "conversations": {
-            "items": {
-              "items": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "type": "array"
-            },
-            "type": "array"
-          },
-          "signatures": {
-            "items": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "type": "array"
-          }
-        },
-        "required": [],
-        "description": "Copies data from the earlier private mailbox into this workspace."
       },
       "tl.so.tilo.mail.Mail.new_draft.Arguments": {
         "type": "object",
@@ -42036,12 +41959,6 @@
     },
     {
       "app": "so.tilo.lang.agent",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.agent",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -42057,12 +41974,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.agent",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.lang.agent",
@@ -42216,12 +42127,6 @@
     },
     {
       "app": "so.tilo.lang.board",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.board",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -42237,12 +42142,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.board",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.lang.board",
@@ -42336,12 +42235,6 @@
     },
     {
       "app": "so.tilo.lang.chat",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.chat",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -42357,12 +42250,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.chat",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.lang.chat",
@@ -42624,12 +42511,6 @@
     },
     {
       "app": "so.tilo.lang.counter",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.counter",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -42645,12 +42526,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.counter",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.lang.counter",
@@ -42684,12 +42559,6 @@
     },
     {
       "app": "so.tilo.lang.discussion",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.discussion",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -42705,12 +42574,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.discussion",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.lang.discussion",
@@ -42768,12 +42631,6 @@
     },
     {
       "app": "so.tilo.lang.gallery",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.gallery",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -42789,12 +42646,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.gallery",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.lang.gallery",
@@ -43086,12 +42937,6 @@
     },
     {
       "app": "so.tilo.mail",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -43107,12 +42952,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -43423,12 +43262,6 @@
     {
       "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Mail",
-      "action": "recover_previous",
-      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.recover_previous.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "tl.so.tilo.mail.Mail",
       "action": "new_draft",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.new_draft.Arguments"
     },
@@ -43464,12 +43297,6 @@
     },
     {
       "app": "so.tilo.notes",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -43485,12 +43312,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.notes",
@@ -43692,12 +43513,6 @@
     },
     {
       "app": "so.tilo.shell",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -43713,12 +43528,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.shell",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.shell",
@@ -44250,12 +44059,6 @@
     },
     {
       "app": "so.tilo.lang.tasks",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.tasks",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -44271,12 +44074,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.tasks",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.lang.tasks",
@@ -44556,12 +44353,6 @@
     },
     {
       "app": "so.tilo.lang.today",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.today",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -44577,12 +44368,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.today",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.lang.today",
@@ -44610,12 +44395,6 @@
     },
     {
       "app": "so.tilo.tube",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -44631,12 +44410,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -44838,12 +44611,6 @@
     },
     {
       "app": "so.tilo.lang.views",
-      "resource": "tl.host",
-      "action": "commit",
-      "arguments": "#/components/schemas/tl.host.commit.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.views",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
@@ -44859,12 +44626,6 @@
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.views",
-      "resource": "tilolang.personal",
-      "action": "reminded",
-      "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
       "app": "so.tilo.lang.views",

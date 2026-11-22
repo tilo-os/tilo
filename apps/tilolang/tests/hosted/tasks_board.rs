@@ -283,9 +283,7 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     settle(&mut app);
     // What a person adds in the list's entry waits in the inbox, and the window shows it there.
     crate::change_marks::choose(&mut app, "Inbox");
-    let root = app
-        .read(|doc| tilolang_tilo::action::resource_ids(doc, "so.tilo.lang.tasks"))
-        .remove(0);
+    let root = super::root_id(&app, "so.tilo.lang.tasks");
     let tasks = format!("tl:so.tilo.lang.tasks:{root}");
     let add = action_id(&mut app, &tasks, "New task");
     let titled = |title: &str| {
@@ -399,9 +397,7 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
     settle(&mut app);
     // The task a person adds waits in the inbox, which the window shows it in.
     choose(&mut app, "Inbox");
-    let root = app
-        .read(|doc| tilolang_tilo::action::resource_ids(doc, "so.tilo.lang.tasks"))
-        .remove(0);
+    let root = super::root_id(&app, "so.tilo.lang.tasks");
     let tasks = format!("tl:so.tilo.lang.tasks:{root}");
     let add = action_id(&mut app, &tasks, "New task");
     let mut titled = serde_json::Map::new();
@@ -893,9 +889,7 @@ fn a_task_of_adas(title: &str) -> (super::Session, String) {
     let mut app = super::Session::new("so.tilo.lang.tasks", "ada");
     settle(&mut app);
     crate::change_marks::choose(&mut app, "Inbox");
-    let root = app
-        .read(|doc| tilolang_tilo::action::resource_ids(doc, "so.tilo.lang.tasks"))
-        .remove(0);
+    let root = super::root_id(&app, "so.tilo.lang.tasks");
     let tasks = format!("tl:so.tilo.lang.tasks:{root}");
     let add = action_id(&mut app, &tasks, "New task");
     let mut args = serde_json::Map::new();
@@ -1080,4 +1074,148 @@ fn a_person_writing_in_a_title_is_seen_there() {
         app.harness()
             .render_png(&dir.join("tasks-person-writes.png"));
     }
+}
+
+/// The task numbers the titles `titles` name ("Item 42"), in order.
+fn numbers_in(titles: &[String]) -> Vec<usize> {
+    titles
+        .iter()
+        .filter_map(|title| title.strip_prefix("Item ")?.parse().ok())
+        .collect()
+}
+
+/// The task list with many tasks: the list holds the tasks the workspace made done, a scroll
+/// reaches its end, a title typed on a task's page is kept and undo takes it back, and a window
+/// opened again over the same workspace holds what was kept.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one story: a list, a scroll, an edit, an undo and a restart"
+)]
+fn the_task_list_holds_many_tasks_through_a_scroll_an_edit_an_undo_and_a_restart() {
+    let _settled = ui::motion::testing::settled();
+    let n = 200;
+    let storage = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("hosted-many-tasks");
+    let _ = std::fs::remove_dir_all(&storage);
+    // The store the window keeps on this device, seeded as the store's origin writes what it
+    // brings in.
+    {
+        let host = tilolang_tilo::host::Host::open(
+            super::stored_store(&storage),
+            tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person(
+                "ada",
+            )),
+            None,
+            || None,
+        )
+        .expect("a host");
+        host.load_bundle(&super::packages::package(super::packages::package_of(
+            super::TASKS,
+        )))
+        .expect("the tasks package");
+        tilolang_tilo::seed::seed(&host, super::TASKS, n, "2026-06-30T09:00:00Z")
+            .expect("the workspace seeds");
+    }
+    let mut session =
+        super::Session::in_store(super::TASKS, "ada", &storage, super::Window::in_harness);
+    session.settle();
+    // The list the window opens on is the place a person reads tasks in: the Done place holds
+    // every third seeded task.
+    let at = super::place_at(&mut session, "Done");
+    session.window.click_at(at.0, at.1);
+    session.settle();
+    let top = session.titles();
+    assert!(
+        top.first().is_some_and(|first| first.starts_with("Item ")),
+        "the list starts at the first task: {top:?}"
+    );
+    assert!(numbers_in(&top).len() > 2, "the list shows rows: {top:?}");
+    // The end of the list: the last task is there, and the order was kept along the way.
+    session.window.scroll(0.0, -20_000.0);
+    session.settle();
+    let end = session.titles();
+    assert!(
+        end.last().is_some_and(|last| last.starts_with("Item ")),
+        "the list ends at a task: {end:?}"
+    );
+    // The Done place holds the tasks the workspace made done: every third one seeded.
+    let numbers = numbers_in(&end);
+    assert!(
+        !numbers.is_empty() && numbers.iter().all(|number| number % 3 == 0),
+        "the list holds finished tasks: {numbers:?}"
+    );
+    // A task's page opens where its row stands, and what is typed into its title is kept: the
+    // row at the top of what the window shows, so its page opens in view.
+    let title = session
+        .controls()
+        .into_iter()
+        .filter(|control| control.doing.is_none() && end.contains(&control.name))
+        .min_by(|a, b| a.at.1.total_cmp(&b.at.1))
+        .map(|control| control.name)
+        .expect("a row in view");
+    let anchor = {
+        let host = session.instance_host();
+        let root = host.root_of(super::TASKS).expect("the root");
+        let items = match host.runtime().read(&root, "items") {
+            Ok(tilolang_tilo::runtime::Value::List(items)) => items,
+            other => panic!("the workspace lists its tasks: {other:?}"),
+        };
+        items
+            .into_iter()
+            .find_map(|item| match item {
+                tilolang_tilo::runtime::Value::Ref(item)
+                    if matches!(
+                        host.runtime().read(&item.target, "title"),
+                        Ok(tilolang_tilo::runtime::Value::Text(said)) if said == title
+                    ) =>
+                {
+                    Some(format!("tl:{}:{}", super::TASKS, item.target.id_string()))
+                }
+                _ => None,
+            })
+            .expect("the task the list shows")
+    };
+    session.instance_mut().reveal(anchor);
+    session.settle();
+    let field = session.field("title");
+    session.window.click_at(field.0, field.1);
+    session.settle();
+    session.window.type_text(" and more");
+    session.settle();
+    let edited = format!("{title} and more");
+    assert!(
+        super::task_in_workspace(&session, &edited, false),
+        "the title typed on the task's page is kept: {:?}",
+        session.titles()
+    );
+    session.window.chord(&["ctrl"], "z");
+    session.settle();
+    assert!(
+        !super::task_in_workspace(&session, &edited, false),
+        "undo takes back what was typed: {:?}",
+        session.titles()
+    );
+    session.window.chord(&["ctrl", "shift"], "Z");
+    session.settle();
+    assert!(
+        super::task_in_workspace(&session, &edited, false),
+        "redo brings it back: {:?}",
+        session.titles()
+    );
+    // A window opened again over the same workspace holds every task it kept.
+    session.close();
+    let mut second =
+        super::Session::in_store(super::TASKS, "ada", &storage, super::Window::in_harness);
+    second.settle();
+    let host = second.instance_host();
+    let root = host.root_of(super::TASKS).expect("the root");
+    let kept = match host.runtime().read(&root, "items") {
+        Ok(tilolang_tilo::runtime::Value::List(items)) => items.len(),
+        other => panic!("the workspace lists its tasks: {other:?}"),
+    };
+    assert_eq!(kept, n, "the workspace kept every task");
+    assert!(
+        super::task_in_workspace(&second, &edited, false),
+        "the title typed into the task is kept too"
+    );
 }

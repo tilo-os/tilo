@@ -53,7 +53,7 @@ RenameColumnArgs = TypedDict("RenameColumnArgs", {
 
 class Card(Resource):
     """Card — `tl.so.tilo.lang.board.Card`."""
-    __surface__ = "so.tilo.lang.board@23413559facb82ea"
+    __surface__ = "so.tilo.lang.board@8070289c791272bb"
     acqkumvl: str  # title
     @property
     def _6hfpfyn7(self) -> str:
@@ -87,7 +87,7 @@ class Card(Resource):
 
 class Column(Resource):
     """Column — `tl.so.tilo.lang.board.Column`."""
-    __surface__ = "so.tilo.lang.board@23413559facb82ea"
+    __surface__ = "so.tilo.lang.board@8070289c791272bb"
     @property
     def _3vw7cjrp(self) -> str:
         """title (`3vw7cjrp` on the wire)."""
@@ -143,7 +143,7 @@ class Column(Resource):
 
 class Board(Resource):
     """Board — `tl.so.tilo.lang.board.Board`."""
-    __surface__ = "so.tilo.lang.board@23413559facb82ea"
+    __surface__ = "so.tilo.lang.board@8070289c791272bb"
     hpfol33z: list[Entry[Column]]  # columns
     tuoyjxa6: list[Entry[Card]]  # cards
 
@@ -158,5 +158,5 @@ class Board(Resource):
 
 class LangBoard(Resource):
     """Board — `tl.so.tilo.lang.board`."""
-    __surface__ = "so.tilo.lang.board@23413559facb82ea"
+    __surface__ = "so.tilo.lang.board@8070289c791272bb"
 

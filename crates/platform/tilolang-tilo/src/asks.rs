@@ -21,8 +21,8 @@ use tilolang_runtime::store::{LinkHow, Store as _};
 use tilolang_runtime::value::{ResourceRef, Value};
 
 use crate::host::Host;
+use crate::resources::Watch;
 use crate::runtime::Actor;
-use crate::store::Watch;
 
 /// The package asks are made in.
 pub const AGENT_APP: &str = "so.tilo.lang.agent";
@@ -58,12 +58,12 @@ pub(crate) fn run(host: &Host, asking: &Asking) -> usize {
     let changes = asking.moved.take();
     // What the store derives of a change (`$versions`, `$updated`) is no text.
     let mut items: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for key in changes.docs.values().flatten() {
-        if !key.field.starts_with('$') {
+    for (resource, field) in changes.fields.values().flatten() {
+        if !field.starts_with('$') {
             items
-                .entry(key.resource.clone())
+                .entry(resource.clone())
                 .or_default()
-                .insert(key.field.clone());
+                .insert(field.clone());
         }
     }
     if items.is_empty() {
@@ -199,7 +199,7 @@ fn made_from(host: &Host, agent: &Meta, at: &ResourceRef) -> BTreeMap<String, Ma
         return BTreeMap::new();
     };
     let mut out = BTreeMap::new();
-    let Ok(links) = host.store().linked(at) else {
+    let Ok(links) = host.store().linked_by(at, &ask.id) else {
         return out;
     };
     for link in links {

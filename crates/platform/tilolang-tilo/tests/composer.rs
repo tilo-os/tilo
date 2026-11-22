@@ -1,7 +1,7 @@
 //! Typing is personal: text being composed is each person's view state, passed to the action that
 //! sends it, so two people typing in one conversation never overwrite each other.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::{Value, ViewInstance};
 
 use crate::fixtures::Replica;
@@ -67,10 +67,10 @@ fn lines(view: &ViewInstance) -> Vec<String> {
 
 #[test]
 fn two_people_typing_in_one_conversation_do_not_overwrite_each_other() {
-    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(TALK, "")]);
     ada.host.root_of(APP).unwrap();
     ada.commit();
-    let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
+    let ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
     let mut view_ada = ada.view(APP);
     let mut view_ben = ben.view(APP);
 
@@ -83,7 +83,7 @@ fn two_people_typing_in_one_conversation_do_not_overwrite_each_other() {
         .unwrap();
     ada.commit();
     ben.commit();
-    ada.sync_with(&mut ben);
+    ada.sync_with(&ben);
     view_ada.poll_patches().unwrap();
     view_ben.poll_patches().unwrap();
     assert_eq!(entry(&view_ada), Value::text("Morning!"));
@@ -92,7 +92,7 @@ fn two_people_typing_in_one_conversation_do_not_overwrite_each_other() {
     // Ada sends: her line is posted and her entry cleared; Ben's text stays his.
     view_ada.press(&key(&view_ada, "ui.Button")).unwrap();
     ada.commit();
-    ada.sync_with(&mut ben);
+    ada.sync_with(&ben);
     view_ada.poll_patches().unwrap();
     view_ben.poll_patches().unwrap();
     assert_eq!(entry(&view_ada), Value::text(""));
@@ -101,7 +101,7 @@ fn two_people_typing_in_one_conversation_do_not_overwrite_each_other() {
 
     view_ben.press(&key(&view_ben, "ui.Button")).unwrap();
     ben.commit();
-    ada.sync_with(&mut ben);
+    ada.sync_with(&ben);
     view_ada.poll_patches().unwrap();
     assert_eq!(lines(&view_ada), ["Morning!", "Hi Ada"]);
     assert_eq!(entry(&view_ada), Value::text(""));

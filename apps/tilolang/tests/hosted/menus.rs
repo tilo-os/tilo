@@ -37,7 +37,7 @@ fn a_tasks_menu_marks_it_done_by_its_complete_command() {
     );
     session.settle();
     assert!(
-        task_in_document(&session, "Water the plants", true),
+        task_in_workspace(&session, "Water the plants", true),
         "Complete marked the task done in the workspace"
     );
     assert!(
@@ -74,7 +74,7 @@ fn a_tasks_menu_marks_it_done_by_its_complete_command() {
     );
     session.settle();
     assert!(
-        task_in_document(&session, "Water the plants", true),
+        task_in_workspace(&session, "Water the plants", true),
         "Complete by name marked the task done in the workspace"
     );
     assert!(
@@ -125,8 +125,8 @@ fn every_command_of_a_tasks_menu_acts_by_its_name() {
             after.iter().all(|name| name != command),
             "{command} left the menu open: {after:?}"
         );
-        let followed = task_in_document(&session, "Water the plants", true)
-            || !task_in_document(&session, "Water the plants", false)
+        let followed = task_in_workspace(&session, "Water the plants", true)
+            || !task_in_workspace(&session, "Water the plants", false)
             || after
                 .iter()
                 .any(|name| !before.contains(name) && !menu.contains(name));

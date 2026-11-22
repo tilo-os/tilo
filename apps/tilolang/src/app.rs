@@ -175,10 +175,10 @@ fn in_process(
         tracing::error!("no package is installed in this runtime");
         return None;
     };
-    // The document is this device's alone, under the workspace's own id: a profile names its
-    // workspace by id, as a session does, so the app's access to the workspace covers its
-    // document; a profile naming it by a plain name (`personal`) gets one derived, so the same
-    // window kept twice is one document.
+    // The app's resources are this device's alone, under the workspace's own id: a profile names
+    // its workspace by id, as a session does, so the app's access to the workspace covers its
+    // route; a profile naming it by a plain name (`personal`) gets one derived, so the same
+    // window kept twice is one workspace's.
     let workspace_id = tilo_failure::ignored!(
         "a workspace named by a plain name rather than its id gets one derived from that name",
         uuid::Uuid::parse_str(workspace).ok()
@@ -202,23 +202,9 @@ fn in_process(
     }
     let route = tilolang_process::route_of(&bundle.meta, workspace_id, me);
     let spec = tilolang_process::hosted::Spec::new(bundle.meta.app.clone(), workspace, 1, me);
-    let kind = tilolang_tilo::meta::MetaExt::resource_type(&bundle.meta);
-    let person = me.to_owned();
-    crate::hosted::HostedWindow::in_process(
-        spec,
-        |kept| {
-            tilolang_tilo::instance::document::InstanceDocument::open_local(
-                route,
-                &kept.documents,
-                person,
-                kind,
-            )
-        },
-        bundle,
-        storage,
-    )
-    .inspect_err(|error| tracing::error!(%error, "the app's instance did not start"))
-    .ok()
+    crate::hosted::HostedWindow::in_process(spec, route, bundle, storage)
+        .inspect_err(|error| tracing::error!(%error, "the app's instance did not start"))
+        .ok()
 }
 
 /// Keep the types of the package whose origin is a video site in step with it: the client asks,

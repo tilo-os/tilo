@@ -10,11 +10,11 @@
 //! task, channel and mailbox is a resource the session's `find` finds, a layout places and
 //! an agent reads and changes through its actions.
 //!
-//! Each app's record is the one its windows open: once the session holds the workspace the
-//! person is in, it keeps the record there ([`tilo_service::Service::workspace_resource`]), so the
-//! seed data is written into the workspace's record of the app, and the app's window, the REPL,
-//! an agent's programs and the canvas read and change that one record. A record the workspace
-//! holds already takes the place of the seed data.
+//! Each app's resources are the ones its windows open: once the session holds the workspace the
+//! person is in, they are kept in the workspace's store ([`tilo_service::Service::keep_in_workspace`]),
+//! filled with the seed data where the workspace holds none of the app's yet, so the app's window,
+//! the REPL, an agent's programs and the canvas read and change one copy. Until then they are kept
+//! in memory.
 //!
 //! There is no second way for an app to reach a session: an app that is not installed is not run,
 //! and an app that is installed has the manifest the launcher and connector planning read. Its
@@ -83,26 +83,28 @@ pub fn seeded_from_env(person: &str) -> Result<Vec<ResourceService>, String> {
 /// # Errors
 /// The document's host does not open.
 pub fn session_document(person: &str) -> Result<ResourceService, String> {
-    let host = Host::new(
-        &tilo_resource::Doc::new(),
+    let host = Host::open(
+        tilolang_tilo::resources::ResourceStore::in_memory(),
         tilo_actions::Actor::from(tilo_actions::MemberId::person(person)),
+        None,
         || None,
     )
     .map_err(|e| e.to_string())?;
-    host.set_words(crate::i18n::SeededWords);
-    Ok(told(ResourceService::session_document(host, person)))
+    let mut service = ResourceService::session_document(host, person);
+    service.set_words(std::rc::Rc::new(crate::i18n::SeededWords));
+    Ok(told(service))
 }
 
 /// The record of the installed app `app`: its root made and filled by its first scenario as
 /// steps its authorship names, in a record of its own.
 fn seeded_app(person: &str, app: &InstalledApp) -> Result<ResourceService, String> {
-    let host = Host::new(
-        &tilo_resource::Doc::new(),
+    let host = Host::open(
+        tilolang_tilo::resources::ResourceStore::in_memory(),
         tilo_actions::Actor::from(tilo_actions::MemberId::person(person)),
+        None,
         || None,
     )
     .map_err(|e| e.to_string())?;
-    host.set_words(crate::i18n::SeededWords);
     // The packages the app is made with ride in its own bundle, and keep their records in its
     // record.
     let bundle =
@@ -111,17 +113,46 @@ fn seeded_app(person: &str, app: &InstalledApp) -> Result<ResourceService, Strin
         .load_bundle(&bundle)
         .map_err(|error| format!("{}: {error}", app.app_id))?;
     let name = package.meta.app.clone();
-    host.root_of(&name)
-        .map_err(|error| format!("{name}'s root: {error}"))?;
-    if let Some(scenario) = package.meta.scenarios.first() {
-        host.runtime()
-            .invoke_action(
-                &tilo_actions::Actor::from(tilo_actions::MemberId::person(person)),
-                (scenario.action.as_str(), vec![]),
-            )
-            .map_err(|error| format!("{name} {:?}: {error}", scenario.name))?;
-    }
-    Ok(ResourceService::of_app(name, host, person))
+    let scenario = package
+        .meta
+        .scenarios
+        .first()
+        .map(|scenario| scenario.action.clone());
+    let seed = {
+        let (name, person) = (name.clone(), person.to_owned());
+        move |host: &Host| -> Result<(), String> {
+            host.root_of(&name)
+                .map_err(|error| format!("{name}'s root: {error}"))?;
+            if let Some(action) = &scenario {
+                host.runtime()
+                    .invoke_action(
+                        &tilo_actions::Actor::from(tilo_actions::MemberId::person(&person)),
+                        (action.as_str(), vec![]),
+                    )
+                    .map_err(|error| format!("{name} {action}: {error}"))?;
+            }
+            // A workspace of many items, to feel the app as a person with that many does.
+            if let Some(items) = seed_items() {
+                tilolang_tilo::seed::seed(host, &name, items, &tilolang_tilo::host::system_time())?;
+            }
+            Ok(())
+        }
+    };
+    seed(&host)?;
+    let mut service = ResourceService::of_app(name, host, person);
+    service.set_words(std::rc::Rc::new(crate::i18n::SeededWords));
+    service.set_seed(seed);
+    Ok(service)
+}
+
+/// How many items beyond its scenario's each seeded app starts with: `$TILO_SEED_ITEMS`, none
+/// without it.
+fn seed_items() -> Option<usize> {
+    tilo_failure::ignored!(
+        "a seed count that is not a number asks for no seeded items",
+        std::env::var("TILO_SEED_ITEMS").ok()?.parse().ok()
+    )
+    .filter(|items| *items > 0)
 }
 
 /// `service`, what its apps tell reaching the person through the platform's notifier this

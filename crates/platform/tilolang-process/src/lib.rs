@@ -11,20 +11,19 @@
 //! broker attributes everything the instance says to the app from the session's own document of
 //! the connection, never from the process.
 //!
-//! Each instance ([`hosted::Hosted`]) holds its workspace document with its undo log and save state,
-//! publishes the app's actions and runs what the broker delivers, all on its own connection. A
-//! window's instance drives its window with component patches, and the window sends back what the
-//! person did; an instance that shows nothing ([`Shows::Nothing`]) runs the app's actions for
-//! whoever invokes them and draws nothing.
+//! Each instance ([`hosted::Hosted`]) reads and writes the app's resources in the workspace's one
+//! store over its connection ([`connection`]), publishes the app's actions and runs what the
+//! broker delivers, all on that connection. A window's instance drives its window with component
+//! patches, and the window sends back what the person did; an instance that shows nothing
+//! ([`Shows::Nothing`]) runs the app's actions for whoever invokes them and draws nothing.
 //!
-//! **Storage.** One directory per workspace and author, granted to the process at its start, keyed by
-//! package inside: `<storage>/<package>/documents` holds the workspace document's on-disk copy, and
-//! `<storage>/<package>/indexes` the indexes its instances read the document through, one per
-//! document, shared by every window of it.
+//! **Storage.** One directory per workspace and author, granted to the process at its start: it
+//! keeps the modules the process compiled, so a later start does not compile them again. The
+//! apps' resources are the store's, never the process's.
 
+pub mod connection;
 pub mod files;
 pub mod hosted;
-mod mail_recovery;
 pub mod personal;
 pub mod phrases;
 pub mod presence;
@@ -42,8 +41,6 @@ use std::sync::Arc;
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-use collaboration::CommittedDocument;
-use collaboration::native_initial::PrimaryRead;
 /// The person's formats and language, as the session says them on the API
 /// ([`TilolangProcess::set_locale`]).
 pub use runtime_portal::process_link::Locale;
@@ -57,7 +54,6 @@ use tilolang_tilo::meta::MetaExt as _;
 use hosted::{Hosted, Kept, Spec};
 use phrases::Phrases;
 use tilolang_tilo::instance::LaterBuilds;
-use tilolang_tilo::instance::document::InstanceDocument;
 
 /// The route an instance of `meta`'s package for `person` in `workspace` joins: the person's own
 /// document of the workspace for an app whose documents are each member's own (`documents: .own`),
@@ -142,8 +138,8 @@ pub enum AdmitError {
     OtherResource { app: String, asked: String },
     #[error("the instance's connection could not join its workspace: {0}")]
     Join(String),
-    #[error(transparent)]
-    Open(#[from] tilolang_tilo::instance::document::DocumentError),
+    #[error("the instance did not open: {0}")]
+    Open(String),
     #[error("the window's connection is unusable: {0}")]
     Window(std::io::Error),
 }
@@ -179,9 +175,8 @@ struct Running {
     window: Option<OwnedFd>,
 }
 
-/// An instance being opened: its module read, its connection joining its workspace's route and
-/// the broker's committed read of its document, each waited for off the host's loop, so the
-/// instances running meanwhile keep producing frames.
+/// An instance being opened: its module read and its connection joining its workspace's route,
+/// each waited for off the host's loop, so the instances running meanwhile keep producing frames.
 struct Opening {
     app: String,
     /// The window's instance.
@@ -239,13 +234,6 @@ enum Stage {
         bundle: Arc<Bundle>,
         manager: collaboration::CollaborationManager,
     },
-    /// The committed read of the document, taken on a thread of its own.
-    Reading {
-        spec: Spec,
-        bundle: Arc<Bundle>,
-        manager: collaboration::CollaborationManager,
-        read: Receiver<Result<(PrimaryRead, CommittedDocument), String>>,
-    },
     /// Taken out for a step.
     Moved,
 }
@@ -258,9 +246,8 @@ enum Step {
     Open(Box<Hosted>, Option<OwnedFd>),
 }
 
-/// The host: its storage, what wakes it, and its instances.
+/// The host: what wakes it, and its instances.
 pub struct TilolangProcess {
-    storage: Option<PathBuf>,
     /// The words this host's own process speaks, which dates and clocks read in where a session
     /// names no language for a window: every window's words are chosen from it and the languages
     /// its package ships ([`hosted::Spec::language`]).
@@ -272,16 +259,15 @@ pub struct TilolangProcess {
     scope: tilo_wake::WakeScope,
     running: Vec<Running>,
     opening: Vec<Opening>,
+    /// Written whenever an instance's connection has something new: what a resource command
+    /// waits on for its answer ([`connection::BrokerPort`]).
+    arrived: Option<Rc<wait::Wake>>,
     /// The windows whose instances ended since the session was last told.
     ended: Vec<u64>,
     /// The agent task whose programs this host runs, when its author is a task.
     task: Option<task::Task>,
     /// The later builds of each app it runs, which its instances of the app follow.
     builds: std::collections::HashMap<String, Arc<LaterBuilds>>,
-    /// The one copy this host holds of each app's documents, in memory: what two windows of the
-    /// app in it read and write together, as they read and wrote one copy on disk before.
-    documents:
-        std::cell::RefCell<std::collections::HashMap<String, Rc<durable_store::MemoryStore>>>,
     /// What an earlier version of the host's app kept on this device ([`Self::reading_earlier`]):
     /// the directory the session granted read-only, and the copy read from it once it was read
     /// whole.
@@ -333,27 +319,36 @@ impl Earlier {
 }
 
 impl TilolangProcess {
-    /// A host keeping its instances' data under `storage` (in memory without), woken by `wake`
-    /// whenever an instance's connection or work off the frame has something for it.
+    /// A host woken by `wake` whenever an instance's connection or work off the frame has
+    /// something for it.
     #[must_use]
-    pub fn new(storage: Option<PathBuf>, wake: Waker) -> Self {
+    pub fn new(wake: Waker) -> Self {
         let mut scope = tilo_wake::WakeScope::new();
+        let arrived = wait::Wake::new()
+            .inspect_err(|error| tracing::warn!(%error, "the host's store wake did not open"))
+            .ok()
+            .map(Rc::new);
         let sink = Arc::clone(&wake);
-        if let Err(error) = scope.bind(move |_| sink()) {
+        let also = arrived.as_ref().map(|arrived| arrived.waker());
+        if let Err(error) = scope.bind(move |_| {
+            sink();
+            if let Some(also) = &also {
+                also();
+            }
+        }) {
             tracing::warn!(?error, "the host's wake scope did not bind");
         }
         Self {
-            storage,
             phrases: Rc::new(Phrases::from_env()),
             formats: hosted::Formats::default(),
             wake,
             scope,
             running: Vec::new(),
             opening: Vec::new(),
+            arrived,
             ended: Vec::new(),
             task: None,
             builds: std::collections::HashMap::new(),
-            documents: std::cell::RefCell::default(),
             earlier: None,
         }
     }
@@ -403,50 +398,23 @@ impl TilolangProcess {
         }
     }
 
-    /// What the instances of `app` hold: their workspace document in memory, its indexes on disk,
-    /// and what an earlier app of the same id kept on this device.
-    ///
-    /// The workspace is the one store of an app's documents: every instance opens its document
-    /// from the broker's committed read of the workspace, so a host keeps no copy of its own on
-    /// disk to open from, on a device and on a server alike.
-    pub fn kept(&self, app: &str) -> std::io::Result<Kept> {
-        // One copy the host holds of the app's documents, shared by every instance of it in
-        // this process.
-        let documents: Rc<dyn durable_store::DurableStore> = {
-            let mut held = self.documents.borrow_mut();
-            Rc::clone(
-                held.entry(app.to_owned())
-                    .or_insert_with(|| Rc::new(durable_store::MemoryStore::default())),
-            ) as Rc<dyn durable_store::DurableStore>
-        };
-        // What an earlier version of the app — a native app the package replaced, or an earlier
-        // Mail — kept on this device, read once by the package's own conversion
-        // (`earlier_documents`, the mailbox's recovery): never written, as the session granted it.
+    /// What the instances of `app` are handed beside the workspace's store: what an earlier app
+    /// of the same id kept on this device. The workspace is the one store of an app's resources,
+    /// so a host keeps no copy of its own, on a device and on a server alike.
+    pub fn kept(&self, _app: &str) -> Kept {
+        // What an earlier version of the app — a native app the package replaced — kept on this
+        // device, read once by the package's own conversion (`earlier_documents`): never
+        // written, as the session granted it.
         let earlier = self
             .earlier
             .as_ref()
             .and_then(Earlier::read)
             .map(|read| read as Rc<dyn durable_store::DurableStore>);
-        let Some(storage) = &self.storage else {
-            return Ok(Kept {
-                documents,
-                indexes: None,
-                earlier,
-                content: None,
-                chooser: None,
-            });
-        };
-        if app.is_empty() || app.contains(['/', '\0']) || app.starts_with('.') {
-            return Err(std::io::ErrorKind::InvalidInput.into());
-        }
-        let package = storage.join(app);
-        Ok(Kept {
-            documents,
-            indexes: Some(package.join("indexes")),
+        Kept {
             earlier,
             content: None,
             chooser: None,
-        })
+        }
     }
 
     /// The person's formats, as the session set them: what an instance opened here writes its
@@ -507,7 +475,7 @@ impl TilolangProcess {
             if running.hosted.spec().app != app {
                 return true;
             }
-            let route = running.hosted.record().route();
+            let route = running.hosted.connection().route();
             if !reads_protected_route(route, access) {
                 running.hosted.flush();
                 ended.push(running.hosted.spec().instance);
@@ -521,7 +489,7 @@ impl TilolangProcess {
         for opening in self.opening.iter_mut().filter(|opening| opening.app == app) {
             match &mut opening.stage {
                 Stage::Module { request, .. } => request.access = access.cloned(),
-                Stage::Joining { spec, .. } | Stage::Reading { spec, .. } => {
+                Stage::Joining { spec, .. } => {
                     spec.access = access.cloned();
                 }
                 Stage::Moved => {}
@@ -646,8 +614,8 @@ impl TilolangProcess {
     }
 
     /// Open the instance `spec` of `bundle` on `manager`, whose route it joins (or joined), with
-    /// its window at the far end of `window`: it runs once the route is joined and its document
-    /// read, both waited for off the host's loop.
+    /// its window at the far end of `window`: it runs once the route is joined, waited for off
+    /// the host's loop.
     pub fn open(
         &mut self,
         spec: Spec,
@@ -729,59 +697,7 @@ impl TilolangProcess {
                         return Ok(Step::Waiting);
                     }
                     opening.reached("joined");
-                    let Some(reader) = PrimaryRead::of(&manager).map_err(AdmitError::Join)? else {
-                        return self.run(opening, spec, bundle, manager, None);
-                    };
-                    // The read waits for as long as the broker takes: say that it does, so an
-                    // instance that never opens shows where it waits.
-                    tracing::info!(
-                        app = opening.app,
-                        instance = opening.instance,
-                        "a tilolang instance reads its document's committed history"
-                    );
-                    let (sender, read) = std::sync::mpsc::channel();
-                    let wake = Arc::clone(&self.wake);
-                    std::thread::Builder::new()
-                        .name("tilolang-read".into())
-                        .spawn(move || {
-                            // Only an opening that already ended dropped the receiver:
-                            // nobody waits on it.
-                            let _ = sender.send(reader.read().map(|read| (reader, read)));
-                            wake();
-                        })
-                        .map_err(AdmitError::Window)?;
-                    opening.stage = Stage::Reading {
-                        spec,
-                        bundle,
-                        manager,
-                        read,
-                    };
-                }
-                Stage::Reading {
-                    spec,
-                    bundle,
-                    manager,
-                    read,
-                } => {
-                    return match read.try_recv() {
-                        Ok(read) => {
-                            let read = read.map_err(AdmitError::Join)?;
-                            opening.reached("read");
-                            self.run(opening, spec, bundle, manager, Some(read))
-                        }
-                        Err(TryRecvError::Empty) => {
-                            opening.stage = Stage::Reading {
-                                spec,
-                                bundle,
-                                manager,
-                                read,
-                            };
-                            Ok(Step::Waiting)
-                        }
-                        Err(TryRecvError::Disconnected) => {
-                            Err(AdmitError::Join("the document's read ended".to_owned()))
-                        }
-                    };
+                    return self.run(opening, spec, bundle, manager);
                 }
                 Stage::Moved => return Ok(Step::Waiting),
             }
@@ -875,14 +791,13 @@ impl TilolangProcess {
         })
     }
 
-    /// The instance, its route joined and its document read: open the document and run it.
+    /// The instance, its route joined: run it over the workspace's store.
     fn run(
         &self,
         opening: &mut Opening,
         spec: Spec,
         bundle: Arc<Bundle>,
         manager: collaboration::CollaborationManager,
-        read: Option<(PrimaryRead, CommittedDocument)>,
     ) -> Result<Step, AdmitError> {
         // Receivers decide each change against the app's surface: its package's own, as the
         // launcher names it for a launched app.
@@ -904,29 +819,16 @@ impl TilolangProcess {
         if records != bundle.meta.app {
             collab_types::app_surface::register_package(&records, &surface);
         }
-        let mut kept = self
-            .kept(&records)
-            .map_err(|error| AdmitError::Join(error.to_string()))?;
+        let mut kept = self.kept(&records);
         // The device's files travel with the instance as its own store and the person's chooser,
         // opened by the session for the app in its workspace.
         kept.content = opening.content.take();
         kept.chooser = opening.chooser.take();
         let _scope = self.scope.enter();
-        // What the document's actions keep as content lives in the device's content store, as a
-        // native window's document content does: it outlives the instance and reaches the document's
-        // other readers on its route.
-        let record = InstanceDocument::open_read(
-            manager,
-            read,
-            &kept.documents,
-            spec.person.clone(),
-            bundle.meta.resource_type(),
-        )?
-        .keeping_content_in(
-            kept.content
-                .clone()
-                .unwrap_or_else(tilo_content_device::for_app),
-        );
+        let connection = connection::Connection::new(manager).map_err(AdmitError::Open)?;
+        let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(
+            connection.port(self.arrived.clone()),
+        ));
         // A window's instance draws and hears its window; one that shows nothing sends its
         // patches nowhere and hears nothing.
         let (transport, watched): (Box<dyn tilo_render_protocol::patch::Transport>, _) =
@@ -946,14 +848,20 @@ impl TilolangProcess {
                 Shows::Nothing => (Box::new(hosted::NoView), None),
             };
         let shows = spec.shows;
-        let mut hosted = Hosted::with_document(
+        // What the instance's actions keep as content lives in the device's content store, as a
+        // native window's does: it outlives the instance.
+        let content = kept
+            .content
+            .clone()
+            .unwrap_or_else(tilo_content_device::for_app);
+        let mut hosted = Hosted::new(
             spec,
-            record,
+            connection,
+            (store, content),
             bundle,
             &kept,
             transport,
-            &self.phrases,
-            &self.formats,
+            (&self.phrases, &self.formats),
             Arc::clone(&self.wake),
         );
         hosted.arrived_early(std::mem::take(&mut opening.early));
@@ -1090,19 +998,6 @@ impl TilolangProcess {
         for running in &mut self.running {
             changed |= running.hosted.turn();
         }
-        // An undo of an action that wrote several units takes every unit back through its own
-        // instance, and the reverts go out as one action.
-        let asks: Vec<(u64, tilo_actions::InvocationId)> = self
-            .running
-            .iter_mut()
-            .filter_map(|running| {
-                let invocation = running.hosted.take_undo_ask()?;
-                Some((running.hosted.spec().instance, invocation))
-            })
-            .collect();
-        for (asked_in, invocation) in asks {
-            changed |= self.undo(asked_in, invocation);
-        }
         let before = self.running.len();
         let ended = &mut self.ended;
         self.running.retain_mut(|running| {
@@ -1121,116 +1016,7 @@ impl TilolangProcess {
             }
             open
         });
-        // A change runs, is answered, and ends once the session let go of its connection: the
-        // workspace was handed what it wrote by then.
         changed || self.running.len() != before
-    }
-
-    /// Take the step the person asked to undo in `asked_in` back: in that unit alone when no
-    /// other unit of the workspace this host runs holds a change of its action, and otherwise in
-    /// every unit that does, each through its own instance, the reverts published as one action.
-    ///
-    /// The units and their changes come from the documents themselves, lazily, unit by unit: an
-    /// undo works after a restart that lost every log the transport kept, because the action's
-    /// invocation names its changes in every document it wrote. Whether anything was taken back.
-    fn undo(&mut self, asked_in: u64, invocation: tilo_actions::InvocationId) -> bool {
-        let mut parts: Vec<(String, String, Vec<[u8; 32]>)> = Vec::new();
-        let mut workspace = None;
-        for running in &self.running {
-            let route = running.hosted.record().route();
-            let changes = running.hosted.changes_of(invocation);
-            if changes.is_empty() {
-                continue;
-            }
-            if running.hosted.spec().instance == asked_in {
-                workspace = Some(route.cluster_id);
-            }
-            parts.push((
-                route.app_id.clone(),
-                route.document.clone().unwrap_or_default(),
-                changes,
-            ));
-        }
-        let Some(workspace) = workspace else {
-            return false;
-        };
-        if parts.len() <= 1 {
-            // The step is this unit's alone: its own instance takes it back.
-            return self
-                .running
-                .iter_mut()
-                .find(|running| running.hosted.spec().instance == asked_in)
-                .is_some_and(|running| running.hosted.undo_here());
-        }
-        // The reverts are one new action of the person's: one fresh invocation names it in every
-        // unit's change, which is what makes the parts one commit.
-        let ambient = tilo_actions::ActionContext {
-            source_invocation: Some(tilo_actions::InvocationId::new()),
-            ..tilo_actions::ActionContext::default()
-        };
-        let mut units: Vec<(String, String, collaboration::DocumentMutation)> = Vec::new();
-        for running in &mut self.running {
-            let route = running.hosted.record().route();
-            let (app, record) = (
-                route.app_id.clone(),
-                route.document.clone().unwrap_or_default(),
-            );
-            let Some((_, _, changes)) = parts
-                .iter()
-                .find(|(unit_app, unit_document, _)| unit_app == &app && unit_document == &record)
-            else {
-                continue;
-            };
-            for change in changes {
-                if !running.hosted.can_revert(change) {
-                    continue;
-                }
-                if let Err(error) = running.hosted.revert_step(change, &ambient) {
-                    tracing::warn!(
-                        app, record, %error,
-                        "a unit of an action did not take its step back"
-                    );
-                }
-            }
-            // What the unit's reverts wrote, in whichever chunk: each part names the document it
-            // travels on, so an action undone across a unit's chunks still goes as one commit.
-            for (record, change) in running.hosted.unsent_parts() {
-                units.push((app.clone(), record, change));
-            }
-        }
-        if units.is_empty() {
-            return false;
-        }
-        let undo = collaboration::WorkspaceCommit::of_units(
-            workspace,
-            &collaboration::CommitAuthor {
-                actor: None,
-                device: [0; 32],
-            },
-            &units
-                .iter()
-                .map(|(app, record, mutation)| collaboration::UnitMutation {
-                    app,
-                    document_id: record,
-                    mutation,
-                    document: None,
-                })
-                .collect::<Vec<_>>(),
-        )
-        .ok()
-        .and_then(|commits| commits.into_iter().flatten().next());
-        for running in &mut self.running {
-            let app = running.hosted.record().route().app_id.clone();
-            let sent = units.iter().any(|(unit_app, _, _)| *unit_app == app);
-            if !sent {
-                continue;
-            }
-            match &undo {
-                Some(commit) => running.hosted.share_under(commit),
-                None => running.hosted.share(),
-            }
-        }
-        true
     }
 
     /// How long until some instance shows something else with nothing arriving
@@ -1278,7 +1064,7 @@ impl TilolangProcess {
             if running.hosted.owes_a_frame() {
                 owed.push(format!(
                     "a frame for {}",
-                    running.hosted.record().route().app_id
+                    running.hosted.connection().route().app_id
                 ));
             }
         }

@@ -312,38 +312,26 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   everything in it: typing a conversation's draft republished its 10k messages (556 ms a
   keystroke). Labels are the store's `first_text` through its read cache, and naming skips a
   collection whose items cannot hold a text (`reads::may_hold_text`).
-- **The store keeps what it read** (`tilolang-tilo/src/cache.rs`). Reading a field of an item
-  used to walk from the document's root to the item (three map lookups), then to the field: 3
-  to 4 µs per lookup in automerge's op set, about 20 µs a field, so a view that filters 10k items
-  spent 200 ms. `TiloStore` now keeps per resource where its map is and the fields read, and a
-  collection read lists every item with its registers and counters in one walk of each item's
-  map, on up to 8 threads for 1k items or more (`collection_entries`/`read_entry` in
-  `tilo-resource` split the read so that it can be spread). Every write the store makes forgets
-  the keys it touched (a local write, a rollback or rewind of local writes, an incremental sync
-  forgets the changed fields; a sync that cannot say clears all), so a read never sees an older
-  value than the mirror holds. The runtime's side of a read copies nothing it can borrow:
+- **The store keeps what it read** (`tilolang-tilo/src/resources.rs`). The resource store's
+  index answers a field without opening the resource's document, and `ResourceStore` keeps each
+  resource the index answered with, and each collection's listing as the index pages it, read a
+  page at a time as rows are shown. A write forgets what it wrote and lets go of the listings of
+  the kinds it wrote, so a read never sees an older value than the store holds. The runtime's side of a read copies nothing it can borrow:
   `res_get` reads the reference, field and author where the frame holds them, a reference value
   shares its `ResourceRef` (`RefValue::target` is an `Rc`), and a boundary's reads are deduplicated
   by hash and indexed per resource.
-- **Store changes for the host.** `TiloStore::watch()` gives a cursor; `Watch::take()` returns the
-  `Changes` since the last take: changed fields per document, documents changed anywhere
-  (`whole`), or `everything` after the mirror was copied anew. Planning an action (a trial run
+- **Store changes for the host.** `ResourceStore::watch()` gives a cursor; `Watch::take()`
+  returns the changes since the last take: changed fields per document, documents changed
+  anywhere, or everything after a change the store cannot name. Planning an action (a trial run
   that is rolled back) tells nobody: its notifications are dropped with its writes.
-  `TiloStore::stats()` counts incremental and full syncs; a full sync happens only when the
-  mirror held a change of its own when the record moved, and should stay at 0.
 - **Search and publication are incremental.** `SearchIndex::new(&host)` then
   `update(&host) -> SearchDelta { upserted, removed }` each frame, `hits()` for the index;
   `Publications::new(&host)` then `update(&host, &planner) -> Vec<DocId>` (the documents whose
   published tree changed) and `trees()`. Both consume a `Watch`, so a frame costs what changed.
-  A record that appears (every record, on the first frame) is read whole off the frame: from a
-  `TiloStore::snapshot()` (one copy of the mirror, shared by every reader until the mirror
-  changes) on a thread of its own. Until it ends, `update` returns nothing and takes no changes;
-  `set_waker(waker)` gives them the window's redraw request to call when it ends, and the next
-  `update` takes the result in. `is_reading()` / `is_building()` say whether that is under way;
-  `settle(&host, ..)` waits for it, for a host without frames and for tests. An action without
-  parameters is published deferred (`ActionSpec::deferred_on`): planned when it runs, so
-  publishing plans nothing. A record's label (its first text, fields in id order, items in order) is read
-  again only when a change is at or before what names it. These replace re-indexing and
+  A record that appears (every record, on the first frame) is read whole from the store. An
+  action without parameters is published deferred (`ActionSpec::deferred_on`): planned when it
+  runs, so publishing plans nothing. A record's label (its first text, fields in id order, items
+  in order) is read again only when a change is at or before what names it. These replace re-indexing and
   re-publishing every record per frame (`search::refresh` and `published()` in the window), which
   cost 322 ms and 393 ms at 10k items.
 - **No needless commit.** The host commits the workspace record when the executor wrote something.
@@ -436,10 +424,10 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   2 ms per document at 400k ops), inherent to its sorted actor table.
 - **A change costs the change, not the collection.** One insert, remove or move in a
   collection of N items is work in the items it touched, at every layer:
-  - *Store.* `TiloStore` keeps a collection's listing (`Store::listing`: its item ids in order,
-    shared as an `Rc<Listing>`) with each item's order key, and brings it in line with the items
-    a change touched (their entries put, deleted or given a new key) by binary search over
-    (order key, id), instead of forgetting it and listing again. Each change says how its
+  - *Store.* A collection's listing (`Store::listing`, shared as an `Rc<Listing>`) is a query
+    of the resource store's index, paged as it is read. A write leaves each listing it changes
+    as it read before, and where each resource the write names stood in it, and stands now, is
+    read from the index's order rather than by listing again. Each change says how its
     listings moved: `ChangeSummary::listings`, steps `Splice::Insert{at, item}` and
     `Splice::Remove{at, item}` (a move is both) in order; a collection named in `fields` without
     steps changed in a way the store could not say. `AmStore` tells the steps of its own

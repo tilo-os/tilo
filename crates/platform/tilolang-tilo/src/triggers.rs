@@ -3,13 +3,11 @@
 //!
 //! The host runs a trigger as the app's own invocation of its action ([`crate::authority`]'s
 //! `trigger:` actor), on the workspace's origin, with the app's authority and declared
-//! effects, and the change documents in the same edit what the trigger last did for the document
-//! ([`crate::action::TRIGGERS_KEY`]): the period it ran in, or the instant it fired at. A second
-//! run of the same period or instant is refused there, so a trigger runs once across the
-//! workspace's devices, and a run a device missed while everything was off runs once when one
-//! comes up. The run it is is named by the trigger, the document and the instant ([`Due::run`]),
-//! so two devices that each come to run that instant before they have met — a workspace whose
-//! origin moved — write one notice and queue one effect between them.
+//! effects, and notes on the document what the trigger last did for it
+//! ([`crate::resources::ResourceStore::triggered`]): the period it ran in, or the instant it
+//! fired at. A second run of the same period or instant is not made, and a run a device missed
+//! while everything was off runs once when one comes up. The run it is is named by the trigger,
+//! the document and the instant ([`Due::run`]).
 
 use serde_json::Value as Json;
 use tilolang::calendar::instant;
@@ -20,7 +18,7 @@ use tilolang_runtime::store::{FieldRead, FieldSpec, FieldValue, Pred, Scalar, St
 use tilolang_runtime::value::{ResourceRef, Value};
 
 use crate::host::Host;
-use crate::store::{Triggering, Watch};
+use crate::resources::Watch;
 
 /// When the packages' triggers next have something to run, as last worked out: a frame looks
 /// for what is due only when the store moved since, a package loaded, or that time came, so a
@@ -104,14 +102,33 @@ pub fn run(host: &Host, now: i64) -> usize {
             continue;
         }
         let by = crate::runtime::Actor::App(due.app.as_str().into());
-        host.store().set_triggering(Some(due.triggering.clone()));
         let run = due.run();
+        // That it ran is noted with what it did, as one change.
+        host.store().mark_triggered_in_run(
+            &run,
+            &due.target,
+            &due.triggering.key,
+            &due.triggering.value,
+        );
         let outcome =
             host.runtime()
                 .invoke_action_named(&run, &by, (due.action.as_str(), due.args));
-        host.store().set_triggering(None);
+        let unwritten = host.store().drop_run_marks(&run);
         match outcome {
-            Ok(InvokeOutcome::Done(_)) => ran = ran.saturating_add(1),
+            Ok(InvokeOutcome::Done(_)) => {
+                ran = ran.saturating_add(1);
+                // A run that changed nothing is noted by itself.
+                if unwritten
+                    && let Err(error) = host.store().mark_triggered(
+                        &due.target,
+                        &due.triggering.key,
+                        &due.triggering.value,
+                        host.viewer(),
+                    )
+                {
+                    tracing::warn!(%error, trigger = due.name, "a trigger's run was not noted");
+                }
+            }
             other => tracing::warn!(
                 app = due.app,
                 trigger = due.name,
@@ -139,7 +156,8 @@ pub fn next(host: &Host, now: i64) -> Option<i64> {
                 TriggerWhenMeta::Every(secs) if *secs > 0 => {
                     let first = host
                         .store()
-                        .resources_of(&package.meta.app, &trigger.ty)
+                        .resources_of(&trigger.ty)
+                        .unwrap_or_default()
                         .into_iter()
                         .next();
                     first.map(|_| {
@@ -196,7 +214,15 @@ struct Due {
     name: String,
     action: String,
     args: Vec<Value>,
+    target: ResourceRef,
     triggering: Triggering,
+}
+
+/// What a trigger's run is for: the document, the trigger and the period or instant.
+struct Triggering {
+    doc: String,
+    key: String,
+    value: String,
 }
 
 impl Due {
@@ -219,7 +245,8 @@ fn due(host: &Host, now: i64) -> Vec<Due> {
             let records: Vec<ResourceRef> = match &trigger.when {
                 TriggerWhenMeta::Every(secs) if *secs > 0 => host
                     .store()
-                    .resources_of(&package.meta.app, &trigger.ty)
+                    .resources_of(&trigger.ty)
+                    .unwrap_or_default()
                     .into_iter()
                     .map(|doc| ResourceRef::root(doc, trigger.ty.clone()))
                     .collect(),
@@ -240,7 +267,7 @@ fn due(host: &Host, now: i64) -> Vec<Due> {
                 };
                 let value = at.to_string();
                 let id = doc.id_string();
-                if host.store().triggered(&id, &trigger.id).as_deref() == Some(value.as_str()) {
+                if host.store().triggered(doc, &trigger.id).as_deref() == Some(value.as_str()) {
                     continue;
                 }
                 let Some(args) = arguments(host, trigger, &package.meta.app, doc) else {
@@ -251,6 +278,7 @@ fn due(host: &Host, now: i64) -> Vec<Due> {
                     name: trigger.name.clone(),
                     action: trigger.action.clone(),
                     args,
+                    target: doc.clone(),
                     triggering: Triggering {
                         doc: id,
                         key: trigger.id.clone(),

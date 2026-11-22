@@ -1,13 +1,10 @@
 //! A note's editor offers the notebook's notes as `[[` links, each by the title it reads as
 //! now; a reference written into a note is what `linked()` reports the note by.
 
-use automerge::AutoCommit;
 use serde_json::json;
 use tilolang_runtime::rich::{Reference, RichValue};
 use tilolang_runtime::store::{LinkHow, Store as _};
 use tilolang_runtime::{Actor, NameHost, ResourceRef, Value, ViewInstance};
-use tilolang_tilo::publish::PlanRequest;
-use tilolang_tilo::resource::DynValue;
 
 use crate::fixtures::{Replica, field_id};
 
@@ -25,9 +22,9 @@ struct Workspace {
 
 /// A notebook holding `Plan` and `Groceries`.
 fn workspace() -> Workspace {
-    let (mut ada, packages) = Replica::new(
+    let (ada, packages) = Replica::new(
         "ada",
-        AutoCommit::new(),
+        crate::fixtures::Workspace::new(),
         &[(DISCUSSION, DISCUSSION_IDS), (NOTES, NOTES_IDS)],
     );
     let meta = packages[1].meta.clone();
@@ -36,7 +33,7 @@ fn workspace() -> Workspace {
     let mut made: Vec<String> = Vec::new();
     for title in ["Plan", "Groceries"] {
         call(
-            &mut ada,
+            &ada,
             &meta,
             "Notebook",
             &root.id_string(),
@@ -52,7 +49,7 @@ fn workspace() -> Workspace {
             note
         );
         call(
-            &mut ada,
+            &ada,
             &meta,
             "Note",
             &note,
@@ -69,7 +66,7 @@ fn workspace() -> Workspace {
 }
 
 fn call(
-    replica: &mut Replica,
+    replica: &Replica,
     meta: &tilolang_runtime::Meta,
     ty: &str,
     resource: &str,
@@ -83,28 +80,22 @@ fn call(
         .unwrap_or_else(|| panic!("no action {name}"));
     let args = args.as_object().cloned().unwrap_or_default();
     let kind = format!("tl.{APP}.{ty}");
-    let planned = replica
-        .host
-        .plan(&PlanRequest {
-            app: APP,
-            kind: &kind,
-            action_id: &action.id,
-            resource: Some(resource),
-            args: &args,
-            caller: None,
-            from: None,
-        })
+    replica
+        .carry(APP, &kind, &action.id, Some(resource), &args, None, None)
         .unwrap();
-    replica.apply(&planned);
 }
 
 /// The notebook's notes, as their ids in the collection.
 fn notes(replica: &Replica, meta: &tilolang_runtime::Meta, root: &ResourceRef) -> Vec<String> {
-    let record = replica.host.store().record(&root.doc).unwrap();
-    match record.get(&field_id(meta, "Notebook", "notes")) {
-        Some(DynValue::Collection(items)) => {
-            items.iter().map(|(id, _)| id.as_str().to_owned()).collect()
-        }
+    let field = field_id(meta, "Notebook", "notes");
+    match replica.read(root, &field) {
+        Value::List(items) => items
+            .into_iter()
+            .map(|item| match item {
+                Value::Ref(r) => r.target.item.clone().unwrap_or_default(),
+                other => panic!("an item: {other:?}"),
+            })
+            .collect(),
         other => panic!("{other:?}"),
     }
 }
@@ -218,7 +209,7 @@ tilo_test_env::scenario! {
     phase a_note_offers_its_notebooks_notes_by_the_titles_they_read_as_now;
     {
         let Workspace {
-            mut ada,
+            ada,
             plan,
             groceries,
         } = workspace();
@@ -264,7 +255,7 @@ tilo_test_env::scenario! {
         // reads is read now.
         let package = ada.host.package(APP).unwrap();
         call(
-            &mut ada,
+            &ada,
             &package.meta,
             "Note",
             &groceries,
@@ -465,7 +456,7 @@ fn embed_of(
 #[test]
 fn an_embedded_note_shows_its_start_links_back_and_follows_the_note() {
     let Workspace {
-        mut ada,
+        ada,
         plan,
         groceries,
     } = workspace();
@@ -548,7 +539,7 @@ fn an_embedded_note_shows_its_start_links_back_and_follows_the_note() {
 
     // Renamed, the note keeps the card: the reference names it, not the title it had.
     call(
-        &mut ada,
+        &ada,
         &meta,
         "Note",
         &groceries,

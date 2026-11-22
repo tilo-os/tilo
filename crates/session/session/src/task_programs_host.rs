@@ -135,6 +135,17 @@ impl TurnRecords {
 }
 
 impl tilo_actions::remote::ResourceReads for TurnRecords {
+    /// Every app's resources are in the workspace's one store, the apps the session keeps
+    /// included: the turn's api answers.
+    fn store_read(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        address: &tilo_actions::remote::ResourceAddress,
+        read: serde_json::Value,
+    ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
+        self.elsewhere()?.store_read(caller, address, read)
+    }
+
     fn read(
         &self,
         caller: &tilo_actions::remote::Caller,

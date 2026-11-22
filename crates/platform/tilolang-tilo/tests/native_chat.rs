@@ -40,7 +40,11 @@ fn native_documents() -> Vec<(String, AutoCommit)> {
 /// Ada's workspace with the tilolang Chat, the native app's `documents` beside it, and its
 /// conversations as the window opens them.
 fn opened(documents: &[(String, AutoCommit)]) -> (Replica, ResourceRef) {
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[crate::fixtures::AGENT, CHAT]);
+    let (ada, _) = Replica::new(
+        "ada",
+        crate::fixtures::Workspace::new(),
+        &[crate::fixtures::AGENT, CHAT],
+    );
     ada.host.runtime().set_earlier(CHAT_APP, documents);
     let all = ada.host.root_of(CHAT_APP).expect("the conversations");
     ada.commit();
@@ -246,7 +250,7 @@ fn a_native_chat_is_carried_over_once_as_one_change() {
         .iter()
         .map(|(_, doc)| doc.clone().get_heads())
         .collect();
-    let (mut ada, all) = opened(&documents);
+    let (ada, all) = opened(&documents);
     assert!(
         listed(&ada, &all, "channels").is_empty(),
         "nothing is carried before the migration runs"
@@ -273,9 +277,9 @@ fn a_native_chat_is_carried_over_once_as_one_change() {
     assert_eq!(before, after, "the native app's documents are not written");
 
     // Undo takes the whole carrying back as one step, and redo makes it again.
-    step(&mut ada, false);
+    step(&ada, false);
     assert!(listed(&ada, &all, "channels").is_empty(), "undone at once");
-    step(&mut ada, true);
+    step(&ada, true);
     assert_carried(&ada, &all);
 }
 
@@ -296,7 +300,7 @@ fn a_chat_whose_messages_are_still_arriving_is_carried_once_they_are_here() {
         part.0.replacen("derived:part.0@", "derived:part.1@", 1),
         part.1.clone(),
     );
-    let (mut ada, all) = opened(std::slice::from_ref(&newer));
+    let (ada, all) = opened(std::slice::from_ref(&newer));
     assert!(!ada.host.runtime().has_earlier(CHAT_APP));
     assert_eq!(ada.host.migrate(), 0, "the carrying waits");
     assert_eq!(ada.commit(), 0);
@@ -313,17 +317,10 @@ fn a_chat_whose_messages_are_still_arriving_is_carried_once_they_are_here() {
 }
 
 /// The person of `replica` takes their last step back, or makes it again.
-fn step(replica: &mut Replica, again: bool) {
-    use collaboration::history_source::verbs::HistoryEdit;
-    replica.history(&if again {
-        HistoryEdit::Redo { steps: None }
+fn step(replica: &Replica, again: bool) {
+    assert!(if again {
+        replica.redo_last()
     } else {
-        HistoryEdit::Undo {
-            steps: None,
-            invocation: None,
-            by: None,
-            to: None,
-            step: None,
-        }
+        replica.undo_last()
     });
 }

@@ -147,8 +147,7 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "nextest"
 requires = ["arch={arch}"]
 wrapper = ["bash", "tools/ci/nextest.sh"]
-# tilolang-tilo's budget checks are test-bench's, below.
-args = ["--locked", "--profile", "ci", "--tests", "-E", "not (package(tilolang-tilo) & (binary(budgets) | test(/^bench::costs::/)))"]
+args = ["--locked", "--profile", "ci", "--tests"]
 unify = "workspace-unify"
 packages = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "install",
@@ -179,22 +178,6 @@ wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests"]
 unify = "workspace-unify"
 packages = ["canvas", "music", "pdf-viewer"]
-heavy = true
-on = ["dispatch", "idle"]
-
-# tilolang-tilo's budget checks: each app's views read at a thousand and at ten thousand records,
-# asserting they do the same work at both. Seeding ten thousand records in a test build makes them
-# 10.4 of the package's 39.6 test-minutes a run (11-14), at every head of main; their counts are
-# deterministic, so main's newest head with room bisects a check a commit breaks as surely.
-[[cargo]]
-name = "test-bench"
-egress = { to = ["code.tilo.so:443"], pinned = true }
-tool = "nextest"
-requires = ["arch=x86_64"]
-wrapper = ["bash", "tools/ci/nextest.sh"]
-args = ["--locked", "--profile", "ci", "--tests", "-E", "binary(budgets) | test(/^bench::costs::/)"]
-unify = "workspace-unify"
-packages = ["tilolang-tilo"]
 heavy = true
 on = ["dispatch", "idle"]
 
@@ -1061,7 +1044,8 @@ secrets = ["NPM_TOKEN", "PYPI_TOKEN"]
 
 [[check]]
 name = "sdk-policy"
-run = "cargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\" --check\npython3 -I tools/sdk/publish_check.py --report-only\n"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\" --check\npython3 -I tools/sdk/publish_check.py --report-only\n"
 fix = "cargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\""
 
 [[check]]

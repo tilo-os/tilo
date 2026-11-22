@@ -8,8 +8,8 @@ use std::rc::Rc;
 use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local::pair;
 use tilo_render_protocol::patch::{ResourceRef, ToApp, Value};
-use tilolang_tilo::instance::memory::MemoryDocument;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
+use tilolang_tilo::runtime::value::{ResourceRef as RuntimeRef, Value as RuntimeValue};
 use ui::headless::FrameHarness;
 use ui::interaction::InteractionEnvironment;
 
@@ -78,6 +78,28 @@ impl Staged {
     }
 }
 
+/// The package's own root resources — every layer it has (the shell's `Shell` beside its layout)
+/// and a person's record kept beside them (`root shell: Shell`) — made with what each starts
+/// with, as the live session does when it loads the package: a scenario that seeds another layer
+/// than the one laid out shows them.
+fn make_roots(instance: &Instance, app: &str) -> Result<(), String> {
+    let Some(host) = instance.host() else {
+        return Ok(());
+    };
+    let meta = host.package(app).map(|package| package.meta);
+    let roots = meta.iter().flat_map(|meta| {
+        meta.roots
+            .iter()
+            .cloned()
+            .chain(meta.named_roots.iter().map(|root| root.ty.clone()))
+    });
+    for ty in roots {
+        host.root_resource(app, &ty)
+            .map_err(|error| format!("a root could not be made: {error}"))?;
+    }
+    Ok(())
+}
+
 /// How often the window and its instance may answer each other before a frame is taken as it is:
 /// the rows a list shows, then the rows those rows show.
 const EXCHANGES: usize = 8;
@@ -90,7 +112,8 @@ pub struct Staging {
     pub scenario: Option<String>,
     /// The layer a package with more than one root shows (`Shell`, `Layout`).
     pub root: Option<String>,
-    pub record: Option<ui::automerge::AutoCommit>,
+    /// How many items the workspace holds when the window opens ([`tilolang_tilo::seed`]).
+    pub seed: usize,
     /// Whether what the app's units run is counted ([`tilolang_tilo::runtime::cost`]).
     pub costs: bool,
     /// The view states the run stages, as the app's own code names them (`place=Task.today`), as
@@ -136,6 +159,13 @@ impl Staged {
         mut theme: ui::Theme,
         staging: Staging,
     ) -> Result<Self, String> {
+        let Staging {
+            scenario,
+            root,
+            seed,
+            costs,
+            states,
+        } = staging;
         theme.reduce_motion = true;
         let (app_end, window_end) = pair();
         let names = Rc::new(tilolang_tilo::names::Told::new(
@@ -149,12 +179,8 @@ impl Staged {
                 me: ME.into(),
                 mode: Mode::Live,
                 device: None,
-                index_dir: None,
-                document_loader: None,
-                root: tilolang_tilo::host::RootView {
-                    root: staging.root.clone(),
-                    view: None,
-                },
+                store: tilolang_tilo::resources::ResourceStore::in_memory(),
+                root: tilolang_tilo::host::RootView { root, view: None },
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
             },
             Rc::clone(packages) as Rc<dyn Platform>,
@@ -164,40 +190,25 @@ impl Staged {
             names,
             Box::new(app_end),
         );
-        let mut record = MemoryDocument::new(staging.record.unwrap_or_default(), ME.to_owned());
-
-        instance.sync(Some(record.doc()));
+        instance.sync();
         // The window is laid out for a still picture: no frame comes to take in the indexes its
         // load builds off the frame, so they are waited for, as a host without frames waits for
         // them.
         instance.settle_pending();
         // Counted from the first frame: a workspace's opening is what it costs to open.
-        if staging.costs
-            && let Some(host) = instance.host()
-        {
+        if costs && let Some(host) = instance.host() {
             host.runtime().record_costs(true);
         }
-        // The package's own root resources — every layer it has (the shell's `Shell` beside its
-        // layout) and a person's record kept beside them (`root shell: Shell`) — are made with
-        // what each starts with, as the live session does when it loads the package: a scenario
-        // that seeds another layer than the one laid out shows them.
-        if let Some(host) = instance.host() {
-            let meta = host.package(app).map(|package| package.meta);
-            let roots = meta.iter().flat_map(|meta| {
-                meta.roots
-                    .iter()
-                    .cloned()
-                    .chain(meta.named_roots.iter().map(|root| root.ty.clone()))
-            });
-            for ty in roots {
-                host.root_resource(app, &ty)
-                    .map_err(|error| format!("a root could not be made: {error}"))?;
-            }
-        }
+        make_roots(&instance, app)?;
         instance.set_origin(true);
-        record.take_in(&mut instance, None)?;
+        if seed > 0
+            && let Some(host) = instance.host()
+        {
+            tilolang_tilo::seed::seed(&host, app, seed, &packages.now())?;
+        }
+        instance.commit_planned();
         if let Some(host) = instance.host() {
-            for state in &staging.states {
+            for state in &states {
                 let (name, text) = state.split_once('=').ok_or_else(|| {
                     format!("--state {state} names no value: write `--state place=Task.today`")
                 })?;
@@ -206,15 +217,17 @@ impl Staged {
                     .map_err(|error| format!("--state {state}: {error}"))?;
             }
         }
-        instance.stage(staging.scenario.as_deref());
-        // A scenario's sample data is what it writes without a
-        // time of its own; what it dates is the story it tells.
-        let now = packages.now();
-        record.take_in(&mut instance, Some(&now))?;
+        instance.stage_story(scenario.as_deref());
+        // The scenario runs on the frame that takes it: its sample data is what it writes
+        // without a time of its own, and what it dates is the story it tells.
+        if scenario.is_some() {
+            instance.sync();
+            instance.commit_planned();
+        }
         if let Some(why) = instance.take_stage_failure() {
             return Err(format!(
                 "the scenario \"{}\" failed: {why}",
-                staging.scenario.as_deref().unwrap_or_default()
+                scenario.as_deref().unwrap_or_default()
             ));
         }
         instance.update();
@@ -358,24 +371,19 @@ impl Staged {
         let Ok(root) = host.root_of_layer(&self.app, &layer) else {
             return Vec::new();
         };
-        let Ok(held) = host.store().record(&root.doc) else {
+        let runtime = host.runtime();
+        let Ok(held) = runtime.read(&root, &places) else {
             return Vec::new();
         };
-        let Some(tilolang_tilo::DynValue::Collection(items)) = held.get(&places) else {
-            return Vec::new();
-        };
-        let text = |item: &tilolang_tilo::DynResource, id: &str| -> String {
-            match item.get(id) {
-                Some(tilolang_tilo::DynValue::Text(said)) => said.clone(),
-                Some(tilolang_tilo::DynValue::Register(serde_json::Value::String(said))) => {
-                    said.clone()
-                }
+        let text = |item: &RuntimeRef, id: &str| -> String {
+            match runtime.read(item, id) {
+                Ok(RuntimeValue::Text(said)) => said,
                 _ => String::new(),
             }
         };
-        items
+        refs_in(&held)
             .iter()
-            .map(|(_, item)| PlaceShown {
+            .map(|item| PlaceShown {
                 key: text(item, &key),
                 shows: text(item, &shows),
                 record: text(item, &record),
@@ -410,35 +418,29 @@ impl Staged {
         let Some(host) = self.instance.host() else {
             return out;
         };
+        let runtime = host.runtime();
         for (_, _, doc) in host.records() {
-            let Some(ty) = host.store().resource_type(&doc) else {
+            let Some(ty) = host.store().type_of_id(&doc) else {
                 continue;
             };
+            let root = RuntimeRef::root(doc.clone(), ty.clone());
             out.push(ResourceRef {
                 id: doc.clone(),
                 ty: ty.clone(),
             });
-            // The record's type by the package versions this host loaded, not by whatever a store
-            // elsewhere in this process registered last.
-            let (Some(schema), Ok(record)) = host.with_schemas(|| {
-                (
-                    tilolang_tilo::schema::lookup(&ty),
-                    host.store().record(&doc),
-                )
-            }) else {
+            let Some(schema) = tilolang_tilo::schema::lookup(&ty) else {
                 continue;
             };
             for field in &schema.fields {
-                // Each item's type is its own: a collection of a union of record types (a category,
-                // a channel or a direct message) declares none for the field, so the item's record
-                // is the only thing that says which type it is.
-                let Some(tilolang_tilo::DynValue::Collection(items)) = record.get(&field.id) else {
+                if field.kind != tilolang_tilo::MergeKind::Collection {
                     continue;
-                };
-                out.extend(items.iter().map(|(id, item)| ResourceRef {
-                    id: format!("{doc}/{}", id.as_str()),
-                    ty: item.schema().id.clone(),
-                }));
+                }
+                if let Ok(items) = runtime.read(&root, &field.id) {
+                    out.extend(refs_in(&items).into_iter().map(|item| ResourceRef {
+                        id: item.id_string(),
+                        ty: item.ty,
+                    }));
+                }
             }
         }
         out
@@ -725,6 +727,15 @@ impl Staged {
     }
 }
 
+/// The resources a collection's reading names, in order.
+fn refs_in(value: &RuntimeValue) -> Vec<RuntimeRef> {
+    match value {
+        RuntimeValue::Ref(target) => vec![RuntimeRef::clone(&target.target)],
+        RuntimeValue::List(items) => items.iter().flat_map(refs_in).collect(),
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -755,11 +766,10 @@ mod tests {
             std::sync::Arc::new(host.handle());
         let mut publications = tilolang_tilo::publish::Publications::new(&host);
         // Records are published whole off the frame: a window with no frames waits for them.
-        publications.settle(&host, &planner);
         let resources: Vec<tilo_actions::ResourceSpec> = publications
-            .trees()
-            .values()
-            .map(|tree| (**tree).clone())
+            .everything(&host, &planner)
+            .into_iter()
+            .map(|tree| (*tree).clone())
             .collect();
         let descriptors = tilo_actions::api::survey(&resources);
         let encoded = serde_json::to_vec(&descriptors).expect("the action directory encodes");
@@ -2286,44 +2296,6 @@ mod tests {
                 "the \"{scenario}\" window shows no row of a workspace it has read"
             );
         }
-        // A store that owes an index is waited for: an index of another schema is derived off the
-        // frame, as one is when a later build of the app declares another, and the frame read then
-        // is the frame of a window that has read nothing.
-        let mut staged = Staged::over(
-            &app,
-            &packages,
-            "a task that is late",
-            (320, 568),
-            ui::Theme::light(),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
-        let host = staged.instance.host().expect("a host");
-        host.store().open_index(&app, "{}");
-        assert!(
-            staged.instance.pending(),
-            "an index of another schema is derived off the frame"
-        );
-        // The window and its instance answer each other at once, as a frame does: what the store is
-        // deriving is taken in before the answer is read, and the frame after it is the window's.
-        staged.exchange();
-        assert!(
-            !staged.instance.pending(),
-            "the window is answered while the store still owes the index it shows"
-        );
-        staged
-            .lay_out(
-                (320, 568),
-                ui::Theme::light(),
-                InteractionEnvironment::TOUCH,
-                1.5,
-            )
-            .expect("lays out");
-        assert!(
-            !staged.instance.pending(),
-            "the window is laid out while the store still owes the index it shows"
-        );
     }
 
     /// A task's check box is a finger's width wherever a person reaches

@@ -1215,6 +1215,7 @@ fn stamp_resource_invoker(command: &mut tilo_resource_store::wire::Command, invo
         | Command::Count { .. }
         | Command::Content { .. }
         | Command::Versions { .. }
+        | Command::VersionEnd { .. }
         | Command::At { .. }
         | Command::Grouped { .. }
         | Command::Removed { .. }
@@ -1222,7 +1223,6 @@ fn stamp_resource_invoker(command: &mut tilo_resource_store::wire::Command, invo
         | Command::Newest { .. }
         | Command::Position { .. }
         | Command::PageAt { .. }
-        | Command::VersionEnd { .. }
         | Command::Contents { .. }
         | Command::Fields { .. } => {}
     }
