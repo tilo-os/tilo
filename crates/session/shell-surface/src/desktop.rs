@@ -1072,6 +1072,13 @@ impl StripPolicy {
                 return;
             }
             self.mapped.push(window.id);
+            for missed in desktop.policy.take_missed_holds() {
+                tracing::warn!(
+                    window = missed.window,
+                    held = missed.held,
+                    "the tab held for a window's launch left the layout before the window mapped: it took another"
+                );
+            }
             desktop.surface.relayout();
             // A window launched into a workspace not in front goes there once its tab is made.
             desktop.policy.carry_launched();

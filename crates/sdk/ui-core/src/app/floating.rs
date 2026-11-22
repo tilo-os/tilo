@@ -1288,9 +1288,15 @@ impl App {
                     self.window_share_changed();
                 }
                 // The shell says what it does not answer, so nothing of the
-                // app's waits on an answer that will not come.
+                // app's waits on an answer that will not come. A refusal of
+                // the window's own controls or bar leaves the window with no
+                // controls a person's tools can name and no bar: said aloud.
                 FloatingSurfaceHostMessage::Unanswered { message, reason } => {
-                    tracing::debug!(%message, %reason, "the shell does not answer that message");
+                    if matches!(message.as_str(), "window_targets" | "toolbar") {
+                        tracing::warn!(%message, %reason, "the shell did not take this window's own controls or bar");
+                    } else {
+                        tracing::debug!(%message, %reason, "the shell does not answer that message");
+                    }
                 }
                 FloatingSurfaceHostMessage::DisplayBounds { bounds } => {
                     match crate::floating_surface::protocol_rect(*bounds) {

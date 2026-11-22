@@ -734,6 +734,64 @@ fn a_window_takes_the_tab_of_its_own_launch_whatever_it_calls_its_app() {
     assert_eq!(tabs(&policy).len(), 2, "no tab is left waiting");
 }
 
+/// The tab held for a launch leaves the layout before its window maps (a slow window, while the
+/// workspace's layout is laid over the shell): the window takes a tab of its own, and its app,
+/// which names its window by the held tab, is still answered for that window. The host hears of
+/// it.
+#[test]
+fn a_window_whose_held_tab_left_is_still_its_launchs_window() {
+    let (mut driver, mut policy) = mount();
+    policy
+        .handle()
+        .dispatch(ChromeEffect::OpenApp {
+            app: "so.tilo.settings".into(),
+            beside: None,
+            background: None,
+            float: None,
+        })
+        .unwrap();
+    settle(&mut driver);
+    let held = policy.take_launches()[0]
+        .tab
+        .expect("the shell holds the tab the window takes");
+    policy.reads_launch_tabs(std::rc::Rc::new(move |pid| (pid == 501).then_some(held)));
+    let mut tree = policy.handle().read(Clone::clone);
+    assert!(tree.close_tab(held).is_some(), "the held tab was on the shell");
+    policy.handle().replace_tree(tree);
+    settle(&mut driver);
+
+    policy
+        .map(Window {
+            pid: Some(501),
+            ..window(10, "so.tilo.settings")
+        })
+        .unwrap();
+    settle(&mut driver);
+    let tab = policy.tab_of(10).expect("the window has a tab");
+    assert_ne!(tab, held, "the held tab is gone, so the window took another");
+    assert_eq!(
+        policy.tab_of_instance("so.tilo.settings", held),
+        Some(tab),
+        "what the app tells of the window it was launched for reaches that window"
+    );
+    assert_eq!(
+        policy.take_missed_holds(),
+        vec![tilo_desktop_policy::MissedHold {
+            window: 10,
+            held,
+        }],
+        "the host hears that the window missed its held tab"
+    );
+
+    policy.unmap(10);
+    settle(&mut driver);
+    assert_eq!(
+        policy.tab_of_instance("so.tilo.settings", held),
+        None,
+        "a window that went names no tab"
+    );
+}
+
 #[test]
 fn a_conversation_opens_beside_its_sender() {
     let (mut driver, mut policy) = mount();

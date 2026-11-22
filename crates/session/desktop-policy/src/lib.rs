@@ -97,6 +97,16 @@ pub type LaunchWorkspaces = Rc<dyn Fn(u32, &str) -> Option<String>>;
 /// launched it knows: a window of that process takes it whatever it calls its app.
 pub type LaunchTabs = Rc<dyn Fn(u32) -> Option<TabId>>;
 
+/// A window that mapped after the tab held for its launch had left the layout
+/// ([`DesktopPolicy::take_missed_holds`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MissedHold {
+    /// The window.
+    pub window: u64,
+    /// The tab held for its launch, which its app names it by.
+    pub held: TabId,
+}
+
 /// A window the desktop gave a place since the session last read them: what a launch learns a
 /// window of its own arrived from, rather than from what the shell shows of its app.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -482,6 +492,13 @@ pub struct DesktopPolicy {
     launched_into: Option<LaunchWorkspaces>,
     /// The tab held for each launched window's launch ([`Self::reads_launch_tabs`]).
     launch_tabs: Option<LaunchTabs>,
+    /// The window that took a tab of its own because the tab held for its launch was gone when
+    /// it mapped, by that held tab: the window's app still names its window by the held tab
+    /// ([`Self::tab_of_instance`]).
+    stood_in: BTreeMap<TabId, u64>,
+    /// The windows that missed the tab held for their launch since this was last taken
+    /// ([`Self::take_missed_holds`]).
+    missed: Vec<MissedHold>,
     /// The windows launched into a workspace not in front whose tab the shell has not made yet,
     /// each with where it goes ([`Self::carry_launched`]).
     to_carry: Vec<(u64, WorkspaceId)>,
@@ -553,6 +570,8 @@ impl DesktopPolicy {
             cards: cards::Placements::new(),
             launched_into: None,
             launch_tabs: None,
+            stood_in: BTreeMap::new(),
+            missed: Vec::new(),
             to_carry: Vec::new(),
             kept: BTreeMap::new(),
             starts_windows: true,
@@ -922,6 +941,9 @@ impl DesktopPolicy {
             self.kept.insert(id, kept);
         }
         let elsewhere = self.launched_elsewhere(&window);
+        let launch_tab = window
+            .pid
+            .and_then(|pid| self.launch_tabs.as_ref().and_then(|tabs| tabs(pid)));
         // A window of an app that asked for another one right after a tab of
         // its own takes the tab held for it there, from the moment it maps.
         if let Some(held) = self.take_held(&window)
@@ -964,6 +986,14 @@ impl DesktopPolicy {
         placed.inspect_err(|_| {
             self.arriving.borrow_mut().remove(&id);
         })?;
+        // The tab held for this window's launch is gone from the layout: the window has a tab of
+        // its own now, and its app, which names its window by the held tab, is answered for it.
+        if let Some(held) = launch_tab
+            && self.handle.read(|tree| route_of(tree, held).is_none())
+        {
+            self.stood_in.insert(held, id);
+            self.missed.push(MissedHold { window: id, held });
+        }
         self.note_mapped(mapped);
         // Launched into a workspace that is not in front (an agent's, a service's): its tab goes
         // there, so the workspace in front shows only its own windows and the other holds its own.
@@ -1120,7 +1150,17 @@ impl DesktopPolicy {
     /// the tab a window is given is the window's instance ([`LaunchAsk::tab`]).
     #[must_use]
     pub fn tab_of_instance(&self, app: &str, instance: u64) -> Option<TabId> {
-        self.app_tab(app, |tab| tab.id == instance)
+        self.app_tab(app, |tab| tab.id == instance).or_else(|| {
+            let window = *self.stood_in.get(&instance)?;
+            self.tab_of(window)
+        })
+    }
+
+    /// The windows that mapped after the tab held for their launch was gone, since this was
+    /// last taken: what the host says, since such a window lands in a tab its app does not know.
+    #[must_use]
+    pub fn take_missed_holds(&mut self) -> Vec<MissedHold> {
+        std::mem::take(&mut self.missed)
     }
 
     /// The first tab of `app` on the shell that `pick` takes.
@@ -1602,6 +1642,7 @@ impl DesktopPolicy {
         self.arriving.borrow_mut().remove(&window);
         self.placed.remove(&window);
         self.kept.remove(&window);
+        self.stood_in.retain(|_, stood| *stood != window);
         let mut tree = self.handle.read(Clone::clone);
         let Some(tab) = tab_of(&tree, window) else {
             return;

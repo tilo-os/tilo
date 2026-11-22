@@ -871,6 +871,70 @@ fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
     );
 }
 
+/// A window that maps after the tab the shell held for its launch left the layout (a slow window,
+/// while the workspace's layout is laid over the shell) takes a tab of its own. Its app names its
+/// window by the held tab, the instance it was launched with: what it describes of its content
+/// still reaches the session for that window, never refused as a window the shell does not show.
+#[test]
+fn a_window_whose_held_tab_left_still_describes_its_controls() {
+    use ui::window_targets::{TargetAction, WindowTarget};
+
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("starts");
+    let (mut session, _apps, launches, _launcher) = probe_session(&mut home, &started);
+    open_from_the_shell(&session, PROBE);
+    let pid = crate::common::wait_for(&mut session, "the app runs", |_| recorded_pid(&started));
+    let held = launches
+        .held_tab_of(pid)
+        .expect("the shell held a tab for the launch");
+
+    // The held tab leaves the layout before the window maps.
+    session.desktop().with_policy(|policy| {
+        let mut tree = policy.handle().read(Clone::clone);
+        assert!(tree.close_tab(held).is_some(), "the held tab was on the shell");
+        policy.handle().replace_tree(tree);
+    });
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(window_of(11, PROBE, pid)).unwrap());
+    until(&mut session, "the app's window is on the session", |session| {
+        groups(session) == vec![vec![PROBE_NAME.to_owned()]]
+    });
+    let tab = session
+        .desktop()
+        .with_policy(|policy| policy.tab_of(11))
+        .expect("the tab the window stands in");
+    assert_ne!(tab, held, "the window took a tab of its own");
+
+    let _connection = ask(
+        &launches,
+        PROBE,
+        pid,
+        held,
+        &FloatingSurfaceClientMessage::WindowTargets {
+            targets: vec![WindowTarget {
+                role: "ListItem".to_owned(),
+                name: "Documents".to_owned(),
+                identity: None,
+                rect: [4.0, 6.0, 44.0, 24.0],
+                actions: vec![TargetAction::Activate],
+            }],
+            instance: None,
+        },
+    );
+    until(
+        &mut session,
+        "the window's own control is listed",
+        |session| {
+            session
+                .controls()
+                .iter()
+                .any(|control| control.name == "Documents")
+        },
+    );
+}
+
 /// Every frame the session wrote back on `connection` by the turn of its loop on which `heard`
 /// holds of them: whole lines, each a host message. The wait is for the frame the caller names and
 /// ends on the turn the session wrote it, never after a count of turns; a session that never writes
