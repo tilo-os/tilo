@@ -857,6 +857,19 @@ impl AdmittedRuntimeSession {
         }
     }
 
+    /// Whether `caller` is who this run was admitted for. A program the person runs reaches
+    /// their own run as the local person, each in an execution of its own: that narrows what its
+    /// calls own, never who makes them. A run projected into one execution admits only that one.
+    fn admits(&self, caller: &Caller) -> bool {
+        let Some(projection) = &self.projection else {
+            return caller == self.admission.caller();
+        };
+        match (projection.execution_lease(), caller.execution_lease()) {
+            (None, Some(lease)) => *caller == projection.clone().in_execution(lease),
+            _ => caller == projection,
+        }
+    }
+
     /// Whether this call may run as the run's caller, now.
     ///
     /// A refusal says why it can be acted on: a run that ended is ended for
@@ -882,12 +895,7 @@ impl AdmittedRuntimeSession {
                 reason: format!("the device certificate does not verify ({error})"),
             });
         }
-        if caller
-            != self
-                .projection
-                .as_ref()
-                .unwrap_or_else(|| self.admission.caller())
-        {
+        if !self.admits(caller) {
             tracing::warn!(
                 caller = ?caller.acting(),
                 "a caller this run was not admitted for tried to act as it"
@@ -935,8 +943,7 @@ impl RuntimeActionProvider {
     fn is_the_person(&self, caller: &Caller) -> bool {
         self.session.as_ref().is_some_and(|session| {
             session.agent.is_none()
-                && (session.projection.as_ref() == Some(caller)
-                    || caller == session.admission.caller())
+                && (session.admits(caller) || caller == session.admission.caller())
         })
     }
 
@@ -1071,7 +1078,7 @@ impl ActionProvider for RuntimeActionProvider {
         if let Some(session) = &self.session {
             // Owner discovery remains the ordinary read path: no per-query
             // identity-store resolution. Opening a result uses retained ownership.
-            if session.projection.as_ref() == Some(caller) {
+            if session.projection.is_some() && session.admits(caller) {
                 if !self.admitted(caller) {
                     return Pending::ready(Err(ActionCallError::NotPermitted));
                 }

@@ -537,7 +537,9 @@ impl Tickets {
             None => (self.0.cert.user_public_key, &self.0.cert.capabilities),
         };
         // A device puts on a ticket only what it holds itself: the same rule every grant follows.
-        let capability = Self::capability(args);
+        // One running on an operating system Tilo does not control adds computers as such.
+        let mut capability = Self::capability(args);
+        capability.foreign |= capabilities.foreign;
         if !capability.grants_no_more_than(capabilities) {
             bail!("this device isn't an administrator, so it can't add one");
         }

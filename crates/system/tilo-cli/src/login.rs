@@ -113,6 +113,41 @@ pub(crate) fn this_device_key() -> Result<SigningKey> {
     Ok(key)
 }
 
+/// `tilo device public-key`: this computer's device key as hex, for [`this_device_public_key`].
+///
+/// # Errors
+/// The key cannot be read or kept.
+pub(crate) fn print_public_key() -> Result<ExitCode> {
+    println!(
+        "{}",
+        hex::encode(this_device_key()?.verifying_key().to_bytes())
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// This computer's device key, made now when it has none, read by a child of this program: a
+/// process that reads the private key is undumpable, and this computer's daemon refuses API
+/// calls from a process whose namespaces it cannot read. A command that calls the daemon after
+/// it knows which device this is keeps the private key out of its process until those calls end.
+///
+/// # Errors
+/// The child cannot run, or says why it could not read or keep the key.
+pub(crate) fn this_device_public_key() -> Result<[u8; 32]> {
+    let tilo = std::env::current_exe().context("finding this program")?;
+    let out = std::process::Command::new(tilo)
+        .args(["device", "public-key"])
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .context("reading this computer's device key")?;
+    if !out.status.success() {
+        bail!("reading this computer's device key failed");
+    }
+    hex::decode(String::from_utf8_lossy(&out.stdout).trim())
+        .ok()
+        .and_then(|key| key.try_into().ok())
+        .ok_or_else(|| anyhow!("reading this computer's device key gave no key"))
+}
+
 pub(crate) fn hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
         .ok()
@@ -543,9 +578,8 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
     crate::identity::convert_earlier()?;
     Ticket::parse(ticket).map_err(|_| not_a_ticket(ticket))?;
     let agent = agent::given(agent);
-    let key = this_device_key()?;
     let login_place = Place::here(crate::identity::paths())?;
-    let place = DaemonPlace::of(login_place.dir(), &key.verifying_key().to_bytes())
+    let place = DaemonPlace::of(login_place.dir(), &this_device_public_key()?)
         .map_err(anyhow::Error::msg)?;
     ensure_daemon(&place)?;
     let runtime = runtime()?;
@@ -570,7 +604,7 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
         Ok::<(), anyhow::Error>(())
     })?;
     // The daemon kept the login; one serving it hands this computer its workspace.
-    let device = load(&login_place)?.ok_or_else(|| anyhow!(LOGIN_DAMAGED))?.1;
+    let (key, device) = load(&login_place)?.ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
     let days = device.cert.expires_at_ns.map_or(0, |end| {
         end.saturating_sub(device.cert.issued_at_ns) / (24 * 3600 * 1_000_000_000)
     });

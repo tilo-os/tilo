@@ -96,9 +96,8 @@ pub fn add(
     login::trust_test_certificates()?;
     crate::identity::convert_earlier()?;
     let login_place = login::Place::here(crate::identity::paths())?;
-    let key = login::this_device_key()?;
-    let here = login::load(&login_place)?;
-    let place = DaemonPlace::of(login_place.dir(), &key.verifying_key().to_bytes())
+    let here = login::load_public(&login_place)?;
+    let place = DaemonPlace::of(login_place.dir(), &login::this_device_public_key()?)
         .map_err(anyhow::Error::msg)?;
     login::ensure_daemon(&place)?;
     let runtime = login::runtime()?;
@@ -109,7 +108,7 @@ pub fn add(
             json: false,
         })?;
         let workspace = match &here {
-            Some((_, device)) => device.workspace.clone(),
+            Some(device) => device.workspace.clone(),
             None => client.founded_workspace().await?,
         };
         let capability = match adding {
@@ -168,8 +167,9 @@ pub fn add(
             .map_err(|error| anyhow!("the certificate: {error}"))?;
         // The person's other devices list it as soon as the host keeps it there. A computer with
         // no login has no session of its own to enter with: the host lists it as it enters.
-        if let Some((key, here)) = &here {
-            match login::connect(key, here, None).await {
+        // The daemon calls are done, so this process may read the private key now.
+        if let Some((key, here)) = login::load(&login_place)? {
+            match login::connect(&key, &here, None).await {
                 Ok(entered) => {
                     let kept = keep_in_list(&entered, &cert).await;
                     entered.close();

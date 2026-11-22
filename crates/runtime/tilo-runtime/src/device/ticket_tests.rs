@@ -409,7 +409,9 @@ fn serve(
 }
 
 /// A daemon of the person's device with no login, governing the workspace it founded, issues a
-/// ticket; a second computer logs in with it and enters that workspace.
+/// ticket; a second computer logs in with it and enters that workspace. The issuer runs on an
+/// operating system Tilo does not control, as a `tilo login` computer does, so it adds the second
+/// computer as one too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_workspace_it_founded()
 {
@@ -420,12 +422,16 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
         state.path().join("issuer"),
         tilo_device_identity::IdentityPaths::under(state.path().join("issuer-keys")),
     );
+    let root = root_in(state.path().to_path_buf());
+    let mut foreign = issuer_cert.clone();
+    foreign.capabilities.foreign = true;
+    sign_device_cert(&mut foreign, &root().unwrap().unwrap()).unwrap();
     let tickets = Tickets::new(
         issuer_key.clone(),
-        issuer_cert.clone(),
+        foreign,
         issuer.endpoint(),
         None,
-        root_in(state.path().to_path_buf()),
+        root,
         Some(Founded {
             workspace: workspace.to_string(),
             name: "Home".into(),
@@ -476,6 +482,10 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
         .unwrap()
         .expect("the desk's login is kept")
         .1;
+    assert!(
+        login.cert.capabilities.foreign,
+        "a foreign issuer adds a foreign computer"
+    );
     assert_eq!(
         login.server_cert.device_public_key,
         issuer

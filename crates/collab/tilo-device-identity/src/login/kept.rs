@@ -35,15 +35,24 @@ impl Place {
     /// certificates its session keeps
     /// (`tilo_identity::provisioning::collaboration_identity_paths`).
     ///
+    /// The directory is made, private to this account, when the computer has never had a login:
+    /// a computer with the person's root issues tickets from it, and one logging in keeps its
+    /// login there.
+    ///
     /// # Errors
-    /// This account has no state directory.
+    /// This account has no state directory, or the directory cannot be made.
     pub fn here(keys: IdentityPaths) -> Result<Self> {
-        Ok(Self {
-            dir: tilo_paths::state_dir()
-                .context("this account has no state directory (no HOME)")?
-                .join("tilo/device"),
-            keys,
-        })
+        let dir = tilo_paths::state_dir()
+            .context("this account has no state directory (no HOME)")?
+            .join("tilo/device");
+        let mut making = std::fs::DirBuilder::new();
+        making.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut making, 0o700);
+        making
+            .create(&dir)
+            .with_context(|| format!("making {}", dir.display()))?;
+        Ok(Self { dir, keys })
     }
 
     /// A login kept in `dir`, with the device key and certificates `keys` names.
@@ -324,6 +333,28 @@ fn held_api_in(place: &Place) -> Result<Option<PathBuf>> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    /// A computer that never had a login has no device directory yet; finding its place makes
+    /// it, so `tilo device add` and `tilo login` both start there.
+    #[test]
+    fn a_computer_that_never_had_a_login_gets_its_device_directory() {
+        let home = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path());
+        env.set("XDG_STATE_HOME", home.path().join("state"));
+        let runtime = home.path().join("run");
+        std::fs::create_dir(&runtime).unwrap();
+        env.set("XDG_RUNTIME_DIR", &runtime);
+        let place = Place::here(IdentityPaths::under(home.path().join("keys"))).unwrap();
+        assert!(place.dir().is_dir(), "{}", place.dir().display());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(place.dir()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "only this account enters it: {mode:o}");
+            holder_dir(place.dir()).expect("the daemon's place is found from it");
+        }
+    }
 
     /// The daemon's socket is found from the certificate, and finding it never makes the process
     /// undumpable: the daemon refuses a connection from a process it cannot read the namespaces
