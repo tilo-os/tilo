@@ -160,7 +160,12 @@ exactly the records the agent reads, and no others. A device that cannot
 open the record a trigger is about is not eligible to take its turn.
 A sub-agent or coding agent that an agent starts is one more actor in the
 chain, so it does no more than everyone before it may. Any device of the
-person an agent belongs to may approve that agent. Any member who may write where an agent is may talk to it,
+person an agent belongs to may approve that agent, and approving it is the
+ticket flow, the one way a key is added: wherever the agent runs (a computer,
+the person's server, tilo.sh) asks with a ticket naming the agent's key, the
+agent shows that ticket while it waits, and a device holding the person's root
+redeems it over `tilo-actions/1` and certifies the key. There is no separate
+proposal queue and no certify protocol beside it. Any member who may write where an agent is may talk to it,
 whoever the agent belongs to. A turn answering a person runs with no more
 than both of them may do: the agent's own grants and the grants of the person
 whose message it answers, the smaller of the two on every resource. An
