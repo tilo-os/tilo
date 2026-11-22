@@ -16,9 +16,9 @@
 //! cause: what a reminder, an event or a sub-agent asks.
 
 use tilo_actions::MemberId;
+use tilolang_tilo::runtime::Value;
 use tilolang_tilo::runtime::rich::RichValue;
 use tilolang_tilo::runtime::store::Store as _;
-use tilolang_tilo::runtime::Value;
 use tilolang_tilo::runtime::value::EnumValue;
 
 use crate::tl_records::{Opened, Packages};
@@ -344,6 +344,19 @@ fn said(opened: &Opened, at: &ResourceRef, asked_about: bool) -> Said {
     }
 }
 
+/// Rich text that mentions `member` as `@name`, then says `then`: what a composer writes when
+/// someone mentions an agent, and so what asks it wherever it is written.
+#[must_use]
+pub fn mentioning(member: &MemberId, name: &str, then: &str) -> Value {
+    let mut rich = RichValue::default();
+    rich.push_reference(
+        &format!("@{name}"),
+        &tilolang_tilo::runtime::rich::Reference::Member(member.clone()),
+    );
+    rich.push_text(then);
+    Value::Rich(rich)
+}
+
 fn agent(id: &MemberId) -> Actor {
     Actor::Member(id.clone())
 }
@@ -410,7 +423,11 @@ pub fn ask(
 ///
 /// # Errors
 /// The package refused it (the ask is no longer owed), or it failed.
-pub fn answer(opened: &mut Opened, agent: &MemberId, ask: &ResourceRef) -> Result<ResourceRef, String> {
+pub fn answer(
+    opened: &mut Opened,
+    agent: &MemberId,
+    ask: &ResourceRef,
+) -> Result<ResourceRef, String> {
     let made = opened.invoke(
         &self::agent(agent),
         (AGENT_APP, "answer"),
@@ -425,12 +442,20 @@ pub fn answer(opened: &mut Opened, agent: &MemberId, ask: &ResourceRef) -> Resul
 ///
 /// # Errors
 /// The reply is no longer working, or the package refused it.
-pub fn say(opened: &mut Opened, agent: &MemberId, reply: &ResourceRef, more: &str) -> Result<(), String> {
+pub fn say(
+    opened: &mut Opened,
+    agent: &MemberId,
+    reply: &ResourceRef,
+    more: &str,
+) -> Result<(), String> {
     opened
         .invoke(
             &self::agent(agent),
             (AGENT_APP, "say"),
-            vec![Value::resource(reply), Value::Rich(RichValue::from_text(more))],
+            vec![
+                Value::resource(reply),
+                Value::Rich(RichValue::from_text(more)),
+            ],
             None,
         )
         .map(drop)
@@ -497,7 +522,11 @@ pub fn claim(
         .invoke(
             &self::agent(agent),
             (AGENT_APP, "claim"),
-            vec![Value::resource(ask), Value::Text(device.into()), Value::Int(at)],
+            vec![
+                Value::resource(ask),
+                Value::Text(device.into()),
+                Value::Int(at),
+            ],
             None,
         )
         .map(drop)

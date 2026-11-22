@@ -37,6 +37,9 @@ use tilolang_tilo::chunk::{self, ChunkNo, Chunks, FIRST};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::runtime::{Actor, InvokeOutcome, ResourceRef, Value};
 
+/// The tilolang runtime's values, references and stores, as a record is read and changed with.
+pub use tilolang_tilo::runtime;
+
 /// The packages a record is read and changed through, compiled once: those the app uses first,
 /// the app itself last.
 #[derive(Clone)]
@@ -51,8 +54,8 @@ impl Packages {
     pub fn compile(sources: &[(&str, &str)]) -> Result<Self, String> {
         let mut compiled: Vec<tilolang_tilo::tilolang::Compiled> = Vec::new();
         for (source, ids) in sources {
-            let lock = tilolang_tilo::tilolang::IdsLock::parse(ids)
-                .map_err(|error| error.to_string())?;
+            let lock =
+                tilolang_tilo::tilolang::IdsLock::parse(ids).map_err(|error| error.to_string())?;
             let imports: Vec<_> = compiled.iter().map(|done| done.meta.clone()).collect();
             let package = tilolang_tilo::tilolang::compile_package(source, &lock, &imports)
                 .map_err(|diagnostics| {
@@ -70,7 +73,9 @@ impl Packages {
     /// The app the record is of: the last package's.
     #[must_use]
     pub fn app(&self) -> &str {
-        self.0.last().map_or("", |package| package.meta.app.as_str())
+        self.0
+            .last()
+            .map_or("", |package| package.meta.app.as_str())
     }
 }
 
@@ -88,7 +93,13 @@ pub fn chunk_of_document(document: &str) -> Option<ChunkNo> {
         return Some(FIRST);
     }
     let number = document.strip_prefix("derived:chunk.")?.strip_suffix('@')?;
-    number.parse().ok()
+    match number.parse() {
+        Ok(chunk) => Some(chunk),
+        Err(_) => tilo_failure::ignored!(
+            "a name that numbers no chunk is no document of the record",
+            None
+        ),
+    }
 }
 
 /// The document chunk `chunk` of a record is kept in.

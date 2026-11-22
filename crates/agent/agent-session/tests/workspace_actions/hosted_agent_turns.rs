@@ -989,3 +989,7 @@ mod shares;
 /// A turn that answers with a view it wrote.
 #[path = "hosted_agent_views.rs"]
 mod views;
+
+/// A mention of the hosted agent asks it, and it answers under the message.
+#[path = "hosted_asked.rs"]
+mod asked;
