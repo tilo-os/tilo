@@ -1242,8 +1242,29 @@ impl Layouts {
         };
         // A window of the person's own is their view's to place, never the layout's: the step
         // keeps the shell this device showed, and laying its windows in would put one back in the
-        // workspace the person moved it from.
+        // workspace the person moved it from. The ones this shell shows stay as they are shown.
         tilo_desktop_model::personal::leave_out_of(&mut owed);
+        keep_personal(workspace, &mut owed);
+        // The step is where the windows stood, not what shows in them: a window that mapped
+        // since the step was kept is shown by its live surface, and the step's older tile (the
+        // app it waited for) would make it a window still to open.
+        let shown: HashMap<u64, TileContent> = workspace
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| (tab.id, tab.tile.clone()))
+            .collect();
+        for tab in owed
+            .strips
+            .iter_mut()
+            .flat_map(|strip| &mut strip.window_groups)
+            .flat_map(|group| &mut group.tabs)
+        {
+            if let Some(tile) = shown.get(&tab.id) {
+                tab.tile.clone_from(tile);
+            }
+        }
         if owed.strips == workspace.strips && owed.layout == workspace.layout {
             return false;
         }
@@ -2589,6 +2610,47 @@ enum NotRead {
     Waiting,
     /// It could not be read.
     Failed(String),
+}
+
+/// Put the windows of the person's own that `shown` shows into `into`, a shell laid over it,
+/// where `shown` has them: in the same group, else a group of their own in the same strip.
+fn keep_personal(shown: &Workspace, into: &mut Workspace) {
+    for strip in &shown.strips {
+        for group in &strip.window_groups {
+            let personal: Vec<_> = group
+                .tabs
+                .iter()
+                .filter(|tab| tab.is_personal())
+                .cloned()
+                .collect();
+            if personal.is_empty() {
+                continue;
+            }
+            if let Some(held) = into
+                .strips
+                .iter_mut()
+                .flat_map(|strip| &mut strip.window_groups)
+                .find(|held| held.id == group.id)
+            {
+                held.tabs.extend(personal);
+                continue;
+            }
+            let mut alone = group.clone();
+            if let Some(first) = personal.first()
+                && !personal.iter().any(|tab| tab.id == alone.active_tab)
+            {
+                alone.active_tab = first.id;
+            }
+            alone.tabs = personal;
+            if let Some(held) = into.strips.iter_mut().find(|held| held.id == strip.id) {
+                held.window_groups.push(alone);
+            } else {
+                let mut kept = strip.clone();
+                kept.window_groups = vec![alone];
+                into.strips.push(kept);
+            }
+        }
+    }
 }
 
 /// What [`Layouts::reached`] found of the workspace's copy.

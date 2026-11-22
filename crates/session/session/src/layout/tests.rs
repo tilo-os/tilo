@@ -1051,6 +1051,111 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
     );
 }
 
+/// A layout step this device keeps while the workspace cannot hold it yet is where the windows
+/// stood, not what shows in them: a window that maps after the step was kept stays the live window
+/// it is when the session shows the step, and is never again a window still to be opened.
+#[test]
+fn a_step_kept_for_the_workspace_leaves_a_window_that_came_since_as_it_shows() {
+    use ed25519_dalek::SigningKey;
+    use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+
+    use crate::engine::Engine;
+
+    let state = tempfile::tempdir().expect("a state directory");
+    let root = SigningKey::from_bytes(&[0x72; 32]);
+    let key = SigningKey::from_bytes(&[0x73; 32]);
+    let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
+    let engine = Arc::new(
+        Engine::open(
+            tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key),
+            Some(state.path()),
+            std::iter::empty(),
+            crate::platform::membership_check::of_this_session(),
+        )
+        .expect("this device's engine opens"),
+    );
+    let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
+    let person = hex::encode(cert.user_public_key);
+    let service = crate::founding_fixture::serve(&engine);
+    let workspace = WorkspaceId::new();
+    pollster::block_on(engine.found(workspace, "Layout")).expect("the workspace is founded");
+    engine.bind(workspace);
+    service.hand_keys(&engine, workspace, service.keys_of(workspace));
+
+    // The person opens Settings: its place waits for the app's window.
+    let mut ids = tilo_desktop_model::IdMinter::new(salt);
+    let (strip, group, tab) = (ids.mint(), ids.mint(), ids.mint());
+    let mut home = Workspace::new(workspace, "Home");
+    home.strips = vec![Strip {
+        id: StripId(strip),
+        name: "Writing".to_owned(),
+        window_groups: vec![WindowGroup {
+            id: group,
+            active_tab: tab,
+            tabs: vec![Tab {
+                id: tab,
+                title: "Settings".to_owned(),
+                tile: TileContent::LocalApp {
+                    app_id: "so.tilo.settings".to_owned(),
+                    label: "Settings".to_owned(),
+                    note: String::new(),
+                },
+                app_title: None,
+                view: String::new(),
+                pinned: false,
+            }],
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        }],
+    }];
+    let mut shown = Layout {
+        workspaces: vec![home],
+        active: workspace,
+        salt,
+        ..Layout::default()
+    };
+    let (wake, _heard) = woken();
+    let desktops = Layouts::new(
+        Arc::new(crate::continuations::Continuations::default()),
+        wake,
+        person.clone(),
+        Some(state.path()),
+    );
+    attach_through_service(&desktops, &engine, &service);
+    drop(service);
+    look(&desktops, &engine, &mut shown);
+    // The workspace cannot take the layout yet: the step that opened Settings is kept.
+    desktops.held(&(workspace, Route::layout()), |held| {
+        held.pending_steps.push(
+            LayoutStep {
+                workspace: shown.workspaces[0].clone(),
+                step: shared_resource::step_message(&person),
+            },
+            None,
+        );
+    });
+
+    // Settings' window maps into its place.
+    let live = TileContent::Foreign {
+        app_id: "so.tilo.settings".to_owned(),
+        surface_id: 7,
+    };
+    shown.workspaces[0].strips[0].window_groups[0].tabs[0].tile = live.clone();
+    shown.external_revision += 1;
+    look(&desktops, &engine, &mut shown);
+    let tile = shown.workspaces[0]
+        .tabs()
+        .find(|shown| shown.id == tab)
+        .map(|shown| shown.tile.clone());
+    assert_eq!(
+        tile,
+        Some(live),
+        "the window that came is still the one shown: {:?}",
+        shown.workspaces[0].strips
+    );
+}
+
 /// A view whose write does not answer before the session ends is kept for the session after, the
 /// person's own windows with it: a desktop that ends cannot wait for its last write.
 #[test]
