@@ -585,6 +585,10 @@ await_owner_question() {
   done
   [ ! -f "$server_dir/serial.log" ] \
     || tr -d '\000' < "$server_dir/serial.log" | grep -viE 'recovery[ _-]?key' | tail -n 60 >&2 || true
+  # The installer says what it is doing on its screen and in its journal,
+  # never on the serial: the screen is what a person at the machine would see.
+  local shot
+  shot="$(server_vm shot "unasked-$label" 2>/dev/null)" && cp -f "$shot" "$out/server-screen-$label.png" || true
   die "the owner's sheet never asked a $kind question ($label)"
 }
 answer_owner() {
