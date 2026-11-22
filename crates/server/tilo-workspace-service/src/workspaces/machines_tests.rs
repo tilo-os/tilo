@@ -2,11 +2,6 @@
 //! takes the workspace's machine before the workspace: what runs the machines
 //! is asked in that order, and a machine that does not come fails the whole.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the host a test binds is a shared handle it keeps until the test ends; dropping it earlier closes the host and releases no lock"
-)]
-
 use std::sync::{Arc, Mutex};
 
 use super::WorkspaceMachines;

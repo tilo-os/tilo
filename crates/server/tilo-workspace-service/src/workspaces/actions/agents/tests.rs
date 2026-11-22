@@ -2,11 +2,6 @@
 //! asking its person first by default; a key a person made for their own
 //! programs is that person, held to what they may.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends"
-)]
-
 use std::sync::{Arc, Mutex};
 
 use ed25519_dalek::SigningKey;

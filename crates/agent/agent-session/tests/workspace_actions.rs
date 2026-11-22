@@ -989,7 +989,6 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
         .server
         .workspace_documents()
         .retained(crate::support::workspace())
-        .await
         .unwrap();
     let (readable, _) = crate::common::member_documents(
         retained
@@ -1252,7 +1251,6 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         .server
         .workspace_documents()
         .retained(crate::support::workspace())
-        .await
         .unwrap();
     let (readable, _) = crate::common::member_documents(
         retained

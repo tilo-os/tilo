@@ -3,10 +3,6 @@
     clippy::expect_used,
     reason = "in a test these are the assertion, not a hazard"
 )]
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "every test here keeps its server and workspace alive to the end"
-)]
 
 use chat::projection::ChatProjection as _;
 use tilo_moderation::{Case, JudgeError, Outcome, Verdict};

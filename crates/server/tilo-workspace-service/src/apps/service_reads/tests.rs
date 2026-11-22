@@ -1,8 +1,3 @@
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "each test's server handle drives the host it reads until the test ends"
-)]
-
 //! A service's resources read for a device: what it holds whole, what it holds nothing of, and
 //! what a chain's head names.
 

@@ -105,6 +105,7 @@ pub(crate) fn hand(connector: &OwnedFd, app: &str, workspace: &str) -> std::io::
         Served::Waiting(waiting) => waiting.push((stream, scope)),
         Served::Open(open) => open.answer(stream, scope),
     }
+    drop(served);
     Ok(())
 }
 

@@ -725,10 +725,6 @@ mod tests {
     /// What this device keeps in the vault it reads back, opened under the document's keys,
     /// with a use written beside it; what it forgets is gone.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the host a test binds has to outlive every step it drives"
-    )]
     async fn what_a_device_keeps_in_the_vault_it_reads_back() {
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = governor();

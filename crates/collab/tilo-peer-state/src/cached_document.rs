@@ -326,7 +326,7 @@ impl CachedDocument {
         {
             return *basis;
         }
-        crate::governance_work::security_basis_worked_out();
+        crate::work::security_basis_worked_out();
         let basis = crate::workspace::media::security_basis_of(self, revocations);
         let _ = self.security_basis.set((revocations.to_vec(), basis));
         basis
@@ -438,7 +438,7 @@ impl CachedDocument {
                         .all(|head| doc.get_change_meta_by_hash(head).is_some())
                 {
                     let added = doc.save_after(&before.heads);
-                    crate::write_work::read(added.len());
+                    crate::work::read(added.len());
                     let since_len = before.since_len().saturating_add(added.len());
                     if since_len.saturating_mul(2) <= before.base.len() {
                         let mut since_digest = (*before.since_digest).clone();
@@ -452,7 +452,7 @@ impl CachedDocument {
                     }
                 }
                 let saved = AutoCommit::clone(committed).save();
-                crate::write_work::read(saved.len());
+                crate::work::read(saved.len());
                 StoredLayout {
                     base_len: saved.len(),
                     base_digest: *blake3::hash(&saved).as_bytes(),
@@ -508,7 +508,7 @@ impl CachedDocument {
                     .all(|head| doc.get_change_meta_by_hash(head).is_some())
             {
                 let added = doc.save_after(&before.heads);
-                crate::write_work::read(added.len());
+                crate::work::read(added.len());
                 let since = before.since_len().saturating_add(added.len());
                 if since.saturating_mul(2) <= before.base.len() {
                     let mut runs = before.since.clone();
@@ -563,7 +563,7 @@ impl CachedDocument {
         }
         // Nothing has kept this state yet: the memo this state was made with
         // holds no base.
-        crate::write_work::read(since.len());
+        crate::work::read(since.len());
         let mut since_digest = Box::new(blake3::Hasher::new());
         since_digest.update(since);
         let _ = self.stored.set(Stored {
@@ -583,7 +583,7 @@ impl CachedDocument {
             #[cfg(test)]
             SERIALIZATIONS.with(|count| count.set(count.get().saturating_add(1)));
             let saved = AutoCommit::clone(&self.doc).save();
-            crate::write_work::read(saved.len());
+            crate::work::read(saved.len());
             saved
         })
     }
@@ -625,7 +625,7 @@ fn join_runs(runs: &mut Vec<Arc<[u8]>>) {
     while let [.., earlier, last] = runs.as_slice()
         && earlier.len() <= last.len().saturating_mul(2)
     {
-        crate::write_work::read(earlier.len().saturating_add(last.len()));
+        crate::work::read(earlier.len().saturating_add(last.len()));
         let joined: Arc<[u8]> = [&**earlier, &**last].concat().into();
         runs.truncate(runs.len().saturating_sub(2));
         runs.push(joined);

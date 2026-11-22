@@ -1063,10 +1063,6 @@ mod tests {
 
     #[cfg(feature = "agents")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "shutdown(self) takes the server at the end, so nothing is left to drop early"
-    )]
     async fn workspace_documents_starts_the_roster_with_the_deployed_flags() {
         #[derive(clap::Parser)]
         struct Command {

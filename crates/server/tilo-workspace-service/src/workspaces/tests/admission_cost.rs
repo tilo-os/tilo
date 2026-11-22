@@ -53,10 +53,7 @@ pub(crate) async fn entry_arrival(
 /// `arrivals` of `members` people coming through the entry: member rows
 /// decoded, signatures checked, whole reads of the governance and replays
 /// of its membership log.
-async fn work_per_arrival(
-    members: u32,
-    arrivals: u32,
-) -> Vec<(tilo_peer_state::governance_work::GovernanceWork, u64)> {
+async fn work_per_arrival(members: u32, arrivals: u32) -> Vec<(tilo_peer_state::work::Work, u64)> {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = test_host(dir.path(), &key, &cert).await;
@@ -67,17 +64,17 @@ async fn work_per_arrival(
         .path()
         .join("workspaces")
         .join(created.workspace_id.to_string())
-        .join(crate::store::GOVERNED_ACCESS_FILE);
+        .join(crate::workspace_files::GOVERNED_ACCESS_FILE);
     let access_len = || std::fs::metadata(&access).map_or(0, |file| file.len());
     let mut work = Vec::new();
     for n in 0..members + arrivals {
-        let _ = tilo_peer_state::governance_work::take();
-        let before = access_len();
+        let before = tilo_peer_state::work::now();
+        let before_access = access_len();
         entry_arrival(&workspaces, &cert, &workspace, n).await;
         if n >= members {
             work.push((
-                tilo_peer_state::governance_work::take(),
-                access_len().saturating_sub(before),
+                tilo_peer_state::work::now().since(before),
+                access_len().saturating_sub(before_access),
             ));
         }
     }
@@ -98,7 +95,7 @@ async fn work_per_arrival(
 /// arrivals, not by each.
 #[tokio::test]
 async fn letting_one_more_person_in_costs_the_same_however_many_are_in() {
-    let middle = |mut work: Vec<(tilo_peer_state::governance_work::GovernanceWork, u64)>| {
+    let middle = |mut work: Vec<(tilo_peer_state::work::Work, u64)>| {
         work.sort_by_key(|(work, access)| {
             (
                 work.identities_decoded,

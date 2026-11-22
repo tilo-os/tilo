@@ -177,10 +177,6 @@ mod tests {
     /// holder's own device asks it in process: an invitation made there reaches it, with the
     /// invitation another device joins by.
     #[tokio::test]
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the service the test binds is shut down at its end, not dropped early"
-    )]
     async fn a_member_asks_its_workspaces_governance_on_the_device_action_service() {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();

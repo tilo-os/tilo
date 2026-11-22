@@ -3,11 +3,6 @@
 //! methods as the wire API does, and destructive governance held back until the
 //! person's own confirmation can be asked for.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
-)]
-
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_actions::InvocationId;

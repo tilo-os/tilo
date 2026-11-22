@@ -1111,10 +1111,9 @@ async fn refound_records(
             workspace = %workspace,
             app = %outcome.app,
             record = %outcome.record,
-            archived = outcome.archived,
-            "a record was refounded and its old history archived"
+            "a record was refounded"
         );
-        let note = format!("archived {} entries", outcome.archived);
+        let note = "refounded".to_owned();
         mark_settled(workspaces, workspace, cert, "refounded", entry, &note).await?;
     }
     Ok(())
@@ -1333,7 +1332,6 @@ async fn settle_invitation_only(
 
 #[expect(
     clippy::too_many_lines,
-    clippy::significant_drop_tightening,
     reason = "one startup sequence; the hosted server lives until shutdown"
 )]
 pub(crate) async fn run(

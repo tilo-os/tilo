@@ -215,7 +215,6 @@ impl Workspaces {
         governed.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
             Ok(collaboration)
         })?;
-        governed.absorb_desktop((app, record), &mut document);
         self.settle(&mut governed).await?;
         Ok(result)
     }

@@ -124,8 +124,9 @@ tilo_agent_session::app_worker!();
 // daemon. The daemon keeps addressing them here.
 #[cfg(not(target_arch = "wasm32"))]
 pub use tilo_workspace_service::{
-    Reaching, app_serving, compaction, device_documents, environment, metrics, payloads, peer,
-    presence_mailbox, service, store, surfaces, workspace, workspace_documents, workspaces,
+    Reaching, app_serving, device_documents, environment, metrics, payloads, peer,
+    presence_mailbox, service, surfaces, workspace, workspace_documents, workspace_files,
+    workspaces,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_workspace_service::{authority_epoch, handshake, workspace_access};
@@ -157,6 +158,7 @@ pub use mesh::{
 };
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
+pub use transport::ContentPeerRegistration;
 pub use transport::{ALPN, Envelope};
 
 /// Semantic version emitted by `tilo-server --version`. Tied to the

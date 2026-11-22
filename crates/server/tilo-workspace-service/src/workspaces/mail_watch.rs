@@ -923,10 +923,6 @@ mod tests {
     /// watch stops with its last listener and starts again where it had
     /// read up to.
     #[tokio::test]
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the host a test binds has to outlive every step it drives"
-    )]
     async fn an_inbox_is_watched_while_somebody_listens_for_its_workspace() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
@@ -991,10 +987,6 @@ mod tests {
     /// start of the message and never the whole, and another workspace's log
     /// holds none of it.
     #[tokio::test]
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the host a test binds has to outlive every step it drives"
-    )]
     async fn what_arrives_is_kept_once_for_its_workspace_alone() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
@@ -1090,10 +1082,6 @@ mod tests {
     /// added is watched, one removed is not, and one whose sign-in changed
     /// is watched with the new one.
     #[tokio::test]
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the host a test binds has to outlive every step it drives"
-    )]
     async fn the_watches_follow_the_accounts_a_workspace_keeps() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();

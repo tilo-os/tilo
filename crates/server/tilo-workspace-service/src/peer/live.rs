@@ -262,10 +262,6 @@ async fn calls_answer(
 
 /// Handle an inbound `Presence`: fan it out to every other subscriber.
 /// Ephemeral, with device attribution stamped from the authenticated session.
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
-)]
 pub(super) async fn handle_presence(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -305,13 +301,6 @@ pub(super) async fn handle_presence(
     }
     if let Some(ws) = ws {
         let mut wr = ws.lock().await;
-        // A device sends presence only to say hello, to ask for a baseline
-        // (`SyncReq`) or after rejecting a checkpoint — each means it needs the
-        // next live checkpoint (the per-device checkpoint check of the live
-        // fan-out).
-        if !attached {
-            wr.request_checkpoint(&peer.device_public_key, session.outbound);
-        }
         wr.fanout_presence(&peer.device_public_key, &env);
         let authority = wr.workspace_authority.clone();
         drop(wr);
@@ -376,10 +365,6 @@ pub(super) async fn handle_host_said(
 /// Handle `DocumentContentWant`: fan a member's request for content out to the
 /// workspace's other members, as presence was fanned out, and answer it here
 /// from what the host keeps ([`answer_content`]).
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
-)]
 pub(super) async fn handle_content_want(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,

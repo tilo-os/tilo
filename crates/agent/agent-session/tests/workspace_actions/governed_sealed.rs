@@ -28,7 +28,7 @@ use tilo_server_protocol::WorkspaceId;
 
 /// The retained bodies `author` wrote to `route`, and whether each is sealed
 /// on the route's channel.
-async fn retained_by(
+fn retained_by(
     hosted: &super::Hosted,
     workspace: WorkspaceId,
     route: &DocumentRoute,
@@ -38,7 +38,6 @@ async fn retained_by(
         .server
         .workspace_documents()
         .retained(workspace)
-        .await
         .unwrap()
         .into_iter()
         .filter(|body| body.author == author)
@@ -69,7 +68,7 @@ async fn until_retained(
 ) -> Vec<bool> {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let sealed = retained_by(hosted, workspace, route, author).await;
+        let sealed = retained_by(hosted, workspace, route, author);
         if sealed.len() >= count {
             return sealed;
         }

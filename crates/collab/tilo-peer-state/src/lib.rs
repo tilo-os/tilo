@@ -12,7 +12,6 @@
 )]
 mod frames;
 pub mod governance;
-pub mod governance_work;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod join_answer;
 pub mod join_log;
@@ -124,7 +123,9 @@ pub mod workspace_membership;
 
 mod admission;
 pub mod resources;
-mod write_work;
+/// The work reading and writing a workspace's history costs, for the whole
+/// process.
+pub mod work;
 pub use admission::{
     AdmissionError, AdmissionReport, DocumentAdmission, DropReason, DroppedInput, InputDisposition,
     MAX_EXACT_ADMISSION_BYTES, MAX_EXACT_ADMISSIONS, MissingPrerequisite, Released, StillHeld,

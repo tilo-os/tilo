@@ -584,6 +584,9 @@ impl SharedOwner {
         if result.is_err() && !self.store.healthy() {
             self.fence_all();
         }
+        if result.is_ok() {
+            crate::work::commit();
+        }
         if policy && result.is_ok() {
             policy_changed();
         }

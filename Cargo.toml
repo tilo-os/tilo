@@ -335,7 +335,6 @@ members = [
     "crates/server/tilo-server-client",
     "crates/server/tilo-server-protocol",
     "crates/server/tilo-server-session",
-    "crates/server/tilo-server-store",
     "crates/server/tilo-workspace-service",
 
     # Media

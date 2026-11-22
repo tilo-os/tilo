@@ -160,7 +160,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
             signature: [0; 64],
         };
         sign_revocation_entry(&mut entry, &user.user_sk).unwrap();
-        tilo_server::store::save_revocations(state.path(), &[entry]).unwrap();
+        tilo_server::workspace_files::save_revocations(state.path(), &[entry]).unwrap();
 
         assert!(
             tilo_test_env::within("client to close", client.recv())
@@ -226,7 +226,7 @@ async fn persisted_revocation_closes_a_member_session_within_a_second() {
         signature: [0; 64],
     };
     sign_revocation_entry(&mut entry, &user.user_sk).unwrap();
-    tilo_server::store::save_revocations(state.path(), &[entry]).unwrap();
+    tilo_server::workspace_files::save_revocations(state.path(), &[entry]).unwrap();
 
     let closed = tokio::time::timeout(std::time::Duration::from_secs(1), async {
         while client.recv().await.is_some() {}

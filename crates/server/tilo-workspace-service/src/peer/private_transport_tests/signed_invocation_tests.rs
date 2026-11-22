@@ -72,6 +72,10 @@ fn signed_by(
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one session's whole setup, its calls and their answers"
+)]
 async fn an_invocation_runs_only_as_the_key_that_signed_it() {
     let (root, user) = UserIdentity::generate("alice", 1);
     let (host, _) = certified_device(&root, user.public_key, "host");
@@ -83,7 +87,6 @@ async fn an_invocation_runs_only_as_the_key_that_signed_it() {
     let mut wr = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
         id,
-        true,
         crate::workspace::Membership::default(),
     )
     .unwrap();
@@ -97,6 +100,7 @@ async fn an_invocation_runs_only_as_the_key_that_signed_it() {
             tx: atx.clone(),
             disconnect: disconnect.clone(),
             content_waiting: Arc::default(),
+            peer: device.clone(),
         });
     }
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(
@@ -113,7 +117,7 @@ async fn an_invocation_runs_only_as_the_key_that_signed_it() {
         version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
         to: host.device_public_key,
     };
-    let served = || recording.0.lock().unwrap().len();
+    let counted = || recording.0.lock().unwrap().len();
     let refused = |answer: Option<Envelope>| match answer {
         Some(Envelope::RemoteActionUndeliverable { refusal, .. }) => refusal,
         other => panic!("expected a refusal, got {other:?}"),
@@ -197,11 +201,11 @@ async fn an_invocation_runs_only_as_the_key_that_signed_it() {
         handle_remote_action(&a, &session, &[id], route(), invoke(retry)).await,
         None
     );
-    let mut reused = asked.clone();
-    reused.target.address.action = "delete".into();
-    let reused = signed_by(id, &reused, &a.cert, &a_key);
+    let mut again = asked.clone();
+    again.target.address.action = "delete".into();
+    let again = signed_by(id, &again, &a.cert, &a_key);
     let Some(Envelope::RemoteAction { frame: answer, .. }) =
-        handle_remote_action(&a, &session, &[id], route(), invoke(reused)).await
+        handle_remote_action(&a, &session, &[id], route(), invoke(again)).await
     else {
         panic!("a reused invocation id is answered");
     };
@@ -214,7 +218,7 @@ async fn an_invocation_runs_only_as_the_key_that_signed_it() {
             },
         })
     );
-    assert_eq!(served(), 2, "only the signed invocation and its retry ran");
+    assert_eq!(counted(), 2, "only the signed invocation and its retry ran");
 
     // Cancelling names an invocation the signer started: it still reaches the
     // provider, which holds it to its caller.
@@ -246,10 +250,10 @@ async fn an_invocation_runs_only_as_the_key_that_signed_it() {
     };
     tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
     holds.revocations.write().unwrap().insert(entry).unwrap();
-    let before = served();
+    let before = counted();
     let revoked = signed_by(id, &request(), &a.cert, &a_key);
     let refusal =
         refused(handle_remote_action(&a, &session, &[id], route(), invoke(revoked)).await);
     assert!(matches!(refusal, Refusal::NotAMember(_)), "{refusal:?}");
-    assert_eq!(served(), before);
+    assert_eq!(counted(), before);
 }

@@ -16,6 +16,10 @@ async fn removed_member_remote_action_is_refused() {
 
 /// No access audit runs here: the handler itself refuses the next frame of
 /// a device revoked or removed while its subscription is still registered.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one session's whole setup, its calls and their answers"
+)]
 async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
     let (root, user) = UserIdentity::generate("alice", 1);
     let (host, _) = certified_device(&root, user.public_key, "host");
@@ -25,7 +29,6 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
     let mut wr = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
         id,
-        true,
         crate::workspace::Membership::default(),
     )
     .unwrap();
@@ -37,6 +40,7 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         tx: atx.clone(),
         disconnect: disconnect.clone(),
         content_waiting: Arc::default(),
+        peer: a.clone(),
     });
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(
         id,
@@ -53,8 +57,6 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         workspaces: &registry,
         outbound: &atx,
         content: Box::leak(Box::default()),
-        state_outbound: None,
-        connection_live: None,
         own_user_public_key: &user.public_key,
         own_device_public_key: &host.cert.device_public_key,
         app_serving: Some(&server),
@@ -69,13 +71,8 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         fetch: None,
         agents: Box::leak(Box::default()),
         environments: Box::leak(Box::default()),
-        positions: None,
-        compactor: None,
-        resumes: Box::leak(Box::default()),
         agent: Box::leak(Box::default()),
-        channel_reader: Box::leak(Box::default()),
         execution: Box::leak(Box::new(tilo_actions::remote::ExecutionLease::mint())),
-        lag: Box::leak(Box::default()),
     };
     let frame = tilo_actions::remote::RemoteActionFrame::new(
         tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
@@ -90,14 +87,14 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
         to: host.device_public_key,
     };
-    let served = || counting.0.load(std::sync::atomic::Ordering::SeqCst);
+    let counted = || counting.0.load(std::sync::atomic::Ordering::SeqCst);
 
     // A current member reaches the app action server through this very path.
     assert_eq!(
         handle_remote_action(&a, &session, &[id], route(), frame.clone()).await,
         None
     );
-    assert_eq!(served(), 1);
+    assert_eq!(counted(), 1);
 
     if remove_membership {
         let workspace = registry.lock().await[&id].clone();
@@ -134,7 +131,7 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         "{refusal}"
     );
     assert_eq!(
-        served(),
+        counted(),
         1,
         "an invalidated device never reaches the app action server"
     );
@@ -196,6 +193,10 @@ fn refusal(frame: &[u8]) -> tilo_actions::remote::ActionCallError {
 /// unanswered, one it abandons, and a host operation it does not serve are
 /// refusals with a reason, never silence the asker waits on forever.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one session's whole setup, its calls and their answers"
+)]
 async fn requests_the_server_does_not_answer_are_refused() {
     let (root, user) = UserIdentity::generate("alice", 1);
     let (host, _) = certified_device(&root, user.public_key, "host");
@@ -205,7 +206,6 @@ async fn requests_the_server_does_not_answer_are_refused() {
     let mut wr = crate::workspace::WorkspaceRuntime::open(
         tmp.path(),
         id,
-        true,
         crate::workspace::Membership::default(),
     )
     .unwrap();
@@ -217,6 +217,7 @@ async fn requests_the_server_does_not_answer_are_refused() {
         tx: atx.clone(),
         disconnect: disconnect.clone(),
         content_waiting: Arc::default(),
+        peer: a.clone(),
     });
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(
         id,
@@ -235,8 +236,6 @@ async fn requests_the_server_does_not_answer_are_refused() {
         workspaces: &registry,
         outbound: &atx,
         content: Box::leak(Box::default()),
-        state_outbound: None,
-        connection_live: None,
         own_user_public_key: &user.public_key,
         own_device_public_key: &host.cert.device_public_key,
         app_serving: Some(&silent),
@@ -251,13 +250,8 @@ async fn requests_the_server_does_not_answer_are_refused() {
         fetch: None,
         agents: Box::leak(Box::default()),
         environments: Box::leak(Box::default()),
-        positions: None,
-        compactor: None,
-        resumes: Box::leak(Box::default()),
         agent: Box::leak(Box::default()),
-        channel_reader: Box::leak(Box::default()),
         execution: Box::leak(Box::new(tilo_actions::remote::ExecutionLease::mint())),
-        lag: Box::leak(Box::default()),
     };
     let route = || RemoteActionRoute {
         workspace_id: id,

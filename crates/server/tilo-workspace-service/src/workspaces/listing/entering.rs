@@ -14,7 +14,6 @@ use crate::handshake::{Admit, EntryFuture};
 use crate::workspace_access::person_device;
 use crate::workspaces::pages::Presented;
 use crate::workspaces::{Carried, Workspaces};
-use tilo_server_protocol::WorkspaceId;
 
 /// A refusal of the join itself, after the entry let the person in.
 const fn refused(reason: String) -> EnterRefusal {
@@ -303,7 +302,6 @@ impl Workspaces {
             Self::admitted(&governed, cert.device_public_key, now)
                 .unwrap_or_else(|error| JoinReply::Refused(error.to_string()))
         };
-        self.retained_for(&reply).await;
         Some(reply)
     }
 }
@@ -331,16 +329,7 @@ impl Workspaces {
             tracing::debug!(%workspace, "an entry's channel request was not the device's own for the workspace's group");
             return;
         }
-        let Some(workspace_id) = WorkspaceId::parse(workspace) else {
-            return;
-        };
-        if !self
-            .inner
-            .host
-            .records
-            .expect_arrival(workspace_id, device)
-            .await
-        {
+        if self.workspace(workspace).await.is_err() {
             return;
         }
         let request = neighbour_wire::NeighbourMsg::MlsAccessRequest {
@@ -419,10 +408,6 @@ fn entered(reply: JoinReply) -> Entered {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::significant_drop_tightening,
-        reason = "the server handle a test binds is a shared handle it keeps until the test ends"
-    )]
     use ed25519_dalek::SigningKey;
     use tilo_server_protocol::directory::{EntryJoin, Listing};
     use tilo_server_protocol::entering::{Entered, Entering, Entry, Through};

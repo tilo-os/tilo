@@ -58,17 +58,6 @@ pub struct Sample {
     pub deltas_received: u64,
     pub deltas_fanned_out: u64,
     pub subscriber_dropped: u64,
-    /// File and directory barriers the server's workspace stores issued
-    /// ([`tilo_server::store::fsyncs`]).
-    pub store_fsyncs: u64,
-    /// Directory entries the stores listed to retain history
-    /// ([`tilo_server::store::listed_entries`]).
-    pub store_listed_entries: u64,
-    /// Thread CPU time compaction spent ([`tilo_server::compaction::cpu_ns`]).
-    pub compaction_cpu_ns: u64,
-    /// Document signatures compaction verified
-    /// ([`tilo_server::compaction::signature_checks`]).
-    pub compaction_signature_checks: u64,
 }
 
 /// The parent's handle on the server process.
@@ -227,10 +216,6 @@ mod affinity {
     }
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server must keep serving until shutdown().await consumes it"
-)]
 async fn serve_server() -> anyhow::Result<()> {
     let mut stdin = BufReader::new(tokio::io::stdin()).lines();
     let setup: Setup = serde_json::from_str(&stdin.next_line().await?.context("no setup")?)?;
@@ -307,10 +292,6 @@ fn sample(server: &Server) -> Sample {
         deltas_received: metrics.deltas_received,
         deltas_fanned_out: metrics.deltas_fanned_out,
         subscriber_dropped: metrics.subscriber_dropped,
-        store_fsyncs: tilo_server::store::fsyncs(),
-        store_listed_entries: tilo_server::store::listed_entries(),
-        compaction_cpu_ns: tilo_server::compaction::cpu_ns(),
-        compaction_signature_checks: tilo_server::compaction::signature_checks(),
     }
 }
 

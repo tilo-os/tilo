@@ -2,11 +2,6 @@
 //! person's device may do is what the workspace's governance lets that person,
 //! and what no workspace decides stays the server's person's.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the server it drives and releases no lock"
-)]
-
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_peer_state::join::Role;

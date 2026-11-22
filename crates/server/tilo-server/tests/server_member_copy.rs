@@ -201,10 +201,6 @@ async fn lease(copies: &Workspaces, id: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the test's server and the state root it keeps stay alive until the test ends"
-)]
 async fn a_devices_own_service_holds_a_workspace_a_server_hosts_as_a_member_copy() {
     let ada = TestUser::fresh("Ada");
     let server_device = ada.enrol("home-server", DeviceCapabilities::member());

@@ -213,10 +213,6 @@ async fn ask_device(tickets: &Tickets, action: &str, args: Value) -> Result<Valu
     clippy::too_many_lines,
     reason = "one person adding a computer, from the ticket to its entry, read top to bottom"
 )]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server answers the laptop's ticket and the desk's entry until it shuts down"
-)]
 async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());

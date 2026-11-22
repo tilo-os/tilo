@@ -246,12 +246,12 @@ fn cmd_status(config: &std::path::Path) -> anyhow::Result<()> {
     durable.dedup();
     println!("durable workspace shards: {}", durable.len());
     for workspace_id in durable {
-        let store = tilo_server::store::WorkspaceStore::open(&cfg.state_root, workspace_id, true)?;
-        let members = store.load_membership()?.len();
-        let retained = store.load_retained()?.len();
-        println!("  {workspace_id}\tmembers={members}\tretained={retained}");
+        let files =
+            tilo_server::workspace_files::WorkspaceFiles::open(&cfg.state_root, workspace_id)?;
+        let members = files.load_membership()?.len();
+        println!("  {workspace_id}\tmembers={members}");
     }
-    if let Some(metrics) = tilo_server::store::load_metrics(&cfg.state_root)? {
+    if let Some(metrics) = tilo_server::workspace_files::load_metrics(&cfg.state_root)? {
         println!("metrics:");
         println!("  connections accepted: {}", metrics.conns_accepted);
         println!("  connections authed:   {}", metrics.conns_authed);

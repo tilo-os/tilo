@@ -163,24 +163,14 @@ async fn a_start_takes_in_a_members_windows_retained_but_never_committed() {
     let message: neighbour_wire::NeighbourMsg = postcard::from_bytes(&opened).unwrap();
     // Retained as the server retains every frame its link admits, and never
     // taken into the governor's copy: the server stopped first.
-    let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
     workspaces
         .inner
-        .host
         .records
         .carry(
             created.workspace_id,
             member.device_public_key,
-            crate::workspace_documents::HostCommit {
-                body: opened,
-                channel,
-                checkpoint: false,
-            },
+            &crate::workspace_documents::HostCommit { body: opened },
         )
-        .await
-        .unwrap()
-        .durable()
-        .await
         .unwrap();
     let mut members_copy = governors_copy(&workspaces, &workspace).await;
     let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = &message else {

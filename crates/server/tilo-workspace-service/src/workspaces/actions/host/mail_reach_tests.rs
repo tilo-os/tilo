@@ -6,11 +6,6 @@
 //! connected to, so nobody maps this server's network or sends a password
 //! into it by naming a mail server.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server handle a test binds is kept until the test ends; dropping it earlier closes what it drives"
-)]
-
 use std::net::{Ipv4Addr, TcpListener};
 
 use serde_json::json;

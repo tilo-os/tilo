@@ -543,15 +543,11 @@ async fn served_answers_with_the_refusal_of_a_write_the_workspace_refused() {
         envelope: Box::new(write.envelope.clone()),
         readers: None,
     };
-    let (channel, retention) =
-        neighbour_wire::retention(&elsewhere, false).expect("the write's channel");
     copies
         .commit_member_document(
             &workspace,
             crate::workspace_documents::HostCommit {
                 body: postcard::to_stdvec(&elsewhere).expect("the write encodes"),
-                channel,
-                checkpoint: retention == neighbour_wire::Retention::Checkpoint,
             },
         )
         .await
@@ -922,10 +918,8 @@ async fn a_copy_taking_in_its_kept_writes_lets_the_devices_other_work_run_meanwh
         loop {
             let kept = copies
                 .inner
-                .host
                 .records
                 .retained(workspace_id)
-                .await
                 .expect("the copy's kept writes read")
                 .iter()
                 .filter(|frame| {

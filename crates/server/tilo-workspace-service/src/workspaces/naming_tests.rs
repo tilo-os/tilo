@@ -1,11 +1,6 @@
 //! The workspace's one name: what its governance records is what its host's
 //! lists and listings name, whoever's permitted device wrote it.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends"
-)]
-
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
 

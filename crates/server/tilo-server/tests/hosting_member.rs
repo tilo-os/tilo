@@ -63,10 +63,6 @@ async fn admitted(client: &ServerClient, workspace_id: WorkspaceId) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each holder after the assertions; the suggested earlier drop would use a moved value"
-)]
 async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
@@ -166,10 +162,6 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each holder after the assertions; the suggested earlier drop would use a moved value"
-)]
 async fn every_device_of_the_governing_person_holds_the_workspace_and_no_one_elses_does() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
@@ -218,10 +210,6 @@ async fn every_device_of_the_governing_person_holds_the_workspace_and_no_one_els
 /// open, though its files stay. Attached again, it serves the workspace from
 /// those files and catches up on what the workspace published meanwhile.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each holder after the assertions; the suggested earlier drop would use a moved value"
-)]
 async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_files() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
@@ -233,7 +221,7 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     let records = member.host.workspace_documents();
-    let retained = || async { records.retained(workspace.workspace_id).await.ok() };
+    let retained = || async { records.retained(workspace.workspace_id).ok() };
 
     workspaces
         .attach_server(
@@ -317,10 +305,6 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
 #[expect(
     clippy::too_many_lines,
     reason = "one scenario per lost holder: its steps and assertions stay together"
-)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each holder after the assertions"
 )]
 async fn losing_any_one_of_three_holders_leaves_the_workspace_writable_and_governed() {
     let alice = TestUser::fresh("Alice");
@@ -544,10 +528,6 @@ fn send_change(
 /// takes a workspace only when its own operator's work setting takes it: one
 /// taking only its own person's work refuses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each holder after the assertions; the suggested earlier drop would use a moved value"
-)]
 async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
@@ -586,10 +566,6 @@ async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
 /// holder reaches the other with its author, also after that holder restarts, and
 /// detached it lets the workspace go.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each holder after the assertions; the suggested earlier drop would use a moved value"
-)]
 #[expect(
     clippy::too_many_lines,
     reason = "one end-to-end scenario: its setup and assertions stay together"
@@ -731,10 +707,6 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     clippy::too_many_lines,
     reason = "one scenario whose servers and sessions live until it ends"
 )]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each holder after the assertions; the suggested earlier drop would use a moved value"
-)]
 async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
@@ -867,10 +839,6 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
     clippy::too_many_lines,
     reason = "one scenario whose servers and sessions live until it ends"
 )]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each server after the assertions; the suggested earlier drop would use a moved value"
-)]
 async fn a_workspace_moves_from_one_server_to_another() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
@@ -1001,10 +969,6 @@ async fn a_workspace_moves_from_one_server_to_another() {
 /// the server no more and says why, and a move to that server leaves the old
 /// one keeping it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each server after the assertions; the suggested earlier drop would use a moved value"
-)]
 async fn a_server_that_does_not_take_the_changes_in_is_not_handed_the_workspace() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
@@ -1067,10 +1031,6 @@ async fn a_server_that_does_not_take_the_changes_in_is_not_handed_the_workspace(
 /// written anywhere for it. Under the workspace's own id the same hand-over
 /// is taken, and its files are the only ones kept.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each device after the assertions; the suggested earlier drop would use a moved value"
-)]
 async fn a_hand_over_names_its_workspace_by_its_id_and_writes_nowhere_else() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
@@ -1155,10 +1115,6 @@ async fn a_hand_over_names_its_workspace_by_its_id_and_writes_nowhere_else() {
 /// their own and hands that over is refused, and the people the first
 /// governor's workspace admits are admitted as before.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each device after the assertions; the suggested earlier drop would use a moved value"
-)]
 async fn a_held_workspace_is_not_taken_from_another_governor() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
@@ -1293,10 +1249,6 @@ async fn admitted_soon(client: &ServerClient, workspace_id: WorkspaceId) {
 /// admits a member's device on its certificate and carries its changes, and
 /// what it writes of who is in the workspace counts nowhere.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each holder after the assertions"
-)]
 async fn another_persons_key_holder_reads_and_serves_but_lets_nobody_in() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
@@ -1388,10 +1340,6 @@ async fn another_persons_key_holder_reads_and_serves_but_lets_nobody_in() {
 /// it admits a member and serves what was written elsewhere, and no holder
 /// gives it the keys, also after the key group moves on to admit a device.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each holder after the assertions"
-)]
 async fn a_store_serves_history_and_never_holds_the_keys() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
@@ -1486,10 +1434,6 @@ async fn a_store_serves_history_and_never_holds_the_keys() {
 /// on every holder, its own copy included, so the group's commit removing it
 /// rotates the keys; made a key holder again it is let back in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each holder after the assertions"
-)]
 async fn a_holders_role_moves_both_ways() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
@@ -1565,10 +1509,6 @@ async fn a_holders_role_moves_both_ways() {
 /// workspace's applications too, so a server that took the workspace over
 /// from the one it was founded on sets them up once that one is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each holder after the assertions"
-)]
 async fn detaching_the_base_maker_hands_the_base_to_another_key_holder() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());

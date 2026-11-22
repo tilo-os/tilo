@@ -189,7 +189,7 @@ async fn revoked_by_someone_else(
         .unwrap();
     other.send(Cmd::Revoke(theirs.clone())).unwrap();
     wait_for("the host to keep their own revocation", || {
-        let logged = tilo_server::store::load_revocations(state);
+        let logged = tilo_server::workspace_files::load_revocations(state);
         let theirs = theirs.clone();
         async move {
             logged
@@ -198,7 +198,7 @@ async fn revoked_by_someone_else(
         }
     })
     .await;
-    let logged = tilo_server::store::load_revocations(state).unwrap();
+    let logged = tilo_server::workspace_files::load_revocations(state).unwrap();
     assert!(
         logged
             .iter()

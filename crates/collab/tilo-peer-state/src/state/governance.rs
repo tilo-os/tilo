@@ -567,7 +567,7 @@ impl PeerGovernance<'_> {
         // role, read in one walk of them: asked person by person, a workspace of hundreds walked
         // every grant for every member.
         let grants = workspace_policy.grants_by_person();
-        crate::governance_work::grants_walked();
+        crate::work::grants_walked();
         let administrator = |root: &[u8; 32]| grants.administers(&hex::encode(root));
         let mut people: BTreeMap<[u8; 32], GovernedMember> = BTreeMap::new();
         // A person is a member by their root, whatever devices of theirs the

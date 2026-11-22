@@ -232,7 +232,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
 
         // Both devices the host enrolled are members of the workspace's one
         // record, so a restart admits them without any second list.
-        let members = tilo_server::store::WorkspaceStore::open(state.path(), WORKSPACE, true)
+        let members = tilo_server::workspace_files::WorkspaceFiles::open(state.path(), WORKSPACE)
             .unwrap()
             .load_membership()
             .unwrap();

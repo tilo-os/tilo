@@ -397,19 +397,20 @@ pub(crate) struct WorkspaceFacts<'a> {
 }
 
 impl<'a> WorkspaceFacts<'a> {
-    pub(crate) const fn current(runtime: &'a WorkspaceRuntime) -> Self {
-        Self {
-            runtime,
-            listed: None,
-        }
-    }
-
     /// The workspace with member devices read from disk by a caller that may not
     /// reload the runtime's set; the replacement ceiling still bounds them.
+    #[cfg(test)]
     pub(crate) const fn with_listed(runtime: &'a WorkspaceRuntime, listed: &'a [[u8; 32]]) -> Self {
         Self {
             runtime,
             listed: Some(listed),
+        }
+    }
+
+    pub(crate) const fn current(runtime: &'a WorkspaceRuntime) -> Self {
+        Self {
+            runtime,
+            listed: None,
         }
     }
 
@@ -500,7 +501,7 @@ pub(crate) fn decide_in(
     op: WorkspaceOperation,
     now_ns: u64,
 ) -> Decision {
-    if let Err(reason) = trust.actor(peer, workspace.runtime.store.workspace_id(), now_ns) {
+    if let Err(reason) = trust.actor(peer, workspace.runtime.workspace_id(), now_ns) {
         return Decision::Deny(reason);
     }
     match crate::environment::environment_of(trust.environments, &peer.device_public_key) {
@@ -523,7 +524,7 @@ pub(crate) fn decide_in(
         let delegated = trust
             .delegation(
                 &peer.device_public_key,
-                workspace.runtime.store.workspace_id(),
+                workspace.runtime.workspace_id(),
                 now_ns,
             )
             .is_some_and(|delegation| delegation.user_public_key == peer.user_public_key);
@@ -572,7 +573,7 @@ fn environment_decision(
     scope: crate::environment::EnvironmentScope,
     op: WorkspaceOperation,
 ) -> Decision {
-    if scope.admits(workspace.runtime.store.workspace_id(), op) {
+    if scope.admits(workspace.runtime.workspace_id(), op) {
         Decision::Admit
     } else {
         Decision::Deny(DenyReason::OutOfEnvironmentScope)
@@ -588,7 +589,7 @@ fn grant_decision(
     scope: tilo_user_identity::AgentScope,
     op: WorkspaceOperation,
 ) -> Decision {
-    let here = workspace.runtime.store.workspace_id();
+    let here = workspace.runtime.workspace_id();
     let reaches = match scope {
         tilo_user_identity::AgentScope::AllWorkspaces => true,
         tilo_user_identity::AgentScope::Workspace(_) => {

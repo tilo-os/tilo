@@ -160,7 +160,7 @@ pub async fn apply_on<R: Resource>(
     .await
     .map_err(|error| error.to_string());
     if applied.is_ok() {
-        workspaces.note_document_write(workspace, app, name);
+        workspaces.wrote(workspace, app, name);
     }
     applied
 }
@@ -265,7 +265,7 @@ where
         .await
         .map_err(|error| error.to_string());
     if applied.is_ok() {
-        workspaces.note_document_write(workspace, app, name);
+        workspaces.wrote(workspace, app, name);
     }
     applied
 }

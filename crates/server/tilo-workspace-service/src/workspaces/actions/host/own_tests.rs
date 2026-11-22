@@ -4,11 +4,6 @@
 //! device on, and their workspaces share what the host gives them and keep no
 //! more of their writes when it is full.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
-)]
-
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::server_account::{self, Reason, ServerAccount};

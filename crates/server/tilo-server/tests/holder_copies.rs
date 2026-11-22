@@ -41,10 +41,6 @@ async fn copies_once(
     clippy::too_many_lines,
     reason = "one scenario: the holders, the outage and the return stay together"
 )]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each holder after the assertions"
-)]
 async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
@@ -182,10 +178,6 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
 /// that holds the workspace beside it reads it among the holders, and takes
 /// in what it decides after the hand-over.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes each holder after the assertions"
-)]
 async fn the_server_a_workspace_was_made_on_is_named_among_its_holders() {
     use tilo_test_env::within;
     let site = TestUser::fresh("Site");
@@ -372,10 +364,6 @@ async fn govern(
 #[expect(
     clippy::too_many_lines,
     reason = "one story: the old build's grant, the hand-over, the stop and the owner's take-out"
-)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "both servers stay up until the owner has taken the stopped one out"
 )]
 async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     use tilo_action_policy::{Answer, Grant, GrantId, Grantee, KindSet, Lifetime, roles};

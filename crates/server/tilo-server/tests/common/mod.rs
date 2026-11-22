@@ -580,25 +580,6 @@ pub async fn connect(
     client
 }
 
-/// Whether the queued deltas in `dir` include one carrying `payload`.
-pub fn queued_carries(dir: &std::path::Path, payload: &[u8]) -> bool {
-    std::fs::read_dir(dir).is_ok_and(|entries| {
-        entries.flatten().any(|entry| {
-            std::fs::read(entry.path())
-                .is_ok_and(|bytes| bytes.windows(payload.len()).any(|w| w == payload))
-        })
-    })
-}
-
-/// How many queued deltas a server's state root holds in `dir`.
-pub fn pending_count(dir: &std::path::Path) -> usize {
-    std::fs::read_dir(dir).map_or(0, |rd| {
-        rd.flatten()
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-            .count()
-    })
-}
-
 /// The next envelope from `client` that `want` accepts: the wait ends as soon
 /// as one arrives, and only a hang reaches the bound.
 pub async fn next(client: &ServerClient, mut want: impl FnMut(&Envelope) -> bool) -> Envelope {

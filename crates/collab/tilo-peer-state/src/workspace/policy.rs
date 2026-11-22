@@ -48,7 +48,7 @@ impl Destination for PolicyData {
 /// changes wrote read again, and nothing else
 /// ([`crate::workspace::rows::touched`]). A state that cannot be placed so (a
 /// change still open, a long or unplaced history, a governance map written
-/// whole) is read whole, and counted as such ([`crate::governance_work`]).
+/// whole) is read whole, and counted as such ([`crate::work`]).
 pub(crate) fn read(document: &automerge::AutoCommit) -> std::sync::Arc<PolicyData> {
     use automerge::transaction::Transactable as _;
     if document.pending_ops() > 0 {
@@ -257,7 +257,7 @@ mod remembered {
 /// [`whole`], uncounted: a test's check of a derived reading.
 #[cfg(test)]
 fn whole_uncounted(document: &automerge::AutoCommit) -> PolicyData {
-    crate::governance_work::uncounted(|| {
+    crate::work::uncounted(|| {
         let mut value = empty();
         let _ = project(document, &mut value);
         value

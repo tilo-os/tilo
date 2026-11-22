@@ -77,7 +77,6 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
             .host
             .workspace_documents()
             .retained(workspace.workspace_id)
-            .await
             .ok()
     };
     applied::reconcile(workspaces).await.unwrap();

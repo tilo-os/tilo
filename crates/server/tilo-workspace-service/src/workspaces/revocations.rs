@@ -126,7 +126,8 @@ impl Workspaces {
             self.forget_push_address_of(&entry.user_public_key, &entry.revoked_device_public_key);
         }
         let fresh = fresh.into_iter().cloned().collect::<Vec<_>>();
-        crate::store::append_revocations(state_root, &fresh).map_err(|error| error.to_string())?;
+        crate::workspace_files::append_revocations(state_root, &fresh)
+            .map_err(|error| error.to_string())?;
         if changed {
             crate::authority_epoch::bump();
         }
@@ -209,13 +210,12 @@ fn crosses_roots(entry: &RevocationEntry, certificates: &[DeviceCert]) -> bool {
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::SigningKey;
-    use tilo_server_protocol::WorkspaceId;
     use tilo_user_identity::{
         DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert,
         sign_revocation_entry,
     };
 
-    use super::super::fixtures::{admit_view_reader, entry_join, governor, test_host};
+    use super::super::fixtures::{admit_view_reader, governor, test_host};
 
     fn revocation(root: &SigningKey, device: [u8; 32]) -> RevocationEntry {
         let mut entry = RevocationEntry {
@@ -241,10 +241,6 @@ mod tests {
     /// nothing of it, moves no admission and no workspace carries it. Ada's
     /// own root's entry still revokes the device everywhere.
     #[tokio::test]
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the server a test binds is kept until it ends; dropping it earlier closes the host the test drives"
-    )]
     async fn another_roots_revocation_of_a_device_is_not_taken() {
         // The authority epoch is the whole process's, which every test that
         // narrows anything bumps: only in a process of its own does the epoch
@@ -275,7 +271,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            crate::store::load_revocations(dir.path())
+            crate::workspace_files::load_revocations(dir.path())
                 .unwrap()
                 .is_empty()
         );
@@ -294,7 +290,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            crate::store::load_revocations(dir.path()).unwrap(),
+            crate::workspace_files::load_revocations(dir.path()).unwrap(),
             vec![own.clone()]
         );
         assert!(workspaces.revocations().refuses(&laptop));
@@ -318,10 +314,6 @@ mod tests {
     /// session alone, and the log still has room for the revocation a member
     /// announces, which lands and ends that device's session.
     #[tokio::test]
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the server a test binds is kept until it ends; dropping it earlier closes the host the test drives"
-    )]
     async fn a_strangers_flood_leaves_room_for_a_members_revocation() {
         // The authority epoch is the whole process's, which every test that
         // narrows anything bumps: only in a process of its own does the epoch
@@ -351,7 +343,7 @@ mod tests {
             .collect::<Vec<_>>();
         workspaces.take_revocations(flood).await.unwrap();
         assert!(
-            crate::store::load_revocations(dir.path())
+            crate::workspace_files::load_revocations(dir.path())
                 .unwrap()
                 .is_empty(),
             "an entry of a root the server does not serve is not kept"
@@ -369,7 +361,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            crate::store::load_revocations(dir.path()).unwrap(),
+            crate::workspace_files::load_revocations(dir.path()).unwrap(),
             vec![own],
             "the member's revocation lands beside nothing of the stranger's"
         );
@@ -386,10 +378,6 @@ mod tests {
     /// and then her laptop. The log keeps every one of them, so the server
     /// refuses each again once it reads the log after a restart.
     #[tokio::test]
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the server a test binds is kept until it ends; dropping it earlier closes the host the test drives"
-    )]
     async fn every_revocation_of_a_served_root_is_kept_across_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
@@ -416,7 +404,7 @@ mod tests {
         server.shutdown().await;
 
         let mut list = tilo_user_identity::RevocationList::new();
-        for entry in crate::store::load_revocations(dir.path()).unwrap() {
+        for entry in crate::workspace_files::load_revocations(dir.path()).unwrap() {
             list.insert(entry).unwrap();
         }
         for entry in &revoked {
@@ -426,198 +414,5 @@ mod tests {
             );
         }
         assert!(list.refuses(&laptop), "the laptop is refused");
-    }
-
-    /// Ada's phone announces, in its identity hello, that her root revoked
-    /// her laptop: a device this workspace never listed, so its governance
-    /// carries no row to keep the revocation on, and the phone's hello is
-    /// the only record of it the workspace's replay holds. Ada is then
-    /// removed, and her phone with her. The host forgets the hellos of
-    /// devices it no longer admits, but not this one: a newcomer still
-    /// learns the revocation, and refuses the laptop.
-    #[tokio::test]
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the server a test binds is kept until it ends; dropping it earlier closes the host the test drives"
-    )]
-    async fn a_hello_that_alone_brings_a_revocation_outlives_its_device() {
-        use crate::workspaces::RemoveMemberRequest;
-        use tilo_peer_state::join::JoinTransportResponse;
-
-        let dir = tempfile::tempdir().unwrap();
-        let (key, cert) = governor();
-        let server = test_host(dir.path(), &key, &cert).await;
-        let workspaces = server.workspaces();
-        let created = workspaces.create("Plans").await.unwrap();
-        let ada = SigningKey::from_bytes(&[21; 32]);
-        let device = |seed: u8, root: &SigningKey| {
-            let key = SigningKey::from_bytes(&[seed; 32]);
-            let mut device = cert.clone();
-            device.user_public_key = root.verifying_key().to_bytes();
-            device.device_public_key = key.verifying_key().to_bytes();
-            device.capabilities = DeviceCapabilities::member();
-            device.issuer = None;
-            sign_device_cert(&mut device, root).unwrap();
-            (key, device)
-        };
-        let (phone_key, phone) = device(23, &ada);
-        let (_, laptop) = device(24, &ada);
-        entry_join(
-            workspaces,
-            &cert,
-            &created.workspace,
-            (&phone_key, &phone),
-            11,
-        )
-        .await;
-
-        // The phone's hello, retained as a member's is, and taken in as the
-        // host takes in a member's notice.
-        let revoked = revocation(&ada, laptop.device_public_key);
-        let hosted = retain_hello(workspaces, created.workspace_id, &phone, &revoked).await;
-        let channel = crate::store::compaction::hello_channel(&phone.device_public_key);
-        workspaces
-            .take_revocations(vec![revoked.clone()])
-            .await
-            .unwrap();
-        let governed = workspaces.workspace(&created.workspace).await.unwrap();
-        assert!(
-            !governed
-                .lock()
-                .await
-                .peer()
-                .revocations()
-                .contains(&revoked),
-            "no row of the workspace's governance carries the laptop's revocation"
-        );
-
-        workspaces
-            .remove_member(
-                &created.workspace,
-                &cert,
-                RemoveMemberRequest {
-                    request_id: [12; 32],
-                    user_public_key: ada.verifying_key().to_bytes(),
-                },
-            )
-            .await
-            .unwrap();
-        let retained =
-            crate::compaction::owner_run(&hosted, move |store| store.channel_entries(&channel))
-                .await
-                .unwrap();
-        assert_eq!(
-            retained.len(),
-            1,
-            "the removed phone's hello is kept for the revocation it alone brings"
-        );
-
-        // A newcomer builds its replica from its join's answer and the
-        // workspace's replay, which carries the phone's hello.
-        let bo = SigningKey::from_bytes(&[25; 32]);
-        let (tablet_key, tablet) = device(26, &bo);
-        let (_, answer) = entry_join(
-            workspaces,
-            &cert,
-            &created.workspace,
-            (&tablet_key, &tablet),
-            13,
-        )
-        .await;
-        let JoinTransportResponse::Complete(joined) = answer else {
-            panic!("the newcomer is admitted: {answer:?}");
-        };
-        assert!(
-            !joined.revocations.contains(&revoked),
-            "the join's answer does not bring it: the hello is its only carrier"
-        );
-        let replica = replica_from(&created.workspace, &cert, &joined, &retained);
-        let known = replica.revocations();
-        assert!(
-            known.contains(&revoked),
-            "the newcomer learns the laptop's revocation"
-        );
-        let mut list = tilo_user_identity::RevocationList::new();
-        for entry in known {
-            list.insert(entry).unwrap();
-        }
-        assert!(list.refuses(&laptop), "and refuses the laptop");
-        drop(governed);
-        server.shutdown().await;
-    }
-
-    /// Retain `device`'s identity hello bringing `revoked` in the workspace
-    /// `workspace_id`, as the host retains a member's. Answers the workspace
-    /// as the host holds it.
-    async fn retain_hello(
-        workspaces: &super::Workspaces,
-        workspace_id: WorkspaceId,
-        device: &tilo_user_identity::DeviceCert,
-        revoked: &RevocationEntry,
-    ) -> crate::workspace::SharedWorkspace {
-        let hello = neighbour_wire::NeighbourMsg::IdentityHello {
-            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-            cert: Box::new(device.clone()),
-            revocations: vec![revoked.clone()],
-        };
-        let channel = crate::store::compaction::hello_channel(&device.device_public_key);
-        let frame = crate::transport::encode(&crate::transport::Envelope::Delta {
-            workspace_id,
-            author_device_public_key: device.device_public_key,
-            authored_at_ns: tilo_clock::unix_now_ns(),
-            delta: crate::coedit::CoeditPayload::Checkpoint {
-                channel,
-                body: postcard::to_stdvec(&hello).unwrap(),
-            }
-            .encode()
-            .unwrap(),
-            signature: [0; 64],
-        })
-        .unwrap();
-        let hosted = workspaces
-            .inner
-            .host
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace_id)
-            .cloned()
-            .unwrap();
-        crate::compaction::owner_run(&hosted, move |store| {
-            store.retain_checkpoint(&channel, &frame)
-        })
-        .await
-        .unwrap();
-        hosted
-    }
-
-    /// The replica a device builds from its join's answer `joined` and the
-    /// `retained` entries its replay brings.
-    fn replica_from(
-        workspace: &str,
-        authority: &tilo_user_identity::DeviceCert,
-        joined: &tilo_peer_state::join::JoinBootstrap,
-        retained: &[crate::store::compaction::ChannelEntry],
-    ) -> tilo_peer_state::StatePeer {
-        let now = tilo_clock::wall();
-        let mut replica = tilo_peer_state::StatePeer::from_join(
-            workspace,
-            authority.clone(),
-            joined.certified_roster.clone(),
-            &joined.revocations,
-            now,
-        )
-        .unwrap();
-        for entry in retained {
-            let message = postcard::from_bytes(&entry.body).unwrap();
-            replica
-                .receive_from(
-                    tilo_peer_state::TransportOrigin::RetainedServerDelta(entry.author),
-                    message,
-                    now,
-                )
-                .unwrap();
-        }
-        replica
     }
 }

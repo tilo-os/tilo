@@ -3,10 +3,6 @@
 //! image, so the server fetches it from the registry that offers the runtime
 //! bundle the package names, verifies it, keeps it, and links against it.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "a test binds the server and the environment it drives until the end"
-)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

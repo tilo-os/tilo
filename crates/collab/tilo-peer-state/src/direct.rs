@@ -522,15 +522,6 @@ struct Admission {
     workspace: tilo_desktop_model::WorkspaceId,
 }
 
-/// The workspace's channel governance as a host retains it, each frame with
-/// its author.
-pub type ChannelHistory = Arc<
-    dyn Fn() -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Vec<([u8; 32], NeighbourMsg)>> + Send>,
-        > + Send
-        + Sync,
->;
-
 struct Inner {
     replica: Replica,
     /// Where this device's engine owns the workspace: frames are admitted into
@@ -562,8 +553,6 @@ struct Inner {
     /// it sends on to its other links, so a member's frame reaches every
     /// member through one path.
     fan_out: std::sync::atomic::AtomicBool,
-    /// Handed with the catch-up ([`DirectSync::with_channel_history`]).
-    channels: Option<ChannelHistory>,
     /// The geneses of the workspace's group this host carries.
     geneses: Geneses,
     /// The other device's store, for a device that keeps none: where a reader
@@ -635,7 +624,6 @@ impl DirectSync {
             ended: watch::channel(None).0,
             replay: Arc::default(),
             fan_out: std::sync::atomic::AtomicBool::new(false),
-            channels: None,
             geneses: Geneses::default(),
             other_store: Arc::default(),
             #[cfg(feature = "test-support")]
@@ -659,7 +647,6 @@ impl DirectSync {
             ended: self.0.ended.clone(),
             replay: Arc::clone(&self.0.replay),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
-            channels: self.0.channels.clone(),
             geneses: Arc::clone(&self.0.geneses),
             other_store: Arc::clone(&self.0.other_store),
             #[cfg(feature = "test-support")]
@@ -667,20 +654,9 @@ impl DirectSync {
         }
     }
 
-    /// Hand every device that links the channel governance `channels` reads,
-    /// with this device's own: the history a link replays keeps sealed records
-    /// only. Call it before cloning the link to its handlers.
-    #[must_use]
-    pub fn with_channel_history(&self, channels: ChannelHistory) -> Self {
-        Self(Arc::new(Inner {
-            channels: Some(channels),
-            ..self.copied()
-        }))
-    }
-
-    /// Keep this workspace's sealed history at `store` and hand it to the
-    /// devices that ask: what a store device does with every link. Call it
-    /// before cloning the link to its handlers.
+    /// Keep this workspace's sealed history and channel governance at `store`
+    /// and hand them to the devices that ask: what a store device does with
+    /// every link. Call it before cloning the link to its handlers.
     #[must_use]
     pub fn with_store(&self, store: Arc<Store>) -> Self {
         Self(Arc::new(Inner {
@@ -921,27 +897,29 @@ impl DirectSync {
         Ok(())
     }
 
-    /// Carry `message`, `from`'s frame the workspace admitted on another
-    /// carrier (a server session), to every device on this link, once: kept at
-    /// this device's store, the history a device that joins later replays, and
-    /// sent live to the devices linked now. A sealed frame the store already
-    /// holds went out when it first arrived, and is not sent again. Returns
-    /// whether it went out.
-    pub fn carry(&self, from: [u8; 32], message: &NeighbourMsg) -> bool {
-        match self.keep(message, false) {
-            Ok(true) => {}
-            Ok(false) => return false,
-            Err(error) => {
-                tracing::warn!(%error, "a carried frame was not kept at the store");
-                return false;
-            }
+    /// Carry `message`, `from`'s signed frame this device took in apart from
+    /// its links (its own service's write, or one it wrote for an agent of
+    /// its own), to every device on this link, once: kept at this device's
+    /// store, the history a device that joins later replays, and sent live to
+    /// the devices linked now. A frame the store already holds went out when
+    /// it first arrived, and is not sent again. Returns whether it went out.
+    ///
+    /// # Errors
+    ///
+    /// The store could not keep it; nothing went out.
+    pub fn carry(&self, from: [u8; 32], message: &NeighbourMsg) -> Result<bool, String> {
+        if !self
+            .keep(message, false)
+            .map_err(|error| error.to_string())?
+        {
+            return Ok(false);
         }
         self.outgoing(Authored {
             from,
             message: message.clone(),
             published: false,
         });
-        true
+        Ok(true)
     }
 
     /// Hand `authored` to every open link; no open link is no error, as the
@@ -950,6 +928,7 @@ impl DirectSync {
         if self.fans_out() {
             self.note_genesis(&authored);
         }
+        self.keep_channel(&authored);
         let author = authored.from;
         let links = self.0.outgoing.send(authored).unwrap_or(0);
         tracing::debug!(
@@ -960,18 +939,20 @@ impl DirectSync {
         );
     }
 
-    /// Take `message`, `from`'s channel governance another carrier admitted
-    /// for this workspace, as a genesis this host carries: one that reaches it
-    /// over a member's server session is not one it sends its links, and a
-    /// device asking after it must be answered with it rather than told the
-    /// channel has none.
-    pub fn remember_genesis(&self, from: [u8; 32], message: &NeighbourMsg) {
-        if self.fans_out() {
-            self.note_genesis(&Authored {
-                from,
-                message: message.clone(),
-                published: false,
-            });
+    /// Keep `authored` at this device's store when it is channel governance
+    /// and this device is the workspace's host on its links: what a device
+    /// that links later joins each channel's group from
+    /// ([`Store::keep_channel`]). Only the host keeps and hands it, so a
+    /// member's older copy never stands in for the newest.
+    fn keep_channel(&self, authored: &Authored) {
+        if !self.fans_out() || !carried_governance(&authored.message) {
+            return;
+        }
+        let (Some(store), Ok(workspace)) = (&self.0.store, self.workspace()) else {
+            return;
+        };
+        if let Err(error) = store.keep_channel(workspace, authored.from, &authored.message) {
+            tracing::warn!(%error, "a channel's governance was not kept at the store; a device that links later asks its members for it");
         }
     }
 
@@ -1306,8 +1287,8 @@ impl DirectSync {
     /// Sync with the device on the other end of `connection` until the link
     /// ends, whichever side dialled: `dialled` names the device this side
     /// dialled, and the side that accepted reads it off the connection.
-    /// What a link starts by sending: the dialling device's catch-up, and the channels' history
-    /// this device hands with it. The device that accepted the dial hands its replica's catch-up
+    /// What a link starts by sending: the dialling device's catch-up, and the channels' governance
+    /// a host hands with it from its store ([`Store::channels`]). The device that accepted the dial hands its replica's catch-up
     /// with the history the other one asks for ([`Self::answer_store`]), where it is judged as
     /// history: on the live stream, what it carries that was written more than the live window ago
     /// was refused as a late frame.
@@ -1317,9 +1298,11 @@ impl DirectSync {
         } else {
             Vec::new()
         };
-        if let Some(channels) = &self.0.channels {
-            let history: Vec<Authored> = channels()
-                .await
+        if let (true, Some(store), Ok(workspace)) =
+            (self.fans_out(), &self.0.store, self.workspace())
+        {
+            let history: Vec<Authored> = store
+                .channels(workspace)
                 .into_iter()
                 .map(|(from, message)| Authored {
                     from,
@@ -1789,6 +1772,19 @@ impl DirectSync {
         Ok(())
     }
 
+    /// Whether `device` may send `workspace`'s frames to this device: a
+    /// certified device of its roster, in its member list, unrevoked and
+    /// unexpired ([`Self::admits`]). What a session's author is checked
+    /// against, at the one point a link's other end is.
+    ///
+    /// # Errors
+    ///
+    /// Why the device may not: it is not in the roster, is revoked, expired,
+    /// or of a person the workspace removed.
+    pub fn admits_author(&self, device: [u8; 32]) -> Result<(), String> {
+        self.admits(device, false)
+    }
+
     /// What the other device may lack: this device's certificate and the
     /// revocations its person signed, then, from a holder of the workspace of
     /// its owning person, the governance and a checkpoint of every document,
@@ -2013,6 +2009,28 @@ impl DirectSync {
     }
 
     /// Take in one frame the other device sent live on the link.
+    /// Admit `message`, `author`'s signed frame, exactly as a frame a link
+    /// brings is admitted: judged as a member's own write is, by its signature,
+    /// its author's sequence on its record and the author's access in the
+    /// workspace now ([`Self::member_history`]), kept at this device's store and
+    /// taken into the workspace's replica. Whether the write's author is a
+    /// device that may send here at all is [`Self::admits_author`], checked
+    /// before this is called, as a link's other end is.
+    ///
+    /// Returns whether the frame waits for history this device lacks, and
+    /// whether the workspace kept it.
+    pub async fn admit_one(&self, author: [u8; 32], message: NeighbourMsg) -> (bool, Option<Kept>) {
+        let history = self.member_history(
+            author,
+            &Authored {
+                from: author,
+                message: message.clone(),
+                published: false,
+            },
+        );
+        self.admit_kept(author, message, false, history).await
+    }
+
     async fn receive_live(
         &self,
         remote: [u8; 32],
@@ -2037,10 +2055,7 @@ impl DirectSync {
             }
             _ => None,
         };
-        let history = self.member_history(remote, &authored);
-        let (lacks_history, kept) = self
-            .admit_kept(authored.from, authored.message, false, history)
-            .await;
+        let (lacks_history, kept) = self.admit_one(authored.from, authored.message).await;
         if lacks_history {
             let _ = link.send(OnlyHere::Ask);
         }

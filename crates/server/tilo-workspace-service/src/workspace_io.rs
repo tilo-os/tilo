@@ -10,16 +10,16 @@ use tokio::sync::{MutexGuard, OwnedMutexGuard, Semaphore, watch};
 
 use crate::membership_watch::DiskGeneration;
 use crate::peer::WorkspaceRegistry;
-use crate::store::{GovernedAccessRecord, StoreError, WorkspaceStore};
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
 use crate::workspace_access::AdmissionMode;
+use crate::workspace_files::{FilesError, GovernedAccessRecord, WorkspaceFiles};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
 const OPEN_WORKERS: usize = 4;
 
-fn io_error(message: impl Into<String>) -> StoreError {
-    StoreError::Io(std::io::Error::other(message.into()))
+fn io_error(message: impl Into<String>) -> FilesError {
+    FilesError::Io(std::io::Error::other(message.into()))
 }
 
 /// The order of one workspace's access-file work. Writes take turns. A read
@@ -126,7 +126,7 @@ impl AccessTurns {
     }
 
     /// Wait until the file holds projection `queued`.
-    async fn projected(&self, queued: u64) -> Result<(), StoreError> {
+    async fn projected(&self, queued: u64) -> Result<(), FilesError> {
         let mut written = self.written.subscribe();
         let written = written
             .wait_for(|written| written.through >= queued)
@@ -153,7 +153,7 @@ impl Drop for WriteTurn {
 
 /// Write governance's queued projections to `workspace`'s file, the latest
 /// each time, until none waits.
-async fn project(workspace: SharedWorkspace, store: WorkspaceStore, turns: AccessTurns) {
+async fn project(workspace: SharedWorkspace, store: WorkspaceFiles, turns: AccessTurns) {
     let (_turn, file) = turns.write().await;
     drop(file);
     loop {
@@ -176,7 +176,9 @@ async fn project(workspace: SharedWorkspace, store: WorkspaceStore, turns: Acces
             // Applied to the runtime already, its narrowing announced: the
             // watch need not announce the file again.
             crate::membership_watch::wrote_own(
-                &file_store.root().join(crate::store::GOVERNED_ACCESS_FILE),
+                &file_store
+                    .root()
+                    .join(crate::workspace_files::GOVERNED_ACCESS_FILE),
                 digest,
             );
             Ok(())
@@ -202,17 +204,17 @@ async fn project(workspace: SharedWorkspace, store: WorkspaceStore, turns: Acces
 }
 
 async fn authorization_io<T: Send + 'static>(
-    operation: impl FnOnce() -> Result<T, StoreError> + Send + 'static,
-) -> Result<T, StoreError> {
+    operation: impl FnOnce() -> Result<T, FilesError> + Send + 'static,
+) -> Result<T, FilesError> {
     match tokio::task::spawn_blocking(operation).await {
         Ok(result) => result,
         Err(error) => Err(io_error(error.to_string())),
     }
 }
 
-async fn authority_handles(workspace: &SharedWorkspace) -> (WorkspaceStore, AccessTurns) {
+async fn authority_handles(workspace: &SharedWorkspace) -> (WorkspaceFiles, AccessTurns) {
     let runtime = workspace.lock().await;
-    (runtime.store.clone(), runtime.authorization.clone())
+    (runtime.files.clone(), runtime.authorization.clone())
 }
 
 /// The handles a membership reload needs, attaching the workspace to the daemon's
@@ -220,11 +222,11 @@ async fn authority_handles(workspace: &SharedWorkspace) -> (WorkspaceStore, Acce
 /// before the watch started, or outlived a stopped one).
 async fn reload_handles(
     workspace: &SharedWorkspace,
-) -> (WorkspaceStore, AccessTurns, Option<DiskGeneration>) {
+) -> (WorkspaceFiles, AccessTurns, Option<DiskGeneration>) {
     let mut runtime = workspace.lock().await;
     let generation = watched_generation(&mut runtime);
     (
-        runtime.store.clone(),
+        runtime.files.clone(),
         runtime.authorization.clone(),
         generation,
     )
@@ -236,7 +238,7 @@ fn watched_generation(runtime: &mut WorkspaceRuntime) -> Option<DiskGeneration> 
         .as_ref()
         .is_some_and(DiskGeneration::is_live)
     {
-        runtime.disk_generation = crate::membership_watch::attach(runtime.store.root());
+        runtime.disk_generation = crate::membership_watch::attach(runtime.files.root());
     }
     runtime.disk_generation.clone()
 }
@@ -258,7 +260,7 @@ fn watched_generation(runtime: &mut WorkspaceRuntime) -> Option<DiskGeneration> 
 /// narrows or widens the exact devices, not the handshake roots.
 pub async fn fresh_membership(
     workspace: &SharedWorkspace,
-) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
+) -> Result<MutexGuard<'_, WorkspaceRuntime>, FilesError> {
     {
         let locking = crate::timing::start();
         let runtime = workspace.lock().await;
@@ -276,7 +278,7 @@ pub async fn fresh_membership(
 
 async fn reload_membership(
     workspace: &SharedWorkspace,
-) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
+) -> Result<MutexGuard<'_, WorkspaceRuntime>, FilesError> {
     let (store, turns, generation) = reload_handles(workspace).await;
     let Some(file) = turns.read().await else {
         // A write is under way: memory holds its removals and none of its
@@ -333,7 +335,7 @@ pub(crate) async fn enrol(
     workspace: &SharedWorkspace,
     cert: &tilo_user_identity::DeviceCert,
     expected_revision: u64,
-) -> Result<(), StoreError> {
+) -> Result<(), FilesError> {
     let governed = {
         let runtime = workspace.lock().await;
         (runtime.admission == AdmissionMode::Governed).then(|| {
@@ -361,7 +363,7 @@ pub(crate) async fn admit_member(
     workspace: &SharedWorkspace,
     device: [u8; 32],
     expected_revision: u64,
-) -> Result<(), StoreError> {
+) -> Result<(), FilesError> {
     let workspace = workspace.clone();
     tokio::spawn(async move {
         let (store, turns) = authority_handles(&workspace).await;
@@ -408,7 +410,7 @@ pub(crate) async fn admit_member(
 pub(crate) async fn replace_membership(
     workspace: &SharedWorkspace,
     members: Vec<[u8; 32]>,
-) -> Result<(), StoreError> {
+) -> Result<(), FilesError> {
     let workspace = workspace.clone();
     tokio::spawn(async move {
         let (store, turns) = authority_handles(&workspace).await;
@@ -462,7 +464,7 @@ pub(crate) async fn replace_governed_access(
     workspace: &SharedWorkspace,
     access: GovernedAccessRecord,
     revoked: Vec<[u8; 32]>,
-) -> Result<Vec<[u8; 32]>, StoreError> {
+) -> Result<Vec<[u8; 32]>, FilesError> {
     let workspace = workspace.clone();
     tokio::spawn(async move {
         // The governor's projection: from here on governance owns who joins.
@@ -530,7 +532,7 @@ pub(crate) async fn replace_governed_access(
             if start {
                 tokio::spawn(project(
                     workspace.clone(),
-                    runtime.store.clone(),
+                    runtime.files.clone(),
                     turns.clone(),
                 ));
             }
@@ -563,7 +565,6 @@ fn reservations() -> &'static Mutex<HashMap<ReservationKey, Opening>> {
 
 async fn open_runtime(
     state_root: std::path::PathBuf,
-    payloads: Arc<dyn crate::payloads::ShellPayloads>,
     workspace_id: WorkspaceId,
     admission: AdmissionMode,
 ) -> OpenResult {
@@ -577,16 +578,10 @@ async fn open_runtime(
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         // Every workspace this host opens, it holds: its own writable copy.
-        let mut runtime = WorkspaceRuntime::open_with_payloads(
-            &state_root,
-            workspace_id,
-            true,
-            Membership::default(),
-            payloads,
-        )?;
+        let mut runtime = WorkspaceRuntime::open(&state_root, workspace_id, Membership::default())?;
         // A governed record on disk keeps the workspace governed.
         runtime.admission = runtime.admission.rebind(admission);
-        Ok::<_, StoreError>(Arc::new(tokio::sync::Mutex::new(runtime)))
+        Ok::<_, FilesError>(Arc::new(tokio::sync::Mutex::new(runtime)))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -601,32 +596,20 @@ pub(crate) async fn evict(workspaces: &WorkspaceRegistry, workspace_id: Workspac
     let Some(workspace) = workspaces.lock().await.remove(&workspace_id) else {
         return;
     };
-    let persistence = {
-        let mut runtime = workspace.lock().await;
-        runtime.evicted = true;
-        runtime.persistence.take()
-    };
+    workspace.lock().await.evicted = true;
     drop(workspace);
-    if let Some(persistence) = persistence {
-        persistence.close().await;
-    }
 }
 
 /// One reserved initialization per registry/ID; reservations count against the
 /// workspace cap. The owner retains the registry Arc (and therefore its identity)
 /// until publication, even when every initial waiter disconnects.
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the opened runtime is moved into the registry under its lock; the lint does not see the move"
-)]
 pub(crate) async fn get_or_initialize(
     workspaces: &WorkspaceRegistry,
     state_root: std::path::PathBuf,
-    payloads: &Arc<dyn crate::payloads::ShellPayloads>,
     workspace_id: WorkspaceId,
     admission: AdmissionMode,
     capacity: usize,
-) -> Result<SharedWorkspace, StoreError> {
+) -> Result<SharedWorkspace, FilesError> {
     let registry_id = Arc::as_ptr(workspaces) as usize;
     let key = (registry_id, workspace_id);
     let mut result = {
@@ -650,9 +633,8 @@ pub(crate) async fn get_or_initialize(
             drop(pending);
             drop(map);
             let registry = workspaces.clone();
-            let payloads = payloads.clone();
             tokio::spawn(async move {
-                let opened = open_runtime(state_root, payloads, workspace_id, admission).await;
+                let opened = open_runtime(state_root, workspace_id, admission).await;
                 let mut map = registry.lock().await;
                 let opened =
                     opened.map(|workspace| map.entry(workspace_id).or_insert(workspace).clone());
@@ -689,7 +671,7 @@ pub async fn admit_for(
     trust: &crate::workspace_access::ServerTrust<'_>,
     peer: &crate::auth::AuthenticatedPeer,
     operation: crate::workspace_access::WorkspaceOperation,
-) -> Result<Result<(), crate::workspace_access::DenyReason>, StoreError> {
+) -> Result<Result<(), crate::workspace_access::DenyReason>, FilesError> {
     use crate::workspace_access::{Decision, DenyReason, decide};
     let (decision, revision) = {
         let runtime = fresh_membership(workspace).await?;
@@ -720,7 +702,7 @@ pub async fn admit_for(
 )]
 mod tests {
     use super::*;
-    use crate::store::test_barrier;
+    use crate::workspace_files::test_barrier;
 
     fn runtime(root: &std::path::Path) -> SharedWorkspace {
         runtime_of(root, 7)
@@ -729,18 +711,13 @@ mod tests {
     fn runtime_of(root: &std::path::Path, id: u128) -> SharedWorkspace {
         // A workspace whose membership is kept: its access record, the one
         // projection of who is a member.
-        WorkspaceStore::open(root, WorkspaceId::from_u128(id), false)
+        WorkspaceFiles::open(root, WorkspaceId::from_u128(id))
             .unwrap()
-            .save_governed_access(&crate::store::GovernedAccessRecord::default())
+            .save_governed_access(&crate::workspace_files::GovernedAccessRecord::default())
             .unwrap();
         Arc::new(tokio::sync::Mutex::new(
-            WorkspaceRuntime::open(
-                root,
-                WorkspaceId::from_u128(id),
-                false,
-                Membership::default(),
-            )
-            .unwrap(),
+            WorkspaceRuntime::open(root, WorkspaceId::from_u128(id), Membership::default())
+                .unwrap(),
         ))
     }
 
@@ -767,7 +744,7 @@ mod tests {
             } else {
                 runtime_of(tmp.path(), id)
             };
-            let root = writer.lock().await.store.root().to_path_buf();
+            let root = writer.lock().await.files.root().to_path_buf();
             let (release, reached) = test_barrier::install(&root, "access-write");
             let member_devices = if id == 7 {
                 vec![[2; 32], [3; 32]]
@@ -934,7 +911,7 @@ mod tests {
         let path = tmp
             .path()
             .join(format!("workspaces/{}", WorkspaceId::from_u128(7)))
-            .join(crate::store::GOVERNED_ACCESS_FILE);
+            .join(crate::workspace_files::GOVERNED_ACCESS_FILE);
         let saved = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
@@ -971,11 +948,13 @@ mod tests {
     async fn failed_replacement_cannot_restore_uncached_external_members() {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = runtime(tmp.path());
-        let store = workspace.lock().await.store.clone();
+        let store = workspace.lock().await.files.clone();
         store.save_membership(&[[1; 32], [2; 32]]).unwrap();
         // This external update has not yet reached the cached routing metadata.
         assert!(workspace.lock().await.membership.devices.is_empty());
-        let path = store.root().join(crate::store::GOVERNED_ACCESS_FILE);
+        let path = store
+            .root()
+            .join(crate::workspace_files::GOVERNED_ACCESS_FILE);
         let saved = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
@@ -1030,7 +1009,7 @@ mod tests {
     async fn fresh_membership_cache_hit_does_not_read_disk() {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = runtime(tmp.path());
-        let store = workspace.lock().await.store.clone();
+        let store = workspace.lock().await.files.clone();
         store.save_membership(&[[1; 32]]).unwrap();
         let watch = crate::membership_watch::spawn_membership_watch(tmp.path());
         warm(&workspace).await;
@@ -1058,7 +1037,7 @@ mod tests {
         let watch = crate::membership_watch::spawn_membership_watch(tmp.path());
         warm(&workspace).await;
         // `tilo-server-admin` edits the file from another process.
-        let external = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+        let external = WorkspaceFiles::open(tmp.path(), WorkspaceId::from_u128(7)).unwrap();
         external.save_membership(&[[1; 32], [2; 32]]).unwrap();
         wait_for_members(&workspace, &[[1; 32], [2; 32]]).await;
         external.save_membership(&[[2; 32]]).unwrap();
@@ -1070,7 +1049,7 @@ mod tests {
     async fn generation_changed_during_read_reloads_again() {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = runtime(tmp.path());
-        let store = workspace.lock().await.store.clone();
+        let store = workspace.lock().await.files.clone();
         store.save_membership(&[[1; 32]]).unwrap();
         let watch = crate::membership_watch::spawn_membership_watch(tmp.path());
         warm(&workspace).await;
@@ -1120,7 +1099,7 @@ mod tests {
         let path = tmp
             .path()
             .join(format!("workspaces/{}", WorkspaceId::from_u128(7)))
-            .join(crate::store::GOVERNED_ACCESS_FILE);
+            .join(crate::workspace_files::GOVERNED_ACCESS_FILE);
         let saved = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
@@ -1217,7 +1196,6 @@ mod tests {
             get_or_initialize(
                 &first_registry,
                 first_root,
-                &crate::payloads::neighbour(),
                 WorkspaceId::from_u128(7),
                 AdmissionMode::Explicit,
                 1,
@@ -1229,7 +1207,6 @@ mod tests {
             get_or_initialize(
                 &registry,
                 root.clone(),
-                &crate::payloads::neighbour(),
                 WorkspaceId::from_u128(8),
                 AdmissionMode::Explicit,
                 1
@@ -1242,7 +1219,6 @@ mod tests {
         let workspace = get_or_initialize(
             &registry,
             root,
-            &crate::payloads::neighbour(),
             WorkspaceId::from_u128(7),
             AdmissionMode::Explicit,
             1,
@@ -1278,7 +1254,6 @@ mod tests {
             get_or_initialize(
                 &first_registry,
                 first_root,
-                &crate::payloads::neighbour(),
                 WorkspaceId::from_u128(7),
                 AdmissionMode::Explicit,
                 1,
@@ -1286,11 +1261,9 @@ mod tests {
             .await
         });
         reached.await.unwrap();
-        let payloads = crate::payloads::neighbour();
         let mut second = Box::pin(get_or_initialize(
             &registry,
             root.clone(),
-            &payloads,
             WorkspaceId::from_u128(7),
             AdmissionMode::Explicit,
             1,
@@ -1314,7 +1287,6 @@ mod tests {
             get_or_initialize(
                 &registry,
                 root,
-                &crate::payloads::neighbour(),
                 WorkspaceId::from_u128(7),
                 AdmissionMode::Explicit,
                 1

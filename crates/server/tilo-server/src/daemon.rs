@@ -39,9 +39,9 @@ pub enum ServerError {
     /// Iroh endpoint bind / accept.
     #[error("iroh: {0}")]
     Iroh(String),
-    /// On-disk persistence.
-    #[error("store: {0}")]
-    Store(#[from] crate::store::StoreError),
+    /// The host's files beside the device store.
+    #[error("files: {0}")]
+    Files(#[from] crate::workspace_files::FilesError),
     /// Config load / save.
     #[error("config: {0}")]
     Config(#[from] crate::config::ConfigError),
@@ -64,7 +64,7 @@ impl From<crate::service::ServiceError> for ServerError {
         use crate::service::ServiceError;
         match error {
             ServiceError::Identity(reason) => Self::Identity(reason),
-            ServiceError::Store(error) => Self::Store(error),
+            ServiceError::Files(error) => Self::Files(error),
             ServiceError::Io(error) => Self::Io(error),
             ServiceError::GovernedAccess(reason) => Self::GovernedAccess(reason),
             ServiceError::Workspaces(reason) => {
@@ -96,7 +96,7 @@ pub fn with_persisted_revocations(
         device_cert,
         mut revocations,
     } = identity;
-    for entry in crate::store::load_revocations(state_root)? {
+    for entry in crate::workspace_files::load_revocations(state_root)? {
         revocations
             .insert(entry)
             .context("verify persisted server revocation")?;
@@ -381,7 +381,7 @@ impl Server {
     /// Returns [`ServerError::Identity`] if `identity` fails validation
     /// (bad signature, wrong chain, revoked, or not host-capable),
     /// [`ServerError::Io`] if the state root can't be created,
-    /// [`ServerError::Store`] if the persistent iroh secret can't be
+    /// [`ServerError::Files`] if the persistent iroh secret can't be
     /// loaded, and [`ServerError::Iroh`] if
     /// the listen address is invalid or the endpoint fails to bind.
     pub async fn start(cfg: ServerConfig, identity: ServerIdentity) -> Result<Self, ServerError> {
@@ -894,7 +894,7 @@ impl Server {
         if let Err(error) = self.router.shutdown().await {
             tracing::debug!(%error, "server router shutdown task failed");
         }
-        self.sessions.shutdown().await;
+        self.sessions.shutdown();
         if let Some(packet_relay) = std::mem::take(&mut self.iroh_packet_relay)
             && let Err(error) = packet_relay.shutdown().await
         {
@@ -966,11 +966,6 @@ impl Server {
         self.endpoint.clone()
     }
 
-    /// The compactor keeping this server's retained document channels short.
-    pub fn compactor(&self) -> &crate::compaction::Compactor {
-        &self.web.server.compactor
-    }
-
     /// The local sockets the server's endpoint is bound to.
     #[must_use]
     pub fn bound_sockets(&self) -> Vec<std::net::SocketAddr> {
@@ -1036,8 +1031,20 @@ impl Server {
     /// In-process access to the records of the workspaces this server hosts,
     /// for a service embedded in the host process.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "records are read only where the server keeps workspaces"
+    )]
     pub fn workspace_documents(&self) -> crate::workspace_documents::WorkspaceDocuments {
-        self.sessions.workspace_documents()
+        self.workspaces()
+            .expect("records are read only where the server keeps workspaces")
+            .workspace_documents()
+    }
+
+    /// This server's own device key.
+    #[must_use]
+    pub fn device_signing_key(&self) -> &ed25519_dalek::SigningKey {
+        &self.sessions.identity.signing_key
     }
 }
 
@@ -1428,7 +1435,7 @@ fn spawn_revocation_refresh_task(
         loop {
             let change = watch.next().await;
             if change.kind == tilo_files::ChangeKind::Rescan
-                || change.path.as_str() == crate::store::REVOCATIONS_FILE
+                || change.path.as_str() == crate::workspace_files::REVOCATIONS_FILE
             {
                 refresh.reload();
             }
@@ -1446,7 +1453,7 @@ struct RevocationRefresh {
 
 impl RevocationRefresh {
     fn reload(&mut self) {
-        let Ok(entries) = crate::store::load_revocations(&self.state_root) else {
+        let Ok(entries) = crate::workspace_files::load_revocations(&self.state_root) else {
             return;
         };
         if self.applied.as_ref() == Some(&entries) {
@@ -1474,7 +1481,9 @@ fn spawn_metrics_persist_task(state_root: PathBuf, live_metrics: Arc<Metrics>) -
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            if let Err(error) = crate::store::save_metrics(&state_root, &live_metrics.snapshot()) {
+            if let Err(error) =
+                crate::workspace_files::save_metrics(&state_root, &live_metrics.snapshot())
+            {
                 tracing::warn!(%error, "could not persist server metrics snapshot");
             }
         }
@@ -1594,10 +1603,6 @@ impl std::fmt::Debug for DiscoveryProtocol {
 }
 
 impl ProtocolHandler for DiscoveryProtocol {
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace handle is consumed by the match that reads admission; there is nothing left to drop early"
-    )]
     #[allow(
         clippy::too_many_lines,
         reason = "one authenticated discovery exchange keeps authorization, workspace lookup, content proof, and response framing in one security-reviewed sequence"

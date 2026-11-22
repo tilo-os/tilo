@@ -43,10 +43,6 @@ async fn page_cert(root: &SigningKey, label: &str) -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "async Server::shutdown consumes the server; the suggested later drop is a use-after-move"
-)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record() {
     // Alice runs the host her workspace lives on, and her desktop is another

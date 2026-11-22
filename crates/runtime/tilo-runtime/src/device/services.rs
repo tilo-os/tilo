@@ -792,10 +792,6 @@ impl tilo_api::session::Here for Daemon {
             .collect()
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the provider is moved into the session it answers"
-    )]
     fn enter(&self, workspace: &str) -> Result<tilo_api::session::Reached, String> {
         let provider = self
             .provider_for(workspace)

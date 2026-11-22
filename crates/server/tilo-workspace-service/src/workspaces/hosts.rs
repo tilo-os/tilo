@@ -479,7 +479,6 @@ impl Workspaces {
             .ok_or("only a device keeping the workspace hands its changes over")?;
         let cursors = self
             .take_store_of(
-                workspace,
                 workspace_id,
                 address.endpoint_addr,
                 address.device_certificate.device_public_key,
@@ -552,17 +551,15 @@ impl Workspaces {
 
     /// Take in what `device` at `addr`, one keeping `workspace`
     /// (`workspace_id`), keeps of it and this device's store lacks, over the
-    /// workspace's device link, into this device's history and its copy as
-    /// a cold start takes what only the link kept
-    /// ([`Self::keep_link_history`]), so a page and the content kept here
-    /// read it at once. Answers where this device's store stands then.
+    /// workspace's device link, into this device's one store as a cold start
+    /// takes a workspace in, so a page and the content kept here read it at
+    /// once. Answers where this device's store stands then.
     ///
     /// # Errors
     ///
     /// No link serves the workspace here, or its changes could not be taken in.
     async fn take_store_of(
         &self,
-        workspace: &str,
         workspace_id: WorkspaceId,
         addr: EndpointAddr,
         device: [u8; 32],
@@ -581,12 +578,9 @@ impl Workspaces {
                     hex::encode(device)
                 )
             })?;
-        // What the server's history already held its copy follows: only
-        // what the link alone kept is replayed into it, once it is kept.
-        if self.keep_link_history(workspace, workspace_id).await > 0 {
-            self.carried_through(workspace_id).await;
-            self.replay(workspace).await;
-        }
+        // The store it took is the one it keeps: every change it holds is in
+        // its own history already, and what its copy needs of them follows
+        // from there.
         Ok(cursors)
     }
 
@@ -795,7 +789,7 @@ impl Workspaces {
         } else if let Some(addr) = addr.or(known) {
             match self.reach_host(device, addr.clone()).await {
                 Ok(reached) => {
-                    self.take_store_of(workspace, workspace_id, addr, device)
+                    self.take_store_of(workspace_id, addr, device)
                         .await
                         .map_err(|error| {
                             format!("the server keeps the workspace still: {error}")

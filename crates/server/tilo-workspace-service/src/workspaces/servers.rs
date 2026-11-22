@@ -1314,17 +1314,18 @@ async fn enter(
 }
 
 impl super::Workspaces {
-    /// Tell whoever follows the workspace's documents that this device wrote
-    /// the record `record` of `app` in `workspace` itself, as a member's write
+    /// Tell whoever follows the workspace's records that this device wrote the
+    /// record `record` of `app` in `workspace` itself, as a member's write
     /// tells them ([`super::ResourceWrite`]): a follower that keeps the record
     /// current hears its own changes too.
-    pub(super) fn note_document_write(&self, workspace: &str, app: &str, record: &str) {
+    ///
+    /// This is the one notice an admitted frame and a local write both raise,
+    /// from the single point each reaches, so a watcher hears a write once.
+    pub(crate) fn wrote(&self, workspace: &str, app: &str, record: &str) {
         let _ = self.inner.document_writes.send(super::ResourceWrite {
             workspace: workspace.to_owned(),
             app: app.to_owned(),
             record: record.to_owned(),
-            #[cfg(feature = "agents")]
-            carried: super::repaired_documents::Carried::default(),
         });
     }
 }

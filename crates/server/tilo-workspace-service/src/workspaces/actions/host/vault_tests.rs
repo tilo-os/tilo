@@ -4,10 +4,6 @@
 //! another workspace reaches none of it, and an agent its member's device
 //! handed its session to reads it while its changes ask its person.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server's handle a test binds is kept until the test ends; dropping it earlier closes the server it drives"
-)]
 #![allow(
     clippy::too_many_lines,
     reason = "a vault's tests walk one subject each, whole"

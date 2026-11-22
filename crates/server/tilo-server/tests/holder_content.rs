@@ -92,10 +92,6 @@ async fn content_blobs(holder: &Server, workspace: &str) -> Option<u32> {
 /// although no member of the workspace holds it, before A counts it handed
 /// over. A then goes away at once, and B serves the same bytes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the servers stay live until their consuming shutdown"
-)]
 async fn a_holder_added_to_a_workspace_fetches_the_content_its_records_name() {
     let alice = TestUser::fresh("Alice");
     let first = alice.enrol("first-server", DeviceCapabilities::member());
@@ -187,10 +183,6 @@ async fn a_holder_added_to_a_workspace_fetches_the_content_its_records_name() {
 /// what its records name is measured against what its store holds each time
 /// it comes up, never remembered as done.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the servers stay live until their consuming shutdown"
-)]
 async fn a_holder_stopped_before_it_fetched_fetches_when_it_starts_again() {
     let alice = TestUser::fresh("Alice");
     let first = alice.enrol("first-server", DeviceCapabilities::member());
@@ -282,10 +274,6 @@ async fn a_holder_stopped_before_it_fetched_fetches_when_it_starts_again() {
 /// what its store holds, read afresh whenever either changes, never a count
 /// kept from the moment it took the copy.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the servers stay live until their consuming shutdown"
-)]
 async fn a_holder_says_how_much_content_it_lacks_until_it_keeps_it() {
     let alice = TestUser::fresh("Alice");
     let first = alice.enrol("first-server", DeviceCapabilities::member());

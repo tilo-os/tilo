@@ -3,11 +3,6 @@
 //! the workspaces this host keeps for them, an agent's grant reads only what
 //! it reaches, and nobody keeps or reads another person's.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server handle a test binds is kept until the test ends; dropping it earlier closes the host it drives"
-)]
-
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::{ActionCallError, ActionProvider as _, InvokeRequest, ReceiptStatus};
@@ -791,8 +786,6 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
         fetch: None,
         agents: crate::peer::AgentRegistry::default(),
         environments: crate::environment::EnvironmentRegistry::default(),
-        positions: None,
-        compactor: None,
     };
     let (_client, end) = tokio::io::duplex(65_536);
     let (read, write) = tokio::io::split(end);

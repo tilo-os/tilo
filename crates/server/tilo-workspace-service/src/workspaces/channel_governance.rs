@@ -4,8 +4,6 @@
 //! service the host runs waits here, one queue per workspace, until the
 //! service takes it.
 
-use std::sync::Arc;
-
 use super::{Carried, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
@@ -14,23 +12,16 @@ use tilo_server_protocol::WorkspaceId;
 const MAX_QUEUED_CHANNEL_NOTICES: usize = 16_384;
 
 impl Workspaces {
-    /// Publish channel governance messages as this server's own, once what the
-    /// workspace's governance already handed its store is durable: a channel's
-    /// group is built on it.
-    ///
-    /// They are retained, which carries them to the members' server sessions
-    /// and to whoever catches up later, and handed to the workspace's direct
-    /// link, which carries them to the member devices it holds. A member
-    /// linked directly hears nothing the server retains: without the link, the
-    /// host's access request never reaches the key holders that could admit
-    /// it, nor its genesis or commits, so a host is never let into a channel
-    /// a member opened while every member's request reaches the host. The
-    /// link already carries what members send each other; this is the
-    /// host's own side of the same exchange.
+    /// Publish channel governance messages as this server's own: each is kept
+    /// at the device store and carried on the workspace's link, to the member
+    /// devices linked now and to whoever links later. Without it the host's
+    /// access request never reaches the key holders that could admit it, nor
+    /// its genesis or commits, so a host is never let into a channel a member
+    /// opened while every member's request reaches the host.
     ///
     /// # Errors
     ///
-    /// The messages could not be retained, or this host holds no such
+    /// The messages could not be kept, or this host holds no such
     /// workspace.
     pub async fn publish_governance(
         &self,
@@ -41,34 +32,26 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let (workspace_id, publisher) = {
-            let governed = governed.lock().await;
-            (governed.workspace_id(), Arc::clone(&governed.publisher))
-        };
-        self.retain_channel_governance(workspace_id, messages.clone())
-            .await?;
-        publisher.flushed().await;
-        if let Some(link) = self.inner.direct.link(workspace_id) {
-            for message in messages {
-                if let Err(error) = link.send(message) {
-                    tracing::debug!(%workspace, %error, "channel governance did not reach the workspace's link");
-                }
-            }
-        }
-        Ok(())
+        let workspace_id = governed.lock().await.workspace_id();
+        let own = self.inner.records.device();
+        self.keep_channel_governance(workspace_id, own, &messages)
     }
 
-    /// Retain channel governance messages as this server's own.
-    pub(super) async fn retain_channel_governance(
+    /// Keep `author`'s channel governance `messages` and carry them on the
+    /// workspace's link.
+    fn keep_channel_governance(
         &self,
         workspace_id: WorkspaceId,
-        messages: Vec<neighbour_wire::NeighbourMsg>,
+        author: [u8; 32],
+        messages: &[neighbour_wire::NeighbourMsg],
     ) -> Result<(), String> {
-        for admission in self
-            .enqueue_channel_governance(workspace_id, messages)
-            .await?
-        {
-            admission.durable().await?;
+        for message in messages {
+            let body = postcard::to_stdvec(message).map_err(|error| error.to_string())?;
+            self.inner.records.carry(
+                workspace_id,
+                author,
+                &crate::workspace_documents::HostCommit { body },
+            )?;
         }
         Ok(())
     }
@@ -105,11 +88,8 @@ impl Workspaces {
     /// service it runs also queues it for that service, which settles the
     /// groups.
     ///
-    /// What the server already kept as the member's own write
-    /// ([`Carried::Kept`]) is not kept again as the host's: each member's
-    /// request was written to the workspace twice, a second job on its
-    /// one-at-a-time queue for every request a crowd sends, and sent twice
-    /// to every device that admits others.
+    /// What the workspace's link already kept and carried
+    /// ([`Carried::Kept`]) is not kept again.
     pub(super) async fn take_governance(
         &self,
         workspace: &str,
@@ -147,16 +127,8 @@ impl Workspaces {
         {
             self.channel_notice(workspace, message.clone())?;
         }
-        let genesis = matches!(&message, neighbour_wire::NeighbourMsg::MlsGovernance { .. })
-            .then(|| message.clone());
         if carried != Carried::Kept {
-            self.retain_channel_governance(workspace_id, vec![message])
-                .await?;
-        }
-        if let Some(genesis) = genesis
-            && let Some(link) = self.inner.direct.link(workspace_id)
-        {
-            link.remember_genesis(author, &genesis);
+            self.keep_channel_governance(workspace_id, author, &[message])?;
         }
         Ok(())
     }
@@ -174,7 +146,7 @@ impl Workspaces {
             let workspaces = self.clone();
             let workspace = workspace.to_owned();
             tokio::spawn(async move {
-                if let Err(error) = workspaces.take_channel_notices(&workspace).await {
+                if let Err(error) = workspaces.take_channel_notices(&workspace) {
                     tracing::warn!(%workspace, %error, "the workspace's channels did not take their notices");
                 }
             });
@@ -185,7 +157,7 @@ impl Workspaces {
     /// Hand `workspace`'s channel service every queued notice: the workspace's
     /// own governance is retained before the channel governance a service
     /// built on it decides them with.
-    pub(super) async fn take_channel_notices(&self, workspace: &str) -> Result<(), String> {
+    pub(super) fn take_channel_notices(&self, workspace: &str) -> Result<(), String> {
         let sink = self
             .inner
             .host
@@ -200,19 +172,6 @@ impl Workspaces {
                 .remove(workspace);
             return Ok(());
         };
-        let governed = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let publisher = {
-            let governed = governed.lock().await;
-            Arc::clone(&governed.publisher)
-        };
-        // Whatever settle handed over is retained before the channel
-        // governance a service derives from it.
-        let flushing = crate::timing::start();
-        publisher.flushed().await;
-        crate::timing::event("channels.notices.flushed", flushing, 0);
         // Taken under the service: notices that queue while it works start the
         // next hand-over, which takes all of them at once.
         let waiting = self
@@ -230,38 +189,4 @@ impl Workspaces {
         sink.take(waiting);
         Ok(())
     }
-    /// Queue channel governance messages in the host's order as this
-    /// server's own, without waiting for them to be durable.
-    async fn enqueue_channel_governance(
-        &self,
-        workspace_id: WorkspaceId,
-        messages: Vec<neighbour_wire::NeighbourMsg>,
-    ) -> Result<Vec<crate::workspace_documents::WorkspaceAdmission>, String> {
-        let mut admissions = Vec::with_capacity(messages.len());
-        for message in messages {
-            let commit = channel_commit(&message)?;
-            admissions.push(
-                self.inner
-                    .host
-                    .records
-                    .enqueue(workspace_id, commit)
-                    .await?,
-            );
-        }
-        Ok(admissions)
-    }
-}
-
-/// A channel governance message, retained as this server's own.
-fn channel_commit(
-    message: &neighbour_wire::NeighbourMsg,
-) -> Result<crate::workspace_documents::HostCommit, String> {
-    let (channel, retention) = neighbour_wire::retention(message, false)
-        .ok_or("channel governance has no retention channel")?;
-    let body = postcard::to_stdvec(message).map_err(|error| error.to_string())?;
-    Ok(crate::workspace_documents::HostCommit {
-        body,
-        channel,
-        checkpoint: retention == neighbour_wire::Retention::Checkpoint,
-    })
 }

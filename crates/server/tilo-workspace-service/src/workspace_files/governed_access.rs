@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use tilo_files::native::migration::Format;
 use tilo_lock::MutexRecover as _;
 
-use super::{GovernedAccessRecord, StoreError, WorkspaceStore, atomic_write};
+use super::{FilesError, GovernedAccessRecord, WorkspaceFiles, atomic_write};
 
 /// The access log of a governed workspace.
 pub const GOVERNED_ACCESS_FILE: &str = "governed-access.log";
@@ -70,9 +70,9 @@ fn header() -> Vec<u8> {
     bytes
 }
 
-fn frame(change: &Change) -> Result<Vec<u8>, StoreError> {
-    let body = postcard::to_stdvec(change).map_err(|error| StoreError::Json(error.to_string()))?;
-    let len = u32::try_from(body.len()).map_err(|error| StoreError::Json(error.to_string()))?;
+fn frame(change: &Change) -> Result<Vec<u8>, FilesError> {
+    let body = postcard::to_stdvec(change).map_err(|error| FilesError::Json(error.to_string()))?;
+    let len = u32::try_from(body.len()).map_err(|error| FilesError::Json(error.to_string()))?;
     let mut bytes = Vec::with_capacity(body.len().saturating_add(FRAMING));
     bytes.extend_from_slice(&len.to_le_bytes());
     bytes.extend_from_slice(&body);
@@ -120,8 +120,8 @@ fn apply(held: &mut GovernedAccessRecord, change: Change) {
 }
 
 /// The version a log's header names.
-fn stored_version(bytes: &[u8]) -> Result<u32, StoreError> {
-    let refused = |reason: &str| StoreError::Json(format!("governed access log: {reason}"));
+fn stored_version(bytes: &[u8]) -> Result<u32, FilesError> {
+    let refused = |reason: &str| FilesError::Json(format!("governed access log: {reason}"));
     let (magic, rest) = bytes
         .split_first_chunk::<8>()
         .ok_or_else(|| refused("no header"))?;
@@ -136,10 +136,10 @@ fn stored_version(bytes: &[u8]) -> Result<u32, StoreError> {
 
 /// The access a log's `bytes` hold and the length of their frames that
 /// hold together: a frame a crash cut short ends the log.
-fn read(bytes: &[u8]) -> Result<(GovernedAccessRecord, usize), StoreError> {
+fn read(bytes: &[u8]) -> Result<(GovernedAccessRecord, usize), FilesError> {
     let version = stored_version(bytes)?;
     if version != FORMAT.version {
-        return Err(StoreError::Json(format!(
+        return Err(FilesError::Json(format!(
             "governed access log: version {version}, not {}",
             FORMAT.version
         )));
@@ -170,14 +170,14 @@ fn read(bytes: &[u8]) -> Result<(GovernedAccessRecord, usize), StoreError> {
     Ok((access, valid))
 }
 
-impl WorkspaceStore {
+impl WorkspaceFiles {
     /// Load the governed access this workspace's log holds; `None` when the
     /// workspace has none. A frame a crash cut short is cut off the file.
     ///
     /// # Errors
     ///
     /// The log cannot be read, or is not an access log of this version.
-    pub(crate) fn load_governed_access(&self) -> Result<Option<GovernedAccessRecord>, StoreError> {
+    pub(crate) fn load_governed_access(&self) -> Result<Option<GovernedAccessRecord>, FilesError> {
         let path = self.root.join(GOVERNED_ACCESS_FILE);
         let mut bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
@@ -190,7 +190,7 @@ impl WorkspaceStore {
         let stored = stored_version(&bytes)?;
         bytes = FORMAT
             .bring_up(&path, bytes, stored)
-            .map_err(|error| StoreError::Json(error.to_string()))?;
+            .map_err(|error| FilesError::Json(error.to_string()))?;
         let (access, valid) = read(&bytes)?;
         if valid < bytes.len() {
             let kept = u64::try_from(valid).unwrap_or(u64::MAX);
@@ -229,7 +229,7 @@ impl WorkspaceStore {
     pub(crate) fn save_governed_access(
         &self,
         access: &GovernedAccessRecord,
-    ) -> Result<([u8; 32], u64), StoreError> {
+    ) -> Result<([u8; 32], u64), FilesError> {
         #[cfg(test)]
         super::test_barrier::pause(&self.root, "access-write");
         let path = self.root.join(GOVERNED_ACCESS_FILE);
@@ -279,7 +279,6 @@ impl WorkspaceStore {
                     let mut file = fs::OpenOptions::new().append(true).open(&path)?;
                     file.write_all(&bytes)?;
                     file.sync_data()?;
-                    super::credit_fsyncs(1);
                     let mut next = current.access.clone();
                     apply(&mut next, change);
                     current.access = next;
@@ -342,7 +341,7 @@ mod tests {
     #[test]
     fn an_admission_appends_its_change_and_the_log_reads_back() {
         let dir = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(dir.path(), WorkspaceId::from_u128(7), false).unwrap();
+        let store = WorkspaceFiles::open(dir.path(), WorkspaceId::from_u128(7)).unwrap();
         let mut devices = Vec::new();
         let mut appended = Vec::new();
         for n in 0..60_u8 {
@@ -359,7 +358,7 @@ mod tests {
             "the 51st member's write ({} B) is no larger than the 11th's ({small} B)",
             appended[50]
         );
-        let reopened = WorkspaceStore::open(dir.path(), WorkspaceId::from_u128(7), false).unwrap();
+        let reopened = WorkspaceFiles::open(dir.path(), WorkspaceId::from_u128(7)).unwrap();
         assert_eq!(
             reopened.load_governed_access().unwrap(),
             Some(access(&devices, &[200]))
@@ -369,7 +368,7 @@ mod tests {
             .save_governed_access(&access(&devices, &[201]))
             .unwrap();
         assert_eq!(
-            WorkspaceStore::open(dir.path(), WorkspaceId::from_u128(7), false)
+            WorkspaceFiles::open(dir.path(), WorkspaceId::from_u128(7))
                 .unwrap()
                 .load_governed_access()
                 .unwrap(),
@@ -386,7 +385,7 @@ mod tests {
     #[test]
     fn a_change_cut_short_is_dropped_whole() {
         let dir = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(dir.path(), WorkspaceId::from_u128(7), false).unwrap();
+        let store = WorkspaceFiles::open(dir.path(), WorkspaceId::from_u128(7)).unwrap();
         store.save_governed_access(&access(&[1, 2], &[9])).unwrap();
         let path = dir
             .path()
@@ -403,7 +402,7 @@ mod tests {
             .unwrap()[..20],
         );
         fs::write(&path, &torn).unwrap();
-        let reopened = WorkspaceStore::open(dir.path(), WorkspaceId::from_u128(7), false).unwrap();
+        let reopened = WorkspaceFiles::open(dir.path(), WorkspaceId::from_u128(7)).unwrap();
         assert_eq!(
             reopened.load_governed_access().unwrap(),
             Some(access(&[1, 2], &[9]))
@@ -413,7 +412,7 @@ mod tests {
             .save_governed_access(&access(&[1, 2, 4], &[9]))
             .unwrap();
         assert_eq!(
-            WorkspaceStore::open(dir.path(), WorkspaceId::from_u128(7), false)
+            WorkspaceFiles::open(dir.path(), WorkspaceId::from_u128(7))
                 .unwrap()
                 .load_governed_access()
                 .unwrap(),

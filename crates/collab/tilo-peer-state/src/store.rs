@@ -14,6 +14,12 @@
 //! holds. A store kept one file per frame before segments
 //! ([`FRAMES_VERSION`]); opening one moves its frames into segments once.
 //!
+//! Beside its frames, a store keeps each workspace's channel governance: for
+//! each route a channel's group frames take ([`neighbour_wire::retention`]),
+//! the newest frame, one file each under `channels/<workspace>/`
+//! ([`Store::keep_channel`]). A device that links later joins each channel's
+//! group from them.
+//!
 //! Retention has three sources and no others: a frame's author retiring its
 //! own earlier frames by publishing a checkpoint ([`Store::retain`]), the
 //! appetite the store was opened with ([`Appetite`]), and the compaction an
@@ -49,14 +55,16 @@ pub enum Appetite {
 }
 
 /// Where a subscriber stands on one lineage: it holds every frame up to
-/// `after_seq` and asks for the ones after it.
+/// `after_seq` and asks for the ones after it. A subscriber that holds none
+/// of a lineage names no cursor for it, and is sent the lineage from its
+/// first frame, a checkpoint at sequence number 0 included.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub struct Cursor {
     /// The lineage it resumes.
     pub lineage: Lineage,
-    /// The last sequence number it holds; `0` for a device that holds none.
+    /// The last sequence number it holds.
     pub after_seq: u64,
 }
 
@@ -90,6 +98,9 @@ pub enum Retained {
     New,
     /// It held it already, byte for byte.
     Duplicate,
+    /// Its author's newer checkpoint on its lineage covers it: the store
+    /// holds that one, which retired it, and keeps nothing of this one.
+    Covered,
     /// The store held another frame at its author's sequence number on its
     /// lineage, with other bytes: it now holds both, and serves both.
     Beside,
@@ -168,6 +179,8 @@ struct Held {
     /// closed when too many are open.
     appends: u64,
     limits: Limits,
+    /// The order the newest channel frame was kept in ([`Store::keep_channel`]).
+    channel_order: u64,
 }
 
 /// How long segments grow and when one is written again.
@@ -208,6 +221,20 @@ struct Workspace {
     /// Records of retired frames still in their segments, by segment and
     /// offset: the retirement records naming them are kept until they go.
     retired: BTreeSet<(u32, u64)>,
+    /// The newest channel governance frame of each route.
+    channels: BTreeMap<[u8; 32], Channel>,
+}
+
+/// A channel governance frame a store keeps, as its file holds it.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Channel {
+    /// When it was kept, among the workspace's channel frames: they are
+    /// served in that order, a group's genesis before what builds on it.
+    order: u64,
+    author: [u8; 32],
+    /// The frame, as postcard [`NeighbourMsg`].
+    #[serde(with = "serde_bytes")]
+    bytes: Vec<u8>,
 }
 
 /// What the store knows of one segment.
@@ -278,6 +305,7 @@ impl Writer {
         self.file.sync_data()?;
         *synced = written;
         drop(synced);
+        crate::work::commit();
         Ok(())
     }
 
@@ -479,12 +507,22 @@ impl Store {
                 writers: 0,
                 appends: 0,
                 limits,
+                channel_order: 0,
             }),
         };
         let holders = store.stored_holders()?;
+        let channels = store.stored_channels()?;
         {
             let mut held = store.held.lock_recover();
             store.read_segments(&mut held)?;
+            for (workspace, route, channel) in channels {
+                held.channel_order = held.channel_order.max(channel.order);
+                held.workspaces
+                    .entry(workspace)
+                    .or_default()
+                    .channels
+                    .insert(route, channel);
+            }
             if kept < FRAMES_VERSION {
                 store.pack_frame_files(&mut held)?;
             }
@@ -585,7 +623,7 @@ impl Store {
     /// Returns an error when the frame cannot be written. The store does not
     /// serve it then.
     pub fn retain(&self, workspace: WorkspaceId, frame: &Frame) -> Result<Retained, StoreError> {
-        self.retain_from(workspace, frame, false)
+        self.retain_from(workspace, frame, false, true)
     }
 
     /// [`Self::retain`] a frame one of the device's links brought it: the
@@ -599,7 +637,23 @@ impl Store {
         workspace: WorkspaceId,
         frame: &Frame,
     ) -> Result<Retained, StoreError> {
-        self.retain_from(workspace, frame, true)
+        self.retain_from(workspace, frame, true, true)
+    }
+
+    /// Keep `frame` though a newer frame of its lineage exists, when a move
+    /// found no checkpoint of that newer frame's author and record it could
+    /// be read against: a frame with nothing covering it is kept rather than
+    /// dropped. The store serves it as any frame it keeps.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::retain`].
+    pub fn keep_uncovered(
+        &self,
+        workspace: WorkspaceId,
+        frame: &Frame,
+    ) -> Result<Retained, StoreError> {
+        self.retain_from(workspace, frame, false, false)
     }
 
     /// Whether the store's first copy of `frame` came over one of the device's
@@ -623,6 +677,7 @@ impl Store {
         workspace: WorkspaceId,
         frame: &Frame,
         from_link: bool,
+        cover: bool,
     ) -> Result<Retained, StoreError> {
         let bytes = postcard::to_allocvec(&frame.message)?;
         let record = frame_record(frame, &bytes)?;
@@ -642,6 +697,9 @@ impl Store {
                         .any(|entry| entry.seq == frame.seq && entry.check == check)
                 {
                     return Ok(Retained::Duplicate);
+                }
+                if cover && newest_checkpoint(entries).is_some_and(|newest| newest > frame.seq) {
+                    return Ok(Retained::Covered);
                 }
                 if entries.iter().any(|entry| entry.seq == frame.seq)
                     || stored
@@ -702,6 +760,7 @@ impl Store {
         }
         retire_to_appetite(&self.root, self.appetite, &mut held);
         drop(held);
+        crate::work::frame_written(len);
         Ok(outcome)
     }
 
@@ -750,18 +809,21 @@ impl Store {
                 .iter()
                 .filter(|cursor| cursor.lineage == *lineage)
                 .map(|cursor| cursor.after_seq)
-                .max()
-                .unwrap_or(0);
+                .max();
             let Some(first) = entries.first().map(|entry| entry.seq) else {
                 continue;
             };
-            if first > after.saturating_add(1) {
+            if first > after.unwrap_or(0).saturating_add(1) {
                 replay.floors.push(Floor {
                     lineage: *lineage,
                     earliest_seq: first,
                 });
             }
-            let from = entries.partition_point(|entry| entry.seq <= after);
+            // A subscriber with no cursor holds none of the lineage, a
+            // checkpoint at sequence number 0 included.
+            let from = after.map_or(0, |after| {
+                entries.partition_point(|entry| entry.seq <= after)
+            });
             if let Some(rest) = entries.get(from..)
                 && !rest.is_empty()
             {
@@ -814,6 +876,7 @@ impl Store {
             *rest = after;
         }
         drop(held);
+        crate::work::frames_read(u64::try_from(carried).unwrap_or(u64::MAX), carried_bytes);
         Ok(replay)
     }
 
@@ -837,10 +900,15 @@ impl Store {
             if stored.writer.is_some() {
                 held.writers = held.writers.saturating_sub(1);
             }
-            match fs::remove_dir_all(holders_dir(&self.root, workspace)) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
+            for dir in [
+                holders_dir(&self.root, workspace),
+                channels_dir(&self.root, workspace),
+            ] {
+                match fs::remove_dir_all(dir) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
             }
             held.bytes = held.bytes.saturating_sub(stored.bytes);
             let frames = stored.lineages.values().map(Vec::len).sum::<usize>();
@@ -945,6 +1013,84 @@ impl Store {
         Ok(retired)
     }
 
+    /// Keep `message`, `author`'s channel governance for `workspace`, as the
+    /// newest frame of its route, synced before this returns: a group's
+    /// genesis is kept for good, its newest commit and the copy its joiners
+    /// join from replace the ones before, and so does each device's newest
+    /// access request. Returns whether the store holds anything new; a frame
+    /// that is not channel governance is not kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the frame cannot be written. The store keeps
+    /// the frame before it then.
+    pub fn keep_channel(
+        &self,
+        workspace: WorkspaceId,
+        author: [u8; 32],
+        message: &NeighbourMsg,
+    ) -> Result<bool, StoreError> {
+        if message.governance_workspace().is_none() {
+            return Ok(false);
+        }
+        let Some((route, neighbour_wire::Retention::Checkpoint)) =
+            neighbour_wire::retention(message, false)
+        else {
+            return Ok(false);
+        };
+        let bytes = postcard::to_allocvec(message)?;
+        let mut held = self.held.lock_recover();
+        if held
+            .workspaces
+            .get(&workspace)
+            .and_then(|stored| stored.channels.get(&route))
+            .is_some_and(|kept| kept.author == author && kept.bytes == bytes)
+        {
+            return Ok(false);
+        }
+        let channel = Channel {
+            order: held.channel_order.saturating_add(1),
+            author,
+            bytes,
+        };
+        let path = channels_dir(&self.root, workspace).join(hex::encode(route));
+        tilo_files::native::atomic::write_creating_parent(
+            &path,
+            &postcard::to_allocvec(&channel)?,
+        )?;
+        held.channel_order = channel.order;
+        held.workspaces
+            .entry(workspace)
+            .or_default()
+            .channels
+            .insert(route, channel);
+        drop(held);
+        Ok(true)
+    }
+
+    /// `workspace`'s channel governance, each frame with its author, in the
+    /// order the store kept them ([`Self::keep_channel`]).
+    #[must_use]
+    pub fn channels(&self, workspace: WorkspaceId) -> Vec<([u8; 32], NeighbourMsg)> {
+        let mut kept: Vec<Channel> = self
+            .held
+            .lock_recover()
+            .workspaces
+            .get(&workspace)
+            .map(|stored| stored.channels.values().cloned().collect())
+            .unwrap_or_default();
+        kept.sort_by_key(|channel| channel.order);
+        kept.into_iter()
+            .filter_map(|channel| match NeighbourMsg::decode(&channel.bytes) {
+                Ok(message) => Some((channel.author, message)),
+                Err(error) => {
+                    tracing::warn!(%error, "a kept channel frame does not decode; it is not served");
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// The segments `workspace` keeps, and their bytes: what a diagnostic
     /// shows and a test of the layout reads.
     #[must_use]
@@ -985,6 +1131,34 @@ impl Store {
                     found.push((id, device, cursors));
                 } else {
                     tracing::warn!(path = %file.display(), "not what a device holds; skipped");
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    /// Every workspace's channel frames, as [`Store::open`] reads them. A file
+    /// that is not one is skipped, as a stray segment is.
+    fn stored_channels(&self) -> Result<Vec<(WorkspaceId, [u8; 32], Channel)>, StoreError> {
+        let mut found = Vec::new();
+        for workspace in directories(&self.root.join(CHANNELS))? {
+            let Some(id) = workspace
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(WorkspaceId::parse)
+            else {
+                continue;
+            };
+            for file in files(&workspace)? {
+                let route = file
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(<[u8; 32] as hex::FromHex>::from_hex);
+                let channel = postcard::from_bytes::<Channel>(&fs::read(&file)?);
+                if let (Some(Ok(route)), Ok(channel)) = (route, channel) {
+                    found.push((id, route, channel));
+                } else {
+                    tracing::warn!(path = %file.display(), "not a channel frame; skipped");
                 }
             }
         }
@@ -1502,6 +1676,12 @@ fn frames_version(root: &Path) -> Result<u32, StoreError> {
 }
 /// Where the store keeps what each device said it holds, per workspace.
 const HOLDERS: &str = "holders";
+/// Where the store keeps each workspace's channel governance.
+const CHANNELS: &str = "channels";
+
+fn channels_dir(root: &Path, workspace: WorkspaceId) -> PathBuf {
+    root.join(CHANNELS).join(workspace.to_string())
+}
 
 /// A workspace, a device of it, and where that device said it stands.
 type HeldBy = (WorkspaceId, [u8; 32], Vec<Cursor>);
@@ -2672,6 +2852,90 @@ mod tests {
         assert_eq!(
             reopened.retain(workspace(), &one).unwrap(),
             Retained::Duplicate
+        );
+    }
+
+    /// A checkpoint at sequence number 0 is served to a device that holds
+    /// none of its lineage, and not to one that holds it. A frame its
+    /// author's newer checkpoint covers is not kept, as a restart would not
+    /// keep it either.
+    #[test]
+    fn a_checkpoint_at_zero_is_served_and_a_covered_frame_is_not_kept() {
+        let (dir, store) = open();
+        let key = device(3);
+        let base = frame(&key, 0, ContentRetention::Checkpoint);
+        assert_eq!(store.retain(workspace(), &base).unwrap(), Retained::New);
+        let fresh = store.replay(workspace(), &[], Budget::default()).unwrap();
+        assert_eq!(fresh.frames, vec![base.message.clone()]);
+        assert!(fresh.floors.is_empty());
+        let holding = store
+            .replay(workspace(), &[cursor(base.lineage, 0)], Budget::default())
+            .unwrap();
+        assert!(
+            holding.frames.is_empty(),
+            "a device holding it is not sent it again"
+        );
+
+        let newer = frame(&key, 5, ContentRetention::Checkpoint);
+        assert_eq!(store.retain(workspace(), &newer).unwrap(), Retained::New);
+        assert!(
+            !store.holds_frame(workspace(), &base).unwrap(),
+            "the newer checkpoint retired it"
+        );
+        let older = frame(&key, 3, ContentRetention::Delta);
+        assert_eq!(
+            store.retain(workspace(), &older).unwrap(),
+            Retained::Covered
+        );
+        let before = store.stands(workspace());
+        drop(store);
+        let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+        assert_eq!(
+            reopened.stands(workspace()),
+            before,
+            "a restart retires nothing more"
+        );
+        assert_eq!(
+            reopened
+                .replay(workspace(), &[], Budget::default())
+                .unwrap()
+                .frames,
+            vec![newer.message]
+        );
+    }
+
+    /// A keystroke costs the store one frame, of bounded bytes, however much
+    /// history the record already holds: what a newcomer later replays, one
+    /// frame per keystroke.
+    #[test]
+    fn a_keystroke_costs_the_store_one_bounded_frame() {
+        const KEYSTROKES: u64 = 256;
+        /// A frame per keystroke, with the record header and fields around it.
+        const PER_KEYSTROKE: u64 = 1_024;
+        let (_dir, store) = open();
+        let key = device(7);
+        for seq in 1..=KEYSTROKES {
+            let before = store.bytes();
+            store
+                .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
+                .unwrap();
+            let grew = store.bytes().saturating_sub(before);
+            assert!(
+                grew <= PER_KEYSTROKE,
+                "keystroke {seq} cost {grew} bytes, over {PER_KEYSTROKE}"
+            );
+        }
+        assert!(
+            store.bytes() <= KEYSTROKES.saturating_mul(PER_KEYSTROKE),
+            "a record of {KEYSTROKES} keystrokes costs {} bytes",
+            store.bytes()
+        );
+        let replayed = store.replay(workspace(), &[], Budget::default()).unwrap();
+        assert!(!replayed.more, "one round holds it");
+        assert_eq!(
+            u64::try_from(replayed.frames.len()).unwrap(),
+            KEYSTROKES,
+            "a newcomer replays one frame per keystroke"
         );
     }
 }

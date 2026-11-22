@@ -1,9 +1,5 @@
 //! A returning browser's device and the workspace's entry: what the workspace refuses
 //! of a device it knows, and whom it admits instead.
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
-)]
 
 use super::tests::{governor, signed_pre_admission, test_host};
 use super::*;

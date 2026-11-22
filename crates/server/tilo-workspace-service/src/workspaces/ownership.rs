@@ -205,10 +205,6 @@ mod tests {
     /// its owner, the grant that named them is gone, and the host stays in it
     /// as an administrator. The next start changes nothing.
     #[tokio::test]
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "each start binds the server it drives until it shuts it down at the end"
-    )]
     async fn a_kept_workspace_is_handed_to_its_person_at_the_next_start() {
         let dir = tempfile::tempdir().unwrap();
         let host = governor();
@@ -247,10 +243,6 @@ mod tests {
     /// it was kept for still governs it, as an administrator: nobody it was
     /// kept for is left without a say.
     #[tokio::test]
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the host a test binds has to outlive every step it drives"
-    )]
     async fn every_other_person_a_workspace_was_kept_for_stays_its_administrator() {
         let dir = tempfile::tempdir().unwrap();
         let host = governor();

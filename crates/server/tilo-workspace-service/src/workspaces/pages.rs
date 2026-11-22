@@ -1344,10 +1344,8 @@ impl Workspaces {
         .await
     }
 
-    /// Admit the device `presented` names with its invitation, then answer
-    /// once the governance that admitted it is retained
-    /// ([`Self::retained_for`]): what a session entering with an invitation,
-    /// or through an entry, is answered.
+    /// Admit the device `presented` names with its invitation: what a session
+    /// entering with an invitation, or through an entry, is answered.
     pub(crate) async fn redeem_on_connection(
         &self,
         presented: Presented,
@@ -1387,22 +1385,8 @@ impl Workspaces {
             }
         }
         crate::timing::event("join.prove.admitted", proving, 0);
-        let retaining = crate::timing::start();
-        self.retained_for(&reply).await;
-        crate::timing::event("join.prove.retained", retaining, 0);
         crate::timing::event("join.prove", proving, 0);
         Ok(reply)
-    }
-
-    /// Wait, off the workspace's lock, until the governance that admitted the
-    /// device `reply` answers is retained. The page subscribes as soon as it
-    /// hears it is in: a replay that began before that governance was written
-    /// would tell it the workspace without it, and its channels would wait for
-    /// the catch-up to learn it may read them.
-    pub(super) async fn retained_for(&self, reply: &JoinReply) {
-        if let JoinReply::Admitted { workspace_id, .. } = reply {
-            self.inner.host.records.settled(*workspace_id).await;
-        }
     }
 
     #[expect(

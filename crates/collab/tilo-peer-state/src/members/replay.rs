@@ -236,7 +236,7 @@ pub(crate) fn carry(
 
 /// [`replay`], read from the document.
 fn replayed_from(doc: &AutoCommit, workspace: &str) -> Replayed {
-    crate::governance_work::replayed();
+    crate::work::replayed();
     read_replay(doc, workspace)
 }
 

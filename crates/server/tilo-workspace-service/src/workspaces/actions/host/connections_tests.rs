@@ -5,11 +5,6 @@
 //! and calls what only reads, and its changes ask its member; and a server
 //! asks no address inside its own network unless its operator lets it.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the serving device a test binds is kept until the test ends; dropping it earlier closes what the test drives"
-)]
-
 use collab_types::WorkspaceId;
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;

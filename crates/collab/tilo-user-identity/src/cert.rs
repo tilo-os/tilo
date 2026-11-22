@@ -51,6 +51,7 @@
 use collab_types::signer::SignError;
 use ed25519_dalek::Verifier;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 
 use crate::canonical::{CanonicalError, signing_digest};
@@ -1665,7 +1666,7 @@ pub fn verify_remembered(
     }
     let vk = ed25519_dalek::VerifyingKey::from_bytes(key).map_err(|_| RememberedRefusal::Key)?;
     let sig = ed25519_dalek::Signature::from_bytes(signature);
-    SIGNATURE_CHECKS.with(|checks| checks.set(checks.get().saturating_add(1)));
+    add_signature_check();
     let verified = if strict {
         vk.verify_strict(message, &sig)
     } else {
@@ -1681,16 +1682,30 @@ pub fn verify_remembered(
     Ok(())
 }
 
-thread_local! {
-    static SIGNATURE_CHECKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+static SIGNATURE_CHECKS: AtomicU64 = AtomicU64::new(0);
+
+/// Count a signature [`verify_remembered`] checked in full.
+fn add_signature_check() {
+    SIGNATURE_CHECKS.fetch_add(1, Ordering::Relaxed);
 }
 
-/// The signatures [`verify_remembered`] checked in full on this thread since
-/// the last call: what a test that a cost does not grow with a workspace
-/// counts.
+/// The signatures [`verify_remembered`] checked in full in this process:
+/// what a test that a cost does not grow with a workspace counts.
 #[must_use]
-pub fn take_signature_checks() -> u64 {
-    SIGNATURE_CHECKS.with(|checks| checks.replace(0))
+pub fn signature_checks() -> u64 {
+    SIGNATURE_CHECKS.load(Ordering::Relaxed)
+}
+
+/// Take back `checks` counted as checked, what a test added while it checked
+/// something else. Never a way to count less than was checked.
+#[doc(hidden)]
+pub fn retract_signature_checks(checks: u64) {
+    if checks == 0 {
+        return;
+    }
+    let _ = SIGNATURE_CHECKS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |counted| {
+        Some(counted.saturating_sub(checks))
+    });
 }
 
 /// Forget every signature [`verify_remembered`] remembers, as a process

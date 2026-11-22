@@ -251,10 +251,6 @@ tilo_test_env::scenario! {
 /// them with are the ones the group admits it with, and the host hands none.
 #[cfg(feature = "agents")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server and its workspaces serve the page until the server shuts down at the end"
-)]
 async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
     let signer = SigningKey::from_bytes(&[71; 32]);
     // A workspace service's node, which takes part in its workspaces' channels.
@@ -289,10 +285,6 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
 /// names it, though the host no longer lets in who was in it; a workspace that
 /// stays, or that the host never held, is not.
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server governs the workspaces until it shuts down at the end"
-)]
 async fn the_host_says_a_workspace_was_deleted_to_whoever_names_it() {
     let root = SigningKey::from_bytes(&[131; 32]);
     let host = host(&root, 132, tilo_user_identity::DeviceCapabilities::member());
@@ -335,10 +327,6 @@ async fn the_host_says_a_workspace_was_deleted_to_whoever_names_it() {
 /// through a proxy. Nobody is let in over HTTP: a device enters through the
 /// entry on its session with the host, so the entry has no `join` route.
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server governs the workspace until it shuts down at the end"
-)]
 async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
     let root = SigningKey::from_bytes(&[121; 32]);
     let host = host(&root, 122, tilo_user_identity::DeviceCapabilities::member());
@@ -453,10 +441,6 @@ async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
 /// whose beacons send nothing sends it: a plain `no-cors` POST from another
 /// origin, its body as large as a page sends.
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server governs the workspace until it shuts down at the end"
-)]
 async fn a_page_that_could_not_open_its_workspace_reaches_the_host_log() {
     #[derive(Clone, Default)]
     struct Sink(Arc<std::sync::Mutex<Vec<u8>>>);
@@ -534,10 +518,6 @@ async fn a_page_that_could_not_open_its_workspace_reaches_the_host_log() {
 /// bytes, a redeemer fetches exactly those, and the inviter takes them back.
 /// The site reads no key, because no request carries one.
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server holds the shelf until it shuts down at the end"
-)]
 async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
     use tilo_server_protocol::sealed_invitations::{Fetched, Stored, TakeBack};
 
@@ -671,10 +651,6 @@ fn a_site_named_with_its_default_port_is_the_same_site() {
 /// request for the invitation's bytes — and any request that already reached
 /// the host through the site — is answered here, as it was.
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server holds the shelf until it shuts down at the end"
-)]
 async fn a_browser_that_opens_a_link_at_the_host_is_sent_to_its_site() {
     let root = SigningKey::from_bytes(&[141; 32]);
     let host = host(&root, 142, tilo_user_identity::DeviceCapabilities::member());
@@ -735,10 +711,6 @@ async fn a_browser_that_opens_a_link_at_the_host_is_sent_to_its_site() {
 /// not for a text body: it is sent on to the site the host belongs to. A
 /// caller that asks for data keeps its answer.
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server holds the shelf until it shuts down at the end"
-)]
 async fn a_browser_that_opens_an_unknown_address_is_sent_to_the_site() {
     let root = SigningKey::from_bytes(&[151; 32]);
     let host = host(&root, 152, tilo_user_identity::DeviceCapabilities::member());
@@ -780,10 +752,6 @@ async fn a_browser_that_opens_an_unknown_address_is_sent_to_the_site() {
 /// is fetched back, and taken back, on the server that comes up next on the same
 /// state — and one that lapsed while nothing was running says so.
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the first server holds the shelf until it shuts down halfway"
-)]
 async fn a_sealed_invitation_outlives_the_server_it_was_left_on() {
     use tilo_server_protocol::sealed_invitations::{Fetched, Stored, TakeBack};
 
@@ -1265,10 +1233,6 @@ async fn call_json_named(
 /// A login code over the host's routes: made, resolved once, followed with
 /// its steps, and guessing codes runs out of tries for the guesser.
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server serves the routes until it shuts down at the end"
-)]
 async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
     use tilo_server_protocol::login_code as wire;
     let root = SigningKey::from_bytes(&[141; 32]);
@@ -1425,10 +1389,6 @@ async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
 /// person's workspace. A certificate a device signed is no device, so it
 /// cannot claim, and says why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server serves the routes until it shuts down at the end"
-)]
 #[expect(
     clippy::too_many_lines,
     reason = "one sign-in, in order, from the claim to the tab entering"
@@ -1699,10 +1659,6 @@ impl tilo_server_client::MemberServer for TabRoot {
 /// refused as "another user identity". A request no code names is still
 /// refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server serves the routes until it shuts down at the end"
-)]
 async fn a_computer_setting_up_for_a_tab_not_yet_let_in_waits_for_the_tab() {
     use tilo_server_client::certify::CertificationOutcome;
     use tilo_server_protocol::login_code as wire;
@@ -2186,10 +2142,6 @@ fn the_host_address_follows_the_endpoint_relay() {
 /// code is that name's. A name it was not told stays another server,
 /// whatever name a request gives the one it reached.
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server serves the routes until it shuts down at the end"
-)]
 async fn a_server_told_its_second_name_makes_the_setup_code_whatever_a_request_calls_it() {
     use tilo_server_protocol::login_code as wire;
     let root = SigningKey::from_bytes(&[143; 32]);

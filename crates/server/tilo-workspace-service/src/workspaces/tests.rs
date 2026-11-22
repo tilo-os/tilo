@@ -830,10 +830,6 @@ fn a_heavy_tail_compacts_and_a_light_one_does_not() {
 
 #[cfg(feature = "agents")]
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server remains live through the policy assertions and its consuming shutdown"
-)]
 async fn applications_are_prepared_for_the_current_owner_only() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -1456,12 +1452,11 @@ async fn a_member_asks_for_a_channel_through(
 impl AskedForKeys {
     /// Whether the workspace kept the member's request among the records it
     /// retains for the devices that take part in its channels.
-    async fn retains_the_request(&self) -> bool {
+    fn retains_the_request(&self) -> bool {
         let workspace_id = WorkspaceId::parse(&self.workspace).unwrap();
         self.server
             .workspace_documents()
             .retained(workspace_id)
-            .await
             .is_ok_and(|retained| {
                 retained.iter().any(|retained| {
                     postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&retained.body).is_ok_and(
@@ -1506,7 +1501,7 @@ async fn a_store_host_retains_what_its_members_send_for_a_channels_group() {
         "a host runs no channel service and holds no channel keys"
     );
     assert!(
-        asked.retains_the_request().await,
+        asked.retains_the_request(),
         "the workspace retained the member's request for its channels"
     );
     asked.shut_down().await;
@@ -1522,7 +1517,7 @@ async fn a_request_the_server_kept_is_not_kept_again_as_the_hosts() {
         a_member_asks_for_a_channel_through(DeviceCapabilities::member(), super::Carried::Kept)
             .await;
     assert!(
-        !asked.retains_the_request().await,
+        !asked.retains_the_request(),
         "the host kept a second copy of a request its server keeps as the member's"
     );
     asked.shut_down().await;
@@ -1540,14 +1535,14 @@ async fn decisions_settle_while_their_workspace_owner_is_stalled() {
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Public").await.unwrap();
-    let records = workspaces.inner.host.records.clone();
+    let records = workspaces.inner.records.clone();
     // The creation's own changes are retained before the owner stalls.
-    records.retained(created.workspace_id).await.unwrap();
+    records.retained(created.workspace_id).unwrap();
     let root = dir
         .path()
         .join("workspaces")
         .join(created.workspace_id.to_string());
-    let (release, reached) = crate::store::test_barrier::install(&root, "state-persist");
+    let (release, reached) = crate::workspace_files::test_barrier::install(&root, "state-persist");
     // Each name is one governance change: more than the owner queues.
     for index in 0..48 {
         tilo_test_env::within(
@@ -1575,12 +1570,8 @@ async fn decisions_settle_while_their_workspace_owner_is_stalled() {
     .await
     .unwrap();
     drop(release);
-    let retained = tilo_test_env::within(
-        "every change retained once the owner moves",
-        records.retained(created.workspace_id),
-    )
-    .await
-    .unwrap();
+    // Every change is kept once the owner moves.
+    let retained = records.retained(created.workspace_id).unwrap();
     let published: Vec<Vec<u8>> = {
         let governed = workspaces.workspace(&created.workspace).await.unwrap();
         let governed = governed.lock().await;
@@ -1986,103 +1977,6 @@ async fn titles_shared(workspaces: &Workspaces, workspace: &str) -> Vec<String> 
     titles_in(governed.peer().admitted_workspace().unwrap())
 }
 
-/// A document write the workspace refused is filed as this device's verdict in
-/// the workspace's own document, signed by its device and naming the write's
-/// route, author and sequence: one fact, carried by the sync that already
-/// carries the workspace. A change to the workspace's topology names no record
-/// and files nothing, and the same write again keeps the verdict held.
-#[tokio::test]
-async fn a_refused_document_write_is_filed_in_the_workspaces_document() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let server = test_host(dir.path(), &key, &cert).await;
-    let workspaces = server.workspaces().clone();
-    let workspace = workspaces.create("Studio").await.unwrap().workspace;
-    let (member, member_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
-    let member_key = SigningKey::from_bytes(&[3; 32]);
-    let author = collab_types::Ed25519PublicKey::from_bytes(member_key.verifying_key().to_bytes());
-    let (app, record) = ("so.tilo.notes", "notes");
-    let mut envelope = collab_types::SignedOp::new_unsigned(
-        vec![7; 12],
-        collab_types::document_artifact_id(app, &workspace, record),
-        author,
-        collab_types::document_attestation_id(app, &workspace, record),
-        collab_types::OpKind::Change,
-        SystemTime::now(),
-        7,
-    );
-    collab_types::sign_op(&mut envelope, &member_key).unwrap();
-    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::AppDocument {
-        peer: tilo_peer_state::peer_handle(member_key.verifying_key().as_bytes()),
-        app_id: app.into(),
-        cluster_id: workspace.clone(),
-        document_id: record.into(),
-        envelope: Box::new(envelope),
-        readers: None,
-    })
-    .unwrap();
-    let reason = "record read forbidden: notes/main";
-    workspaces
-        .publish_refusal(&workspace, &body, reason)
-        .await
-        .unwrap();
-    {
-        let state = workspaces.workspace(&workspace).await.unwrap();
-        let governed = state.lock().await;
-        let held = governed.peer().workspace().write_refusals();
-        assert_eq!(held.len(), 1, "the workspace files its verdict: {held:?}");
-        let refusal = &held[0];
-        assert_eq!(
-            refusal.author, member.device_public_key,
-            "the write's author"
-        );
-        assert_eq!(refusal.by, cert.device_public_key, "the refusing device");
-        assert!(
-            refusal.signed_by(&cert.device_public_key),
-            "signed as its own"
-        );
-        assert_eq!(
-            (refusal.app.as_str(), refusal.record.as_str()),
-            (app, record)
-        );
-        assert_eq!(refusal.seq, 7);
-        assert_eq!(refusal.reason, neighbour_wire::RefusalReason::Forbidden);
-        assert_eq!(refusal.detail, reason);
-    }
-    // A topology change is no record's write: it names no route for a verdict.
-    let topology = terminals_opened(&workspaces, &workspace, &member, member_salt).await;
-    workspaces
-        .publish_refusal(
-            &workspace,
-            &topology,
-            "a change of layout is no record write",
-        )
-        .await
-        .unwrap();
-    // The same write again keeps the verdict the workspace already holds.
-    workspaces
-        .publish_refusal(&workspace, &body, reason)
-        .await
-        .unwrap();
-    let state = workspaces.workspace(&workspace).await.unwrap();
-    let governed = state.lock().await;
-    assert_eq!(
-        governed
-            .peer()
-            .workspace()
-            .write_refusals()
-            .iter()
-            .filter(|refusal| refusal.author == member.device_public_key)
-            .count(),
-        1,
-        "one verdict per write's author and route"
-    );
-    drop(governed);
-    drop(state);
-    drop(workspaces);
-    server.shutdown().await;
-}
-
 /// A member's windows are the workspace's: the governor takes the change in, and
 /// every member sees the windows.
 #[allow(
@@ -2140,52 +2034,17 @@ async fn windows_closed(
     .unwrap()
 }
 
-/// Every entry the store under `root` archived.
-fn archived_bytes(root: &std::path::Path) -> Vec<Vec<u8>> {
-    let mut found = Vec::new();
-    let mut dirs = vec![
-        root.join(crate::store::RETAINED_DIR)
-            .join(crate::store::compaction::ARCHIVE_DIR),
-    ];
-    while let Some(dir) = dirs.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                dirs.push(path);
-            } else if let Ok(bytes) = std::fs::read(&path) {
-                found.push(bytes);
-            }
-        }
-    }
-    found
-}
-
 /// Whether `title` occurs in `frame`, a frame a device's replay delivers:
 /// in its bytes as encoded for the wire, or in any operation of a workspace
 /// document change it carries once decoded (a change's columns may be
 /// compressed, which a search of the raw bytes alone would miss).
-fn replayed_frame_carries(frame: &crate::transport::Envelope, title: &str) -> bool {
+fn replayed_frame_carries(frame: &neighbour_wire::NeighbourMsg, title: &str) -> bool {
     let needle = title.as_bytes();
-    let wire = crate::frame::encode(frame).unwrap();
+    let wire = postcard::to_allocvec(frame).unwrap();
     if wire.windows(needle.len()).any(|window| window == needle) {
         return true;
     }
-    let crate::transport::Envelope::Delta { delta, .. } = frame else {
-        return false;
-    };
-    let Some(
-        crate::coedit::CoeditPayload::Checkpoint { body, .. }
-        | crate::coedit::CoeditPayload::RetainedDelta { body, .. },
-    ) = crate::coedit::CoeditPayload::decode(delta)
-    else {
-        return false;
-    };
-    let Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, .. }) =
-        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body)
-    else {
+    let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = frame else {
         return false;
     };
     changes.iter().any(|bytes| {
@@ -2230,30 +2089,26 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
 
     let (c, c_cert) = guest_device();
     entry_join(&workspaces, &cert, &workspace, (&c, &c_cert), 21).await;
-    // Whatever the workspace published is retained before C's replay is read.
-    workspaces
-        .inner
-        .host
-        .records
-        .retained(created.workspace_id)
-        .await
-        .unwrap();
-    let workspace = workspaces
-        .inner
-        .host
-        .workspaces
-        .lock()
-        .await
-        .get(&created.workspace_id)
-        .cloned()
-        .expect("the server hosts the workspace");
-    let (replayed, archived) = {
-        let runtime = workspace.lock().await;
-        (
-            crate::store::test_support::replay_frames(&runtime.store),
-            archived_bytes(runtime.store.root()),
-        )
-    };
+    // What a device joining now replays: every frame the device store serves of the
+    // workspace from its first, the history a newcomer's link catches up from.
+    let mut replayed = Vec::new();
+    let mut cursors = Vec::new();
+    loop {
+        let round = workspaces
+            .inner
+            .store
+            .replay(
+                created.workspace_id,
+                &cursors,
+                tilo_peer_state::store::Budget::default(),
+            )
+            .unwrap();
+        tilo_peer_state::store::advance(&mut cursors, &round.frames);
+        replayed.extend(round.frames);
+        if !round.more {
+            break;
+        }
+    }
     assert!(
         !replayed.is_empty(),
         "a device joining the workspace is replayed the workspace"
@@ -2265,13 +2120,6 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
                 .any(|frame| replayed_frame_carries(frame, title)),
             "a member who joins later is replayed {title:?}, \
              a window withdrawn before they joined"
-        );
-        assert!(
-            archived.iter().any(|bytes| {
-                crate::frame::decode(bytes.get(4..).unwrap_or_default())
-                    .is_ok_and(|frame| replayed_frame_carries(&frame, title))
-            }),
-            "the server keeps {title:?} archived for those who held it"
         );
     }
     drop(workspaces);

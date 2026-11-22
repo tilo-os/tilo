@@ -4,7 +4,13 @@ use super::*;
 fn only_a_remote_party_needs_this_device_reachable() {
     let addr = EndpointAddr::new(iroh::SecretKey::generate().public());
     assert!(remote_party_command(&NetCmd::Connect { addr: addr.clone() }).is_some());
-    assert!(remote_party_command(&NetCmd::ConnectHost { addr }).is_some());
+    assert!(
+        remote_party_command(&NetCmd::ConnectHost {
+            addr,
+            expectation: None,
+        })
+        .is_some()
+    );
     let (on_event, _events) = mpsc::channel(1);
     assert!(
         remote_party_command(&NetCmd::JoinWorkspace {

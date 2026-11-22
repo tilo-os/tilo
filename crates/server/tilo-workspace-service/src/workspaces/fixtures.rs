@@ -244,12 +244,6 @@ impl TestHost {
         self.host.node_addr()
     }
 
-    /// The compactor of its workspaces.
-    #[cfg(all(test, feature = "agents"))]
-    pub(crate) fn compactor(&self) -> &crate::compaction::Compactor {
-        self.host.compactor()
-    }
-
     /// Stop the host, then its router and endpoint.
     pub async fn shutdown(self) {
         self.host.shutdown().await;
@@ -603,21 +597,20 @@ pub async fn project_access(workspaces: &Workspaces, workspace: &str) {
         .workspace(workspace)
         .await
         .expect("a governed workspace");
-    let (device_access, heads, workspace_id) = {
+    let (device_access, workspace_id) = {
         let governed = state.lock().await;
         let device_access = governed
             .peer()
             .governance()
             .governed_device_access(tilo_clock::wall())
             .expect("the workspace's device_access");
-        let heads = governed.peer().governance().held_heads();
-        (device_access, heads, governed.workspace_id())
+        (device_access, governed.workspace_id())
     };
     workspaces
         .inner
         .host
         .access
-        .replace_access(workspace_id, (device_access, heads))
+        .replace_access(workspace_id, device_access)
         .await
         .expect("the server projects the workspace's device_access");
 }

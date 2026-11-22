@@ -229,28 +229,6 @@ impl Workspaces {
     /// every device again. A public workspace is one anyone may walk into:
     /// what a newcomer waits for is its governance and its shared desktop,
     /// not every record its crowd ever wrote.
-    async fn load_documents_when_opened(&self, workspace: &str, when_opened: bool) {
-        let Ok(governed) = self.workspace(workspace).await else {
-            return;
-        };
-        let workspace_id = governed.lock().await.workspace_id();
-        let hosted = self
-            .inner
-            .host
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace_id)
-            .cloned();
-        if let Some(hosted) = hosted {
-            hosted
-                .lock()
-                .await
-                .store
-                .set_documents_when_opened(when_opened);
-        }
-    }
-
     /// The entry `governed` holds, as its governance records it.
     pub(super) fn entry_of(governed: &GovernedWorkspace) -> EntryPolicy {
         governed.peer().governance().governed_entry()
@@ -314,7 +292,6 @@ impl Workspaces {
         .await?;
         let listed = entry.is_listed();
         drop(governed);
-        self.load_documents_when_opened(workspace, listed).await;
         self.inner.directory.announce(workspace);
         tracing::info!(%workspace, listed, "the workspace's entry settled");
         Ok(entry)
@@ -907,10 +884,6 @@ pub(super) mod tests {
 
 #[cfg(test)]
 pub(crate) mod entry_tests {
-    #![expect(
-        clippy::significant_drop_tightening,
-        reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
-    )]
     use tilo_actions::remote::{
         ActionProvider as _, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
         RemoteActionTarget,

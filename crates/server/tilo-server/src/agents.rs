@@ -1819,13 +1819,10 @@ fn attach_resources(
         // A session in a workspace's VM joins as a device of the person's,
         // which a stand-in certifies: the one this host keeps for them, else
         // a host that is itself one.
-        let user = server.workspace_documents().user_public_key();
-        let (key, cert) = server.stand_in(&user).unwrap_or_else(|| {
-            (
-                server.workspace_documents().signing_key().clone(),
-                server_cert.clone(),
-            )
-        });
+        let user = server.own_user_public_key();
+        let (key, cert) = server
+            .stand_in(&user)
+            .unwrap_or_else(|| (server.device_signing_key().clone(), server_cert.clone()));
         browsers.serve_from(crate::hosted_browser::Authority {
             user_public_key: user,
             cert,
@@ -1854,7 +1851,7 @@ fn attach_resources(
     actions
         .attach(Arc::new(ServerRecordsLink {
             shell,
-            user_public_key: server.workspace_documents().user_public_key(),
+            user_public_key: server.own_user_public_key(),
             workspaces: server.workspaces().cloned(),
             browser_origin: Arc::clone(&server.browser_origin),
             web_entry,
@@ -1867,7 +1864,7 @@ fn attach_resources(
             runtime: tokio::runtime::Handle::current(),
             host_device: HostDevice {
                 endpoint: ServerEndpoint::iroh(server.node_addr(), server_cert.clone()),
-                key: server.workspace_documents().signing_key().clone(),
+                key: server.device_signing_key().clone(),
                 runtime: tokio::runtime::Handle::current(),
                 keys: server
                     .workspace_keys()

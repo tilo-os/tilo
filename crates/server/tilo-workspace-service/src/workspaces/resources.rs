@@ -768,9 +768,9 @@ impl Workspaces {
         {
             // Whoever follows the workspace's writes (its bots) is woken by a resource's
             // change as by any, while the workspace is held, so it reads the change.
-            let written = (app_id.clone(), document_id.clone());
-            self.tell_followers(&governed, author, written, &message, false)
+            self.tell_followers(&governed, author, &message, false)
                 .await;
+            self.wrote_frame(governed.workspace(), &message);
         }
         drop(governed);
         // The workspace's own replica keeps the document the store indexed, as it keeps every
@@ -809,15 +809,8 @@ impl Workspaces {
         if !still_live(governed) {
             return Err("the resource writer is no longer authorized".into());
         }
-        self.keep_resource_write(
-            governed,
-            device,
-            app,
-            (write, &request),
-            std::future::pending(),
-            true,
-        )
-        .await
+        self.keep_resource_write(governed, device, app, (write, &request), true)
+            .await
     }
 
     #[cfg(any(feature = "apps", feature = "agents"))]
@@ -893,7 +886,6 @@ impl Workspaces {
         device: &super::MemberDevice,
         app: &str,
         (write, request): (&tilo_resource_store::Written, &OwnerCommitRequest),
-        cancelled: impl Future<Output = ()>,
         compact: bool,
     ) -> Result<(), String> {
         let author = device.device();
@@ -902,12 +894,7 @@ impl Workspaces {
             .store_with_surfaces(&self.inner.host.surfaces)
             .check_write(write, author)
             .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
-        let admission = tokio::select! {
-            biased;
-            () = cancelled => return Err("the resource writer was cancelled".into()),
-            result = self.enqueue_local_document(governed.workspace_id(), author, request) => result?,
-        };
-        let (message, _) = admission.durable().await?;
+        let (message, _) = self.retain_local_document(governed.workspace_id(), author, request)?;
         let neighbour_wire::NeighbourMsg::AppDocument {
             envelope, readers, ..
         } = &message
@@ -923,6 +910,7 @@ impl Workspaces {
         if governed.member.is_some() {
             self.follow_member_document(governed, author, &message);
             self.forward_member_document(governed.workspace_id(), message);
+            self.wrote(governed.workspace(), app, document);
         } else {
             self.follow_write(
                 governed,
@@ -932,7 +920,6 @@ impl Workspaces {
                 compact,
             )
             .await;
-            self.carry_to_links(governed.workspace(), author, &message);
         }
         Ok(())
     }
@@ -1119,20 +1106,22 @@ impl Workspaces {
         if governed.member.is_some() && !requests.is_empty() {
             self.wait_member_link(governed.workspace_id()).await?;
         }
-        let (mut complete, answer) = tokio::sync::oneshot::channel();
+        let (complete, answer) = tokio::sync::oneshot::channel();
         let workspaces = self.clone();
         // Once retention starts, finish applying that frame even if the caller goes away.
         // A cancelled caller never starts the next frame of a batch.
         tokio::spawn(async move {
             let result = async {
                 for (index, (write, request)) in writes.iter().zip(&requests).enumerate() {
+                    if complete.is_closed() {
+                        return Err("the resource writer was cancelled".into());
+                    }
                     workspaces
                         .keep_resource_write(
                             &mut governed,
                             &device,
                             &app,
                             (write, request),
-                            complete.closed(),
                             // Compaction can consume a sequence the batch already drafted.
                             index.saturating_add(1) == requests.len(),
                         )

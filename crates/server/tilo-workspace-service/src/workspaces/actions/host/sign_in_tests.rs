@@ -5,11 +5,6 @@
 //! The server is a stand-in on loopback: no real account, password or
 //! mailbox is touched.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server handle a test binds is kept until the test ends; dropping it earlier closes the service it drives"
-)]
-
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};

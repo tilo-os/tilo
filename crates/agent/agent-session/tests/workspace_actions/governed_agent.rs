@@ -118,7 +118,7 @@ fn json(value: &serde_json::Value) -> InvokeArgument {
 /// The sheets of the record at `route` as `member` received it, once what
 /// arrived opens: until the change that sets the record up is in, the app
 /// refuses what came before it.
-async fn retained_sealed(
+fn retained_sealed(
     hosted: &super::Hosted,
     workspace: WorkspaceId,
     route: &DocumentRoute,
@@ -128,7 +128,6 @@ async fn retained_sealed(
         .server
         .workspace_documents()
         .retained(workspace)
-        .await
         .unwrap()
         .into_iter()
         .filter(|body| body.author == author)
@@ -514,7 +513,7 @@ async fn a_hosted_roster_turn() {
         letter_before,
         "the refused write outside the grant changed nothing"
     );
-    let signed = roster_write(&hosted, workspace.workspace_id, &workbook, device).await;
+    let signed = roster_write(&hosted, workspace.workspace_id, &workbook, device);
     assert_eq!(signed.len(), 1, "{signed:?}");
     // The agent's turn asks the workspace only under its own key, which the host checks
     // before anything runs: unsigned, nothing runs (its signed sheet above ran), and signed by
@@ -568,7 +567,7 @@ async fn a_hosted_roster_turn() {
     sessions
         .sign_as(&device, workspace.workspace_id, &mut late)
         .unwrap();
-    let (count, _) = retained_sealed(&hosted, workspace.workspace_id, &tracker, device).await;
+    let (count, _) = retained_sealed(&hosted, workspace.workspace_id, &tracker, device);
     assert_eq!(count, 0);
     let mut store_events = 0;
     while let Ok(write) = store_writes.try_recv() {
@@ -745,7 +744,7 @@ async fn a_hosted_roster_turn() {
         &accepted,
     )
     .await;
-    let restored = roster_write(&reopened, workspace.workspace_id, &workbook, device).await;
+    let restored = roster_write(&reopened, workspace.workspace_id, &workbook, device);
     assert_eq!(
         restored, signed,
         "the same signed action is kept after reopening"
@@ -1001,7 +1000,6 @@ async fn assert_store_edit(
         .server
         .workspace_documents()
         .retained(WorkspaceId::parse(&route.cluster_id).unwrap())
-        .await
         .unwrap()
         .into_iter()
         .filter_map(|body| match postcard::from_bytes(&body.body).unwrap() {
@@ -1024,7 +1022,7 @@ async fn assert_store_edit(
     collab_types::verify_op(edit).unwrap();
 }
 
-async fn roster_write(
+fn roster_write(
     hosted: &super::Hosted,
     workspace: WorkspaceId,
     route: &DocumentRoute,
@@ -1034,7 +1032,6 @@ async fn roster_write(
         .server
         .workspace_documents()
         .retained(workspace)
-        .await
         .unwrap()
         .into_iter()
         .filter(|body| body.author == device)

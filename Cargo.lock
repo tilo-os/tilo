@@ -21939,24 +21939,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-server-store"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "postcard",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tilo-files",
- "tilo-lock",
- "tilo-server-client",
- "tilo-server-protocol",
- "tokio",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-service"
 version = "0.1.0"
 dependencies = [
@@ -23574,7 +23556,6 @@ dependencies = [
  "tilo-server-client",
  "tilo-server-protocol",
  "tilo-server-session",
- "tilo-server-store",
  "tilo-session-client",
  "tilo-test-env",
  "tilo-ui",
@@ -29325,7 +29306,6 @@ dependencies = [
  "tilo-server-client",
  "tilo-server-protocol",
  "tilo-server-session",
- "tilo-server-store",
  "tilo-service",
  "tilo-session",
  "tilo-session-actions",

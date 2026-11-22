@@ -1594,7 +1594,7 @@ impl DocumentKeysBasis<'_> {
     fn holders(&self) -> Result<&KeyAccess, String> {
         self.holders
             .get_or_init(|| {
-                crate::governance_work::key_access_read();
+                crate::work::key_access_read();
                 let governance = self.peer.governance();
                 let devices: Vec<_> = governance.key_holders(self.now)?.into_iter().collect();
                 let access = governance.access_of(&devices, self.now)?;

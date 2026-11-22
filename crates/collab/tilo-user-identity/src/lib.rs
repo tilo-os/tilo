@@ -97,9 +97,9 @@ pub use cert::{
     DeviceCertError, MAX_AGENT_GRANT_LIFETIME_NS, RememberedRefusal, STAND_IN_LIFETIME_NS,
     UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, binary_layout_of, check_agent_grant,
     device_cert_signing_digest, device_name, prepare_minted_grant, prepare_service_cert,
-    prepare_stand_in_cert, sign_device_cert, sign_device_cert_async, take_signature_checks,
-    verify_device_cert, verify_device_cert_at, verify_remembered, verify_stand_in_cert,
-    verify_stand_in_cert_at,
+    prepare_stand_in_cert, retract_signature_checks, sign_device_cert, sign_device_cert_async,
+    signature_checks, verify_device_cert, verify_device_cert_at, verify_remembered,
+    verify_stand_in_cert, verify_stand_in_cert_at,
 };
 pub use certification::{
     CERTIFICATION_CLOCK_ALLOWANCE_NS, CERTIFICATION_REQUEST_TAG, CERTIFICATION_SCHEMA_VERSION,

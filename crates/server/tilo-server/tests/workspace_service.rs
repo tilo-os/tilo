@@ -149,10 +149,6 @@ async fn enter_on(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes the host after the assertions; the suggested earlier drop would use a moved value"
-)]
 async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_through_it() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
@@ -255,10 +251,6 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Hosted::stop consumes the host after the assertions; the suggested earlier drop would use a moved value"
-)]
 async fn an_in_process_member_shares_deltas_with_a_remote_one() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());

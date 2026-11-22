@@ -24,7 +24,7 @@ use tilo_files::native::migration::Format;
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::RevocationEntry;
 
-use super::{StoreError, atomic_write};
+use super::{FilesError, atomic_write};
 
 /// Root-signed device revocations enforced during server authentication.
 pub const REVOCATIONS_FILE: &str = "revocations.log";
@@ -53,9 +53,9 @@ fn header() -> Vec<u8> {
     bytes
 }
 
-fn frame(entry: &RevocationEntry) -> Result<Vec<u8>, StoreError> {
-    let body = postcard::to_stdvec(entry).map_err(|error| StoreError::Json(error.to_string()))?;
-    let len = u32::try_from(body.len()).map_err(|error| StoreError::Json(error.to_string()))?;
+fn frame(entry: &RevocationEntry) -> Result<Vec<u8>, FilesError> {
+    let body = postcard::to_stdvec(entry).map_err(|error| FilesError::Json(error.to_string()))?;
+    let len = u32::try_from(body.len()).map_err(|error| FilesError::Json(error.to_string()))?;
     let mut bytes = Vec::with_capacity(body.len().saturating_add(FRAMING));
     bytes.extend_from_slice(&len.to_le_bytes());
     bytes.extend_from_slice(&body);
@@ -63,7 +63,7 @@ fn frame(entry: &RevocationEntry) -> Result<Vec<u8>, StoreError> {
     Ok(bytes)
 }
 
-fn whole(entries: &[RevocationEntry]) -> Result<Vec<u8>, StoreError> {
+fn whole(entries: &[RevocationEntry]) -> Result<Vec<u8>, FilesError> {
     let mut bytes = header();
     for entry in entries {
         bytes.extend(frame(entry)?);
@@ -108,8 +108,8 @@ impl Held {
 }
 
 /// The version a log's header names.
-fn stored_version(bytes: &[u8]) -> Result<u32, StoreError> {
-    let refused = |reason: &str| StoreError::Json(format!("revocation log: {reason}"));
+fn stored_version(bytes: &[u8]) -> Result<u32, FilesError> {
+    let refused = |reason: &str| FilesError::Json(format!("revocation log: {reason}"));
     let (magic, rest) = bytes
         .split_first_chunk::<8>()
         .ok_or_else(|| refused("no header"))?;
@@ -124,10 +124,10 @@ fn stored_version(bytes: &[u8]) -> Result<u32, StoreError> {
 
 /// What a log's `bytes` hold, and the length of their frames that hold
 /// together: a frame a crash cut short ends the log.
-fn read(bytes: &[u8]) -> Result<(Held, usize), StoreError> {
+fn read(bytes: &[u8]) -> Result<(Held, usize), FilesError> {
     let version = stored_version(bytes)?;
     if version != FORMAT.version {
-        return Err(StoreError::Json(format!(
+        return Err(FilesError::Json(format!(
             "revocation log: version {version}, not {}",
             FORMAT.version
         )));
@@ -159,7 +159,7 @@ fn read(bytes: &[u8]) -> Result<(Held, usize), StoreError> {
 }
 
 /// The log's bytes, `None` when the state root holds none.
-fn log_bytes(state_root: &Path) -> Result<Option<Vec<u8>>, StoreError> {
+fn log_bytes(state_root: &Path) -> Result<Option<Vec<u8>>, FilesError> {
     let path = state_root.join(REVOCATIONS_FILE);
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
@@ -170,7 +170,7 @@ fn log_bytes(state_root: &Path) -> Result<Option<Vec<u8>>, StoreError> {
     FORMAT
         .bring_up(&path, bytes, stored)
         .map(Some)
-        .map_err(|error| StoreError::Json(error.to_string()))
+        .map_err(|error| FilesError::Json(error.to_string()))
 }
 
 /// Load the root-signed revocation entries the server's log holds: for each
@@ -180,7 +180,7 @@ fn log_bytes(state_root: &Path) -> Result<Option<Vec<u8>>, StoreError> {
 ///
 /// Returns an error if the log exists but can't be read, or is not a
 /// revocation log of this version.
-pub fn load_revocations(state_root: &Path) -> Result<Vec<RevocationEntry>, StoreError> {
+pub fn load_revocations(state_root: &Path) -> Result<Vec<RevocationEntry>, FilesError> {
     let Some(bytes) = log_bytes(state_root)? else {
         return Ok(Vec::new());
     };
@@ -193,7 +193,7 @@ pub fn load_revocations(state_root: &Path) -> Result<Vec<RevocationEntry>, Store
 ///
 /// Returns an error if the state root can't be created, an entry can't be
 /// encoded, or the atomic write fails.
-pub fn save_revocations(state_root: &Path, entries: &[RevocationEntry]) -> Result<(), StoreError> {
+pub fn save_revocations(state_root: &Path, entries: &[RevocationEntry]) -> Result<(), FilesError> {
     let _writing = WRITING.lock_recover();
     fs::create_dir_all(state_root)?;
     atomic_write(&state_root.join(REVOCATIONS_FILE), &whole(entries)?)?;
@@ -211,7 +211,7 @@ pub fn save_revocations(state_root: &Path, entries: &[RevocationEntry]) -> Resul
 pub fn append_revocations(
     state_root: &Path,
     entries: &[RevocationEntry],
-) -> Result<usize, StoreError> {
+) -> Result<usize, FilesError> {
     let _writing = WRITING.lock_recover();
     fs::create_dir_all(state_root)?;
     let path = state_root.join(REVOCATIONS_FILE);
@@ -254,7 +254,7 @@ pub fn append_revocations(
 /// # Errors
 ///
 /// Returns an error if the log can't be read or written.
-pub fn append_revocation(state_root: &Path, entry: &RevocationEntry) -> Result<bool, StoreError> {
+pub fn append_revocation(state_root: &Path, entry: &RevocationEntry) -> Result<bool, FilesError> {
     Ok(append_revocations(state_root, std::slice::from_ref(entry))? > 0)
 }
 

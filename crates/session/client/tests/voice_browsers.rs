@@ -313,10 +313,6 @@ impl Native {
     }
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the fixture is consumed by shutdown after the final assertion; dropping its guard at Clippy's suggested location uses a moved value"
-)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
     let governed = crate::call::GovernedCall::start().await;

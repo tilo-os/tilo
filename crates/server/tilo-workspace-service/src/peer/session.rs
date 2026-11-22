@@ -1,70 +1,143 @@
 //! The connection's session loop: [`run_peer`] and its variants, and
-//! `serve_peer_stream`, which sets a session up, races its [`reader`] and
-//! [`writer`] state machines against the carrier closing, and tears it down,
-//! plus the inbound-frame helpers the reader uses.
+//! `serve_peer_stream`, which sets a session up, races its reader and writer
+//! against the carrier closing, and tears it down.
+//!
+//! The reader takes each frame off the wire and answers it, in the order sent;
+//! the writer is the only task that writes to the wire, and writes what the
+//! reader and the workspaces queue for the connection, presence once it is due.
 
-mod reader;
 mod wire;
-mod writer;
 
 use super::fetch::Grant as FetchGrant;
 use super::{
-    AccessAudit, Arc, AuthenticatedPeer, Envelope, EnvelopeV2, HashMap, Lag,
-    PEER_OUTBOUND_CAPACITY, PeerContext, PeerError, ReplayWrite, SessionCtx, SessionReader,
-    StateDelivery, mpsc,
+    AccessAudit, Arc, AsyncWriteExt, AuthenticatedPeer, Envelope, EnvelopeV2,
+    PEER_OUTBOUND_CAPACITY, PeerContext, PeerError, SessionCtx, SessionReader,
+    audit_subscriber_access, encode_charged, handle_envelope, mpsc, write_presence,
 };
 use crate::metrics::EgressWrite;
-use reader::{ReaderQueues, SessionReaderLoop};
 use tilo_server_protocol::WorkspaceId;
 use wire::{Heartbeats, Wire};
-use writer::{SessionWriter, WriterQueues};
 
-/// What the reader and the writer of one session both borrow while they
-/// run concurrently.
-#[derive(Clone, Copy)]
-struct SessionLoop<'s, 'a> {
+/// Whether `reply` refuses a device the server does not admit. A connection
+/// that holds no workspace holds nothing the refusal leaves open, so the
+/// refusal is its last word and the session ends.
+fn refused_not_admitted(reply: Option<&Envelope>) -> bool {
+    matches!(
+        reply,
+        Some(Envelope::NotAuthorised {
+            refusal: tilo_server_protocol::refusal::Refusal::NotAdmitted,
+            ..
+        })
+    )
+}
+
+/// What the reader of one session works with.
+struct Reading<'s, 'a, R> {
     peer: &'s AuthenticatedPeer,
     session: &'s SessionCtx<'a>,
-    /// Subscribe replays the reader has handed to the writer and the writer
-    /// has not finished; live frames wait while any is pending.
-    pending_replays: &'s std::sync::atomic::AtomicUsize,
-    /// Woken each time the writer finishes one of those replays.
-    replay_written: &'s tokio::sync::Notify,
-    /// Pings read and not yet answered; the wire answers them at once.
+    reader: &'s mut SessionReader<R>,
+    subscribed: &'s mut Vec<WorkspaceId>,
+    access_audit: &'s mut AccessAudit,
+    authority: &'s mut tokio::sync::watch::Receiver<u64>,
     heartbeats: &'s Heartbeats,
 }
 
-impl<'s, 'a> SessionLoop<'s, 'a> {
-    const fn new(
-        peer: &'s AuthenticatedPeer,
-        session: &'s SessionCtx<'a>,
-        pending_replays: &'s std::sync::atomic::AtomicUsize,
-        replay_written: &'s tokio::sync::Notify,
-        heartbeats: &'s Heartbeats,
-    ) -> Self {
-        Self {
-            peer,
-            session,
-            pending_replays,
-            replay_written,
-            heartbeats,
+impl<R: tokio::io::AsyncRead + Unpin> Reading<'_, '_, R> {
+    /// Read and answer frames until the peer's half of the stream ends, its
+    /// access lapses, or it sends what the host does not take.
+    async fn run(self) -> Result<(), PeerError> {
+        loop {
+            // Prefer an already-readable frame over the membership audit: a
+            // refused frame still gets its refusal rather than a bare close.
+            self.access_audit.cover(self.subscribed);
+            let audit_due = self.access_audit.due();
+            tokio::select! {
+                biased;
+                frame = self.reader.read_next() => match frame? {
+                    None => return Ok(()),
+                    // A heartbeat is answered by the wire itself, between any
+                    // two frames, whatever the writer waits for (see `wire`).
+                    Some(EnvelopeV2::State(Envelope::Ping)) => self.heartbeats.owe(),
+                    Some(EnvelopeV2::State(env)) => {
+                        let _doing = tilo_rt::stall::doing(env.kind());
+                        let reply =
+                            Box::pin(handle_envelope(self.peer, env, self.session, self.subscribed))
+                                .await?;
+                        let ended =
+                            self.subscribed.is_empty() && refused_not_admitted(reply.as_ref());
+                        if let Some(reply) = reply {
+                            self.session
+                                .outbound
+                                .send(reply)
+                                .await
+                                .map_err(|_| PeerError::Protocol("the session's writer ended".into()))?;
+                        }
+                        if ended {
+                            return Err(PeerError::NotAdmitted);
+                        }
+                    }
+                    // `SessionReader::read_next` turns these into `State` values
+                    // before returning.
+                    Some(_) => {
+                        return Err(PeerError::Protocol(
+                            "a coded frame escaped its session reader".into(),
+                        ));
+                    }
+                },
+                () = crate::peer::access_audit::until(audit_due) => {
+                    let watched =
+                        Box::pin(audit_subscriber_access(self.peer, self.session, self.subscribed)).await?;
+                    self.access_audit
+                        .audited(self.peer, self.session.agents, self.subscribed, watched);
+                }
+                // The epoch's sender is a process-wide static and never
+                // closes, so this cannot spin on an error.
+                _ = self.authority.changed() => self.access_audit.changed(),
+            }
         }
     }
+}
 
-    /// Until the writer has finished every replay the reader handed it.
-    async fn replays_written(self) -> Result<(), PeerError> {
-        loop {
-            let written = self.replay_written.notified();
-            tokio::pin!(written);
-            written.as_mut().enable();
-            if self
-                .pending_replays
-                .load(std::sync::atomic::Ordering::SeqCst)
-                == 0
-            {
-                return Ok(());
+/// Write what is queued for the connection until `ending` says the session
+/// ends, then what was queued by then, and close the stream.
+async fn write_frames<W: tokio::io::AsyncWrite + Unpin>(
+    rx: &mut mpsc::Receiver<Envelope>,
+    content: &crate::content_queue::ContentQueue,
+    presence: &crate::presence_mailbox::PresenceMailbox,
+    write: &mut W,
+    (peer, session): (&AuthenticatedPeer, &SessionCtx<'_>),
+    mut ending: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), PeerError> {
+    loop {
+        // A slot the last write freed goes to content that waited for it, so
+        // the queue behind a busy sender keeps moving without further pieces
+        // arriving ([`crate::content_queue`]).
+        content.serve_waiting(session.outbound);
+        if *ending.borrow_and_update() || ending.has_changed().is_err() {
+            while let Ok(frame) = rx.try_recv() {
+                write
+                    .write_all(&encode_charged(&frame, session, false)?)
+                    .await?;
             }
-            written.await;
+            write.shutdown().await?;
+            return Ok(());
+        }
+        tokio::select! {
+            biased;
+            frame = rx.recv() => {
+                let Some(frame) = frame else {
+                    write.shutdown().await?;
+                    return Ok(());
+                };
+                let live = matches!(frame, Envelope::Presence { .. });
+                write.write_all(&encode_charged(&frame, session, live)?).await?;
+            }
+            () = presence.ready() => {
+                if presence.next_due().is_some_and(|due| due <= tokio::time::Instant::now()) {
+                    write_presence(presence, peer, session, write).await?;
+                }
+            }
+            _ = ending.changed() => {}
         }
     }
 }
@@ -121,10 +194,6 @@ where
     clippy::too_many_lines,
     reason = "one connection's whole life, in the order it happens: set up, serve until it ends, and the teardown every exit shares"
 )]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the session context, the loop context and the writer's queues are borrowed by the concurrent reader and writer futures, and teardown reads the session context again; the lint does not see those uses"
-)]
 pub(super) async fn serve_peer_stream<R, W>(
     peer: AuthenticatedPeer,
     read: R,
@@ -151,13 +220,8 @@ where
         fetch,
         agents,
         environments,
-        positions,
-        compactor,
     } = ctx;
-    let resumes = std::sync::Mutex::new(HashMap::new());
     let agent = std::sync::OnceLock::new();
-    let channel_reader = std::sync::atomic::AtomicBool::new(false);
-    let lag = Arc::new(Lag::default());
     // Everything this session is sent passes here, so its egress and the
     // server's are what the stream accepted, not an estimate.
     let wire = Wire::new(EgressWrite::new(write, &metrics, peer.device_public_key));
@@ -166,7 +230,6 @@ where
     // Outbound channel: workspaces write here what they fan out to this peer.
     let (tx, mut rx) = mpsc::channel::<Envelope>(PEER_OUTBOUND_CAPACITY);
     let content = Arc::new(crate::content_queue::ContentQueue::default());
-    let (state_tx, mut state_rx) = mpsc::channel::<StateDelivery>(PEER_OUTBOUND_CAPACITY);
     let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(1);
     let stop = Arc::new(tokio::sync::Notify::new());
     let mut reader = SessionReader::new(read);
@@ -178,7 +241,6 @@ where
     let mut access_audit =
         AccessAudit::new(peer.device_public_key == own_device_cert.device_public_key);
 
-    let connection_live = ConnectionLease(Arc::new(std::sync::atomic::AtomicBool::new(true)));
     // Presence is batched per connection, in the order it was posted.
     let presence = Arc::new(crate::presence_mailbox::PresenceMailbox::default());
     let execution = tilo_actions::remote::ExecutionLease::mint();
@@ -186,8 +248,6 @@ where
         workspaces: &workspaces,
         outbound: &tx,
         content: &content,
-        state_outbound: Some(&state_tx),
-        connection_live: Some(&connection_live.0),
         own_user_public_key: &own_user_public_key,
         metrics: &metrics,
         trust_policy: &trust_policy,
@@ -201,13 +261,8 @@ where
         fetch: fetch.as_deref(),
         agents: &agents,
         environments: &environments,
-        positions,
-        compactor: compactor.as_ref(),
-        resumes: &resumes,
         agent: &agent,
-        channel_reader: &channel_reader,
         execution: &execution,
-        lag: &lag,
         presence: Some(&presence),
     };
 
@@ -231,22 +286,26 @@ where
     // is unconditional. Leaving a subscription behind is not cosmetic —
     // fan-out then writes deltas to a peer that is gone instead of
     // queueing them for store-and-forward, and they are lost.
-    let (reply_tx, mut reply_rx) = mpsc::channel::<ReplayWrite>(8);
-    let pending_replays = std::sync::atomic::AtomicUsize::new(0);
-    let replay_written = tokio::sync::Notify::new();
     let outcome = {
-        let cx = SessionLoop::new(&peer, &session, &pending_replays, &replay_written, &beats);
-        let reading = SessionReaderLoop::new(
-            &mut reader,
-            &mut subscribed,
-            &mut access_audit,
-            &mut authority,
-            ReaderQueues::new(&tx, &state_tx, &reply_tx),
-        )
-        .run(cx);
-        let queues = WriterQueues::new(&mut rx, &mut state_rx, &mut reply_rx, &content);
+        let reading = Reading {
+            peer: &peer,
+            session: &session,
+            reader: &mut reader,
+            subscribed: &mut subscribed,
+            access_audit: &mut access_audit,
+            authority: &mut authority,
+            heartbeats: &beats,
+        }
+        .run();
         let (end_writer, ending) = tokio::sync::watch::channel(false);
-        let writing = SessionWriter::new(queues, &mut write, &presence).run(cx, ending);
+        let writing = write_frames(
+            &mut rx,
+            &content,
+            &presence,
+            &mut write,
+            (&peer, &session),
+            ending,
+        );
         until_ended(
             reading,
             writing,
@@ -275,7 +334,6 @@ where
         admin.session_ended(&peer.cert).await;
     }
 
-    connection_live.end();
     grant.end();
     let outcome = finish_peer_outcome(outcome, &metrics, &peer.device_public_key);
     let sent = wire.io(EgressWrite::bytes_sent);
@@ -384,9 +442,7 @@ fn trace_session_end(
         bytes_sent,
         "peer session egress"
     );
-    if crate::persistence::correlated_diagnostics() {
-        tracing::info!(phase = "peer_end", device = %hex::encode(&peer.device_public_key[..4]), outcome = ?outcome, workspaces = ?subscribed);
-    }
+    tracing::debug!(phase = "peer_end", device = %hex::encode(&peer.device_public_key[..4]), outcome = ?outcome, workspaces = ?subscribed);
 }
 
 /// Remove this session's subscriber from every workspace it subscribed to.
@@ -430,40 +486,5 @@ pub(super) fn finish_peer_outcome(
             );
             Err(error)
         }
-    }
-}
-
-struct ConnectionLease(Arc<std::sync::atomic::AtomicBool>);
-impl ConnectionLease {
-    /// Mark the connection gone: what a workspace would deliver to it stops
-    /// now, not at teardown.
-    fn end(&self) {
-        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-impl Drop for ConnectionLease {
-    fn drop(&mut self) {
-        self.end();
-    }
-}
-pub(super) fn inbound_bytes(frame: &EnvelopeV2) -> usize {
-    match frame {
-        EnvelopeV2::State(Envelope::Delta { delta, .. }) => delta.len().saturating_add(256),
-        EnvelopeV2::State(Envelope::Presence { payload, .. }) => payload.len().saturating_add(256),
-        EnvelopeV2::State(Envelope::SyncResponse { delta_since, .. }) => {
-            delta_since.len().saturating_add(256)
-        }
-        EnvelopeV2::State(Envelope::SyncRequest { have_heads, .. }) => {
-            have_heads.len().saturating_mul(32).saturating_add(256)
-        }
-        EnvelopeV2::State(Envelope::PeerServerHello { hosted_workspaces }) => hosted_workspaces
-            .len()
-            .saturating_mul(8)
-            .saturating_add(256),
-        EnvelopeV2::State(Envelope::NotAuthorised { refusal, .. }) => {
-            refusal.to_string().len().saturating_add(256)
-        }
-        // Bounds all non-state/private controls without serializing payloads.
-        _ => 64 * 1024,
     }
 }

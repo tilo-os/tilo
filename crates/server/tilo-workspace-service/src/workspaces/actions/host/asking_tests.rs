@@ -2,11 +2,6 @@
 //! back, taking back holds at once, it covers exactly what was asked, and no
 //! request writes one, whoever sends it.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server handle a test binds is kept until the test ends; dropping it earlier closes the server it drives"
-)]
-
 use serde_json::{Value, json};
 use tilo_actions::remote::person_asking::{
     self, ActionName, ActionTarget, AgentName, Asked, AskedBy, Thing, Waiting, WaitingAnswer, Words,

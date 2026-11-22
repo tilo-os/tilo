@@ -45,9 +45,8 @@ use tilo_user_identity::DeviceCert;
 use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
+use super::links::{Link, Links};
 use super::{GovernedWorkspace, Workspaces, appended, peer_parts};
-use crate::attach::{HostDialer, Link, Links, Upstream};
-use crate::handshake::LiveIdentity;
 
 /// What a holder hands the device it asks to hold one of its workspaces.
 #[derive(Clone, Debug)]
@@ -438,10 +437,14 @@ impl Workspaces {
         }
     }
 
-    /// Keep a session to every other holder `governed`'s governance names,
-    /// and to the holder that handed it over, and to none other; let the
-    /// workspace go once its governance named this device and names it no
-    /// more.
+    /// Keep a link to the other holders `governed`'s governance names, and
+    /// to the holder that handed it over; let the workspace go once its
+    /// governance named this device and names it no more.
+    ///
+    /// Every holder links to the others over the device link, exactly once
+    /// per pair: the holder with the greatest device key among them is
+    /// dialled by the others and dials none, so each keeps one link into the
+    /// workspace's history beside the ones it answers.
     pub(super) fn dial_holders(&self, governed: &mut GovernedWorkspace) {
         let host = &self.inner.host;
         let own = host.cert.device_public_key;
@@ -487,44 +490,108 @@ impl Workspaces {
             ))));
         }
         let workspace_id = governed.workspace_id();
-        for holder in named {
-            let device = holder.device_certificate.device_public_key;
-            if device == own || governed.holders.sessions.contains_key(&device) {
-                continue;
-            }
-            let dialer = HostDialer {
-                endpoint: host.endpoint.clone(),
-                identity: LiveIdentity {
-                    user_public_key: host.cert.user_public_key,
-                    cert: host.cert.clone(),
-                    signing_key: host.key.clone(),
-                    revocations: host.revocations.clone(),
-                },
-                trust_policy: host.trust_policy.clone(),
-                workspaces: host.workspaces.clone(),
-                metrics: host.metrics.clone(),
-                scope: Some(vec![workspace_id]),
-                links: Some(links.clone()),
-                retiring: self.downgrade(),
-            }
-            .spawn_woken(
-                Upstream {
-                    addr: holder.endpoint_addr.clone(),
-                    device,
-                    person: holder.device_certificate.user_public_key,
-                },
-                format!(
-                    "holder {} of {}",
-                    hex::encode(&device[..4]),
-                    governed.workspace()
-                ),
-                &host.arrivals,
-            );
+        // The one holder this device dials: the greatest device key among the
+        // others, or none when it is its own.
+        let Some(dialled) = named
+            .iter()
+            .map(|holder| holder.device_certificate.device_public_key)
+            .filter(|device| *device != own)
+            .max()
+        else {
+            return;
+        };
+        if named
+            .iter()
+            .map(|holder| holder.device_certificate.device_public_key)
+            .chain(std::iter::once(own))
+            .max()
+            != Some(own)
+            && !governed.holders.sessions.contains_key(&dialled)
+        {
+            let Some(holder) = named
+                .iter()
+                .find(|holder| holder.device_certificate.device_public_key == dialled)
+            else {
+                return;
+            };
+            let Some(link) = self.inner.direct.link(workspace_id) else {
+                return;
+            };
+            let endpoint = host.endpoint.clone();
+            let addr = holder.endpoint_addr.clone();
+            let name = governed.workspace().to_owned();
+            let dialing = tokio::spawn(dial_holder(link, endpoint, addr, dialled, links, name));
             governed
                 .holders
                 .sessions
-                .insert(device, AbortOnDrop(dialer));
+                .insert(dialled, AbortOnDrop(dialing));
         }
+    }
+}
+
+/// Dial `device` at `addr` over the workspace's link until the workspace is
+/// let go here, taking in what it holds and answering it: what this holder's
+/// copy lacks of the other, and what it publishes, go over that one link.
+async fn dial_holder(
+    link: tilo_peer_state::direct::DirectSync,
+    endpoint: iroh::Endpoint,
+    addr: iroh_base::EndpointAddr,
+    device: [u8; 32],
+    links: Links,
+    name: String,
+) {
+    const FIRST: std::time::Duration = std::time::Duration::from_secs(1);
+    const MOST: std::time::Duration = std::time::Duration::from_secs(60);
+    let mut backoff = FIRST;
+    loop {
+        links.set(device, Link::Reaching);
+        match link.dial(&endpoint, addr.clone(), device).await {
+            Ok(dialed) => {
+                backoff = FIRST;
+                links.set(device, Link::CatchingUp);
+                let mut caught_up = link.caught_up();
+                let run = dialed.run(&link);
+                tokio::pin!(run);
+                loop {
+                    tokio::select! {
+                        ended = &mut run => {
+                            if let Err(refusal) = ended {
+                                tracing::debug!(%name, ?refusal, "a holder's link ended");
+                            }
+                            break;
+                        }
+                        changed = caught_up.changed() => {
+                            if changed.is_err() {
+                                continue;
+                            }
+                            let current = if *caught_up.borrow() {
+                                Link::Current
+                            } else {
+                                Link::CatchingUp
+                            };
+                            links.set(device, current);
+                        }
+                    }
+                }
+                links.set(
+                    device,
+                    Link::Unreachable {
+                        since_ns: tilo_clock::unix_now_ns(),
+                    },
+                );
+            }
+            Err(refusal) => {
+                tracing::debug!(%name, ?refusal, "a holder is unreachable");
+                links.set(
+                    device,
+                    Link::Unreachable {
+                        since_ns: tilo_clock::unix_now_ns(),
+                    },
+                );
+            }
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = backoff.saturating_mul(2).min(MOST);
     }
 }
 
@@ -592,22 +659,6 @@ fn held_copy(links: &Links) -> tilo_peer_state::HeldCopy {
 }
 
 impl Workspaces {
-    /// History of `workspace` arrived from another holder: the changes held
-    /// back for lack of it are tried again, against what the server keeps.
-    pub(crate) fn history_arrived(&self, workspace: &str) {
-        let this = self.clone();
-        let workspace = workspace.to_owned();
-        tokio::spawn(async move {
-            let Ok(governed) = this.workspace(&workspace).await else {
-                return;
-            };
-            if governed.lock().await.holders.held.is_empty() {
-                return;
-            }
-            this.replay(&workspace).await;
-        });
-    }
-
     /// Each workspace whose copy here turned current with another of its
     /// holders: what it lacks of the content its files name, the holder
     /// may keep. A slow receiver may lag; it then asks for all it lacks.

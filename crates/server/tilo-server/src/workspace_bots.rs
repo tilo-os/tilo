@@ -244,11 +244,6 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
             &bot,
         )
         .await?;
-        self.workspaces.keep_bot_device(
-            &self.workspace,
-            MODERATION,
-            self.certifier.device_key(MODERATION),
-        );
         Ok(())
     }
 

@@ -2,10 +2,6 @@
 //! compute claims an offloaded invocation's turn only when everything it needs
 //! is here, and a member device asking it over the device action service gets
 //! the turn run there.
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the host, its workspaces and the devices' action services are this test's subject until its last assertion"
-)]
 
 use std::sync::Mutex;
 

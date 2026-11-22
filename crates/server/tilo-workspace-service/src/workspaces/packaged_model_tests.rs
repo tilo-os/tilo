@@ -1,11 +1,6 @@
 //! A server applies an installed app's action from the model its package
 //! carries, and another holder replays the invocation with the same module.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "a test binds the server it drives until it shuts it down at the end"
-)]
-
 use std::path::{Path, PathBuf};
 
 use super::fixtures::{governor, test_host};

@@ -26,7 +26,7 @@ pub fn revoke_device(
         signature: [0; 64],
     };
     tilo_user_identity::sign_revocation_entry(&mut entry, root).context("sign the revocation")?;
-    let appended = crate::store::append_revocation(state_root, &entry)
+    let appended = crate::workspace_files::append_revocation(state_root, &entry)
         .with_context(|| format!("append to {}", state_root.display()))?;
     Ok((entry, appended))
 }
@@ -69,7 +69,7 @@ mod tests {
             tilo_user_identity::verify_revocation_entry(&entry).unwrap();
             assert_eq!(entry.user_public_key, person.verifying_key().to_bytes());
             assert_eq!(
-                crate::store::load_revocations(&state).unwrap(),
+                crate::workspace_files::load_revocations(&state).unwrap(),
                 vec![entry]
             );
         }

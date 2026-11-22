@@ -2,11 +2,6 @@
 //! their own workspace: theirs alone, and the zone their views are rendered in is the one they
 //! chose, else their browser's.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server's handle a test binds is kept until the test ends; dropping it earlier closes the server it drives"
-)]
-
 use serde_json::{Value, json};
 use tilo_actions::remote::formats;
 use tilo_actions::remote::{ActionCallError, Caller};

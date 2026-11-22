@@ -42,17 +42,11 @@ const CALL_CEILING: Duration = Duration::from_secs(10);
 /// its pages took three to four.
 const LISTING_IN_LISTS: f64 = 1.75;
 
-/// The bytes this process read and wrote so far, as the kernel counts them.
-/// Each test runs in a process of its own.
+/// The bytes of history this process read and wrote so far, as the engine
+/// counts them. Each test runs in a process of its own.
 fn bytes_moved() -> u64 {
-    let counted = std::fs::read_to_string("/proc/self/io").unwrap();
-    let field = |name: &str| {
-        counted
-            .lines()
-            .find_map(|line| line.strip_prefix(name)?.trim().parse::<u64>().ok())
-            .unwrap()
-    };
-    field("rchar:").saturating_add(field("wchar:"))
+    let work = tilo_peer_state::work::now();
+    work.bytes_read.saturating_add(work.bytes_written)
 }
 
 /// One of the import's lists: how long it took, and the bytes the process
