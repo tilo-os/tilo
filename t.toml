@@ -6451,8 +6451,12 @@ proof = ["tilolang", "two-people", "agent-sessions", "session-lock"]
 # is shown to be replaceable before it is deleted, and it judges nothing: the page the walk writes
 # (`t outputs app-walk/<app> --to DIR`, DIR/walk.md) sets the runs. snapshots side by side for
 # a person to read.
+# The walk finds and plays a video the way a person does, from the live service: what YouTube
+# answers is no fixed list of hosts (its API, then wherever a video's bytes are served from), so
+# the walk reaches the open network, and a run is never served from the cache.
 [[check]]
 name = "app-walk/{app}"
+egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/test-env.sh bash tools/ci/app-walk.sh /target/app-walk/{app} {app}"
 needs = ["nested-session", "tilolang-cli-binary"]
 env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TILOLANG = "/target/debug/tilolang", TILO_TEST_NTFS_FIXTURES = "0" }
