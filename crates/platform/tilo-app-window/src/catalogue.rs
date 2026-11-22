@@ -181,6 +181,14 @@ fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
     }
     ty.keywords.clone_from(&descriptor.keywords);
     ty.icon.clone_from(&descriptor.icon);
+    // What the action does is what the app declares it does: an undoable change of its records
+    // or a reach outside them. The window's own check of a press decides that need, so a person
+    // whose role lets them change the workspace's records but asks before outside effects (an
+    // editor) presses an undoable action as the app's own window lets them.
+    ty.contract.kind = descriptor.contract.kind;
+    ty.contract.field.clone_from(&descriptor.contract.field);
+    ty.contract.risk = descriptor.contract.risk;
+    ty.contract.tags.clone_from(&descriptor.contract.tags);
     // An action whose precondition does not hold is not offered, as the app says.
     ty.contract
         .availability

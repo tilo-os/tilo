@@ -1792,3 +1792,51 @@ fn a_read_the_workspace_cannot_answer_keeps_one_account_and_its_inbox_fills() {
     );
     assert!(session.flag(&account, "online"), "its server answers");
 }
+
+/// Bo, whom the workspace's owner made an editor, answers a message in the workspace's mailbox:
+/// the draft he makes is the mailbox's, as Ada's is.
+#[test]
+fn an_editor_answers_from_the_workspaces_mailbox() {
+    use ui::permissions::policy::{self, Role};
+    let route = super::RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let workspace = route.cluster_id.to_string();
+    let mut policy = policy::WorkspacePolicy::new(&workspace, "ada");
+    policy.members.insert("bo".to_owned(), Role::Editor);
+    let spec = tilolang_process::hosted::Spec::new(APP, workspace, 1, "bo")
+        .in_language("en-US")
+        .access(policy::MemberAccess::person(policy, "bo"));
+    let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
+    let mut session = Session::brokered_as(&route, spec, chunks, None, Window::in_harness);
+    session.settle();
+    let root = session.mail_root();
+    session.call(
+        "deliver_message",
+        &root,
+        &json!({
+            "from": "Grace Hopper <grace@navy.example>", "to": "Office <office@company.example>",
+            "subject": "Quarterly invoices", "body": "Please confirm the totals by Friday.",
+            "date": "2026-11-12T09:30:00Z", "folder": "inbox",
+            "message_id": "<invoices@navy.example>",
+        }),
+    );
+    let kept = session.refs(&root, "recovered_mail");
+    let [thread] = kept.as_slice() else {
+        panic!("one conversation: {kept:?}");
+    };
+    let resource = tilolang_tilo::publish::resource_id(APP, &thread.id_string());
+    let answered = session.invoke(None, None, &resource, "reply", &serde_json::Map::new());
+    session.settle();
+    assert!(
+        session.asked(thread).is_empty(),
+        "nobody is asked: {:?}",
+        session.asked(thread)
+    );
+    let answered = answered.expect("the reply is taken");
+    assert!(
+        !answered.resources.is_empty(),
+        "the reply answers its draft: {answered:?}"
+    );
+    let draft = session.made("reply", thread, &json!({}));
+    assert_eq!(session.text(&draft, "subject"), "Re: Quarterly invoices");
+    assert_eq!(session.text(&draft, "to"), "grace@navy.example");
+}

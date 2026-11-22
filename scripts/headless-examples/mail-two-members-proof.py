@@ -153,6 +153,19 @@ def open_it(session: Session, out: Path) -> dict:
             "controls": [name for name in names if name in ("Reply", "Reply all", "Forward")]}
 
 
+def replied_through_api(session: Session) -> str:
+    """What Mail's `reply` answers `session`'s person through the API, as an agent or a script
+    asks it: whether it was taken, or why not."""
+    try:
+        action = next((a for a in session.actions("")
+                       if a.get("application") == MAIL and a.get("operation") == "reply"), None)
+        if action is None:
+            return "nothing: the session lists no reply"
+        return json.dumps(session.invoke(action["provider"], action["id"]))[:1500]
+    except Failed as error:
+        return f"a refusal: {error}"
+
+
 def reply(session: Session, out: Path) -> dict:
     """`session`'s person presses Reply, and their composer answers the sender under "Re:"."""
     target = until("the conversation's own Reply, as its action names it",
@@ -166,7 +179,9 @@ def reply(session: Session, out: Path) -> dict:
                                else None) if (now := names_of(session)) else None,
                       60, 0.25)
     except Failed as error:
-        raise Failed(f"{error}; {session.tag}'s Mail window is {title_of(session)!r} and shows "
+        raise Failed(f"{error}; {session.tag}'s Mail window is {title_of(session)!r}, its Reply "
+                     f"is {target}, the same Reply through the API answers "
+                     f"{replied_through_api(session)} and the window shows "
                      f"{names_of(session)}") from None
     wanted = f"Re: {SUBJECT}"
     title = title_of(session)

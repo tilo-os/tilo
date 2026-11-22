@@ -651,6 +651,50 @@ fn the_windows_catalogue_keeps_what_an_action_takes_and_whether_it_can_run() {
     );
 }
 
+/// The window's own check of a press decides the need the app declared for the action: an
+/// undoable change of the workspace's records stays one, which an editor makes, and an outside
+/// effect stays one, which asks them first.
+#[test]
+fn the_windows_catalogue_keeps_what_an_action_needs() {
+    use tilo_actions::{ActionKind, ActionSpec, OperationKind, ResourceSpec};
+    let declared = |id: &str, kind: ActionKind| {
+        let mut spec = ActionSpec::operation(
+            id,
+            id,
+            OperationKind::Effect,
+            "test.create",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        spec.type_mut().contract.kind = kind;
+        spec
+    };
+    let resource = ResourceSpec::new("mail:1", "test.mail.Thread", "Thread")
+        .with_action(declared("reply", ActionKind::Undoable))
+        .with_action(declared("send", ActionKind::Outside));
+    let published = serde_json::to_vec(&tilo_actions::api::survey(&[resource])).expect("encodes");
+
+    let (mut app, mut window) = window();
+    send(
+        &mut app,
+        &[ToUi::Actions(wire::ActionCatalogue::All(published))],
+    );
+    window.receive();
+    let catalogue = window.catalogue();
+    let need = |id: &str| {
+        catalogue
+            .iter()
+            .flat_map(|resource| &resource.actions)
+            .find(|action| action.id == id)
+            .unwrap_or_else(|| panic!("{id} is declared for the window"))
+            .contract
+            .need()
+            .kind
+    };
+    assert_eq!(need("reply"), ActionKind::Undoable);
+    assert_eq!(need("send"), ActionKind::Outside);
+}
+
 fn keyed_menu(key: &str) -> Vec<ToUi> {
     let mut button = UiNode::empty("ui.Button", "archive");
     button
@@ -2644,5 +2688,50 @@ fn a_field_marked_autofocus_takes_the_keyboard_when_it_appears() {
         drawn_window(&mut harness).focused_field().as_deref(),
         Some("field"),
         "the keyboard is in the search field, where the person types next"
+    );
+}
+
+/// [`action_shell`] whose app declares its `new` as `kind` of change.
+fn action_shell_declaring(kind: tilo_actions::ActionKind) -> Vec<ToUi> {
+    use tilo_actions::{ActionSpec, OperationKind, ResourceSpec};
+    let mut page = action_shell(false);
+    let mut spec = ActionSpec::operation(
+        "new",
+        "New note",
+        OperationKind::Effect,
+        "test.create",
+        &serde_json::json!({}),
+    )
+    .unwrap();
+    spec.type_mut().contract.kind = kind;
+    let resource = ResourceSpec::new("tasks:1", "test.tasks", "Tasks").with_action(spec);
+    let published = serde_json::to_vec(&tilo_actions::api::survey(&[resource])).expect("encodes");
+    page.retain(|message| !matches!(message, ToUi::Actions(_)));
+    page.push(ToUi::Actions(wire::ActionCatalogue::All(published)));
+    page
+}
+
+/// An editor of the workspace presses the app's button for an undoable change of its records: the
+/// press reaches the app, as the owner's does. The window's check decides what the app declared
+/// the action does, not an outside effect, which would ask an editor first.
+#[test]
+fn an_editors_press_of_an_undoable_action_reaches_the_app() {
+    let (mut app, mut harness) = drawn(&action_shell_declaring(tilo_actions::ActionKind::Undoable));
+    harness.set_permission_ctx(ui::permissions::PermissionContext::member(
+        &ui::permissions::MemberId::person("bo"),
+        ui::permissions::policy::Role::Editor,
+    ));
+    harness.relayout();
+    let _ = sent(&mut app);
+    let action = named_node(&harness, "New note");
+    harness
+        .perform_a11y_action(action, &ui::a11y::Action::Activate)
+        .expect("the button presses");
+    drawn_window(&mut harness).flush();
+    let told = sent(&mut app);
+    assert!(
+        told.iter()
+            .any(|message| matches!(message, ToApp::Invoke { .. } | ToApp::Fire { .. })),
+        "the editor's press reaches the app: {told:?}"
     );
 }
