@@ -755,6 +755,8 @@ struct Refusals {
     wait: Duration,
     /// When the next write may go out.
     until: Option<Instant>,
+    /// When the last refusal came, and why the workspace refused.
+    last: Option<(Instant, String)>,
 }
 
 /// The first wait after a refusal.
@@ -990,8 +992,25 @@ impl Sync {
         let waiting = long_waits.len().saturating_sub(unanswered);
         let lacking = self.lacking.len();
         let ordered = if long(since) { self.ordered.len() } else { 0 };
+        // A change the workspace keeps refusing goes again after each wait, and says why.
+        let refused: Vec<&str> = if long(since) {
+            self.documents
+                .values()
+                .filter_map(|held| held.refused.last.as_ref())
+                .filter(|(at, _)| at.elapsed() <= MOST_REFUSED_WAIT.saturating_mul(2))
+                .map(|(_, reason)| reason.as_str())
+                .collect()
+        } else {
+            Vec::new()
+        };
         let unopened = !opened;
-        if unanswered == 0 && waiting == 0 && lacking == 0 && ordered == 0 && !unopened {
+        if unanswered == 0
+            && waiting == 0
+            && lacking == 0
+            && ordered == 0
+            && refused.is_empty()
+            && !unopened
+        {
             return None;
         }
         let parts = |count: usize| if count == 1 { "part" } else { "parts" };
@@ -1025,6 +1044,14 @@ impl Sync {
                 parts(ordered),
                 if ordered == 1 { "waits" } else { "wait" },
                 parts(first),
+            ));
+        }
+        if let Some(reason) = refused.first() {
+            why.push(format!(
+                "the workspace refused changes to {} {} of the file list ({reason}), which go \
+                 again after a wait",
+                refused.len(),
+                parts(refused.len()),
             ));
         }
         if lacking > 0 {
@@ -1101,7 +1128,9 @@ impl Sync {
             .flatten()
             .map(|hash| automerge::ChangeHash(*hash))
             .collect();
-        if held.refused.refused(Instant::now()) {
+        let now = Instant::now();
+        held.refused.last = Some((now, reason.to_owned()));
+        if held.refused.refused(now) {
             tracing::warn!(%reason, workspace = %self.workspace, chunk, "the workspace refused a change to its files; it goes again after a wait");
         }
     }
