@@ -2611,6 +2611,7 @@ mod tests {
             origin: None,
             title: None,
             untitled: None,
+            readers: None,
         }));
         DynResource::empty(schema).unwrap_or_else(|e| panic!("{e}"))
     }

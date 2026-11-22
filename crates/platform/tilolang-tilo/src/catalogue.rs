@@ -618,6 +618,7 @@ impl Reader<'_> {
                     origin: None,
                     title: None,
                     untitled: None,
+                    readers: None,
                 });
             }
         }
@@ -653,6 +654,7 @@ impl Reader<'_> {
             origin: None,
             title: None,
             untitled: None,
+            readers: None,
         });
     }
 

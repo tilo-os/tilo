@@ -29,6 +29,8 @@ pub struct TypeInfo {
     pub origin: Option<String>,
     pub title: Option<String>,
     pub untitled: Option<String>,
+    /// `(readers: people)`: the field naming who reads a record and everything under it.
+    pub readers: Option<String>,
 }
 
 impl TypeInfo {

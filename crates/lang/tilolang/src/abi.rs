@@ -159,6 +159,7 @@ imports! {
     MadeFrom = "made_from" ([] -> [H]);
     ActorEq = "actor_eq" ([H, H] -> [I32]);
     ActorName = "actor_name" ([H] -> [H]);
+    ActorId = "actor_id" ([H] -> [H]);
     Now = "now" ([] -> [H]);
     WebGet = "web_get" ([H, H, H] -> [H]);
     WebPost = "web_post" ([H, H, H] -> [H]);

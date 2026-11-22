@@ -29,6 +29,9 @@ pub struct TypeInfo {
     pub fields: Vec<FieldInfo>,
     /// `(title: subject)`: the field the type says names its records, by name.
     pub title: Option<String>,
+    /// `(readers: people)`: the field holding who reads a record and everything under it, by
+    /// name.
+    pub readers: Option<String>,
 }
 
 impl TypeInfo {
@@ -216,6 +219,7 @@ fn type_info(t: &TypeMeta, app: &str) -> Result<TypeInfo, String> {
         name: t.name.clone(),
         fields,
         title: t.title.clone(),
+        readers: t.readers.clone(),
     })
 }
 

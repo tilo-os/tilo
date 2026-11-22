@@ -126,8 +126,34 @@ impl EarlierItem {
                     })
                     .collect(),
             ),
+            Value::Map(
+                self.texts
+                    .iter()
+                    .filter_map(|(name, said)| {
+                        let named = members_named(said)?;
+                        let named = named
+                            .into_iter()
+                            .map(|member| Value::Actor(crate::ids::Actor::Member(member)))
+                            .collect();
+                        Some((text(name), Value::List(named)))
+                    })
+                    .collect(),
+            ),
         ])
     }
+}
+
+/// The members the words `said` name, as a native app kept them: one member (`{"person":"<id>"}`),
+/// or several, as the id of a direct conversation names its people
+/// (`direct:[{"person":"<id>"},...]`). None for words that name no member.
+fn members_named(said: &str) -> Option<Vec<crate::ids::MemberId>> {
+    let said = said.strip_prefix("direct:").unwrap_or(said);
+    if let Ok(one) = serde_json::from_str::<crate::ids::MemberId>(said) {
+        return Some(vec![one]);
+    }
+    serde_json::from_str::<Vec<crate::ids::MemberId>>(said)
+        .ok()
+        .filter(|several| !several.is_empty())
 }
 
 /// What the earlier document `doc`, kept under the id `id`, holds: its own fields as one item,
@@ -577,9 +603,17 @@ mod tests {
         assert_eq!(of("draft").texts["sender.email"], "sam@rivera.example");
         assert_eq!(of("drafts").texts["to"], "bo@chen.example");
         assert_eq!(of("drafts").texts["sender.email"], "work@rivera.example");
-        assert!(items.iter().all(|item| item.of != "imported" && item.of != "tl"));
+        assert!(
+            items
+                .iter()
+                .all(|item| item.of != "imported" && item.of != "tl")
+        );
         let own = of("");
         assert_eq!(own.lists["imported"], ["one"]);
-        assert!(own.texts.keys().all(|key| !key.contains('.')), "{:?}", own.texts);
+        assert!(
+            own.texts.keys().all(|key| !key.contains('.')),
+            "{:?}",
+            own.texts
+        );
     }
 }

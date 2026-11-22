@@ -21,7 +21,7 @@ use crate::value::Value;
 
 use Imp::{
     Abort, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen, ActUndo,
-    Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, BytesLength, CallFn,
+    Actions, ActorEq, ActorId, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, BytesLength, CallFn,
     ChangeView, CollCount, CollCounted, CollEmpty, CollInsert, CollInsertAs, CollInsertKeyed,
     CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives, CollRemove,
     CollWhere, CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek,
@@ -489,6 +489,24 @@ impl Core {
 }
 
 impl Core {
+    /// What a collection's where, relatives, order and query imports return.
+    fn collection_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let value = match imp {
+            // An argument a call left out before one it gives: it is no value, and the
+            // invocation has the default in its place before anything reads it.
+            Imp::MissingV => Value::Missing,
+            Imp::CollWhere => self.coll_where(a.h(0)?, a.h(1)?)?,
+            Imp::CollWhereWith => self.coll_where_with(a.h(0)?, a.h(1)?, a.h(2)?)?,
+            Imp::CollRelatives => {
+                self.coll_relatives(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?, a.h(4)?)?
+            }
+            Imp::CollOrdered => self.coll_ordered(a.h(0)?, a.h(1)?)?,
+            Imp::Query => self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?,
+            _ => return trap("not a collection import"),
+        };
+        self.ret_h(value)
+    }
+
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::Delivery;
         match imp {
@@ -504,16 +522,9 @@ impl Core {
             | ListEnd | ListIndexOf | ListPrevious | TupleNew | TupleSetI | TupleSetF
             | TupleSetH | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV
             | IsSome | UnwrapI | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
-            // An argument a call left out before one it gives: it is no value, and the
-            // invocation has the default in its place before anything reads it.
-            MissingV => self.ret_h(Value::Missing),
-            CollWhere => self.ret_h(self.coll_where(a.h(0)?, a.h(1)?)?),
-            CollWhereWith => self.ret_h(self.coll_where_with(a.h(0)?, a.h(1)?, a.h(2)?)?),
-            CollRelatives => {
-                self.ret_h(self.coll_relatives(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?, a.h(4)?)?)
+            MissingV | CollWhere | CollWhereWith | CollRelatives | CollOrdered | Query => {
+                self.collection_import(imp, a)
             }
-            CollOrdered => self.ret_h(self.coll_ordered(a.h(0)?, a.h(1)?)?),
-            Query => self.ret_h(self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?),
             Filters | FilterLit | SortLit => self.catalogue_import(imp, a),
             IdentPart => self.ret_h(self.ident_part(a.h(0)?, a.h(1)?)?),
             Today | TimeDay | TimeOfDay | TimeClock | TimeSpan | DayShift | DayPart
@@ -551,7 +562,7 @@ impl Core {
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
             | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd
             | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
-            WorkspaceMembers | Members | MayRead | Speakers | ActorKind | ActorRole => {
+            WorkspaceMembers | Members | MayRead | Speakers | ActorKind | ActorRole | ActorId => {
                 self.members_import(imp, a)
             }
             EditField => self.edit_field(a),

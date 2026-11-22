@@ -1164,13 +1164,14 @@ impl<'a> Parser<'a> {
         let mut origin = None;
         let mut title = None;
         let mut untitled = None;
+        let mut readers = None;
         if self.eat(&Tok::LParen) {
             loop {
                 self.skip_nl();
                 if self.eat(&Tok::RParen) {
                     break;
                 }
-                let key = self.ident("`origin`, `title` or `untitled`")?;
+                let key = self.ident("`origin`, `title`, `untitled` or `readers`")?;
                 self.expect(&Tok::Colon)?;
                 match key.name.as_str() {
                     "origin" => origin = Some(self.type_origin()?),
@@ -1185,11 +1186,17 @@ impl<'a> Parser<'a> {
                             self.plain_string("what the type is called while its title is empty")?;
                         untitled = Some(UntitledDecl { words, span });
                     }
+                    "readers" => {
+                        let span = self.span();
+                        let field =
+                            self.ident("the field naming who reads a record of the type")?;
+                        readers = Some(TitleDecl { field, span });
+                    }
                     other => {
                         return self.fail(
                             key.span,
                             format!(
-                                "a type's options are `origin:`, `title:` and `untitled:`, not `{other}:`"
+                                "a type's options are `origin:`, `title:`, `untitled:` and `readers:`, not `{other}:`"
                             ),
                         );
                     }
@@ -1259,6 +1266,7 @@ impl<'a> Parser<'a> {
             origin,
             title,
             untitled,
+            readers,
             fields,
             search,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),

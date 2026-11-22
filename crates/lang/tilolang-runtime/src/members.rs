@@ -211,9 +211,69 @@ impl Core {
     pub(crate) fn may_read(&self, who: &Actor, target: &ResourceRef) -> bool {
         let list = self.read_members();
         let reads = self.members.borrow().reads.clone();
+        let readers = self.readers_of(target);
         list.iter().any(|member| {
-            who.member_id() == Some(&member.id) && member_reads(reads.as_deref(), member, target)
+            who.member_id() == Some(&member.id)
+                && member_reads(reads.as_deref(), &readers, member, target)
         })
+    }
+
+    /// Whether every record holding `target` that says who reads it names `who`
+    /// ([`Self::readers_of`]).
+    pub(crate) fn readers_admit(&self, who: &Actor, target: &ResourceRef) -> bool {
+        self.readers_of(target)
+            .iter()
+            .all(|people| people.contains(who))
+    }
+
+    /// Who the records holding `target` say read it: for each resource from `target` up to its
+    /// document whose type names its readers (`type Direct (readers: people)`), the people that
+    /// field holds. A member reads `target` only when every one of them names them, whatever the
+    /// grants say. The fields are noted as read by the running view, so it runs again when they
+    /// change.
+    pub(crate) fn readers_of(&self, target: &ResourceRef) -> Vec<Vec<Actor>> {
+        let mut out = Vec::new();
+        let mut at = Some(target.clone());
+        while let Some(here) = at {
+            if let Some(people) = self.readers_here(&here) {
+                out.push(people);
+            }
+            at = self
+                .store
+                .borrow()
+                .container(&here)
+                .ok()
+                .flatten()
+                .map(|(holder, _)| holder);
+        }
+        out
+    }
+
+    /// The people the resource `at` says read it, when its type names its readers.
+    fn readers_here(&self, at: &ResourceRef) -> Option<Vec<Actor>> {
+        let ty = if at.ty.is_empty() {
+            self.stored_type(at)
+        } else {
+            at.ty.clone()
+        };
+        let (_, info) = self.type_of_ref(&ty).ok()?;
+        let field = info.field_by_id_or_name(info.readers.as_deref()?)?.clone();
+        if let Some(vs) = self.frames.borrow_mut().view_mut() {
+            vs.reads.push((at.id_string(), field.id.clone()));
+        }
+        // A record whose readers cannot be read is read by nobody: never by everyone.
+        let Ok(Value::List(people)) = self.read_value(at, &field, None) else {
+            return Some(Vec::new());
+        };
+        Some(
+            people
+                .into_iter()
+                .filter_map(|who| match who {
+                    Value::Actor(who) => Some(who),
+                    _ => None,
+                })
+                .collect(),
+        )
     }
 
     pub(crate) fn members_import(
@@ -231,9 +291,10 @@ impl Core {
                 let target = self.ref_arg(a.h(0)?)?;
                 let list = self.read_members();
                 let reads = self.members.borrow().reads.clone();
-                let readers = list
-                    .iter()
-                    .filter(|member| member_reads(reads.as_deref(), member, &target.target));
+                let readers = self.readers_of(&target.target);
+                let readers = list.iter().filter(|member| {
+                    member_reads(reads.as_deref(), &readers, member, &target.target)
+                });
                 self.ret_h(actors(readers))
             }
             // Whether one actor reads a resource: the answer `members(r)` gives for them, and
@@ -251,6 +312,11 @@ impl Core {
                 let who = self.actor_arg(a.h(0)?)?;
                 crate::core::ret_i64(kind_case(&who))
             }
+            // What names the actor whatever they are called: the same on every device.
+            Imp::ActorId => {
+                let who = self.actor_arg(a.h(0)?)?;
+                self.ret_h(Value::Text(crate::ids::actor_text(&who)))
+            }
             Imp::ActorRole => {
                 let who = self.actor_arg(a.h(0)?)?;
                 let _ = self.read_members();
@@ -264,10 +330,18 @@ impl Core {
     }
 }
 
-/// Whether `member` reads `target` by `reads`, the host's grants (none given: every member
-/// reads every resource of the workspace).
-fn member_reads(reads: Option<&Reads>, member: &Member, target: &ResourceRef) -> bool {
-    reads.is_none_or(|reads| reads(&member.who(), target))
+/// Whether `member` reads `target`: every one of `readers`, the records holding it that say who
+/// reads them ([`Core::readers_of`]), names them, and `reads`, the host's grants, let them (none
+/// given: every member reads every resource of the workspace).
+fn member_reads(
+    reads: Option<&Reads>,
+    readers: &[Vec<Actor>],
+    member: &Member,
+    target: &ResourceRef,
+) -> bool {
+    let who = member.who();
+    readers.iter().all(|people| people.contains(&who))
+        && reads.is_none_or(|reads| reads(&who, target))
 }
 
 pub(crate) fn actors<'a>(members: impl Iterator<Item = &'a Member>) -> Value {

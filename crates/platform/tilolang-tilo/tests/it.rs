@@ -24,6 +24,7 @@ mod chunks;
 mod collab;
 mod columns;
 mod composer;
+mod direct_readers;
 mod discussion;
 #[cfg(feature = "document")]
 mod document;
@@ -56,9 +57,9 @@ mod native_chat;
 mod native_mail;
 mod native_notes;
 mod note_import;
-mod notes_checklist;
 mod notebook_order;
 mod notes;
+mod notes_checklist;
 mod notices;
 mod outbox;
 mod outcomes;

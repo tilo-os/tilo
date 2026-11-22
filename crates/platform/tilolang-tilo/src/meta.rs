@@ -323,6 +323,12 @@ impl MetaExt for Meta {
                         .map(|field| field.id.clone())
                 });
                 schema.untitled.clone_from(&ty.untitled);
+                schema.readers = ty.readers.as_ref().and_then(|name| {
+                    ty.fields
+                        .iter()
+                        .find(|field| &field.name == name)
+                        .map(|field| field.id.clone())
+                });
                 for field in &ty.fields {
                     schema.fields.push(field_schema(self, field));
                 }

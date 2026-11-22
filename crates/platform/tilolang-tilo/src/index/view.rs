@@ -470,6 +470,52 @@ impl View<'_> {
         Ok(out)
     }
 
+    /// Whether `reader` reads the resource at `path` by the records holding it: every one from it
+    /// up to its document whose type names its readers (`type Direct (readers: people)`) names
+    /// them among those people, as `std.may_read` answers it. A record whose readers cannot be
+    /// read is read by nobody.
+    pub fn reads(&self, path: &str, reader: &tilolang_runtime::Actor) -> Result<bool, IndexError> {
+        let mut at = Some(path.to_owned());
+        // A holder is never under what it holds; the bound only stops a damaged index.
+        for _ in 0..1024 {
+            let Some(here) = at.take() else {
+                return Ok(true);
+            };
+            let readers = self
+                .type_of(&here)?
+                .as_deref()
+                .and_then(lookup)
+                .and_then(|schema| schema.readers.as_deref());
+            if let Some(field) = readers {
+                let people = match self.field(&here, field)? {
+                    Some(FieldValue::Scalar(tilolang_runtime::store::Scalar::Json(held))) => {
+                        // The index wrote this field from a value; one it cannot read back
+                        // means the index is corrupt and is built anew.
+                        Some(
+                            tilolang_runtime::value::from_json(&held)
+                                .map_err(|_| IndexError::Corrupt)?,
+                        )
+                    }
+                    _ => None,
+                };
+                let named = matches!(
+                    people,
+                    Some(tilolang_runtime::Value::List(people))
+                        if people.iter().any(|who| {
+                            matches!(who, tilolang_runtime::Value::Actor(who) if who == reader)
+                        })
+                );
+                if !named {
+                    return Ok(false);
+                }
+            }
+            at = self.text(&here, IN)?.and_then(|held| {
+                super::derive::split_in(&held).map(|(holder, _)| holder.to_owned())
+            });
+        }
+        Ok(false)
+    }
+
     /// The resource at `path` as [`Self::every_text`] lists it, read through the open writes:
     /// none when it is gone or holds no text.
     pub fn texts_at(&self, path: &str) -> Result<Option<Texts>, IndexError> {

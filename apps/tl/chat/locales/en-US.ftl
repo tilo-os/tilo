@@ -94,7 +94,7 @@ d-2ki7h2z5 = Archived
 d-6qpql3pg-filter-archived = Archived
 
 d-5nkbpj6q = Direct
-    .doc = A private conversation: one other person, or a named group of them, in the same message model as a channel.
+    .doc = A private conversation between people of the workspace, in the same message model as a channel: the person who opened it and the one they opened it with, or one person alone for their notes to self.
     .noun = { $count ->
         [one] direct
        *[other] directs
@@ -102,8 +102,11 @@ d-5nkbpj6q = Direct
 
 d-5stv6ro7 = Name
 
+d-wph25aa5 = People
+    .doc = Who is in it, each once.
+
 d-ycadyqh5 = Person
-    .doc = The one person it is with, for a direct message.
+    .doc = The one person an earlier version kept it with, before it said who is in it: what its migration reads (`carry_direct_people`).
 
 d-y65whtrn = Messages
 
@@ -141,11 +144,14 @@ d-abono4ra = New channel
 
 d-abono4ra-name = Name
 
+d-tkh5jonr = Carry direct people
+    .doc = The direct conversations an earlier version kept with one person alone (`person`), which every member could read: in each are that person and whoever opened it, as its history says.
+
 d-aod7dups = Carry native chat
     .doc = The conversations the native Chat kept before this app took its id over, carried into these once: its categories and channels in the sidebar's order, each with its name and topic, and every message of a channel with what it said, whether it was pinned and the id it had there.
 
 d-3cetzzm3 = Message
-    .doc = Opens the direct message with `who`, in the sidebar, or the one already open with them: a person has one conversation, not a new empty one each time.
+    .doc = Opens the direct message between the invoker and `who`, in the sidebar, or the one already open between the two of them: two people have one conversation, not a new empty one each time.
 
 d-3cetzzm3-who = Who
 

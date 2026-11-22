@@ -140,13 +140,17 @@ pub struct TypeDecl {
     pub title: Option<TitleDecl>,
     /// `(untitled: "Untitled")`: what a record is called while its title is empty.
     pub untitled: Option<UntitledDecl>,
+    /// `(readers: people)`: the field naming who reads a record of the type and everything under
+    /// it, and nobody else.
+    pub readers: Option<TitleDecl>,
     pub fields: Vec<FieldDecl>,
     pub search: Option<SearchBlock>,
     pub span: Span,
 }
 
-/// The field a record is named by: a text field of the type, read wherever one is named (a row, a
-/// window's title, a reference, history).
+/// A field a type's option names: the field a record is named by (a text field of the type, read
+/// wherever one is named: a row, a window's title, a reference, history), or the one naming its
+/// readers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TitleDecl {
     pub field: Ident,

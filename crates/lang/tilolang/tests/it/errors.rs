@@ -887,3 +887,19 @@ tilo_test_env::scenario! {
         assert!(d.message.contains("would never end"), "{}", d.message);
     }
 }
+
+tilo_test_env::scenario! {
+    /// E144: a type that says who reads its records names a `List<Actor>` field of them.
+    fn readers_e144;
+
+    phase the_readers_are_a_list_of_actors_the_type_holds;
+    {
+        let compiled = crate::common::compile_body(
+            "type Direct (readers: people) {\n    people: List<Actor>\n    said: Text\n}\n",
+        );
+        let direct = compiled.meta.type_named("Direct").unwrap();
+        assert_eq!(direct.readers.as_deref(), Some("people"));
+        expect("E144", "type Direct (readers: said) {\n    people: List<Actor>\n    said: Text\n}\n");
+        expect("E144", "type Direct (readers: who) {\n    people: List<Actor>\n}\n");
+    }
+}

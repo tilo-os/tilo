@@ -206,6 +206,9 @@ pub struct TypeSchema {
     /// What one of its documents is called while its title is empty, as the app wrote it
     /// (`(untitled: "Untitled")`); its type's name when it declares none.
     pub untitled: Option<String>,
+    /// The field holding who reads one of its records and everything under it
+    /// (`(readers: people)`), by id.
+    pub readers: Option<String>,
 }
 
 /// A type's name as a sentence says it: `TodoList` as "Todo list".
@@ -248,6 +251,7 @@ impl TypeSchema {
             origin: None,
             title: None,
             untitled: None,
+            readers: None,
         }
     }
 

@@ -2454,6 +2454,8 @@ impl Checker<'_> {
             // A length of time as the seconds it is, which is how a record keeps one.
             (Ty::Duration, "seconds") if args.is_empty() => r.typed(Ty::Int),
             (Ty::Actor, "name") if args.is_empty() => Ex::host(Imp::ActorName, vec![r], Ty::Text),
+            // What names them whatever they are called: a key every device makes the same.
+            (Ty::Actor, "id") if args.is_empty() => Ex::host(Imp::ActorId, vec![r], Ty::Text),
             (Ty::Actor, "kind") if args.is_empty() => {
                 Ex::host(Imp::ActorKind, vec![r], Ty::Choice("actor_kind"))
             }

@@ -371,6 +371,7 @@ impl Env {
                 origin: t.origin.clone(),
                 title: t.title.clone(),
                 untitled: t.untitled.clone(),
+                readers: t.readers.clone(),
             });
         }
         let params = |ps: &[crate::meta::ParamMeta]| -> Vec<ParamInfo> {
@@ -716,6 +717,37 @@ impl Resolver<'_> {
                     ),
                 );
             }
+        }
+    }
+
+    /// A type that says who reads its records names a field of them holding those people: a
+    /// `List<Actor>`.
+    fn check_readers(&mut self, decls: &[&ast::TypeDecl]) {
+        for t in decls {
+            let Some(readers) = &t.readers else {
+                continue;
+            };
+            let Some(info) = self
+                .env
+                .types
+                .iter()
+                .find(|x| x.key.app == self.env.app && x.key.name == t.name.name)
+            else {
+                continue;
+            };
+            let why = match info.field(&readers.field.name) {
+                Some(field) if field.ty == Ty::List(Box::new(Ty::Actor)) => continue,
+                Some(field) => format!("`{}` is `{}`", field.name, field.ty),
+                None => format!("no field of it is `{}`", readers.field.name),
+            };
+            self.err(
+                "E144",
+                readers.field.span,
+                format!(
+                    "`{}` says `{}` holds who reads its records, and {why}; its readers are a `List<Actor>` field: `people: List<Actor>`",
+                    t.name.name, readers.field.name
+                ),
+            );
         }
     }
 
