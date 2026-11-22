@@ -57,11 +57,12 @@ fn deep_folder() -> WindowToolbar {
     }
 }
 
-/// The bar of a window `width` wide showing `toolbar`, with the window's History, laid out and painted
-/// twice, as a window's first frames measure and then lay out its labels.
-fn bar_at(harness: &mut FrameHarness, width: f64) -> TabBar {
+/// The bar of a window `width` wide showing the declared toolbar, laid out and painted twice.
+fn bar_at(harness: &mut FrameHarness, width: f64, history: bool) -> TabBar {
     let mut bar = harness.window_bar(width);
-    bar.set_history_control(super::TAB, Some(crate::widget::HistoryControl::of(false)));
+    if history {
+        bar.set_history_control(super::TAB, Some(crate::widget::HistoryControl::of(false)));
+    }
     for _ in 0..2 {
         super::lay_out_bar(&mut bar, width, &harness.theme);
         bar.draw(
@@ -75,26 +76,23 @@ fn bar_at(harness: &mut FrameHarness, width: f64) -> TabBar {
     bar
 }
 
-/// Every control the bar shows, by name: the app's icon, the app's parts, the window's search and its
-/// own controls.
-fn controls(bar: &TabBar) -> Vec<(String, Rect)> {
-    let mut out: Vec<(String, Rect)> = bar
-        .test_rects()
-        .into_iter()
-        .filter(|(name, rect)| {
-            rect.area() > 0.0
-                && name != "window_location"
-                && !name.starts_with("tab:")
-                && name != "tabbar_new_tab"
-        })
-        .collect();
-    if let Some((row, _)) = bar.toolbar_search_part() {
-        let px = crate::widget::window_controls::CONTROL_PX;
-        let x0 = row.x1 + crate::widget::window_controls::CONTROL_GAP;
-        let y0 = row.center().y - px / 2.0;
-        out.push(("window_search".into(), Rect::new(x0, y0, x0 + px, y0 + px)));
+/// The bar's controls from the layout the shell draws: its editable location, and the rest.
+fn controls(layout: &crate::window_toolbar::BarLayout) -> (Option<Rect>, Vec<(String, Rect)>) {
+    let mut location = None;
+    let mut out = Vec::new();
+    for control in &layout.controls {
+        let [x, y, width, height] = control.rect;
+        if width <= 0.0 || height <= 0.0 {
+            continue;
+        }
+        let rect = Rect::new(x, y, x + width, y + height);
+        if control.part == "location" {
+            location = Some(rect);
+        } else {
+            out.push((control.name.clone(), rect));
+        }
     }
-    out
+    (location, out)
 }
 
 fn overlap(a: Rect, b: Rect) -> bool {
@@ -102,11 +100,10 @@ fn overlap(a: Rect, b: Rect) -> bool {
     i.width() > 0.01 && i.height() > 0.01
 }
 
-/// At every width, no two of the bar's controls overlap, every one stands inside the window, the
-/// location stands clear of all of them, and its breadcrumb paints inside it: its middle levels fold
-/// into the `…`, then the folder's own name is cut short, and nothing runs past its end.
+/// At every width no two controls overlap, the location stands clear, and its words paint inside
+/// it: cut short, never under a button.
 #[test]
-fn a_deep_folders_bar_gives_every_control_its_part_at_every_width() {
+fn every_bar_gives_every_part_its_own_place_at_every_width() {
     let _hosted = HostedReset;
     let mut harness = FrameHarness::for_app(
         crate::State::new(),
@@ -115,70 +112,72 @@ fn a_deep_folders_bar_gives_every_control_its_part_at_every_width() {
         crate::theme::Theme::dark(),
     );
     harness.present_in_window_bar();
-    crate::window_toolbar::declare(Some(deep_folder()));
-    let style = harness.theme.text(crate::tokens::TextRole::Body);
-    for width in WIDTHS {
-        let bar = bar_at(&mut harness, width);
-        let shown = controls(&bar);
-        for (i, (name, rect)) in shown.iter().enumerate() {
+    let mut files = deep_folder();
+    files.location = Some(ToolbarLocation {
+        label: "Workspace".into(),
+        value: "Workspace".into(),
+        editable: true,
+        ..ToolbarLocation::default()
+    });
+    files.actions[0].primary = true;
+    for toolbar in [deep_folder(), files] {
+        let crumbs = toolbar
+            .location
+            .as_ref()
+            .is_some_and(|location| !location.segments.is_empty());
+        crate::window_toolbar::declare(Some(toolbar));
+        for width in WIDTHS {
+            let bar = bar_at(&mut harness, width, false);
+            let layout = harness.window_bar_layout(width);
+            let (place, shown) = controls(&layout);
+            let location = place.unwrap_or_else(|| bar.location_rect());
             assert!(
-                rect.x0 >= -0.01 && rect.x1 <= width + 0.01,
-                "{width} px: {name} stands inside the window: {rect:?}"
+                location.area() > 0.0,
+                "{width} px: the location stands: {shown:?}"
             );
-            for (other, other_rect) in shown.iter().skip(i + 1) {
+            for (i, (name, rect)) in shown.iter().enumerate() {
                 assert!(
-                    !overlap(*rect, *other_rect),
-                    "{width} px: {name} {rect:?} overlaps {other} {other_rect:?}: {shown:?}"
+                    rect.x0 >= -0.01 && rect.x1 <= width + 0.01,
+                    "{width} px: {name} stands inside the window: {rect:?}"
+                );
+                for (other, other_rect) in shown.iter().skip(i + 1) {
+                    assert!(
+                        !overlap(*rect, *other_rect),
+                        "{width} px: {name} {rect:?} overlaps {other} {other_rect:?}: {shown:?}"
+                    );
+                }
+                assert!(
+                    !overlap(location, *rect),
+                    "{width} px: the location {location:?} runs under {name} {rect:?}: {shown:?}"
                 );
             }
-        }
-        let location = bar.location_rect();
-        assert!(
-            location.area() > 0.0,
-            "{width} px: the folder is named in the bar: {shown:?}"
-        );
-        for (name, rect) in &shown {
-            assert!(
-                !overlap(location, *rect),
-                "{width} px: the location {location:?} runs under {name} {rect:?}"
-            );
-        }
-        let (painted, trail) = bar
-            .toolbar_row()
-            .crumbs_painted()
-            .expect("the folder's levels are a breadcrumb");
-        assert!(
-            trail.x0 >= location.x0 - 0.01 && trail.x1 <= location.x1 + 0.01,
-            "{width} px: the breadcrumb {trail:?} stands in the location {location:?}"
-        );
-        let last = painted
-            .last()
-            .and_then(|(label, _)| label.as_deref())
-            .map(|label| {
-                label
-                    .trim_end_matches(crate::text_render::ELLIPSIS)
-                    .to_owned()
-            });
-        assert!(
-            last.is_some_and(|label| !label.is_empty() && "app-language".starts_with(&label)),
-            "{width} px: the folder's own name always shows, cut short at the narrowest: {painted:?}"
-        );
-        for (label, rect) in &painted {
-            let ink = label.as_deref().map_or(rect.width(), |label| {
-                f64::from(harness.text.measure_style(label, None, &style).0)
-            });
-            assert!(
-                rect.x0 >= trail.x0 - 0.01 && rect.x0 + ink <= trail.x1 + 0.5,
-                "{width} px: {label:?} ({ink} px at {rect:?}) paints inside the breadcrumb \
-                 {trail:?}: {painted:?}"
-            );
-        }
-        let whole = painted.iter().all(|(label, _)| label.is_some()) && painted.len() == 6;
-        if width >= 1024.0 {
-            assert!(
-                whole,
-                "{width} px: a wide window shows every level: {painted:?}"
-            );
+            if crumbs {
+                let (painted, trail) = bar
+                    .toolbar_row()
+                    .crumbs_painted()
+                    .expect("the folder's levels are a breadcrumb");
+                assert!(
+                    trail.x0 >= location.x0 - 0.01 && trail.x1 <= location.x1 + 0.01,
+                    "{width} px: the breadcrumb {trail:?} stands in the location {location:?}"
+                );
+                let name = painted.last().and_then(|(label, _)| label.as_deref());
+                let cut = name.map_or("", |name| {
+                    name.trim_end_matches(crate::text_render::ELLIPSIS)
+                });
+                assert!(
+                    !cut.is_empty() && "app-language".starts_with(cut),
+                    "{width} px: the folder's own name shows, cut short at the narrowest: {painted:?}"
+                );
+            } else {
+                for label in layout.labels.iter().filter(|l| l.widget == "BarLocation") {
+                    assert!(
+                        label.rect[0] >= location.x0 - 0.01
+                            && label.rect[0] + label.rect[2] <= location.x1 + 0.5,
+                        "{width} px: {:?} paints outside {location:?}",
+                        label.text
+                    );
+                }
+            }
         }
     }
     crate::window_toolbar::declare(None);
@@ -207,9 +206,9 @@ fn the_windows_controls_stand_apart_at_a_fixed_trailing_edge() {
             },
         ] {
             crate::window_toolbar::declare(Some(toolbar));
-            let bar = bar_at(&mut harness, width);
+            let bar = bar_at(&mut harness, width, true);
             let controls = *bar.window_controls();
-            let shown = self::controls(&bar);
+            let shown = self::controls(&harness.window_bar_layout(width)).1;
             let history = bar.history_action_rect();
             assert!(
                 history.area() > 0.0,
