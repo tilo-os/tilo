@@ -332,29 +332,6 @@ impl WorkspaceDocuments {
         Ok(bodies)
     }
 
-    /// The channel governance `workspace_id` retains, each frame with its
-    /// author, in order: what a linking device is handed, as a server session
-    /// replays it.
-    pub(crate) async fn channel_governance(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> Vec<([u8; 32], neighbour_wire::NeighbourMsg)> {
-        let Ok(retained) = self.retained(workspace_id).await else {
-            return Vec::new();
-        };
-        retained
-            .into_iter()
-            .filter_map(|retained| {
-                let message: neighbour_wire::NeighbourMsg =
-                    neighbour_wire::NeighbourMsg::decode(&retained.body).ok()?;
-                message
-                    .governance_workspace()
-                    .is_some()
-                    .then_some((retained.author, message))
-            })
-            .collect()
-    }
-
     /// Keep what `workspace_id` commits for `device` alone until the device
     /// subscribes, which the entry just let it in to do
     /// ([`crate::peer::Arriving`]). False for a workspace this host does not

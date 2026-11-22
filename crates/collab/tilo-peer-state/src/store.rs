@@ -14,6 +14,12 @@
 //! holds. A store kept one file per frame before segments
 //! ([`FRAMES_VERSION`]); opening one moves its frames into segments once.
 //!
+//! Beside its frames, a store keeps each workspace's channel governance: for
+//! each route a channel's group frames take ([`neighbour_wire::retention`]),
+//! the newest frame, one file each under `channels/<workspace>/`
+//! ([`Store::keep_channel`]). A device that links later joins each channel's
+//! group from them.
+//!
 //! Retention has three sources and no others: a frame's author retiring its
 //! own earlier frames by publishing a checkpoint ([`Store::retain`]), the
 //! appetite the store was opened with ([`Appetite`]), and the compaction an
@@ -165,6 +171,8 @@ struct Held {
     /// closed when too many are open.
     appends: u64,
     limits: Limits,
+    /// The order the newest channel frame was kept in ([`Store::keep_channel`]).
+    channel_order: u64,
 }
 
 /// How long segments grow and when one is written again.
@@ -205,6 +213,20 @@ struct Workspace {
     /// Records of retired frames still in their segments, by segment and
     /// offset: the retirement records naming them are kept until they go.
     retired: BTreeSet<(u32, u64)>,
+    /// The newest channel governance frame of each route.
+    channels: BTreeMap<[u8; 32], Channel>,
+}
+
+/// A channel governance frame a store keeps, as its file holds it.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Channel {
+    /// When it was kept, among the workspace's channel frames: they are
+    /// served in that order, a group's genesis before what builds on it.
+    order: u64,
+    author: [u8; 32],
+    /// The frame, as postcard [`NeighbourMsg`].
+    #[serde(with = "serde_bytes")]
+    bytes: Vec<u8>,
 }
 
 /// What the store knows of one segment.
@@ -458,12 +480,22 @@ impl Store {
                 writers: 0,
                 appends: 0,
                 limits,
+                channel_order: 0,
             }),
         };
         let holders = store.stored_holders()?;
+        let channels = store.stored_channels()?;
         {
             let mut held = store.held.lock_recover();
             store.read_segments(&mut held)?;
+            for (workspace, route, channel) in channels {
+                held.channel_order = held.channel_order.max(channel.order);
+                held.workspaces
+                    .entry(workspace)
+                    .or_default()
+                    .channels
+                    .insert(route, channel);
+            }
             if kept < FRAMES_VERSION {
                 store.pack_frame_files(&mut held)?;
             }
@@ -764,10 +796,15 @@ impl Store {
             if stored.writer.is_some() {
                 held.writers = held.writers.saturating_sub(1);
             }
-            match fs::remove_dir_all(holders_dir(&self.root, workspace)) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
+            for dir in [
+                holders_dir(&self.root, workspace),
+                channels_dir(&self.root, workspace),
+            ] {
+                match fs::remove_dir_all(dir) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
             }
             held.bytes = held.bytes.saturating_sub(stored.bytes);
             let frames = stored.lineages.values().map(Vec::len).sum::<usize>();
@@ -872,6 +909,84 @@ impl Store {
         Ok(retired)
     }
 
+    /// Keep `message`, `author`'s channel governance for `workspace`, as the
+    /// newest frame of its route, synced before this returns: a group's
+    /// genesis is kept for good, its newest commit and the copy its joiners
+    /// join from replace the ones before, and so does each device's newest
+    /// access request. Returns whether the store holds anything new; a frame
+    /// that is not channel governance is not kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the frame cannot be written. The store keeps
+    /// the frame before it then.
+    pub fn keep_channel(
+        &self,
+        workspace: WorkspaceId,
+        author: [u8; 32],
+        message: &NeighbourMsg,
+    ) -> Result<bool, StoreError> {
+        if message.governance_workspace().is_none() {
+            return Ok(false);
+        }
+        let Some((route, neighbour_wire::Retention::Checkpoint)) =
+            neighbour_wire::retention(message, false)
+        else {
+            return Ok(false);
+        };
+        let bytes = postcard::to_allocvec(message)?;
+        let mut held = self.held.lock_recover();
+        if held
+            .workspaces
+            .get(&workspace)
+            .and_then(|stored| stored.channels.get(&route))
+            .is_some_and(|kept| kept.author == author && kept.bytes == bytes)
+        {
+            return Ok(false);
+        }
+        let channel = Channel {
+            order: held.channel_order.saturating_add(1),
+            author,
+            bytes,
+        };
+        let path = channels_dir(&self.root, workspace).join(hex::encode(route));
+        tilo_files::native::atomic::write_creating_parent(
+            &path,
+            &postcard::to_allocvec(&channel)?,
+        )?;
+        held.channel_order = channel.order;
+        held.workspaces
+            .entry(workspace)
+            .or_default()
+            .channels
+            .insert(route, channel);
+        drop(held);
+        Ok(true)
+    }
+
+    /// `workspace`'s channel governance, each frame with its author, in the
+    /// order the store kept them ([`Self::keep_channel`]).
+    #[must_use]
+    pub fn channels(&self, workspace: WorkspaceId) -> Vec<([u8; 32], NeighbourMsg)> {
+        let mut kept: Vec<Channel> = self
+            .held
+            .lock_recover()
+            .workspaces
+            .get(&workspace)
+            .map(|stored| stored.channels.values().cloned().collect())
+            .unwrap_or_default();
+        kept.sort_by_key(|channel| channel.order);
+        kept.into_iter()
+            .filter_map(|channel| match NeighbourMsg::decode(&channel.bytes) {
+                Ok(message) => Some((channel.author, message)),
+                Err(error) => {
+                    tracing::warn!(%error, "a kept channel frame does not decode; it is not served");
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// The segments `workspace` keeps, and their bytes: what a diagnostic
     /// shows and a test of the layout reads.
     #[must_use]
@@ -912,6 +1027,34 @@ impl Store {
                     found.push((id, device, cursors));
                 } else {
                     tracing::warn!(path = %file.display(), "not what a device holds; skipped");
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    /// Every workspace's channel frames, as [`Store::open`] reads them. A file
+    /// that is not one is skipped, as a stray segment is.
+    fn stored_channels(&self) -> Result<Vec<(WorkspaceId, [u8; 32], Channel)>, StoreError> {
+        let mut found = Vec::new();
+        for workspace in directories(&self.root.join(CHANNELS))? {
+            let Some(id) = workspace
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(WorkspaceId::parse)
+            else {
+                continue;
+            };
+            for file in files(&workspace)? {
+                let route = file
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(<[u8; 32] as hex::FromHex>::from_hex);
+                let channel = postcard::from_bytes::<Channel>(&fs::read(&file)?);
+                if let (Some(Ok(route)), Ok(channel)) = (route, channel) {
+                    found.push((id, route, channel));
+                } else {
+                    tracing::warn!(path = %file.display(), "not a channel frame; skipped");
                 }
             }
         }
@@ -1417,6 +1560,12 @@ fn frames_version(root: &Path) -> Result<u32, StoreError> {
 }
 /// Where the store keeps what each device said it holds, per workspace.
 const HOLDERS: &str = "holders";
+/// Where the store keeps each workspace's channel governance.
+const CHANNELS: &str = "channels";
+
+fn channels_dir(root: &Path, workspace: WorkspaceId) -> PathBuf {
+    root.join(CHANNELS).join(workspace.to_string())
+}
 
 /// A workspace, a device of it, and where that device said it stands.
 type HeldBy = (WorkspaceId, [u8; 32], Vec<Cursor>);

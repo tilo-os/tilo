@@ -60,19 +60,14 @@ impl Workspaces {
     }
 
     /// Serve `workspace`'s replica over the direct link, keeping its history
-    /// at the host's store, and take in what its members send there.
+    /// and its channels' governance at the host's store, and take in what its
+    /// members send there.
     pub(super) fn serve_direct(&self, workspace: &GovernedWorkspace) -> Result<(), String> {
-        let records = self.inner.host.records.clone();
-        let workspace_id = workspace.workspace_id();
         let link = tilo_peer_state::direct::DirectSync::over(
             workspace.peer.clone(),
             self.inner.host.key.clone(),
         )
-        .with_store(Arc::clone(&self.inner.store))
-        .with_channel_history(Arc::new(move || {
-            let records = records.clone();
-            Box::pin(async move { records.channel_governance(workspace_id).await })
-        }));
+        .with_store(Arc::clone(&self.inner.store));
         #[cfg(test)]
         let link = match self
             .inner
@@ -368,6 +363,12 @@ impl Workspaces {
             // again after every answer. So those are replayed like a
             // member's.
             if own && !written_by_a_session(&message) {
+                // The host's own channel governance (its access requests, the
+                // groups it founded and committed) is what a device that links
+                // reads those groups from, kept at the link's store.
+                if message.governance_workspace().is_some() {
+                    self.carry_to_links(workspace.workspace(), retained.author, &message);
+                }
                 continue;
             }
             let followed = workspace
