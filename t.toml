@@ -4928,7 +4928,7 @@ name = "installer-cycle-x86_64"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "set -euo pipefail\nencoder_dir=\"$CARGO_TARGET_DIR/imager-profile\"\ncargo build --release --locked --manifest-path tools/imager-profile/Cargo.toml --target-dir \"$encoder_dir\"\nencoder=\"$encoder_dir/release/tilo-imager-profile\"\ntest -f \"$encoder\" && test ! -L \"$encoder\" && test -x \"$encoder\"\nencoder_sha256=\"$(sha256sum \"$encoder\" | awk '{print $1}')\"\nbash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt tools/ci/packages/installer-cycle.txt\nrm -rf /var/tmp/tilo-installer-cycle\nTILO_PROFILE_ENCODER=\"$encoder\" TILO_PROFILE_ENCODER_SHA256=\"$encoder_sha256\" TILO_VM_DISPLAY=2d TILO_ACCEL=kvm TILO_DISTROBOX= TILO_MEM=8192 TILO_VM_CYCLE=installer-cycle TILO_INSTALLER_CYCLE_STORAGE=/var/tmp/tilo-installer-cycle TILO_BOOT_WAIT_SECS=1800 TILO_INSTALLER_CYCLE_MAX_INSTALL_SECONDS=3600 bash os/dev/test-installer-cycle.sh /target/publish/dev-installer-medium/x86_64/disk.qcow2 --graphics software --out /target/installer-cycle\n"
 needs = ["dev-installer-medium-x86_64", "tilo-vm-binary-x86_64"]
-env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm", TILO_CYCLE_DIR = "/var/tmp/tilo-installer-cycle/cycle" }
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/installer-cycle/**"]
