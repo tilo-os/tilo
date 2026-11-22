@@ -284,8 +284,13 @@ There are seven ways to add a device:
   bytes. The CLI login keeps only `site`, `workspace` and `server_cert` as a
   `login.json` beside `device/`, and signs with the device key that is
   already there.
-- **One certificate format.** `DeviceCert`, with capabilities. A boot-only
-  capability replaces `BootKeyCert`.
+- **One certificate format.** `DeviceCert`, checked by `verify_device_cert`
+  for every caller. Before a disk is unlocked the device key is inside it,
+  so the unlock request is signed by a boot key on the unencrypted
+  partition. That key holds an ordinary `DeviceCert` with no capabilities.
+  The signed request names the volume and slot, and the approving device
+  checks them against what it recorded when unlock was set up. There is no
+  `BootKeyCert` and no second verifier.
 - **One device list.** `DeviceFleetStore` persists it, and `CertifiedFleet`
   verifies it. A workspace's device view is derived from the fleet, not
   stored a second time. Revocation is an entry in the fleet and reaches every
