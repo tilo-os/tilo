@@ -2828,7 +2828,7 @@ impl Widget for NavShell {
             && let Some(sidebar) = &self.sidebar
         {
             sidebar.provide(request);
-        } else {
+        } else if !request.wants::<dyn crate::widget::decorator::Decorated>() {
             self.content.provide(request);
         }
     }
@@ -2847,7 +2847,7 @@ impl Widget for NavShell {
             && let Some(sidebar) = &mut self.sidebar
         {
             sidebar.provide_mut(request);
-        } else {
+        } else if !request.wants::<dyn crate::widget::decorator::Decorated>() {
             self.content.provide_mut(request);
         }
     }
