@@ -266,7 +266,7 @@ def main() -> int:
 
         print("\n[ask] the person asks the agent they keep, from the canvas")
         # The canvas entry's own action, as the person submits it.
-        session.invoke("so.tilo.session", "shell:layout\x1fplace-found",
+        session.invoke("so.tilo.session", "shell:layout", "place-found",
                        {"text": QUESTION, "x": 80, "y": 60})
         try:
             channel = ra.until("the question in Chat's messages",

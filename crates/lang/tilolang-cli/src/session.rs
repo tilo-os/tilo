@@ -356,12 +356,12 @@ impl Peer {
             let page = result.map_err(|error| format!("listing the session's actions: {error}"))?;
             let found = page.rows.into_iter().find_map(|row| {
                 let address = row.action?.address;
-                (address.resource == resource && address.action == action).then(|| {
+                (address.resource == resource && address.action == action).then_some(
                     RemoteActionTarget {
                         provider: row.provider,
                         address,
-                    }
-                })
+                    },
+                )
             });
             if found.is_some() || page.exhausted || page.next_cursor.is_empty() {
                 return Ok(found);

@@ -75,9 +75,9 @@ def sound_action(session) -> dict:
     """The sound's own volume action, as the session offers it: the session's
     action on its `sound` resource, not an app's effect that asks for it."""
     return until("the sound's volume action", lambda: next(
-        (action for action in session.actions(SET_VOLUME)
-         if action.get("provider") == "so.tilo.session"
-         and action.get("id", "").split("\x1f")[-1] == SET_VOLUME), None), 30, 0.2)
+        (row for row in session.actions(SET_VOLUME)
+         if row.get("provider") == "so.tilo.session"
+         and (real_apps.address(row) or ("",))[-1] == SET_VOLUME), None), 30, 0.2)
 
 
 def without_audio_server() -> pathlib.Path:
@@ -161,12 +161,12 @@ def main() -> int:
         volume = sound_action(session)
         before = None
         try:
-            session.invoke(volume["provider"], volume["id"], {"level": LEVEL})
+            session.invoke_row(volume, {"level": LEVEL})
         except Failed as error:
             before = str(error)
         check("the sound's volume action says there is no output to set", before is not None,
               (before or "it set a level with no output")
-              .removeprefix("actions_invoke refused: ")[:160])
+              .removeprefix("invoke refused: ")[:160])
         # The panel shows what the session published; let the frame it asked
         # for after the press land before it is the picture a person sees.
         time.sleep(1)
@@ -180,7 +180,7 @@ def main() -> int:
 
         def set_level() -> bool:
             try:
-                session.invoke(volume["provider"], volume["id"], {"level": LEVEL})
+                session.invoke_row(volume, {"level": LEVEL})
                 return True
             except Failed:
                 return False

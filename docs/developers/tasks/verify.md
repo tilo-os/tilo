@@ -37,13 +37,13 @@ integration journeys.
 
 ## Verify an installed resource
 
-Use the authorized session's `tilo-control` socket. Run `actions list` for
-permission-filtered descriptors, then invoke the returned provider and id.
+Use the authorized session's control socket. Run `tilo action list` for
+permission-filtered descriptors, then `tilo do` the one you picked.
 Keep the caller, workspace and resource fixed.
 
-- **Completion:** `accepted` only means admitted. Save `broker_invocation_id`;
-  follow it with `tilo-control actions status ID --wait`. If unavailable,
-  outcome is unknown; do not replay a mutation to replace a lost reply.
+- **Completion:** `accepted` only means admitted. Keep the invocation id and
+  follow it with an `Observe` frame. If unavailable, the outcome is unknown;
+  do not replay a mutation to replace a lost reply.
 - **Result:** observe the changed resource through its action surface and
   production view. Wait boundedly for cold publication; the first empty
   listing is inconclusive. Use the returned resource id, not its title.

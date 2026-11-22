@@ -42,7 +42,7 @@ import tempfile
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from real_apps import Agent  # noqa: E402
+from real_apps import Agent, address, catalogue  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 # The one place that picks a session's private runtime directory.
@@ -236,11 +236,8 @@ class Shell:
 
     def stop_row(self) -> dict | None:
         """The Stop the person's own MCP server lists on the shell, if it lists one."""
-        rows = (self.call({"op": "actions_enumerate", "query": "stop"}).get("answer")
-                or {}).get("actions") or []
-        return next((row for row in rows
-                     if row.get("resource") == "session:agents"
-                     and row.get("operation") == "stop-agent"), None)
+        return next((row for row in catalogue(self.call, "stop")
+                     if address(row) == ("session:agents", "stop-agent")), None)
 
 
 def main() -> int:

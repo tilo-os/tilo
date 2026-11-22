@@ -16,7 +16,7 @@ of the worktree and brings `target/nested-session` back), so a machine without
 the toolchain or the RAM for it still gets a session.
 
 As a library, `Session` is the session and the tools that act in it:
-`Session.start()`, `session.invoke("applications", "so.tilo.tasks")` to launch
+`Session.start()`, `session.open("so.tilo.tasks")` to launch
 an app through the desktop, `session.windows()`, `session.snapshot(path)`,
 `session.click_named(...)`, `session.type(...)`. `tilolang-e2e.py` and
 `canvas-e2e.py` build on it.
@@ -49,6 +49,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -174,6 +175,62 @@ def control_call(socket_path: Path | str, payload: dict | str, timeout: float = 
     if "err" in reply:
         raise Refused(payload.get("op"), reply["err"])
     return reply
+
+
+# The action model's frame version, as `tilo_actions::remote::REMOTE_ACTIONS_VERSION` names it.
+FRAME_VERSION = 2
+
+
+def frame(message: dict) -> dict:
+    """The action model's frame carrying `message`, as a session's control socket reads it."""
+    return {"version": FRAME_VERSION, "message": message}
+
+
+def catalogue(ask, needle: str = "") -> list:
+    """Every row a session lists that mentions `needle`, page by page: each a catalogue row
+    (`provider`, `app_id`, `resource`, and the `action` with its `address`). `ask` sends one
+    frame and answers the frame that came back."""
+    rows, query = [], {"needle": needle, "max_results": 256}
+    while True:
+        answer = ask(frame({"CatalogueRequest": {"correlation": 1, "query": query}}))
+        result = answer["message"]["CatalogueResponse"]["result"]
+        if "Ok" not in result:
+            raise Refused("listing", {"code": "refused", "message": json.dumps(result)})
+        page = result["Ok"]
+        rows += page.get("rows", [])
+        if page.get("exhausted") or not page.get("next_cursor"):
+            return rows
+        query = {**query, "cursor": page["next_cursor"], "revision": page["revision"]}
+
+
+def address(row: dict) -> tuple[str, str] | None:
+    """The resource and action a catalogue row invokes, or None for a row of a resource alone."""
+    found = (row.get("action") or {}).get("address")
+    return (found["resource"], found["action"]) if found else None
+
+
+def invocation(provider: str, resource: str, action: str, args: dict | None = None,
+               wait_ms: int | None = None) -> dict:
+    """The frame that invokes `resource`'s `action` of `provider` with `args`, its answer held
+    up to `wait_ms` while it runs."""
+    request = {
+        "invocation": str(uuid.uuid4()),
+        "target": {"provider": provider, "address": {"resource": resource, "action": action}},
+        "argument": {"Json": args} if args else "None",
+    }
+    if wait_ms:
+        request["wait_ms"] = wait_ms
+    return frame({"Invoke": request})
+
+
+def receipt(answer: dict) -> dict | str:
+    """Where an invocation frame's answer says it stands (`"Accepted"`, `{"Completed": ...}`,
+    `{"Failed": ...}`); a refusal raises, with its reason."""
+    status = answer["message"]["Receipt"]["status"]
+    if isinstance(status, dict) and "Rejected" in status:
+        error = status["Rejected"]["error"]
+        raise Refused("invoke", {"code": json.dumps(error)[:200], "message": json.dumps(error)})
+    return status
 
 
 def runtime_for(state: Path) -> Path:
@@ -673,33 +730,16 @@ class Session:
         return json.loads(self.control_cmd(*args))
 
     def actions(self, query: str = "") -> list:
-        """The actions the desktop lists for `query`, those listed for agents
-        alone included ("Show this window"), which a person's palette leaves out.
-
-        The listing moves on as a session settles (an action appears, a window
-        opens), and a page asked for past such a change is refused as stale: the
-        walk starts again from the first page."""
+        """The rows the desktop lists for `query` (see `catalogue`), those listed for agents
+        alone included ("Show this window"), which a person's palette leaves out. A listing
+        that moved on under the walk is walked again from its start."""
         for _ in range(10):
             try:
-                return self.actions_from(query)
-            except Failed as error:
-                if "stale_cursor" not in str(error):
+                return catalogue(self.control, query)
+            except Refused as error:
+                if "StaleRevision" not in str(error):
                     raise
         raise Failed(f"the actions for {query!r} kept moving on")
-
-    def actions_from(self, query: str) -> list:
-        """One walk of the listing `actions` makes."""
-        found, cursor = [], None
-        while True:
-            request = {"op": "actions_enumerate", "query": query, "include_programmatic": True,
-                       "wait_ms": 5000, "limit": 1000}
-            if cursor:
-                request["cursor"] = cursor
-            answer = self.control(request)["answer"]
-            found += answer["actions"]
-            cursor = answer.get("next_cursor")
-            if not cursor:
-                return found
 
     def search_rows(self) -> dict:
         """The open search's query, the rows it shows and whether it is still
@@ -722,12 +762,23 @@ class Session:
             step=0.01,
         )
 
-    def invoke(self, provider: str, ident: str, args: dict | None = None) -> dict:
-        """Invoke an action by its address and answer its settled receipt."""
-        payload = {"op": "actions_invoke", "provider": provider, "id": ident, "wait_ms": 20000}
-        if args:
-            payload["args"] = args
-        return self.control(payload)["answer"]
+    def invoke(self, provider: str, resource: str, action: str,
+               args: dict | None = None) -> dict | str:
+        """Invoke `resource`'s `action` of `provider` and answer where it stands once it
+        settled, or after the ten seconds a session holds an answer (see `receipt`)."""
+        return receipt(self.control(invocation(provider, resource, action, args, 10000)))
+
+    def invoke_row(self, row: dict, args: dict | None = None) -> dict | str:
+        """Invoke what the catalogue row `row` offers (see `invoke`)."""
+        return self.invoke(row["provider"], *address(row), args)
+
+    def open(self, app: str, deadline: float = 120.0) -> dict | str:
+        """Open the installed app `app` (its application id) as the workspace offers it."""
+        resource = f"app.{app}"
+        row = until(f"the session to offer {app}", lambda: next(
+            (row for row in self.actions(app) if address(row) == (resource, "open")), None),
+            deadline)
+        return self.invoke_row(row)
 
     def windows(self) -> list:
         return self.control({"op": "windows"})["answer"]["windows"]
@@ -747,7 +798,7 @@ class Session:
         ident = app if "." in app else app_id(app)
         found = next((w for w in self.windows() if w.get("app_id") == ident), None)
         if found is None:
-            self.invoke("applications", ident)
+            self.open(ident, deadline)
             found = until(f"the window of {ident}", lambda: next(
                 (w for w in self.windows() if w.get("app_id") == ident), None), deadline)
         return {**found, "title": found.get("title")}

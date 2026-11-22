@@ -485,7 +485,7 @@ impl SessionSearch {
     }
 
     /// Serve the workspace's action catalogue as a source of the person's search: `provider` is
-    /// this session's action host, the one `tilo do` and `tilo-control actions_enumerate` ask.
+    /// this session's action host, the one `tilo do` and an agent's tools ask.
     /// Its rows are listed for the workspace in front, less the ones this device's own sources
     /// already publish ([`tilo_desktop_search::providers::HostActions`]).
     pub fn serve_catalogue(

@@ -111,17 +111,13 @@ class Desktop:
     def windows(self):
         return list(self.shown)
 
-    def invoke(self, provider, ident, args=None):
-        self.invokes.append((provider, ident))
+    def open(self, ident, deadline=120.0):
+        self.invokes.append(ident)
         if self.refusal is not None:
-            raise real_apps.Refused("actions_invoke", self.refusal)
+            raise real_apps.Refused("invoke", self.refusal)
         if ident in self.opened:
             self.shown.append({"app_id": ident, "title": "Untitled"})
-        return {"ok": {}}
-
-    def actions(self, query=""):
-        # The desktop lists an app's open only while the app has no window.
-        return []
+        return "Accepted"
 
 
 class Launch(unittest.TestCase):
@@ -143,9 +139,7 @@ class Launch(unittest.TestCase):
     def session(self, desktop: Desktop) -> real_apps.Session:
         return type("Launched", (real_apps.Session,), {
             "windows": lambda _: desktop.windows(),
-            "invoke": lambda _, provider, ident, args=None:
-                desktop.invoke(provider, ident, args),
-            "actions": lambda _, query="": desktop.actions(query),
+            "open": lambda _, ident, deadline=120.0: desktop.open(ident, deadline),
         })(Path("/nonexistent-session"))
 
     def test_an_app_the_desktop_already_shows_is_answered_by_its_window(self):
@@ -160,7 +154,7 @@ class Launch(unittest.TestCase):
         notes = real_apps.app_id("notes")
         desktop = Desktop([], opened=[notes])
         window = self.session(desktop).launch(notes)
-        self.assertEqual(desktop.invokes, [("applications", notes)])
+        self.assertEqual(desktop.invokes, [notes])
         self.assertEqual(window["app_id"], notes)
 
     def test_an_app_this_device_lacks_is_refused_at_once(self):

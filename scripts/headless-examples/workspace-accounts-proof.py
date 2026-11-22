@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import real_apps as ra  # noqa: E402
 from real_apps import Failed, until  # noqa: E402
 from two_people import joined  # noqa: E402
 
@@ -33,25 +34,24 @@ def settings_action(session, out: Path, resource: str, action: str) -> dict:
     def found():
         seen[:] = session.actions()
         for listed in seen:
-            ident = str(listed.get("id", ""))
+            at = ra.address(listed) or ("", "")
             # A bound action names its resource hex-encoded, after its window's ids.
-            named = (ident.startswith(f"{resource}\u001f")
-                     or f":{resource.encode().hex()}\u001f" in ident)
-            if named and ident.endswith(f"\u001f{action}"):
+            named = at[0] == resource or at[0].endswith(f":{resource.encode().hex()}")
+            if named and at[1] == action:
                 return listed
         return None
     try:
         return until(f"Settings' {resource} {action} to be listed on {session.tag}", found, 120)
     except Failed:
         (out / f"actions-{session.tag}.json").write_text(json.dumps(
-            [a.get("id") for a in seen if "settings" in str(a.get("id")) or
-             "account" in str(a.get("id"))], indent=1))
+            [ra.address(a) for a in seen if "settings" in str(ra.address(a)) or
+             "account" in str(ra.address(a))], indent=1))
         raise
 
 
 def act(session, out: Path, resource: str, action: str, args: dict) -> dict:
     listed = settings_action(session, out, resource, action)
-    return session.invoke(listed["provider"], listed["id"], args)
+    return session.invoke_row(listed, args)
 
 
 def main() -> int:

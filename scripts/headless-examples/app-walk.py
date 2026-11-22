@@ -59,7 +59,7 @@ sys.path.insert(0, str(HERE))
 # The session this walks and the tools that act in it: the one harness every
 # check of a desktop with the tree's apps starts (scripts/headless-examples/real_apps.py).
 import real_apps  # noqa: E402
-from real_apps import BUILD, Failed, Session, prepare, run, until  # noqa: E402
+from real_apps import BUILD, Failed, Session, address, prepare, run, until  # noqa: E402
 
 WALKS = HERE / "app-walks"
 # What a control's identity joins: the record kind it acts on, and the operation,
@@ -90,16 +90,17 @@ def app_action(session: Session, app: str, operation: str, resource: str | None 
     """The action `operation` the window of `app` publishes: found by the name
     the app gives it, never by the words its title reads in. Its application is
     `app` exactly (`so.tilo.notes` never matches `so.tilo.notes`)."""
-    for action in session.actions(""):
-        if (action.get("application") == app and action.get("operation") == operation
-                and resource in (None, action.get("resource"))):
-            return action
+    for row in session.actions(""):
+        at = address(row)
+        if (row.get("app_id") == app and at is not None and at[1] == operation
+                and resource in (None, at[0])):
+            return row
     return None
 
 
-def value_of(answer: dict):
+def value_of(answer: dict | str):
     try:
-        return answer["receipt"]["update"]["output"]["value"]
+        return answer["Completed"]["output"]["value"]
     except (KeyError, TypeError):
         raise Failed(f"an answer without a value: {json.dumps(answer)[:2000]}") from None
 
@@ -108,10 +109,11 @@ def read_back(session: Session, app: str) -> dict:
     """The app's own read — the one on the resource its "Show this window" stands
     on — as this person reads it."""
     own = until_value(f"{app}'s 'Show this window'",
-                      lambda: app_action(session, app, "activate-window"), 60)["resource"]
+                      lambda: app_action(session, app, "activate-window"), 60)
+    own = address(own)[0]
     action = until_value(f"{app}'s read on {own}",
                          lambda: app_action(session, app, "read", own), 60)
-    return value_of(session.invoke(action["provider"], action["id"]))
+    return value_of(session.invoke_row(action))
 
 
 def notes_held(read: dict) -> int | None:
@@ -279,10 +281,11 @@ class Walk:
         reads: what a verb with no control still is. Every application's, unless
         `only_app` keeps this app's, so a step that could not be walked says
         what was published beside what it wanted."""
-        return [{"title": a.get("title"), "operation": a.get("operation"),
-                 "application": a.get("application"), "resource": a.get("resource")}
+        return [{"title": (a.get("action") or {}).get("action_label"),
+                 "operation": (address(a) or ("", ""))[1],
+                 "application": a.get("app_id"), "resource": (address(a) or ("", ""))[0]}
                 for a in self.session.actions("")
-                if not only_app or a.get("application") == self.v["id"]]
+                if address(a) and (not only_app or a.get("app_id") == self.v["id"])]
 
     def shot(self, name: str) -> str:
         path = self.shots / f"{name}.png"
@@ -301,7 +304,7 @@ class Walk:
         """Open the app through the desktop's own launcher. Without `wait`, the
         walk goes on the moment the launcher takes it: what a person presses
         before the app is ready."""
-        self.session.invoke("applications", self.v["id"])
+        self.session.open(self.v["id"])
         if wait:
             until_value(f"the window of {self.v['id']}", self.window_of, deadline)
             # The app's own process in the session's store, where the launcher
@@ -315,7 +318,7 @@ class Walk:
         window = self.window_of()
         if window is None:
             return
-        self.session.invoke(SHELL, f"{SHELL_RESOURCE}{ID_SEP}close-tab",
+        self.session.invoke(SHELL, SHELL_RESOURCE, "close-tab",
                             {"tab": str(window["tab"])})
         until_value(f"the window of {self.v['id']} to close",
                     lambda: self.window_of() is None, 30)
@@ -326,7 +329,7 @@ class Walk:
         window = self.window_of()
         if window is None:
             return
-        self.session.invoke(SHELL, f"{SHELL_RESOURCE}{ID_SEP}force-quit-app",
+        self.session.invoke(SHELL, SHELL_RESOURCE, "force-quit-app",
                             {"tab": str(window["tab"])})
         until_value(f"the window of {self.v['id']} to go",
                     lambda: self.window_of() is None, 60)
@@ -338,8 +341,8 @@ class Walk:
             self.appearance = until_value(
                 "the appearance action",
                 lambda: next((a for a in self.session.actions("")
-                              if a.get("operation") == "set-dark-mode"), None), 30)
-        self.session.invoke(self.appearance["provider"], self.appearance["id"], {"on": dark})
+                              if (address(a) or ("", ""))[1] == "set-dark-mode"), None), 30)
+        self.session.invoke_row(self.appearance, {"on": dark})
 
     def theme_shot(self, name: str, dark: bool) -> str:
         """The state `name` again, in the theme named: the person switches it and
@@ -395,7 +398,7 @@ class Walk:
             # launch is a cold one, and the window left behind is theirs.
             self.close_window()
         began = time.monotonic()
-        self.session.invoke("applications", self.v["id"])
+        self.session.open(self.v["id"])
 
         def shown():
             if self.window_of() is None:
@@ -536,16 +539,17 @@ class Walk:
         offers no control for. The answer is recorded, a refusal does not end
         the walk — a person who cannot do it from the app cannot do it here
         either, and that is the finding."""
-        provider, ident = value[0], value[1]
-        args = value[2] if len(value) > 2 else None
+        provider, resource, action = value[0], value[1], value[2]
+        args = value[3] if len(value) > 3 else None
+        invoked = f"{provider} {resource}#{action}"
         try:
-            answer = self.session.invoke(provider, ident, args)
+            answer = self.session.invoke(provider, resource, action, args)
         except Failed as error:
-            return {"invoked": f"{provider}{ID_SEP}{ident}", "refused": str(error)}
+            return {"invoked": invoked, "refused": str(error)}
         try:
-            return {"invoked": f"{provider}{ID_SEP}{ident}", "value": value_of(answer)}
+            return {"invoked": invoked, "value": value_of(answer)}
         except Failed:
-            return {"invoked": f"{provider}{ID_SEP}{ident}"}
+            return {"invoked": invoked}
 
     def op_notes(self, _value) -> dict:
         """How many notes the app holds now, read back through its own read;
@@ -580,7 +584,7 @@ class Walk:
             # is drawn for a client still connecting publishes nothing.
             def listed():
                 return [a for a in self.session.actions("")
-                        if a.get("application") == self.v["id"]]
+                        if a.get("app_id") == self.v["id"] and address(a)]
 
             return {"actions": len(until_value(
                 f"{self.v['id']} to publish its actions", listed, 120))}
@@ -767,14 +771,14 @@ class Walk:
         (`file-chooser.request`), the step's name its operation; a session that
         lists them another way still names the sheet in the operation or its
         provider."""
-        def of(action: dict) -> bool:
-            operation = str(action.get("operation") or "")
-            if action.get("resource") == FILE_CHOOSER_RESOURCE:
-                return ident in (action.get("id"), operation)
-            return (action.get("id") == ident
-                    and (operation.startswith(FILE_CHOOSER_STEP)
-                         or FILE_CHOOSER in operation
-                         or FILE_CHOOSER in str(action.get("provider") or "")))
+        def of(row: dict) -> bool:
+            resource, operation = address(row) or ("", "")
+            if resource == FILE_CHOOSER_RESOURCE:
+                return ident == operation
+            return (operation == ident
+                    and (resource.startswith(FILE_CHOOSER_STEP)
+                         or FILE_CHOOSER in resource
+                         or FILE_CHOOSER in str(row.get("provider") or "")))
 
         return next((a for a in self.session.actions("") if of(a)), None)
 
@@ -800,9 +804,8 @@ class Walk:
                 said[ident] = "the chooser lists no such step"
                 return False
             try:
-                self.session.invoke(action["provider"], action["id"],
-                                    {"handle": handle, "path": str(path)}
-                                    if ident == "select" else {"handle": handle})
+                self.session.invoke_row(action, {"handle": handle, "path": str(path)}
+                                        if ident == "select" else {"handle": handle})
                 return True
             except Failed as error:
                 # The chooser has not listed the file yet, or the answer is
@@ -904,7 +907,7 @@ class Walk:
             try:
                 if self.discover:
                     found["actions"] = [a for a in self.session.actions("")
-                                        if a.get("application") == self.v["id"]]
+                                        if a.get("app_id") == self.v["id"] and address(a)]
                     found["windows"] = self.session.windows()
             except Failed:
                 pass

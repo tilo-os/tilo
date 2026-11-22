@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 
-from real_apps import Refused, control_call
+from real_apps import Refused, address, catalogue, control_call, invocation, receipt
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 # The one place that picks a session's private runtime directory.
@@ -44,12 +44,12 @@ def display_name(runtime: pathlib.Path) -> str:
 
 
 def opens_probe(row: dict) -> bool:
-    """Whether `row` is the shell's one launch of the probe: the applications provider's, under
-    this machine's own app id (`host:<desktop id>`) or the desktop file's."""
-    if row.get("provider") != "applications":
+    """Whether catalogue row `row` is the workspace's one open of the probe, under this machine's
+    own app id (`host:<desktop id>`) or the desktop file's."""
+    resource, action = address(row) or ("", "")
+    if action != "open" or not resource.startswith("app."):
         return False
-    desktop_id = str(row.get("id", ""))
-    return desktop_id.removeprefix("host:") in (APP, APP + ".desktop")
+    return resource.removeprefix("app.").removeprefix("host:") in (APP, APP + ".desktop")
 
 
 def is_probe_window(row: dict) -> bool:
@@ -400,9 +400,8 @@ def main() -> None:
                 raise RuntimeError("the published production Wayland endpoint is not a socket")
             deadline = time.monotonic() + args.timeout
             while True:
-                catalog = control_call(sock, {"op": "actions_enumerate", "query": "Startup frame probe"})
-                actions = catalog.get("answer", {}).get("actions", [])
-                launch = [a for a in actions if opens_probe(a)]
+                catalog = catalogue(lambda frame: control_call(sock, frame), "Startup frame probe")
+                launch = [a for a in catalog if opens_probe(a)]
                 if len(launch) == 1:
                     break
                 if time.monotonic() >= deadline:
@@ -428,8 +427,8 @@ def main() -> None:
                 host_load = os.getloadavg()
                 before = time.monotonic_ns()
                 try:
-                    control_call(sock, {"op": "actions_invoke", "provider": launch[0]["provider"],
-                                        "id": launch[0]["id"]})
+                    receipt(control_call(sock, invocation(launch[0]["provider"],
+                                                          *address(launch[0]))))
                 except Refused as error:
                     raise RuntimeError(f"registered launch refused: {error}") from error
                 spawned = time.monotonic_ns()

@@ -214,12 +214,11 @@ echo '{"op":"pointer_move","x":260,"y":140}' | nc -U "$TILO_TEST_CONTROL"
 echo '{"op":"pointer_button","pressed":true}' | nc -U "$TILO_TEST_CONTROL"
 echo '{"op":"pointer_button","pressed":false}' | nc -U "$TILO_TEST_CONTROL"
 
-# An action by address, no coordinates, through the same resolution,
-# availability, confirmation and argument binding the live host applies:
-echo '{"op":"actions_invoke","resource":"notes.notebook","action":"new-note","arguments":{"title":"Trip"}}' | nc -U "$TILO_TEST_CONTROL"
-echo '{"op":"actions_enumerate","query":"notes"}' | nc -U "$TILO_TEST_CONTROL"
-echo '{"op":"actions_status","id":"INVOCATION_ID"}' | nc -U "$TILO_TEST_CONTROL"
-echo '{"op":"actions_cancel","id":"INVOCATION_ID"}' | nc -U "$TILO_TEST_CONTROL"
+# Actions by name, no coordinates, through the same resolution, availability,
+# confirmation and argument binding the live host applies: `tilo` sends the
+# action model's frames (`RemoteActionFrame`) to the same socket.
+TILO_TEST_CONTROL=... tilo action list notes
+TILO_TEST_CONTROL=... tilo do new-note --title Trip
 
 # Records an app publishes, read through the record API as this person reads
 # them, answered once they differ from `after` (the `revision` an earlier answer
@@ -326,10 +325,10 @@ python3 scripts/headless-examples/real_apps.py --start --open file-explorer --op
 
 The build takes the app list from `TILO_NESTED_APPS`. Through a remote-exec prefix, pass it in the program's own environment — `<prefix> env TILO_NESTED_APPS="notes …" dist/dev/nested-session-build.sh`, which is what the harness does — because a builder runs with its environment, not this machine's.
 
-`--start` starts `dist/dev/nested-session.sh` headless on lavapipe alone (`--software`: it never opens this machine's GPU) on a private runtime directory and a throwaway identity. The session also starts its own surfaces — the lock screen, the quick settings panel and the on-screen keyboard, beside its executable — and its own sound server: `pipewire`, `pipewire-pulse`, `wireplumber` and `pw-cli` must be on `PATH`, and it refuses to start without them rather than start as half a desktop. That sound is the session's own: its WirePlumber runs without the audio and Bluetooth monitors, so the only output is the session's null sink and the machine's cards and Bluetooth stay the host's. The apps it installs are `--apps` (default: Files, Chat, Settings, Terminal), signed with the session's own key and installed through `tilo-install` into the session's store — the same path the image's `/usr/share/tilo-apps` is built through. `--open APP` launches it through the session's own launcher (`applications so.tilo.<app>`) and waits until a process of it runs from the session's store with its window in the layout; `--shot` writes a PNG of the whole desktop. `--keep` leaves the session running and prints its ready JSON — the control socket, the runtime directory and the state directory — so `tilo-control` drives it from anywhere:
+`--start` starts `dist/dev/nested-session.sh` headless on lavapipe alone (`--software`: it never opens this machine's GPU) on a private runtime directory and a throwaway identity. The session also starts its own surfaces — the lock screen, the quick settings panel and the on-screen keyboard, beside its executable — and its own sound server: `pipewire`, `pipewire-pulse`, `wireplumber` and `pw-cli` must be on `PATH`, and it refuses to start without them rather than start as half a desktop. That sound is the session's own: its WirePlumber runs without the audio and Bluetooth monitors, so the only output is the session's null sink and the machine's cards and Bluetooth stay the host's. The apps it installs are `--apps` (default: Files, Chat, Settings, Terminal), signed with the session's own key and installed through `tilo-install` into the session's store — the same path the image's `/usr/share/tilo-apps` is built through. `--open APP` launches it through the workspace's own open of it (`app.so.tilo.<app>#open`) and waits until a process of it runs from the session's store with its window in the layout; `--shot` writes a PNG of the whole desktop. `--keep` leaves the session running and prints its ready JSON — the control socket, the runtime directory and the state directory — so `tilo-control` drives it from anywhere:
 
 ```bash
-TILO_TEST_CONTROL=<control from the ready line> <build>/bin/tilo-control actions list
+TILO_TEST_CONTROL=<control from the ready line> <build>/bin/tilo-control windows
 kill -TERM -<pid>   # the session's own process group: its apps, services and bus too
 ```
 

@@ -20,9 +20,9 @@ use std::path::Path;
 use serde_json::{Map, Value};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, CatalogueQuery,
-    CatalogueRow, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus,
-    RemoteActionFrame, RemoteActionMessage, RemoteActionTarget, application_open_target,
-    provider_workspace,
+    CatalogueResource, CatalogueRow, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE,
+    ReceiptStatus, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
+    application_open_target, provider_workspace,
 };
 use tilo_actions::tree::{action_rank, app_meant, bind_choices, folded, pick_action};
 use tilo_actions::{ActionDescriptor, InvocationId, InvocationUpdate};
@@ -129,6 +129,11 @@ fn ask(desktop: &mut Desktop, message: RemoteActionMessage) -> Result<RemoteActi
         .map_err(|error| format!("The desktop answered something this can't read: {error}"))
 }
 
+/// What to list to find the action `name` names: its own id, without the place before it.
+fn listed(name: &str) -> &str {
+    name.rsplit('#').next().unwrap_or(name)
+}
+
 fn connect(sockets: &[ControlSocket]) -> Result<Desktop, String> {
     Desktop::connect(sockets).map_err(|why| unreachable_sentence(&why))
 }
@@ -136,11 +141,7 @@ fn connect(sockets: &[ControlSocket]) -> Result<Desktop, String> {
 /// The actions the desktop offers that `filter` mentions: the first of its
 /// words narrows the listing the desktop answers, and each row then holds
 /// every word.
-fn offered(
-    desktop: &mut Desktop,
-    filter: &str,
-    spelling: &Spelling,
-) -> Result<Vec<CatalogueRow>, String> {
+fn offered(desktop: &mut Desktop, filter: &str, spelling: &Spelling) -> Result<Vec<Offer>, String> {
     let words: Vec<String> = filter
         .split(|c: char| c.is_whitespace() || c == '-')
         .filter(|word| !word.is_empty())
@@ -168,7 +169,8 @@ fn offered(
         rows.extend(
             page.rows
                 .into_iter()
-                .filter(|row| row.action.is_some() && mentions(row, &words)),
+                .filter(|row| mentions(row, &words))
+                .filter_map(Offer::of),
         );
         if page.exhausted || page.next_cursor.is_empty() {
             break;
@@ -179,11 +181,24 @@ fn offered(
     Ok(rows)
 }
 
-/// The action a listed row offers.
-fn action(row: &CatalogueRow) -> &ActionDescriptor {
-    row.action
-        .as_ref()
-        .unwrap_or_else(|| unreachable!("only rows with an action are kept"))
+/// One action the desktop offers, of the resource it is listed under.
+struct Offer {
+    provider: String,
+    app_id: String,
+    resource: CatalogueResource,
+    action: ActionDescriptor,
+}
+
+impl Offer {
+    /// What `row` offers, when it lists an action.
+    fn of(row: CatalogueRow) -> Option<Self> {
+        Some(Self {
+            action: row.action?,
+            provider: row.provider,
+            app_id: row.app_id,
+            resource: row.resource,
+        })
+    }
 }
 
 /// Whether `row` mentions every one of `words`.
@@ -206,7 +221,7 @@ fn mentions(row: &CatalogueRow, words: &[String]) -> bool {
 
 /// Where `row` acts, as a person names it: its resource's label, or its
 /// app's.
-fn place(row: &CatalogueRow) -> String {
+fn place(row: &Offer) -> String {
     let label = row.resource.label.trim();
     let named = if label.is_empty() {
         row.app_id.rsplit('.').next().unwrap_or(&row.app_id)
@@ -218,7 +233,7 @@ fn place(row: &CatalogueRow) -> String {
 
 /// Whether `row` acts at the place `name` names: its resource, by label or
 /// id, or its app.
-fn at(row: &CatalogueRow, name: &str) -> bool {
+fn at(row: &Offer, name: &str) -> bool {
     let wanted = folded(name);
     row.resource.id == name
         || folded(&row.resource.label) == wanted
@@ -228,11 +243,11 @@ fn at(row: &CatalogueRow, name: &str) -> bool {
 
 /// The name `row` is typed by among `rows`: its action's id where no other
 /// row offers one of that id, else that and its place.
-fn name_of(row: &CatalogueRow, rows: &[CatalogueRow]) -> String {
-    let id = &action(row).address.action;
+fn name_of(row: &Offer, rows: &[Offer]) -> String {
+    let id = &row.action.address.action;
     let shared = rows
         .iter()
-        .filter(|other| action(other).address.action == *id)
+        .filter(|other| other.action.address.action == *id)
         .count();
     if shared > 1 {
         format!("{}#{id}", place(row))
@@ -243,20 +258,16 @@ fn name_of(row: &CatalogueRow, rows: &[CatalogueRow]) -> String {
 
 /// The row `name` picks among `rows`: `place#action`, or an action by its id
 /// or its title, as the published tree picks one.
-fn find<'a>(
-    rows: &'a [CatalogueRow],
-    name: &str,
-    spelling: &Spelling,
-) -> Result<&'a CatalogueRow, String> {
+fn find<'a>(rows: &'a [Offer], name: &str, spelling: &Spelling) -> Result<&'a Offer, String> {
     let (within, wanted) = match name.rsplit_once('#') {
         Some((place, wanted)) => (Some(place), wanted),
         None => (None, name),
     };
-    let here: Vec<&CatalogueRow> = rows
+    let here: Vec<&Offer> = rows
         .iter()
         .filter(|row| within.is_none_or(|within| at(row, within)))
         .collect();
-    let actions: Vec<ActionDescriptor> = here.iter().map(|row| action(row).clone()).collect();
+    let actions: Vec<ActionDescriptor> = here.iter().map(|row| row.action.clone()).collect();
     let picked = pick_action(wanted, &actions, "this desktop")
         .or_else(|_| pick_action(&wanted.replace('-', " "), &actions, "this desktop"))
         .map_err(|_| {
@@ -266,11 +277,11 @@ fn find<'a>(
             )
         })?;
     let rank = action_rank(wanted, picked);
-    let mut fits: Vec<&CatalogueRow> = here
+    let mut fits: Vec<&Offer> = here
         .iter()
         .copied()
         .filter(|row| {
-            let offered = action(row);
+            let offered = &row.action;
             if rank.is_some() {
                 action_rank(wanted, offered) == rank
             } else {
@@ -278,7 +289,7 @@ fn find<'a>(
             }
         })
         .collect();
-    fits.dedup_by(|a, b| a.provider == b.provider && action(a).address == action(b).address);
+    fits.dedup_by(|a, b| a.provider == b.provider && a.action.address == b.action.address);
     match fits.as_slice() {
         [one] => Ok(one),
         [] => Err("That didn't work.".into()),
@@ -291,8 +302,8 @@ fn find<'a>(
                     "\n  {} {}#{}    {}",
                     spelling.run,
                     place(row),
-                    action(row).address.action,
-                    action(row).action_label
+                    row.action.address.action,
+                    row.action.action_label
                 );
             }
             Err(text)
@@ -338,8 +349,7 @@ pub fn list(sockets: &[ControlSocket], filter: &str, spelling: &Spelling, io: &m
     for (row, name) in rows.iter().zip(&names) {
         let line = format!(
             "{name:<width$}  {}  {}",
-            action(row).action_label,
-            row.resource.label
+            row.action.action_label, row.resource.label
         );
         let _ = writeln!(io.out, "{}", line.trim_end());
     }
@@ -348,7 +358,8 @@ pub fn list(sockets: &[ControlSocket], filter: &str, spelling: &Spelling, io: &m
 
 /// `tilo action show NAME`: what an action does, where, and what it takes.
 pub fn show(sockets: &[ControlSocket], name: &str, spelling: &Spelling, io: &mut Io<'_>) -> u8 {
-    let rows = match connect(sockets).and_then(|mut desktop| offered(&mut desktop, name, spelling))
+    let rows = match connect(sockets)
+        .and_then(|mut desktop| offered(&mut desktop, listed(name), spelling))
     {
         Ok(rows) => rows,
         Err(sentence) => return said(Err(sentence), io),
@@ -357,7 +368,7 @@ pub fn show(sockets: &[ControlSocket], name: &str, spelling: &Spelling, io: &mut
         Ok(row) => row,
         Err(sentence) => return said(Err(sentence), io),
     };
-    let offered = action(row);
+    let offered = &row.action;
     let display = name_of(row, &rows);
     let _ = writeln!(io.out, "{}", offered.action_label);
     if !row.resource.label.is_empty() {
@@ -394,12 +405,12 @@ pub fn show(sockets: &[ControlSocket], name: &str, spelling: &Spelling, io: &mut
             let _ = writeln!(io.out, "{line}");
         }
     }
-    let example: String = offered
-        .params
-        .iter()
-        .filter(|param| param.required)
-        .map(|param| format!(" {}=…", param.name))
-        .collect();
+    let mut example = String::new();
+    for param in offered.params.iter().filter(|param| param.required) {
+        example.push(' ');
+        example.push_str(&param.name);
+        example.push_str("=…");
+    }
     let _ = writeln!(io.out, "\nExample\n  {} {display}{example}", spelling.run);
     0
 }
@@ -509,18 +520,14 @@ pub fn run(
     io: &mut Io<'_>,
 ) -> u8 {
     let answered = connect(sockets).and_then(|mut desktop| {
-        let rows = offered(
-            &mut desktop,
-            name.rsplit('#').next().unwrap_or(name),
-            spelling,
-        )?;
+        let rows = offered(&mut desktop, listed(name), spelling)?;
         let row = find(&rows, name, spelling)?;
-        let args = bind_args(action(row), words)?;
+        let args = bind_args(&row.action, words)?;
         invoke(
             &mut desktop,
             target(row),
             args,
-            &action(row).action_label,
+            &row.action.action_label,
             spelling,
         )
     });
@@ -528,10 +535,10 @@ pub fn run(
 }
 
 /// What `row` invokes.
-fn target(row: &CatalogueRow) -> RemoteActionTarget {
+fn target(row: &Offer) -> RemoteActionTarget {
     RemoteActionTarget {
         provider: row.provider.clone(),
-        address: action(row).address.clone(),
+        address: row.action.address.clone(),
     }
 }
 
@@ -758,8 +765,8 @@ pub fn open_item(item: &str, cwd: &Path) -> String {
 }
 
 /// The app `row` opens, when it is the workspace's open of an app: its id.
-fn opens(row: &CatalogueRow) -> Option<&str> {
-    let offered = action(row);
+fn opens(row: &Offer) -> Option<&str> {
+    let offered = &row.action;
     (offered.address.action == APPLICATION_OPEN_ACTION
         && provider_workspace(&row.provider).is_some())
     .then(|| {
@@ -772,7 +779,7 @@ fn opens(row: &CatalogueRow) -> Option<&str> {
 }
 
 /// The apps among `rows`: each one's id, with the name it is listed by.
-fn apps(rows: &[CatalogueRow]) -> Vec<(&str, &str, &CatalogueRow)> {
+fn apps(rows: &[Offer]) -> Vec<(&str, &str, &Offer)> {
     rows.iter()
         .filter_map(|row| Some((opens(row)?, row.resource.label.as_str(), row)))
         .collect()

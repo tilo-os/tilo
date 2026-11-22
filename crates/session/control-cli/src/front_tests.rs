@@ -3,9 +3,7 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tilo_actions::remote::{
-    self, CataloguePage, CatalogueResource, InvokeRequest, Pending, TestProvider,
-};
+use tilo_actions::remote::{self, CataloguePage, CatalogueResource, InvokeRequest, TestProvider};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionOutput, ActionParam, ActionState, ExecutionLocus,
     InputSpec, OperationKind, ParamType,
@@ -373,5 +371,4 @@ fn files_become_absolute_and_links_stay_as_they_are() {
 fn an_answer_says_what_ran_and_what_it_made() {
     let answer = serde_json::json!({"status": "ok", "result": "done", "resources": ["notes/Todo"]});
     assert_eq!(answer_text(&answer), "ok\ndone\n-> notes/Todo");
-    let _ = Pending::ready(());
 }

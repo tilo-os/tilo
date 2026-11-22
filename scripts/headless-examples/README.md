@@ -2,8 +2,8 @@
 
 Scripts for controlling the headless compositor through the `TILO_TEST_CONTROL` Unix socket.
 
-For app automation, begin with `tilo-control actions list QUERY --json`, then
-invoke the chosen `(provider, id)`. The [search selection guide](../../docs/headless-testing.md#select-search-results-by-identity)
+For app automation, begin with `real_apps.Session.actions(QUERY)` (the
+session's catalogue, as action frames), then `invoke_row` the chosen row. The [search selection guide](../../docs/headless-testing.md#select-search-results-by-identity)
 explains how to distinguish same-named native and host apps and verify execution
 without opening the palette. Use the input examples below when testing input or
 rendering itself.

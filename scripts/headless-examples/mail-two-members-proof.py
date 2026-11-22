@@ -24,7 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from real_apps import BUILD, REPO, Failed, Session, build, run, until  # noqa: E402
+from real_apps import BUILD, REPO, Failed, Session, address, build, run, until  # noqa: E402
 from two_people import joined  # noqa: E402
 
 MAIL = "so.tilo.mail"
@@ -81,7 +81,7 @@ def open_mail(session: Session, deadline: float = 180.0) -> dict:
     """Open the tilolang Mail through the desktop's own launcher. The app asks for the network it
     reaches its accounts' servers over, which the shell puts to the workspace's people: the window
     opens once one of them allows it."""
-    session.invoke("applications", MAIL)
+    session.open(MAIL)
 
     def opened():
         window = next((w for w in session.windows() if w.get("app_id") == MAIL), None)
@@ -105,10 +105,9 @@ def click_row(session: Session, wanted, what: str, deadline: float = 180.0) -> N
 def deliver_action(session: Session) -> dict:
     """Mail's `deliver_message` action, as the session lists it for agents and scripts."""
     def found():
-        for action in session.actions(""):
-            if (action.get("application") == MAIL
-                    and action.get("operation") == "deliver_message"):
-                return action
+        for row in session.actions(""):
+            if row.get("app_id") == MAIL and (address(row) or ("",))[-1] == "deliver_message":
+                return row
         return None
     return until("Mail's deliver_message action to be listed", found, 180)
 
@@ -116,7 +115,7 @@ def deliver_action(session: Session) -> dict:
 def deliver(session: Session) -> dict:
     """A message for the workspace's mailbox, brought in as an import brings each one."""
     action = deliver_action(session)
-    answer = session.invoke(action["provider"], action["id"], {
+    answer = session.invoke_row(action, {
         "from": SENDER,
         "to": "Office <office@company.example>",
         "subject": SUBJECT,
@@ -125,9 +124,7 @@ def deliver(session: Session) -> dict:
         "folder": "inbox",
         "message_id": MESSAGE_ID,
     })
-    receipt = answer.get("receipt") or {}
-    value = (receipt.get("update") or {}).get("output", {}).get("value")
-    if value is None and receipt.get("status") not in (None, "ok", "done", "settled"):
+    if isinstance(answer, dict) and "Failed" in answer:
         raise Failed(f"the delivery was not taken: {json.dumps(answer)[:1500]}")
     return answer
 
@@ -158,11 +155,12 @@ def replied_through_api(session: Session) -> str:
     """What Mail's `reply` answers `session`'s person through the API, as an agent or a script
     asks it: whether it was taken, or why not."""
     try:
-        action = next((a for a in session.actions("")
-                       if a.get("application") == MAIL and a.get("operation") == "reply"), None)
+        action = next((row for row in session.actions("")
+                       if row.get("app_id") == MAIL and (address(row) or ("",))[-1] == "reply"),
+                      None)
         if action is None:
             return "nothing: the session lists no reply"
-        return json.dumps(session.invoke(action["provider"], action["id"]))[:1500]
+        return json.dumps(session.invoke_row(action))[:1500]
     except Failed as error:
         return f"a refusal: {error}"
 
