@@ -1571,11 +1571,11 @@ mod tests {
 
         let app = "so.tilo.tube";
         let kind = "tube.watch-history";
-        let owned = |device: &tilo_identity::identity_store::DeviceIdentity| {
+        let private_for = |device: &tilo_identity::identity_store::DeviceIdentity| {
             collab_types::OwnResource::new(kind, device.device_cert.user_public_key).unwrap()
         };
-        let owner_record = owned(&owner);
-        let member_record = owned(&member);
+        let owner_record = private_for(&owner);
+        let member_record = private_for(&member);
         for own in [&owner_record, &member_record] {
             peer.keep_own_document(app, own);
         }

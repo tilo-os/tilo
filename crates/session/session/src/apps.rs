@@ -698,12 +698,10 @@ impl Apps {
                     return Err("no connector can start here".to_owned());
                 };
                 let named = self.workspace_named(workspace);
-                match connectors.connection(app, &origin, &named.id, &|origin| {
+                let connection = connectors.connection(app, &origin, &named.id, &|origin| {
                     self.plan_connector(app, origin, &named)
-                }) {
-                    Ok(connection) => Some(connection),
-                    Err(error) => return Err(error),
-                }
+                })?;
+                Some(connection)
             }
             Err(error) => return Err(error),
         };
