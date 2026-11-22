@@ -157,15 +157,22 @@ pub enum Change {
     },
     /// Make `agent` a member acting for `for_person`. A member adds an agent
     /// acting for themselves; one acting for someone else is an
-    /// administrator's to add.
+    /// administrator's to add. `by` is the member the signing device writes
+    /// for, when that is not its own person: the person, or an agent of the
+    /// member list acting for them, whose right decides, narrowed by the
+    /// signer's.
     AddAgent {
         agent: String,
         for_person: String,
+        #[serde(default)]
+        by: Option<crate::MemberId>,
     },
     /// The agent leaves the workspace: its person, or an administrator,
-    /// removes it.
+    /// removes it. `by` as [`Self::AddAgent`]'s.
     RemoveAgent {
         agent: String,
+        #[serde(default)]
+        by: Option<crate::MemberId>,
     },
 }
 
@@ -205,12 +212,18 @@ impl Change {
 
     /// The one change that makes `agent` a member acting for `person`: every
     /// place that makes an agent writes it, and it is the agent's whole
-    /// membership.
+    /// membership. `by` names the member the signing device writes it for,
+    /// when that is not the device's own person ([`Self::AddAgent`]).
     #[must_use]
-    pub fn add_agent(agent: impl Into<String>, person: impl Into<String>) -> Self {
+    pub fn add_agent(
+        agent: impl Into<String>,
+        person: impl Into<String>,
+        by: Option<crate::MemberId>,
+    ) -> Self {
         Self::AddAgent {
             agent: agent.into(),
             for_person: person.into(),
+            by,
         }
     }
 
@@ -936,9 +949,19 @@ impl WorkspacePolicy {
         if is_leaving(actor_person, change) {
             return Ok(Vec::new());
         }
-        if self.manages_own_agent(actor_person, change) {
+        if let Some(own) = self.manages_own_agent(actor_person, change) {
             self.check_not_held_off(actor, cx)?;
+            if self.restricted_until(own, cx).is_some() {
+                return Err(Refusal::Restricted(own.to_owned()));
+            }
             return Ok(Vec::new());
+        }
+        if let Change::AddAgent { by: Some(by), .. } | Change::RemoveAgent { by: Some(by), .. } =
+            change
+        {
+            return Err(Refusal::NotPermitted(format!(
+                "{by:?} manages only the agents acting for its own person"
+            )));
         }
         match change {
             Change::Grant(grant) => self.admit_grant(actor, grant, cx, approved),
@@ -946,18 +969,37 @@ impl WorkspacePolicy {
         }
     }
 
-    /// Whether `change` adds or removes an agent acting for `actor_person`,
-    /// a member.
-    fn manages_own_agent(&self, actor_person: &str, change: &Change) -> bool {
-        let for_person = match change {
-            Change::AddAgent { for_person, .. } => Some(for_person.as_str()),
-            Change::RemoveAgent { agent } => self
+    /// The member person `change`, an agent change, is made for when the
+    /// device of `actor_person` signs it: the member it names as acting, a
+    /// person or an agent of the member list acting for its person, else the
+    /// signer's own person. `None` for one it names that acts for nobody.
+    fn agents_actor<'a>(&'a self, actor_person: &'a str, change: &'a Change) -> Option<&'a str> {
+        let (Change::AddAgent { by, .. } | Change::RemoveAgent { by, .. }) = change else {
+            return Some(actor_person);
+        };
+        match by {
+            None => Some(actor_person),
+            Some(crate::MemberId::Person(person)) => Some(person.as_str()),
+            Some(crate::MemberId::Agent(agent)) => self
                 .agents
                 .get(agent)
                 .map(|member| member.for_person.as_str()),
-            _ => None,
+            Some(crate::MemberId::Bot(_)) => None,
+        }
+    }
+
+    /// The person `change` adds or removes an agent of, when it is the one the
+    /// change is made for ([`Self::agents_actor`]): a member, written by a
+    /// device of a member, so both rights hold it.
+    fn manages_own_agent<'a>(&'a self, actor_person: &str, change: &'a Change) -> Option<&'a str> {
+        let for_person = match change {
+            Change::AddAgent { for_person, .. } => for_person.as_str(),
+            Change::RemoveAgent { agent, .. } => self.agents.get(agent)?.for_person.as_str(),
+            _ => return None,
         };
-        for_person == Some(actor_person) && self.is_member(actor_person)
+        let own = self.agents_actor(actor_person, change)?;
+        (own == for_person && self.is_member(own) && self.is_member(actor_person))
+            .then_some(for_person)
     }
 
     /// Applies a governance change made by `actor_person` through `actor`.
@@ -1000,10 +1042,12 @@ impl WorkspacePolicy {
                 self.members.insert(person, role);
             }
             Change::RemoveMember { person } => self.drop_member(&person),
-            Change::AddAgent { agent, for_person } => {
+            Change::AddAgent {
+                agent, for_person, ..
+            } => {
                 self.agents.insert(agent, AgentMember { for_person });
             }
-            Change::RemoveAgent { agent } => {
+            Change::RemoveAgent { agent, .. } => {
                 self.agents.remove(&agent);
             }
             Change::Ban { person } => {
@@ -1220,10 +1264,19 @@ impl WorkspacePolicy {
                 role,
                 assigned,
             } => self.check_member_custom_role(actor, person, role, *assigned, cx),
-            Change::AddAgent { agent, for_person } => {
-                self.check_agent_addition(actor_person, agent, for_person)
-            }
-            Change::RemoveAgent { agent } => self.check_agent_removal(actor_person, agent),
+            Change::AddAgent {
+                agent, for_person, ..
+            } => self.check_agent_addition(
+                self.agents_actor(actor_person, change)
+                    .unwrap_or(actor_person),
+                agent,
+                for_person,
+            ),
+            Change::RemoveAgent { agent, .. } => self.check_agent_removal(
+                self.agents_actor(actor_person, change)
+                    .unwrap_or(actor_person),
+                agent,
+            ),
         }
     }
 

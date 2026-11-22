@@ -1395,9 +1395,10 @@ impl ServerAgents {
     }
 
     /// Add to the workspace's member list each agent of `roster` it does not hold yet, acting
-    /// for its keeper, as this server: an agent made before agents were members becomes one
-    /// once, where this server may add it. One it may not add answers that it is not a member
-    /// yet ([`NOT_A_MEMBER_YET`]) until its keeper's device adds it.
+    /// for its keeper, as a member write for the keeper this server signs: an agent made before
+    /// agents were members becomes one once, where the keeper's right and this server's allow
+    /// it. One they do not answers that it is not a member yet ([`NOT_A_MEMBER_YET`]) until its
+    /// keeper's device adds it.
     async fn add_members(&self, workspace: &str, roster: &BTreeMap<String, Agent>) {
         let Some(policy) = self.workspaces.policy_of(workspace).await else {
             return;
@@ -1411,7 +1412,12 @@ impl ServerAgents {
             };
             if let Err(error) = self
                 .workspaces
-                .add_agent(workspace, self.workspaces.governor(), id, &keeper)
+                .add_agent(
+                    workspace,
+                    tilo_action_policy::MemberId::person(keeper.clone()),
+                    id,
+                    &keeper,
+                )
                 .await
             {
                 tracing::debug!(%workspace, agent = %id, %error, "an agent is not a member here yet");
@@ -2490,7 +2496,12 @@ async fn list_agent(
         .map_err(|error| error.to_string())?;
     // Its membership: the workspace's member list holds it, acting for its person.
     workspaces
-        .add_agent(workspace, workspaces.governor(), &listed, &keeper)
+        .add_agent(
+            workspace,
+            tilo_action_policy::MemberId::person(keeper.clone()),
+            &listed,
+            &keeper,
+        )
         .await
         .map_err(|error| error.to_string())
 }
