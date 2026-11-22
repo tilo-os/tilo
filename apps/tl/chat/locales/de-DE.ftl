@@ -253,3 +253,15 @@ d-6uysx57s-c = C
 d-6uysx57s-m = M
 
 d-6uysx57s-name = Name
+
+d-tz5yw5dt = Von
+    .doc = Wer sie im nativen Chat geschrieben hat, wie diese App sie nannte, für eine von dort übernommene Nachricht: ihr eigener Verlauf nennt, wer sie übernommen hat und wann.
+
+d-mmlcexsa = Geschrieben
+    .doc = Wann sie im nativen Chat geschrieben wurde, in Millisekunden seit 1970; 0 für eine hier geschriebene Nachricht.
+
+d-jcgolgdf = Reaktionen
+    .doc = Die Reaktionen, die sie im nativen Chat hatte, jedes Emoji mit der Zahl derer, die damit reagiert haben: wer dort reagiert hat, wird nicht übernommen, da diese App Personen nur als ihre eigenen Mitglieder nennt.
+
+d-aod7dups = Nativen Chat übernehmen
+    .doc = Die Unterhaltungen, die der native Chat hielt, bevor diese App seine ID übernahm, einmal in diese übernommen: seine Kategorien und Kanäle in der Reihenfolge der Seitenleiste, jeder mit Name und Thema, und jede Nachricht eines Kanals mit dem, was sie sagte, ob sie angeheftet war, und der ID, die sie dort hatte.
