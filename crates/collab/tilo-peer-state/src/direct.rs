@@ -2290,7 +2290,7 @@ impl DirectSync {
         } else {
             store.retain(workspace, &frame)
         };
-        retained.map(|retained| retained != store::Retained::Duplicate)
+        retained.map(|retained| matches!(retained, store::Retained::New | store::Retained::Beside))
     }
 
     fn workspace(&self) -> Result<WorkspaceId, String> {
