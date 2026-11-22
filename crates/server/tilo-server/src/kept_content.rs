@@ -117,6 +117,10 @@ struct State {
     /// The workspaces whose records were all read: a change of their members
     /// reads again only what did not open.
     read: BTreeSet<String>,
+    /// How many blobs of what each record names the host lacks, for the
+    /// records that name some it lacks: what the workspace's copy status says
+    /// this host lacks, kept as each record is read again.
+    lacking: BTreeMap<Route, usize>,
 }
 
 impl Default for State {
@@ -127,6 +131,7 @@ impl Default for State {
             again: BTreeSet::new(),
             reopened: BTreeMap::new(),
             read: BTreeSet::new(),
+            lacking: BTreeMap::new(),
         }
     }
 }
@@ -366,15 +371,60 @@ impl KeptContent {
             }
         };
         self.state.lock_recover().read.insert(workspace.to_owned());
-        let mut missing = 0_usize;
-        for (app, record) in routes {
-            if another_keeper(&app) {
-                continue;
-            }
-            missing = missing.saturating_add(self.keep(&(workspace.to_owned(), app, record)).await);
+        let routes: BTreeSet<Route> = routes
+            .into_iter()
+            .filter(|(app, _)| !another_keeper(app))
+            .map(|(app, record)| (workspace.to_owned(), app, record))
+            .collect();
+        for route in &routes {
+            self.keep(route).await;
         }
-        // Read over the whole workspace: what it lacks is all it lacks.
-        let blobs = u32::try_from(missing).unwrap_or(u32::MAX);
+        // A record the workspace no longer has names nothing it lacks.
+        let gone: Vec<Route> = self
+            .lacked(workspace)
+            .into_iter()
+            .filter(|route| !routes.contains(route))
+            .collect();
+        for route in gone {
+            self.count(&route, 0).await;
+        }
+    }
+
+    /// The records of `workspace` that name content this host lacks.
+    fn lacked(&self, workspace: &str) -> Vec<Route> {
+        let state = self.state.lock_recover();
+        state
+            .lacking
+            .range((workspace.to_owned(), String::new(), String::new())..)
+            .take_while(|((held, _, _), _)| held == workspace)
+            .map(|(route, _)| route.clone())
+            .collect()
+    }
+
+    /// Note that `route`'s record names `missing` blobs this host lacks, and
+    /// when that changes what its workspace lacks, say so in the workspace's
+    /// copy status: as content arrives, not only when the whole workspace is
+    /// read over.
+    async fn count(&self, route: &Route, missing: usize) {
+        let workspace = &route.0;
+        let total = {
+            let mut state = self.state.lock_recover();
+            let before = if missing == 0 {
+                state.lacking.remove(route)
+            } else {
+                state.lacking.insert(route.clone(), missing)
+            };
+            if before.unwrap_or(0) == missing {
+                return;
+            }
+            state
+                .lacking
+                .range((workspace.clone(), String::new(), String::new())..)
+                .take_while(|((held, _, _), _)| held == workspace)
+                .map(|(_, blobs)| *blobs)
+                .fold(0, usize::saturating_add)
+        };
+        let blobs = u32::try_from(total).unwrap_or(u32::MAX);
         self.workspaces.lacks_content(workspace, blobs).await;
     }
 
@@ -386,9 +436,9 @@ impl KeptContent {
         self.keep_workspace(workspace).await;
     }
 
-    /// Read `route`, note that it opened, and ask for the content it names:
-    /// what it lacks, as the number of blobs.
-    async fn keep(&self, route: &Route) -> usize {
+    /// Read `route`, note that it opened, ask for the content it names, and
+    /// count what it lacks of it.
+    async fn keep(&self, route: &Route) {
         let (workspace, app, record) = route;
         let bytes = match self
             .workspaces
@@ -399,28 +449,30 @@ impl KeptContent {
             Ok(None) => {
                 // Nobody wrote it: it is read when its first write lands.
                 self.state.lock_recover().reopened.remove(route);
-                return 0;
+                return self.count(route, 0).await;
             }
             Err(error) => {
                 tracing::debug!(%workspace, %app, %record, %error, "a governed workspace's record is not readable yet");
                 if self.workspaces.own_record(workspace, app, record).await {
                     // A person's own record is theirs: never asked to open.
                     self.state.lock_recover().reopened.remove(route);
-                    return 0;
+                    return self.count(route, 0).await;
                 }
                 if self.workspaces.waits_for_keys(workspace, app, record).await {
                     self.workspaces.ask_to_open(workspace, app, record).await;
                 }
+                // What it lacks stands as it was last read.
                 self.reopen(route);
-                return 0;
+                return;
             }
         };
         self.state.lock_recover().reopened.remove(route);
         let Ok(addresses) = content_of(app, &bytes) else {
             tracing::debug!(%workspace, %app, %record, "a record of a governed workspace does not read");
-            return 0;
+            return self.count(route, 0).await;
         };
-        self.ask_for(route, addresses).await
+        let missing = self.ask_for(route, addresses).await;
+        self.count(route, missing).await;
     }
 
     /// Note that `route` did not read, and read it again shortly: further
