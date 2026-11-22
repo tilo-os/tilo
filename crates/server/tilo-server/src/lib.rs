@@ -158,7 +158,6 @@ pub use mesh::{
 };
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
-pub use transport::ContentPeerRegistration;
 pub use transport::{ALPN, Envelope};
 
 /// Semantic version emitted by `tilo-server --version`. Tied to the

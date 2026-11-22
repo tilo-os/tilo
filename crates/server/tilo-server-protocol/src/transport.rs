@@ -16,7 +16,6 @@
 //!   reorder) so integration tests can byte-compare fixtures.
 
 use collab_types::WorkspaceId;
-use iroh_base::EndpointAddr;
 use serde::{Deserialize, Serialize};
 pub use tilo_unlock_protocol::opened::{Opening, UnlockMethod};
 
@@ -38,34 +37,6 @@ pub const DISCOVERY_ALPN: &[u8] = b"tilo-server-discovery/2";
 /// The protocol a person's device asks one of their servers to take it in
 /// on: into their Servers workspace, or among their servers.
 pub const MANAGEMENT_ALPN: &[u8] = b"tilo-home-peer-management/1";
-
-/// Small, stable discovery reply consumed directly by filesystem workers.
-/// Keeping this separate from the server's richer placement profile avoids a
-/// relay-only address ever being mistaken for a content endpoint.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ContentEndpointAdvertisement {
-    /// Explicit schema version for persisted/client registration envelopes.
-    pub schema_version: u16,
-    /// Server workspace whose signed filesystem authority authorised this lookup.
-    pub workspace_id: WorkspaceId,
-    /// Direct authenticated filesystem/blob endpoints currently ready for it.
-    pub filesystem_endpoints: Vec<EndpointAddr>,
-    /// Authenticated Files workspace binding used to join the record protocol.
-    pub filesystem_ticket: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Complete authenticated registration handed to the local Files daemon.
-pub struct ContentPeerRegistration {
-    /// Direct Iroh endpoint serving filesystem records and blobs.
-    pub endpoint: EndpointAddr,
-    /// Encoded Files ticket binding a fresh daemon to the shared namespace.
-    pub ticket: String,
-    /// Server service that authenticated this registration.  This binds a
-    /// persisted Files endpoint to the enrolled home peer which nominated it,
-    /// so removing that peer can revoke its hydration route too.
-    pub server_service_id: [u8; 32],
-}
 
 /// Bounded owner operation for an enrolled home peer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

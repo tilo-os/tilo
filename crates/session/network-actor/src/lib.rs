@@ -184,13 +184,6 @@ pub use tilo_desktop_model::WorkspaceId;
 pub type PeerId = EndpointId;
 pub use tilo_identity::identity_store::DeviceIdentity;
 
-/// Enrollment-bound identity expected behind a distinct server service key.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HomePeerExpectation {
-    pub user_public_key: [u8; 32],
-    pub device_public_key: [u8; 32],
-}
-
 #[derive(Debug)]
 pub enum NetCmd {
     /// Ask the host of the joined workspace on `ws` to replay what it retains:
@@ -302,7 +295,6 @@ pub enum NetCmd {
     /// delivery while the person's devices are away.
     ConnectHost {
         addr: EndpointAddr,
-        expectation: Option<HomePeerExpectation>,
     },
 }
 
@@ -1004,12 +996,11 @@ struct ActorState {
     sibling_hello_sent: Option<[u8; 32]>,
     /// Where the person's devices are heard ([`NetCmd::WatchSiblings`]).
     sibling_events: Option<mpsc::Sender<NetEvent>>,
-    hosts: HashMap<EndpointId, (EndpointAddr, Option<HomePeerExpectation>)>,
+    hosts: HashMap<EndpointId, EndpointAddr>,
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     /// Each joined workspace's link, on the direct connection.
     native_links: HashMap<WorkspaceId, native_ingress::NativeLink>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
-    content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
     /// Approver sessions that put this person's agents' questions on the
     /// sheet, one per connected host.
     agent_questions: Box<dyn services::Approvers>,
@@ -1221,17 +1212,6 @@ impl ActorState {
                         runtime.pump.abort();
                     }
                 }
-                let discoveries: Vec<_> = self
-                    .content_discovery_tasks
-                    .keys()
-                    .filter(|(task_ws, _)| *task_ws == ws)
-                    .copied()
-                    .collect();
-                for key in discoveries {
-                    if let Some(task) = self.content_discovery_tasks.remove(&key) {
-                        task.abort();
-                    }
-                }
             }
             // A workspace's link brings what its host retains when it starts,
             // and every frame after it live. A write this device let go
@@ -1329,23 +1309,14 @@ impl ActorState {
                 self.own_devices.insert(addr.id, addr);
                 self.dial_siblings();
             }
-            Some(NetCmd::ConnectHost { addr, expectation }) => {
+            Some(NetCmd::ConnectHost { addr }) => {
                 let id = addr.id;
-                let changed = self
-                    .hosts
-                    .get(&id)
-                    .is_some_and(|known| known != &(addr.clone(), expectation.clone()));
+                let changed = self.hosts.get(&id).is_some_and(|known| *known != addr);
                 if changed {
-                    // A new address for the same certified service replaces
-                    // only its server session. Its already authenticated Files
-                    // endpoint remains usable until refreshed discovery proves
-                    // a replacement; treating a reconnect as removal creates
-                    // a needless offline window (and can strand hydration if
-                    // the new server hint is temporarily unreachable).
                     self.teardown_host(id);
                 }
                 self.lookup.add_endpoint_info(addr.clone());
-                self.hosts.insert(id, (addr.clone(), expectation));
+                self.hosts.insert(id, addr.clone());
                 let Some(identity) = self.host_identity.as_ref() else {
                     tracing::warn!(peer = %id, "cannot connect workspace host without a device certificate");
                     return true;
@@ -1358,9 +1329,7 @@ impl ActorState {
         true
     }
 
-    /// Stop server sessions and discovery tasks for one host. An address
-    /// refresh must never revoke a still-valid Files hydration source, so
-    /// this keeps the host's content registrations.
+    /// Stop the server sessions of one host.
     fn teardown_host(&mut self, id: EndpointId) {
         self.agent_questions.stop(id);
         self.hosts.remove(&id);
@@ -1374,17 +1343,6 @@ impl ActorState {
         for key in sessions {
             if let Some(runtime) = self.host_sessions.remove(&key) {
                 runtime.pump.abort();
-            }
-        }
-        let discoveries: Vec<_> = self
-            .content_discovery_tasks
-            .keys()
-            .filter(|(_, host)| *host == id)
-            .copied()
-            .collect();
-        for key in discoveries {
-            if let Some(task) = self.content_discovery_tasks.remove(&key) {
-                task.abort();
             }
         }
     }
@@ -1890,10 +1848,9 @@ impl ActorState {
             internal_tx: &self.internal_tx,
             sessions: &self.host_sessions,
             connecting: &mut self.connecting_hosts,
-            content_discovery_tasks: &mut self.content_discovery_tasks,
         };
-        for (addr, expectation) in self.hosts.values().cloned() {
-            routes.schedule(ws, addr, expectation);
+        for addr in self.hosts.values().cloned() {
+            routes.schedule(ws, addr);
         }
     }
 
@@ -2179,7 +2136,7 @@ impl ActorState {
         if self
             .hosts
             .get(&peer)
-            .is_none_or(|(current, _)| current != attempted_addr)
+            .is_none_or(|current| current != attempted_addr)
         {
             return;
         }
@@ -2908,7 +2865,6 @@ async fn run(
         host_sessions: HashMap::new(),
         native_links: HashMap::new(),
         connecting_hosts: HashSet::new(),
-        content_discovery_tasks: HashMap::new(),
         agent_questions: services::approvers(),
         next_membership_epoch: 0,
         workspace_members: workspace_members::WorkspaceMembers::default(),
@@ -3309,29 +3265,21 @@ fn mark_new_message(
 }
 
 /// The actor state a host-route scheduling step reads: its endpoint, host
-/// identity and live sessions; and records into: in-flight connections and
-/// the single discovery-task registry.
+/// identity and live sessions; and records into: in-flight connections.
 struct HostRouteScheduler<'a> {
     endpoint: &'a Endpoint,
     identity: &'a DeviceIdentity,
     internal_tx: &'a mpsc::Sender<InternalEvent>,
     sessions: &'a HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     connecting: &'a mut HashSet<(WorkspaceId, EndpointId)>,
-    content_discovery_tasks:
-        &'a mut HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
 }
 
 impl HostRouteScheduler<'_> {
     #[allow(
         clippy::too_many_lines,
-        reason = "one scheduler transition atomically coordinates the endpoint, host identity, route state, and single discovery-task registry"
+        reason = "one scheduler transition atomically coordinates the endpoint, host identity and route state"
     )]
-    fn schedule(
-        &mut self,
-        ws: WorkspaceId,
-        addr: EndpointAddr,
-        expectation: Option<HomePeerExpectation>,
-    ) {
+    fn schedule(&mut self, ws: WorkspaceId, addr: EndpointAddr) {
         let (endpoint, identity, internal_tx, sessions) = (
             self.endpoint,
             self.identity,
@@ -3339,64 +3287,7 @@ impl HostRouteScheduler<'_> {
             self.sessions,
         );
         let connecting = &mut *self.connecting;
-        let content_discovery_tasks = &mut *self.content_discovery_tasks;
         let host = addr.id;
-        if let Some(expectation) = expectation.clone()
-            && !content_discovery_tasks.contains_key(&(ws, host))
-        {
-            let discovery_key = Arc::clone(&identity.signer);
-            let discovery_endpoint = endpoint.clone();
-            let discovery_addr = addr.clone();
-            let discovery_identity = identity.clone();
-            let task = tokio::spawn(async move {
-                let mut retry = Duration::from_secs(1);
-                loop {
-                    let (discovery_cert, entries) = discovery_identity.material_for(ws);
-                    let mut discovery_revocations = RevocationList::new();
-                    if entries
-                        .into_iter()
-                        .any(|entry| discovery_revocations.insert(entry).is_err())
-                    {
-                        tracing::warn!(ws = %ws, "workspace identity has an invalid revocation entry");
-                        tokio::time::sleep(Duration::from_secs(10)).await;
-                        continue;
-                    }
-                    let discovered = tokio::time::timeout(
-                        Duration::from_secs(10),
-                        ServerClient::discover_content_peer(
-                            &discovery_endpoint,
-                            discovery_addr.clone(),
-                            ws,
-                            expectation.user_public_key,
-                            expectation.device_public_key,
-                            discovery_cert.clone(),
-                            discovery_key.clone(),
-                            discovery_revocations.clone(),
-                        ),
-                    )
-                    .await;
-                    match discovered {
-                        Ok(Ok(content_peer)) => {
-                            let _ = register_content_peer(content_peer).await;
-                            // Re-advertise periodically. Registration persists the
-                            // peer, while this also repairs a daemon replacement
-                            // without coupling its lifecycle to the server session.
-                            retry = Duration::from_secs(30);
-                        }
-                        Ok(Err(error)) => {
-                            tracing::debug!(%error, ws = %ws, "server content discovery is not ready");
-                            retry = retry.saturating_mul(2).min(Duration::from_secs(10));
-                        }
-                        Err(_) => {
-                            tracing::debug!(ws = %ws, "server content discovery timed out");
-                            retry = retry.saturating_mul(2).min(Duration::from_secs(10));
-                        }
-                    }
-                    tokio::time::sleep(retry).await;
-                }
-            });
-            content_discovery_tasks.insert((ws, host), task);
-        }
         if sessions.contains_key(&(ws, host)) || !connecting.insert((ws, host)) {
             return;
         }
@@ -3412,48 +3303,14 @@ impl HostRouteScheduler<'_> {
                 return;
             }
         }
-        let Some(expectation) = expectation else {
-            // Invited/provider hosts can carry collaboration state, but only an
-            // enrolled home peer may nominate a Files hydration endpoint.
-            let tx = internal_tx.clone();
-            tokio::spawn(async move {
-                let result = tokio::time::timeout(
-                    Duration::from_secs(10),
-                    ServerClient::connect_to_pinned_host(
-                        endpoint,
-                        addr.clone(),
-                        device_cert,
-                        key,
-                        revocations,
-                    ),
-                )
-                .await
-                .map_err(|_| "workspace host connection timed out".to_string())
-                .and_then(|result| result.map_err(|error| server_error(&host, &error)))
-                .and_then(|client| {
-                    ServerCoeditSession::join(client, ws, identity.device_public_key())
-                        .map_err(|error| error.to_string())
-                });
-                let _ = tx
-                    .send(InternalEvent::HostConnected {
-                        ws,
-                        peer: host,
-                        addr,
-                        result: Box::new(result),
-                    })
-                    .await;
-            });
-            return;
-        };
+        // Invited/provider hosts carry the workspace's collaboration state.
         let tx = internal_tx.clone();
         tokio::spawn(async move {
             let result = tokio::time::timeout(
                 Duration::from_secs(10),
-                ServerClient::connect_v2_to_enrolled_home_peer(
+                ServerClient::connect_to_pinned_host(
                     endpoint,
                     addr.clone(),
-                    expectation.user_public_key,
-                    expectation.device_public_key,
                     device_cert,
                     key,
                     revocations,
@@ -3475,82 +3332,6 @@ impl HostRouteScheduler<'_> {
                 })
                 .await;
         });
-    }
-}
-
-/// Submit an authenticated server-discovered Files peer to the running FUSE
-/// daemon. This is deliberately a detached worker: endpoint registration may
-/// wait on the group-restricted daemon socket but must never delay networking
-/// or the compositor. The filesystem owns persistence and hydration policy.
-#[allow(
-    clippy::items_after_statements,
-    reason = "the async write extension is local to the detached filesystem-registration worker and kept beside its only use"
-)]
-async fn register_content_peer(
-    registration: tilo_server_protocol::transport::ContentPeerRegistration,
-) -> bool {
-    if cfg!(any(test, feature = "test-support"))
-        && std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER").is_none()
-    {
-        return true;
-    }
-    let publisher = std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER")
-        .filter(|value| !value.is_empty())
-        .map_or_else(
-            || std::path::PathBuf::from("/usr/bin/fs"),
-            std::path::PathBuf::from,
-        );
-    let cache_dir = std::env::var_os("TILO_FS_CONTENT_PEER_CACHE_DIR")
-        .filter(|value| !value.is_empty())
-        .map_or_else(
-            || std::path::PathBuf::from("/var/cache/quick-fs"),
-            std::path::PathBuf::from,
-        );
-    let Ok(payload) = serde_json::to_vec(&registration) else {
-        tracing::warn!("could not serialize server-discovered filesystem registration");
-        return false;
-    };
-    let mut child = match tokio::process::Command::new(&publisher)
-        .arg("register-content-peer")
-        .arg("--cache-dir")
-        .arg(&cache_dir)
-        .arg("--endpoint-stdin")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(error) => {
-            tracing::warn!(%error, publisher = %publisher.display(), "could not start filesystem content-peer registration");
-            return false;
-        }
-    };
-    use tokio::io::AsyncWriteExt as _;
-    let Some(mut stdin) = child.stdin.take() else {
-        tracing::warn!("filesystem content-peer registration has no stdin");
-        return false;
-    };
-    if let Err(error) = stdin.write_all(&payload).await {
-        tracing::warn!(%error, "could not send discovered endpoint to filesystem daemon");
-        return false;
-    }
-    drop(stdin);
-    match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
-        Ok(Ok(status)) if status.success() => true,
-        Ok(Ok(status)) => {
-            tracing::warn!(?status, "filesystem content-peer registration failed");
-            false
-        }
-        Ok(Err(error)) => {
-            tracing::warn!(%error, "could not wait for filesystem content-peer registration");
-            false
-        }
-        Err(_) => {
-            tracing::warn!("filesystem content-peer registration timed out");
-            false
-        }
     }
 }
 
