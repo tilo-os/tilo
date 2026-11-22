@@ -358,7 +358,8 @@ fn source_label(source: ReportSource, placement: Placement) -> String {
     })
 }
 
-#[cfg(test)]
+// The report the tests show is the main story's, whose fixtures are Linux's.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

@@ -4078,6 +4078,8 @@ async fn native_invocation_delivery_turn_waits_until_the_route_fails() {
     assert!(error.contains("the first read was refused"), "{error}");
 }
 
+// The fixtures build on the native broker types, which exist only on Unix.
+#[cfg(unix)]
 include!("native_fixtures.rs");
 
 #[cfg(unix)]

@@ -692,6 +692,8 @@ mod tests {
         plan
     }
 
+    // The token is a file only its owner reads, which the test sets with Unix modes.
+    #[cfg(unix)]
     #[test]
     fn a_staged_plan_and_its_token_are_given_together_and_name_their_disk() {
         let platform = linux_platform();
