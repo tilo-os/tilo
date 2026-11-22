@@ -11,6 +11,7 @@ pub mod downloaded;
 #[cfg(feature = "indexes")]
 pub mod files;
 pub mod happening;
+pub mod host_actions;
 pub mod host_apps;
 pub mod hosted;
 pub mod jobs;
@@ -31,6 +32,7 @@ use ui::search::{PagePoll, PendingToken, SearchQuery};
 use crate::model::{ActionTarget, Hit, LaunchPlace, Source, Target};
 use crate::rank;
 pub use app_actions::Actions;
+pub use host_actions::HostActions;
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
 /// An application the desktop can open. A desktop lists only the apps it

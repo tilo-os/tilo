@@ -1347,7 +1347,7 @@ impl Session {
             activity.attach_broker(broker);
         }
         activity.attach_content(std::sync::Arc::clone(&document_content));
-        let control = crate::test_control::Control::open(&options, host);
+        let control = crate::test_control::Control::open(&options, std::sync::Arc::clone(&host));
         tilo_startup_metrics::mark("control-socket-open");
         let server = crate::mcp_server::mount_named(
             &options,
@@ -1564,6 +1564,13 @@ impl Session {
             Some(Arc::new(crate::activity_models::Gateway)),
         ));
         session_search.get_or_init(|| Rc::clone(&search));
+        // The workspace's action catalogue is a source of the person's search, as it is of
+        // `tilo do`: the app's actions an installed app runs on the workspace's host, and its
+        // workspace records, reach the screen where they reach an agent.
+        let catalogue_host = std::sync::Arc::clone(&host);
+        let catalogue: std::sync::Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> =
+            catalogue_host;
+        search.serve_catalogue(catalogue);
         let asker = crate::questions::Asker::new(
             questions,
             portal.clone(),

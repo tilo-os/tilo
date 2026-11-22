@@ -288,6 +288,11 @@ pub struct SessionSearch {
     workspace_files: Option<Held>,
     /// The workspace host's search, where this host holds only part of the workspace.
     host_search: Option<Held>,
+    /// The workspace's action catalogue, where this session serves one: the rows `tilo do` and a
+    /// page's catalogue query read, so the person's search lists an app that runs on the
+    /// workspace's host too ([`tilo_desktop_search::providers::HostActions`]).
+    catalogue:
+        RefCell<Option<std::sync::Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>>>,
     /// Sources a test mounts beside the session's own, asked as the host's are ([`SearchOptions::extra_sources`]).
     extra_sources: Vec<Held>,
     /// What the session itself publishes, as of the last frame: the shell cannot read its own tree
@@ -457,6 +462,7 @@ impl SessionSearch {
             records,
             workspace_files,
             host_search,
+            catalogue: RefCell::default(),
             extra_sources,
             own: RefCell::default(),
             own_types: RefCell::default(),
@@ -476,6 +482,17 @@ impl SessionSearch {
             pending: RefCell::default(),
             wake,
         }
+    }
+
+    /// Serve the workspace's action catalogue as a source of the person's search: `provider` is
+    /// this session's action host, the one `tilo do` and `tilo-control actions_enumerate` ask.
+    /// Its rows are listed for the workspace in front, less the ones this device's own sources
+    /// already publish ([`tilo_desktop_search::providers::HostActions`]).
+    pub fn serve_catalogue(
+        &self,
+        provider: std::sync::Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+    ) {
+        *self.catalogue.borrow_mut() = Some(provider);
     }
 
     /// What the session publishes now, the windows open and the downloaded programs as the registry
@@ -695,6 +712,30 @@ impl SessionSearch {
         // while closed stands in, and choosing one opens the app and invokes it there.
         let published =
             tilo_desktop_search::providers::with_offers(published, offered.iter().cloned());
+        // What the workspace's action catalogue offers that this device's own sources do not:
+        // the actions of an app running on the workspace's host, and of a record the workspace
+        // keeps for all its apps, so the person finds on their screen what `tilo do` finds.
+        // Rows are ranked in this workspace, whichever one the action itself belongs to.
+        if !scope.everywhere()
+            && let Some(catalogue) = self.catalogue.borrow().clone()
+        {
+            let listed: std::collections::HashSet<tilo_actions::ActionAddress> = published
+                .iter()
+                .flat_map(|published| published.actions.iter())
+                .map(|action| action.address.clone())
+                .collect();
+            let silent: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(|| {});
+            let wake = self.wake.clone().unwrap_or(silent);
+            let caller = tilo_actions::remote::Caller::local_person(self.person.as_str())
+                .in_workspace(workspace);
+            sources.push(Held::new(tilo_desktop_search::providers::HostActions::new(
+                catalogue,
+                caller,
+                workspace,
+                std::sync::Arc::new(listed),
+                wake,
+            )));
+        }
         (sources, published)
     }
 

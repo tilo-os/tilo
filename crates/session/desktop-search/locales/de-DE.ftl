@@ -82,6 +82,7 @@ search-source-windows = Fenster
 search-source-commands = Desktop-Befehle
 search-source-app-actions = Aktionen in offenen Apps
 search-source-published-actions = Von Apps veröffentlichte Aktionen
+search-source-workspace-actions = Aktionen in diesem Arbeitsbereich
 search-source-captures = Neu
 search-source-app-content = Was Apps enthalten
 search-source-recent = Zuletzt
