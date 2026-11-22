@@ -1229,7 +1229,6 @@ impl Device {
                 target: self.target,
                 message,
                 placement: self.placement.clone(),
-                agent: None,
             },
             now_ns(),
             self.key.as_ref(),

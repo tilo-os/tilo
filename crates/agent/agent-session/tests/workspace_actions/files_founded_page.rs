@@ -59,10 +59,10 @@ async fn a_page_that_founded_files_lists_a_file_the_workspace_founded_after_it()
     .await;
     let agent = Browser::open(&hosted, &computer, &serving).await;
     let person = hex::encode(root.verifying_key().to_bytes());
-    let server = McpServer::new(
+    let server = McpServer::for_person(
         SessionActions::new(&agent.peer, agent.workspace, serving.cert.device_public_key),
         WORKSPACE.into(),
-        person,
+        &person,
     );
 
     // Ada's page opens Files before the workspace holds a tree: the page's Files opens the

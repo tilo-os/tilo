@@ -28,10 +28,10 @@ fn endpoint() -> (tempfile::TempDir, PathBuf, HeldHost) {
     let serving = host.clone();
     let endpoint = Endpoint {
         session_factory: Arc::new(move || {
-            Ok::<_, std::io::Error>(McpServer::new(
+            Ok::<_, std::io::Error>(McpServer::for_person(
                 serving.clone(),
                 "workspace".into(),
-                "owner".into(),
+                "owner",
             ))
         }),
         status: Status {

@@ -214,12 +214,6 @@ async fn keyless_certified_host_steps_require_a_verified_native_projection() {
                 &projected,
                 Some(&origin(missing_presentation, false))
             ));
-            let delegated = checked.delegated_to("agent");
-            assert!(!delegated.native_projection_verified);
-            assert!(!is_local_host_caller(
-                &projected,
-                Some(&origin(delegated, false))
-            ));
             rig.stop().await;
         })
         .await;

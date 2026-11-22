@@ -95,10 +95,10 @@ async fn a_devices_agent_keeps_a_folder_for_a_task_by_paths_in_the_workspace() {
     .await;
     let agent = Browser::open(&hosted, &computer, &host).await;
     let person = hex::encode(root.verifying_key().to_bytes());
-    let server = McpServer::new(
+    let server = McpServer::for_person(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
-        person,
+        &person,
     );
 
     // Two files arrive in the workspace's folder.
@@ -936,21 +936,17 @@ async fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
     let conversation =
         chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
     let scout = |rules: Vec<tilo_action_policy::Rule>| {
-        Caller::authenticated(
-            root.verifying_key().to_bytes(),
-            browser.cert.device_public_key,
-        )
-        .in_workspace(&workspace)
-        .delegated_to(SCOUT.to_owned())
-        .named("Scout")
-        .in_agent_session("agent-session:files".to_owned())
-        .on_turn(
-            tilo_action_policy::turn::Turn::new(
+        let person_key = root.verifying_key().to_bytes();
+        Caller::delegated_agent(SCOUT, person_key, browser.cert.device_public_key)
+            .in_workspace(&workspace)
+            .named("Scout")
+            .in_agent_session("agent-session:files".to_owned())
+            .on_roster(0, person_key)
+            .on_roster_turn(tilo_action_policy::turn::Turn::new(
                 chat::summons::conversation_address(&conversation),
                 "asked".to_owned(),
-            ),
-            rules,
-        )
+            ))
+            .held_to(rules)
     };
     let tools = |rules: Vec<tilo_action_policy::Rule>| {
         McpServer::for_turn(

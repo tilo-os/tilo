@@ -68,8 +68,8 @@ async fn tool(
     )
 }
 
-/// The session of `root`'s person handed to her agent on a turn in `conversation`, held to
-/// `rules`: what the tools of such a turn act as on a server.
+/// The roster agent on a turn in `conversation`, held to `rules`: what the tools of such a turn
+/// act as on a server.
 fn on_turn(
     root: &SigningKey,
     browser: &crate::support::Device,
@@ -77,21 +77,17 @@ fn on_turn(
     (conversation, cause): (&Id, &Id),
     rules: Vec<tilo_action_policy::Rule>,
 ) -> Caller {
-    Caller::authenticated(
-        root.verifying_key().to_bytes(),
-        browser.cert.device_public_key,
-    )
-    .in_workspace(workspace)
-    .delegated_to(SCOUT.to_owned())
-    .named("Scout")
-    .in_agent_session("agent-session:watch".to_owned())
-    .on_turn(
-        tilo_action_policy::turn::Turn::new(
+    let person = root.verifying_key().to_bytes();
+    Caller::delegated_agent(SCOUT, person, browser.cert.device_public_key)
+        .in_workspace(workspace)
+        .named("Scout")
+        .in_agent_session("agent-session:watch".to_owned())
+        .on_roster(0, person)
+        .on_roster_turn(tilo_action_policy::turn::Turn::new(
             chat::summons::conversation_address(conversation),
             cause.to_string(),
-        ),
-        rules,
-    )
+        ))
+        .held_to(rules)
 }
 
 /// Every change one watch answered with: the app of each resource it names.
@@ -217,26 +213,23 @@ async fn a_turn_on_the_server_wakes_on_a_persons_write_and_is_told_only_what_it_
     )
     .await;
     let narrowed = {
-        let asking = Caller::authenticated(
-            root.verifying_key().to_bytes(),
-            browser.cert.device_public_key,
-        )
-        .in_workspace(&workspace)
-        .delegated_to(SCOUT.to_owned())
-        .named("Scout")
-        .in_agent_session("agent-session:watch".to_owned());
+        let person_key = root.verifying_key().to_bytes();
+        let asking = Caller::delegated_agent(SCOUT, person_key, browser.cert.device_public_key)
+            .in_workspace(&workspace)
+            .named("Scout")
+            .in_agent_session("agent-session:watch".to_owned());
         let rules = tilo_workspace_service::agents::workspace_agent(&workspaces, id, &asking).await;
         assert!(
             !rules.is_empty(),
             "the agent is held to the rules kept for it"
         );
-        asking.on_turn(
-            tilo_action_policy::turn::Turn::new(
+        asking
+            .on_roster(0, person_key)
+            .on_roster_turn(tilo_action_policy::turn::Turn::new(
                 chat::summons::conversation_address(&conversation),
                 first.to_string(),
-            ),
-            rules,
-        )
+            ))
+            .held_to(rules)
     };
     let feed = WorkspaceActionProvider::new(actions.clone(), id)
         .change_feed()

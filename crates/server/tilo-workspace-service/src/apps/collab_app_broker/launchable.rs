@@ -801,15 +801,11 @@ mod tests {
         workspace
     }
 
-    /// An agent inside a turn the workspace owner's message caused, in
-    /// `workspace`.
+    /// An agent acting for the workspace owner in `workspace`.
     fn agent_of(workspace: &str) -> Caller {
-        Caller::agent_turn(
-            "scribe",
-            "owner",
-            tilo_action_policy::turn::Turn::new("chat/workspace/channels/1", "m1"),
-        )
-        .in_workspace(workspace.to_owned())
+        Caller::local_person("owner")
+            .delegated_to("scribe")
+            .in_workspace(workspace.to_owned())
     }
 
     /// A broker session hosting `workspace`, and its workspace.

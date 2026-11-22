@@ -10,7 +10,7 @@ use tilo_desktop_model::Workspace;
 /// the agent answers: the connection's admitted agent, in the turn's agent session, on the turn.
 ///
 /// A turn's steps are requests on the agent's connection served as the turn's: the caller carries
-/// the turn and the turn's session (`Caller::agent_turn(..).in_agent_session(..)`), which
+/// the turn and the turn's session (`Caller::on_roster_turn(..).in_agent_session(..)`), which
 /// `agent_session_of` checks goes, while the actor the admitted connection makes carries neither,
 /// since the connection itself answers no turn. Every step of the turn then acted outside it: a
 /// session's own step (the API's programs, `task_programs`) refused it as "an agent runs programs
@@ -40,12 +40,23 @@ fn in_turn_session(actor: BrokerActor, caller: &Caller) -> BrokerActor {
 mod turn_session_tests {
     use super::{BrokerActor, Caller, in_turn_session};
 
+    /// The person whose message a roster agent's turn answers, and the key its certificate
+    /// chains to.
+    const PERSON: [u8; 32] = [0x11; 32];
+
+    /// An agent `agent` bound to its roster entry, answering `turn` for [`PERSON`].
+    fn on_turn(agent: &str, turn: tilo_action_policy::turn::Turn) -> Caller {
+        Caller::delegated_agent(agent, PERSON, [0x12; 32])
+            .on_roster(0, PERSON)
+            .on_roster_turn(turn)
+    }
+
     /// A step from the agent's connection, for the turn it answers, acts in that turn's
     /// session and on that turn; a step that is no turn's, or another agent's, does not.
     #[test]
     fn a_turns_step_acts_in_the_turns_session() {
         let turn = tilo_action_policy::turn::Turn::new("chat.workspace/channels/c", "m1");
-        let caller = Caller::agent_turn("scribe", "person", turn.clone())
+        let caller = on_turn("scribe", turn.clone())
             .in_workspace("w")
             .in_agent_session("so.tilo.session/agent-session/s1");
         let connection = BrokerActor::agent("scribe").for_person("person");
@@ -64,7 +75,7 @@ mod turn_session_tests {
             "another agent's step is not on this turn"
         );
 
-        let no_session = Caller::agent_turn("scribe", "person", turn).in_workspace("w");
+        let no_session = on_turn("scribe", turn).in_workspace("w");
         assert_eq!(in_turn_session(connection, &no_session).session(), None);
     }
 }

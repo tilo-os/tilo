@@ -308,7 +308,12 @@ impl OwnAgent {
 
     /// `tilo mcp` on the agent's computer, asking over `actions`.
     fn mcp(&self, actions: &SessionActions) -> McpServer<SessionActions> {
-        McpServer::new(actions.clone(), WORKSPACE.into(), self.person.clone())
+        McpServer::for_agent(
+            actions.clone(),
+            WORKSPACE.into(),
+            &claude_code(&self.person),
+            &self.person,
+        )
     }
 
     /// One agent connection per `runs`, each a run of its own over the one session `agent`

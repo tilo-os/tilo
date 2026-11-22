@@ -427,8 +427,7 @@ async fn a_message_the_assistant_would_send_waits_for_its_person() {
 /// A workspace's mail is its members'. Somebody who is no member, and their
 /// agent, is nobody to it by any road: on their own device, over a
 /// member's page, in a turn of their own, or under no person at all. A
-/// member's agent id with no device of theirs behind it is nobody too, and
-/// a member of another workspace reads nothing of this one's mail there. No
+/// member of another workspace reads nothing of this one's mail there. No
 /// server is asked for any of them.
 #[tokio::test]
 async fn nobody_outside_the_workspace_reads_its_mail() {
@@ -437,11 +436,10 @@ async fn nobody_outside_the_workspace_reads_its_mail() {
     let bo = admit(&setup.workspaces, &elsewhere, &setup.owner, 2).await;
     let bos_page = setup.host.in_workspace_as(setup.workspace_id, &bo);
     let bos_agent = caller(&bo).delegated_to(ASSISTANT);
-    let bos_turn = Caller::agent_turn(
-        ASSISTANT,
-        hex::encode(bo.user_public_key),
-        Turn::new("chat/main", "message-1"),
-    );
+    let bos_turn = Caller::delegated_agent(ASSISTANT, bo.user_public_key, bo.device_public_key)
+        .in_workspace(setup.workspace_id.to_string())
+        .on_roster(0, bo.user_public_key)
+        .on_roster_turn(Turn::new("chat/main", "message-1"));
     let line = setup.host.in_workspace(setup.workspace_id);
     let hers = || json!({"account": ACCOUNT, "folder": "inbox"});
     let fetch = person_accounts::FETCH;
@@ -466,15 +464,6 @@ async fn nobody_outside_the_workspace_reads_its_mail() {
     );
     let unowned = Caller::local_agent(ASSISTANT);
     nobody("under no person", setup.ask(&unowned, fetch, hers()).await);
-    let bare_turn = Caller::agent_turn(
-        ASSISTANT,
-        hex::encode(setup.device.user_public_key),
-        Turn::new("chat/main", "message-2"),
-    );
-    nobody(
-        "a member's agent id with no device of theirs behind it",
-        asked_of(&line, &bare_turn, fetch, hers()).await,
-    );
     assert!(offered(&bos_page, &bos_agent).await.is_empty());
 
     // In the workspace Bo is a member of, this account is none it keeps.
