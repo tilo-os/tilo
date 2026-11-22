@@ -515,10 +515,14 @@ impl ActionProvider for WorkspaceActionProvider {
     /// the resources, whoever wrote it, and by who is in the workspace moving with its
     /// governance. A watch of a turn on this server is woken by a person's edit or message and
     /// by another agent's change, not only by its own invocations.
-    fn changed(&self, caller: &Caller, scope: WatchScope) -> Option<Pending<()>> {
-        // Either answer is the same to a watch: what it follows is read again, and a refusal is
-        // told by that read. A service that answers nothing at all is not running, and the
-        // watch waits its own deadline instead of on a wake that would come at once for ever.
+    fn changed(
+        &self,
+        caller: &Caller,
+        scope: WatchScope,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        // The service's refusal is the watch's to tell, with why. A service that answers nothing
+        // at all is not running, and the watch waits its own deadline instead of on a wake that
+        // would come at once for ever.
         self.actions
             .serve(
                 self.workspace,
@@ -528,7 +532,16 @@ impl ActionProvider for WorkspaceActionProvider {
                     scope,
                 },
             )
-            .map(|answer| answer.map(|_| ()))
+            .map(|answer| {
+                answer.map(|message| match message {
+                    RemoteActionMessage::ChangedResponse { result, .. } => result,
+                    other => Err(ActionCallError::Unavailable {
+                        reason: format!(
+                            "the workspace answered a wait for a change with {other:?}"
+                        ),
+                    }),
+                })
+            })
     }
 
     /// One document of the workspace, read as every reader of it is answered: the same read a

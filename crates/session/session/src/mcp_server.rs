@@ -2257,9 +2257,12 @@ impl ActionProvider for Host {
         &self,
         _caller: &Caller,
         scope: tilo_actions::remote::WatchScope,
-    ) -> Option<Pending<()>> {
+    ) -> Option<tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>>>
+    {
         match scope {
-            tilo_actions::remote::WatchScope::Records => self.session.changes.watching(),
+            tilo_actions::remote::WatchScope::Records => {
+                self.session.changes.watching().map(|landed| landed.map(Ok))
+            }
             tilo_actions::remote::WatchScope::Here => None,
         }
     }

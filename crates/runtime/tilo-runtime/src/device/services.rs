@@ -1003,7 +1003,8 @@ impl ActionProvider for RuntimeActionProvider {
         &self,
         caller: &Caller,
         scope: tilo_actions::remote::WatchScope,
-    ) -> Option<Pending<()>> {
+    ) -> Option<tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>>>
+    {
         if let Some(session) = &self.session {
             session.check(caller, &self.workspaces).ok()?;
             return session.provider.changed(session.admission.caller(), scope);

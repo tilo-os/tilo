@@ -242,7 +242,8 @@ impl ActionProvider for Current {
         &self,
         caller: &tilo_actions::remote::Caller,
         scope: tilo_actions::remote::WatchScope,
-    ) -> Option<Pending<()>> {
+    ) -> Option<tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>>>
+    {
         self.provider().changed(caller, scope)
     }
 

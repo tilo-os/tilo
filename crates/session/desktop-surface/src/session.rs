@@ -781,8 +781,10 @@ impl ActionProvider for DesktopSession {
         &self,
         caller: &Caller,
         scope: tilo_actions::remote::WatchScope,
-    ) -> Option<Pending<()>> {
-        self.records.changed(caller, scope)
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        self.records
+            .changed(caller, scope)
+            .map(|moved| moved.map(Ok))
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {

@@ -1019,8 +1019,11 @@ async fn typed_on_a_terminal_is_recorded() {
             std::time::Instant::now() < deadline,
             "never recorded: {session}"
         );
-        // A wait the session could not carry is never answered: it ends at the deadline, and
-        // the session is read once more then.
-        let _ = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), changed).await;
+        // A wait the session refuses says why at once; the deadline only backs that up.
+        if let Ok(Some(Err(refused))) =
+            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), changed).await
+        {
+            panic!("the session refused to follow the workspace's records: {refused}");
+        }
     }
 }

@@ -1084,8 +1084,14 @@ pub trait ActionProvider {
     ///
     /// Wakeups may be spurious: the waiter reads again and tolerates finding nothing new. A provider
     /// that answers `Some` must resolve it within a bounded interval even when nothing changes,
-    /// so a change it failed to signal costs latency rather than a stalled waiter.
-    fn changed(&self, caller: &Caller, scope: WatchScope) -> Option<Pending<()>> {
+    /// so a change it failed to signal costs latency rather than a stalled waiter. A wait the
+    /// provider finds it cannot follow after all (the device it asks refuses it, or cannot be
+    /// asked) resolves at once with why: the waiter is told, never left to its deadline.
+    fn changed(
+        &self,
+        caller: &Caller,
+        scope: WatchScope,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
         let _ = (caller, scope);
         None
     }

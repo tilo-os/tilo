@@ -250,6 +250,9 @@ to one resource and what is under it.
 - **presence** — who is in the workspace, whenever that changes: its people and the agents its
   roster names, as the desktop's people panel lists them. A host that keeps no roster reports
   no presence rather than an empty workspace.
+- **unwatched** — the host refused to tell when a `source` (`records` or `presence`) changes,
+  and `reason` says why. Said once; the watch then reads that source only when something else
+  wakes it, and its wait runs to `wait_ms` rather than to a change of it.
 
 An answer with no events still carries the cursor to ask again from. A caller that got its
 cursor from an earlier answer only ever sees each event once. A held watch listens for every

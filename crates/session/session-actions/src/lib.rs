@@ -676,9 +676,9 @@ impl SessionActions {
     /// lands in the workspace's records, or when who is in it moves.
     ///
     /// A device that cannot tell answers a refusal, and a session that cannot carry the
-    /// request answers one too: either way nothing wakes this wait, and its caller holds until
-    /// its own deadline rather than reading again on a timer.
-    pub fn wait_for_change(&self, scope: WatchScope) -> Pending<()> {
+    /// request refuses it too: either way the wait is answered at once with why, never left
+    /// for its caller's deadline to end.
+    pub fn wait_for_change(&self, scope: WatchScope) -> Pending<Answered<()>> {
         let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
         let message = RemoteActionMessage::ChangedRequest { correlation, scope };
         let (answer, answered) = pending();
@@ -699,13 +699,7 @@ impl SessionActions {
                 asked.answer.complete(Err(error));
             }
         });
-        let (changed, change) = pending();
-        answered.then(move |result| {
-            if result.is_some_and(|result| result.is_ok()) {
-                changed.complete(());
-            }
-        });
-        change
+        answered
     }
 
     /// Ask the device for `step` of an upload: its answer, once it comes, or why none came within
@@ -1129,7 +1123,7 @@ impl ActionProvider for SessionActions {
     /// that holds it: its records (`WatchScope::Records`) or who is in it (`WatchScope::Here`).
     /// `None` for the roster: the session reads who is here when asked rather than telling
     /// when it moved, so a watch of presence waits until its deadline instead.
-    fn changed(&self, _caller: &Caller, scope: WatchScope) -> Option<Pending<()>> {
+    fn changed(&self, _caller: &Caller, scope: WatchScope) -> Option<Pending<Answered<()>>> {
         match scope {
             WatchScope::Records => Some(self.wait_for_change(scope)),
             WatchScope::Here => None,
@@ -1498,6 +1492,8 @@ mod tests {
         /// The answers held for the pieces behind the first one, by correlation.
         held: Mutex<Vec<(u64, ContentPutAnswer)>>,
         holds: bool,
+        /// Why this device refuses to tell when its workspace changes, when it does.
+        refuses_changes: Mutex<Option<String>>,
     }
 
     const DEVICE: [u8; 32] = [7; 32];
@@ -1515,6 +1511,7 @@ mod tests {
                 answers_together: Mutex::default(),
                 held: Mutex::default(),
                 holds,
+                refuses_changes: Mutex::default(),
             })
         }
 
@@ -1655,6 +1652,14 @@ mod tests {
                 // A wait for what a watch follows: answered at once by a device that does not
                 // hold, and kept unanswered by one that does, as a change still to come.
                 RemoteActionMessage::ChangedRequest { correlation, .. } => {
+                    let refused = self.refuses_changes.lock_recover().clone();
+                    if let Some(reason) = refused {
+                        self.say(RemoteActionMessage::ChangedResponse {
+                            correlation,
+                            result: Err(ActionCallError::Unavailable { reason }),
+                        });
+                        return Ok(());
+                    }
                     if self.holds {
                         return Ok(());
                     }
@@ -1923,7 +1928,8 @@ mod tests {
 
     /// A watch of a device's workspace is woken by the device's own change signal, and never by
     /// looking again: the device holds the wait until a write lands there, and a device that
-    /// cannot tell leaves the wait to its caller's deadline instead of answering it early.
+    /// cannot tell refuses the wait, which answers it at once with why rather than leaving it to
+    /// its caller's deadline.
     #[test]
     fn a_watch_is_woken_by_the_devices_own_change_signal() {
         let invocation = InvocationId::new();
@@ -1954,8 +1960,29 @@ mod tests {
             .expect("the device follows its records");
         assert_eq!(
             changed.wait_timeout(Duration::from_secs(5)).ok().flatten(),
-            Some(()),
+            Some(Ok(())),
             "the change answers the wait"
+        );
+
+        // A device that cannot tell when its workspace changes refuses the wait, even one that
+        // holds the waits it can follow, and the refusal answers the wait at once.
+        let refusing = Device::new(invocation, true);
+        *refusing.refuses_changes.lock_recover() =
+            Some("this device carries no records of the workspace".into());
+        let actions = SessionActions::new(
+            Arc::clone(&refusing) as Arc<dyn RemoteSession>,
+            WorkspaceId::from_u128(1),
+            DEVICE,
+        );
+        let changed = actions
+            .changed(&caller(), WatchScope::Records)
+            .expect("the session asks the device");
+        assert_eq!(
+            changed.wait_timeout(Duration::from_secs(5)).ok().flatten(),
+            Some(Err(ActionCallError::Unavailable {
+                reason: "this device carries no records of the workspace".into()
+            })),
+            "the refusal answers the wait, with why"
         );
         assert!(
             actions.changed(&caller(), WatchScope::Here).is_none(),

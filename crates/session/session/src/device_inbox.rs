@@ -67,7 +67,8 @@ impl ActionProvider for Shared {
         &self,
         caller: &Caller,
         scope: tilo_actions::remote::WatchScope,
-    ) -> Option<tilo_actions::remote::Pending<()>> {
+    ) -> Option<tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>>>
+    {
         self.0.changed(caller, scope)
     }
 

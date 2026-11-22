@@ -203,6 +203,9 @@ pub struct McpServer<H> {
     /// Who waits for the next run event of this session: one of its invocations
     /// starting, being held for its person, or ending ([`McpServer::invocations_moved`]).
     pub(crate) invocation_waiters: std::sync::Mutex<Vec<tilo_actions::remote::Completer<()>>>,
+    /// The sources a watch of this session no longer follows because the host refused to tell
+    /// when they change, each with why ([`McpServer::agent_watch`]).
+    pub(crate) unfollowed: std::sync::Arc<std::sync::Mutex<Vec<agent::watch::Unfollowed>>>,
     /// Whether a call that names no wait is held until its action has ended, however long
     /// that takes ([`McpServer::for_turn`]). Any other server answers such a call `pending`
     /// after [`DEFAULT_WAIT_MS`].
@@ -684,6 +687,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             showed: std::sync::Mutex::default(),
             invocations: std::sync::Mutex::default(),
             invocation_waiters: std::sync::Mutex::default(),
+            unfollowed: std::sync::Arc::default(),
             until_ended: false,
         }
     }

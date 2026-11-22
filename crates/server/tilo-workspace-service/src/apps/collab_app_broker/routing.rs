@@ -802,11 +802,12 @@ impl AppBrokerState {
         &self,
         caller: &tilo_actions::remote::Caller,
         scope: tilo_actions::remote::WatchScope,
-    ) -> Option<tilo_actions::remote::Pending<()>> {
+    ) -> Option<tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>>>
+    {
         self.here(caller)?;
         match scope {
             tilo_actions::remote::WatchScope::Records => None,
-            tilo_actions::remote::WatchScope::Here => Some(self.policy_changed()),
+            tilo_actions::remote::WatchScope::Here => Some(self.policy_changed().map(Ok)),
         }
     }
     /// The name a person reads for `agent`: the one the workspace's record of its agents gives

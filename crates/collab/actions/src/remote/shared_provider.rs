@@ -45,7 +45,11 @@ impl<H: ActionProvider + ?Sized> ActionProvider for std::sync::Arc<H> {
         (**self).session_state_changed(caller)
     }
 
-    fn changed(&self, caller: &Caller, scope: super::WatchScope) -> Option<Pending<()>> {
+    fn changed(
+        &self,
+        caller: &Caller,
+        scope: super::WatchScope,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
         (**self).changed(caller, scope)
     }
 
