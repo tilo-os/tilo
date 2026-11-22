@@ -663,8 +663,17 @@ async fn a_paused_event_fires_nothing_and_a_refused_run_says_why() {
     let events = WorkspaceEvents::start_with(workspaces.clone(), assistant.clone());
     let theirs = as_their_agent(&cert, &workspace);
 
-    // Paused before its moment, it never fires, also not once it goes on.
-    let quiet = set_up_saying(&events, &workspace, &theirs, "Quiet", in_a_moment(300).0).await;
+    // Paused before its moment, it never fires, also not once it goes on. It
+    // is paused an hour ahead of its moment, which is then brought near: a
+    // busy machine taking its time to pause it cannot let it fire first.
+    let quiet = set_up_saying(
+        &events,
+        &workspace,
+        &theirs,
+        "Quiet",
+        in_a_moment(3_600_000).0,
+    )
+    .await;
     let named = json!({"event": quiet.id});
     take_as_turn(
         &events,
@@ -675,6 +684,17 @@ async fn a_paused_event_fires_nothing_and_a_refused_run_says_why() {
     )
     .await
     .unwrap();
+    let moved = event(
+        take_as_turn(
+            &events,
+            &workspace,
+            &theirs,
+            workspace_events::CHANGE,
+            json!({"event": quiet.id, "when": in_a_moment(300).0}),
+        )
+        .await,
+    );
+    assert!(!moved.on, "a paused event moved stays paused");
     tokio::time::sleep(Duration::from_millis(900)).await;
     assert!(assistant.taken().is_empty(), "{:?}", assistant.taken());
     let resumed = event(
