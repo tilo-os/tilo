@@ -768,7 +768,6 @@ impl Apps {
             chooser: resources.chooser,
             opens: hosted.opens,
             locale: Self::person_locale(),
-            device: crate::fs_authority::device_key().map(hex::encode),
         });
     }
 
@@ -2069,7 +2068,6 @@ impl Apps {
                 chooser: resources.chooser,
                 opens: tilo_app_launch::Opens::default(),
                 locale: Self::person_locale(),
-                device: crate::fs_authority::device_key().map(hex::encode),
             })
             .map_err(|error| ApiError::Failed(error.to_string()))?;
         Ok(())

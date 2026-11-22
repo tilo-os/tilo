@@ -1691,21 +1691,6 @@ impl ResourceStore {
         self.inner.listings.borrow_mut().clear();
     }
 
-    /// The workspace's own state as code reads it (`workspace.leases`), asked of the device that
-    /// holds the workspace now ([`Command::Leases`]): never kept here, since the device that
-    /// holds a lease can change at any moment.
-    ///
-    /// # Errors
-    /// Why the workspace's host could not be asked, or answered something else.
-    pub fn workspace_state(&self) -> Result<Json, String> {
-        match self.inner.port.command(Command::Leases)? {
-            Reply::Content(Some(state)) => Ok(state),
-            other => Err(format!(
-                "the workspace's host answered its leases with {other:?}"
-            )),
-        }
-    }
-
     fn command(&self, command: Command) -> Result<Reply, StoreError> {
         if command.writes() {
             self.forget_versions_of(&command);

@@ -99,10 +99,6 @@ pub struct Spec {
     /// instance that shows nothing draws no window, offers no window verb, and runs the app's
     /// actions on its document alone.
     pub shows: Shows,
-    /// The device the instance runs on, by its public key in lowercase hex
-    /// (`InstanceRequest::device`): what signs for the person at its window, which an action's
-    /// `invoker.device()` reads.
-    pub device: Option<String>,
 }
 
 impl Spec {
@@ -124,7 +120,6 @@ impl Spec {
             language: String::new(),
             access: None,
             shows: Shows::View,
-            device: None,
         }
     }
 
@@ -1003,7 +998,7 @@ impl Hosted {
                 app: spec.app.clone(),
                 me: spec.person.as_str().into(),
                 mode: Mode::Live,
-                device: spec.device.clone(),
+                device: None,
                 store: store.clone(),
                 root: tilolang_tilo::host::RootView::default(),
                 sink: None,

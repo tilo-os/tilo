@@ -674,3 +674,8 @@ reason = "length-prefixed JSON, by name, between a mail origin and the connector
 file = "crates/platform/tilolang-mail/src/wire.rs"
 enum = "FromConnector"
 reason = "the connector's half of the same connection: length-prefixed JSON, by name, never kept. `Asks` named the accounts waiting on the person's yes for Mail's Ask bar, which no longer asks"
+
+[[break]]
+file = "crates/collab/resource-store/src/wire.rs"
+enum = "Command"
+reason = "a request an app instance sends the workspace service over its port and gets answered at once; no byte of it is kept. `Leases` was its last variant, so nothing after it moves, and it read the workspace's leases for a requirement the design no longer has"

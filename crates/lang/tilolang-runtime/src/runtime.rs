@@ -1081,39 +1081,6 @@ impl Runtime {
         self.core.earlier.borrow().contains_key(app)
     }
 
-    /// The device this runtime runs on, by its public key in lowercase hex: what
-    /// `invoker.device()` reads for an invocation made here, and for a requirement read where
-    /// an action is presented. An invocation the host admitted from another device names that
-    /// device itself ([`crate::exec::ExecCtx::device`]).
-    pub fn set_device(&self, device: &str) {
-        *self.core.device.borrow_mut() = Some(Rc::from(device));
-    }
-
-    /// Runs `invoke` as invocations signed by `device` (its public key in lowercase hex), when
-    /// the host admitted them from another device than this runtime's: `invoker.device()` reads
-    /// it while they run, and while the host decides their requirement before they do. A run
-    /// resumed later (a person's answer, a settled effect) runs on the device that resumes it,
-    /// and reads that one.
-    pub fn invoked_from<R>(&self, device: Option<&str>, invoke: impl FnOnce() -> R) -> R {
-        let Some(device) = device else {
-            return invoke();
-        };
-        let before = self.core.invoked_from.replace(Some(Rc::from(device)));
-        let answered = invoke();
-        *self.core.invoked_from.borrow_mut() = before;
-        answered
-    }
-
-    /// Where the workspace's own state (`workspace.leases`, [`tilolang::workspace`]) is read
-    /// from: `read` answers the workspace document as it stands, as the JSON of the root's
-    /// fields (`{"leases": {"ask/1": {"device": "<hex key>"}}}`). It is asked at every read of
-    /// a field of it, never kept between them: the device that holds a lease can change at any
-    /// moment, and an action's requirement must see the holder of now. A view that read it is
-    /// read again when the reading moves, as a view of any app's reading is.
-    pub fn set_workspace_reading(&self, read: impl Fn() -> Result<Json, String> + 'static) {
-        *self.core.workspace_reading.borrow_mut() = Some(Rc::new(read));
-    }
-
     /// Where `web.get` and `web.post` reach: the network of the device whose code makes the
     /// request, which runs each request once, and whose journal entry a replay answers from.
     pub fn set_web(&self, transport: impl crate::web::WebTransport + 'static) {

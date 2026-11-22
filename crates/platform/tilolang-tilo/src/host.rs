@@ -751,16 +751,12 @@ impl HostInner {
             .iter()
             .find(|action| action.id == request.action_id)
             .ok_or_else(|| format!("no action {}", request.action_id))?;
-        // The device that signed for the caller is the one its requirement sees, here and as
-        // the action runs.
-        let device = request.caller.and_then(|caller| caller.device.as_deref());
         // A requirement is the app's, and the app is what can read it: an action published
         // while its rule held, or one an agent addresses by name, is refused here, before it
         // runs, with its rule's reason.
         if let Some(target) = request.resource
-            && let Some(tilo_actions::Availability::Unavailable { reason, .. }) = self
-                .runtime
-                .invoked_from(device, || self.availability(target, request.action_id))
+            && let Some(tilo_actions::Availability::Unavailable { reason, .. }) =
+                self.availability(target, request.action_id)
         {
             return Err(reason);
         }
@@ -775,19 +771,17 @@ impl HostInner {
         let recorded = match self.planned_args(&package, action, request)? {
             Some((args, recorded)) => {
                 self.store.take_made();
-                let outcome = self
-                    .runtime
-                    .invoked_from(device, || match request.from {
-                        Some(from) => self.runtime.invoke_action_from(
-                            &invoker,
-                            (request.action_id, args.clone()),
-                            from,
-                        ),
-                        None => self
-                            .runtime
-                            .invoke_action(&invoker, (request.action_id, args.clone())),
-                    })
-                    .map_err(|error| error.to_string())?;
+                let outcome = match request.from {
+                    Some(from) => self.runtime.invoke_action_from(
+                        &invoker,
+                        (request.action_id, args.clone()),
+                        from,
+                    ),
+                    None => self
+                        .runtime
+                        .invoke_action(&invoker, (request.action_id, args.clone())),
+                }
+                .map_err(|error| error.to_string())?;
                 self.returned_by(request.action_id, &outcome);
                 // An action that stopped at a step a person must answer first answers what it
                 // made before it stopped of the type it returns: the program goes on with it.
@@ -931,9 +925,8 @@ impl Host {
         Self::open(ResourceStore::in_memory(), viewer, None, access)
     }
 
-    /// A host for `viewer` over `store`, on the device `device` (its public key in lowercase
-    /// hex): the device that signs what this host's invocations do, which an action's
-    /// `invoker.device()` reads. A host on no device traps where code reads it.
+    /// A host for `viewer` over `store`, on the device `device`: the device that carries out the
+    /// outside effects this host queues. A host without one is a device of its own.
     ///
     /// # Errors
     /// The runtime cannot be set up, which is a bug.
@@ -943,6 +936,7 @@ impl Host {
         device: Option<&str>,
         access: impl Fn() -> Option<MemberAccess> + 'static,
     ) -> Result<Self, HostError> {
+        let _ = device;
         // The host's own record types (`Invocation`) are stored like any other resource.
         let host_meta = tilolang::host_meta();
         host_meta.register_schemas();
@@ -953,13 +947,6 @@ impl Host {
         let authority = TiloAuthority::new(viewer.clone(), access);
         let runtime = Runtime::new(store.clone(), authority.clone())?;
         runtime.set_clock(system_time);
-        if let Some(device) = device {
-            runtime.set_device(device);
-        }
-        // `workspace.leases` is read from the workspace's host at each read, through the store's
-        // connection to it.
-        let state = store.clone();
-        runtime.set_workspace_reading(move || state.workspace_state());
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
         let triggers = crate::triggers::Schedule::new(store.watch());
         let asking = crate::asks::Asking::new(store.watch());
