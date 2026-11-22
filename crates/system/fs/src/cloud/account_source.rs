@@ -3,10 +3,9 @@
 //! [`SessionAccounts`] asks the session ([`accounts::sign_ins`]): the accounts are the
 //! workspaces' published accounts records, and an account that signs in with a password (`WebDAV`,
 //! Nextcloud) signs in with the vault entry it names, released by the session in memory. No
-//! account's password is in a file on this device. An account its provider's page signed in
-//! (Google Drive, `OneDrive`, Dropbox, iCloud Drive) keeps that grant on this device, and its
-//! short-lived access token comes through the handoff store, which Settings' credential helper
-//! fills.
+//! account's secret is in a file on this device. An account that signs in by its provider's page
+//! (Google Drive, `OneDrive`, Dropbox, iCloud Drive) has no sign-in the workspace's vault hands
+//! out yet: it asks its person to sign in again.
 
 use std::io;
 use std::path::PathBuf;
@@ -15,9 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use accounts::sign_ins::{self, Answer, Ask, Held};
-use accounts::{
-    Account, AccountId, AccountStore, CredentialRefresher, HandoffCredentialSource, HandoffStore,
-};
+use accounts::{Account, AccountId, AccountStore};
 use cloud_source::{Credential, CredentialSource};
 use tilo_lock::MutexRecover as _;
 use zeroize::Zeroizing;
@@ -55,26 +52,16 @@ struct Inner {
     socket: PathBuf,
     /// The last accounts the session told, and their revision.
     latest: Mutex<Option<(String, Vec<Held>)>>,
-    /// Where an account its provider's page signed in finds its access token.
-    handoff: Option<HandoffStore>,
-    refresher: Arc<dyn CredentialRefresher>,
 }
 
 impl SessionAccounts {
-    /// The session's accounts on `socket`; `handoff` and `refresher` give the access tokens of
-    /// the accounts their provider's page signed in.
+    /// The session's accounts on `socket`.
     #[must_use]
-    pub fn new(
-        socket: PathBuf,
-        handoff: Option<HandoffStore>,
-        refresher: Arc<dyn CredentialRefresher>,
-    ) -> Self {
+    pub fn new(socket: PathBuf) -> Self {
         Self {
             inner: Arc::new(Inner {
                 socket,
                 latest: Mutex::new(None),
-                handoff,
-                refresher,
             }),
         }
     }
@@ -163,12 +150,6 @@ impl AccountSource for SessionAccounts {
 
     fn credential(&self, account: &Account) -> Arc<dyn CredentialSource> {
         if sign_ins::signs_in_with_entry(account) {
-            // What an older version handed off for it in a file goes.
-            if let Some(handoff) = &self.inner.handoff
-                && let Err(error) = handoff.withdraw(&account.id)
-            {
-                tracing::warn!(%error, "a file account's old handed-off password stays on this device");
-            }
             return Arc::new(EntrySignIn {
                 inner: Arc::clone(&self.inner),
                 account: account.id.clone(),
@@ -183,14 +164,7 @@ impl AccountSource for SessionAccounts {
                 rejected: Mutex::new(None),
             });
         }
-        match &self.inner.handoff {
-            Some(handoff) => Arc::new(HandoffCredentialSource::new(
-                account.id.clone(),
-                handoff.clone(),
-                Arc::clone(&self.inner.refresher),
-            )),
-            None => Arc::new(NoCredential),
-        }
+        Arc::new(NoCredential)
     }
 }
 

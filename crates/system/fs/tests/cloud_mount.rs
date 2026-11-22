@@ -864,31 +864,12 @@ fn publish(root: &Path, id: &str, password: &str) {
     session(root).keep(id, password);
 }
 
-struct Published(accounts::HandoffStore);
-
-impl accounts::CredentialRefresher for Published {
-    fn refresh(
-        &self,
-        id: &accounts::AccountId,
-        _force: bool,
-    ) -> Result<(), accounts::RefreshError> {
-        match self.0.read(id) {
-            Ok(Some(_)) => Ok(()),
-            _ => Err(accounts::RefreshError::NeedsAuthentication),
-        }
-    }
-}
-
 fn service_config(root: &Path, home: &Path) -> ServiceConfig {
     ServiceConfig {
         config_root: Some(root.to_path_buf()),
         mounts_root: home.join("Remote"),
         state_root: home.join("state"),
-        accounts: Arc::new(fs::cloud::SessionAccounts::new(
-            session(root).socket(),
-            Some(accounts::HandoffStore::open_in(root)),
-            Arc::new(Published(accounts::HandoffStore::open_in(root))),
-        )),
+        accounts: Arc::new(fs::cloud::SessionAccounts::new(session(root).socket())),
         control_socket: None,
         file_socket: None,
     }

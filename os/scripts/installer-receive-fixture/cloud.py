@@ -27,9 +27,8 @@ def user_environment(account):
     if any(os.environ.get(name) != value for name, value in expected.items()):
         raise RuntimeError('cloud consumer paths differ from the receiving account')
     if (not os.environ.get('DBUS_SESSION_BUS_ADDRESS')
-            or any(name in os.environ for name in ('TILO_SECRETS_DIR', 'TILO_IDENTITY_FILE_SECRETS',
-                                                   'TILO_ACCOUNT_CREDENTIAL_HELPER'))):
-        raise RuntimeError('actual session keyring and default credential helper required')
+            or any(name in os.environ for name in ('TILO_SECRETS_DIR', 'TILO_IDENTITY_FILE_SECRETS'))):
+        raise RuntimeError('actual session keyring required')
     info = home.stat(follow_symlinks=False)
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != current.pw_uid or info.st_mode & 0o022:
         raise RuntimeError('receiving Home is not owned by the actual account')

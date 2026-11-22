@@ -157,7 +157,6 @@ require_line /usr/lib/systemd/system/tilo-store-volume.service "RuntimeDirectory
 require_line /usr/lib/systemd/system/tilo-store-loop.service "ExecStart=/usr/libexec/tilo-store-volume attach"
 require_line /usr/lib/systemd/system/fs-identity.path "PathChanged=/var/lib/tilo/device/cert.bin"
 require_line /usr/lib/systemd/system/fs-identity.path "Unit=fs.service"
-require_line /usr/lib/systemd/user/tilo-fs-cloud.service "Environment=TILO_ACCOUNT_CREDENTIAL_HELPER=/usr/libexec/tilo-account-credential"
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "Requires=graphical-session-pre.target graphical-session.target"
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "PropagatesStopTo=graphical-session.target graphical-session-pre.target"
 require_text /usr/share/tilo/selinux/tilo-base.cil "(allow init_t tilo_fs_t (process2 (nnp_transition nosuid_transition)))"

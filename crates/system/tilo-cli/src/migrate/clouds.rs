@@ -288,10 +288,7 @@ pub(super) fn open_with(
 fn open(place: &Place, source: &Source) -> Result<Arc<dyn CloudSource>> {
     let account = account(place, source)?;
     let root = config_root()?;
-    let store = credentials(&root);
-    let handoff = store.handoff().map_err(|error| anyhow!("{error}"))?;
-    let credential =
-        accounts::HandoffCredentialSource::new(account.id.clone(), handoff, Arc::new(store));
+    let credential = account_credentials::DriveSignIn::new(credentials(&root), account.id.clone());
     open_with(&account, Arc::new(credential))
 }
 

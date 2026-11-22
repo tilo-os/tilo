@@ -1,6 +1,6 @@
 //! The credential store: the one place that turns a sealed long-lived grant into a
-//! short-lived credential, for the storage daemon (an access token or session headers,
-//! through the handoff store) and for Mail (an access token for `XOAUTH2`). A `WebDAV` or
+//! short-lived credential, for a drive this process reads (an access token or session
+//! headers, made in memory: [`DriveSignIn`]) and for Mail (an access token for `XOAUTH2`). A `WebDAV` or
 //! Nextcloud password is no grant of this device's: it is the workspace's vault entry's.
 
 use std::collections::BTreeMap;
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use accounts::{Account, AccountCredentials, AccountId, HandoffCredential, HandoffStore, Secret};
+use accounts::{Account, AccountCredentials, AccountId, Secret};
 use serde::{Deserialize, Serialize};
 use tilo_oauth::client::{Authorization, OAuthClient};
 use tilo_oauth::device::DeviceAuthorization;
@@ -697,13 +697,6 @@ impl CredentialStore {
         }
     }
 
-    /// The handoff store the daemon reads; [`CredentialError::Storage`] when no config
-    /// directory resolves.
-    pub fn handoff(&self) -> Result<HandoffStore, CredentialError> {
-        HandoffStore::open_person(self.config_root.as_deref())
-            .ok_or_else(|| CredentialError::Storage("no config directory".into()))
-    }
-
     fn reporter(&self, id: &AccountId) -> accounts::AccountSyncReporter {
         match &self.config_root {
             Some(root) => accounts::AccountSyncReporter::in_root(id.clone(), root.clone()),
@@ -1113,23 +1106,41 @@ impl CredentialStore {
         Ok(tokens)
     }
 
+    /// Say that `id` signed in again: its sync health is no longer "sign in again".
+    ///
+    /// # Errors
+    /// Its sync status could not be written.
     pub fn signed_in(&self, id: &AccountId) -> Result<(), CredentialError> {
-        let _ = self.reporter(id).signed_in();
-        self.publish(id, false)
+        self.reporter(id)
+            .signed_in()
+            .map_err(|error| CredentialError::Storage(error.to_string()))
     }
 
-    pub fn publish(&self, id: &AccountId, force: bool) -> Result<(), CredentialError> {
-        let result = self.publish_inner(id, force);
-        if result == Err(CredentialError::NeedsAuthentication) {
+    /// What `id`'s drive signs in with now, made in memory from the grant this device keeps: an
+    /// `OAuth` account's current access token, renewed when it is due (or when `force`, after
+    /// the drive refused it), or an iCloud account's session headers. Nothing of it is written
+    /// anywhere but the renewed grant, back into the vault. A grant the provider no longer
+    /// takes moves the account to "sign in again".
+    ///
+    /// # Errors
+    /// The account is gone, disabled, signs in with no grant here, or its grant was not renewed.
+    pub fn file_credential(
+        &self,
+        id: &AccountId,
+        force: bool,
+    ) -> Result<cloud_source::Credential, CredentialError> {
+        let result = self.made_file_credential(id, force);
+        if result.as_ref().err() == Some(&CredentialError::NeedsAuthentication) {
             let _ = self.reporter(id).needs_authentication();
-            if let Ok(handoff) = self.handoff() {
-                let _ = handoff.withdraw(id);
-            }
         }
         result
     }
 
-    fn publish_inner(&self, id: &AccountId, force: bool) -> Result<(), CredentialError> {
+    fn made_file_credential(
+        &self,
+        id: &AccountId,
+        force: bool,
+    ) -> Result<cloud_source::Credential, CredentialError> {
         let account = self
             .store()
             .get(id)
@@ -1140,12 +1151,8 @@ impl CredentialStore {
         }
         if matches!(account.type_id.as_str(), WEBDAV_TYPE | NEXTCLOUD_TYPE) {
             // Its password is the workspace's vault entry's, which the session releases to the
-            // cloud service in memory: nothing of it is handed off in a file, and what an older
-            // version handed off goes.
-            return self
-                .handoff()?
-                .withdraw(id)
-                .map_err(CredentialError::Storage);
+            // cloud service in memory: no grant of this device's signs it in.
+            return Err(CredentialError::NeedsAuthentication);
         }
         let mut credentials = self.credentials()?;
         let secret = credentials
@@ -1153,9 +1160,9 @@ impl CredentialStore {
             .ok_or(CredentialError::NeedsAuthentication)?;
         let credential = if let Some(cloud) = OAuthCloud::from_type_id(account.type_id.as_str()) {
             let tokens = self.fresh_oauth_tokens(&mut credentials, id, cloud.oauth_use(), force)?;
-            HandoffCredential::Bearer {
+            cloud_source::Credential::Bearer {
                 token: Zeroizing::new(tokens.access_token.clone()),
-                expires_unix: tokens.expires_at(),
+                expires: expires_at(tokens.expires_at()),
             }
         } else if account.type_id.as_str() == ICLOUD_DRIVE_TYPE {
             let Some(Grant::Icloud {
@@ -1181,24 +1188,19 @@ impl CredentialStore {
                 &icloud_secret_with_provenance(&apple_id, &renewed, copied, copy_origin),
             );
             credentials.try_save().map_err(CredentialError::Storage)?;
-            HandoffCredential::Session {
+            cloud_source::Credential::Session {
                 headers: headers.headers,
-                expires_unix: headers.expires_unix,
+                expires: expires_at(headers.expires_unix),
             }
         } else {
             return Err(CredentialError::Account(
                 "this account type is not a file provider".into(),
             ));
         };
-        self.handoff()?
-            .publish(id, &credential)
-            .map_err(CredentialError::Storage)
+        Ok(credential)
     }
 
     pub fn revoke(&self, account: &Account, secret: &Secret) {
-        if let Ok(handoff) = self.handoff() {
-            let _ = handoff.withdraw(&account.id);
-        }
         if is_copied_secret(secret) || (has_grant_tag(secret) && grant_of(secret).is_none()) {
             return;
         }
@@ -1249,12 +1251,46 @@ impl CredentialStore {
     }
 }
 
-impl accounts::CredentialRefresher for CredentialStore {
-    fn refresh(&self, id: &AccountId, force: bool) -> Result<(), accounts::RefreshError> {
-        self.publish(id, force).map_err(|error| match error {
-            CredentialError::NeedsAuthentication => accounts::RefreshError::NeedsAuthentication,
-            CredentialError::Offline => accounts::RefreshError::Offline,
-            _ => accounts::RefreshError::Failed,
-        })
+/// A moment `unix` seconds after the epoch.
+fn expires_at(unix: Option<u64>) -> Option<std::time::SystemTime> {
+    unix.and_then(|secs| std::time::UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
+}
+
+/// What a drive of `account` signs in with, made by the credential store in this process each
+/// time the drive asks ([`CredentialStore::file_credential`]): renewed when the drive refused
+/// the last one.
+pub struct DriveSignIn {
+    store: CredentialStore,
+    account: AccountId,
+    rejected: std::sync::atomic::AtomicBool,
+}
+
+impl DriveSignIn {
+    #[must_use]
+    pub const fn new(store: CredentialStore, account: AccountId) -> Self {
+        Self {
+            store,
+            account,
+            rejected: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+impl cloud_source::CredentialSource for DriveSignIn {
+    fn credential(&self) -> cloud_source::Result<cloud_source::Credential> {
+        let force = self
+            .rejected
+            .swap(false, std::sync::atomic::Ordering::SeqCst);
+        self.store
+            .file_credential(&self.account, force)
+            .map_err(|error| match error {
+                CredentialError::Offline => cloud_source::Error::Offline,
+                _ => cloud_source::Error::Unauthorized,
+            })
+    }
+
+    fn rejected(&self) {
+        self.rejected
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }

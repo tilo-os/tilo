@@ -198,8 +198,6 @@ fn migrated_dav_grant_default_helper_promotes_system_ownership_and_mounts_real_f
     let local_key = accounts::vault_dir_in(&target).join("vault.key");
     assert!(local_key.is_file());
     let cipher_before = std::fs::read(accounts::vault_dir_in(&target).join("vault.enc")).unwrap();
-    let handoff = accounts::HandoffStore::open().unwrap();
-    assert!(handoff.read(&id).unwrap().is_none());
     let mount_root = home.join("Remote");
     let state_root = home.join("cloud-state");
     let mount = mount_root.join("Work files");
@@ -218,11 +216,7 @@ fn migrated_dav_grant_default_helper_promotes_system_ownership_and_mounts_real_f
             state_root: state_root.clone(),
             control_socket: None,
             file_socket: None,
-            accounts: Arc::new(fs::cloud::SessionAccounts::new(
-                session.socket(),
-                Some(handoff.clone()),
-                Arc::new(accounts::CommandRefresher::new(None).with_program(HELPER)),
-            )),
+            accounts: Arc::new(fs::cloud::SessionAccounts::new(session.socket())),
         },
         Box::new(ProcessLauncher {
             executable: FS.into(),
@@ -245,8 +239,6 @@ fn migrated_dav_grant_default_helper_promotes_system_ownership_and_mounts_real_f
         std::fs::read(accounts::vault_dir_in(&target).join("vault.enc")).unwrap(),
         cipher_before
     );
-    // The password reached the mount in memory: no file on this device hands it off.
-    assert!(handoff.read(&id).unwrap().is_none());
     assert_eq!(
         std::fs::read(mount.join("Documents/hello.txt")).unwrap(),
         b"actual receiving read"

@@ -24,7 +24,6 @@ Type=simple
 # ConfigurationDirectory=. No ExecStartPre: under systemd 259 a user unit
 # with PrivateIPC=yes cannot start a second sandboxed process (its IPC
 # namespace setup fails with EPERM and the next exec exits 226/NAMESPACE).
-Environment=TILO_ACCOUNT_CREDENTIAL_HELPER=/usr/libexec/tilo-account-credential
 # Two control sockets, each the user's alone and carrying no credential.
 # Settings' sandbox is granted tilo-fs-cloud/, whose account socket lists the
 # mounts and syncs, pauses and resumes them, and refuses file requests.

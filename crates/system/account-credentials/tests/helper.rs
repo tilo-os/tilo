@@ -1,6 +1,5 @@
-//! The daemon's side of the handoff through the real process boundary: a
-//! `HandoffCredentialSource` whose refresher runs the
-//! `tilo-account-credential` binary against an explicit config root.
+//! The `tilo-account-credential` binary through the real process boundary: what it says of the
+//! protected-grant protocol it speaks.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -9,153 +8,10 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
-use std::path::Path;
-use std::sync::Arc;
 use tilo_test_env::SpawnUnderEnvLock as _;
-
-use accounts::{
-    Account, AccountId, AccountStore, CommandRefresher, HandoffCredentialSource, HandoffStore,
-    Secret, SecretVault,
-};
-use cloud_source::CredentialSource as _;
 
 fn helper() -> std::path::PathBuf {
     tilo_test_env::package_binary!("tilo-account-credential")
-}
-
-tilo_test_env::scenario! {
-    /// The `tilo-account-credential` binary as the daemon's refresher.
-    fn the_credential_helper_hands_the_daemon_access_tokens_only;
-
-    phase approved_bearer_retains_provider_expiry;
-    {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("tilo");
-        let id = AccountId::from("music.spotify.streaming");
-        let tokens = tilo_oauth::TokenSet {
-            access_token: "fixture-approved-access".into(),
-            refresh_token: "fixture-refresh-stays-in-vault".into(),
-            expires_in: 3600,
-            obtained_at: tilo_clock::unix_now(),
-            scope: Some("streaming".into()),
-        };
-        save(
-            &root,
-            &id,
-            "spotify",
-            Some(&account_credentials::oauth_secret(&tokens)),
-        );
-        let (bearer, expiry) = account_credentials::CredentialStore::for_root(Some(root))
-            .oauth_access_token_with_expiry(
-                &id,
-                account_credentials::OAuthUse::new(
-                    account_credentials::OAuthIssuer::Spotify,
-                    account_credentials::Capability::MusicStreaming,
-                ),
-                false,
-            )
-            .unwrap();
-        assert_eq!(bearer.as_str(), "fixture-approved-access");
-        assert_eq!(expiry, tokens.expires_at());
-    }
-
-    phase helper_publishes_a_valid_access_token_but_never_the_refresh_token;
-    {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("tilo");
-        let id = AccountId::from("drive-1");
-        let tokens = tilo_oauth::TokenSet {
-            access_token: "still-valid-access".into(),
-            refresh_token: "long-lived-refresh".into(),
-            expires_in: 3600,
-            obtained_at: tilo_clock::unix_now(),
-            scope: None,
-        };
-        save(
-            &root,
-            &id,
-            account_credentials::providers::GOOGLE_DRIVE_TYPE,
-            Some(&account_credentials::oauth_secret(&tokens)),
-        );
-        let credential = source(&root, &id).credential().unwrap();
-        match credential {
-            cloud_source::Credential::Bearer { token, expires } => {
-                assert_eq!(token.as_str(), "still-valid-access");
-                assert!(expires.is_some());
-            }
-            other => panic!("unexpected {other:?}"),
-        }
-        // The helper's own output carries no secret either.
-        let output = std::process::Command::new(helper())
-            .args(["refresh", id.as_str(), "--config-root"])
-            .arg(&root)
-            .output_locked()
-            .unwrap();
-        assert!(output.status.success());
-        let streams = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(!streams.contains("long-lived-refresh") && !streams.contains("still-valid-access"));
-    }
-
-    phase helper_exit_codes_reach_the_daemon_as_typed_errors;
-    {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("tilo");
-        // An OAuth account without a grant needs sign-in.
-        let unsigned = AccountId::from("drive-unsigned");
-        save(
-            &root,
-            &unsigned,
-            account_credentials::providers::DROPBOX_TYPE,
-            None,
-        );
-        assert!(matches!(
-            source(&root, &unsigned).credential(),
-            Err(cloud_source::Error::Unauthorized)
-        ));
-        // A WebDAV account's password is the workspace's vault entry's: the helper hands off
-        // nothing for it, even where this device still keeps one.
-        let dav = AccountId::from("dav-1");
-        save(
-            &root,
-            &dav,
-            account_credentials::providers::WEBDAV_TYPE,
-            Some(&Secret::password("dav-password")),
-        );
-        assert!(source(&root, &dav).credential().is_err());
-        assert!(HandoffStore::open_in(&root).read(&dav).unwrap().is_none());
-        let status = std::process::Command::new(helper())
-            .args(["refresh", "missing", "--config-root"])
-            .arg(&root)
-            .status_locked()
-            .unwrap();
-        assert_eq!(status.code(), Some(accounts::handoff::exit::FAILED));
-    }
-}
-
-fn save(root: &Path, id: &AccountId, type_id: &str, secret: Option<&Secret>) {
-    if let Some(secret) = secret {
-        let mut vault = SecretVault::open_in(root);
-        vault.put(id, secret);
-        vault.try_save().unwrap();
-    }
-    let mut store = AccountStore::load_in(root);
-    let mut account = Account::new(id.clone(), type_id);
-    account.config = serde_json::json!({"username": "ada", "base_url": "https://dav.example"});
-    store.upsert(account);
-    store.save_in(root).unwrap();
-}
-
-fn source(root: &Path, id: &AccountId) -> HandoffCredentialSource {
-    HandoffCredentialSource::new(
-        id.clone(),
-        HandoffStore::open_in(root),
-        Arc::new(CommandRefresher::new(Some(root.to_path_buf())).with_program(helper())),
-    )
 }
 
 #[test]

@@ -1,13 +1,14 @@
-//! Ownership end to end against the fake authorization server: sign-in,
-//! publication, refresh when due and on rejection, a revoked refresh token
-//! becoming "sign in again", and the daemon only ever seeing access tokens.
+//! Ownership end to end against the fake authorization server: sign-in, a
+//! drive's sign-in made in memory, refresh when due and on rejection, a revoked
+//! refresh token becoming "sign in again", and a drive only ever seeing access
+//! tokens.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use accounts::{
-    Account, AccountId, AccountStore, AccountSyncHealth, AccountSyncStatusStore, HandoffCredential,
-    HandoffCredentialSource, HandoffStore, Secret, SecretVault,
+    Account, AccountId, AccountStore, AccountSyncHealth, AccountSyncStatusStore, Secret,
+    SecretVault,
 };
 use cloud_source::CredentialSource as _;
 use tilo_oauth::fake::{FakeAuthorizationServer, browse};
@@ -17,7 +18,9 @@ use crate::icloud::{
     ICloudAuth, ICloudAuthError, ICloudChallenge, ICloudHeaders, ICloudSessionState, ICloudSignIn,
 };
 use crate::providers::{GOOGLE_DRIVE_TYPE, ICLOUD_DRIVE_TYPE, WEBDAV_TYPE};
-use crate::{CredentialError, CredentialStore, OAuthCloud, icloud_secret, oauth_secret};
+use crate::{
+    CredentialError, CredentialStore, DriveSignIn, OAuthCloud, icloud_secret, oauth_secret,
+};
 
 fn save(root: &Path, id: &AccountId, type_id: &str, secret: &Secret, config: serde_json::Value) {
     let mut vault = SecretVault::open_in(root);
@@ -88,10 +91,22 @@ fn signed_in_drive(lifetime: u64) -> (Fixture, tilo_oauth::TokenSet) {
     )
 }
 
-fn handed_off_token(root: &Path, id: &AccountId) -> String {
-    match HandoffStore::open_in(root).read(id).unwrap() {
-        Some(HandoffCredential::Bearer { token, .. }) => token.to_string(),
-        other => panic!("expected a bearer handoff, got {other:?}"),
+/// The access token a drive of `id` signs in with now.
+fn drive_token(credential_store: &CredentialStore, id: &AccountId) -> String {
+    match credential_store.file_credential(id, false).unwrap() {
+        cloud_source::Credential::Bearer { token, .. } => token.to_string(),
+        other => panic!("expected a bearer token, got {other:?}"),
+    }
+}
+
+/// The session headers a drive of `id` signs in with now.
+fn drive_headers(
+    credential_store: &CredentialStore,
+    id: &AccountId,
+) -> Vec<(String, Zeroizing<String>)> {
+    match credential_store.file_credential(id, false).unwrap() {
+        cloud_source::Credential::Session { headers, .. } => headers,
+        other => panic!("expected session headers, got {other:?}"),
     }
 }
 
@@ -106,7 +121,7 @@ fn vault_refresh_token(root: &Path, id: &AccountId) -> String {
 
 tilo_test_env::scenario! {
     /// An OAuth grant held, from sign-in to removal, against the fake authorization server.
-    fn ownership_signs_in_publishes_and_renews_oauth_grants;
+    fn ownership_signs_in_and_renews_oauth_grants;
 
     phase unreadable_credentials_are_storage_errors_not_missing_grants;
     {
@@ -134,18 +149,18 @@ tilo_test_env::scenario! {
             Err(CredentialError::Storage(_))
         ));
         assert!(matches!(
-            credential_store.publish(&id, false),
+            credential_store.file_credential(&id, false),
             Err(CredentialError::Storage(_))
         ));
         assert_eq!(std::fs::read(&sealed).unwrap(), b"corrupt credentials");
         assert_eq!(health(&root, &id), None);
     }
 
-    phase sign_in_publishes_the_access_token_only;
+    phase a_drive_is_handed_the_access_token_only;
     {
         let (fixture, tokens) = signed_in_drive(3600);
         assert_eq!(
-            handed_off_token(&fixture.root, &fixture.id),
+            drive_token(&fixture.credential_store, &fixture.id),
             tokens.access_token
         );
         assert_eq!(
@@ -163,8 +178,8 @@ tilo_test_env::scenario! {
     phase a_due_token_is_refreshed_before_it_is_handed_out;
     {
         let (fixture, tokens) = signed_in_drive(1);
-        assert_eq!(fixture.server.refreshes(), 1, "signed_in already refreshed");
-        let handed = handed_off_token(&fixture.root, &fixture.id);
+        let handed = drive_token(&fixture.credential_store, &fixture.id);
+        assert_eq!(fixture.server.refreshes(), 1, "the due token is renewed first");
         assert_ne!(handed, tokens.access_token);
         assert_eq!(
             vault_refresh_token(&fixture.root, &fixture.id),
@@ -172,14 +187,10 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_rejected_token_is_replaced_through_the_daemon_source;
+    phase a_rejected_token_is_replaced_through_the_drives_sign_in;
     {
         let (fixture, tokens) = signed_in_drive(3600);
-        let source = HandoffCredentialSource::new(
-            fixture.id.clone(),
-            HandoffStore::open_in(&fixture.root),
-            Arc::new(fixture.credential_store.clone()),
-        );
+        let source = DriveSignIn::new(fixture.credential_store.clone(), fixture.id.clone());
         let bearer = |credential: cloud_source::Credential| match credential {
             cloud_source::Credential::Bearer { token, .. } => token.to_string(),
             other => panic!("unexpected {other:?}"),
@@ -195,40 +206,27 @@ tilo_test_env::scenario! {
     {
         let (fixture, _tokens) = signed_in_drive(3600);
         fixture.server.revoke_all_refresh_tokens();
-        assert_eq!(
-            fixture.credential_store.publish(&fixture.id, true),
-            Err(CredentialError::NeedsAuthentication)
+        assert!(
+            matches!(
+                fixture.credential_store.file_credential(&fixture.id, true),
+                Err(CredentialError::NeedsAuthentication)
+            )
         );
         assert_eq!(
             health(&fixture.root, &fixture.id),
             Some(AccountSyncHealth::NeedsAuthentication)
         );
-        assert!(
-            HandoffStore::open_in(&fixture.root)
-                .read(&fixture.id)
-                .unwrap()
-                .is_none(),
-            "the rejected access token is withdrawn"
-        );
-        let source = HandoffCredentialSource::new(
-            fixture.id.clone(),
-            HandoffStore::open_in(&fixture.root),
-            Arc::new(fixture.credential_store.clone()),
-        );
+        let source = DriveSignIn::new(fixture.credential_store, fixture.id);
         assert!(matches!(
             source.credential(),
             Err(cloud_source::Error::Unauthorized)
         ));
     }
 
-    phase the_daemon_never_receives_a_refresh_token;
+    phase a_drive_never_receives_a_refresh_token;
     {
         let (fixture, tokens) = signed_in_drive(3600);
-        let source = HandoffCredentialSource::new(
-            fixture.id.clone(),
-            HandoffStore::open_in(&fixture.root),
-            Arc::new(fixture.credential_store.clone()),
-        );
+        let source = DriveSignIn::new(fixture.credential_store.clone(), fixture.id.clone());
         let mut seen = Vec::new();
         for _ in 0..3 {
             source.rejected();
@@ -242,23 +240,6 @@ tilo_test_env::scenario! {
         let refresh = vault_refresh_token(&fixture.root, &fixture.id);
         assert_eq!(refresh, tokens.refresh_token);
         assert!(seen.iter().all(|token| token != &refresh));
-        let dir = accounts::handoff::handoff_dir_in(&fixture.root);
-        let entries: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "enc"))
-            .collect();
-        assert_eq!(entries.len(), 1, "one account, one handoff file");
-        match HandoffStore::open_in(&fixture.root)
-            .read(&fixture.id)
-            .unwrap()
-        {
-            Some(HandoffCredential::Bearer { token, .. }) => {
-                assert_ne!(token.as_str(), refresh);
-                assert_eq!(Some(token.to_string()), seen.last().cloned());
-            }
-            other => panic!("unexpected {other:?}"),
-        }
     }
 
     phase a_missing_client_id_is_not_configured_not_a_broken_flow;
@@ -290,12 +271,6 @@ tilo_test_env::scenario! {
             .unwrap();
         fixture.credential_store.revoke(&account, &secret);
         assert_eq!(fixture.server.revoked(), vec![tokens.refresh_token]);
-        assert!(
-            HandoffStore::open_in(&fixture.root)
-                .read(&fixture.id)
-                .unwrap()
-                .is_none()
-        );
     }
 
     phase a_new_account_resolves_its_storage_once;
@@ -486,9 +461,9 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     /// Accounts that are not OAuth grants: a WebDAV password, which is the workspace's vault
     /// entry's, and an iCloud session.
-    fn webdav_and_icloud_accounts_hand_off_only_a_session;
+    fn webdav_and_icloud_drives_are_handed_only_a_session;
 
-    phase webdav_hands_off_nothing_since_its_password_is_the_workspaces;
+    phase webdav_is_handed_nothing_since_its_password_is_the_workspaces;
     {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("tilo");
@@ -500,13 +475,16 @@ tilo_test_env::scenario! {
             &Secret::password("dav-password"),
             serde_json::json!({"base_url": "https://dav.example", "username": "ada"}),
         );
-        CredentialStore::for_root(Some(root.clone()))
-            .publish(&id, false)
-            .unwrap();
-        assert!(HandoffStore::open_in(&root).read(&id).unwrap().is_none());
+        assert!(
+            matches!(
+                CredentialStore::for_root(Some(root)).file_credential(&id, false),
+                Err(CredentialError::NeedsAuthentication)
+            ),
+            "the session releases its password from the workspace's vault"
+        );
     }
 
-    phase icloud_session_headers_are_handed_off_and_reauthentication_is_reported;
+    phase icloud_session_headers_are_handed_out_and_reauthentication_is_reported;
     {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("tilo");
@@ -541,21 +519,19 @@ tilo_test_env::scenario! {
         );
 
         credential_store.signed_in(&id).unwrap();
-        match HandoffStore::open_in(&root).read(&id).unwrap() {
-            Some(HandoffCredential::Session { headers, .. }) => {
-                assert_eq!(headers.len(), 1);
-                assert!(
-                    !headers[0].1.contains("trust-for"),
-                    "trust state stays sealed"
-                );
-            }
-            other => panic!("unexpected {other:?}"),
-        }
+        let headers = drive_headers(&credential_store, &id);
+        assert_eq!(headers.len(), 1);
+        assert!(
+            !headers[0].1.contains("trust-for"),
+            "trust state stays sealed"
+        );
 
         *icloud.needs_reauth.lock().unwrap() = true;
-        assert_eq!(
-            credential_store.publish(&id, true),
-            Err(CredentialError::NeedsAuthentication)
+        assert!(
+            matches!(
+                credential_store.file_credential(&id, true),
+                Err(CredentialError::NeedsAuthentication)
+            )
         );
         assert_eq!(
             health(&root, &id),
@@ -563,7 +539,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase apple_sign_in_through_the_icloud_provider_hands_off_web_cookies;
+    phase apple_sign_in_through_the_icloud_provider_hands_out_web_cookies;
     {
         use cloud_source_icloud::fake::{APPLE_ID, DEVICE_CODE, FakeICloud, PASSWORD};
         let fake = FakeICloud::start();
@@ -594,13 +570,9 @@ tilo_test_env::scenario! {
             &icloud_secret(APPLE_ID, &session),
             serde_json::json!({ "identity": APPLE_ID }),
         );
-        let credential_store = CredentialStore::for_root(Some(root.clone())).with_icloud(Arc::new(auth));
+        let credential_store = CredentialStore::for_root(Some(root)).with_icloud(Arc::new(auth));
         credential_store.signed_in(&id).unwrap();
-        let Some(HandoffCredential::Session { headers, .. }) =
-            HandoffStore::open_in(&root).read(&id).unwrap()
-        else {
-            panic!("session headers");
-        };
+        let headers = drive_headers(&credential_store, &id);
         assert!(
             headers
                 .iter()
@@ -609,9 +581,11 @@ tilo_test_env::scenario! {
 
         fake.expire_web_sessions();
         fake.expire_trust();
-        assert_eq!(
-            credential_store.publish(&id, true),
-            Err(CredentialError::NeedsAuthentication)
+        assert!(
+            matches!(
+                credential_store.file_credential(&id, true),
+                Err(CredentialError::NeedsAuthentication)
+            )
         );
     }
 }
@@ -924,7 +898,7 @@ tilo_test_env::scenario! {
         assert!(!crate::copied_source_matches(&cleared, &expected));
     }
 
-    phase protected_copies_refuse_legacy_decoders_but_canonical_dav_ownership_still_publishes;
+    phase protected_copies_refuse_legacy_decoders_but_canonical_dav_ownership_still_signs_in;
     {
         #[derive(serde::Deserialize)]
         #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1022,53 +996,9 @@ tilo_test_env::scenario! {
             serde_json::json!({}),
         );
         assert!(matches!(
-            CredentialStore::for_root(Some(root.clone())).publish(&id, false),
+            CredentialStore::for_root(Some(root.clone())).file_credential(&id, false),
             Err(CredentialError::NeedsAuthentication),
         ));
-        assert!(HandoffStore::open_in(&root).read(&id).unwrap().is_none());
         assert_eq!(SecretVault::open_in(&root).get(&id).unwrap(), secret);
     }
-}
-
-/// The person's handoff credentials are keyed by the person's one ownership:
-/// a credential store over their own root writes them where a fresh credential store over
-/// that root reads them, never under a key file beside the ciphertext.
-#[cfg(unix)]
-#[test]
-fn the_persons_handoff_store_opens_under_the_persons_ownership() {
-    let home = tempfile::tempdir().unwrap();
-    let config = home.path().join("config");
-    let person = config.join("tilo");
-    std::fs::create_dir_all(&person).unwrap();
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", &config)
-        .set("HOME", home.path())
-        .set(tilo_secrets::SECRETS_DIR_ENV, home.path().join("secrets"));
-
-    let id = AccountId::from("music.spotify.streaming");
-    let credential = HandoffCredential::Bearer {
-        token: Zeroizing::new("handoff-bearer-token".into()),
-        expires_unix: None,
-    };
-    CredentialStore::for_root(Some(person.clone()))
-        .handoff()
-        .expect("the person's handoff store")
-        .publish(&id, &credential)
-        .expect("publishing under the person's ownership");
-    assert!(
-        !accounts::handoff::handoff_dir_in(&person)
-            .join("vault.key")
-            .exists(),
-        "the keyring keeps the handoff key, not a file beside it"
-    );
-
-    let read = CredentialStore::for_root(Some(person))
-        .handoff()
-        .expect("the person's handoff store")
-        .read(&id)
-        .expect("reading under the person's ownership");
-    let Some(HandoffCredential::Bearer { token, .. }) = read else {
-        panic!("the published bearer credential is the one that reads back");
-    };
-    assert_eq!(*token, "handoff-bearer-token");
 }

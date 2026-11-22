@@ -10,8 +10,8 @@ description = "Online account credentials: Tilo's OAuth client registrations, OA
 name = "account_credentials"
 path = "src/lib.rs"
 
-# The credential helper the storage daemon runs to get a fresh short-lived
-# credential for one account. It holds the vault only for that call.
+# What the installer asks of this build's credential store: the protected-grant
+# protocol it speaks.
 [[bin]]
 name = "tilo-account-credential"
 path = "src/bin/tilo-account-credential.rs"

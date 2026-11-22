@@ -531,15 +531,8 @@ async fn run_command(cli: Cli) -> Result<()> {
                 fs::cloud::CloudService::new(
                     fs::cloud::ServiceConfig {
                         // The session tells the workspaces' file accounts and releases their
-                        // passwords; Settings' credential helper, the only process that opens
-                        // this device's grants, publishes fresh access tokens.
-                        accounts: std::sync::Arc::new(fs::cloud::SessionAccounts::new(
-                            sign_ins,
-                            accounts::HandoffStore::open_person(config_root.as_deref()),
-                            std::sync::Arc::new(accounts::CommandRefresher::new(
-                                config_root.clone(),
-                            )),
-                        )),
+                        // passwords.
+                        accounts: std::sync::Arc::new(fs::cloud::SessionAccounts::new(sign_ins)),
                         config_root,
                         mounts_root,
                         state_root,

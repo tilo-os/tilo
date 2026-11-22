@@ -1,25 +1,13 @@
-//! `tilo-account-credential refresh <account id> [--force] [--config-root <dir>]`
+//! `tilo-account-credential capabilities`
 //!
-//! Run by the storage daemon when an account's short-lived credential is
-//! missing, due or was rejected. Publishes a fresh one in the handoff store
-//! and exits; the exit code says what happened (see
-//! `accounts::handoff::exit`). Nothing secret is written to stdout or stderr.
+//! Says which protected-grant protocol this build's credential store speaks, for whoever hands
+//! it a copied grant. Nothing secret is written to stdout or stderr.
 
-use std::path::PathBuf;
 use std::process::ExitCode;
 
-use account_credentials::{CredentialError, CredentialStore};
-use accounts::handoff::exit;
-
 fn usage() -> ExitCode {
-    eprintln!(
-        "usage: tilo-account-credential capabilities | refresh <account id> [--force] [--config-root <dir>]"
-    );
+    eprintln!("usage: tilo-account-credential capabilities");
     ExitCode::from(64)
-}
-
-fn code(value: i32) -> ExitCode {
-    ExitCode::from(u8::try_from(value).unwrap_or(1))
 }
 
 fn main() -> ExitCode {
@@ -30,34 +18,8 @@ fn main() -> ExitCode {
                 "{{\"schema\":1,\"protected_grant_protocol\":{}}}",
                 account_credentials::protected_grant_protocol()
             );
-            return ExitCode::SUCCESS;
+            ExitCode::SUCCESS
         }
-        Some("refresh") => {}
-        _ => return usage(),
-    }
-    let Some(id) = args.next().and_then(|id| id.into_string().ok()) else {
-        return usage();
-    };
-    let mut force = false;
-    let mut config_root = None;
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--force") => force = true,
-            Some("--config-root") => match args.next() {
-                Some(root) => config_root = Some(PathBuf::from(root)),
-                None => return usage(),
-            },
-            _ => return usage(),
-        }
-    }
-    let credential_store = CredentialStore::for_root(config_root).with_apple_icloud();
-    match credential_store.publish(&accounts::AccountId::from(id), force) {
-        Ok(()) => code(exit::PUBLISHED),
-        Err(CredentialError::NeedsAuthentication) => code(exit::NEEDS_AUTHENTICATION),
-        Err(CredentialError::Offline) => code(exit::OFFLINE),
-        Err(error) => {
-            eprintln!("tilo-account-credential: {error}");
-            code(exit::FAILED)
-        }
+        _ => usage(),
     }
 }

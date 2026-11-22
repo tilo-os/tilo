@@ -65,12 +65,7 @@ pub mod cloud_types {
 }
 
 pub mod email;
-pub mod handoff;
 pub mod thunderbird;
-pub use handoff::{
-    CommandRefresher, CredentialRefresher, HandoffCredential, HandoffCredentialSource,
-    HandoffStore, RefreshError,
-};
 pub mod vault;
 pub use vault::{Saved, Secret, SecretVault, VaultBackend};
 pub mod secrets;
