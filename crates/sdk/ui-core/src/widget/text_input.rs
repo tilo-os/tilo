@@ -391,7 +391,6 @@ pub struct TextInput {
     spell_language: String,
     /// Cached by (language, text), so drawing idle fields never starts work.
     spell_cache_key: Option<(String, String)>,
-    spell_generation: u64,
     spell_spans: Vec<(usize, usize)>,
     shown: crate::scroll_copy::ShownFrames<damage::FieldShown>,
     /// `spell_spans` were cleared while idle and no longer describe the
@@ -734,7 +733,6 @@ impl TextInput {
             spell_active: false,
             spell_language,
             spell_cache_key: None,
-            spell_generation: spellcheck::dictionaries_generation(),
             spell_spans: Vec::new(),
             shown: crate::scroll_copy::ShownFrames::default(),
             spell_spans_stale: false,

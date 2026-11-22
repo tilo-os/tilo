@@ -133,9 +133,15 @@ pub struct Dictionary {
 
 impl Dictionary {
     pub fn builtin() -> Self {
-        let mut builder = BuiltinBuilder::default();
-        builder.step(&mut || true);
-        builder.finish()
+        let mut building = Building::default();
+        for word in BUILTIN_WORDS
+            .lines()
+            .chain(PRODUCT_WORDS.iter().copied())
+            .chain(CONVERSATIONAL_WORDS.iter().copied())
+        {
+            building.add(word);
+        }
+        building.finish()
     }
 
     /// Load the persisted user words into this dictionary's runtime set; a missing or
@@ -260,8 +266,7 @@ impl Dictionary {
     }
 }
 
-/// Words taken in so far, for [`Dictionary::from_words`] and the built-in
-/// list's [`BuiltinBuilder`].
+/// Words taken in so far, for [`Dictionary::from_words`] and [`Dictionary::builtin`].
 #[derive(Default)]
 struct Building {
     words: HashSet<String>,
@@ -291,55 +296,6 @@ impl Building {
             by_len: self.by_len,
             user_words: BTreeMap::new(),
         }
-    }
-}
-
-// The built-in dictionary is built a slice at a time: a browser page has no thread to
-// build its 89,000 words on, and building them at once holds the page for frames.
-pub(crate) struct BuiltinBuilder {
-    words: Box<dyn Iterator<Item = &'static str> + Send>,
-    building: Building,
-}
-
-impl Default for BuiltinBuilder {
-    /// The only code that reads the embedded list ([`Dictionary::builtin`]
-    /// builds through it too), never inlined: a web build's split moves the
-    /// list into the one module whose code reaches it, and keeps it in the
-    /// start module when two do.
-    #[inline(never)]
-    fn default() -> Self {
-        Self {
-            words: Box::new(
-                BUILTIN_WORDS
-                    .lines()
-                    .chain(PRODUCT_WORDS.iter().copied())
-                    .chain(CONVERSATIONAL_WORDS.iter().copied()),
-            ),
-            building: Building::default(),
-        }
-    }
-}
-
-impl BuiltinBuilder {
-    const SLICE: usize = 256;
-
-    pub(crate) fn step(&mut self, more: &mut dyn FnMut() -> bool) -> bool {
-        loop {
-            for _ in 0..Self::SLICE {
-                let Some(word) = self.words.next() else {
-                    return true;
-                };
-                self.building.add(word);
-            }
-            if !more() {
-                return false;
-            }
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn finish(self) -> Dictionary {
-        self.building.finish()
     }
 }
 

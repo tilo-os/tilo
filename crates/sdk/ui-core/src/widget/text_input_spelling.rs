@@ -34,11 +34,6 @@ impl super::TextInput {
 
     pub(super) fn refresh_spelling(&mut self) {
         self.refresh_personal_spelling();
-        let generation = spellcheck::dictionaries_generation();
-        if self.spell_generation != generation {
-            self.spell_generation = generation;
-            self.spell_cache_key = None;
-        }
         if !self.checks_spelling() || self.text.is_empty() {
             self.spell_spans.clear();
             self.spell_cache_key = None;

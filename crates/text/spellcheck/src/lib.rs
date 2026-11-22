@@ -13,7 +13,6 @@
 
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 mod contractions;
@@ -114,29 +113,19 @@ fn english_lookup_form(word: &str) -> Cow<'_, str> {
     }
 }
 
-fn english_results(language: &str, words: &[&str]) -> Option<Vec<bool>> {
+fn english_results(language: &str, words: &[&str]) -> Vec<bool> {
     let lookups: Vec<Cow<'_, str>> = words.iter().map(|word| english_lookup_form(word)).collect();
     let lookups: Vec<&str> = lookups.iter().map(AsRef::as_ref).collect();
-    // A program building the embedded list in idle steps (a browser page,
-    // without threads) never loads a system dictionary on a keystroke.
-    let system = if BUILT_IN_STEPS.load(Ordering::Acquire) {
-        None
-    } else {
-        hunspell_results(english_dictionary_name(language), &lookups)
-    };
-    let known = if let Some(known) = system {
-        known
-    } else {
-        let english = shared_english()?;
-        lookups.iter().map(|word| english.contains(word)).collect()
-    };
-    Some(
-        known
-            .into_iter()
-            .zip(&lookups)
-            .map(|(known, word)| known || dictionary::is_extra_word(word))
-            .collect(),
-    )
+    let known =
+        hunspell_results(english_dictionary_name(language), &lookups).unwrap_or_else(|| {
+            let english = shared_english();
+            lookups.iter().map(|word| english.contains(word)).collect()
+        });
+    known
+        .into_iter()
+        .zip(&lookups)
+        .map(|(known, word)| known || dictionary::is_extra_word(word))
+        .collect()
 }
 
 fn english_dictionary_name(language: &str) -> &str {
@@ -157,9 +146,7 @@ pub fn spans_for_language(language: &str, text: &str) -> Vec<(usize, usize)> {
     }
     if is_english(language) {
         let words: Vec<&str> = tokens.iter().map(|token| token.text).collect();
-        let Some(correct) = english_results(language, &words) else {
-            return Vec::new();
-        };
+        let correct = english_results(language, &words);
         return tokens
             .into_iter()
             .zip(correct)
@@ -192,7 +179,7 @@ pub fn suggestions_for_language(language: &str, word: &str, max: usize) -> Vec<S
         return Vec::new();
     }
     if is_english(language) {
-        return shared_english().map_or_else(Vec::new, |english| suggest(english, word, max));
+        return suggest(shared_english(), word, max);
     }
     let lookup = normalize_lookup_word(word);
     if let Some(mut suggestions) = hunspell_suggestions(language, lookup.as_ref()) {
@@ -307,7 +294,7 @@ fn dictionary_correction(language: &str, word: &str, lower: &str) -> Option<Stri
         if english_in_another_spelling(language, lower) {
             return None;
         }
-        let candidate = unique_adjacent_transposition(shared_english()?, lower)?;
+        let candidate = unique_adjacent_transposition(shared_english(), lower)?;
         return Some(match_word_case(word, &candidate));
     }
     let candidate = suggestions_for_language(language, word, 1)
@@ -359,7 +346,9 @@ fn english_in_another_spelling(language: &str, lower: &str) -> bool {
         return false;
     }
     let words: Vec<&str> = forms.iter().map(String::as_str).collect();
-    english_results(language, &words).is_some_and(|known| known.into_iter().any(|known| known))
+    english_results(language, &words)
+        .into_iter()
+        .any(|known| known)
 }
 
 /// Adjacent transpositions have a tiny candidate space: a word of length `n`
@@ -434,48 +423,10 @@ fn match_word_case(original: &str, correction: &str) -> String {
     correction.to_string()
 }
 
-#[must_use]
-pub fn dictionaries_generation() -> u64 {
-    ENGLISH_GENERATION.load(Ordering::Acquire)
-}
-
-static ENGLISH: OnceLock<Dictionary> = OnceLock::new();
-static ENGLISH_GENERATION: AtomicU64 = AtomicU64::new(0);
-static BUILT_IN_STEPS: AtomicBool = AtomicBool::new(false);
-
-// The program builds the English dictionary in steps, in its idle time, instead of on
-// the first check: a check before it is built flags nothing, and the fields check
-// again once it is.
-pub fn build_dictionaries_in_steps() {
-    BUILT_IN_STEPS.store(true, Ordering::Release);
-}
-
-/// Build the English dictionary while `more` answers true. Whether it is built.
-pub fn prepare_dictionaries(more: &mut dyn FnMut() -> bool) -> bool {
-    static BUILDER: Mutex<Option<dictionary::BuiltinBuilder>> = Mutex::new(None);
-    if ENGLISH.get().is_some() {
-        return true;
-    }
-    let Ok(mut builder) = BUILDER.lock() else {
-        return false;
-    };
-    if !builder.get_or_insert_with(Default::default).step(more) {
-        return false;
-    }
-    if let Some(built) = builder.take()
-        && ENGLISH.set(built.finish()).is_ok()
-    {
-        ENGLISH_GENERATION.fetch_add(1, Ordering::AcqRel);
-    }
-    true
-}
-
-/// The English dictionary, built on first use unless the program builds it in steps.
-fn shared_english() -> Option<&'static Dictionary> {
-    if BUILT_IN_STEPS.load(Ordering::Acquire) {
-        return ENGLISH.get();
-    }
-    Some(ENGLISH.get_or_init(Dictionary::builtin))
+/// The English dictionary, built on first use.
+fn shared_english() -> &'static Dictionary {
+    static ENGLISH: OnceLock<Dictionary> = OnceLock::new();
+    ENGLISH.get_or_init(Dictionary::builtin)
 }
 
 /// Begin loading `language`'s dictionary before the first field is focused; the warm-up
