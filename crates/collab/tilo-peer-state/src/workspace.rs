@@ -344,8 +344,8 @@ pub fn candidate_on(
         tilo_automerge_isolate::Dependencies::RetainOrphans,
     )
     .map_err(|error| match crate::AdmissionError::from(error) {
-        crate::AdmissionError::Rejected(reason) => {
-            AdmissionFailure::Refused(WorkspaceRefusal::Malformed(reason))
+        crate::AdmissionError::Rejected { detail, .. } => {
+            AdmissionFailure::Refused(WorkspaceRefusal::Malformed(detail))
         }
         crate::AdmissionError::Device(reason) => AdmissionFailure::Device(reason),
         other => AdmissionFailure::Refused(WorkspaceRefusal::Malformed(other.to_string())),

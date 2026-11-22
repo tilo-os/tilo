@@ -43,25 +43,31 @@ impl StatePeer {
             ..
         } = message
         else {
-            return Err("retained local publication requires AppDocument".into());
+            return Err(crate::AdmissionError::malformed(
+                "retained local publication requires AppDocument",
+            ));
         };
         if cluster_id != &self.core.workspace
             || envelope.author.as_bytes() != &selected
             || *peer != peer_handle(&selected)
         {
-            return Err("retained local publication selected author or workspace mismatch".into());
+            return Err(crate::AdmissionError::forbidden(
+                "retained local publication selected author or workspace mismatch",
+            ));
         }
-        collab_types::verify_op(envelope).map_err(err)?;
+        collab_types::verify_op(envelope).map_err(crate::AdmissionError::malformed)?;
         let route = Route {
             app: app_id.clone(),
             record: document_id.clone(),
         };
         let Some(document) = self.core.documents.get(&route) else {
-            return Err(format!(
-                "retained local publication route {}/{} is not admitted",
-                route.app, route.record
-            )
-            .into());
+            return Err(crate::AdmissionError::rejected(
+                neighbour_wire::RefusalReason::MissingDependency,
+                format!(
+                    "retained local publication route {}/{} is not admitted",
+                    route.app, route.record
+                ),
+            ));
         };
         let mutation = match collab_types::validate_whole_document_payload_route(
             app_id,
@@ -69,7 +75,7 @@ impl StatePeer {
             document_id,
             envelope,
         )
-        .map_err(err)?
+        .map_err(crate::AdmissionError::malformed)?
         {
             collab_types::WholeDocumentPayload::Cleartext(mutation) => Some(mutation),
             collab_types::WholeDocumentPayload::Encrypted { .. }
@@ -78,9 +84,9 @@ impl StatePeer {
                 None
             }
             collab_types::WholeDocumentPayload::Encrypted { .. } => {
-                return Err(
-                    "retained sealed publication for a record that is not encrypted".into(),
-                );
+                return Err(crate::AdmissionError::malformed(
+                    "retained sealed publication for a record that is not encrypted",
+                ));
             }
         };
         Ok(LocalDocument {

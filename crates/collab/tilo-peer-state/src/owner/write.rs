@@ -61,33 +61,14 @@ impl WriteRefusal {
 }
 
 impl From<crate::MembershipError> for WriteRefusal {
-    /// A device the workspace grants nothing is told why; a workspace whose governance has not
-    /// arrived yet decides once it has, so the writes wait for it.
+    /// A device the workspace grants nothing is told why; a workspace whose rules have not
+    /// arrived yet decides once they have, so the writes wait for them.
     fn from(error: crate::MembershipError) -> Self {
-        use crate::MembershipError;
-        use neighbour_wire::RefusalReason;
-        let reason = match &error {
-            MembershipError::GovernanceMissing => {
-                return Self::Waiting(crate::admission::MissingPrerequisite::Governance);
-            }
-            MembershipError::Revoked => RefusalReason::Revoked,
-            MembershipError::Certificate(tilo_user_identity::DeviceCertError::Expired) => {
-                RefusalReason::Expired
-            }
-            MembershipError::UnknownDevice
-            | MembershipError::Certificate(_)
-            | MembershipError::Absent
-            | MembershipError::CertificateMismatch => RefusalReason::NotCertified,
-            MembershipError::RevocationRoot
-            | MembershipError::Revocation(_)
-            | MembershipError::UnreadableAccess
-            | MembershipError::MalformedIdentity(_) => RefusalReason::Malformed,
-            MembershipError::Delegate(_) | MembershipError::NoMembership => {
-                RefusalReason::Forbidden
-            }
-        };
+        if matches!(error, crate::MembershipError::RulesMissing) {
+            return Self::Waiting(crate::admission::MissingPrerequisite::Rules);
+        }
         Self::Declined {
-            reason,
+            reason: error.refusal_reason(),
             detail: error.to_string(),
         }
     }
@@ -274,13 +255,9 @@ impl NativeWorkspaceOwner {
                         // This device could not decide the write: no verdict of
                         // this device's says anything about it.
                         Err(error) if error.is_device_failure() => Ok(false),
-                        Err(error) => live.workspace_mut().refuse_write(
-                            &device,
-                            message,
-                            &error.to_string(),
-                            signed,
-                            now,
-                        ),
+                        Err(error) => live
+                            .workspace_mut()
+                            .refuse_write(&device, message, error, signed, now),
                     };
                     match verdict {
                         Ok(filed) => kept |= filed,
@@ -797,7 +774,13 @@ impl NativeWorkspaceOwner {
             Err(crate::NotAdmitted::Waiting(prerequisite)) => {
                 Err(WriteRefusal::Waiting(prerequisite))
             }
-            Err(crate::NotAdmitted::Refused(reason)) => Err(WriteRefusal::Refused(reason)),
+            Err(crate::NotAdmitted::Refused { reason, detail }) => {
+                Err(WriteRefusal::Declined { reason, detail })
+            }
+            Err(crate::NotAdmitted::HistoryFull) => Err(WriteRefusal::HistoryFull {
+                app: route.0.to_owned(),
+                record: route.1.to_owned(),
+            }),
             Err(crate::NotAdmitted::ChangeRefused(refused)) => {
                 Err(WriteRefusal::ChangeRefused(refused))
             }

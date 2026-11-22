@@ -13,10 +13,12 @@ pub enum MergeError {
 impl From<MergeError> for crate::AdmissionError {
     fn from(error: MergeError) -> Self {
         match error {
+            // The document this device holds was mid-change: this device's state, which says
+            // nothing about the change.
             MergeError::Busy => {
-                Self::Rejected("the shared document has changes of its own open".into())
+                Self::Device("the shared document has changes of its own open".into())
             }
-            MergeError::Invalid(reason) => Self::Rejected(reason),
+            MergeError::Invalid(reason) => Self::malformed(reason),
             MergeError::Device(reason) => Self::Device(reason),
         }
     }
@@ -45,7 +47,7 @@ pub(crate) fn merge_committed_with_status(
         Ok(Applied::Changed(changed)) => Ok(MergeOutcome::Changed(changed)),
         Ok(Applied::MissingDependencies) => Ok(MergeOutcome::MissingDependencies),
         Err(error) => match crate::AdmissionError::from(error) {
-            crate::AdmissionError::Rejected(reason) => Err(MergeError::Invalid(reason)),
+            crate::AdmissionError::Rejected { detail, .. } => Err(MergeError::Invalid(detail)),
             crate::AdmissionError::Device(reason) => Err(MergeError::Device(reason)),
             other => Err(MergeError::Invalid(other.to_string())),
         },

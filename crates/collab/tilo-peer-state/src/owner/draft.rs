@@ -268,13 +268,11 @@ async fn signed_local_write(
         })
         .map_err(|refused| match refused {
             NotAdmitted::Waiting(prerequisite) => WriteRefusal::Waiting(prerequisite),
-            NotAdmitted::Refused(reason) if reason.contains("sealed record history is full") => {
-                WriteRefusal::HistoryFull {
-                    app: write.app.clone(),
-                    record: write.document.clone(),
-                }
-            }
-            NotAdmitted::Refused(reason) => WriteRefusal::Refused(reason),
+            NotAdmitted::HistoryFull => WriteRefusal::HistoryFull {
+                app: write.app.clone(),
+                record: write.document.clone(),
+            },
+            NotAdmitted::Refused { reason, detail } => WriteRefusal::Declined { reason, detail },
             NotAdmitted::ChangeRefused(change) => WriteRefusal::ChangeRefused(change),
         })?;
     Ok(AppWrite {

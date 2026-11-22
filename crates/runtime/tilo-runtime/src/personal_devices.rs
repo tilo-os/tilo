@@ -3,6 +3,7 @@
 
 use std::time::SystemTime;
 
+use neighbour_wire::RefusalReason;
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
@@ -86,9 +87,9 @@ impl PersonalDevices {
             }
             store
                 .admits_device(&dialer, now)
-                .map_err(|why| match why.as_str() {
-                    "device revoked" => Refusal::Revoked,
-                    _ => Refusal::NotCertified(why),
+                .map_err(|why| match why.reason() {
+                    RefusalReason::Revoked => Refusal::Revoked,
+                    _ => Refusal::NotCertified(why.to_string()),
                 })
         })
     }

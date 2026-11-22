@@ -2679,14 +2679,14 @@ impl Workspaces {
     }
 
     /// File this device's verdict on the write `message` carried, which
-    /// admission refused because `reason`, and publish it as the workspace's
+    /// admission refused as `refusal` says, and publish it as the workspace's
     /// next governance: its author reads it live, and every member keeps it.
     /// Answers nothing about the write: that it did not land is the verdict.
     async fn file_refusal(
         &self,
         workspace: &mut GovernedWorkspace,
         message: &neighbour_wire::NeighbourMsg,
-        reason: &str,
+        refusal: &tilo_peer_state::AdmissionError,
     ) -> Result<(), String> {
         let host = &self.inner.host;
         let now = tilo_clock::wall();
@@ -2696,7 +2696,7 @@ impl Workspaces {
             |_, candidate| {
                 let filed = candidate
                     .workspace_mut()
-                    .refuse_write(&host.cert, message, reason, &host.key, now)?;
+                    .refuse_write(&host.cert, message, refusal, &host.key, now)?;
                 Ok((filed, filed))
             },
             |record, _| Ok(record.collaboration.clone()),

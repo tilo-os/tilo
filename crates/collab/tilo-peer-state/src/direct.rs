@@ -2221,10 +2221,11 @@ impl DirectSync {
         {
             Ok(reports) => reports,
             // The commit failed: so did every frame of it, as one frame's
-            // failed commit fails that frame.
+            // failed commit fails that frame. This device failed to keep them,
+            // which is no verdict on what their writers wrote.
             Err(error) => batch
                 .iter()
-                .map(|_| Err(crate::AdmissionError::from(error.clone())))
+                .map(|_| Err(crate::AdmissionError::Device(error.clone())))
                 .collect(),
         };
         let verdicts: Vec<_> = batch
@@ -2272,9 +2273,7 @@ impl DirectSync {
             // A frame this device could not decide is no verdict on it: it is
             // not kept as refused, and the writer's next frame proceeds.
             Err(error) if error.is_device_failure() || arrived_late(error) => None,
-            Err(error) => neighbour_wire::RefusalReason::of(&error.to_string())
-                .permanent()
-                .then_some(Kept::Refused),
+            Err(error) => error.reason().permanent().then_some(Kept::Refused),
         };
         if let Err(error) = &heard.report
             && error.is_device_failure()
@@ -2405,7 +2404,7 @@ impl DirectSync {
             message,
             landed: false,
             retained,
-            report: Err(NOT_WORKSPACE_STATE.into()),
+            report: Err(crate::AdmissionError::malformed(NOT_WORKSPACE_STATE)),
             fresh: true,
         });
     }
@@ -2484,13 +2483,9 @@ impl DirectSync {
                     (Ok(_), _) => peer
                         .workspace_mut()
                         .clear_landed_write(&own, &message, signer, now),
-                    (Err(_), Some(reason)) => peer.workspace_mut().refuse_write(
-                        &own,
-                        &message,
-                        &reason.to_string(),
-                        signer,
-                        now,
-                    ),
+                    (Err(_), Some(reason)) => peer
+                        .workspace_mut()
+                        .refuse_write(&own, &message, reason, signer, now),
                     (Err(_), None) => Ok(false),
                 })
                 .await;

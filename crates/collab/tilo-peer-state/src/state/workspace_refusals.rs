@@ -305,9 +305,9 @@ impl PeerWorkspaceMut<'_> {
     }
 
     /// File this device's verdict on the write `message` carried, which it
-    /// refused because `reason`: the fact names the route, the write's author
+    /// refused as `refused` says: the fact names the route, the write's author
     /// and sequence, the changes that write would have brought here, and the
-    /// reason. Answers whether the workspace changed.
+    /// refusal. Answers whether the workspace changed.
     ///
     /// # Errors
     /// As [`Self::record_own_write_refusal`], and for a message that is no
@@ -316,7 +316,7 @@ impl PeerWorkspaceMut<'_> {
         self,
         caller: &tilo_user_identity::DeviceCert,
         message: &NeighbourMsg,
-        reason: &str,
+        refused: &crate::AdmissionError,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
@@ -340,8 +340,8 @@ impl PeerWorkspaceMut<'_> {
             seq: envelope.seq,
             operation: format!("{}:{}", envelope.artifact.0, envelope.seq),
             changes: self.unheld_changes(app_id, document_id, envelope),
-            reason: RefusalReason::of(reason),
-            detail: reason.into(),
+            reason: refused.reason(),
+            detail: refused.to_string(),
             by: caller.device_public_key,
             at_ns: now_ns(now),
             signature: Vec::new(),

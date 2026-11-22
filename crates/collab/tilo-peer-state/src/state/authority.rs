@@ -99,9 +99,9 @@ pub(super) enum Authorized {
 
 /// Why [`StatePeer::authorize_document`] refuses a change.
 pub(super) enum AuthorizeRefusal {
-    /// The change is not its sender's own, or its author holds nothing here: the reason, in the
-    /// words the workspace keeps.
-    Denied(String),
+    /// The change is not its sender's own, or its author holds nothing here: why, as its author
+    /// is told it.
+    Denied(crate::AdmissionError),
     /// The workspace's rules refuse it: what its author's session is told, typed as a server's
     /// refusal of a change is, and in words that name who made the change and which device
     /// signed it.
@@ -111,7 +111,7 @@ pub(super) enum AuthorizeRefusal {
 impl std::fmt::Display for AuthorizeRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Denied(reason) => f.write_str(reason),
+            Self::Denied(refusal) => refusal.fmt(f),
             Self::Rules(_, said) => f.write_str(said),
         }
     }
@@ -286,15 +286,12 @@ impl StatePeer {
         &self,
         device: &[u8; 32],
         now: SystemTime,
-    ) -> Result<&DeviceCert, String> {
-        let cert = self
-            .certificate(device, now)
-            .map_err(|error| error.to_string())?;
+    ) -> Result<&DeviceCert, crate::AdmissionError> {
+        let cert = self.certificate(device, now)?;
         if !self.governs_history(&cert.user_public_key) {
-            return Err(
-                "the publisher is not a device of the workspace's owner or an administrator's"
-                    .into(),
-            );
+            return Err(crate::AdmissionError::forbidden(
+                "the publisher is not a device of the workspace's owner or an administrator's",
+            ));
         }
         Ok(cert)
     }
@@ -476,7 +473,7 @@ impl StatePeer {
             .core
             .workspace_doc
             .as_ref()
-            .ok_or(MembershipError::GovernanceMissing)?
+            .ok_or(MembershipError::RulesMissing)?
             .workspace_policy(&self.core.workspace)
             .clone();
         let (person, foreign, delegate) = self.member_of(&source, now)?;
@@ -591,15 +588,19 @@ impl StatePeer {
         write: &SignedOp,
     ) -> Result<(), AuthorizeRefusal> {
         if write.encryption.is_some() {
-            return Err(AuthorizeRefusal::Denied(
-                "work a server takes for a member is written in the clear".into(),
-            ));
+            return Err(AuthorizeRefusal::Denied(crate::AdmissionError::forbidden(
+                "work a server takes for a member is written in the clear",
+            )));
         }
         let mutation = collab_types::DocumentMutation::decode(&write.payload).map_err(|error| {
-            AuthorizeRefusal::Denied(format!("the change does not read as work: {error}"))
+            AuthorizeRefusal::Denied(crate::AdmissionError::malformed(format!(
+                "the change does not read as work: {error}"
+            )))
         })?;
         let changes = collab_types::claim::parse_changes(mutation.data()).map_err(|error| {
-            AuthorizeRefusal::Denied(format!("the change does not read as work: {error}"))
+            AuthorizeRefusal::Denied(crate::AdmissionError::malformed(format!(
+                "the change does not read as work: {error}"
+            )))
         })?;
         let actor = tilo_action_policy::Actor::Member(delegation.actor());
         let server = hex::encode(server);
@@ -609,19 +610,19 @@ impl StatePeer {
                 .and_then(tilo_actions::ActionContext::from_change_message)
                 .and_then(|context| context.invoker)
                 .ok_or_else(|| {
-                    AuthorizeRefusal::Denied(
-                        "work a server takes for a member names the actor it acts for".into(),
-                    )
+                    AuthorizeRefusal::Denied(crate::AdmissionError::forbidden(
+                        "work a server takes for a member names the actor it acts for",
+                    ))
                 })?;
             if named.acting.by != actor {
-                return Err(AuthorizeRefusal::Denied(
-                    "a server takes the work of the member who delegated it and no one else".into(),
-                ));
+                return Err(AuthorizeRefusal::Denied(crate::AdmissionError::forbidden(
+                    "a server takes the work of the member who delegated it and no one else",
+                )));
             }
             if named.device.as_ref().map(|device| device.id.as_str()) != Some(server.as_str()) {
-                return Err(AuthorizeRefusal::Denied(
-                    "work a server takes for a member names the server it ran on".into(),
-                ));
+                return Err(AuthorizeRefusal::Denied(crate::AdmissionError::forbidden(
+                    "work a server takes for a member names the server it ran on",
+                )));
             }
         }
         Ok(())
@@ -639,7 +640,7 @@ impl StatePeer {
             .core
             .workspace_doc
             .as_ref()
-            .ok_or(MembershipError::GovernanceMissing)?
+            .ok_or(MembershipError::RulesMissing)?
             .workspace_policy(&self.core.workspace)
             .clone();
         let (_, delegate) = backend::member::role_in_history(&self.core, source, now)?;
@@ -731,7 +732,7 @@ impl StatePeer {
                     .core
                     .workspace_doc
                     .as_ref()
-                    .ok_or(MembershipError::GovernanceMissing)?
+                    .ok_or(MembershipError::RulesMissing)?
                     .workspace_policy(&self.core.workspace)
                     .clone();
                 let acting = crate::state::ActingAs {
@@ -766,13 +767,13 @@ impl StatePeer {
     ) -> Result<MemberAccess, MembershipError> {
         let written = match self
             .judged_under(app, document, write, true)
-            .map_err(|_| MembershipError::GovernanceMissing)?
+            .map_err(|_| MembershipError::RulesMissing)?
         {
             Under::Now | Under::Unresolved(None) => self.written_as(app, document, write, now)?,
             Under::Past(judged) | Under::Unresolved(Some(judged)) => {
                 judged.written_as(app, document, write, now)?
             }
-            Under::Missing => return Err(MembershipError::GovernanceMissing),
+            Under::Missing => return Err(MembershipError::RulesMissing),
         };
         written
             .map(|(member, _, _)| member)
@@ -1379,15 +1380,15 @@ impl StatePeer {
         retained: bool,
     ) -> Result<Authorized, AuthorizeRefusal> {
         if envelope.author.as_bytes() != source {
-            return Err(AuthorizeRefusal::Denied(
-                "the change is not its sender's own".into(),
-            ));
+            return Err(AuthorizeRefusal::Denied(crate::AdmissionError::forbidden(
+                "the change is not its sender's own",
+            )));
         }
         let (decided, delegated) = match self
             .judged_under(app_id, record, envelope, retained)
-            .map_err(AuthorizeRefusal::Denied)?
+            .map_err(|error| AuthorizeRefusal::Denied(crate::AdmissionError::malformed(error)))?
         {
-            Under::Missing => return Ok(Authorized::Hold(crate::MissingPrerequisite::Governance)),
+            Under::Missing => return Ok(Authorized::Hold(crate::MissingPrerequisite::Rules)),
             Under::Now => {
                 self.decide_written(source, app_id, record, envelope, authorization_time)?
             }
@@ -1406,7 +1407,7 @@ impl StatePeer {
                 ) {
                     Ok(decided) => decided,
                     Err(_) => {
-                        return Ok(Authorized::Hold(crate::MissingPrerequisite::Governance));
+                        return Ok(Authorized::Hold(crate::MissingPrerequisite::Rules));
                     }
                 }
             }
@@ -1420,15 +1421,15 @@ impl StatePeer {
             && self.delegated_work(source, authorization_time).is_none()
             && self.withdrawal_keeping(app_id, record, envelope).is_none()
         {
-            return Err(AuthorizeRefusal::Denied(
-                "the member this server worked for took the work back before it was taken".into(),
-            ));
+            return Err(AuthorizeRefusal::Denied(crate::AdmissionError::forbidden(
+                "the member this server worked for took the work back before it was taken",
+            )));
         }
         // A copy behind its governor's base takes nothing in on the roles and
         // grants it holds: the write waits, and the base the copy takes
         // decides it.
         if self.behind_its_governor() {
-            return Ok(Authorized::Hold(crate::MissingPrerequisite::Governance));
+            return Ok(Authorized::Hold(crate::MissingPrerequisite::Rules));
         }
         Ok(decided)
     }
@@ -1445,7 +1446,7 @@ impl StatePeer {
     ) -> Result<(Authorized, bool), AuthorizeRefusal> {
         let written = self
             .written_as(app_id, record, envelope, authorization_time)
-            .map_err(|error| AuthorizeRefusal::Denied(error.to_string()))?;
+            .map_err(|error| AuthorizeRefusal::Denied(error.into()))?;
         let Some((member, history, kept)) = written else {
             return Ok((
                 Authorized::Hold(crate::MissingPrerequisite::RemovalCut),

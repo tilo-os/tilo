@@ -3,6 +3,10 @@
 //! when a write of the same author lands.
 use super::*;
 
+fn forbidden() -> crate::AdmissionError {
+    crate::AdmissionError::forbidden("no permission")
+}
+
 /// The write `key`'s device publishes into the workspace's record, authored
 /// by `author` as another device's peer sees it arrive.
 fn write(author: &mut StatePeer, key: &SigningKey, now: SystemTime, name: &str) -> NeighbourMsg {
@@ -41,14 +45,14 @@ tilo_test_env::scenario! {
         let second = write(&mut theirs, &b_key, now, "second");
         assert!(
             peer.workspace_mut()
-                .refuse_write(&a_cert, &second, "no permission", &a_key, now)
+                .refuse_write(&a_cert, &second, &forbidden(), &a_key, now)
                 .unwrap(),
             "the workspace takes the device's verdict"
         );
         assert!(
             !peer
                 .workspace_mut()
-                .refuse_write(&a_cert, &second, "no permission", &a_key, now)
+                .refuse_write(&a_cert, &second, &forbidden(), &a_key, now)
                 .unwrap(),
             "one verdict per write"
         );
@@ -101,6 +105,32 @@ tilo_test_env::scenario! {
         assert!(restored.workspace().write_refusals().is_empty());
     }
 
+    phase a_verdict_keeps_the_class_admission_refused_with;
+    {
+        // The class is the refusal's own, never read back from its words:
+        // "certified identity missing" names no missing write, and a full
+        // history names no malformed one.
+        for (refused, class) in [
+            (
+                crate::AdmissionError::from(crate::MembershipError::UnknownDevice),
+                crate::RefusalReason::NotCertified,
+            ),
+            (crate::AdmissionError::HistoryFull, crate::RefusalReason::Full),
+        ] {
+            let (mut peer, a_key, b_key, _, now) = seeded();
+            let a_cert = certificate(&peer, &a_key);
+            let mut theirs = peer.clone();
+            let message = write(&mut theirs, &b_key, now, "value");
+            peer.workspace_mut()
+                .refuse_write(&a_cert, &message, &refused, &a_key, now)
+                .unwrap();
+            let held = peer.workspace().write_refusals();
+            assert_eq!(held.len(), 1, "{held:?}");
+            assert_eq!(held[0].reason, class, "{refused}");
+            assert_eq!(held[0].detail, refused.to_string(), "the words stay as they were");
+        }
+    }
+
     phase a_verdict_is_kept_only_in_the_slice_of_the_device_that_made_it;
     {
         let (mut peer, a_key, b_key, _, now) = seeded();
@@ -110,7 +140,7 @@ tilo_test_env::scenario! {
         let message = write(&mut theirs, &b_key, now, "value");
         let before = peer.admitted_workspace().cloned();
         peer.workspace_mut()
-            .refuse_write(&a_cert, &message, "no permission", &a_key, now)
+            .refuse_write(&a_cert, &message, &forbidden(), &a_key, now)
             .unwrap();
         let after = peer.admitted_workspace().unwrap().clone();
         assert!(
@@ -157,11 +187,11 @@ fn two_devices_first_verdicts_both_survive_a_merge() {
     let from_b = write(&mut theirs, &b_key, now, "first");
     let from_a = write(&mut theirs, &a_key, now, "second");
     left.workspace_mut()
-        .refuse_write(&a_cert, &from_b, "no permission", &a_key, now)
+        .refuse_write(&a_cert, &from_b, &forbidden(), &a_key, now)
         .unwrap();
     right
         .workspace_mut()
-        .refuse_write(&b_cert, &from_a, "no permission", &b_key, now)
+        .refuse_write(&b_cert, &from_a, &forbidden(), &b_key, now)
         .unwrap();
     // What each device holds, merged into the other's as a sync would.
     let heads = left.workspace_heads().unwrap();

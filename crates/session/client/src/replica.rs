@@ -318,7 +318,10 @@ impl Replicas {
         now: SystemTime,
     ) -> Result<tilo_peer_state::AdmissionReport, tilo_peer_state::AdmissionError> {
         if !self.workspaces.contains(&workspace_id) {
-            return Err("the workspace has no governance".into());
+            return Err(tilo_peer_state::AdmissionError::rejected(
+                neighbour_wire::RefusalReason::MissingDependency,
+                "the workspace is not held here yet",
+            ));
         }
         self.owner
             .receive(workspace_id, relayed(author), message, now)

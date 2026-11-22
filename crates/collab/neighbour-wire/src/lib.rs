@@ -238,64 +238,6 @@ impl RefusalReason {
             Self::Other => "refused",
         }
     }
-
-    /// The class of a receiver's own words about why it refused a write:
-    /// what the write's author is shown, the words themselves staying in
-    /// [`WriteRefusal::detail`].
-    #[must_use]
-    pub fn of(reason: &str) -> Self {
-        let reason = reason.to_ascii_lowercase();
-        if reason.contains("revoked") {
-            Self::Revoked
-        } else if reason.contains("expired")
-            || reason.contains("not current")
-            || reason.contains("date")
-        {
-            Self::Expired
-        } else if reason.contains("certificate")
-            || reason.contains("not certified")
-            || reason.contains("roster")
-        {
-            Self::NotCertified
-        } else if reason.contains("earlier writes")
-            || reason.contains("before the document")
-            || reason.contains("not here")
-            || reason.contains("missing")
-            || reason.contains("held")
-        {
-            Self::MissingDependency
-        } else if reason.contains("already")
-            || reason.contains("conflict")
-            || reason.contains("immutable")
-            || reason.contains("rewinds")
-        {
-            Self::Conflict
-        } else if reason.contains("exhausted")
-            || reason.contains("limit")
-            || reason.contains("quota")
-            || reason.contains("capacity")
-            || reason.contains("too many")
-            || reason.contains("too much")
-        {
-            Self::Full
-        } else if reason.contains("admits")
-            || reason.contains("permission")
-            || reason.contains("forbidden")
-            || reason.contains("mismatch")
-            || reason.contains("signs its own")
-            || reason.contains("not a member")
-            || reason.contains("no membership")
-            || reason.contains("may not")
-            || reason.contains("cannot")
-            || reason.contains("layout")
-            || reason.contains("publishes no")
-            || reason.contains("not granted")
-        {
-            Self::Forbidden
-        } else {
-            Self::Malformed
-        }
-    }
 }
 
 /// One device's verdict on one write of another's: a signed fact the
@@ -953,44 +895,6 @@ mod tests {
     #[test]
     fn peer_handle_is_fnv1a_of_the_device_key() {
         assert_eq!(peer_handle(&[7; 32]), 0xf160_fd08_b6d9_aac5);
-    }
-
-    /// A receiving device's own words about why it refused a write read as the
-    /// class the person is shown, for the wordings the store and the workspace
-    /// actually refuse with.
-    #[test]
-    fn a_receivers_words_read_as_the_class_it_is() {
-        for (words, class) in [
-            ("device revoked", RefusalReason::Revoked),
-            ("certificate expired", RefusalReason::Expired),
-            ("certificate not current", RefusalReason::Expired),
-            (
-                "identity is absent from admitted roster",
-                RefusalReason::NotCertified,
-            ),
-            (
-                "document change held: its app surface is not here yet",
-                RefusalReason::MissingDependency,
-            ),
-            (
-                "signed operation conflicts with exact admitted sequence",
-                RefusalReason::Conflict,
-            ),
-            ("exact admission index quota exceeded", RefusalReason::Full),
-            ("too many changes; slow down", RefusalReason::Full),
-            (
-                "record read forbidden: notes/main",
-                RefusalReason::Forbidden,
-            ),
-            (
-                "the workspace's layout is personal, as a public workspace's is: \
-                 it takes no member's windows or layout",
-                RefusalReason::Forbidden,
-            ),
-            ("something else entirely", RefusalReason::Malformed),
-        ] {
-            assert_eq!(RefusalReason::of(words), class, "{words}");
-        }
     }
 
     /// Workspace id shared by every fixture that names one.

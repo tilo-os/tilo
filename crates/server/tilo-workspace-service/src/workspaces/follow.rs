@@ -31,7 +31,7 @@ pub(super) struct Followed {
     /// since: replaying what the server retains brings it in.
     pub(super) replay_wanted: bool,
     /// Admission refused the write, and why: the author is owed a verdict.
-    pub(super) refused: Option<String>,
+    pub(super) refused: Option<tilo_peer_state::AdmissionError>,
     /// The write is a sealed compaction this copy refused because it is behind in it, and why
     /// it could not take it yet ([`BehindRefusal`]).
     pub(super) behind: Option<BehindRefusal>,
@@ -283,7 +283,7 @@ impl GovernedWorkspace {
                 Followed::default()
             }
             Err(error) => Followed {
-                refused: Some(error.to_string()),
+                refused: Some(error),
                 ..Followed::default()
             },
         }
@@ -454,20 +454,20 @@ impl GovernedWorkspace {
         Some(error.to_string())
     }
 
-    /// File this device's verdict on the write admission refused because
-    /// `reason`, in the governor's copy, for [`Self::keep_followed`] to write
+    /// File this device's verdict on the write admission refused as
+    /// `refusal` says, in the governor's copy, for [`Self::keep_followed`] to write
     /// through: the write's author reads why it is not here.
     pub(super) fn refused(
         &self,
         caller: &DeviceCert,
         key: &SigningKey,
         message: &neighbour_wire::NeighbourMsg,
-        reason: &str,
+        refusal: &tilo_peer_state::AdmissionError,
     ) -> Followed {
         let filed = self.peer().workspace_mut().refuse_write(
             caller,
             message,
-            reason,
+            refusal,
             key,
             tilo_clock::wall(),
         );
@@ -479,7 +479,7 @@ impl GovernedWorkspace {
             Err(error) => {
                 tracing::warn!(
                     workspace = %self.record.workspace,
-                    %reason,
+                    %refusal,
                     %error,
                     "the governor did not file a refusal of a record write"
                 );
@@ -535,7 +535,7 @@ impl Workspaces {
         }
         if let Some(refused) = followed.refused {
             drop(governed);
-            return Some(refused);
+            return Some(refused.to_string());
         }
         // The change is this copy's now: what it took is kept, and a verdict
         // filed against it before is cleared.

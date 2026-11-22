@@ -771,7 +771,9 @@ mod tests {
             message,
             landed: false,
             retained: false,
-            report: Err("the workspace keeps no state of it".into()),
+            report: Err(tilo_peer_state::AdmissionError::malformed(
+                "the workspace keeps no state of it",
+            )),
             fresh: true,
         };
         let Some(super::super::NetEvent::Msg {

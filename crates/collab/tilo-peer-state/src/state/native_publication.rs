@@ -25,11 +25,12 @@ impl NativePublicationCut {
         now: SystemTime,
         strict: bool,
     ) -> Result<(Self, AdmissionReport), AdmissionError> {
-        let publisher = self
-            .candidate
-            .core
-            .native_cut_publisher
-            .ok_or_else(|| AdmissionError::from("native cut context missing"))?;
+        let publisher = self.candidate.core.native_cut_publisher.ok_or_else(|| {
+            AdmissionError::rejected(
+                neighbour_wire::RefusalReason::MissingDependency,
+                "native cut context missing",
+            )
+        })?;
         let (source, replayed) = self.candidate.resolve_origin(
             TransportOrigin::RetainedNativePublication { publisher },
             &message,
@@ -45,11 +46,12 @@ impl NativePublicationCut {
     }
 
     pub fn finish(mut self, now: SystemTime) -> Result<StatePeer, AdmissionError> {
-        let publisher = self
-            .candidate
-            .core
-            .native_cut_publisher
-            .ok_or_else(|| AdmissionError::from("native cut context missing"))?;
+        let publisher = self.candidate.core.native_cut_publisher.ok_or_else(|| {
+            AdmissionError::rejected(
+                neighbour_wire::RefusalReason::MissingDependency,
+                "native cut context missing",
+            )
+        })?;
         self.candidate.validate_native_publisher(publisher, now)?;
         if self
             .candidate
@@ -58,10 +60,15 @@ impl NativePublicationCut {
             .as_deref()
             .is_some_and(|workspace| !workspace.get_missing_deps(&[]).is_empty())
         {
-            return Err("native publication cut has unresolved workspace history".into());
+            return Err(crate::AdmissionError::malformed(
+                "native publication cut has unresolved workspace history",
+            ));
         }
         if self.candidate.core.pending.len() > 64 {
-            return Err("native cut pending queue exceeds entry limit".into());
+            return Err(crate::AdmissionError::rejected(
+                neighbour_wire::RefusalReason::Full,
+                "native cut pending queue exceeds entry limit",
+            ));
         }
         // Preserve unresolved server work that existed before this cut. No new
         // native item may lose publisher provenance in the frozen v4/v5 queue.
@@ -77,7 +84,9 @@ impl NativePublicationCut {
                 .zip(matched.iter_mut())
                 .find_map(|(prior, matched)| (!*matched && prior == &stamp).then_some(matched))
             else {
-                return Err("native publication cut has unresolved input".into());
+                return Err(crate::AdmissionError::malformed(
+                    "native publication cut has unresolved input",
+                ));
             };
             *slot = true;
         }
@@ -90,8 +99,9 @@ impl NativePublicationCut {
 // neither materializes the wire bytes nor changes the durable queue format.
 fn pending_stamp(pending: &([u8; 32], NeighbourMsg, bool)) -> Result<[u8; 32], AdmissionError> {
     let mut hasher = blake3::Hasher::new();
-    crate::postcard_sink::hash_into(pending, &mut hasher, usize::MAX)
-        .map_err(|_| AdmissionError::from("native cut pending identity could not be encoded"))?;
+    crate::postcard_sink::hash_into(pending, &mut hasher, usize::MAX).map_err(|_| {
+        AdmissionError::malformed("native cut pending identity could not be encoded")
+    })?;
     Ok(*hasher.finalize().as_bytes())
 }
 
@@ -103,7 +113,9 @@ impl StatePeer {
     ) -> Result<NativePublicationCut, AdmissionError> {
         self.validate_native_publisher(publisher, now)?;
         if self.core.native_cut_publisher.is_some() || self.core.pending.len() > 64 {
-            return Err("invalid native cut baseline".into());
+            return Err(crate::AdmissionError::malformed(
+                "invalid native cut baseline",
+            ));
         }
         let mut prior_pending = [[0; 32]; 64];
         for (slot, pending) in prior_pending.iter_mut().zip(&self.core.pending) {
@@ -137,9 +149,7 @@ impl StatePeer {
         publisher: [u8; 32],
         now: SystemTime,
     ) -> Result<(), AdmissionError> {
-        self.governor_device(&publisher, now)
-            .map(drop)
-            .map_err(AdmissionError::from)
+        self.governor_device(&publisher, now).map(drop)
     }
 
     pub(super) fn resolve_origin(
@@ -163,7 +173,11 @@ impl StatePeer {
                     // retained packet does not change its signed authorship.
                     NeighbourMsg::AppDocument { envelope, .. } => *envelope.author.as_bytes(),
                     NeighbourMsg::IdentityHello { cert, .. } => cert.device_public_key,
-                    _ => return Err("unsupported native publication family".into()),
+                    _ => {
+                        return Err(crate::AdmissionError::malformed(
+                            "unsupported native publication family",
+                        ));
+                    }
                 };
                 Ok((source, true))
             }
@@ -172,7 +186,9 @@ impl StatePeer {
                     message,
                     NeighbourMsg::SyncResp { .. } | NeighbourMsg::AppDocument { .. }
                 ) {
-                    return Err("state requires server-authenticated Delta carrier".into());
+                    return Err(crate::AdmissionError::malformed(
+                        "state requires server-authenticated Delta carrier",
+                    ));
                 }
                 Ok((source, false))
             }

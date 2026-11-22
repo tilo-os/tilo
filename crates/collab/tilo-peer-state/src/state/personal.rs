@@ -30,6 +30,7 @@ use super::{
     DocumentRow, PeerDocument, ReceiveOutcome, Route, backend, default_surfaces, err, now_ns,
     peer_handle,
 };
+use crate::AdmissionError;
 use crate::NeighbourMsg;
 use crate::admission::{DocumentAdmission, ExactAdmissions};
 use crate::cached_document::CachedDocument;
@@ -313,7 +314,7 @@ impl PersonalStore {
         app: &str,
         resource: &str,
         envelope: &SignedOp,
-        reason: &str,
+        refused: &AdmissionError,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<(), String> {
@@ -342,8 +343,8 @@ impl PersonalStore {
             seq: envelope.seq,
             operation: format!("{}:{}", envelope.artifact.0, envelope.seq),
             changes: self.unheld_changes(app, resource, envelope),
-            reason: RefusalReason::of(reason),
-            detail: reason.into(),
+            reason: refused.reason(),
+            detail: refused.to_string(),
             by: self.device.device_public_key,
             at_ns: now_ns(now),
             signature: Vec::new(),
@@ -401,7 +402,8 @@ impl PersonalStore {
             return Err("a refusal is signed by the device that sent it".into());
         }
         if !refusals.is_empty() {
-            self.admits_device(&source, now)?;
+            self.admits_device(&source, now)
+                .map_err(|error| error.to_string())?;
             if !self.certificates.contains_key(&source) {
                 return Err("the device's certificate is not here".into());
             }
@@ -699,12 +701,26 @@ impl PersonalStore {
     /// a certificate already held for it is still current. A device never met
     /// is admitted to the connection alone; nothing it sends is admitted
     /// before the certificate its first frame carries checks out.
-    pub fn admits_device(&self, device: &[u8; 32], now: SystemTime) -> Result<(), String> {
+    ///
+    /// # Errors
+    /// [`RefusalReason::Revoked`] for a revoked device, and
+    /// [`RefusalReason::Expired`] or [`RefusalReason::NotCertified`] for a
+    /// held certificate that does not hold now.
+    pub fn admits_device(&self, device: &[u8; 32], now: SystemTime) -> Result<(), AdmissionError> {
         if self.revocations.is_revoked(&self.root, device) {
-            return Err("device revoked".into());
+            return Err(AdmissionError::rejected(
+                RefusalReason::Revoked,
+                "device revoked",
+            ));
         }
         if let Some(certificate) = self.certificates.get(device) {
-            certificate.current_typed(now_ns(now)).map_err(err)?;
+            certificate.current_typed(now_ns(now)).map_err(|error| {
+                let reason = match error {
+                    tilo_user_identity::DeviceCertError::Expired => RefusalReason::Expired,
+                    _ => RefusalReason::NotCertified,
+                };
+                AdmissionError::rejected(reason, error)
+            })?;
         }
         Ok(())
     }
@@ -853,13 +869,12 @@ impl PersonalStore {
             }
             // The store's verdict on the person's own write is filed like a
             // sibling's: what its history shows, and what a notice is made of.
-            let reason = refused.to_string();
             // The resource of their devices is the store's, not a write of
             // theirs: nobody is told of it.
             if !Self::is_devices_document(app, resource) {
-                self.file_refusal(app, resource, &envelope, &reason, key, now)?;
+                self.file_refusal(app, resource, &envelope, &refused, key, now)?;
             }
-            return Err(reason);
+            return Err(refused.to_string());
         }
         // A change of this device's own subtree goes out as the whole document
         // it leaves, signed here: what a sibling keeps to hand on for this
@@ -1085,7 +1100,7 @@ impl PersonalStore {
             return Err("transport author or store key mismatch".to_owned());
         };
         let refused = if cluster_id != self.store_key() || peer != peer_handle(&author) {
-            crate::AdmissionError::Rejected("transport author or store key mismatch".to_owned())
+            AdmissionError::forbidden("transport author or store key mismatch")
         } else {
             match self.write(&app_id, &document_id, &envelope, now, origin) {
                 Ok(outcome) => return Ok(outcome),
@@ -1105,17 +1120,73 @@ impl PersonalStore {
         // The store's verdict on this one write is now a fact it keeps: the
         // write's author is told, and its history joins it to the write. The
         // resource of the person's devices is no write of theirs to be told of.
-        let reason = refused.to_string();
         if !Self::is_devices_document(&app_id, &document_id) {
-            self.file_refusal(&app_id, &document_id, &envelope, &reason, key, now)?;
+            self.file_refusal(&app_id, &document_id, &envelope, &refused, key, now)?;
         }
-        Err(reason)
+        Err(refused.to_string())
     }
 
     /// The one admission: the signed write is the author's own, its device is
     /// certified by the root and live, its route is this store, and what it
     /// changes merges into the resource. Everything is decided in a copy, so a
     /// refusal leaves the store as it was.
+    /// What `envelope` changes of `resource`: a personal document's change is
+    /// cleartext between the person's devices, and nothing but a change.
+    fn cleartext_change(
+        app: &str,
+        store_key: &str,
+        resource: &str,
+        envelope: &SignedOp,
+    ) -> Result<DocumentMutation, AdmissionError> {
+        let payload =
+            collab_types::validate_whole_document_payload_route(app, store_key, resource, envelope)
+                .map_err(AdmissionError::malformed)?;
+        let WholeDocumentPayload::Cleartext(mutation) = payload else {
+            return Err(AdmissionError::malformed(
+                "a personal document is cleartext between its devices",
+            ));
+        };
+        if envelope.kind != OpKind::Change {
+            return Err(AdmissionError::forbidden(
+                "the personal store admits document changes",
+            ));
+        }
+        Ok(mutation)
+    }
+
+    /// Whether a write `source` signed may be decided here at all: this
+    /// device still holds the store, a write of its own is signed by it, and
+    /// another device's is a certified device the person has not revoked.
+    fn admits_author(
+        &self,
+        source: [u8; 32],
+        origin: Origin,
+        now: SystemTime,
+    ) -> Result<(), AdmissionError> {
+        if self.revoked_here() {
+            return Err(AdmissionError::rejected(
+                RefusalReason::Revoked,
+                "this device was revoked",
+            ));
+        }
+        if origin == Origin::Local {
+            if source != self.device.device_public_key {
+                return Err(AdmissionError::forbidden(
+                    "this device signs its own writes",
+                ));
+            }
+            return Ok(());
+        }
+        self.admits_device(&source, now)?;
+        if !self.certificates.contains_key(&source) {
+            return Err(AdmissionError::rejected(
+                RefusalReason::NotCertified,
+                "the device's certificate is not here",
+            ));
+        }
+        Ok(())
+    }
+
     fn write(
         &mut self,
         app: &str,
@@ -1123,49 +1194,33 @@ impl PersonalStore {
         envelope: &SignedOp,
         now: SystemTime,
         origin: Origin,
-    ) -> Result<ReceiveOutcome, crate::AdmissionError> {
+    ) -> Result<ReceiveOutcome, AdmissionError> {
         let source = *envelope.author.as_bytes();
-        if self.revoked_here() {
-            return Err("this device was revoked".into());
-        }
-        if origin == Origin::Local {
-            if source != self.device.device_public_key {
-                return Err("this device signs its own writes".into());
-            }
-        } else {
-            self.admits_device(&source, now)?;
-            if !self.certificates.contains_key(&source) {
-                return Err("the device's certificate is not here".into());
-            }
-        }
+        self.admits_author(source, origin, now)?;
         let store_key = self.store_key();
-        let admitted =
-            DocumentAdmission::from_op(&store_key, app, resource, envelope).map_err(err)?;
+        let admitted = DocumentAdmission::from_op(&store_key, app, resource, envelope)
+            .map_err(AdmissionError::malformed)?;
         if self.exact.get(&admitted.key) == Some(&admitted.operation_id) {
             return Ok(ReceiveOutcome {
                 duplicate: true,
                 ..Default::default()
             });
         }
-        let payload = collab_types::validate_whole_document_payload_route(
-            app, &store_key, resource, envelope,
-        )
-        .map_err(err)?;
-        let WholeDocumentPayload::Cleartext(mutation) = payload else {
-            return Err("a personal document is cleartext between its devices".into());
-        };
-        if envelope.kind != OpKind::Change {
-            return Err("the personal store admits document changes".into());
-        }
+        let mutation = Self::cleartext_change(app, &store_key, resource, envelope)?;
         let route = Self::route(app, resource);
         let route_existed = self.documents.contains_key(&route);
         if !route_existed && matches!(mutation, DocumentMutation::Incremental(_)) {
-            return Err("the change arrived before the document it changes".into());
+            return Err(AdmissionError::rejected(
+                RefusalReason::MissingDependency,
+                "the change arrived before the document it changes",
+            ));
         }
         let owner = resource_owner(resource);
         if origin == Origin::Relayed {
             if !matches!(mutation, DocumentMutation::Snapshot(_)) {
-                return Err("a device's own resource is handed on whole".into());
+                return Err(AdmissionError::malformed(
+                    "a device's own resource is handed on whole",
+                ));
             }
             if self.holds_newer(&route, envelope) {
                 return Ok(ReceiveOutcome {
@@ -1194,24 +1249,31 @@ impl PersonalStore {
             collab_types::validate_admitted_inbound_op
         };
         validate(envelope, &author, &mut validated, now, CLOCK_SKEW)
-            .map_err(|error| format!("the write is not admitted: {error}"))?;
+            .map_err(|error| format!("the write is not admitted: {error}"))
+            .map_err(AdmissionError::malformed)?;
         candidate.channel = validated;
-        collab_types::check_claimed(envelope)?;
+        collab_types::check_claimed(envelope).map_err(AdmissionError::malformed)?;
         if let DocumentMutation::Incremental(bytes) = &mutation {
-            let changes = collab_types::parse_changes(bytes).map_err(err)?;
-            collab_types::check_appearances(&changes, None)
-                .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
+            let changes = collab_types::parse_changes(bytes).map_err(AdmissionError::malformed)?;
+            collab_types::check_appearances(&changes, None).map_err(|refusal| {
+                AdmissionError::forbidden(format!("document change forbidden: {refusal}"))
+            })?;
         }
         let changed =
             match crate::document::merge_committed_with_status(&mut candidate.doc, &mutation)
-                .map_err(crate::AdmissionError::from)?
+                .map_err(AdmissionError::from)?
             {
                 crate::document::MergeOutcome::Changed(changed) => changed,
                 crate::document::MergeOutcome::MissingDependencies => {
-                    return Err("the change's earlier writes are not here".into());
+                    return Err(AdmissionError::rejected(
+                        RefusalReason::MissingDependency,
+                        "the change's earlier writes are not here",
+                    ));
                 }
             };
-        self.exact.insert(&admitted).map_err(err)?;
+        self.exact
+            .insert(&admitted)
+            .map_err(AdmissionError::malformed)?;
         // The owner's newest whole state of its own resource is what this
         // device hands on for it.
         if owner == Some(source)
@@ -2026,7 +2088,10 @@ mod tests {
                 "tube",
                 "prefs",
                 &refused,
-                "it waits for earlier writes",
+                &AdmissionError::rejected(
+                    RefusalReason::MissingDependency,
+                    "it waits for earlier writes",
+                ),
                 &a_key,
                 now(),
             )
@@ -2640,7 +2705,10 @@ mod tests {
                 "tube",
                 "prefs",
                 &refused,
-                "it waits for earlier writes",
+                &AdmissionError::rejected(
+                    RefusalReason::MissingDependency,
+                    "it waits for earlier writes",
+                ),
                 &a_key,
                 now(),
             )

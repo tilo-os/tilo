@@ -920,7 +920,7 @@ fn refusal_of(error: &crate::MembershipError) -> tilo_actions::remote::ActionCal
         | MembershipError::Absent
         | MembershipError::MalformedIdentity(_)
         | MembershipError::CertificateMismatch
-        | MembershipError::GovernanceMissing
+        | MembershipError::RulesMissing
         | MembershipError::RevocationRoot
         | MembershipError::Revocation(_) => ActionCallError::NotPermitted,
     }

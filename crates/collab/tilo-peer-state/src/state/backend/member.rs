@@ -53,7 +53,7 @@ fn current(
     let workspace = peer
         .workspace_doc
         .as_ref()
-        .ok_or(MembershipError::GovernanceMissing)?;
+        .ok_or(MembershipError::RulesMissing)?;
     let policy = workspace.workspace_policy(&peer.workspace);
     let key = key_text(source);
     // Decoded once per document state, not on every lookup.

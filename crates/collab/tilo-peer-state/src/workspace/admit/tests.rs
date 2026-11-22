@@ -216,7 +216,7 @@ tilo_test_env::scenario! {
                 &snapshot,
             )
             .unwrap_err(),
-            WorkspaceRefusal::GovernanceMissing
+            WorkspaceRefusal::RulesMissing
         );
     }
 
@@ -426,8 +426,8 @@ tilo_test_env::scenario! {
     {
         for (refusal, message) in [
             (
-                WorkspaceRefusal::GovernanceMissing,
-                "workspace governance missing",
+                WorkspaceRefusal::RulesMissing,
+                "the workspace's rules are not here yet",
             ),
             (
                 WorkspaceRefusal::WriteForbidden,

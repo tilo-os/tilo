@@ -29,13 +29,16 @@ impl StatePeer {
         source: &[u8; 32],
         sequence: u64,
     ) -> Result<bool, AdmissionError> {
-        Ok(self.governed_coverage(route)?.is_some_and(|coverage| {
-            coverage.workspace == self.core.workspace
-                && coverage.app == route.app
-                && coverage.record == route.record
-                && coverage.author == *source
-                && coverage.sequence > sequence
-        }))
+        Ok(self
+            .governed_coverage(route)
+            .map_err(crate::AdmissionError::malformed)?
+            .is_some_and(|coverage| {
+                coverage.workspace == self.core.workspace
+                    && coverage.app == route.app
+                    && coverage.record == route.record
+                    && coverage.author == *source
+                    && coverage.sequence > sequence
+            }))
     }
     /// A superseded checkpoint is settled without being applied, so the
     /// delivery cursor can move past it; nothing from it enters state.
