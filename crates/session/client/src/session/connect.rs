@@ -356,9 +356,8 @@ pub(super) fn link_error(error: tilo_server_session::ClientError) -> LinkError {
         ClientError::Codec(reason) => LinkError::Malformed(reason),
         ClientError::PeerVersion { theirs } => LinkError::PeerVersion { theirs },
         // The server said why, and proved the refusal its own.
-        ClientError::Refused(tilo_server_protocol::auth::HelloRefusal::DeviceRevoked) => {
-            LinkError::DeviceRevoked
-        }
+        ClientError::Refused(tilo_server_protocol::auth::HelloRefusal::DeviceRevoked)
+        | ClientError::Retired(_) => LinkError::DeviceRevoked,
         ClientError::Refused(tilo_server_protocol::auth::HelloRefusal::CertificateRejected) => {
             LinkError::CertificateRejected
         }

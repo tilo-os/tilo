@@ -113,6 +113,11 @@ pub async fn reconcile_into(
     workspaces: &Workspaces,
     requests: &Requests,
 ) -> Result<Applied, String> {
+    // A server whose key its person's root revoked is retired, whatever its
+    // copy of the Servers workspace says, or whether it still keeps one.
+    if revoked(workspaces) {
+        return let_go(workspaces).await;
+    }
     let mut servers = read(workspaces).await?;
     let cert = workspaces.serving_certificate().clone();
     let own = device_id(&cert.device_public_key);
@@ -126,10 +131,15 @@ pub async fn reconcile_into(
         super::apply(workspaces, super::Servers::RETIRE_SERVER.with(own.clone())).await?;
         servers = read(workspaces).await?;
     }
+    // Every device of the person refuses the key of each retired server,
+    // this one's own among them.
+    super::refuse_retired(workspaces, &servers).await?;
     let own_entry = servers.servers.get(&own);
+    if own_entry.is_some_and(|server| server.retired) {
+        return let_go(workspaces).await;
+    }
     let mut applied = Applied {
         offered: own_entry.is_some(),
-        retired: own_entry.is_some_and(|server| server.retired),
         ..Applied::default()
     };
     // Every holder of the Servers workspace applies this part of the
@@ -140,23 +150,38 @@ pub async fn reconcile_into(
     // only on a server.
     let attached = super::attach::attach_named(workspaces).await?;
     if let Some(entry) = own_entry {
-        if entry.retired {
-            // A retired server serves nothing: it lets go of everything it
-            // holds, and its files stay for a later entry that wants them.
-            for summary in workspaces.list().await {
-                workspaces.release(&summary.workspace).await?;
-                applied.released.push(summary.workspace);
-            }
-        } else {
-            let settings = apply_settings(workspaces, &cert, entry, requests).await?;
-            applied.policy = settings.policy;
-            applied.device_config = settings.device_config;
-            applied.device_status = settings.device_status;
-        }
+        let settings = apply_settings(workspaces, &cert, entry, requests).await?;
+        applied.policy = settings.policy;
+        applied.device_config = settings.device_config;
+        applied.device_status = settings.device_status;
     }
-    super::refuse_retired(workspaces, &servers).await?;
     applied.held = attached.held;
     applied.released.extend(attached.released);
+    Ok(applied)
+}
+
+/// Whether this device's own person's root revoked its key: a verified entry
+/// in the list it refuses keys by, however that entry reached it. A server
+/// retired while it was away learns it so: every device of its person refuses
+/// it, and its entry in their Servers workspace never reaches it.
+fn revoked(workspaces: &Workspaces) -> bool {
+    let cert = workspaces.serving_certificate();
+    workspaces
+        .revocations()
+        .is_revoked(&cert.user_public_key, &cert.device_public_key)
+}
+
+/// What a retired server does: it serves nothing, so it lets go of everything
+/// it holds, and its files stay for a later entry that wants them.
+async fn let_go(workspaces: &Workspaces) -> Result<Applied, String> {
+    let mut applied = Applied {
+        retired: true,
+        ..Applied::default()
+    };
+    for summary in workspaces.list().await {
+        workspaces.release(&summary.workspace).await?;
+        applied.released.push(summary.workspace);
+    }
     Ok(applied)
 }
 
@@ -226,7 +251,7 @@ pub fn follow(
     tokio::spawn(async move {
         let mut again = tokio::time::interval(super::attach::NAMED_TICK);
         again.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut seen = read(&workspaces).await.ok();
+        let mut seen = (read(&workspaces).await.ok(), revoked(&workspaces));
         apply_now(&workspaces, &requests, endpoint.as_ref(), &state_root).await;
         answer_now(&workspaces, &state_root, &running).await;
         loop {
@@ -240,10 +265,11 @@ pub fn follow(
                 },
                 change = governance.recv() => change.map(|workspace| workspace == admin),
                 // A write another holder made reaches this copy without the write watch hearing
-                // it: the document is applied again once it reads otherwise than it did.
+                // it, and a revocation of this device's key reaches it with no write at all:
+                // the document is applied again once either reads otherwise than it did.
                 _ = again.tick() => {
-                    let now = read(&workspaces).await.ok();
-                    Ok(now.is_some() && std::mem::replace(&mut seen, now.clone()) != now)
+                    let now = (read(&workspaces).await.ok(), revoked(&workspaces));
+                    Ok((now.0.is_some() || now.1) && std::mem::replace(&mut seen, now.clone()) != now)
                 }
             };
             match ours {

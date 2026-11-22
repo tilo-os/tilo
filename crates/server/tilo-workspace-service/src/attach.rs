@@ -37,7 +37,7 @@ use iroh::endpoint::Endpoint;
 use iroh_base::EndpointAddr;
 use tilo_lock::MutexRecover as _;
 use tilo_lock::RwLockRecover as _;
-use tilo_server_session::client::ServerClient;
+use tilo_server_session::client::{ClientError, ServerClient};
 use tokio::task::JoinHandle;
 
 use crate::handshake::LiveIdentity;
@@ -220,6 +220,10 @@ pub struct HostDialer {
     pub metrics: Arc<Metrics>,
     pub scope: Option<Vec<WorkspaceId>>,
     pub links: Option<Links>,
+    /// The workspaces kept here, which take the revocation of this device
+    /// that the device it dials hands over as it refuses it: a server its
+    /// person retired while it was away learns it so.
+    pub retiring: crate::workspaces::WeakWorkspaces,
 }
 
 impl HostDialer {
@@ -266,6 +270,12 @@ impl HostDialer {
                 Some(Err(error)) => {
                     tracing::debug!(%label, "attach dial failed: {error}");
                     self.unreachable(device);
+                    if let ClientError::Retired(entry) = error
+                        && let Some(workspaces) = self.retiring.upgrade()
+                        && let Err(error) = workspaces.take_revocations(vec![*entry]).await
+                    {
+                        tracing::warn!(%label, %error, "the revocation a refusal handed over was not taken");
+                    }
                 }
                 None => {
                     tracing::debug!(%label, "the upstream's device is back; dialing it again");
@@ -282,7 +292,7 @@ impl HostDialer {
         }
     }
 
-    async fn dial(&self, upstream: &Upstream) -> Result<ServerClient, String> {
+    async fn dial(&self, upstream: &Upstream) -> Result<ServerClient, ClientError> {
         let identity = &self.identity;
         let revocations = identity.revocations.read_recover().clone();
         ServerClient::connect_v2_to_enrolled_home_peer(
@@ -295,7 +305,6 @@ impl HostDialer {
             revocations,
         )
         .await
-        .map_err(|error| error.to_string())
     }
 
     /// Tell this session's links that the one to `device` stands at `link`.

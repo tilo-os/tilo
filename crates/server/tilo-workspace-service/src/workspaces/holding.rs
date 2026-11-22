@@ -505,6 +505,7 @@ impl Workspaces {
                 metrics: host.metrics.clone(),
                 scope: Some(vec![workspace_id]),
                 links: Some(links.clone()),
+                retiring: self.downgrade(),
             }
             .spawn_woken(
                 Upstream {

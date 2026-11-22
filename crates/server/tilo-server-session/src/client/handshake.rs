@@ -197,7 +197,16 @@ fn refusal(
     client_nonce: &[u8; 32],
 ) -> ClientError {
     match verify_ack(refused, server, own_user, revocations, client_nonce) {
-        Ok(_) => ClientError::Refused(refused.refusal),
+        Ok(_) => match &refused.revocation {
+            Some(entry)
+                if refused.refusal == auth::HelloRefusal::DeviceRevoked
+                    && entry.user_public_key == *own_user
+                    && tilo_user_identity::verify_revocation_entry(entry).is_ok() =>
+            {
+                ClientError::Retired(Box::new(entry.clone()))
+            }
+            _ => ClientError::Refused(refused.refusal),
+        },
         Err(error) => ClientError::NoHandshakeAnswer(format!(
             "a refusal that does not prove its server: {error}"
         )),
@@ -287,6 +296,7 @@ mod tests {
             &by.0,
             nonce,
             auth::HelloRefusal::DeviceRevoked,
+            None,
         ))
         .unwrap()
     }

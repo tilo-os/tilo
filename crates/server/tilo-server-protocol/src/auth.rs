@@ -42,7 +42,10 @@ use ed25519_dalek::{Signer, Verifier};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use tilo_user_identity::{DeviceCert, DeviceCertError, RevocationList, verify_device_cert_at};
+use tilo_user_identity::{
+    DeviceCert, DeviceCertError, RevocationEntry, RevocationList, RevocationReason,
+    verify_device_cert_at,
+};
 
 use crate::policy::TrustPolicy;
 
@@ -240,8 +243,9 @@ impl HelloRefusal {
     /// Whoever shows that certificate and is refused can work out as much,
     /// because nothing else refuses it. A removed device of a person the
     /// endpoint does not admit hears nothing, as that person's other devices
-    /// hear nothing. Who removed the device, when, for what reason, and which
-    /// other devices its person has are never said.
+    /// hear nothing. Who removed the device and which other devices its
+    /// person has are never said; when and why only to a device its person
+    /// retired ([`HelloRefused::revocation`]).
     ///
     /// A certificate the server cannot verify is the device's own: it may
     /// certify again, and it learns nothing about the people this server
@@ -288,6 +292,12 @@ pub struct HelloRefused {
     /// hello, for this reason.
     #[serde(with = "serde_bytes")]
     pub sig_over_refusal: [u8; 64],
+    /// The revocation of the refused device's key its root signed, when the
+    /// device was retired: a server that was away while its person retired
+    /// it learns so from the first device that refuses it, and lets go of
+    /// what it holds. The root's signature is its own proof. A device lost,
+    /// stolen or compromised is told only that it was removed.
+    pub revocation: Option<RevocationEntry>,
 }
 
 /// A server's signed answer to a hello: its [`HelloAck`], or its
@@ -637,6 +647,7 @@ pub fn build_hello_refused(
     own_signing_key: &ed25519_dalek::SigningKey,
     client_nonce: &[u8; 32],
     refusal: HelloRefusal,
+    revocation: Option<RevocationEntry>,
 ) -> HelloRefused {
     let sig = own_signing_key
         .sign(&refusal_digest(client_nonce, refusal))
@@ -646,24 +657,38 @@ pub fn build_hello_refused(
         cert: own_cert,
         refusal,
         sig_over_refusal: sig,
+        revocation,
     }
 }
 
 /// Server-side: what answers `hello`, refused with `error` at an endpoint that
-/// asks `trust`, where the server says why ([`HelloRefusal::said_of`]).
+/// asks `trust`, where the server says why ([`HelloRefusal::said_of`]), with
+/// the root's entry from `revocations` that retired the device, if one did.
 #[must_use]
 pub fn server_refusal(
     identity: &ServerIdentity<'_>,
     trust: HandshakeTrust<'_>,
+    revocations: &RevocationList,
     hello: &Hello,
     error: &AuthError,
 ) -> Option<HelloRefused> {
     let refusal = HelloRefusal::said_of(error, &hello.cert, identity.own_user, trust)?;
+    let retired = (refusal == HelloRefusal::DeviceRevoked)
+        .then(|| {
+            revocations.iter().find(|entry| {
+                entry.reason == RevocationReason::Retired
+                    && (entry.user_public_key, entry.revoked_device_public_key)
+                        == (hello.cert.user_public_key, hello.cert.device_public_key)
+            })
+        })
+        .flatten()
+        .cloned();
     Some(build_hello_refused(
         identity.cert.clone(),
         identity.key,
         &hello.client_nonce,
         refusal,
+        retired,
     ))
 }
 
@@ -1506,6 +1531,7 @@ mod tests {
         refusal: u32,
         #[serde(with = "serde_bytes")]
         sig_over_refusal: [u8; 64],
+        revocation: Option<RevocationEntry>,
     }
 
     /// `root`'s removal of `device`, in a list of its own.
@@ -1540,7 +1566,13 @@ mod tests {
                     [5; 32],
                 )
                 .unwrap_err();
-                let said = server_refusal(&identity(&server, &alice), trust, &hello(party), &error);
+                let said = server_refusal(
+                    &identity(&server, &alice),
+                    trust,
+                    revocations,
+                    &hello(party),
+                    &error,
+                );
                 (error, said.map(|refused| refused.refusal))
             };
             // The person's own device, removed: every endpoint that would have admitted it
@@ -1555,6 +1587,32 @@ mod tests {
                 assert!(matches!(error, AuthError::Revoked));
                 assert_eq!(said, Some(HelloRefusal::DeviceRevoked));
             }
+            // A device its person retired is handed its root's entry, which proves itself; one
+            // lost, stolen or compromised is told only that it was removed.
+            let handed = |revocations: &RevocationList| {
+                let trust = HandshakeTrust::OwnerDevicesOnly;
+                let error = server_begin(
+                    &identity(&server, &alice),
+                    trust,
+                    revocations,
+                    &hello(&laptop),
+                    1000,
+                    [5; 32],
+                )
+                .unwrap_err();
+                server_refusal(&identity(&server, &alice), trust, revocations, &hello(&laptop), &error)
+                    .and_then(|refused| refused.revocation)
+            };
+            let retired = revocations.iter().next().cloned().unwrap();
+            assert_eq!(handed(&revocations), Some(retired.clone()));
+            let mut lost = RevocationEntry {
+                reason: RevocationReason::Lost,
+                ..retired
+            };
+            sign_revocation_entry(&mut lost, &alice_root).unwrap();
+            let mut losing = RevocationList::new();
+            losing.insert(lost).unwrap();
+            assert_eq!(handed(&losing), None);
             // A device nothing removed, of a person the endpoint does not admit, hears nothing:
             // nor does one whose removal the server knows, since that person's other devices
             // hear nothing here either.
@@ -1618,6 +1676,7 @@ mod tests {
                 &server.sk,
                 &nonce,
                 HelloRefusal::DeviceRevoked,
+                None,
             );
             assert_eq!(refused.protocol, PEER_PROTOCOL_VERSION);
             // Its server's, for this hello: believed by each check an ack passes.
@@ -1643,6 +1702,7 @@ mod tests {
                 &member.sk,
                 &nonce,
                 HelloRefusal::DeviceRevoked,
+                None,
             );
             assert!(matches!(
                 verify_hello_ack(&foreign, &alice, &revs, 1000, &nonce),
@@ -1686,6 +1746,7 @@ mod tests {
                     cert: server.cert.clone(),
                     refusal: HelloRefusal::DeviceRevoked,
                     sig_over_refusal: ack.sig_over_client_nonce,
+                    revocation: None,
                 };
                 assert!(
                     matches!(
@@ -1701,6 +1762,7 @@ mod tests {
                 &server.sk,
                 &victim_nonce,
                 HelloRefusal::DeviceRevoked,
+                None,
             );
             let forged = HelloAck {
                 protocol: PEER_PROTOCOL_VERSION,
@@ -1725,6 +1787,7 @@ mod tests {
                 &server.sk,
                 &[3u8; 32],
                 HelloRefusal::DeviceRevoked,
+                None,
             );
             let frame = postcard::to_stdvec(&refused).unwrap();
             let read: HelloRefused = decode_handshake(&frame).unwrap();
@@ -1740,6 +1803,7 @@ mod tests {
                 cert: &server.cert,
                 refusal: 0,
                 sig_over_refusal: refused.sig_over_refusal,
+                revocation: None,
             })
             .unwrap();
             assert_eq!(later, frame, "the stand-in is the frame, reason by number");
@@ -1748,6 +1812,7 @@ mod tests {
                 cert: &server.cert,
                 refusal: 2,
                 sig_over_refusal: refused.sig_over_refusal,
+                revocation: None,
             })
             .unwrap();
             assert!(matches!(
