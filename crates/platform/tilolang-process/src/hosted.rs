@@ -264,6 +264,9 @@ struct Surface {
     /// "Show this window", in the person's language: a window's alone (`None` for an instance
     /// that shows nothing).
     activate: Option<tilo_actions::ActionSpec>,
+    /// Whether the surface publishes the resources anyone may call on, since no view bounds what
+    /// it holds: a call that shows nothing, whose caller names what it calls.
+    everything: bool,
     host: Host,
     planner: Arc<dyn Planner>,
     committer: Arc<dyn Committer>,
@@ -276,6 +279,7 @@ impl Surface {
     fn new(
         app: &str,
         activate: Option<tilo_actions::ActionSpec>,
+        everything: bool,
         host: &Host,
         wake: Waker,
     ) -> Self {
@@ -285,14 +289,16 @@ impl Surface {
         );
         let mut publications = Publications::new(host);
         publications.set_waker(wake.clone());
-        // Nothing here is published up front: what an invocation names is published when it
-        // names it (`addressed`), whether a window shows it or no window does. A workspace of ten
-        // thousand costs an open what it takes.
-        publications.window();
+        if !everything {
+            // Nothing here is published up front: what an invocation names is published when it
+            // names it (`addressed`). A workspace of ten thousand costs an open what it takes.
+            publications.window();
+        }
         let planner: Arc<dyn Planner> = handle.clone();
         let surface = Self {
             app: app.to_owned(),
             activate,
+            everything,
             host: host.clone(),
             planner,
             committer: handle,
@@ -686,7 +692,16 @@ impl Platform for HostPlatform {
                 self.phrases.say("app-activate-window-description", &[]),
             )
         });
-        let surface = Rc::new(Surface::new(&self.bundle.meta.app, activate, host, wake));
+        // A call that shows nothing has no view to bound what it holds: it publishes the app's
+        // resources, which is what a caller names when it calls.
+        let everything = self.shows == Shows::Nothing;
+        let surface = Rc::new(Surface::new(
+            &self.bundle.meta.app,
+            activate,
+            everything,
+            host,
+            wake,
+        ));
         *self.surface.borrow_mut() = Some(Rc::clone(&surface));
         Some(Box::new(Held(surface)))
     }
@@ -2494,7 +2509,11 @@ impl Hosted {
             return;
         }
         let _phase = tilo_resource::profiling::Phase::start("tl.host.publish");
-        let resources = surface.resources(Some(&shown));
+        let resources = if surface.everything {
+            surface.resources(None)
+        } else {
+            surface.resources(Some(&shown))
+        };
         // The document's history names an action by the label the window offers it under.
         self.record.learn_labels(&resources);
         let handlers: HashSet<String> = HashSet::from([

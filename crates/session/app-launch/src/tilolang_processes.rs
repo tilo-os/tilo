@@ -383,7 +383,9 @@ impl Processes {
         }
     }
 
-    /// [`Self::hand_over`] on this thread. Whether it started the process.
+    /// [`Self::hand_over`] on this thread. Whether it started the process. An [`Instance`] with no
+    /// patch shows nothing: the host runs the app's code for the call and draws nothing, till the
+    /// session ends it.
     ///
     /// # Errors
     /// The app does not verify, its module cannot be sealed, or no process takes the instance.
@@ -464,16 +466,6 @@ impl Processes {
             "tilolang instance handed over"
         );
         Ok(started)
-    }
-
-    /// Start an instance of an app in its tilolang host with no window: what an action that shows
-    /// nothing runs in. It is [`Self::hand_over_now`] of an [`Instance`] with no `patch`, which
-    /// the host runs as one that shows nothing, drawing nothing, till the session ends it.
-    ///
-    /// # Errors
-    /// As [`Self::hand_over_now`].
-    pub fn start_with_no_view(self: &Arc<Self>, call: Instance) -> std::io::Result<bool> {
-        self.hand_over_now(call)
     }
 
     /// The module the process `key` runs `app` from, its verified `module`: the person's views get
@@ -930,6 +922,67 @@ mod tests {
     use super::*;
 
     const NOTES: &str = "so.tilo.notes";
+
+    /// The directory of `app`'s documents of `workspace` in the store a device's home keeps apps'
+    /// own data in, made: where an earlier version of the app wrote what a conversion reads.
+    fn earlier_documents(home: &Path, workspace: &str, app: &str) -> PathBuf {
+        let root = launcher::appdir::host_app_dir(
+            home,
+            &launcher::appdir::workspace_slug(Some(workspace)),
+            app,
+        )
+        .join(".local/share");
+        let directory = app_state::workspace_index_directory(&root, app, workspace)
+            .expect("the app's directory of this workspace");
+        std::fs::create_dir_all(directory.join("documents")).expect("the app's directory is made");
+        directory
+    }
+
+    /// A process reads what an earlier version of its app kept in its own workspace, and nothing
+    /// of another workspace's or another app's: the session grants the one directory.
+    #[test]
+    fn a_process_reads_only_its_apps_documents_of_its_own_workspace() {
+        const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000e1";
+        const ELSEWHERE: &str = "7a110d00-0000-4000-8000-0000000000e2";
+        const ANOTHER_APP: &str = "so.tilo.chat";
+        let home = tempfile::tempdir().expect("a device's home");
+        let processes = Processes::with(
+            home.path().to_path_buf(),
+            Box::new(|_, _, _, _| Command::new("true")),
+            Box::new(|_, _| Err("no package store here".to_owned())),
+        );
+        let kept = earlier_documents(home.path(), WORKSPACE, NOTES);
+        let elsewhere = earlier_documents(home.path(), ELSEWHERE, NOTES);
+        let another = earlier_documents(home.path(), WORKSPACE, ANOTHER_APP);
+        let key = HostKey {
+            workspace: WORKSPACE.to_owned(),
+            app: NOTES.to_owned(),
+            runtime: "tilolang@1".to_owned(),
+            app_runtime: "tilo@1".to_owned(),
+        };
+        let (granted, under) = processes
+            .earlier(&key)
+            .expect("the app kept something in this workspace");
+        assert_eq!(granted, kept, "its app's documents of its own workspace");
+        assert_eq!(
+            under,
+            Path::new(NOTES).join("workspaces").join(WORKSPACE),
+            "located beneath the store's own root"
+        );
+        for other in [&elsewhere, &another] {
+            assert!(
+                !other.starts_with(&granted) && !granted.starts_with(other),
+                "{} is no part of what the process reads",
+                other.display()
+            );
+        }
+        // A workspace the app kept nothing in grants nothing: the process reads no empty store.
+        let absent = HostKey {
+            workspace: "7a110d00-0000-4000-8000-0000000000e3".to_owned(),
+            ..key
+        };
+        assert!(processes.earlier(&absent).is_none());
+    }
 
     /// Processes running in each workspace of `running`, behind its socket, each with two windows of
     /// Notes.

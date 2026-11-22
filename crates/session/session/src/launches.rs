@@ -542,10 +542,10 @@ impl LauncherServices for Launches {
         self.live(pid, app, workspace).is_some()
     }
 
-    /// Have package `app` run with no window in `workspace`, for an action that shows nothing:
-    /// the session's loop starts it unless a process of it runs there already, and the start's
-    /// answer is the one returned. An app whose windows' instances run in a tilolang host starts
-    /// an instance there with no window; one that is no package has no such instance.
+    /// Have package `app` run with no window in `workspace`, for a call that shows nothing: the
+    /// session's loop starts it unless its process runs there already, and the start's answer is
+    /// the one returned. An app whose code runs in a tilolang process is started the same way,
+    /// which runs it with no view; one that is no package has no such start.
     ///
     /// # Errors
     /// More launches are waiting than a person's apps ask for.
@@ -554,10 +554,17 @@ impl LauncherServices for Launches {
         app: &str,
         workspace: &str,
     ) -> Result<Option<tilo_broker_core::services::WindowlessStart>, String> {
-        let Some(launch @ tilo_app_launch::Launch::Package { open: None, .. }) =
-            tilo_app_launch::Launch::parse(app)
-        else {
-            return Ok(None);
+        let launch = match tilo_app_launch::Launch::parse(app) {
+            Some(launch @ tilo_app_launch::Launch::Package { open: None, .. }) => launch,
+            // A tilolang app's call starts its code with no view, whether or not its launch
+            // parses as a package: nothing of it opens a window.
+            _ if tilo_app_launch::tilolang_processes::runs_in_process(app) => {
+                tilo_app_launch::Launch::Package {
+                    app: app.to_owned(),
+                    open: None,
+                }
+            }
+            _ => return Ok(None),
         };
         let (reply, started) = tokio::sync::oneshot::channel();
         self.hand_over(LaunchRequest {

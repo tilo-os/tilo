@@ -2148,9 +2148,9 @@ impl Apps {
     /// asks it for one, through the link it holds as every launch of the app does. A process of
     /// the app running there already takes the action instead, and nothing starts.
     ///
-    /// An app whose windows' instances run in a tilolang host starts an instance with no window
-    /// there ([`Self::start_with_no_view`]): the app's calls are its own, and no
-    /// process of its own runs.
+    /// An app whose windows' instances run in a tilolang host runs its code with no view there
+    /// ([`Self::start_with_no_view`]): the app's calls are its own, and no process of its own
+    /// runs.
     fn start_windowless(&self, launch: &Launch, workspace: &Workspace) -> Result<(), ApiError> {
         if self.runs_in_process(launch.app()) {
             return self.start_with_no_view(launch.app(), workspace);
@@ -2185,7 +2185,7 @@ impl Apps {
                 ))
             })?;
         processes
-            .start_with_no_view(tilo_app_launch::tilolang_processes::Instance {
+            .hand_over_now(tilo_app_launch::tilolang_processes::Instance {
                 access: resources.access,
                 app: app.to_owned(),
                 workspace: workspace.id.clone(),
