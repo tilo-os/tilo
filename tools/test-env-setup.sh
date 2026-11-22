@@ -59,8 +59,8 @@
 # ntfs     TILO_NTFS_FIXTURES: the native NTFS images, generated once per
 #          fixture generator revision and cached below TILO_TEST_CACHE_DIR.
 #          An existing TILO_NTFS_FIXTURES is kept. nextest runs this step only
-#          when the run selects a tilo-ntfs-helper test, as only those read
-#          the images, which take a minute to build. A job that finds no set
+#          when the run selects a test of tilo-ntfs-helper's `it` binary, as
+#          only those read the images, which take a minute to build. A job that finds no set
 #          makes one in a directory of its own and places it with one rename,
 #          so no job waits on another's generation, and a set a job raced to
 #          make is dropped whole rather than written over the one that landed.

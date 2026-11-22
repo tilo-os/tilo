@@ -306,7 +306,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         # The native NTFS images are generated once for the tests that read them; a test
         # started without them fails saying so, so every profile serves them too.
         (ntfs,) = rules("default", "ntfs-fixtures")
-        self.assertEqual(ntfs["filter"], "package(tilo-ntfs-helper)")
+        self.assertEqual(ntfs["filter"], "package(tilo-ntfs-helper) and binary(it)")
         self.assertEqual(ntfs["platform"], siblings_rule["platform"])
         self.assertEqual(rules("ci", "ntfs-fixtures"), [],
                          "ci inherits the default profile's NTFS fixtures")

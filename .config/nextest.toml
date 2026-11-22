@@ -321,13 +321,15 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) and binary(it) and test(app_open_budget::)"
 setup = "app-open-siblings"
 
-# The native NTFS images the helper's tests read are generated once and handed
-# to the tests as TILO_NTFS_FIXTURES; Cargo builds none, and a test that starts
-# without them fails saying so. In every profile: the release is graded with the
-# default profile, and ci inherits this registration.
+# The native NTFS images the helper's integration tests read are generated once
+# and handed to the tests as TILO_NTFS_FIXTURES; Cargo builds none, and a test
+# that starts without them fails saying so. Its library's tests read none: a run
+# of them alone waited a minute for images it never opened. In every profile:
+# the release is graded with the default profile, and ci inherits this
+# registration.
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-ntfs-helper)"
+filter = "package(tilo-ntfs-helper) and binary(it)"
 setup = "ntfs-fixtures"
 
 # The values only some packages' tests need, for those packages: the ones
