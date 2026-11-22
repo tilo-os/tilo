@@ -558,39 +558,8 @@ fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
         length,
         "the draft the server let go of, taken back from its writer",
     );
-    // What the server says it lacks follows the content as it arrives: once the draft is back,
-    // the workspace's copy status says the server lacks none of it, so no device is told a file
-    // is only on it when the server keeps it.
-    let workspaces = server.workspaces().unwrap();
-    let back = std::time::Instant::now();
-    loop {
-        let lacked = server_lacks(&run(workspaces.copies(&workspace)).unwrap());
-        if lacked == 0 {
-            break;
-        }
-        assert!(
-            back.elapsed() <= Duration::from_secs(30),
-            "the server keeps the draft, yet its copy status says it lacks {lacked} blobs"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
     drop(member);
     run(server.shutdown());
-}
-
-/// The blobs a holder of the workspace says it lacks, by its copy status.
-fn server_lacks(copies: &tilo_peer_state::CopyStatus) -> u32 {
-    copies
-        .shortfall
-        .iter()
-        .map(|short| match short {
-            tilo_peer_state::Shortfall::Holder {
-                missing: tilo_peer_state::Missing::Content { blobs },
-                ..
-            } => *blobs,
-            _ => 0,
-        })
-        .sum()
 }
 
 const CLONE_TEST: &str = "standalone::files::replica::tests::\

@@ -33,6 +33,33 @@ async fn asked_for(session: &ServerCoeditSession, address: &str) -> Vec<u8> {
     .await
 }
 
+/// The blobs `server` says, in `workspace`'s copy status, that it lacks, once that is `blobs`:
+/// what each device reads to tell its person which files are on it alone.
+async fn says_it_lacks(server: &Server, workspace: &str, blobs: u32, what: &str) {
+    let workspaces = server.workspaces().unwrap();
+    tilo_test_env::within(what, async {
+        loop {
+            let status = workspaces.copies(workspace).await.unwrap();
+            let lacked: u32 = status
+                .shortfall
+                .iter()
+                .map(|short| match short {
+                    tilo_peer_state::Shortfall::Holder {
+                        missing: tilo_peer_state::Missing::Content { blobs },
+                        ..
+                    } => *blobs,
+                    _ => 0,
+                })
+                .sum();
+            if lacked == blobs {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+}
+
 /// What the host serves a device asking `workspace` for `address` of `PHOTOS`,
 /// its pieces put together.
 fn served(server: &Server, workspace: &str, asking: &TestDevice, address: &str) -> Vec<u8> {
@@ -152,6 +179,15 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
         }
         _ => panic!("a content request"),
     }
+    // Until it is answered, the host says it lacks the picture: read from the one record that
+    // names it, with no pass over the whole workspace since.
+    says_it_lacks(
+        &server,
+        &workspace.workspace,
+        1,
+        "the host says it lacks the picture the record names",
+    )
+    .await;
     let pieces = neighbour_wire::content::answer(
         &phone.device_pubkey(),
         &alice_home.device_pubkey(),
@@ -175,6 +211,13 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
             .has(&address)
             .then_some(())
     });
+    says_it_lacks(
+        &server,
+        &workspace.workspace,
+        0,
+        "the host says it lacks nothing once it keeps the picture",
+    )
+    .await;
 
     // Bob's page is gone; a page that reloads reads the picture from the host,
     // as ciphertext, and opens it with the key its record carries.
