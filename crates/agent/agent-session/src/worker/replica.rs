@@ -2277,7 +2277,6 @@ mod tests {
 
     const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
-    /// A replica of a new notes record, at the change that began it.
     /// A request the app is still working on past the bound a caller waits is
     /// answered as the document opened again, naming the request; the worker
     /// goes on, and the next request is applied as usual.
@@ -2304,7 +2303,7 @@ mod tests {
         arguments.insert("name".into(), "Made after a slow request".into());
         replica
             .invoke(
-                &ActionAddress::new("notes.notebook", "new-tag"),
+                &ActionAddress::new("sheets.workbook", "new-sheet"),
                 &arguments,
                 false,
             )
@@ -2318,10 +2317,11 @@ mod tests {
         );
     }
 
+    /// A replica of a new workbook, at the change that began it.
     fn begun() -> ConfinedReplica {
         let replica = ConfinedReplica::open(
             &AppCatalogue::native(),
-            "so.tilo.notes",
+            "so.tilo.sheets",
             WORKSPACE,
             &tilo_actions::MemberId::agent("maker"),
             &ReplicaActor::Agent {
@@ -2391,7 +2391,7 @@ mod tests {
             .survey()
             .into_iter()
             .next()
-            .expect("a notebook offers its agent an action")
+            .expect("a workbook offers its agent an action")
             .address;
         // As one write of the service asks: whether the document offers the action, what it
         // is, and once more after what it wrote was collected.
@@ -2476,11 +2476,11 @@ mod tests {
         arguments.insert("name".into(), "Made while another waited".into());
         replica
             .invoke(
-                &ActionAddress::new("notes.notebook", "new-tag"),
+                &ActionAddress::new("sheets.workbook", "new-sheet"),
                 &arguments,
                 false,
             )
-            .expect("the app makes a tag");
+            .expect("the app adds a sheet");
 
         let taken = replica
             .take_mutation()

@@ -96,7 +96,7 @@ fn the_app_worker_cannot_read_the_hosts_state_directory() {
 /// of its own, or a member's store refuses it as not matching its binding.
 /// Only an app whose windows each show a resource of their own (Sheets)
 /// keeps such records; Scratchpad keeps the workspace's one record, its
-/// package primary, like Notes.
+/// package primary.
 #[test]
 fn a_confined_record_created_under_a_workspace_route_names_that_route() {
     assert_seed_route(
@@ -107,7 +107,10 @@ fn a_confined_record_created_under_a_workspace_route_names_that_route() {
 
 #[test]
 fn a_confined_workspace_record_is_created_under_the_package_primary_route() {
-    assert_seed_route("so.tilo.notes", ui::resource::DocumentId::package_primary());
+    assert_seed_route(
+        "so.tilo.scratchpad",
+        ui::resource::DocumentId::package_primary(),
+    );
 }
 
 fn assert_seed_route(app: &str, default: ui::resource::DocumentId) {

@@ -749,7 +749,7 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
 #[test]
 fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
     let mut made = crate::common::open(
-        "so.tilo.notes",
+        "so.tilo.sheets",
         &MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::New,
@@ -766,7 +766,7 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
     .access()
     .clone();
     let mut agent = crate::common::open(
-        "so.tilo.notes",
+        "so.tilo.sheets",
         &MemberId::person("ada"),
         ReplicaActor::Member {
             access: access
@@ -786,19 +786,18 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
     )
     .unwrap();
     let _ = agent.take_mutation();
-    // A tag is written to the notebook itself; its notes live in parts beside it.
-    let new_tag = agent
+    let new_sheet = agent
         .survey()
         .into_iter()
-        .find(|descriptor| descriptor.address.action == "new-tag")
-        .expect("the notebook offers the agent a new tag")
+        .find(|descriptor| descriptor.address.action == "new-sheet")
+        .expect("the workbook offers the agent a new sheet")
         .address;
     let arguments = serde_json::json!({"name": "Launch plan"});
     agent
-        .invoke(&new_tag, arguments.as_object().unwrap(), false)
+        .invoke(&new_sheet, arguments.as_object().unwrap(), false)
         .unwrap();
     let Some(DocumentMutation::Incremental(wrote)) = agent.take_mutation().unwrap() else {
-        panic!("the agent's tag is handed back to be saved");
+        panic!("the agent's sheet is handed back to be saved");
     };
     let mut doc = automerge::AutoCommit::new();
     tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &genesis).unwrap();
@@ -844,7 +843,7 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
 #[test]
 fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
     let mut made = crate::common::open(
-        "so.tilo.notes",
+        "so.tilo.sheets",
         &MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::New,
@@ -861,9 +860,9 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
     .access()
     .clone();
     let mut wrote = Vec::new();
-    for title in ["Launch plan", "Retro notes"] {
+    for title in ["Launch plan", "Retro"] {
         let mut agent = crate::common::open(
-            "so.tilo.notes",
+            "so.tilo.sheets",
             &MemberId::person("ada"),
             ReplicaActor::Member {
                 access: access
@@ -885,18 +884,18 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
         )
         .unwrap();
         let _ = agent.take_mutation();
-        let new_tag = agent
+        let new_sheet = agent
             .survey()
             .into_iter()
-            .find(|descriptor| descriptor.address.action == "new-tag")
-            .expect("the notebook offers the agent a new tag")
+            .find(|descriptor| descriptor.address.action == "new-sheet")
+            .expect("the workbook offers the agent a new sheet")
             .address;
         let arguments = serde_json::json!({ "name": title });
         agent
-            .invoke(&new_tag, arguments.as_object().unwrap(), false)
+            .invoke(&new_sheet, arguments.as_object().unwrap(), false)
             .unwrap();
         let Some(DocumentMutation::Incremental(changes)) = agent.take_mutation().unwrap() else {
-            panic!("the agent's tag is handed back to be saved");
+            panic!("the agent's sheet is handed back to be saved");
         };
         wrote.push(changes);
     }
