@@ -149,6 +149,10 @@ export const searcher = ({until, failed, dump}) => {
   return {search};
 };
 
+/** The mails the entry sent, oldest first: what the stack's mail sink kept of
+ * each (`stack.sh mail` lists the same, with their links). */
+export const mailsOf = dir => readdirSync(dir).filter(name => name.endsWith('.json')).sort()
+  .map(name => JSON.parse(readFileSync(join(dir, name), 'utf8')));
 export const waitForMail = async (dir, what, count, timeout = stepLimit(6)) => {
   const deadline = Date.now() + timeout;
   for (;;) {
