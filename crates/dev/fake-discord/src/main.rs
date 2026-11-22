@@ -261,13 +261,12 @@ fn tone(fake: &Arc<fake_discord::FakeDiscord>, user: String, hz: &str, seconds: 
 fn heard(fake: &fake_discord::FakeDiscord, hz: &str, seconds: &str) -> Value {
     let seconds: u64 = seconds.parse().unwrap_or(5);
     let since = fake_discord::now_ms().saturating_sub(seconds.saturating_mul(1000));
-    let frames: Vec<Vec<u8>> = fake
+    let frames: Vec<fake_discord::Heard> = fake
         .voice_heard_frames()
         .into_iter()
         .filter(|heard| heard.at_ms >= since)
-        .map(|heard| heard.opus)
         .collect();
-    let samples = fake_discord::tone::decode(&frames);
+    let samples = fake_discord::tone::decode_received(&frames);
     let shares: serde_json::Map<String, Value> = hz
         .split(',')
         .filter_map(|f| {

@@ -37,6 +37,15 @@ impl Sender {
         }
     }
 
+    /// A frame that is not sent: its place in the timeline is still spent, so
+    /// the receiver sees the sequence and the timestamp advance without a
+    /// packet and conceals the 20 ms it never got, instead of decoding the
+    /// next frame as though it followed the last one.
+    pub fn skip(&mut self) {
+        self.sequence = self.sequence.wrapping_add(1);
+        self.timestamp = self.timestamp.wrapping_add(FRAME_SAMPLES);
+    }
+
     /// The next packet carrying `frame`, sealed with `cipher`.
     pub fn packet(&mut self, cipher: &Cipher, frame: &[u8]) -> Option<Vec<u8>> {
         let mut packet = Vec::with_capacity(HEADER.saturating_add(frame.len()).saturating_add(32));

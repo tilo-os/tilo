@@ -48,8 +48,8 @@ impl Stream {
     }
 }
 
-/// `(ssrc, frame)` of an RTP packet, opened; `None` for anything else.
-pub fn open(cipher: &Cipher, packet: &[u8]) -> Option<(u32, Vec<u8>)> {
+/// `(ssrc, sequence, frame)` of an RTP packet, opened; `None` for anything else.
+pub fn open(cipher: &Cipher, packet: &[u8]) -> Option<(u32, u16, Vec<u8>)> {
     let first = *packet.first()?;
     if first >> 6 != 2 || packet.get(1)? & 0x7f != 0x78 {
         return None;
@@ -76,7 +76,8 @@ pub fn open(cipher: &Cipher, packet: &[u8]) -> Option<(u32, Vec<u8>)> {
     }
     plain.drain(..skip);
     let ssrc = u32::from_be_bytes(packet.get(8..12)?.try_into().ok()?);
-    Some((ssrc, plain))
+    let sequence = u16::from_be_bytes(packet.get(2..4)?.try_into().ok()?);
+    Some((ssrc, sequence, plain))
 }
 
 #[cfg(test)]
@@ -90,7 +91,7 @@ mod tests {
             let cipher = Cipher::new(mode, &[3; 32]).unwrap();
             let mut stream = Stream::new(9, [0; 10]);
             let packet = stream.packet(&cipher, b"hello").unwrap();
-            assert_eq!(open(&cipher, &packet).unwrap(), (9, b"hello".to_vec()));
+            assert_eq!(open(&cipher, &packet).unwrap(), (9, 0, b"hello".to_vec()));
         }
     }
 }

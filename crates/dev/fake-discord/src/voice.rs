@@ -57,6 +57,10 @@ pub struct Heard {
     pub e2ee: bool,
     /// When it arrived, in Unix ms.
     pub at_ms: u64,
+    /// The RTP sequence number: the bot spends one without a packet when it
+    /// drops a frame, so a receiver knows the audio is missing there and
+    /// conceals it.
+    pub sequence: u16,
 }
 
 /// Someone in a voice channel of the guild.
@@ -694,7 +698,7 @@ impl State {
         };
         bot.address = Some(from);
         let Some(cipher) = &bot.cipher else { return };
-        let Some((ssrc, frame)) = rtp::open(cipher, packet) else {
+        let Some((ssrc, sequence, frame)) = rtp::open(cipher, packet) else {
             return;
         };
         if ssrc != bot.ssrc {
@@ -709,6 +713,7 @@ impl State {
                 opus: frame,
                 e2ee: false,
                 at_ms: crate::time::now_ms(),
+                sequence,
             });
             return;
         }
@@ -725,6 +730,7 @@ impl State {
                 opus,
                 e2ee: true,
                 at_ms: crate::time::now_ms(),
+                sequence,
             });
         }
     }

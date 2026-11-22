@@ -471,6 +471,16 @@ impl Link {
         let mixed = self.mixer.tick().filter(|_| self.dave.can_send());
         let frame = match mixed {
             Some(frame) => {
+                // A frame the mixer shed from a speaker's passthrough stream
+                // reaches the wire in no packet, but its place in the timeline
+                // is still spent, so the receiver hears the gap and conceals
+                // it instead of decoding the next frame as though it followed
+                // the last one. A mix keeps no such gap: it is encoded anew.
+                for _ in 0..self.mixer.take_shed() {
+                    if let Some(sender) = &mut self.sender {
+                        sender.skip();
+                    }
+                }
                 self.silence_left = SILENCE_FRAMES;
                 if !self.speaking {
                     self.speaking = true;

@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use fake_discord::{CHANNEL_VOICE, CONNECT_AND_SPEAK, FakeDiscord, TOKEN, User, tone};
+use fake_discord::{CHANNEL_VOICE, CONNECT_AND_SPEAK, FakeDiscord, Heard, TOKEN, User, tone};
 use tilo_connector::framing::{read_frame_async, write_frame_async};
 use tilo_connector::protocol::{Bytes, CallLink, FromWorker, OutsideCall, ToWorker};
 use tokio::sync::mpsc;
@@ -248,6 +248,15 @@ fn tone_share(frames: &[Vec<u8>], hz: f32) -> f32 {
     tone::share(&samples[skip..], hz)
 }
 
+/// The share of the energy at `hz` in what a receiver of `frames` hears, past
+/// the codec's warm-up: a sequence number the sender spent without a packet
+/// is concealed, as a receiver does when the sender drops audio.
+fn tone_share_received(frames: &[Heard], hz: f32) -> f32 {
+    let samples = tone::decode_received(frames);
+    let skip = (tone::FRAME_SAMPLES * 5).min(samples.len());
+    tone::share(&samples[skip..], hz)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn occupancy_and_the_bots_own_place_follow_discord() {
     let host = Host::start().await;
@@ -349,11 +358,10 @@ async fn audio_goes_both_ways_end_to_end_encrypted_without_echo() {
         heard.iter().all(|h| h.e2ee),
         "every frame came through DAVE"
     );
-    let opus: Vec<Vec<u8>> = heard.into_iter().map(|h| h.opus).collect();
     assert!(
-        tone_share(&opus, 440.0) > 0.5,
+        tone_share_received(&heard, 440.0) > 0.5,
         "440 Hz arrived: {}",
-        tone_share(&opus, 440.0)
+        tone_share_received(&heard, 440.0)
     );
 
     // Discord to Tilo: Ada says 660 Hz.

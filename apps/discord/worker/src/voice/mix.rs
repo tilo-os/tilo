@@ -27,6 +27,9 @@ const MAX_PACKET: usize = 1275;
 struct Speaker {
     queue: VecDeque<Vec<u8>>,
     playing: bool,
+    /// A frame of theirs has played: from then on a frame dropped from the
+    /// queue leaves a hole in the stream the receiver must hear about.
+    started: bool,
     idle_ticks: u32,
     decoder: Option<Decoder>,
 }
@@ -35,6 +38,7 @@ struct Speaker {
 pub struct Mixer {
     speakers: BTreeMap<String, Speaker>,
     encoder: Option<Encoder>,
+    shed: u32,
 }
 
 impl Mixer {
@@ -46,13 +50,24 @@ impl Mixer {
             .or_insert_with(|| Speaker {
                 queue: VecDeque::with_capacity(DEPTH),
                 playing: false,
+                started: false,
                 idle_ticks: 0,
                 decoder: None,
             });
         if entry.queue.len() >= DEPTH {
-            entry.queue.pop_front();
+            let dropped = entry.queue.pop_front();
+            if entry.started && dropped.is_some() {
+                self.shed = self.shed.saturating_add(1);
+            }
         }
         entry.queue.push_back(opus);
+    }
+
+    /// How many frames were dropped from streams already playing since this
+    /// was last asked: each one is a 20 ms hole the sender must leave in the
+    /// RTP timeline for the receiver to conceal.
+    pub fn take_shed(&mut self) -> u32 {
+        std::mem::take(&mut self.shed)
     }
 
     /// The frame for the next 20 ms, `None` when nobody is speaking.
@@ -68,6 +83,7 @@ impl Mixer {
                 None
             };
             if let Some(frame) = frame {
+                speaker.started = true;
                 speaker.idle_ticks = 0;
                 frames.push((name.clone(), frame));
             } else {
@@ -81,7 +97,13 @@ impl Mixer {
         match frames.len() {
             0 => None,
             1 => frames.pop().map(|(_, frame)| frame),
-            _ => self.mix(&frames),
+            _ => {
+                // The mix is encoded anew from what is queued, so what the
+                // receiver gets is continuous: a frame shed from a speaker's
+                // queue is no hole in that stream to conceal.
+                self.shed = 0;
+                self.mix(&frames)
+            }
         }
     }
 
@@ -173,6 +195,51 @@ mod tests {
             "the three newest play"
         );
         assert_eq!(mixer.tick(), None, "and nothing older");
+        assert_eq!(
+            mixer.take_shed(),
+            0,
+            "nothing played yet, so no hole in a stream the receiver has"
+        );
+    }
+
+    #[test]
+    fn a_frame_shed_after_playback_started_is_the_senders_to_conceal() {
+        let mut mixer = Mixer::default();
+        let (a, b) = (tone(440.0, 0), tone(440.0, 1));
+        mixer.push("ada", a.clone());
+        mixer.push("ada", b);
+        assert_eq!(mixer.take_shed(), 0, "nothing lost before playback");
+        assert_eq!(mixer.tick(), Some(a));
+        let burst: Vec<Vec<u8>> = (2..6).map(|i| tone(440.0, i)).collect();
+        for frame in &burst {
+            mixer.push("ada", frame.clone());
+        }
+        assert_eq!(
+            mixer.take_shed(),
+            2,
+            "a burst past the depth sheds its oldest two"
+        );
+        assert_eq!(mixer.tick().as_ref(), Some(&burst[1]), "the rest play");
+    }
+
+    #[test]
+    fn a_mixed_tick_has_no_hole_for_the_receiver_to_conceal() {
+        let mut mixer = Mixer::default();
+        for i in 0..2 {
+            mixer.push("ada", tone(440.0, i));
+            mixer.push("bob", tone(660.0, i));
+        }
+        assert!(mixer.tick().is_some(), "the first mix");
+        let burst: Vec<Vec<u8>> = (2..6).map(|i| tone(440.0, i)).collect();
+        for frame in &burst {
+            mixer.push("ada", frame.clone());
+        }
+        assert!(mixer.tick().is_some(), "still a mix");
+        assert_eq!(
+            mixer.take_shed(),
+            0,
+            "the mix is encoded anew, so its stream has no hole"
+        );
     }
 
     #[test]
