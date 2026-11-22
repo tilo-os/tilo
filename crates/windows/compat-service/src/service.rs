@@ -2461,6 +2461,11 @@ mod tests {
     /// the recommendation opens it with Wine again. The appliance and a 32-bit prefix are no
     /// choice for it.
     #[test]
+    #[cfg_attr(
+        not(target_arch = "x86_64"),
+        ignore = "Proton is offered on x86 computers only: an ARM computer refuses it, keeps \
+                  Wine, and plan's own test holds that"
+    )]
     #[allow(
         clippy::too_many_lines,
         reason = "one program's choice is followed through every launch it changes"
