@@ -3048,6 +3048,25 @@ timeout_secs = 5400
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
+# What a release's signed packages must show before they are published: every windowed app draws
+# its first frame against the shared runtime, a media app decodes through the GStreamer the runtime
+# loads on first use, Typst Editor and Music run their engine libraries, and every app's own engine
+# library loads when it starts. It reads the compile's tree and the signed release the sign check
+# wrote (`tools/apps/release-smoke.sh`), so it builds nothing.
+[[check]]
+name = "app-release-smoke-{arch}"
+run = '''set -euo pipefail
+export CARGO_TARGET_DIR=/target/apps-build/{arch}
+export TILO_APP_RELEASE_OUT=/target/app-release/{arch}
+bash tools/apps/release-smoke.sh {arch}'''
+needs = ["apps-build-{arch}", "sign-apps-{arch}"]
+requires = ["arch={arch}"]
+timeout_secs = 5400
+on = ["dispatch"]
+heavy = true
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
 # Two builds of one app give the same bytes, or every image and update re-sends what did not
 # change: `tools/apps/check-reproducible-tapp.sh` packages a small app twice through the same
 # script, with one identity made for it, and names every byte that differs.
