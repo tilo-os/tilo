@@ -3055,6 +3055,7 @@ arch = ["x86_64", "aarch64"]
 # wrote (`tools/apps/release-smoke.sh`), so it builds nothing.
 [[check]]
 name = "app-release-smoke-{arch}"
+egress = { to = ["code.tilo.so:443"], pinned = true }
 run = '''set -euo pipefail
 export CARGO_TARGET_DIR=/target/apps-build/{arch}
 export TILO_APP_RELEASE_OUT=/target/app-release/{arch}
