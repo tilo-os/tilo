@@ -116,6 +116,15 @@ pub enum AppMessage {
         refresh_ns: u64,
         discarded: bool,
     },
+    /// A file of the product font catalog, by the SHA-256 its manifest pins
+    /// (lowercase hex), from the digests the service's welcome lists. Every
+    /// process names a catalog face the same way wherever its own namespace
+    /// put the catalog, and the service maps its own copy of the file.
+    RegisterCatalogFont {
+        font: FontId,
+        sha256: String,
+        index: u32,
+    },
 }
 
 /// Why a frame or a request was not served.
@@ -174,12 +183,14 @@ pub struct Renderer {
 /// What the service sends.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ServiceMessage {
-    /// Answer to the hello: the version both speak, the app's limits, and
-    /// the font directories it may name fonts in by path (everything else is
-    /// uploaded).
+    /// Answer to the hello: the version both speak, the app's limits, the
+    /// catalog files the service has (by their pinned SHA-256), and the font
+    /// directories it may name other fonts in by path. Only a font in neither
+    /// is uploaded.
     Welcome {
         version: u16,
         limits: Limits,
+        catalog: Vec<String>,
         font_roots: Vec<String>,
         /// What draws this app's frames, which the app names in its log as
         /// a window drawing on its own GPU names its adapter.

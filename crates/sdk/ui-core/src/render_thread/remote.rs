@@ -5,7 +5,7 @@
 //! one), the window keeps showing its last frame, the worker asks for a new channel and the next frame
 //! is a whole one: the toolkit always has the full scene.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
@@ -135,6 +135,8 @@ struct Session {
     ring: RingWriter,
     max_ring: usize,
     font_roots: Vec<PathBuf>,
+    /// The catalog files the service has, by pinned SHA-256.
+    catalog: HashSet<String>,
     fonts: HashMap<u64, FontId>,
     images: HashMap<u64, (ImageId, WeakBlob<u8>)>,
     next_font: u32,
@@ -164,6 +166,7 @@ impl Session {
             .map_err(|error| format!("render service: {error}"))?;
         let ServiceMessage::Welcome {
             limits,
+            catalog,
             font_roots,
             renderer,
             ..
@@ -185,6 +188,7 @@ impl Session {
             ring,
             max_ring: limits.ring_bytes as usize,
             font_roots: font_roots.into_iter().map(PathBuf::from).collect(),
+            catalog: catalog.into_iter().collect(),
             fonts: HashMap::new(),
             images: HashMap::new(),
             next_font: 0,
@@ -249,7 +253,20 @@ impl ResourceIds for Session {
         let id = FontId(self.next_font);
         self.next_font = self.next_font.wrapping_add(1);
         let file = font_files().lock_recover().get(&font.data.id()).cloned();
-        if let Some(path) =
+        let catalog = file
+            .as_deref()
+            .and_then(crate::font_catalog::catalog_digest)
+            .filter(|digest| self.catalog.contains(*digest));
+        if let Some(sha256) = catalog {
+            self.send(
+                &AppMessage::RegisterCatalogFont {
+                    font: id,
+                    sha256: sha256.to_owned(),
+                    index: font.index,
+                },
+                &[],
+            )?;
+        } else if let Some(path) =
             file.filter(|path| self.font_roots.iter().any(|root| path.starts_with(root)))
         {
             self.send(

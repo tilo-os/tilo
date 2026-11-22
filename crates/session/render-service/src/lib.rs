@@ -59,6 +59,8 @@ pub const DEFAULT_FONT_ROOTS: &[&str] = &["/usr/share/fonts", "/usr/local/share/
 pub struct Config {
     pub render_node: Option<PathBuf>,
     pub font_roots: Vec<PathBuf>,
+    /// The product font catalog, which apps name by digest.
+    pub font_catalog: Option<PathBuf>,
     pub limits: Limits,
     /// Enter the sandbox once the device is open. Off only in tests that run
     /// the service on a thread of the test process.
@@ -80,10 +82,25 @@ impl Config {
         Self {
             render_node,
             font_roots,
+            font_catalog: catalog_root(),
             limits: Limits::default(),
             confine: true,
         }
     }
+}
+
+/// The catalog this build pins: the one `TILO_FONT_CATALOG` names, the
+/// image's, or the build's own.
+fn catalog_root() -> Option<PathBuf> {
+    let named = std::env::var_os(tilo_font_catalog::OVERRIDE_ENV)
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from);
+    tilo_font_catalog::find_root(
+        named
+            .into_iter()
+            .chain([PathBuf::from(tilo_font_catalog::INSTALLED_ROOT)])
+            .chain([tilo_font_catalog::checkout_root()]),
+    )
 }
 
 /// Open the device every frame is drawn on.
@@ -106,7 +123,7 @@ pub fn open_gpu(config: &Config) -> Result<Gpu, GpuError> {
 #[cfg(target_os = "linux")]
 pub fn serve(config: &Config, broker: &Channel) -> Result<(), String> {
     let gpu = open_gpu(config).map_err(|error| format!("no device to draw on: {error}"))?;
-    let fonts = FontFiles::new(&config.font_roots);
+    let fonts = FontFiles::new(&config.font_roots, config.font_catalog.as_deref());
     if config.confine {
         let node = config.render_node.as_ref().filter(|_| gpu.dmabufs());
         confine::confine(node, fonts.roots()).map_err(|error| error.to_string())?;
