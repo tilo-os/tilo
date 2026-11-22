@@ -216,7 +216,25 @@ impl Checker<'_> {
             a.name.as_ref().is_some_and(|id| id.name == "enabled")
                 && !matches!(a.value.kind, ast::ExprKind::Bool(true))
         });
-        if dimmed && !given.contains("description") {
+        // A control whose press applies one of the app's actions is dimmed by that action's
+        // `require`, which says why: dimming it by hand would say it a second time, or not at all.
+        let pressed = c.block.iter().flatten().find_map(|s| match &s.kind {
+            UiKind::On { event, action, .. } if event.name == "press" => {
+                self.declared_action_of(action).filter(|action| action.own)
+            }
+            _ => None,
+        });
+        if let (true, Some(action)) = (dimmed, &pressed) {
+            self.err(
+                "E063",
+                span,
+                format!(
+                    "{} is dimmed by the `require` of `{}`, which says why; remove `enabled:` and keep the condition in that `require`",
+                    shown(d),
+                    action.name
+                ),
+            );
+        } else if dimmed && !given.contains("description") {
             let fix = if d.prop("description").is_some() {
                 "give `description:`, why it cannot be used while it is dimmed".to_owned()
             } else {

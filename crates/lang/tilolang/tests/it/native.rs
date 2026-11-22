@@ -1000,6 +1000,13 @@ tilo_test_env::scenario! {
             "E022",
             &with_t("view v(x: T) {\n    ui.Toggle(bind: x.b, label: \"On\", enabled: false)\n}"),
         );
+        // A press bound to an action whose `require` says why is dimmed by it, never by hand.
+        expect(
+            "E063",
+            &with_t(
+                "action go(x: T) {\n    require x.b \"Not yet\"\n    x.n = 1\n}\nview v(x: T) {\n    ui.Button(\"Go\", enabled: x.b, description: \"Not yet\") {\n        on press: go(x)\n    }\n}",
+            ),
+        );
         ok(&with_t(
             "view v(x: T) {\n    stack {\n        ui.Button(\"Go\", enabled: x.b, description: \"Not yet\")\n        ui.Toggle(bind: x.b, label: \"On\", enabled: true)\n    }\n}",
         ));

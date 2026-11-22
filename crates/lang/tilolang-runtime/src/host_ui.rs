@@ -591,12 +591,23 @@ impl Core {
                 ));
             }
         };
+        // A press bound to an action that would be refused now stands dimmed, saying why in the
+        // words of the action's `require`: the view never says it a second time.
+        let unmet = match (&act, event.as_str()) {
+            (Value::Action(run), "press") => {
+                let viewer = self.with_view(|vs| Ok(vs.viewer.clone()))?;
+                self.unmet(run, &viewer)?
+            }
+            _ => None,
+        };
         self.with_view(|vs| {
-            vs.nodes
-                .get_mut(node)
-                .ok_or("unknown ui node")?
-                .events
-                .insert(event, act);
+            let at = vs.nodes.get_mut(node).ok_or("unknown ui node")?;
+            at.events.insert(event, act);
+            if let Some(reason) = unmet {
+                at.props.insert("enabled".to_owned(), Value::Int(0));
+                at.props
+                    .insert("description".to_owned(), Value::text(reason));
+            }
             Ok(())
         })?;
         ret_void()

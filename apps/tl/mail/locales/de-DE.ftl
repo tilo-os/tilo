@@ -564,7 +564,6 @@ d-oqpazwvc = Schreiben
     .w-subject = Betreff
     .w-write-your-message = Schreib deine Nachricht
     .w-send = Senden
-    .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
 
 d-ozukvva2 = Zur Seite gelegt
     .doc = Was die frühere Mail an diesem Entwurf hielt, wofür diese keinen Platz hat (Bcc, Anhänge, private Notizen), in Worten gesagt: nie mit ihm versendet.
