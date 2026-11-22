@@ -3160,6 +3160,8 @@ mod openai_sign_in_tests;
 mod person_learned_tests;
 #[cfg(test)]
 mod person_model_tests;
+#[cfg(all(test, feature = "apps"))]
+mod caller_signer_tests;
 #[cfg(test)]
 mod share_tests;
 #[cfg(test)]

@@ -42,3 +42,7 @@ model-settings-unreadable = Deine Modelleinstellungen konnten nicht gelesen werd
 model-cannot-take-picture = { $model } liest keine Bilder. Wähle in den Einstellungen ein Modell, das es kann.
 model-workspace-refuses = Dieser Arbeitsbereich lässt seine Inhalte nicht an { $provider } gehen.
 model-day-limit = { $agent } hat das heutige Limit von { $limit } aufgebraucht. Erhöhe das Limit, damit es weitergeht.
+
+## Apps a server runs
+
+server-apps-editing-unavailable = { $app } lässt sich im Web noch nicht bearbeiten. Lesen und suchen kannst du hier, bearbeiten in der Tilo-App.
