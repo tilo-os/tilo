@@ -817,6 +817,14 @@ impl ViewStorage {
             .is_some_and(|workspace| workspace.open_arrived())
     }
 
+    /// Whether a document the views asked for is still on its way: the workspace had not
+    /// delivered it, or its store was in use, when it was asked for.
+    pub(crate) fn opening(&self) -> bool {
+        self.workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.opening())
+    }
+
     /// What the window's view waits for: the documents its app's declarations asked for that
     /// are still on their way ([`super::workspace::WorkspaceState::declared_arriving`]).
     pub(crate) fn declared_arriving(

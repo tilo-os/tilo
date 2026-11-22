@@ -1486,6 +1486,11 @@ impl WorkspaceState {
         })
     }
 
+    /// Whether a document asked for is still on its way ([`Self::open_arrived`] opens it).
+    pub(crate) fn opening(&self) -> bool {
+        !self.unopened.borrow().is_empty()
+    }
+
     /// Open what was on its way when it was asked for, once something arrived for it: the
     /// workspace delivered it, or answered that it holds none of it, so it is founded here.
     /// The window is woken for what opened, so that what shows it is built with it. Whether

@@ -16,6 +16,10 @@ use super::{
     open_app, operation, profile_directory,
 };
 
+/// The longest a document the view opened may take to arrive in the report's own workspace,
+/// which holds every one it is asked for.
+const OPENS_WITHIN: ui_core::time::Duration = ui_core::time::Duration::from_secs(15);
+
 /// What `A` publishes and how its view binds to it, as `tilo-app surface`
 /// commits it and `tilo-app check` compares it: the resource's
 /// [`Surface`](tilo_resource::Surface), those of the person's own resources it
@@ -118,6 +122,21 @@ fn report_surface(
     let mut offers = Vec::new();
     match built {
         Ok(mut opened) => {
+            // What the view asked for while it was on its way (the workspace had not delivered
+            // it, or its store was in use) is waited for as a window waits for it: opened as it
+            // arrives, in a frame, and published from then on. A report written before would
+            // differ from one written after.
+            let storage = opened
+                .harness
+                .with_widget_mut(|root: &mut ResourceRoot| Rc::clone(&root.storage));
+            let arrived = opened.harness.wait_until(OPENS_WITHIN, |_| {
+                !storage.as_ref().is_some_and(|storage| storage.opening())
+            });
+            if !arrived {
+                view = Some(format!(
+                    "what the view opened did not arrive within {OPENS_WITHIN:?}"
+                ));
+            }
             declared = published(&mut opened.harness);
             offers = offers_of(&opened.harness.resources());
         }
