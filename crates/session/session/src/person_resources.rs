@@ -3,7 +3,7 @@
 //! The session asks for what is the person's alone (their devices, their Wi-Fi) from its main
 //! thread, before its workspace service has opened as much as after. This keeps the last state of
 //! each resource it was asked for, read again whenever the workspace takes in a write to it, and
-//! hands each write to the service: at once once it is open and holds the workspace, else when it
+//! hands each write to the service: at once once this device holds the workspace, else when it
 //! does. A write the service refused is said and dropped; one it could not make yet waits.
 
 use std::collections::BTreeMap;
@@ -21,6 +21,10 @@ type Write = Arc<
     dyn Fn(Workspaces) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync,
 >;
 
+/// Whether this device holds the person's own workspace: its replica of it is installed here, and
+/// the device takes part in the workspace's channels.
+type Holds = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// The person's own workspace's resources on this device.
 #[derive(Clone, Default)]
 pub(crate) struct PersonResources {
@@ -31,6 +35,8 @@ pub(crate) struct PersonResources {
 struct Inner {
     /// The service, once it opened, and the runtime its writes run on.
     service: OnceLock<(Workspaces, tokio::runtime::Handle)>,
+    /// Whether this device holds the person's own workspace, once the session can say.
+    holds: OnceLock<Holds>,
     /// Each resource as the service last had it, saved, by `(app, name)`.
     saved: Mutex<BTreeMap<(String, String), Vec<u8>>>,
     /// The writes the service did not make yet, oldest first.
@@ -122,9 +128,20 @@ impl PersonResources {
     }
 
     /// Hand writes and reads to `workspaces`, this device's own service, from now on, on
-    /// `runtime`: what waited is written, and each resource is read again whenever the workspace
-    /// takes in a write to it.
-    pub(crate) fn attach(&self, workspaces: Workspaces, runtime: &tokio::runtime::Handle) {
+    /// `runtime`, and take `holds` as what says this device is in the person's own workspace: what
+    /// waited is written once it is, and each resource is read again whenever the workspace takes
+    /// in a write to it.
+    ///
+    /// The service holds the person's workspace as its governor from the moment it makes it, while
+    /// this device is not in it yet; a write made then is refused, and the service's governor has
+    /// no channel keys to seal it with. So the gate is this device's hold, which is also where an
+    /// ordinary workspace's writes wait.
+    pub(crate) fn attach(
+        &self,
+        workspaces: Workspaces,
+        runtime: &tokio::runtime::Handle,
+        holds: impl Fn(&str) -> bool + Send + Sync + 'static,
+    ) {
         if self
             .inner
             .service
@@ -133,15 +150,21 @@ impl PersonResources {
         {
             return;
         }
+        let _ = self.inner.holds.set(Arc::new(holds));
         let inner = Arc::clone(&self.inner);
         runtime.spawn(async move { inner.follow(workspaces).await });
     }
 }
 
 impl Inner {
-    /// Make `write`; one the service cannot make until it holds the workspace waits for it.
+    /// Whether this device holds `workspace`: its replica is installed here.
+    fn held(&self, workspace: &str) -> bool {
+        self.holds.get().is_some_and(|holds| holds(workspace))
+    }
+
+    /// Make `write`; one this device cannot make until it holds the workspace waits for it.
     async fn make(&self, write: Write, workspaces: Workspaces) {
-        if !person_workspace::holds_person_workspace(&workspaces).await {
+        if !self.held(&person_workspace::workspace_id(&workspaces)) {
             self.waiting.lock_recover().push(write);
             return;
         }
@@ -150,7 +173,7 @@ impl Inner {
         }
     }
 
-    /// Keep each resource read here current, and make what waits once the workspace is held.
+    /// Keep each resource read here current, and make what waits once the workspace is held here.
     async fn follow(self: Arc<Self>, workspaces: Workspaces) {
         use tokio::sync::broadcast::error::RecvError;
         let id = person_workspace::workspace_id(&workspaces);
@@ -158,7 +181,7 @@ impl Inner {
         let mut moved = workspaces.governance_changes();
         self.reload(&workspaces, None).await;
         loop {
-            if person_workspace::holds_person_workspace(&workspaces).await {
+            if self.held(&id) {
                 let waiting = std::mem::take(&mut *self.waiting.lock_recover());
                 for write in waiting {
                     if let Err(error) = write(workspaces.clone()).await {

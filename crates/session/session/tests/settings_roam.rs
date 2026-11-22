@@ -15,77 +15,19 @@
 )]
 
 use std::sync::Arc;
-use std::time::Instant;
 
-use serde_json::{Value, json};
+use serde_json::json;
 use settings_store::{appearance, power};
 
-use crate::common::people::{Device, two_devices_of_one_person, waited};
+use crate::common::people::{
+    Device, set_setting, setting, setting_edit, two_devices_of_one_person, waited,
+};
 
 /// The settings `device` 's session holds, as an app beside it follows them.
 fn settings_of(device: &Device) -> Arc<settings_store::Store> {
     let home = device.directory();
     settings_store::Store::open_device_in(&home.join("data"), &home.join("config/tilo"))
         .unwrap_or_else(|error| panic!("{}'s settings: {error}", device.label))
-}
-
-/// The `field-edit` of the settings section `section` , as `device` 's session publishes it.
-fn field_edit(device: &Device, section: &str) -> (String, String) {
-    let resource = format!("settings:settings.{section}");
-    let listed = device.ask(&json!({"op": "actions_enumerate", "query": section}));
-    let row = listed["answer"]["actions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|row| row["resource"] == json!(resource) && row["operation"] == json!("field-edit"))
-        .unwrap_or_else(|| {
-            panic!(
-                "{} offers no field-edit of {resource}: {listed}",
-                device.label
-            )
-        });
-    (
-        row["provider"].as_str().expect("a provider").to_owned(),
-        row["id"].as_str().expect("an action's id").to_owned(),
-    )
-}
-
-/// Start setting `field` of `section` to `value` on `device` , as the person does in Settings:
-/// the invocation to follow with [`settled`].
-fn start_setting(device: &Device, section: &str, field: &str, value: &Value) -> u64 {
-    let (provider, id) = field_edit(device, section);
-    let started = device.ask(&json!({
-        "op": "actions_invoke",
-        "provider": provider,
-        "id": id,
-        "args": {"edit": {"path": [{"field": field}], "op": "set", "value": value}},
-        "confirmed": true,
-    }));
-    started["answer"]["receipt"]["broker_invocation_id"]
-        .as_u64()
-        .unwrap_or_else(|| panic!("{} sets {section}.{field}: {started}", device.label))
-}
-
-/// Follow `invocation` on `device` until it settles, and fail unless it completed.
-fn settled(device: &Device, invocation: u64) {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let answer = device.ask(&json!({
-            "op": "actions_status",
-            "invocation_id": invocation,
-            "wait_ms": 30_000,
-        }));
-        match answer["answer"]["receipt"]["update"]["state"].as_str() {
-            Some("accepted" | "progress") if Instant::now() < deadline => {}
-            Some("completed") => return,
-            _ => panic!("{}'s setting did not complete: {answer}", device.label),
-        }
-    }
-}
-
-/// Set `field` of `section` to `value` on `device` .
-fn set(device: &Device, section: &str, field: &str, value: &Value) {
-    settled(device, start_setting(device, section, field, value));
 }
 
 #[test]
@@ -96,8 +38,8 @@ fn a_persons_settings_follow_them_and_a_machines_stay_on_it() {
 
     // What the person chooses on one device is on the other; how soon this machine locks is its
     // own.
-    set(&laptop, "appearance", "mode", &json!("dark"));
-    set(&laptop, "power", "lock_minutes", &json!(1));
+    set_setting(&laptop, "appearance", "mode", &json!("dark"));
+    set_setting(&laptop, "power", "lock_minutes", &json!(1));
     waited(
         "the laptop's dark mode is on the phone",
         &site,
@@ -113,10 +55,9 @@ fn a_persons_settings_follow_them_and_a_machines_stay_on_it() {
 
     // Both devices change a setting at the same moment, neither having heard of the other's:
     // both changes are on both, and what was there before stays.
-    let on_the_laptop = start_setting(&laptop, "appearance", "high_contrast", &json!(true));
-    let on_the_phone = start_setting(&phone, "appearance", "translucency", &json!(0.25));
-    settled(&laptop, on_the_laptop);
-    settled(&phone, on_the_phone);
+    let appearance = setting("appearance");
+    laptop.act(&appearance, &setting_edit("high_contrast", &json!(true)));
+    phone.act(&appearance, &setting_edit("translucency", &json!(0.25)));
     waited("both changes are on both devices", &site, &devices, || {
         [&on_laptop, &on_phone].iter().all(|settings| {
             appearance::HIGH_CONTRAST.get_in(settings.as_ref())

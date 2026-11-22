@@ -2727,6 +2727,58 @@ pub fn at(provider: &str, resource: &str, action: &str) -> RemoteActionTarget {
     }
 }
 
+/// The settings section `section` (`appearance`, `power`), as the settings service publishes it:
+/// the resource whose `field-edit` action a control, a script or an agent runs.
+pub fn setting_section(section: &str) -> String {
+    format!("settings:settings.{section}")
+}
+
+/// The `field-edit` of the settings section `section`, as Settings and Quick Settings run it.
+pub fn setting(section: &str) -> RemoteActionTarget {
+    at(
+        tilo_actions::remote::settings_resources::PROVIDER,
+        &setting_section(section),
+        "field-edit",
+    )
+}
+
+/// What a field edit of the settings section `section` asks for: setting `field` to `value`.
+pub fn setting_edit(field: &str, value: &Value) -> Value {
+    json!({"edit": {"path": [{"field": field}], "op": "set", "value": value}})
+}
+
+/// Set `field` of `section` to `value` on `device`, as the person does in Settings, once it
+/// settled: a change the settings refused is the assertion.
+///
+/// The sections are resources of the person's own workspace, so the edit is not offered until
+/// this session reads it there: the set is asked again until it is.
+pub fn set_setting(device: &Device, section: &str, field: &str, value: &Value) {
+    let target = setting(section);
+    let edit = setting_edit(field, value);
+    let until = tilo_test_env::hang_deadline();
+    let mut answer = device.act_wait(&target, &edit);
+    while answer["err"]["code"].as_str() == Some("unknown_action") {
+        assert!(
+            Instant::now() < until,
+            "{} is never offered {section}'s field edit: {answer}\n{}",
+            device.label,
+            device.diagnostic()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        answer = device.act_wait(&target, &edit);
+    }
+    if answer["err"]["code"].as_str() == Some(CONFIRMATION_REQUIRED) {
+        answer = device.act_confirming(&target, &edit);
+    }
+    assert_eq!(
+        answer["update"]["state"],
+        json!("succeeded"),
+        "{} sets {section}.{field}: {answer}\n{}",
+        device.label,
+        device.diagnostic()
+    );
+}
+
 /// The session's own verb that makes a new workspace, as the workspace menu invokes it.
 pub fn new_workspace() -> RemoteActionTarget {
     at(

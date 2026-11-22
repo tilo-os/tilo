@@ -681,9 +681,23 @@ async fn listening(
     // every workspace this device governs or joined.
     let service = own_service.as_ref().and_then(OwnService::get);
     if let (true, Some(service)) = (opened, &service) {
+        // The person's own workspace is written by the session only once this device is in it: a
+        // write the service makes as its governor before then is refused, as any member's write to
+        // a workspace this device does not hold is. A founding has installed the workspace here
+        // only when its enrollment is committed, which a pending one is not.
+        let holding = engine.map(Arc::downgrade);
         person.attach(
             service.workspaces().clone(),
             &tokio::runtime::Handle::current(),
+            move |workspace: &str| {
+                let Some(engine) = holding.as_ref().and_then(std::sync::Weak::upgrade) else {
+                    return false;
+                };
+                let Some(id) = tilo_desktop_model::WorkspaceId::parse(workspace) else {
+                    return false;
+                };
+                engine.workspaces().contains(&id)
+            },
         );
     }
     if let (true, Some(documents), Some(service)) = (opened, documents, service) {
