@@ -128,162 +128,153 @@ impl tilo_server_client::https::HttpClient for Network<'_> {
     }
 }
 
-/// The network between a guest and its host, by the way the guest reaches
-/// it, counting what crosses it.
-enum Wire {
-    Datagrams(Datagrams),
-    Stream(DelayedLink),
+/// One chunk the network between a guest and its host carried: which way,
+/// its bytes, when the network took it and when it handed it on.
+struct Chunk {
+    up: bool,
+    bytes: usize,
+    sent: Instant,
+    delivered: Option<Instant>,
+}
+
+/// The network between a guest and its host, by the way the guest reaches it:
+/// every chunk each way arrives `round_trip / 2` after it was sent, in order,
+/// and each is kept with when it was sent and delivered.
+struct Wire {
+    addr: std::net::SocketAddr,
+    chunks: Chunks,
+}
+
+/// A queue of chunks to deliver: each with when it is due and its index.
+type Due = tokio::sync::mpsc::UnboundedSender<(tokio::time::Instant, Vec<usize>, Vec<u8>)>;
+
+/// What a [`Wire`] carried so far.
+#[derive(Clone, Default)]
+struct Chunks(std::sync::Arc<std::sync::Mutex<Vec<Chunk>>>);
+
+impl Chunks {
+    /// A chunk taken to be carried, printed when traced: its index.
+    fn sent(&self, up: bool, bytes: usize) -> usize {
+        if wire_traced() {
+            eprintln!(
+                "WIRE {:>9.1} {:>4} {bytes}",
+                origin().elapsed().as_secs_f64() * 1000.0,
+                if up { "up" } else { "down" }
+            );
+        }
+        let mut chunks = self.0.lock().unwrap();
+        chunks.push(Chunk {
+            up,
+            bytes,
+            sent: Instant::now(),
+            delivered: None,
+        });
+        chunks.len() - 1
+    }
+
+    /// The chunks at `indices` were handed on, now.
+    fn delivered(&self, indices: &[usize]) {
+        let now = Instant::now();
+        let mut chunks = self.0.lock().unwrap();
+        for &index in indices {
+            chunks[index].delivered = Some(now);
+        }
+    }
+
+    /// A queue whose chunks `deliver` takes each at its time, in order, each
+    /// marked delivered once it was handed on.
+    fn delayed<F, Fut>(&self, deliver: F) -> (Due, tokio::task::JoinHandle<()>)
+    where
+        F: Fn(Vec<u8>) -> Fut + Send + 'static,
+        Fut: Future<Output = bool> + Send,
+    {
+        let (queue, mut due) =
+            tokio::sync::mpsc::unbounded_channel::<(tokio::time::Instant, Vec<usize>, Vec<u8>)>();
+        let chunks = self.clone();
+        let carrying = tokio::spawn(async move {
+            while let Some((at, indices, bytes)) = due.recv().await {
+                tokio::time::sleep_until(at).await;
+                if !deliver(bytes).await {
+                    return;
+                }
+                chunks.delivered(&indices);
+            }
+        });
+        (queue, carrying)
+    }
 }
 
 impl Wire {
-    /// What reached the guest, and what it sent.
-    fn bytes(&self) -> (u64, u64) {
-        match self {
-            Self::Datagrams(datagrams) => datagrams.bytes(),
-            Self::Stream(link) => link.bytes(),
-        }
-    }
-}
-
-/// Print one chunk the wire carried, with when it was sent, when traced.
-fn trace_wire(way: &str, bytes: usize) {
-    if wire_traced() {
-        eprintln!(
-            "WIRE {:>9.1} {way:>4} {bytes}",
-            origin().elapsed().as_secs_f64() * 1000.0
-        );
-    }
-}
-
-/// A network between a page and the host's WebTransport listener: every
-/// datagram each way arrives `round_trip / 2` after it was sent, in order,
-/// and the bytes of those that reach the page are counted, as [`DelayedLink`] counts
-/// a stream's. One page's session crosses it: the first address to send is
-/// the page's.
-struct Datagrams {
-    addr: std::net::SocketAddr,
-    received: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    sent: std::sync::Arc<std::sync::atomic::AtomicU64>,
-}
-
-impl Datagrams {
-    async fn start(upstream: std::net::SocketAddr, round_trip: Duration) -> Self {
+    /// A network between a page and the host's WebTransport listener, carrying
+    /// datagrams. One page's session crosses it: the first address to send is
+    /// the page's.
+    async fn datagrams(upstream: std::net::SocketAddr, round_trip: Duration) -> Self {
         use std::sync::Arc;
-        use std::sync::atomic::{AtomicU64, Ordering};
         let page_side = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
         let host_side = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
         host_side.connect(upstream).await.unwrap();
         let addr = page_side.local_addr().unwrap();
-        let received = Arc::new(AtomicU64::new(0));
-        let sent = Arc::new(AtomicU64::new(0));
+        let chunks = Chunks::default();
         let page = Arc::new(std::sync::OnceLock::<std::net::SocketAddr>::new());
         let delay = round_trip / 2;
-        // Up: from the page to the host, each datagram `delay` later.
-        let up = Self::delayed({
+        let (up, _) = chunks.delayed({
             let host_side = host_side.clone();
             move |datagram: Vec<u8>| {
                 let host_side = host_side.clone();
-                async move {
-                    let _ = host_side.send(&datagram).await;
-                }
+                async move { host_side.send(&datagram).await.is_ok() }
             }
         });
         {
-            let (page_side, page, sent) = (page_side.clone(), page.clone(), sent.clone());
+            let (page_side, page, chunks) = (page_side.clone(), page.clone(), chunks.clone());
             tokio::spawn(async move {
                 let mut buffer = vec![0u8; 64 * 1024];
                 while let Ok((read, from)) = page_side.recv_from(&mut buffer).await {
                     if *page.get_or_init(|| from) != from {
                         continue;
                     }
-                    sent.fetch_add(read as u64, Ordering::Relaxed);
-                    trace_wire("up", read);
+                    let index = vec![chunks.sent(true, read)];
                     let at = tokio::time::Instant::now() + delay;
-                    if up.send((at, buffer[..read].to_vec())).is_err() {
+                    if up.send((at, index, buffer[..read].to_vec())).is_err() {
                         break;
                     }
                 }
             });
         }
-        // Down: from the host to the page.
-        let down = Self::delayed({
+        let (down, _) = chunks.delayed({
             move |datagram: Vec<u8>| {
                 let (page_side, page) = (page_side.clone(), page.get().copied());
                 async move {
-                    if let Some(page) = page {
-                        let _ = page_side.send_to(&datagram, page).await;
+                    match page {
+                        Some(page) => page_side.send_to(&datagram, page).await.is_ok(),
+                        None => true,
                     }
                 }
             }
         });
         {
-            let received = received.clone();
+            let chunks = chunks.clone();
             tokio::spawn(async move {
                 let mut buffer = vec![0u8; 64 * 1024];
                 while let Ok(read) = host_side.recv(&mut buffer).await {
-                    received.fetch_add(read as u64, Ordering::Relaxed);
-                    trace_wire("down", read);
+                    let index = vec![chunks.sent(false, read)];
                     let at = tokio::time::Instant::now() + delay;
-                    if down.send((at, buffer[..read].to_vec())).is_err() {
+                    if down.send((at, index, buffer[..read].to_vec())).is_err() {
                         break;
                     }
                 }
             });
         }
-        Self {
-            addr,
-            received,
-            sent,
-        }
+        Self { addr, chunks }
     }
 
-    /// A queue whose datagrams `deliver` takes each at its time, in order.
-    fn delayed<F, Fut>(
-        deliver: F,
-    ) -> tokio::sync::mpsc::UnboundedSender<(tokio::time::Instant, Vec<u8>)>
-    where
-        F: Fn(Vec<u8>) -> Fut + Send + 'static,
-        Fut: Future<Output = ()> + Send,
-    {
-        let (queue, mut due) =
-            tokio::sync::mpsc::unbounded_channel::<(tokio::time::Instant, Vec<u8>)>();
-        tokio::spawn(async move {
-            while let Some((at, datagram)) = due.recv().await {
-                tokio::time::sleep_until(at).await;
-                deliver(datagram).await;
-            }
-        });
-        queue
-    }
-
-    fn bytes(&self) -> (u64, u64) {
-        use std::sync::atomic::Ordering;
-        (
-            self.received.load(Ordering::Relaxed),
-            self.sent.load(Ordering::Relaxed),
-        )
-    }
-}
-
-/// A network between a device and the host's packet relay: every byte each
-/// way arrives `round_trip / 2` after it was sent, in order, and the bytes
-/// that reach the device are counted. A device reaching its host only
-/// through the relay sends nothing else, so this is all of its session's
-/// path to the host.
-struct DelayedLink {
-    addr: std::net::SocketAddr,
-    received: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    sent: std::sync::Arc<std::sync::atomic::AtomicU64>,
-}
-
-impl DelayedLink {
-    async fn start(upstream: std::net::SocketAddr, round_trip: Duration) -> Self {
-        use std::sync::atomic::AtomicU64;
+    /// A network between a device and the host's packet relay, carrying a
+    /// stream. A device reaching its host only through the relay sends nothing
+    /// else, so this is all of its session's path to the host.
+    async fn stream(upstream: std::net::SocketAddr, round_trip: Duration) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let received = std::sync::Arc::new(AtomicU64::new(0));
-        let sent = std::sync::Arc::new(AtomicU64::new(0));
-        let (down, up) = (received.clone(), sent.clone());
+        let chunks = Chunks::default();
+        let carried = chunks.clone();
         tokio::spawn(async move {
             while let Ok((page, _)) = listener.accept().await {
                 let Ok(relay) = tokio::net::TcpStream::connect(upstream).await else {
@@ -293,73 +284,137 @@ impl DelayedLink {
                 let _ = relay.set_nodelay(true);
                 let (page_read, page_write) = page.into_split();
                 let (relay_read, relay_write) = relay.into_split();
-                tokio::spawn(Self::carry(
-                    page_read,
-                    relay_write,
-                    round_trip / 2,
-                    up.clone(),
-                    "up",
-                ));
-                tokio::spawn(Self::carry(
-                    relay_read,
-                    page_write,
-                    round_trip / 2,
-                    down.clone(),
-                    "down",
-                ));
+                for (from, to, up) in [
+                    (page_read, relay_write, true),
+                    (relay_read, page_write, false),
+                ] {
+                    tokio::spawn(Self::carry(from, to, round_trip / 2, carried.clone(), up));
+                }
             }
         });
-        Self {
-            addr,
-            received,
-            sent,
-        }
+        Self { addr, chunks }
     }
 
-    /// Carry `from` to `to`, each chunk `delay` after it was read.
+    /// Carry `from` to `to`, each chunk `delay` after it was read, kept as the
+    /// packets and frames it carries ([`RelayFrames`]).
     async fn carry(
         mut from: tokio::net::tcp::OwnedReadHalf,
-        mut to: tokio::net::tcp::OwnedWriteHalf,
+        to: tokio::net::tcp::OwnedWriteHalf,
         delay: Duration,
-        counted: std::sync::Arc<std::sync::atomic::AtomicU64>,
-        way: &'static str,
+        chunks: Chunks,
+        up: bool,
     ) {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-        let (queue, mut due) =
-            tokio::sync::mpsc::unbounded_channel::<(tokio::time::Instant, Vec<u8>)>();
-        let writer = tokio::spawn(async move {
-            while let Some((at, bytes)) = due.recv().await {
-                tokio::time::sleep_until(at).await;
-                if to.write_all(&bytes).await.is_err() {
-                    return;
-                }
+        let to = std::sync::Arc::new(tokio::sync::Mutex::new(to));
+        let (queue, carrying) = chunks.delayed({
+            let to = to.clone();
+            move |bytes: Vec<u8>| {
+                let to = to.clone();
+                async move { to.lock().await.write_all(&bytes).await.is_ok() }
             }
-            let _ = to.shutdown().await;
         });
         let mut buffer = vec![0u8; 64 * 1024];
-        loop {
-            match from.read(&mut buffer).await {
-                Ok(0) | Err(_) => break,
-                Ok(read) => {
-                    counted.fetch_add(read as u64, std::sync::atomic::Ordering::Relaxed);
-                    trace_wire(way, read);
-                    let at = tokio::time::Instant::now() + delay;
-                    if queue.send((at, buffer[..read].to_vec())).is_err() {
-                        break;
-                    }
-                }
+        let mut frames = RelayFrames::default();
+        while let Ok(read @ 1..) = from.read(&mut buffer).await {
+            let indices = frames
+                .take(&buffer[..read])
+                .into_iter()
+                .map(|bytes| chunks.sent(up, bytes))
+                .collect();
+            let at = tokio::time::Instant::now() + delay;
+            if queue.send((at, indices, buffer[..read].to_vec())).is_err() {
+                break;
             }
         }
         drop(queue);
-        let _ = writer.await;
+        let _ = carrying.await;
+        let _ = to.lock().await.shutdown().await;
     }
 
-    fn bytes(&self) -> (u64, u64) {
-        use std::sync::atomic::Ordering;
-        (
-            self.received.load(Ordering::Relaxed),
-            self.sent.load(Ordering::Relaxed),
-        )
+    /// What reached the guest, and what it sent, of the chunks sent by `until`.
+    fn bytes(&self, until: Instant) -> (u64, u64) {
+        let chunks = self.chunks.0.lock().unwrap();
+        let sum = |up: bool| {
+            chunks
+                .iter()
+                .filter(|chunk| chunk.up == up && chunk.sent <= until)
+                .map(|chunk| chunk.bytes as u64)
+                .sum()
+        };
+        (sum(false), sum(true))
+    }
+}
+
+/// One way of a device's link to the packet relay, read as what it carries:
+/// the WebSocket upgrade's HTTP head, then WebSocket frames, each a relay
+/// frame. A relay frame of datagrams yields each QUIC packet it carries, so
+/// the stream's chunks weigh what the datagrams' would; any other relay frame
+/// yields itself. What a read splits mid-frame waits for the rest.
+#[derive(Default)]
+struct RelayFrames {
+    upgraded: bool,
+    pending: Vec<u8>,
+}
+
+impl RelayFrames {
+    /// The bytes of each packet and frame that `read` completes.
+    fn take(&mut self, read: &[u8]) -> Vec<usize> {
+        self.pending.extend_from_slice(read);
+        let mut taken = Vec::new();
+        if !self.upgraded {
+            let Some(end) = self.pending.windows(4).position(|w| w == b"\r\n\r\n") else {
+                return taken;
+            };
+            taken.push(end + 4);
+            self.pending.drain(..end + 4);
+            self.upgraded = true;
+        }
+        while let Some((header, payload)) = Self::frame(&self.pending) {
+            let mask = (self.pending[1] & 0x80 != 0)
+                .then(|| <[u8; 4]>::try_from(&self.pending[header - 4..header]).unwrap());
+            taken.extend(Self::packets(&self.pending[header..header + payload], mask));
+            self.pending.drain(..header + payload);
+        }
+        taken
+    }
+
+    /// A whole WebSocket frame at the start of `bytes`: its header's length,
+    /// its mask included, and its payload's.
+    fn frame(bytes: &[u8]) -> Option<(usize, usize)> {
+        let masked = bytes.get(1)? & 0x80 != 0;
+        let (header, payload) = match bytes[1] & 0x7f {
+            126 => (
+                4,
+                usize::from(u16::from_be_bytes([*bytes.get(2)?, *bytes.get(3)?])),
+            ),
+            127 => (
+                10,
+                usize::try_from(u64::from_be_bytes(bytes.get(2..10)?.try_into().unwrap())).unwrap(),
+            ),
+            len => (2, usize::from(len)),
+        };
+        let header = header + if masked { 4 } else { 0 };
+        (bytes.len() >= header + payload).then_some((header, payload))
+    }
+
+    /// The QUIC packets a relay frame of datagrams carries, or the frame
+    /// itself: `payload` is the WebSocket frame's, under `mask`.
+    fn packets(payload: &[u8], mask: Option<[u8; 4]>) -> Vec<usize> {
+        let byte = |index: usize| payload[index] ^ mask.map_or(0, |mask| mask[index % 4]);
+        let payload = payload.len();
+        // A relay frame: its type, then for datagrams the other endpoint's
+        // key (32 B) and the ECN byte, and for a batch the segment size.
+        match (payload > 34).then(|| byte(0)) {
+            Some(4 | 6) => vec![payload - 34],
+            Some(5 | 7) if payload > 36 => {
+                let segment = usize::from(u16::from_be_bytes([byte(34), byte(35)])).max(1);
+                let contents = payload - 36;
+                (0..contents.div_ceil(segment))
+                    .map(|at| segment.min(contents - at * segment))
+                    .collect()
+            }
+            _ => vec![payload],
+        }
     }
 }
 
@@ -602,8 +657,8 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     };
     // A small workspace on the same host, seeded the same way: what the same
     // guest's entry costs with no crowd behind it, measured in this run. A
-    // builder busy with other work stretches both, so the crowd is read as a
-    // ratio against it rather than against a wall-clock bound of its own.
+    // builder busy with other work stretches both, so the crowd is reported as
+    // a ratio against it.
     let small = workspaces.create("Small").await.unwrap();
     workspaces
         .publish(
@@ -683,7 +738,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     // `ROUND_TRIPS`: with no delay, what the host and the page spend; with
     // one, every round trip the guest waits through one after another.
     for way in [Way::WebTransport, Way::PacketRelay] {
-        way.measure(&place, Some(&small_place)).await;
+        way.measure(&place, &small_place).await;
     }
     for member in staying {
         member.close();
@@ -887,9 +942,9 @@ fn chat_part(workspace: &str) -> DocumentRoute {
     }
 }
 
-/// How many times each point of [`ROUND_TRIPS`] is measured, the fastest kept: a builder busy
-/// with other work stretches one measurement of the same work by a few percent, and the same
-/// work measured a few times tells that apart from an entry that is slower.
+/// How many times each point of [`ROUND_TRIPS`] is measured: the fastest is reported, as a
+/// builder busy with other work stretches one measurement of the same work, and the round trips
+/// of every one at [`FAR`] are counted, as they come out the same however busy it is.
 const TRIALS: usize = 3;
 
 /// The round trips a guest's entry is measured at: none, which is what the
@@ -912,10 +967,10 @@ enum Way {
 }
 
 impl Way {
-    /// How many round trips a fresh guest may wait this way, one after
-    /// another, beside [`COMPUTE`]: at every round trip of [`ROUND_TRIPS`]
-    /// the desktop shows within this many of it plus that allowance.
-    const fn round_trips(self) -> f64 {
+    /// How many requests a fresh guest's desktop may wait on this way, each
+    /// sent once the answer to the one before it arrived: see
+    /// [`dependent_requests`].
+    const fn round_trips(self) -> usize {
         match self {
             Self::WebTransport => WEB_ROUND_TRIPS,
             Self::PacketRelay => RELAYED_ROUND_TRIPS,
@@ -923,34 +978,23 @@ impl Way {
     }
 
     /// A fresh guest entering `place` this way at each of [`ROUND_TRIPS`],
-    /// held to the compute measured here, this way's round trips beside it and
-    /// [`MAX_BYTES`], with the CPU each spent reported beside them. A
-    /// regression that adds a step in sequence, sends the whole workspace
-    /// before the desktop, or asks its server again fails here.
-    async fn measure(self, place: &Place<'_>, baseline: Option<&Place<'_>>) {
-        let round_trips = self.round_trips();
-        // Every point is measured [`TRIALS`] times: a builder busy with other work stretches one
-        // measurement of the same work by a few percent, so the guest is its fastest, and what
-        // the server and the page spend here is the no-round-trip guests' slowest: the same
-        // work, measured rather than assumed, and never less than [`COMPUTE`].
-        let mut entries = Vec::new();
-        // What the same guest's entry costs with no crowd, this run, and the
-        // most a crowded workspace's entry may cost beside it: a crowd adds
-        // work, and the bound says how much, as a ratio of the same
+    /// held at the far one to this way's round trips, counted on the wire, and
+    /// at each to [`MAX_BYTES`], with how long each took and the CPU it spent
+    /// reported beside them. A regression that adds a request in sequence,
+    /// sends the whole workspace before the desktop, or asks its server again
+    /// fails here.
+    async fn measure(self, place: &Place<'_>, baseline: &Place<'_>) {
+        // What the same guest's entry takes with no crowd, this run: a crowd
+        // adds work, and the ratio says how much, against the same
         // measurement on the same node at the same moment.
-        let baseline_shown = match baseline {
-            Some(small) => {
-                let empty = guest_enters(small, self, Duration::ZERO).await;
-                eprintln!(
-                    "BASELINE {self:?}: an empty workspace's guest showed after {:?}",
-                    empty.shown
-                );
-                empty.shown
-            }
-            None => COMPUTE,
-        };
-        let floor = baseline_shown.mul_f64(CROWD_RATIO);
-        let mut compute = COMPUTE.max(floor);
+        let empty = guest_enters(baseline, self, Duration::ZERO).await;
+        eprintln!(
+            "BASELINE {self:?}: an empty workspace's guest showed after {:?}",
+            empty.shown
+        );
+        let mut entries = Vec::new();
+        let mut compute = Duration::ZERO;
+        let mut far = Vec::new();
         for round_trip in ROUND_TRIPS {
             let mut trials = Vec::new();
             for _ in 0..TRIALS {
@@ -960,18 +1004,18 @@ impl Way {
             for entry in &trials {
                 entry.report(&format!("{self:?}, {} ms", round_trip.as_millis()));
             }
-            if round_trip.is_zero()
-                && let Some(slowest) = trials.last()
-            {
-                compute = compute.max(slowest.shown);
+            if round_trip.is_zero() {
+                compute = trials.last().map_or(compute, |slowest| slowest.shown);
+            }
+            if round_trip == FAR {
+                far = trials.iter().map(|entry| entry.waited.clone()).collect();
             }
             entries.push((round_trip, trials.remove(0)));
         }
-        let far = ROUND_TRIPS[ROUND_TRIPS.len() - 1];
         let (_, slow) = entries.last().unwrap();
         eprintln!(
             "ENTRY {self:?}: shown at {}; {:.1} round trips beside {compute:?} of compute \
-             at {far:?}; page received {} B, sent {} B",
+             at {FAR:?}; page received {} B, sent {} B",
             entries
                 .iter()
                 .map(|(round_trip, entry)| format!(
@@ -981,26 +1025,32 @@ impl Way {
                 ))
                 .collect::<Vec<_>>()
                 .join(", "),
-            slow.shown.saturating_sub(compute).as_secs_f64() / far.as_secs_f64(),
+            slow.shown.saturating_sub(compute).as_secs_f64() / FAR.as_secs_f64(),
             slow.received,
             slow.sent
         );
         eprintln!(
             "RATIO {self:?}: the crowd's guest at no round trip showed in {:.2} times an empty \
-             workspace's ({:?} against {:?}); the bound is {CROWD_RATIO}",
-            entries[0].1.shown.as_secs_f64() / baseline_shown.as_secs_f64(),
+             workspace's ({:?} against {:?})",
+            entries[0].1.shown.as_secs_f64() / empty.shown.as_secs_f64(),
             entries[0].1.shown,
-            baseline_shown
+            empty.shown
         );
-        for (round_trip, entry) in &entries {
-            let allowed = compute + round_trip.mul_f64(round_trips + ROUND_TRIP_SLACK);
+        let round_trips = self.round_trips();
+        for waited in &far {
             assert!(
-                entry.shown <= allowed,
-                "over {self:?}, a fresh guest's desktop showed after {:?} at a {round_trip:?} \
-                 round trip, more than {round_trips} round trips beside {compute:?} of compute \
-                 ({allowed:?})",
-                entry.shown
+                waited.len() <= round_trips,
+                "over {self:?}, a fresh guest's desktop waited on {} requests one after another \
+                 at a {FAR:?} round trip, more than {round_trips}: {}",
+                waited.len(),
+                waited
+                    .iter()
+                    .map(|(bytes, at)| format!("{bytes} B at {:.0} ms", at.as_secs_f64() * 1000.0))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
+        }
+        for (_, entry) in &entries {
             // Its site says who the host is, and the entry and the admission
             // ride the session: a fresh guest asks the host nothing over
             // HTTPS.
@@ -1030,94 +1080,135 @@ impl Way {
     }
 }
 
-/// How many round trips a fresh guest's page may wait over WebTransport,
-/// one after another, beside the compute measured here, floored at
-/// [`COMPUTE`]. It counts:
+/// The round trip a guest's round trips are counted at: long enough that what
+/// the host and the page compute between two chunks, even on a busy node,
+/// stays well inside one, so no chunk reads as answering one it came before.
+const FAR: Duration = ROUND_TRIPS[ROUND_TRIPS.len() - 1];
+
+/// The requests a guest's desktop waited on, one after another: their bytes
+/// and when each was sent after the guest began.
 ///
-/// - the QUIC handshake, with TLS inside it: 1. The host's HTTP/3 SETTINGS
-///   go out with its handshake, so the page asks for its session as the
-///   handshake completes;
-/// - the extended CONNECT that opens the session: 1. The host writes the
-///   entry's binding as it answers, so the hello waits for nothing more;
+/// The wire's chunks are QUIC packets, and on the packet relay its frames
+/// besides ([`RelayFrames`]). One carries data when it weighs more than
+/// [`ACK_BYTES`]: what is smaller carries only acknowledgements and window
+/// updates, which both sides send as data arrives. A packet larger than every
+/// one sent that way before it, and than the [`QUIC_MIN_DATAGRAM`] every
+/// endpoint starts from, carries none either: it is a path MTU probe, a
+/// padded PING answered with an acknowledgement alone, and no packet of data
+/// is larger than a probe that went before it.
+///
+/// A request is a chunk of data the guest sent. One follows another when the
+/// guest sent it after data reached it that the host sent after that other
+/// one arrived: it could have waited on the answer. The count is the longest
+/// chain of requests each following the one before, the last of which data
+/// followed before the desktop showed. It reads only the order the wire saw
+/// chunks in, each against chunks half the round trip away, so how long the
+/// host or the page computes between them moves no request in or out of the
+/// chain.
+///
+/// The replay's pacing is flow, not a request: the host sends what the
+/// guest's window and its congestion window allow, and the acknowledgements
+/// and window updates that let it send more are under [`ACK_BYTES`]. The
+/// rounds the replay takes are in the printed timing, not in this count.
+fn dependent_requests(chunks: &[Chunk], begun: Instant, shown: Instant) -> Vec<(usize, Duration)> {
+    let never = shown + Duration::from_secs(3_600);
+    let mut largest = [QUIC_MIN_DATAGRAM; 2];
+    let data: Vec<&Chunk> = chunks
+        .iter()
+        .filter(|chunk| {
+            let largest = &mut largest[usize::from(chunk.up)];
+            let probe = chunk.bytes > *largest;
+            *largest = (*largest).max(chunk.bytes);
+            chunk.bytes > ACK_BYTES && !probe
+        })
+        .collect();
+    let arrived = |chunk: &Chunk| chunk.delivered.unwrap_or(never);
+    let requests: Vec<&Chunk> = data
+        .iter()
+        .copied()
+        .filter(|request| request.up && request.sent < shown)
+        .collect();
+    // For each request, when the first data the host sent after it arrived
+    // reached the guest.
+    let answered: Vec<Instant> = requests
+        .iter()
+        .map(|request| {
+            data.iter()
+                .filter(|answer| !answer.up && answer.sent >= arrived(request))
+                .map(|answer| arrived(answer))
+                .min()
+                .unwrap_or(never)
+        })
+        .collect();
+    // The longest chain ending at each request, and the request before it.
+    let mut chain: Vec<(usize, Option<usize>)> = Vec::with_capacity(requests.len());
+    for (at, request) in requests.iter().enumerate() {
+        let before = (0..at)
+            .filter(|&earlier| answered[earlier] <= request.sent)
+            .max_by_key(|&earlier| chain[earlier].0);
+        chain.push((before.map_or(1, |earlier| chain[earlier].0 + 1), before));
+    }
+    let mut last = (0..requests.len())
+        .filter(|&at| answered[at] <= shown)
+        .max_by_key(|&at| chain[at].0);
+    let mut waited = Vec::new();
+    while let Some(at) = last {
+        waited.push((requests[at].bytes, requests[at].sent - begun));
+        last = chain[at].1;
+    }
+    waited.reverse();
+    waited
+}
+
+/// The most a chunk carrying only acknowledgements and window updates weighs
+/// on the wire: a QUIC packet of those (about 30 to 60 B), and on the packet
+/// relay the frame around it. The smallest request on either way, the HTTP/3
+/// CONNECT or a hello carrying the guest's certificate, is well above it.
+const ACK_BYTES: usize = 100;
+
+/// The largest datagram every QUIC endpoint may send before it learns the
+/// path's MTU, and the size the client's Initial is padded to.
+const QUIC_MIN_DATAGRAM: usize = 1_200;
+
+/// How many requests a fresh guest's page may wait on over WebTransport, one
+/// after another (see [`dependent_requests`]):
+///
+/// - the QUIC handshake's Initial, with TLS inside it. The host's HTTP/3
+///   SETTINGS go out with its handshake, so the page asks for its session as
+///   the handshake completes;
+/// - the extended CONNECT that opens the session, behind the handshake's end.
+///   The host writes the entry's binding as it answers, so the hello waits
+///   for nothing more;
 /// - the hello, which carries the entry with its proof and the guest's first
-///   requests, and the host's answer with the Welcome first: 1;
-/// - the replay of governance and the desktop, about 0.65 MB for a crowd of
-///   300 that all hold the keys (see [`MAX_BYTES`]), from a 256 KiB initial
-///   window, paced over the round trip: 1.5 to 2.
+///   requests, and the host's answer with the Welcome first, the replay of
+///   governance and the desktop behind it;
+/// - the page's first write, which it makes once the entry admitted it. The
+///   replay does not wait on it, but it goes out after the admission and the
+///   replay comes after it, so the wire reads it as one.
 ///
-/// Four and a half to five in all, of which the compute reads about three:
-/// the server and the page compute while the replay travels. At 400 ms the
-/// desktop shows in about 2.6 s, at 70 ms in about 1.55 s. Before the
-/// host sent its SETTINGS with its handshake and started from that window,
-/// the same entry took 4.1 s at 400 ms.
-const WEB_ROUND_TRIPS: f64 = 3.25;
+/// At 400 ms the desktop shows in about 2.3 to 2.7 s, at 70 ms in about
+/// 0.9 to 1.5 s.
+const WEB_ROUND_TRIPS: usize = 4;
 
-/// What the host and the page may spend on a fresh guest's entry, from its
-/// first request until its desktop shows: the session and the entry (about
-/// 0.1 s), the workspace admitting the guest (about 60 ms for 300 members),
-/// the members' commit that adds the guest to a channel group of 300 and
-/// carries its Welcome (about 85 ms), the replay written, and the page taking
-/// in its Welcome, the commits after it, the governance and the 300 members'
-/// parts of the desktop. Every member's page holds the keys, as in the Lounge,
-/// so each of those channel frames works through a group of 300. The quick
-/// entry shows in 0.85 to 1.05 s on the builder.
-///
-/// Nothing here waits on a clock: a guest whose certificate was issued a
-/// moment before its entry is in the workspace's channel group at once, so
-/// the entry with no round trip is this allowance of work alone. It is kept
-/// wider than that entry needs so that a guest held to it beside its round
-/// trips is not read as slower for a few percent of scheduling.
-///
-/// A builder busy with other work spends wall time on scheduling the same
-/// compute, so what a guest's desktop is held to in wall time is the compute
-/// measured here: the slowest of its entries with no round trip, never less
-/// than this.
-const COMPUTE: Duration = Duration::from_millis(1_300);
-
-/// How much slower a fresh guest's entry into the crowded workspace may be
-/// than the same guest's entry into an empty one on the same host in the same
-/// run. A crowd adds the members' parts to what a newcomer is sent and the
-/// workspace's governance to what it is told; what it must not add is a wait
-/// that grows with the crowd. The ratio is what a busy node cannot move: both
-/// sides are measured here, one after the other, so a node that stretches the
-/// empty entry stretches the crowded one with it.
-const CROWD_RATIO: f64 = 3.0;
-
-/// How much of one round trip a guest's entry may wait beyond the round trips
-/// it is held to, for a node scheduling other work: a quarter of one. A
-/// regression that waits a round trip more is a whole one above this, so the
-/// slack does not hide it.
-const ROUND_TRIP_SLACK: f64 = 0.25;
-
-/// How many round trips a fresh guest may wait over iroh through the packet
-/// relay, one after another, beside the compute measured here, floored at
-/// [`COMPUTE`]: the slow entry's desktop shows within this many of the round
-/// trip plus that compute.
-///
-/// The compute the slow entry is held to beside its round trips is measured
-/// here, as the slowest of its entries with none, so a builder busy with
-/// other work raises both rather than reading as the product being slower.
-/// It counts:
+/// How many requests a fresh guest may wait on over iroh through the packet
+/// relay, one after another (see [`dependent_requests`]):
 ///
 /// - the packet relay's WebSocket upgrade, which brings the relay's
-///   challenge: 1 (a browser adds TCP's and TLS's own round trips here);
-/// - the session's QUIC handshake, its Initial right behind the answer to
-///   that challenge rather than a round trip later, after the relay's
-///   confirmation: 1;
-/// - the hello, which carries the entry with its proof (bound to the QUIC
-///   connection, so no challenge of the host's comes first) and has the
-///   guest's first requests right behind it: 0.5;
-/// - the host's answer and the replay of governance and the desktop behind
-///   it, about 0.65 MB for a crowd of 300 that all hold the keys (see
-///   [`MAX_BYTES`]), from a 256 KiB initial window rather than QUIC's 14 KB:
-///   2.
+///   challenge (a browser adds TCP's and TLS's own round trips here);
+/// - the answer to that challenge, with the session's QUIC Initial right
+///   behind it rather than a round trip later, after the relay's
+///   confirmation;
+/// - the hello behind the handshake's end, which carries the entry with its
+///   proof (bound to the QUIC connection, so no challenge of the host's comes
+///   first) and the guest's first requests, and the host's answer with the
+///   Welcome first, the replay of governance and the desktop behind it;
+/// - the guest's first write once admitted, as over WebTransport.
 ///
 /// The desktop's keys take none of their own: the hello carries the guest's
-/// request for them, and the Welcome is the first thing its replay writes.
-/// The host's certificate takes none either: the page's site hands it over
-/// with the page. Four and a half in all, which the compute reads as about
-/// three and a half; at 400 ms the desktop shows in about 2.7 s.
-const RELAYED_ROUND_TRIPS: f64 = 3.5;
+/// request for them. The host's certificate takes none either: the page's
+/// site hands it over with the page. At 400 ms the desktop shows in about
+/// 2.3 to 3 s.
+const RELAYED_ROUND_TRIPS: usize = 4;
 
 /// What a fresh guest may receive before its desktop shows, 0.62 to 0.64 MB
 /// for 300 members who all hold the keys: its Welcome first, once (about
@@ -1161,6 +1252,9 @@ struct Entry {
     /// The CPU this process spent on the entry, where the platform counts it: what the server
     /// and the page computed, apart from how long a busy machine took to schedule them.
     cpu: Option<Duration>,
+    /// The requests the desktop waited on one after another, with their bytes
+    /// and when each was sent: [`dependent_requests`].
+    waited: Vec<(usize, Duration)>,
 }
 
 impl Entry {
@@ -1186,6 +1280,11 @@ impl Entry {
             ),
             self.received,
             self.sent
+        );
+        eprintln!(
+            "ENTRY [{network}] waited on {} requests one after another: {:?}",
+            self.waited.len(),
+            self.waited
         );
     }
 }
@@ -1222,8 +1321,8 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
                 .into_iter()
                 .next()
                 .expect("the WebTransport listener's address");
-            let datagrams = Datagrams::start(listener, round_trip).await;
-            origin.set_port(Some(datagrams.addr.port())).unwrap();
+            let wire = Wire::datagrams(listener, round_trip).await;
+            origin.set_port(Some(wire.addr.port())).unwrap();
             let proxied = tilo_server_protocol::web::WebLink {
                 origin: origin.as_str().trim_end_matches('/').to_owned(),
                 ..web
@@ -1231,7 +1330,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
             let host = ServerAddress::published(&named.clone().into())
                 .over(tilo_server_client::Carrier::WebTransport)
                 .with_web(Some(proxied));
-            (Wire::Datagrams(datagrams), host)
+            (wire, host)
         }
         Way::PacketRelay => {
             // Only through the relay, as a native device goes when no
@@ -1243,13 +1342,13 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
                 .into_iter()
                 .next()
                 .expect("the packet relay's address");
-            let link = DelayedLink::start(upstream, round_trip).await;
+            let wire = Wire::stream(upstream, round_trip).await;
             let mut relay: url::Url = (*place.relay).clone();
-            relay.set_port(Some(link.addr.port())).unwrap();
+            relay.set_port(Some(wire.addr.port())).unwrap();
             let host =
                 ServerAddress::through(iroh::EndpointAddr::new(place.host), Some(relay.into()))
                     .over(tilo_server_client::Carrier::Relay);
-            (Wire::Stream(link), host)
+            (wire, host)
         }
     };
     let network = Network {
@@ -1349,11 +1448,13 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         );
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
-    let shown = started.elapsed();
+    let shown_at = Instant::now();
+    let shown = shown_at - started;
     let cpu = cpu_started
         .zip(process_cpu())
         .map(|(from, to)| to.saturating_sub(from));
-    let (received, sent) = wire.bytes();
+    let (received, sent) = wire.bytes(shown_at);
+    let waited = dependent_requests(&wire.chunks.0.lock().unwrap(), started, shown_at);
     marks.push(("session connected", connected.unwrap_or_default()));
     marks.push(("entry admitted the guest", admitted.unwrap_or_default()));
     marks.push(("host admitted the subscription", ready.unwrap_or(shown)));
@@ -1454,5 +1555,6 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         received: received + http_bytes as u64,
         sent,
         cpu,
+        waited,
     }
 }
