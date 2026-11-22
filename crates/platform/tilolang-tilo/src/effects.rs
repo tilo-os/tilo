@@ -511,7 +511,13 @@ impl Host {
                     "run": suggestion.run,
                     "waiting_on": suggestion.action,
                 });
-                self.inner.suspended.borrow_mut().push_back(suggestion);
+                self.inner
+                    .suspended
+                    .borrow_mut()
+                    .push_back(crate::host::Waiting {
+                        suggestion,
+                        invocation: None,
+                    });
                 Ok(output(shown))
             }
         }

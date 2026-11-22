@@ -163,6 +163,13 @@ pub struct RootView {
     pub view: Option<String>,
 }
 
+/// A run that waits on a person's answer: what it asks, and the record of the invocation that
+/// asked it, which the answer decides, when one was recorded.
+pub struct Waiting {
+    pub suggestion: tilolang_runtime::Suggestion,
+    pub invocation: Option<ResourceRef>,
+}
+
 pub(crate) struct HostInner {
     handle: u64,
     runtime: Runtime,
@@ -170,8 +177,12 @@ pub(crate) struct HostInner {
     authority: TiloAuthority,
     viewer: Actor,
     packages: RefCell<Vec<Rc<Package>>>,
-    /// Suggestions an agent's code raised on the API, waiting for the window to ask a person.
-    pub(crate) suspended: RefCell<std::collections::VecDeque<tilolang_runtime::Suggestion>>,
+    /// Runs waiting for the window to ask a person: what an agent's code raised on the API, and
+    /// what the person's own press stopped at.
+    pub(crate) suspended: RefCell<std::collections::VecDeque<Waiting>>,
+    /// What the run of the action being planned stopped at, for its person's window to ask them
+    /// once the plan is the change the document commits ([`Self::plan`]).
+    stopped: RefCell<Option<Waiting>>,
     /// The resource each action returned when its plan last happened, by the action: what its
     /// invocation answers. Publishing a surface plans every action, so one place for the last
     /// would answer one action with another's resource; each is kept by its action and taken
@@ -561,10 +572,12 @@ impl HostInner {
         let carried = self.carried.replace(false);
         let checkpoint = self.store.checkpoint();
         let planned = self.plan_in_mirror(request);
+        let stopped = self.stopped.take();
         if carried && planned.is_ok() {
             self.store
                 .keep(checkpoint)
                 .map_err(|error| error.to_string())?;
+            self.suspended.borrow_mut().extend(stopped);
         } else {
             self.store.rewind(checkpoint);
         }
@@ -791,10 +804,19 @@ impl HostInner {
                     InvokeOutcome::Done(_) => {}
                     // An action that needs a person's approval is not refused: it is recorded as
                     // a suggested invocation, the answer an agent gets and a person decides.
+                    // The person's own call is asked of them on their window's Ask bar, and
+                    // their answer decides the record.
                     InvokeOutcome::Suggested(suggestion) => {
-                        self.runtime
+                        let invocation = self
+                            .runtime
                             .record_suggestion(&invoker, request.action_id, args, &suggestion)
                             .map_err(|error| error.to_string())?;
+                        if invoker == self.viewer && request.caller.is_none_or(|c| !c.agent) {
+                            self.stopped.replace(Some(Waiting {
+                                suggestion,
+                                invocation: Some(invocation),
+                            }));
+                        }
                     }
                     InvokeOutcome::Denied => return Err("the action is not allowed".to_owned()),
                 }
@@ -944,6 +966,7 @@ impl Host {
             viewer,
             packages: RefCell::new(Vec::new()),
             suspended: RefCell::default(),
+            stopped: RefCell::default(),
             returned: RefCell::default(),
             triggers,
             asking,
@@ -992,9 +1015,9 @@ impl Host {
         self.inner.admit_agent(caller);
     }
 
-    /// The next suggestion an agent's code raised, for the window to ask a person about.
+    /// The next run waiting on a person, for the window to ask them about.
     #[must_use]
-    pub fn take_suspended(&self) -> Option<tilolang_runtime::Suggestion> {
+    pub fn take_suspended(&self) -> Option<Waiting> {
         self.inner.suspended.borrow_mut().pop_front()
     }
 

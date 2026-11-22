@@ -359,7 +359,7 @@ pub struct Instance {
     /// note an action made opens in the notebook's tree beside it. A kind the window has no place
     /// for is left where it was, never opened as a page of its own.
     pressed_shows: Vec<(u64, String)>,
-    ask: Option<Suggestion>,
+    ask: Option<crate::host::Waiting>,
     settle_due: bool,
     sink: Option<Box<dyn OutsideSink>>,
     /// The outside services the package's types with an origin are kept in step with.
@@ -1178,18 +1178,44 @@ impl Instance {
         self.flush();
     }
 
-    /// Ask the person about what a run waits on them for since the last frame. Whether one did.
+    /// Ask the person about what a run waits on them for since the last frame. Whether the Ask
+    /// bar changed.
     fn take_suspended(&mut self) -> bool {
-        let Some(suggestion) = self.host().and_then(|host| host.take_suspended()) else {
-            return false;
+        // An ask whose record somebody decided elsewhere (through the API, on another device)
+        // waits on nobody: the bar goes.
+        let decided = self
+            .ask
+            .as_ref()
+            .and_then(|waiting| waiting.invocation.as_ref())
+            .zip(self.host())
+            .is_some_and(|(invocation, host)| {
+                host.runtime()
+                    .read_invocation(invocation)
+                    .is_ok_and(|record| record.state != "suggested")
+            });
+        if decided {
+            self.ask = None;
+            self.out.push(ToUi::Ask(None));
+        }
+        let Some(waiting) = self.host().and_then(|host| host.take_suspended()) else {
+            return decided;
         };
         self.commit_planned();
-        self.ask_for(suggestion);
+        self.ask(waiting);
         true
     }
 
-    /// Show the Ask bar for `suggestion`.
+    /// Show the Ask bar for `suggestion`, a run of this window's own.
     fn ask_for(&mut self, suggestion: Suggestion) {
+        self.ask(crate::host::Waiting {
+            suggestion,
+            invocation: None,
+        });
+    }
+
+    /// Show the Ask bar for what `waiting` waits on.
+    fn ask(&mut self, waiting: crate::host::Waiting) {
+        let suggestion = &waiting.suggestion;
         let action = self
             .host()
             .and_then(|host| {
@@ -1207,7 +1233,7 @@ impl Instance {
             action,
             invoker: self.names.name(&suggestion.invoker),
         })));
-        self.ask = Some(suggestion);
+        self.ask = Some(waiting);
     }
 
     /// Show what a person's press made, and what search hits or agents asked the window to
@@ -2121,9 +2147,10 @@ impl Instance {
     }
 
     fn answer(&mut self, answer: ui::Answer) {
-        let (Some(suggestion), Some(host)) = (self.ask.take(), self.host()) else {
+        let (Some(waiting), Some(host)) = (self.ask.take(), self.host()) else {
             return;
         };
+        let suggestion = waiting.suggestion;
         let resolution = match answer {
             ui::Answer::Decline => Resolution::Decline,
             ui::Answer::Allow | ui::Answer::Always => {
@@ -2135,10 +2162,18 @@ impl Instance {
                 Resolution::Approve
             }
         };
-        if let Err(error) = host
-            .runtime()
-            .resolve(&suggestion.run, &self.me_actor(), resolution)
-        {
+        // A recorded ask is decided as its record, so every replica reads the answer.
+        let decided = match &waiting.invocation {
+            Some(invocation) => host
+                .runtime()
+                .resolve_invocation(invocation, &self.me_actor(), resolution)
+                .map(drop),
+            None => host
+                .runtime()
+                .resolve(&suggestion.run, &self.me_actor(), resolution)
+                .map(drop),
+        };
+        if let Err(error) = decided {
             self.notice(Words::Plain(error.to_string()), ui::NoticeKind::Error);
         }
         self.out.push(ToUi::Ask(None));

@@ -1047,6 +1047,77 @@ fn approving_a_pressed_send_through_the_ask_bar_sends_the_letter_once() {
     );
 }
 
+/// The person runs the letter's Send through the action API, as the shell's palette, a search
+/// row or a script of theirs runs it: to the app as their own step.
+fn run_send(session: &mut Session, draft: &ResourceRef) -> Result<(), String> {
+    let resource = tilolang_tilo::publish::resource_id(LETTERS, &draft.id_string());
+    let ran = session
+        .invoke(None, None, &resource, "send", &Map::new())
+        .map(drop);
+    session.settle();
+    ran
+}
+
+/// The action the window's Ask bar asks the person about, when it is up.
+fn asked(session: &mut Session) -> Option<String> {
+    session
+        .hosted()
+        .view()
+        .and_then(tilo_app_window::AppWindow::asks)
+        .map(|ask| ask.action.clone())
+}
+
+/// Bo at a Letters window of Ada's workspace, whose editor she made him: an editor asks before
+/// what leaves the workspace.
+fn bo_editing_letters() -> Session {
+    use ui::permissions::policy::{MemberAccess, Role, WorkspacePolicy};
+    let route = collaboration::RouteSpec::app(LETTERS, uuid::Uuid::new_v4());
+    let workspace = route.cluster_id.to_string();
+    let mut policy = WorkspacePolicy::new(&workspace, "ada");
+    policy.members.insert("bo".to_owned(), Role::Editor);
+    let spec = tilolang_process::hosted::Spec::new(LETTERS, workspace, 1, "bo")
+        .in_language("en-US")
+        .access(MemberAccess::person(policy, "bo"));
+    let mut session = Session::brokered_as(&route, spec, super::Window::in_harness);
+    session.instance_mut().stage("a mailbox of letters");
+    session.settle();
+    session
+}
+
+/// Bo's own Send asks him on his window's Ask bar, as a press of the letter's control does, and
+/// goes once he allows it; run again once it went, it is refused with the letter's own reason.
+/// An ask is never left as a record nobody shows.
+#[test]
+fn an_editors_send_asks_on_the_ask_bar_and_a_refused_one_says_why() {
+    let mut session = bo_editing_letters();
+    let draft = first_draft(&mut session);
+    run_send(&mut session, &draft).expect("the send is taken, to ask first");
+    assert_eq!(
+        asked(&mut session).as_deref(),
+        Some("Send"),
+        "the press asks the person first"
+    );
+    assert!(
+        !sent(&mut session, &draft),
+        "nothing leaves before they say so"
+    );
+    session
+        .hosted()
+        .view()
+        .expect("the window is connected")
+        .answer(tilo_render_protocol::patch::Answer::Allow);
+    session.settle();
+    assert!(sent(&mut session, &draft), "the letter went");
+    assert_eq!(asked(&mut session), None, "the answered ask is gone");
+
+    let refused = run_send(&mut session, &draft).expect_err("a letter goes once");
+    assert!(
+        refused.contains("This letter went already"),
+        "the refusal says why: {refused}"
+    );
+    assert_eq!(asked(&mut session), None, "a refused press asks nothing");
+}
+
 // ----- an app's own window ----------------------------------------------------------------
 
 /// What `std` does for the standard apps, an app does by composing the toolkit's components with
