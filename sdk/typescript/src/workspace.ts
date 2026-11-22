@@ -20,7 +20,6 @@ import {
   type WorkspaceExport,
   type WorkspaceInfo,
   resultOf,
-  workspaceOf,
 } from "./models.ts";
 import { ProtocolError, refusalOf } from "./errors.ts";
 import { resourceProxy, type Resource, type Surface } from "./resource.ts";
@@ -377,28 +376,71 @@ export class Workspace {
 
   /**
    * Everything the workspace holds, read whole: its listing (with its
-   * labels) and every resource of every app, as a walk from its apps finds
-   * them; the ones that did not read are in `unread`, with why. The files
-   * the resources name (`tilo.content:` references) download with
+   * labels) and every resource of every app, read by walking the listings
+   * from its apps; the ones that did not read are in `unread`, with why. The
+   * files the resources name (`tilo.content:` references) download with
    * `files.download`. Take one before deleting a customer's workspace.
    */
   async export(): Promise<WorkspaceExport> {
+    const exportedAtMs = Date.now();
+    const resources: Record<string, unknown>[] = [];
+    const unread: { path: string; error: string }[] = [];
+    const why = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+    const seen = new Set<string>();
+    const walk: (string | null)[] = [null];
+    while (walk.length > 0) {
+      const path = walk.shift() ?? null;
+      let listing: Listing;
+      try {
+        listing = await this.ls(path);
+      } catch (error) {
+        unread.push({ path: path ?? "", error: why(error) });
+        continue;
+      }
+      for await (const row of listing) {
+        if (seen.has(row.path)) {
+          continue;
+        }
+        seen.add(row.path);
+        if (row.raw.reads !== false) {
+          try {
+            resources.push(await this.readWhole(row.path));
+          } catch (error) {
+            unread.push({ path: row.path, error: why(error) });
+          }
+        }
+        if (row.hasChildren) {
+          walk.push(row.path);
+        }
+      }
+    }
+    return { workspace: await this.info(), exportedAtMs, resources, unread };
+  }
+
+  /** `path` read with every page of what it holds. */
+  private async readWhole(path: string): Promise<Record<string, unknown>> {
     const endpoint = await this.endpoint();
-    const answer = await endpoint.answer("GET", routes.export(endpoint.id), { idempotent: false });
-    const workspace =
-      answer.workspace !== null && typeof answer.workspace === "object"
-        ? workspaceOf(answer.workspace as Record<string, unknown>)
-        : await this.info();
-    return {
-      workspace,
-      exportedAtMs: Number(answer.exported_at_ms ?? 0),
-      resources: Array.isArray(answer.resources)
-        ? (answer.resources as Record<string, unknown>[])
-        : [],
-      unread: Array.isArray(answer.unread)
-        ? (answer.unread as { path: string; error: string }[])
-        : [],
-    };
+    const children: unknown[] = [];
+    let whole: Record<string, unknown> = {};
+    let cursor: string | null = null;
+    for (;;) {
+      const page: Record<string, unknown> = await endpoint.answer(
+        "GET",
+        `${routes.resource(endpoint.id, path)}${queryOf({ cursor })}`,
+        { idempotent: false },
+      );
+      if (cursor === null) {
+        whole = { ...page };
+      }
+      children.push(...(Array.isArray(page.children) ? page.children : []));
+      whole.children = children;
+      const following = page.cursor;
+      if (typeof following !== "string" || following === cursor) {
+        delete whole.cursor;
+        return whole;
+      }
+      cursor = following;
+    }
   }
 
   /**

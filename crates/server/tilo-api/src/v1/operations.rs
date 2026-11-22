@@ -111,13 +111,6 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         )
         .json(200, "ApiInfo"),
         op(
-            "exportWorkspace",
-            Method::GET,
-            "/v1/workspaces/{workspace}/export",
-            "Everything the workspace holds: every resource of every app, read in full",
-        )
-        .json(200, "WorkspaceExport"),
-        op(
             "listAccountResources",
             Method::GET,
             "/v1/resources",

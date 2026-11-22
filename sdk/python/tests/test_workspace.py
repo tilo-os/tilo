@@ -452,3 +452,13 @@ async def test_a_resource_is_read_before_its_fields(workspace):
 
     await resource.load()
     assert resource.title == "Todo"
+
+
+async def test_an_export_reads_what_a_walk_of_the_listings_finds(workspace, api):
+    exported = await workspace.export()
+    assert exported.workspace.id == WORKSPACE_ID
+    assert [resource["path"] for resource in exported.resources] == [TODO]
+    assert exported.resources[0]["fields"]["title"] == "Todo"
+    unread = {row["path"] for row in exported.unread}
+    assert {"notes", f"{TODO}/c01e"} <= unread
+    assert all(row["error"] for row in exported.unread)

@@ -453,3 +453,16 @@ describe("a listing's actions", () => {
     expect(listing.rows[1]?.actions[0]?.params[0]?.name).toBe("title");
   });
 });
+
+describe("an export", () => {
+  it("reads what a walk of the listings finds, and names what did not read", async () => {
+    const exported = await open(new FakeApi()).workspace("jane-doe").export();
+
+    expect(exported.workspace.id).toBe(WORKSPACE_ID);
+    expect(exported.resources.map((resource) => resource.path)).toEqual([TODO]);
+    const unread = exported.unread.map((row) => row.path);
+    expect(unread).toContain("notes");
+    expect(unread).toContain(`${TODO}/c01e`);
+    expect(exported.unread.every((row) => row.error !== "")).toBe(true);
+  });
+});

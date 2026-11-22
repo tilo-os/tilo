@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import builtins
 import dataclasses
+import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 from urllib.parse import quote
 
 from ._endpoint import CURRENT, Endpoint, InvocationGroup, result_of, segments
-from ._errors import AskPending, ProtocolError
+from ._errors import AskPending, ProtocolError, Refused
 from ._models import (
     Event,
     Hit,
@@ -401,16 +402,73 @@ class Workspace:
     def export(self) -> Any:
         """Everything the workspace holds, read whole: a `WorkspaceExport`.
 
-        Its listing (with its labels) and every resource of every app, as a
-        walk from its apps finds them; the ones that did not read are in
-        `unread`, with why. The files the resources name download with
-        `files.download`. Take one before deleting a customer's workspace.
+        Its listing (with its labels) and every resource of every app, read
+        by walking the listings from its apps; the ones that did not read
+        are in `unread`, with why. The files the resources name download
+        with `files.download`. Take one before deleting a customer's
+        workspace.
         """
         return self.client.handoff(self._export())
 
     async def _export(self) -> WorkspaceExport:
         endpoint = await self._endpoint()
-        return WorkspaceExport.of(await endpoint.json("GET", endpoint.path("export")))
+        exported_at_ms = int(time.time() * 1000)
+        resources: builtins.list[Mapping[str, Any]] = []
+        unread: builtins.list[Mapping[str, Any]] = []
+        seen: set[str] = set()
+        walk: builtins.list[str | None] = [None]
+        while walk:
+            path = walk.pop(0)
+            cursor = None
+            while True:
+                try:
+                    listing = await endpoint.json(
+                        "GET", endpoint.path("resources"), query={"path": path, "cursor": cursor}
+                    )
+                except Refused as refused:
+                    unread.append({"path": path or "", "error": refused.message or refused.code})
+                    break
+                for row in listing.get("rows") or []:
+                    at = row.get("path")
+                    if not isinstance(at, str) or at in seen:
+                        continue
+                    seen.add(at)
+                    if row.get("reads", True):
+                        try:
+                            resources.append(await self._read_whole(endpoint, at))
+                        except Refused as refused:
+                            unread.append({"path": at, "error": refused.message or refused.code})
+                    if row.get("has_children"):
+                        walk.append(at)
+                following = listing.get("next_cursor")
+                if not isinstance(following, str) or following == cursor:
+                    break
+                cursor = following
+        return WorkspaceExport(
+            workspace=await self._resolve(),
+            exported_at_ms=exported_at_ms,
+            resources=resources,
+            unread=unread,
+        )
+
+    @staticmethod
+    async def _read_whole(endpoint: Endpoint, path: str) -> Mapping[str, Any]:
+        """`path` read with every page of what it holds."""
+        whole: dict[str, Any] | None = None
+        cursor = None
+        while True:
+            page = await endpoint.json(
+                "GET", endpoint.path("resources", segments(path)), query={"cursor": cursor}
+            )
+            if whole is None:
+                whole = dict(page)
+            else:
+                whole["children"] = [*whole.get("children", []), *(page.get("children") or [])]
+            following = page.get("cursor")
+            if not isinstance(following, str) or following == cursor:
+                whole.pop("cursor", None)
+                return whole
+            cursor = following
 
     def branch(
         self,

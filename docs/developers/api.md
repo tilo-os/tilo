@@ -94,7 +94,9 @@ an invocation of its own, named for the key ("Visa backend #3").
 | `GET /v1/resources?path=` | the account's resources and actions, as a workspace's are listed |
 | `GET /v1/resources/account/usage` | its `fields`: the person's plan and per workspace what it keeps and the VM time it ran |
 | `POST /v1/resources/{path}/actions/{action}` | runs an action of the account, as a workspace's action is run: `{"status", "path", "result"}` |
-| `GET /v1/workspaces/{workspace}/export` | `{"workspace", "exported_at_ms", "resources": [...], "unread": [...]}`: every resource of every app, read whole and streamed as it reads |
+
+A workspace's export is the walk of its listings, each resource read whole: the SDKs'
+`workspace.export()` makes it.
 
 The account's actions, each run with `POST /v1/resources/account/{resource}/actions/{action}`
 (MCP: `tilo_do account/{resource}#{action}`), answer their `result`:

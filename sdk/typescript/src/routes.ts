@@ -70,7 +70,6 @@ export const routes = {
     `${PREFIX}/workspaces/${segment(workspace)}/invocations/${segment(invocation)}/output`,
 
   search: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/search`,
-  export: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/export`,
   views: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/views`,
   programs: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/programs`,
   uploads: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/uploads`,

@@ -62,27 +62,6 @@ pub struct ApiInfo {
 
 pub use crate::server::Workspace;
 
-/// One resource an export could not read, and why.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Unread {
-    pub path: String,
-    pub error: String,
-}
-
-/// Everything a workspace holds, as its key reads it: every resource of
-/// every app, read in full, in the order a walk from its apps finds them.
-/// The files they name (`tilo.content:` references) are fetched with
-/// `getContent`.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct WorkspaceExport {
-    pub workspace: Workspace,
-    pub exported_at_ms: u64,
-    pub resources: Vec<Resource>,
-    /// What it holds that did not read, each with why.
-    #[serde(default)]
-    pub unread: Vec<Unread>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct KeyRow {
     pub grant: String,
@@ -495,7 +474,6 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         Error,
         ApiInfo,
         Workspace,
-        WorkspaceExport,
         KeyRow,
         Listing,
         Resource,

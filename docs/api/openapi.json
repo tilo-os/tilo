@@ -99,54 +99,6 @@
         ]
       }
     },
-    "/v1/workspaces/{workspace}/export": {
-      "get": {
-        "operationId": "exportWorkspace",
-        "summary": "Everything the workspace holds: every resource of every app, read in full",
-        "tags": [
-          "Resources"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Everything the workspace holds: every resource of every app, read in full",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorkspaceExport"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/resources": {
       "get": {
         "operationId": "listAccountResources",
@@ -1960,139 +1912,6 @@
         ],
         "description": "A workspace as the account lists it: what `/v1` answers, and what an MCP\nclient and the desktop read of the person's workspaces."
       },
-      "WorkspaceExport": {
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "$ref": "#/components/schemas/Workspace"
-          },
-          "exported_at_ms": {
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0
-          },
-          "resources": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Resource"
-            }
-          },
-          "unread": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Unread"
-            },
-            "description": "What it holds that did not read, each with why.",
-            "default": []
-          }
-        },
-        "required": [
-          "workspace",
-          "exported_at_ms",
-          "resources"
-        ],
-        "description": "Everything a workspace holds, as its key reads it: every resource of\nevery app, read in full, in the order a walk from its apps finds them.\nThe files they name (`tilo.content:` references) are fetched with\n`getContent`."
-      },
-      "Resource": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          },
-          "kind": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "fields": {
-            "type": "object",
-            "additionalProperties": true,
-            "description": "The app's own fields, with its own types.",
-            "default": {}
-          },
-          "children": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Child"
-            },
-            "default": []
-          },
-          "cursor": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The app's cursor for the next page."
-          },
-          "app": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "For an app: its id."
-          },
-          "surface": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "For an app: its surface in the form it is kept by\n(`collab_types::surface::canonical`), what types are generated from."
-          },
-          "surface_version": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "For an app: its surface's version, `<app>@<digest>`."
-          }
-        },
-        "required": [
-          "path"
-        ]
-      },
-      "Child": {
-        "type": "object",
-        "properties": {
-          "list": {
-            "type": "string",
-            "description": "The list it is in."
-          },
-          "name": {
-            "type": "string"
-          },
-          "item": {
-            "type": "string",
-            "description": "The key a read takes it by."
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "list",
-          "name",
-          "item",
-          "path"
-        ],
-        "description": "A list of what a resource holds, one entry of it."
-      },
-      "Unread": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          },
-          "error": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "path",
-          "error"
-        ],
-        "description": "One resource an export could not read, and why."
-      },
       "Listing": {
         "type": "object",
         "properties": {
@@ -2207,6 +2026,90 @@
           "kind"
         ],
         "description": "One row of a listing: a resource under the path listed, or an app."
+      },
+      "Resource": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "The app's own fields, with its own types.",
+            "default": {}
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Child"
+            },
+            "default": []
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The app's cursor for the next page."
+          },
+          "app": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For an app: its id."
+          },
+          "surface": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For an app: its surface in the form it is kept by\n(`collab_types::surface::canonical`), what types are generated from."
+          },
+          "surface_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For an app: its surface's version, `<app>@<digest>`."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "Child": {
+        "type": "object",
+        "properties": {
+          "list": {
+            "type": "string",
+            "description": "The list it is in."
+          },
+          "name": {
+            "type": "string"
+          },
+          "item": {
+            "type": "string",
+            "description": "The key a read takes it by."
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "list",
+          "name",
+          "item",
+          "path"
+        ],
+        "description": "A list of what a resource holds, one entry of it."
       },
       "ActionAnswer": {
         "type": "object",
