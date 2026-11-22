@@ -167,8 +167,9 @@ for a sub-agent is decided together with its signer and only narrows it.
 A member change (add, role, remove) is an ordinary action on
 `workspace/members`, run and signed by the device that writes it. That
 device admits the call itself with `admit_invocation` over its synced
-grants and asks its person through the Confirm frame. A member may remove
-someone ranked below them, and an agent may do what its person may once
+grants and asks its person through the Confirm frame. A workspace always keeps
+one owner, and a server's person has no special place in it. A member may
+remove themselves or someone ranked below them, and an agent may do what its person may once
 its person says yes.
 
 A server runs an app's code for the person at the page, under that
