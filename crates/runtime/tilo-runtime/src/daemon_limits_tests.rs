@@ -46,7 +46,6 @@ fn endpoint() -> (tempfile::TempDir, PathBuf, HeldHost) {
             ),
         ))),
         media: None,
-        other_devices: None,
     };
     std::thread::spawn(move || endpoint.accept(&listener));
     (directory, socket, host)

@@ -279,18 +279,39 @@ fn signed_invoker(
             .map_err(refused)?
     };
     // The answer goes to the connection that asked: a key that did not sign
-    // the request is never answered what the signer may read.
-    if cert.device_public_key != peer.device_public_key
-        || cert.user_public_key != peer.user_public_key
+    // the request is never answered what the signer may read. The one other
+    // key a device carries requests for is that of the agent whose run its
+    // session is: the key its person made for that agent alone, which the
+    // request is the agent's by.
+    let agent_signed = cert.device_public_key != peer.device_public_key
+        && cert.user_public_key == peer.user_public_key
+        && session.agent.get().is_some_and(|agent| {
+            let agent = tilo_actions::remote::device_agent_id(&peer.user_public_key, agent);
+            session.revocations.read().is_ok_and(|revocations| {
+                tilo_server_protocol::invocation::verify_agent_invocation(
+                    &workspace_id.to_string(),
+                    &request,
+                    (&peer.user_public_key, &agent, &cert.device_public_key),
+                    &revocations,
+                    now,
+                )
+                .is_ok()
+            })
+        });
+    if !agent_signed
+        && (cert.device_public_key != peer.device_public_key
+            || cert.user_public_key != peer.user_public_key)
     {
         return Err(Refusal::NotAllowed(
             "the invocation is signed by another key than the device asking".into(),
         )
         .into());
     }
+    // An agent's request is admitted as the device that carries it, and runs as
+    // the agent whose key signed it ([`session_caller`]).
     let invoker = AuthenticatedPeer {
         user_public_key: cert.user_public_key,
-        device_public_key: cert.device_public_key,
+        device_public_key: peer.device_public_key,
         cert,
     };
     session
@@ -663,9 +684,6 @@ fn serve_locally(
     Ok(None)
 }
 
-/// Who `peer` acts as: the person on their own device, the agent that
-/// device handed this session to ([`SessionCtx::agent`]), or the agent or bot
-/// whose live delegation that device carries.
 /// Whether `message` asks this host to hold a workspace another host governs.
 fn asks_to_hold(message: &tilo_actions::remote::RemoteActionMessage) -> bool {
     matches!(
@@ -677,6 +695,9 @@ fn asks_to_hold(message: &tilo_actions::remote::RemoteActionMessage) -> bool {
     )
 }
 
+/// Who `peer` acts as: the person on their own device, the agent whose run
+/// this session is ([`SessionCtx::agent`]) where its own key signed the
+/// request, or the agent or bot whose live delegation that device carries.
 pub(super) fn session_caller(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -702,6 +723,22 @@ pub(super) fn session_caller(
         Some(None) => {
             return Err(Refusal::NotAMember("the agent was withdrawn".into()));
         }
+        // The agent whose run this session is signed the request with its own
+        // key ([`signed_invoker`] checked it): one agent of the person's under its
+        // name, on every computer of theirs, by the id their workspaces keep it by.
+        None if peer.cert.device_public_key != peer.device_public_key => {
+            let Some(agent) = session.agent.get() else {
+                return Err(Refusal::NotAllowed(
+                    "the invocation is signed by another key than the device asking".into(),
+                ));
+            };
+            Caller::delegated_agent(
+                tilo_actions::remote::device_agent_id(&peer.user_public_key, agent),
+                peer.user_public_key,
+                peer.cert.device_public_key,
+            )
+            .named(agent)
+        }
         // An agent's grant (a key its person certified for a service acting
         // for an agent they approved) is their agent: what it does is the
         // agent's, for them, never above what an agent of theirs may do, and
@@ -714,20 +751,7 @@ pub(super) fn session_caller(
                 ))
                 .named(tilo_server_client::grant_holder(&peer.cert.device_label))
         }
-        None => {
-            let person = Caller::authenticated(peer.user_public_key, peer.device_public_key);
-            // The agent this device runs is one agent of the person's under its name, on
-            // every computer of theirs: the id their workspaces keep it by.
-            match session.agent.get() {
-                Some(agent) => person
-                    .delegated_to(tilo_actions::remote::device_agent_id(
-                        &peer.user_public_key,
-                        agent,
-                    ))
-                    .named(agent),
-                None => person,
-            }
-        }
+        None => Caller::authenticated(peer.user_public_key, peer.device_public_key),
     };
     // An agent's (or a key's) requests on this connection are one run, the
     // host's to name.

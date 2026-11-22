@@ -163,8 +163,6 @@ pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
                 "key": agent.key,
                 "name": agent.name,
                 "doing": agent.doing,
-                "device": agent.device,
-                "device_name": agent.device_name,
                 "environment": agent.environment,
                 "environment_id": agent.environment_id,
             })

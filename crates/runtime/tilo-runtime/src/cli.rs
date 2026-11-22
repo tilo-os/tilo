@@ -79,12 +79,9 @@ fn run() -> io::Result<()> {
         .try_init();
     match args.mode {
         daemon::Mode::Daemon | daemon::Mode::Hold => daemon::serve(&args.profile, args.dev),
-        daemon::Mode::Connect => daemon::connect(
-            &args.profile,
-            args.standalone,
-            args.forward.as_ref(),
-            args.workspace.as_deref(),
-        ),
+        daemon::Mode::Connect => {
+            daemon::connect(&args.profile, args.standalone, args.workspace.as_deref())
+        }
         daemon::Mode::RunApp {
             app_id,
             workspace,

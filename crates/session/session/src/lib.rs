@@ -166,7 +166,6 @@ pub mod desktop_services;
 #[cfg(target_os = "linux")]
 mod device_actions;
 #[cfg(target_os = "linux")]
-mod device_agents;
 #[cfg(target_os = "linux")]
 mod device_inbox;
 #[cfg(target_os = "linux")]

@@ -1297,7 +1297,6 @@ impl Session {
         ) {
             broker.set_app_action_consent(std::sync::Arc::new(crate::step_questions::Sheet::new(
                 questions,
-                std::sync::Arc::clone(&agent_sessions),
                 app_wire.as_ref().map(|app_wire| {
                     std::sync::Arc::clone(&app_wire.layout)
                         as std::sync::Arc<dyn tilo_broker_core::services::WorkspaceAuthority>
@@ -1385,9 +1384,6 @@ impl Session {
                     .as_ref()
                     .and_then(|app_wire| app_wire.hosting.clone()),
             );
-            if let Some(devices) = sync.as_ref().and_then(|sync| sync.device_actions()) {
-                server.hear_device_agents(devices);
-            }
             server
         });
         let automation = crate::automation::Automation::new(
