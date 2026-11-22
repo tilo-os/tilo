@@ -28,10 +28,12 @@ when they are pushed once more as they were, rebased onto a newer main, within
 REBASE_WINDOW: main takes a commit every minute or two and a lint takes minutes,
 so a push that relints after every rebase loses to the next commit each time and
 never lands. What the commits main gained in between do to them is what t's
-families say on main. Cargo compiles wherever `$CARGO` points when it is
-set - any cargo drop-in, which may build on another machine - and otherwise the
-`cargo` on PATH. Formatting is always checked by the `cargo` and `rustfmt` on
-PATH: they compile nothing, so they need no other machine.
+families say on main. One cargo names the packages and compiles them: the one
+`$CARGO` names when it is set - any cargo drop-in, which may build on another
+machine - else the `cargo` on PATH, else t's (`t cargo`), which reads and builds
+on t's nodes for a machine that has no cargo of its own. Formatting is checked
+by the `rustfmt` on PATH, when there is one: it compiles nothing, so it needs no
+other machine.
 
 The lint reads the files on disk, so a push is refused when what it sends is not
 the tree checked out here: a lint that spoke for another commit would say
@@ -48,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -65,7 +68,7 @@ if str(TOOLS) not in sys.path:
     sys.path.append(str(TOOLS))
 from ci import suites
 from ci.lint_inputs import Workspace
-from ci.workspace_graph import cargo_metadata, file_at, lockfile_change, package_maps
+from ci.workspace_graph import file_at, lockfile_change, package_maps
 
 # A changed file is Rust or Cargo when it can change what a package compiles.
 RUST_SUFFIXES = (".rs", ".tl")
@@ -111,9 +114,78 @@ def say(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
 
 
+# t's cargo: what a machine without a cargo of its own reads and builds the workspace with.
+T_CARGO = ["t", "cargo"]
+# Where a t job sees the checkout and its build directory.
+JOB_SOURCES = "/src"
+JOB_TARGET = "/target"
+
+
 def cargo_command() -> list[str]:
-    """The cargo that builds: any drop-in named in $CARGO (which may build on another machine), else cargo."""
-    return shlex.split(os.environ.get("CARGO", "")) or ["cargo"]
+    """The cargo that reads the workspace and builds it.
+
+    Any drop-in named in $CARGO (which may build on another machine), else the cargo on PATH, else
+    t's, which builds on t's nodes.
+    """
+    named = shlex.split(os.environ.get("CARGO", ""))
+    if named:
+        return named
+    if shutil.which("cargo") is None and shutil.which(T_CARGO[0]) is not None:
+        return T_CARGO
+    return ["cargo"]
+
+
+def cargo_metadata(root: Path) -> dict:
+    """The workspace's packages, from the cargo that lints them, with the paths of this checkout."""
+    cargo = cargo_command()
+    command = [*cargo, "metadata", "--locked", "--no-deps", "--format-version", "1"]
+    try:
+        result = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False)
+    except OSError as error:
+        raise RuntimeError(f"{shlex.join(command)}: {error}") from error
+    if result.returncode == 0:
+        return json.loads(result.stdout)
+    if cargo == T_CARGO and "does not run through t" in result.stderr:
+        return metadata_through_t_exec(root)
+    raise RuntimeError(f"{shlex.join(command)} failed: {result.stderr.strip()}")
+
+
+def metadata_through_t_exec(root: Path) -> dict:
+    """The workspace's packages from a t whose `t cargo` does not read metadata.
+
+    Cargo reads it on a node (`t exec`), into a file the run brings back: a log keeps no line as
+    long as the workspace's metadata. It names the paths the job sees, which are this checkout's.
+    """
+    answer = Path("target/pre-push-metadata.json")
+    command = ["t", "exec", "--no-build", "--fetch", answer.as_posix(), "--", "sh", "-c",
+               f'cargo "$@" > {JOB_TARGET}/{answer.name}', "sh",
+               "metadata", "--locked", "--no-deps", "--format-version", "1"]
+    result = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False)
+    fetched = root / answer
+    try:
+        if result.returncode != 0:
+            raise RuntimeError(f"{shlex.join(command)} failed: {(result.stdout + result.stderr).strip()}")
+        metadata = json.loads(fetched.read_text())
+    finally:
+        fetched.unlink(missing_ok=True)
+    return host_paths(metadata, str(root))
+
+
+def host_paths(value, root: str):
+    """`value` with the paths a t job names under its sources and build directory as this checkout's."""
+    if isinstance(value, dict):
+        return {key: host_paths(item, root) for key, item in value.items()}
+    if isinstance(value, list):
+        return [host_paths(item, root) for item in value]
+    if isinstance(value, str):
+        # A package's id names its path too: `path+file:///src/crates/a#a@0.1.0`.
+        for job, here in ((JOB_TARGET, f"{root}/target"), (JOB_SOURCES, root)):
+            for scheme, ends in (("", "/"), ("path+file://", "/#")):
+                if value.startswith(scheme + job):
+                    rest = value[len(scheme + job):]
+                    if rest == "" or rest[0] in ends:
+                        return f"{scheme}{here}{rest}"
+    return value
 
 
 class Lint(NamedTuple):

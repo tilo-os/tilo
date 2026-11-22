@@ -97,6 +97,31 @@ DROP_IN_STUB = (CARGO_STUB.replace("printf 'start ", "printf 'dropin ")
                 .replace('''  fmt) printf 'fmt %s\\n' "$*" >> "$HOOK_LOG"; [ "$2" = "--version" ] && exit 0; exit "${STUB_FMT_STATUS:-0}" ;;''',
                          '''  fmt) printf 'dropin-fmt %s\\n' "$*" >> "$HOOK_LOG"; exit 2 ;;'''))
 assert "dropin-fmt" in DROP_IN_STUB, "the drop-in stub must refuse to format"
+# t on a machine with no cargo of its own: `t cargo` reads the workspace's
+# metadata and lints on t's nodes. With STUB_T_WITHOUT_METADATA it is a t whose
+# `t cargo` refuses `metadata`: `t exec` then reads it on a node into the file
+# it fetches, with the paths the job sees.
+T_STUB = """#!/bin/sh
+case "$1 $2" in
+  "cargo metadata")
+    if [ -n "$STUB_T_WITHOUT_METADATA" ]; then
+      printf 't: `cargo metadata` does not run through t: run it here, on your machine.\\n' >&2
+      exit 2
+    fi
+    printf '%s\\n' "$STUB_METADATA"; exit 0 ;;
+  "exec --no-build")
+    printf 'exec %s\\n' "$*" >> "$HOOK_LOG"
+    mkdir -p "$(dirname "$4")"
+    printf '%s\\n' "$STUB_JOB_METADATA" > "$4"
+    printf 'build: b-1 of state 2 chosen\\n'
+    exit 0 ;;
+  cargo\\ *)
+    shift
+    printf 'start %s %s\\n' "$(date +%s%N)" "$*" >> "$HOOK_LOG"
+    exit "${STUB_STATUS:-0}" ;;
+esac
+exit 2
+"""
 # The toolchain's installed targets, which say whether the page build can be linted here.
 RUSTFMT_STUB = """#!/bin/sh
 printf 'rustfmt %s\\n' "$*" >> "$HOOK_LOG"
@@ -210,7 +235,7 @@ class PrePushLintTests(unittest.TestCase):
         return json.dumps({"packages": packages})
 
     def environment(self, page=True, status=0, sleep=0, drop_in=False, unformatted=False,
-                    agent=False) -> dict:
+                    agent=False, t_without_metadata=False) -> dict:
         """The hook's environment: only the stubs, never this machine's toolchain.
 
         `agent` pushes as a coding agent does, whose shell says so in its environment.
@@ -224,12 +249,16 @@ class PrePushLintTests(unittest.TestCase):
         env["PATH"] = os.pathsep.join(
             [str(self.bin), *(entry for entry in env["PATH"].split(os.pathsep)
                                if not any(os.access(Path(entry) / tool, os.X_OK)
-                                          for tool in ("cargo", "rustup")))])
+                                          for tool in ("cargo", "rustup", "t")))])
         env.update(HOOK_LOG=str(self.log), STUB_STATUS=str(status), STUB_SLEEP=str(sleep),
                    STUB_METADATA=self.metadata(), STUB_FMT_STATUS="1" if unformatted else "0",
                    STUB_TARGETS=WITH_PAGE if page else HOST_ONLY)
         if drop_in:
             env["CARGO"] = str(self.bin / "drop-in")
+        if t_without_metadata:
+            env["STUB_T_WITHOUT_METADATA"] = "1"
+        root = str(getattr(self, "checkout", self.root))
+        env["STUB_JOB_METADATA"] = self.metadata().replace(root, "/src")
         return env
 
     def push(self, head=None, remote_oid=None, ref="refs/heads/main", cwd=None,
@@ -397,6 +426,40 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(self.calls("dropin"),
                          [NATIVE_CLIPPY.replace("native", "web")])
         self.assertEqual(self.calls(), [], "the local cargo must not compile at all")
+
+    def without_cargo(self):
+        """This machine as a build server is: no cargo, and t, which builds on its nodes."""
+        (self.bin / "cargo").unlink()
+        self.stub("t", T_STUB)
+
+    def test_without_a_cargo_t_names_the_packages_and_lints_them(self):
+        self.without_cargo()
+        self.write("web/src/lib.rs", LIB.format(answer=16))
+        self.commit("feat: answer 16 in the page")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY.replace("native", "web")])
+        self.assertNotIn("exec ", self.log.read_text(), "t reads the metadata itself")
+        self.assertIn("clippy and rustfmt for 1 package", result.stderr)
+
+    def test_without_a_cargo_a_t_that_reads_no_metadata_reads_it_on_a_node(self):
+        self.without_cargo()
+        self.write("native/src/lib.rs", LIB.format(answer=17))
+        self.commit("feat: answer 17")
+        result = self.push(t_without_metadata=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The job's paths are this checkout's, so the change is named as fixture-native's.
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+        self.assertIn("exec --no-build --fetch target/pre-push-metadata.json", self.log.read_text())
+        self.assertFalse((self.root / "target/pre-push-metadata.json").exists(), "the fetched file is removed")
+
+    def test_without_a_cargo_a_lint_failure_names_the_t_cargo_rerun(self):
+        self.without_cargo()
+        self.write("native/src/lib.rs", LIB.format(answer=18))
+        self.commit("feat: answer 18")
+        result = self.push(status=101)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("pre-push: clippy (native) failed - rerun: t cargo " + NATIVE_CLIPPY, result.stderr)
 
     def test_formatting_is_checked_here_when_the_drop_in_only_builds(self):
         self.write("web/src/lib.rs", LIB.format(answer=14))
