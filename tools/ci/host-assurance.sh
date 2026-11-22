@@ -1190,10 +1190,10 @@ mkdir -p /mnt/update; mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/upd
 booted=$(tr " " "\n" < /proc/cmdline | sed -n "s/^composefs=//p")
 uki=""
 for f in /boot/EFI/Linux/bootc/*.efi; do
-  /usr/libexec/tilo-uki-cmdline show "$f" | tr " " "\n" | grep -qx "composefs=$booted" && uki="$uki $f"
+  /usr/libexec/tilo-uki-cmdline show "$f" 2>/dev/null | tr " " "\n" | grep -qx "composefs=$booted" && uki="$uki $f"
 done
 [ "$(printf "%s\n" $uki | grep -c .)" = 1 ] || { echo "no single UKI boots composefs=$booted: $(ls /boot/EFI/Linux/bootc)"; exit 1; }
-unshare -m sh -euc "mount -o remount,bind,rw /boot; cp /mnt/update/older.efi \$uki; sync"
+unshare -m sh -euc "mount -o remount,bind,rw /boot; cp /mnt/update/older.efi $uki; sync"
 '
 as_root 'sync' >/dev/null 2>&1 || true
 ./os/dev/vm.sh stop >/dev/null 2>&1 || true
