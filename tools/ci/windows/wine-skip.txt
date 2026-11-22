@@ -8,7 +8,6 @@ app::tests::write_setup_wifi_and_owner_key_stage_without_identity_enrollment	the
 handoff::tests::handoff_writes_wifi_and_a_certified_device_without_the_root_secret	local identity enrollment needs Windows' identity services
 resource::tests::every_scenario_captures_its_flow_without_touching_the_machine	app state publishes only to volumes with local-disk evidence, which Wine's lack
 resource::tests::one_tree_holds_the_profile_actions_effects_drives_and_job	no privileged writer under Wine
-setup::destination_security::windows::tests::windows_parent_acls_and_private_creation_are_enforced	Wine does not enforce NTFS ACLs
 setup::import_view::tests::continuation_batches_retarget_and_retry_without_duplicate_operations	Wine cannot protect a directory ACL
 setup::import_view::tests::copy_action_completes_only_after_the_reviewed_worker_finishes	Wine cannot protect a directory ACL
 setup::import_view::tests::every_import_scenario_stages_real_worker_results_in_fixture_folders	crashes Wine with a page fault
@@ -46,3 +45,25 @@ setup::staging::fake::tests::remove_restores_owned_state_and_never_touches_chang
 setup::staging::fake::tests::windows_resumes_after_a_crash_at_every_mutation	storage publishes only to volumes with local-disk evidence, which Wine's lack
 setup::staging::record::tests::staging_records_track_steps_persist_atomically_and_reject_foreign_owners	storage publishes only to volumes with local-disk evidence, which Wine's lack
 setup::staging::windows::tests::final_boot_geometry_snapshot_executes_without_shrink_probe	Windows' disk geometry query returns nothing under Wine
+app::tests::capture_progress_owns_worker_until_actual_host_teardown	Wine reports a directory's volume as FILE_DEVICE_DISK_FILE_SYSTEM, never FILE_DEVICE_DISK, so the local-disk publication admission refuses it
+app::tests::release_download_is_local_visible_and_cancellable	Wine reports a directory's volume as FILE_DEVICE_DISK_FILE_SYSTEM, never FILE_DEVICE_DISK, so the local-disk publication admission refuses it
+app::tests::the_customization_form_reads_in_the_windows_language	Wine reports a directory's volume as FILE_DEVICE_DISK_FILE_SYSTEM, never FILE_DEVICE_DISK, so the local-disk publication admission refuses it
+setup::destination_security_windows_tests::windows_parent_acls_and_private_creation_are_enforced	Wine does not enforce NTFS ACLs
+setup::journey::accounts::tests::a_prepared_import_keeps_the_source_it_came_from	the prepared import writes through the local-disk publication admission, which Wine's volume evidence refuses
+setup::journey::accounts::tests::a_provider_is_connected_only_through_the_persons_explicit_sign_in	the prepared connection writes through the local-disk publication admission, which Wine's volume evidence refuses
+setup::journey::accounts::tests::cancellation_racing_completed_sign_in_removes_staged_connection	the prepared connection writes through the local-disk publication admission, which Wine's volume evidence refuses
+setup::journey::accounts::tests::dav_and_nextcloud_connections_keep_their_secrets_until_the_person_signs_in	the prepared connection writes through the local-disk publication admission, which Wine's volume evidence refuses
+setup::journey::accounts::tests::spotify_names_the_grant_it_asks_for	the prepared connection writes through the local-disk publication admission, which Wine's volume evidence refuses
+setup::journey::demo::tests::the_demo_walks_every_route_and_touches_nothing	its capture launches the app, whose state store is refused by Wine's volume evidence
+setup::journey::machine_tests::the_plan_screens_paint_at_desktop_and_narrow_widths	its capture launches the app, whose state store is refused by Wine's volume evidence
+setup::journey::machine_tests::the_review_names_what_the_plan_decides_and_what_the_computer_answers	its capture launches the app, whose state store is refused by Wine's volume evidence
+setup::journey::visual_tests::a_blocked_preparation_still_lets_the_person_go_back	its capture launches the app, whose state store is refused by Wine's volume evidence
+setup::journey::visual_tests::guided_pages_paint_at_small_normal_and_large_host_scales_in_both_themes	its capture launches the app, whose state store is refused by Wine's volume evidence
+setup::journey::visual_tests::guided_scenario_gallery_renders_and_closes_every_actual_component	its capture launches the app, whose state store is refused by Wine's volume evidence
+setup::journey::visual_tests::image_writer_progress_capture_closes_through_the_canonical_lifecycle	its capture launches the app, whose state store is refused by Wine's volume evidence
+setup::journey::visual_tests::migration_route_consequences_are_present_in_the_semantic_choice	its capture launches the app, whose state store is refused by Wine's volume evidence
+setup::journey::visual_tests::review_summary_scrolls_without_moving_navigation_at_large_text_sizes	its capture launches the app, whose state store is refused by Wine's volume evidence
+setup::journey::visual_tests::viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping	its capture launches the app, whose state store is refused by Wine's volume evidence
+setup::staging::fake::tests::a_named_disk_identity_is_revalidated_and_recorded	its recorded staging needs local-disk evidence Wine lacks
+setup::staging::fake::tests::development_layers_reach_the_staging_root_and_a_resume_finds_them	its recorded staging needs local-disk evidence Wine lacks
+setup::staging::record::tests::btrfs_resize_journal_requires_durable_order_and_preserves_retry_intent	its recorded staging needs local-disk evidence Wine lacks
