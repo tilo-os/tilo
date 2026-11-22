@@ -1705,8 +1705,13 @@ lay_out_lounge() {
       "$repo/tools/ci/publish/lounge-context.sh" "$container/Containerfile" "$container/Containerfile.dockerignore" \
       "$container/entrypoint.sh" "$repo/apps/discord/bridge/program.json")
     if [[ $(cat "$native/lounge.made-from" 2>/dev/null) != "$stamp" || ! -x $native/lounge/bin/tilo-server ]]; then
+      # The apps the workspace runs: the launcher, the runtime bundles and the signed packages
+      # (lounge-apps.sh), which only t builds.
+      from_t || die "the server's apps are built on t (lounge-check-apps): build the stack with t, or name a laid-out context in TILO_SH_LOUNGE"
+      t_build "the workspace's apps" lounge-check-apps
       TILO_LOUNGE_SURFACE_COMMIT=$commit \
-        bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$fonts" >/dev/null \
+        bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$fonts" \
+          "$t_fetched/target/publish/lounge-check/apps" >/dev/null \
         || die 'could not lay out the server (lounge-context.sh)'
       printf '%s\n' "$stamp" > "$native/lounge.made-from"
     fi
@@ -1997,7 +2002,13 @@ start_native_server() {
   local lounge=${lounge:-$native/lounge}
   { private_env server "$lounge/bin"
     image_env_here "$repo/os/containers/tilo-lounge/Containerfile" \
-      "TILO_WORKSPACES_STATE=$state/server" "TILO_SECRETS_DIR=$state/server/secrets"
+      "TILO_WORKSPACES_STATE=$state/server" "TILO_SECRETS_DIR=$state/server/secrets" \
+      "TILO_WORKSPACES_PACKAGES=$lounge/packages"
+    # The runtime bundles the apps execute and the key they and the packages are signed with,
+    # which the image keeps at the launcher's own paths: here the launcher (a `lounge-check`
+    # build, `dev-overrides`) is told where they are.
+    printf '%s\n' "TILO_RUNTIME_BUNDLE_DIR=$lounge/runtimes" \
+      "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$lounge/runtime-publishers.txt"
     # Where the image keeps the app surfaces the server publishes at start,
     # and the product font catalog its components lay text out from.
     printf '%s\n' "TILO_SURFACES=$lounge/surfaces"
