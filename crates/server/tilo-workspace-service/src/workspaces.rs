@@ -907,9 +907,12 @@ pub(crate) struct WorkspaceServices {
     pub(crate) revocations: Arc<std::sync::RwLock<RevocationList>>,
     /// Pre-admissions each workspace keeps, spent ones included.
     pub(crate) max_pre_admissions: usize,
-    /// The live handshake trust policy, for what an agent's grant is read
-    /// against ([`crate::workspace_access::decide`]).
-    #[cfg(feature = "agents")]
+    /// The live handshake trust policy, which an admission is decided with
+    /// ([`crate::workspace_access::decide`]).
+    #[cfg_attr(
+        not(any(feature = "agents", test)),
+        expect(dead_code, reason = "only a host with agents of its own decides")
+    )]
     pub(crate) trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     /// Agent delegations, for [`crate::workspace_access::decide`] and for
     /// refusing an agent the administration only a person holds.
@@ -2622,6 +2625,10 @@ impl Workspaces {
             self.join_soon(workspace, app.clone(), record.clone());
             return;
         }
+        // Joining the record's channel is what names its app and record, and
+        // only a build with device keys joins one.
+        #[cfg(not(feature = "device-keys"))]
+        let _ = (&app, &record);
         if followed.changed {
             self.landed(workspace, &message);
             self.keep_soon(workspace);

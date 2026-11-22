@@ -398,8 +398,9 @@ impl GovernedWorkspace {
     /// copy would give, without keeping it: why the workspace refuses the
     /// write, or `None` when it takes it. A test asks it of a write the
     /// workspace's link would have admitted, so nothing is decided for a
-    /// change that never reaches a copy.
-    #[cfg(test)]
+    /// change that never reaches a copy. The tests that ask are the sealed
+    /// documents', which are built with the agents.
+    #[cfg(all(test, feature = "agents"))]
     pub(super) fn refuses(
         &self,
         author: [u8; 32],
@@ -487,8 +488,9 @@ impl Workspaces {
     ///
     /// A sealed compaction the copy is behind in is not refused: it is taken
     /// as the record's base under the record's keys, and one whose keys are
-    /// not here yet is taken once they are.
-    #[cfg(test)]
+    /// not here yet is taken once they are. The tests that ask are the sealed
+    /// documents', which are built with the agents.
+    #[cfg(all(test, feature = "agents"))]
     pub(crate) async fn refuses_write(
         &self,
         workspace: &str,

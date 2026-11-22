@@ -325,7 +325,6 @@ impl ServiceSessions {
             max_pre_admissions: cfg
                 .max_workspace_grants
                 .unwrap_or(crate::workspaces::DEFAULT_MAX_PRE_ADMISSIONS),
-            #[cfg(feature = "agents")]
             trust_policy: self.handler.trust_policy.clone(),
             agents: self.handler.agents.clone(),
             environments: self.handler.environments.clone(),
