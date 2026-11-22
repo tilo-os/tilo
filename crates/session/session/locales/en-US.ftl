@@ -14,6 +14,14 @@ idle-inhibit-unnamed-app = An app
 ## of their devices.
 remote-use-hold = Remote use from another of your devices
 
+## An agent on another of the person's devices that works here, and one here that works on theirs.
+device-agents-not-accepted = This device doesn’t accept agents from your other devices. Turn on “Accept agents from my other devices” in its Settings, under Devices.
+device-agent-stopped = You stopped this agent on that device.
+device-agents-no-device = None of your other devices is known here.
+device-agents-unknown-device = None of your devices here is called { $device }. Your devices here: { $devices }.
+device-agents-name-workspace = { $device } is in more than one of your workspaces here. Name one with --workspace.
+device-agents-not-connected = not connected to this device now
+
 storage-app-name = Storage
 storage-volume-home = your files
 storage-volume-system = the system

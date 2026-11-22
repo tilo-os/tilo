@@ -27,7 +27,7 @@
 //! whole connection.
 
 use std::collections::HashMap;
-use std::io::{self, Read as _, Write as _};
+use std::io;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -38,6 +38,7 @@ use iroh::{Endpoint, EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::devices::{DeviceDirectory, Reach, device_name};
+pub use tilo_mcp::devices::{Forward, ask_forward, forward_request, refuse_forward};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -757,82 +758,6 @@ impl Drop for Lines {
     }
 }
 
-/// What a `--connect --device` client asks of its own host: carry this
-/// connection to that device's MCP server.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Forward {
-    /// The device, by its name or its endpoint id.
-    pub device: String,
-    /// The workspace on it to work in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ForwardLine {
-    forward: Forward,
-}
-
-/// The forward a connection's first line asks for, if that is what it is.
-#[must_use]
-pub fn forward_request(line: &[u8]) -> Option<Forward> {
-    serde_json::from_slice::<ForwardLine>(line)
-        .ok()
-        .map(|line| line.forward)
-}
-
-/// Ask the host at the other end of `stream` to carry it to the server
-/// `forward` names, and read whether that server opened. From `Ok` on, the
-/// stream is that server's.
-pub fn ask_forward(stream: &mut UnixStream, forward: &Forward) -> io::Result<()> {
-    let mut line = serde_json::to_vec(&ForwardLine {
-        forward: forward.clone(),
-    })
-    .map_err(io::Error::other)?;
-    line.push(b'\n');
-    stream.write_all(&line)?;
-    let mut answer = Vec::new();
-    let mut byte = [0_u8; 1];
-    loop {
-        match stream.read(&mut byte)? {
-            0 => {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    format!(
-                        "this device's host does not carry agents to another device: it closed \
-                         without answering for {}",
-                        forward.device
-                    ),
-                ));
-            }
-            _ if byte == *b"\n" => break,
-            _ if answer.len() >= MAX_LINE => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "this device's host answered with a line too long to read",
-                ));
-            }
-            _ => answer.extend_from_slice(&byte),
-        }
-    }
-    match serde_json::from_slice::<Answer>(&answer) {
-        Ok(Answer::Open) => Ok(()),
-        Ok(Answer::Refused { reason }) => Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!("{} did not let this agent in: {reason}", forward.device),
-        )),
-        Ok(Answer::Here | Answer::List { .. }) | Err(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "this device's host does not carry agents to another device: it answered {}",
-                String::from_utf8_lossy(&answer)
-            ),
-        )),
-    }
-}
-
 /// The servers of the person's other devices, as this device's host reaches
 /// them: dialed from its endpoint, as the device its store certifies.
 pub struct OtherDevices {
@@ -1014,17 +939,6 @@ impl DeviceDirectory for OtherDevices {
     fn reach(&self) -> std::pin::Pin<Box<dyn Future<Output = Vec<Reach>> + Send + '_>> {
         Box::pin(self.reach_now())
     }
-}
-
-/// Tell a forwarding client its device's server does not open, and why.
-pub fn refuse_forward(mut local: UnixStream, reason: String) {
-    let answer = Answer::Refused { reason };
-    if let Ok(mut line) = serde_json::to_vec(&answer) {
-        line.push(b'\n');
-        let _ = local.set_write_timeout(Some(Duration::from_secs(1)));
-        let _ = local.write_all(&line);
-    }
-    let _ = local.shutdown(std::net::Shutdown::Both);
 }
 
 fn names(devices: &[DeviceCert]) -> String {

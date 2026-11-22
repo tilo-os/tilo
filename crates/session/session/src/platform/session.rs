@@ -1291,6 +1291,7 @@ impl Session {
         ) {
             broker.set_app_action_consent(std::sync::Arc::new(crate::step_questions::Sheet::new(
                 questions,
+                std::sync::Arc::clone(&agent_sessions),
                 app_wire.as_ref().map(|app_wire| {
                     std::sync::Arc::clone(&app_wire.layout)
                         as std::sync::Arc<dyn tilo_broker_core::services::WorkspaceAuthority>
@@ -1378,6 +1379,9 @@ impl Session {
                     .as_ref()
                     .and_then(|app_wire| app_wire.hosting.clone()),
             );
+            if let Some(devices) = sync.as_ref().and_then(|sync| sync.device_actions()) {
+                server.hear_device_agents(devices);
+            }
             server
         });
         let automation = crate::automation::Automation::new(
@@ -2384,6 +2388,17 @@ impl Session {
     #[must_use]
     pub fn stored_record(&self, app: &str, workspace: &str, record: &str) -> Option<Vec<u8>> {
         self.shared.records.stored(app, workspace, record)
+    }
+
+    /// This device's action service, which the person's other devices ask it through: a test
+    /// holds a workspace's roster of its own there ([`ActionService::hold`]). `None` on a
+    /// session that takes part as nobody.
+    ///
+    /// [`ActionService::hold`]: tilo_peer_state::actions::ActionService::hold
+    #[must_use]
+    pub fn device_actions(&self) -> Option<tilo_peer_state::actions::ActionService> {
+        let devices = self.shared.sync.as_ref()?.device_actions()?;
+        Some(devices.action_service())
     }
 
     /// Whether an agent in `workspace` acts here only in one of its sessions: true once the session

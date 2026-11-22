@@ -1,7 +1,38 @@
-//! The person's devices as an agent's tool lists them, and the names they go by. The
-//! connections between them are `tilo-device-mcp`'s.
+//! The person's devices as an agent's tool lists them, the names they go by, and the line a
+//! `--connect --device` client asks its own host to carry it to one of them with ([`Forward`]).
 
+#[cfg(unix)]
+use std::io::{self, Read as _, Write as _};
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+
+use serde::{Deserialize, Serialize};
 use tilo_user_identity::DeviceCert;
+
+/// The longest answer to a [`Forward`] read.
+#[cfg(unix)]
+const MAX_ANSWER: usize = 64 * 1024;
+
+/// What a host answers a [`Forward`] with.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "answer", rename_all = "snake_case")]
+pub enum ForwardAnswer {
+    /// The device works with the agent: MCP follows.
+    Open,
+    /// It does not, and why.
+    Refused { reason: String },
+}
+
+/// Tell a forwarding client that MCP follows on `local`, toward the device it named.
+///
+/// # Errors
+/// The client left.
+#[cfg(unix)]
+pub fn open_forward(local: &mut UnixStream) -> io::Result<()> {
+    let mut line = serde_json::to_vec(&ForwardAnswer::Open).map_err(io::Error::other)?;
+    line.push(b'\n');
+    local.write_all(&line)
+}
 
 /// The longest device name the person is shown, and a `--device` is matched
 /// against.
@@ -110,4 +141,93 @@ pub fn listing(reach: &[Reach]) -> String {
         ));
     }
     lines.join("\n")
+}
+
+/// What a `--connect --device` client asks of its own host: carry this
+/// connection to that device's MCP server.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Forward {
+    /// The device, by its name or its endpoint id.
+    pub device: String,
+    /// The workspace on it to work in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForwardLine {
+    forward: Forward,
+}
+
+/// The forward a connection's first line asks for, if that is what it is.
+#[must_use]
+pub fn forward_request(line: &[u8]) -> Option<Forward> {
+    serde_json::from_slice::<ForwardLine>(line)
+        .ok()
+        .map(|line| line.forward)
+}
+
+/// Ask the host at the other end of `stream` to carry it to the server
+/// `forward` names, and read whether that server opened. From `Ok` on, the
+/// stream is that server's.
+#[cfg(unix)]
+pub fn ask_forward(stream: &mut UnixStream, forward: &Forward) -> io::Result<()> {
+    let mut line = serde_json::to_vec(&ForwardLine {
+        forward: forward.clone(),
+    })
+    .map_err(io::Error::other)?;
+    line.push(b'\n');
+    stream.write_all(&line)?;
+    let mut answer = Vec::new();
+    let mut byte = [0_u8; 1];
+    loop {
+        match stream.read(&mut byte)? {
+            0 => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "this device's host does not carry agents to another device: it closed \
+                         without answering for {}",
+                        forward.device
+                    ),
+                ));
+            }
+            _ if byte == *b"\n" => break,
+            _ if answer.len() >= MAX_ANSWER => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "this device's host answered with a line too long to read",
+                ));
+            }
+            _ => answer.extend_from_slice(&byte),
+        }
+    }
+    match serde_json::from_slice::<ForwardAnswer>(&answer) {
+        Ok(ForwardAnswer::Open) => Ok(()),
+        Ok(ForwardAnswer::Refused { reason }) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{} did not let this agent in: {reason}", forward.device),
+        )),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "this device's host does not carry agents to another device: it answered {}",
+                String::from_utf8_lossy(&answer)
+            ),
+        )),
+    }
+}
+
+/// Tell a forwarding client its device's server does not open, and why.
+#[cfg(unix)]
+pub fn refuse_forward(mut local: UnixStream, reason: String) {
+    let answer = ForwardAnswer::Refused { reason };
+    if let Ok(mut line) = serde_json::to_vec(&answer) {
+        line.push(b'\n');
+        let _ = local.set_write_timeout(Some(std::time::Duration::from_secs(1)));
+        let _ = local.write_all(&line);
+    }
+    let _ = local.shutdown(std::net::Shutdown::Both);
 }

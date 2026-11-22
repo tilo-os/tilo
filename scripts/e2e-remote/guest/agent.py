@@ -12,9 +12,10 @@ reads the transcript. Python standard library only (the guest image's).
 Scenarios:
   devices     initialize, tools/list, then `tilo_devices` until it lists the device
               E2E_DEVICE (an endpoint id) as reachable, or E2E_WAIT_S passes
-  unanswered  initialize and wait E2E_WAIT_S for an answer that must not come
+  not_accepted  initialize, tools/list, `tilo_devices`, `tilo_ls`, whose answers the harness reads
   stop        initialize, tools/list, `tilo_devices`, `tilo_ls`; then E2E_READY is written
-              and `tilo_ls` asked once a second until the connection ends (or E2E_WAIT_S)
+              and `tilo_ls` asked once a second until it is refused or the connection ends (or
+              E2E_WAIT_S)
   work        initialize, tools/list, `tilo_devices`, `tilo_ls`, Notes opened with
               `notes#open`; then E2E_ASKING is written and the command E2E_COMMAND run with
               `terminal#run` (a step that asks first, which a device puts to its person
@@ -222,9 +223,8 @@ def devices(client: Client, out: dict) -> None:
     out["open_here"] = client.tool("tilo_do", {"path": "notes#open"})
 
 
-def unanswered(client: Client, out: dict) -> None:
-    out["initialize"] = client.initialize(WAIT_S)
-    out["initialize_at"] = client.since()
+def not_accepted(client: Client, out: dict) -> None:
+    introduce(client, out)
 
 
 def stop(client: Client, out: dict) -> None:
@@ -236,9 +236,8 @@ def stop(client: Client, out: dict) -> None:
     asks = []
     while time.monotonic() < deadline:
         reply = client.tool("tilo_ls", {}, timeout=10)
-        asks.append({"at": client.since(), "reply": reply if not isinstance(reply, dict)
-                     else ("ok" if ok(reply) else reply)})
-        if reply is None or (isinstance(reply, dict) and "error" in reply):
+        asks.append({"at": client.since(), "reply": "ok" if ok(reply) else reply})
+        if reply is None or not ok(reply):
             break
         time.sleep(1.0)
     out["after_stop"] = asks[-12:]
@@ -340,7 +339,7 @@ def main() -> int:
     client = None
     try:
         client = Client(command)
-        {"devices": devices, "unanswered": unanswered, "stop": stop, "work": work,
+        {"devices": devices, "not_accepted": not_accepted, "stop": stop, "work": work,
          "refused": refused, "browser": browser}[scenario](client, out)
     except Exception as exc:  # noqa: BLE001 - the harness reads what went wrong
         out["client_error"] = f"{type(exc).__name__}: {exc}"

@@ -408,6 +408,16 @@ impl ActionService {
             .insert(replica.workspace(), replica);
     }
 
+    /// The certificates on `workspace`'s roster as this device holds it, the one it decides who
+    /// may ask by; `None` where it holds no such workspace.
+    pub async fn certificates(
+        &self,
+        workspace: &str,
+    ) -> Option<Vec<tilo_user_identity::DeviceCert>> {
+        self.read_workspace_for(None, workspace, crate::StatePeer::certificates)
+            .await
+    }
+
     /// Answer requests for the workspace `sync` syncs.
     pub fn share(&self, sync: &crate::direct::DirectSync) {
         self.hold(sync.replica());
@@ -478,7 +488,21 @@ impl ActionService {
         addr: &EndpointAddr,
         workspace: &str,
     ) -> RemoteDevice {
-        RemoteDevice(self.device_at(endpoint, addr, workspace, None))
+        RemoteDevice(self.device_at(endpoint, addr, workspace, None, None))
+    }
+
+    /// [`Self::remote`] for `agent`, which this device's person handed the requests to: every
+    /// request names it, and the device that answers acts on each as that agent, for this
+    /// device's person, under the agent's grants there.
+    #[must_use]
+    pub fn remote_for_agent(
+        &self,
+        endpoint: &Endpoint,
+        addr: &EndpointAddr,
+        workspace: &str,
+        agent: neighbour_wire::actions::HandedAgent,
+    ) -> RemoteDevice {
+        RemoteDevice(self.device_at(endpoint, addr, workspace, None, Some(agent)))
     }
 
     /// [`Self::remote`] for a device this device places `workspace`'s work on: every request
@@ -493,7 +517,7 @@ impl ActionService {
         placement: &crate::join::TransportHint,
     ) -> RemoteDevice {
         let placement = postcard::to_allocvec(placement).ok();
-        RemoteDevice(self.device_at(endpoint, addr, workspace, placement))
+        RemoteDevice(self.device_at(endpoint, addr, workspace, placement, None))
     }
 
     /// The connection to one device, opened on first use and kept while it
@@ -504,12 +528,14 @@ impl ActionService {
         addr: &EndpointAddr,
         workspace: &str,
         placement: Option<Vec<u8>>,
+        agent: Option<neighbour_wire::actions::HandedAgent>,
     ) -> Arc<Device> {
         Arc::new(Device {
             endpoint: endpoint.clone(),
             addr: addr.clone(),
             workspace: workspace.to_owned(),
             placement,
+            agent,
             target: self.device_of(*addr.id.as_bytes()),
             key: Arc::clone(&self.0.device),
             runtime: self.0.runtime.clone(),
@@ -577,7 +603,7 @@ impl ActionService {
             .filter(|addr| *addr.id.as_bytes() != device)
             .map(|addr| {
                 let target = *addr.id.as_bytes();
-                let asker = self.device_at(endpoint, &addr, &workspace, None);
+                let asker = self.device_at(endpoint, &addr, &workspace, None, None);
                 let (route, work) = (route.clone(), work.clone());
                 (
                     target,
@@ -737,6 +763,10 @@ impl ActionService {
                 Caller::bot(installation.clone(), certificate.user_public_key, source)
             }
             _ => Caller::authenticated(certificate.user_public_key, source),
+        };
+        let caller = match &action.agent {
+            None => caller,
+            Some(agent) => handed(caller, agent)?,
         };
         Ok((
             caller
@@ -1019,6 +1049,40 @@ fn refusal_of(error: &crate::MembershipError) -> tilo_actions::remote::ActionCal
     }
 }
 
+/// `caller`, a person at their own device, as the agent the device says it handed the request
+/// to: that agent, for the person, held to what both the person and the agent's grants allow,
+/// under the id the person's device gives an agent of that client
+/// ([`tilo_actions::remote::device_agent_id`]). The claim only narrows, so the device's word is
+/// taken for it; a caller that is already not the person (an agent's or a bot's own device)
+/// hands nothing on.
+fn handed(
+    caller: Caller,
+    agent: &neighbour_wire::actions::HandedAgent,
+) -> Result<Caller, tilo_actions::remote::ActionCallError> {
+    use tilo_actions::remote::ActionCallError;
+    if !caller.acting().is_person() {
+        return Err(ActionCallError::NotPermitted);
+    }
+    let said = |text: &str| !text.trim().is_empty() && text.len() <= MAX_HANDED;
+    if !(said(&agent.client) && said(&agent.session)) {
+        return Err(ActionCallError::InvalidRequest {
+            reason: "the agent the request names has no client or session".into(),
+        });
+    }
+    let person = caller
+        .user_public_key()
+        .copied()
+        .ok_or(ActionCallError::NotPermitted)?;
+    let id = tilo_actions::remote::device_agent_id(&person, &agent.client);
+    Ok(caller
+        .delegated_to(id)
+        .named(&agent.client)
+        .in_agent_session(agent.session.clone()))
+}
+
+/// The longest client or session a handed agent is named by.
+const MAX_HANDED: usize = 256;
+
 /// The answer a dispatcher's pending gives, or the refusal of one it
 /// abandoned.
 async fn await_answer<T: Send + 'static>(
@@ -1049,6 +1113,9 @@ struct Device {
     /// What every request carries of where this device serves the workspace, when it places the
     /// workspace's work on the device ([`ActionService::placing`]).
     placement: Option<Vec<u8>>,
+    /// The agent this device's person handed every request to, when it is one
+    /// ([`ActionService::remote_for_agent`]).
+    agent: Option<neighbour_wire::actions::HandedAgent>,
     target: [u8; 32],
     key: Arc<dyn DeviceSigner>,
     runtime: tokio::runtime::Handle,
@@ -1172,6 +1239,7 @@ impl Device {
                 target: self.target,
                 message,
                 placement: self.placement.clone(),
+                agent: self.agent.clone(),
             },
             now_ns(),
             self.key.as_ref(),

@@ -32,6 +32,7 @@ use tilo_power_mgmt::inhibit::INHIBIT_SUSPEND;
 use tilo_runtime::offload::{ActionServicePeers, offer_offload, own_offering};
 use tilo_server_protocol::{Whose, WorkSetting};
 
+use crate::device_agents::HandedAgents;
 use crate::engine::Engine;
 use neighbour_wire::offer::{Answer, Query};
 
@@ -57,6 +58,8 @@ struct Inner {
     offering: SessionOffering,
     /// The runtime the action service answers on, where its asks and runs are carried out.
     runtime: tokio::runtime::Handle,
+    /// The person this device is, and its own key.
+    whose: ([u8; 32], [u8; 32]),
 }
 
 impl DeviceActions {
@@ -86,7 +89,60 @@ impl DeviceActions {
             dispatch,
             offering,
             runtime: tokio::runtime::Handle::current(),
+            whose: (
+                identity.device_cert.user_public_key,
+                identity.device_cert.device_public_key,
+            ),
         }))
+    }
+
+    /// Work with the agents the person's other devices hand requests to through the MCP server
+    /// whose pass `wake` starts, as sessions of `sessions` ([`crate::device_agents`]).
+    pub(crate) fn hear_agents(
+        &self,
+        wake: tilo_service::Wake,
+        sessions: Arc<crate::agent_sessions::AgentSessions>,
+    ) -> Arc<HandedAgents> {
+        let handed = HandedAgents::new(
+            wake,
+            sessions,
+            self.0.action_service.clone(),
+            self.0.runtime.clone(),
+        );
+        *self.0.dispatch.0.handed.lock_recover() = Some(Arc::clone(&handed));
+        handed
+    }
+
+    /// The runtime this device asks on.
+    pub(crate) fn runtime(&self) -> &tokio::runtime::Handle {
+        &self.0.runtime
+    }
+
+    /// The person this device is, and its own key.
+    pub(crate) fn whose(&self) -> ([u8; 32], [u8; 32]) {
+        self.0.whose
+    }
+
+    /// The workspaces whose devices this session heard of.
+    pub(crate) fn workspaces_here(&self) -> Vec<String> {
+        self.0.here.lock_recover().keys().cloned().collect()
+    }
+
+    /// The device `key` asked as `agent`, which this device's person handed what it asks to, in
+    /// `workspace`.
+    pub(crate) fn remote_for_agent(
+        &self,
+        key: [u8; 32],
+        workspace: &str,
+        agent: neighbour_wire::actions::HandedAgent,
+    ) -> Result<RemoteDevice, String> {
+        let id = EndpointId::from_bytes(&key).map_err(|_| "that is not a device key".to_owned())?;
+        Ok(self.0.action_service.remote_for_agent(
+            &self.0.endpoint,
+            &self.addr(id),
+            workspace,
+            agent,
+        ))
     }
 
     /// The action service the collaboration endpoint serves.
@@ -283,6 +339,9 @@ struct DispatchInner {
     power: Mutex<Option<tilo_session_power::PowerLink>>,
     /// The suspend lease the person's other devices hold, renewed in place.
     remote_use: Mutex<Option<InhibitToken>>,
+    /// The agents the person's other devices hand requests to, once this session's MCP server
+    /// works with them.
+    handed: Mutex<Option<Arc<HandedAgents>>>,
 }
 
 impl DeviceDispatch {
@@ -293,6 +352,7 @@ impl DeviceDispatch {
             user,
             power: Mutex::default(),
             remote_use: Mutex::default(),
+            handed: Mutex::default(),
         }))
     }
 
@@ -345,19 +405,34 @@ impl DeviceDispatch {
     }
 }
 
-impl ActionProvider for DeviceDispatch {
-    fn query(
+impl DeviceDispatch {
+    /// Run `act` as `caller` works here: an agent another of the person's devices handed its
+    /// requests to as that agent's session here ([`crate::device_agents`]), refused where this
+    /// session works with no such agents; anyone else as they are.
+    fn through<T: Send + 'static>(
         &self,
         caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        match self.provider() {
-            Ok(provider) => provider.query(caller, query),
-            Err(error) => Pending::ready(Err(error)),
+        act: impl FnOnce(&Caller) -> Pending<Result<T, ActionCallError>> + Send + 'static,
+    ) -> Pending<Result<T, ActionCallError>> {
+        if !crate::device_agents::handed(caller) {
+            return act(caller);
+        }
+        let handed = self.0.handed.lock_recover().clone();
+        match handed {
+            Some(handed) => handed.through(caller, act),
+            None => Pending::ready(Err(crate::device_agents::not_accepted())),
         }
     }
 
-    fn invoke(
+    /// `caller` as it works here already, for a read that does not wait ([`Self::through`]).
+    fn known(&self, caller: &Caller) -> Caller {
+        match self.0.handed.lock_recover().as_ref() {
+            Some(handed) if crate::device_agents::handed(caller) => handed.known(caller),
+            _ => caller.clone(),
+        }
+    }
+
+    fn invoke_as(
         &self,
         caller: &Caller,
         request: InvokeRequest,
@@ -375,24 +450,49 @@ impl ActionProvider for DeviceDispatch {
             Err(error) => Pending::ready(Err(error)),
         }
     }
+}
+
+impl ActionProvider for DeviceDispatch {
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        let provider = self.provider();
+        self.through(caller, move |caller| match provider {
+            Ok(provider) => provider.query(caller, query),
+            Err(error) => Pending::ready(Err(error)),
+        })
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let this = self.clone();
+        self.through(caller, move |caller| this.invoke_as(caller, request))
+    }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        let caller = self.known(caller);
         let governance = self.0.governance.lock_recover().clone();
         self.provider()
             .ok()
-            .and_then(|provider| provider.observe(caller, id))
-            .or_else(|| governance?.observe(caller, id))
+            .and_then(|provider| provider.observe(&caller, id))
+            .or_else(|| governance?.observe(&caller, id))
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        self.provider().ok()?.next_change(caller, id)
+        self.provider().ok()?.next_change(&self.known(caller), id)
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        match self.provider() {
-            Ok(provider) => provider.cancel(caller, id),
+        let (provider, id) = (self.provider(), *id);
+        self.through(caller, move |caller| match provider {
+            Ok(provider) => provider.cancel(caller, &id),
             Err(error) => Pending::ready(Err(error)),
-        }
+        })
     }
 
     fn confirm(
@@ -400,10 +500,11 @@ impl ActionProvider for DeviceDispatch {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
-        match self.provider() {
-            Ok(provider) => provider.confirm(caller, request),
+        let (provider, request) = (self.provider(), request.clone());
+        self.through(caller, move |caller| match provider {
+            Ok(provider) => provider.confirm(caller, &request),
             Err(error) => Pending::ready(Err(error)),
-        }
+        })
     }
 }
 
