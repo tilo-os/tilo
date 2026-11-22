@@ -396,52 +396,18 @@ origin and loader entry; a split target changes only its boot representation.
 No OS rebuild, image commit or registry upload is involved. The signed release
 promotion path continues to require its prebuilt target bundle.
 
-Run the downloaded medium through `tilo device scenario install` on Windows ARM64.
+Run the medium through `tilo device scenario install` on Windows ARM64.
 The Windows backend requires WHPX and never falls back to TCG. A selected dev
 target emits proof v4: target manifest, source/run locators, deployment origin,
-composefs, UKI hash and GPT identities. This is VM evidence, not a CI signature.
-Its declared run ID must be independently checked against Forgejo before any
-physical copy; the production Windows-direct receipt guard does not accept it.
-`windows-direct-dev-provenance.py` checks a pinned child manifest and its raw
-OCI config against the live `os-dev.yml` main run, successful ARM producer,
-published cohort tag/digest and Lenovo disk job. Fetch the config with
-`skopeo inspect --config --raw`: formatted JSON is not the descriptor's bytes.
-The command records explicit developer CI evidence and never authorizes a disk
-write. It is distinct from release Cosign/SLSA verification; the physical copy
-guard still requires source/VM evidence and its separate developer admission.
-The final-source `receipt` and final-copy `execute` commands accept explicit
-`--development` admission. Supply the board/generic child manifests and raw
-configs, their internal `os-dev.yml` run IDs, the board/generic installer run
-IDs, both tested profile media and `--dev-setup-handoff`. The check rechecks live
-CI publication and media metadata, hashes both CI backing disks, verifies that
-the overlays change only the authorized Wi-Fi/SSH tail, and requires board
-proof v4 plus complete generic encrypted first-boot proof v3 from the same CI
-cohort and installer assembly. It records developer authority without a release
-key or SLSA claim. Normal admission continues to require signed release evidence.
-All physical identity, source extent, EFI file and full readback checks still
-apply. The final copy leaves C: untouched, so its pagefile can remain active;
-partition shrinking retains the pagefile restriction.
-`python3 os/dev/forgejo-dev-installer-metadata.py INTERNAL_RUN_ID` reads the
-source and disk checksums from the successful installer run's authenticated
-artifact endpoint. It reads at most 64 KiB, checks ZIP entry lengths and CRCs,
-and binds the assembly source to the live run. This avoids a full disk download
-when rechecking provenance. The downloaded disk still needs its full SHA-256
-check; metadata verification alone does not prove its contents or bootability.
-`python3 os/dev/download-dev-installer.py INTERNAL_RUN_ID --output DISK.qcow2`
-checks that live CI authority, then streams its ZIP payload through zstd into
-a new disk file. It verifies ZIP CRC/lengths plus the complete compressed and
-decoded CI hashes, writes a verified receipt, and never caches the ZIP archive.
-It reserves 8 GiB of host free space throughout extraction. A failed partial
-disk is unverified and has no verified receipt; it cannot be used for installation.
-To recover a partial disk, pass `--resume`: the downloader compares every retained
-byte against the decoded CI stream before appending missing bytes. It still
-checks the complete ZIP payload and both full CI hashes. It rereads the network
-stream but avoids another disk copy or discarding the existing allocation.
-For generic encrypted targets, `--resume` repeats the boot check against the
-completed install without copying the OS again. A Lenovo board install can use
-`--skip-target-boot` because its hardware UKI cannot boot QEMU's generic machine;
-the generic scenario must cover full encrypted boot and the board source still
-requires an independent boot-file/root audit before physical use.
+composefs, UKI hash and GPT identities. This is VM evidence, not a CI signature:
+a physical copy requires signed release evidence, which the Windows-direct
+receipt guard checks. A Lenovo board install can use `--skip-target-boot`
+because its hardware UKI cannot boot QEMU's generic machine; the generic
+scenario must cover full encrypted boot and the board source still requires an
+independent boot-file/root audit before physical use. All physical identity,
+source extent, EFI file and full readback checks still apply. The final copy
+leaves C: untouched, so its pagefile can remain active; partition shrinking
+retains the pagefile restriction.
 
 To reinstall into an owned Windows raw VM source, stop its VM and run
 `prepare-windows-direct-source.py reset-template --plan PLAN --manifest MANIFEST

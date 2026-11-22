@@ -186,24 +186,6 @@ class Transport(unittest.TestCase):
         self.assertEqual(results[0]['usr/libexec/tilo-install'], self.file.read_bytes())
         self.assertEqual(json.loads((self.source / 'receipt.json').read_text()), receipt)
 
-    def test_physical_admission_rejects_refreshed_guest_before_other_fields(self):
-        admission = load('refresh_admission_test', ROOT / 'dev/windows-direct-dev-admission.py')
-        proof = self.source / 'proof.json'
-        proof.write_text(json.dumps({'installer_code_runtime': {'schema':'tilo.installer-code-runtime.v1', 'channel':{'schema':'tilo.installer-code-runtime.v1', 'enabled':False, 'port':None, 'source':None}, 'history':[]}, 'guest_proof': {'installer_code_override_sha256': 'a' * 64},
-                                     'source_check': {}}))
-        with self.assertRaisesRegex(ValueError, 'cannot authorize a physical install'):
-            admission.checked_proof(proof)
-
-    def test_guest_omission_does_not_hide_host_override_or_missing_host_evidence(self):
-        admission = load('refresh_host_admission_test', ROOT / 'dev/windows-direct-dev-admission.py')
-        proof = self.source / 'host-proof.json'
-        for runtime in (None, {'schema': protocol.SCHEMA},
-                        {'schema':'tilo.installer-code-runtime.v1', 'channel':{'schema':'tilo.installer-code-runtime.v1',
-                         'enabled':True, 'port':2222, 'source':'worktree'}, 'history':[]}):
-            proof.write_text(json.dumps({'guest_proof':{},'source_check':{},'installer_code_runtime':runtime}))
-            with self.subTest(runtime=runtime), self.assertRaisesRegex(ValueError, 'fresh host evidence'):
-                admission.checked_proof(proof)
-
     def test_crlf_and_forbidden_trust_scripts_are_not_refreshable(self):
         self.file.write_bytes(b'#!/bin/bash\r\necho broken\r\n')
         with self.assertRaisesRegex(ValueError, 'LF line endings'):

@@ -3257,7 +3257,6 @@
    "receive_from_broker",
    "receive_native_publication",
    "record_publication_failure",
-   "recover_app_publication",
    "refuse_action_publications",
    "refused_action_publications",
    "refused_broker_receipt",

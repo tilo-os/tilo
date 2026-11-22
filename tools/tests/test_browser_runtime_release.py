@@ -1,8 +1,7 @@
-"""Exercise engine-only authority, native payload rejection and source coherence."""
+"""Exercise source admission, native payload rejection and package coherence."""
 import importlib.util
 import os
 import json
-import re
 import sys
 from unittest.mock import patch
 from pathlib import Path
@@ -39,45 +38,6 @@ class BrowserRuntimeRelease(unittest.TestCase):
                 release.main()
             run.assert_not_called()
 
-    def plan(self, overrides):
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / 'output'
-            environment = dict(os.environ, GITHUB_OUTPUT=str(output), ENGINE_RUNTIME_ONLY='true',
-                               GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REF='refs/heads/main',
-                               GITHUB_SHA=release.head())
-            for key in ('COORDINATOR_INTENT', 'REQUESTED_BUILDER', 'BASELINE_SHA', 'BASELINE_RUN_ID',
-                        'BASELINE_EVIDENCE', 'BASELINE_RECEIPT_SHA256', 'COORDINATOR_POLICY_SHA256',
-                        'VERIFY_FINAL_RECEIPT', 'REQUESTED_APPS', 'REQUESTED_COLLECTION'):
-                environment.pop(key, None)
-            environment.update(overrides)
-            result = subprocess.run(['python3', str(SCRIPT), 'plan'], env=environment,
-                                    capture_output=True, text=True)
-            return result, output.read_text() if output.exists() else ''
-
-    def test_only_explicit_exact_main_dispatch_enables_engine_release(self):
-        result, output = self.plan({})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, 'engine_runtime_only=true\n')
-        for overrides in ({'GITHUB_EVENT_NAME': 'push'}, {'GITHUB_EVENT_NAME': 'pull_request'},
-                          {'GITHUB_REF': 'refs/heads/codex/task'}, {'GITHUB_REF': 'refs/tags/v1'},
-                          {'GITHUB_SHA': 'a' * 40}, {'ENGINE_RUNTIME_ONLY': 'yes'}):
-            with self.subTest(overrides=overrides):
-                result, output = self.plan(overrides)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(output, '')
-        result, output = self.plan({'ENGINE_RUNTIME_ONLY': 'false', 'GITHUB_EVENT_NAME': 'push'})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, 'engine_runtime_only=false\n')
-
-    def test_no_qualification_or_unrelated_app_inputs_are_accepted(self):
-        for key in ('COORDINATOR_INTENT', 'REQUESTED_BUILDER', 'BASELINE_SHA', 'BASELINE_RUN_ID',
-                    'BASELINE_EVIDENCE', 'BASELINE_RECEIPT_SHA256', 'COORDINATOR_POLICY_SHA256',
-                    'VERIFY_FINAL_RECEIPT', 'REQUESTED_APPS', 'REQUESTED_COLLECTION'):
-            with self.subTest(key=key):
-                result, output = self.plan({key: 'unexpected'})
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(output, '')
-
     def test_runtime_source_manifest_and_os_recipe_must_agree(self):
         self.assertTrue(release.runtime_version(ROOT).endswith('-chromium'))
         with tempfile.TemporaryDirectory() as directory:
@@ -111,16 +71,6 @@ class BrowserRuntimeRelease(unittest.TestCase):
             (root / 'escape').symlink_to(outside)
             with self.assertRaisesRegex(ValueError, 'escapes'):
                 release.native_payload(root, 'aarch64')
-
-    def test_normal_publication_selects_the_engine_of_built_or_reused_browser(self):
-        environment = dict(REQUESTED_PUBLISH='true', SELECTED_APPS='browser')
-        self.assertTrue(release.engine_dependency(environment))
-        self.assertFalse(release.engine_dependency(dict(environment, REQUESTED_PUBLISH='false')))
-        self.assertFalse(release.engine_dependency(dict(environment, ENGINE_RUNTIME_ONLY='true')))
-        self.assertFalse(release.engine_dependency(dict(environment, SIGNAL_PROVIDER_ONLY='true')))
-        self.assertFalse(release.engine_dependency(dict(environment, SELECTED_APPS='calculator')))
-        self.assertTrue(release.engine_dependency(dict(environment, SELECTED_APPS='calculator', COMPLETE='true')))
-        self.assertFalse(release.engine_dependency(dict(environment, SELECTED_APPS='', COMPLETE='true')))
 
     def test_snapshot_admission_matches_actual_git_tree_and_rejects_source_changes(self):
         with tempfile.TemporaryDirectory() as directory:

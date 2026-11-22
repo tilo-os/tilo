@@ -143,12 +143,6 @@ class SignalRuntimeStaging(unittest.TestCase):
         pin = json.loads(staging.PIN.read_text())
         for asset in [*pin["assets"].values(), pin["java_zero_source"]]:
             self.assertEqual(assets[asset["name"]], (asset["sha256"], asset["url"]))
-        spec = importlib.util.spec_from_file_location("signal_release", ROOT / "tools/apps/signal_provider_release.py")
-        release = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(release)
-        proof = release.provenance(release.release.head())
-        self.assertEqual(proof["runtime"], "tilo-runtime/" + pin["runtime"])
-        self.assertEqual(proof["pin"], pin)
 
 
 if __name__ == "__main__":

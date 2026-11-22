@@ -506,10 +506,6 @@ when = { test = "macos_collection" }
 git = true
 
 [[check.matrix.set]]
-when = { test = "signal_provider_release" }
-git = true
-
-[[check.matrix.set]]
 when = { test = "signal_runtime_staging" }
 git = true
 
