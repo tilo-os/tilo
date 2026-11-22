@@ -50,21 +50,23 @@ const fail = message => { throw new Error(message); };
 const {search} = searcher({until, failed: fail, dump: async () => {}});
 const arrived = `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`;
 const refusedByWaitList = `document.documentElement.dataset.refusal === 'wait-list'`;
-// The workspace the person is in, drawn and titled: the Lounge is not theirs.
+// The workspace the person is in, drawn and named: the Lounge is not theirs.
 const ownWorkspace = `(() => {
-  const state = globalThis.tiloMount?.state?.() ?? null;
-  const title = document.title ?? '';
-  return state?.phase === 'presented' && state.workspaceName
-    && /^Tilo · /.test(title) && !/lounge/i.test(title) ? title : '';
+  const name = document.documentElement.dataset.workspace ?? '';
+  const drawn = document.documentElement.dataset.arrival === 'done'
+    && !!document.querySelector('#tilo-page [data-p]');
+  return drawn && name && !/lounge/i.test(name) ? name : '';
 })()`;
 const enteredLounge = `(() => {
   try { return JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.workspace ?? ''; }
   catch { return ''; }
 })()`;
-// The workspace the page has open, drawn: its name, once its desktop is presented.
+// The workspace the page has open, drawn: its name, once its page is up.
 const drawn = `(() => {
-  const state = globalThis.tiloMount?.state?.() ?? null;
-  return state?.phase === 'presented' && state.workspaceName ? state.workspaceName : '';
+  const name = document.documentElement.dataset.workspace ?? '';
+  const up = document.documentElement.dataset.arrival === 'done'
+    && !!document.querySelector('#tilo-page [data-p]');
+  return up ? name : '';
 })()`;
 const chordOf = async tab => (await tab.evaluate('/Mac/.test(navigator.platform)')) ? 4 : 2;
 
@@ -202,7 +204,7 @@ try {
     if (firstScreen !== null) fail(`the setup screen came over the workspace Ada joined (${firstScreen})`);
     console.log(`Ada arrived in ${own}`);
     // The workspace is Ada's, not the Lounge's: the Lounge is elsewhere.
-    const lounge = await lin.tab.evaluate('globalThis.tiloMount?.state?.()?.workspaceName ?? null');
+    const lounge = await lin.tab.evaluate(`document.documentElement.dataset.workspace ?? null`);
     if (!lounge) fail('the host lost the Lounge when Ada joined');
     if (String(own).includes(lounge)) fail(`Ada landed in the Lounge (${own}), not a workspace of her own`);
   });

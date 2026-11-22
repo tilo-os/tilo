@@ -42,11 +42,9 @@ const percentile = (values, p) => {
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))];
 };
 
-// In the page: from each key to the first frame presented after it. The
-// desktop drawn into a canvas says when it presented a frame
-// (`data-frames` on the canvas's host); a page of plain HTML paints on the
-// browser's own next frame, which is the animation frame's turn and the task
-// after it.
+// In the page: from each key to the frame painted after it. A page of plain
+// HTML paints on the browser's own next frame, which is the animation frame's
+// turn and the task after it.
 const KEY_TO_PAINT = `(() => {
   if (globalThis.__keyPaint) return true;
   globalThis.__keyPaint = [];
@@ -54,16 +52,7 @@ const KEY_TO_PAINT = `(() => {
     if (event.key.length !== 1) return;
     const pressed = performance.now();
     const done = () => globalThis.__keyPaint.push(performance.now() - pressed);
-    const host = globalThis.tiloMount?.canvas?.parentElement;
-    if (host && host.dataset.frames !== undefined) {
-      const from = Number(host.dataset.frames);
-      const watch = new MutationObserver(() => {
-        if (Number(host.dataset.frames) > from && host.dataset.phase === 'presented') { watch.disconnect(); done(); }
-      });
-      watch.observe(host, {attributes: true, attributeFilter: ['data-frames', 'data-phase']});
-    } else {
-      requestAnimationFrame(() => { const channel = new MessageChannel(); channel.port1.onmessage = done; channel.port2.postMessage(0); });
-    }
+    requestAnimationFrame(() => { const channel = new MessageChannel(); channel.port1.onmessage = done; channel.port2.postMessage(0); });
   }, true);
   return true;
 })()`;
