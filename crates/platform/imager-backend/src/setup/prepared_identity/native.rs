@@ -212,7 +212,7 @@ impl PreparedIdentity {
         let directory = tilo_identity::store::identity_dir_from_env()?;
         let current =
             tilo_identity::enrolled_transport::CurrentDeviceReference::review(system, &directory)?;
-        let registry = tilo_identity::registry::IdentityRegistryStore::at(&directory).load()?;
+        let registry = tilo_identity::store::IdentityRegistryStore::at(&directory).load()?;
         if !registry.identities.values().any(|profile| {
             profile.id == hex::encode(current.public_key())
                 && profile.user_public_key == current.public_key()

@@ -70,7 +70,7 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
     )
     .unwrap();
     tilo_identity::store::set_active_identity(&identity, "member").unwrap();
-    let registry_store = tilo_identity::registry::IdentityRegistryStore::at(&identity);
+    let registry_store = tilo_identity::store::IdentityRegistryStore::at(&identity);
     let mut registry = registry_store.load().unwrap();
     registry.register_record(&record).unwrap();
     registry_store.save(&registry).unwrap();

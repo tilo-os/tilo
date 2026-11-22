@@ -87,12 +87,13 @@ fn provision_device(
     environment.set("XDG_CONFIG_HOME", &config);
     environment.set("TILO_IDENTITY_ROOT", root.join("system"));
     let record = identity.ownership_directory().join("primary.json");
-    let mut registry = tilo_identity::registry::IdentityRegistry::default();
-    let id = registry.register_record(&record).unwrap().id.clone();
-    tilo_identity::registry::IdentityRegistryStore::from_env()
-        .unwrap()
-        .save(&registry)
-        .unwrap();
+    let identity_dir = config.join("tilo/identity");
+    directory(&identity_dir);
+    file(
+        &identity_dir.join("primary.json"),
+        &fs::read(&record).unwrap(),
+    );
+    let id = hex::encode(identity.public_key());
     let paths = tilo_identity::provisioning::collaboration_identity_paths();
     let cert_path =
         tilo_identity::provisioning::ensure_device_certificate_for_record(&record, &paths).unwrap();

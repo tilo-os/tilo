@@ -116,7 +116,7 @@ fn fixture(keyring: Keyring) -> Fixture {
     let now = tilo_clock::unix_now_ns();
     let fleet =
         tilo_identity::device_fleet::DeviceFleetStore::from_env().expect("the device fleet");
-    let profile = tilo_identity::registry::identity_for_workspace(WORKSPACE)
+    let profile = tilo_identity::store::identity_for_workspace(WORKSPACE)
         .expect("the identity registry")
         .expect("the workspace is answered by this device's person");
     let token = fleet

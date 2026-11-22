@@ -54,7 +54,7 @@ pub fn device_certificate(
     // A selected alternate workspace identity cannot borrow this device's
     // primary person. The certificate's fleet revocation is checked afresh.
     tilo_identity::certificates::authorize(workspace, &certificate)?;
-    let registry = tilo_identity::registry::IdentityRegistryStore::from_env()
+    let registry = tilo_identity::store::IdentityRegistryStore::from_env()
         .map_err(|error| error.to_string())?;
     if !tilo_identity::provisioning::active_identity_owns_device(registry.identity_dir(), &paths)
         .map_err(|error| error.to_string())?
@@ -96,8 +96,8 @@ pub fn device_readiness(workspace: &str, person: &str) -> Readiness {
     // hands a decision the registry its worker last reconciled, so a read that lands before that
     // worker has the person's record is a wait, not a refusal — and the answer after it is the one
     // that counts.
-    let named = tilo_identity::registry::identity_for_workspace(workspace)
-        .is_ok_and(|named| named.is_some());
+    let named =
+        tilo_identity::store::identity_for_workspace(workspace).is_ok_and(|named| named.is_some());
     match device_certificate(workspace, person) {
         Ok(certificate) => Readiness::Ready(certificate),
         Err(why) if named => Readiness::Refused(why),

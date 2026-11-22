@@ -22,14 +22,23 @@ fn identities(root: &Path, owner: [u8; 32], signed_in: [u8; 32]) -> tilo_test_en
     std::fs::write(system.join("user-identity/pubkey.bin"), owner).unwrap();
     let config = root.join("config");
     std::fs::create_dir_all(config.join("tilo/identity")).unwrap();
+    let identity = config.join("tilo/identity");
+    std::fs::write(identity.join("active"), "me\n").unwrap();
     std::fs::write(
-        config.join("tilo/identity/registry.json"),
+        identity.join("me.json"),
         serde_json::json!({
-            "schema_version": 1,
-            "default_identity": "me",
-            "identities": {"me": {"id": "me", "display_name": "Me",
-                "record_path": "/x", "user_public_key": signed_in.to_vec()}},
-            "workspace_identities": {}
+            "display_name": "Me",
+            "avatar_color": [0, 0, 0],
+            "threshold_identity": {
+                "single_device": true,
+                "group_public_key": signed_in.to_vec(),
+                "threshold": 1,
+                "total_shares": 1,
+                "share_index": 1,
+                "secret_bytes": []
+            },
+            "created_at": "now",
+            "schema_version": 1
         })
         .to_string(),
     )

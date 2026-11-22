@@ -273,21 +273,9 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
             "{}.json",
             hex::encode(root.verifying_key().to_bytes())
         ));
-        for projected_path in [recipient_identities.join("registry.json"), fleet] {
-            let metadata = std::fs::metadata(&projected_path).unwrap();
-            assert_eq!(
-                metadata.uid(),
-                owner.uid(),
-                "{} uid",
-                projected_path.display()
-            );
-            assert_eq!(
-                metadata.gid(),
-                owner.gid(),
-                "{} gid",
-                projected_path.display()
-            );
-        }
+        let metadata = std::fs::metadata(&fleet).unwrap();
+        assert_eq!(metadata.uid(), owner.uid(), "{} uid", fleet.display());
+        assert_eq!(metadata.gid(), owner.gid(), "{} gid", fleet.display());
     }
 
     let transferred: Vec<HomePeerRegistration> = serde_json::from_slice(
@@ -622,7 +610,6 @@ wait "$approval"
             recipient_paths.device_cert_for_user(&root.verifying_key().to_bytes()),
             tilo_server::home_peer_registry_path(&recipient_root),
             recipient_identities.join("pairing-status.json"),
-            recipient_identities.join("registry.json"),
             recipient_identities.join("fleets").join(format!(
                 "{}.json",
                 hex::encode(root.verifying_key().to_bytes())

@@ -792,7 +792,7 @@ fn ensure_collaboration_identity_in_context(
     // Register the primary record in the multi-identity registry. A registry
     // write failure is a provisioning failure: silently creating a key that no
     // workspace can select strands the identity immediately.
-    let registry = crate::registry::IdentityRegistryStore::at(identity_dir).load_reconciled()?;
+    let registry = crate::store::IdentityRegistryStore::at(identity_dir).load_reconciled()?;
     if let Some(identity_id) = registry.default_identity {
         crate::device_fleet::DeviceFleetStore::at(identity_dir, paths.clone())
             .register_current_device(&identity_id)?;
@@ -1665,7 +1665,7 @@ mod tests {
             assert!(complete_enrolled_device(&identity_dir, &paths, 2_000).unwrap());
             assert!(complete_enrolled_device(&identity_dir, &paths, 2_000).unwrap());
             verify_collaboration_identity(&identity_dir, &paths, 2_000).unwrap();
-            let registry = crate::registry::IdentityRegistryStore::at(&identity_dir)
+            let registry = crate::store::IdentityRegistryStore::at(&identity_dir)
                 .load_reconciled()
                 .unwrap();
             assert_eq!(registry.default_identity, Some(hex::encode(user)));

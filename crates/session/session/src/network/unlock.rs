@@ -30,7 +30,7 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tilo_identity::device_fleet::DeviceFleetStore;
-use tilo_identity::registry::IdentityRegistryStore;
+use tilo_identity::store::IdentityRegistryStore;
 use tilo_service::{Asked, Question, Questions};
 use tilo_unlock_protocol::{
     APPROVAL_TIMEOUT_NS, BootKeyCert, CHALLENGE_LIFETIME_NS, ClientFrame, ENROL_SOCKET, EnrolReply,

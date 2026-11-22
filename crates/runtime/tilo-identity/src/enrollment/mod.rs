@@ -424,7 +424,7 @@ mod tests {
             crate::provisioning::IdentityStorage::Files,
         )
         .expect("provision");
-        let identity_id = crate::registry::IdentityRegistryStore::at(&identity_dir)
+        let identity_id = crate::store::IdentityRegistryStore::at(&identity_dir)
             .load()
             .expect("registry")
             .default_identity

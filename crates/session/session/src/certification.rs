@@ -465,7 +465,7 @@ mod tests {
             tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("provision");
-        let registry = tilo_identity::registry::IdentityRegistryStore::at(&dir)
+        let registry = tilo_identity::store::IdentityRegistryStore::at(&dir)
             .load()
             .expect("registry");
         let id = registry.default_identity.expect("default identity");

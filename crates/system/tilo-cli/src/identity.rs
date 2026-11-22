@@ -492,7 +492,7 @@ mod tests {
         // The registry the session reads names the person, and this device is
         // enrolled in their fleet: the session's broker admits their own
         // actions under the certificate.
-        let profile = tilo_identity::registry::identity_for_workspace("any")
+        let profile = tilo_identity::store::identity_for_workspace("any")
             .unwrap()
             .expect("the registry names the person");
         assert_eq!(profile.user_public_key, person.public_key());
@@ -546,7 +546,7 @@ mod tests {
             restored.cert.device_public_key, ada.cert.device_public_key,
             "this computer is a device of its own"
         );
-        let profile = tilo_identity::registry::identity_for_workspace("any")
+        let profile = tilo_identity::store::identity_for_workspace("any")
             .unwrap()
             .expect("the session's registry names her");
         assert_eq!(profile.user_public_key, ada.public_key());

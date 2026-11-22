@@ -56,7 +56,7 @@ fn negotiated_real_broker_photo_reaches_default_shared_avatar_paint() {
     let workspace = tilo_desktop_model::WorkspaceId::new();
     let mut open = tilo_desktop_model::Workspace::new(workspace, "Home");
     open.policy.owner = Some(
-        tilo_identity::registry::identity_for_workspace(&workspace.to_string())
+        tilo_identity::store::identity_for_workspace(&workspace.to_string())
             .unwrap()
             .expect("this device has the person it signs as")
             .person_id(),

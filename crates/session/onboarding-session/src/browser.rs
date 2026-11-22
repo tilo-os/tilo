@@ -181,7 +181,7 @@ pub fn attach_deferred_continuity() {
     let Some(home) = crate::identity::session_home() else {
         return;
     };
-    let Ok(store) = tilo_identity::registry::IdentityRegistryStore::from_env() else {
+    let Ok(store) = tilo_identity::store::IdentityRegistryStore::from_env() else {
         return;
     };
     if let Ok(Some(path)) = deferred_projection(&home, store.identity_dir()) {
@@ -236,7 +236,7 @@ pub fn validate_published_projection(path: &Path) -> bool {
     let Some(home) = crate::identity::session_home() else {
         return false;
     };
-    let Ok(store) = tilo_identity::registry::IdentityRegistryStore::from_env() else {
+    let Ok(store) = tilo_identity::store::IdentityRegistryStore::from_env() else {
         return false;
     };
     let identity = store.identity_dir();

@@ -253,8 +253,8 @@ credentials in `key-group` are a separate layer and stay.
 
 There are four device lists: `CertifiedFleet` (`tilo-user-identity`
 `fleet.rs`, a verifier), `DeviceFleetStore` (`tilo-identity` `device_fleet/`,
-on disk at `<identity_dir>/fleets/<id>.json`), the `fleet.json` and
-`registry.json` that `tilo-enrollment` `install.rs` writes itself, and the
+on disk at `<identity_dir>/fleets/<id>.json`), the `fleet.json` that
+`tilo-enrollment` `install.rs` writes itself, and the
 per-workspace `WorkspaceDirectory` (`tilo-user-identity` `directory.rs`).
 Revocation has a defect: `tilo-server` `admin.rs` `persist_fleet_revocation`
 defaults to `$XDG_CONFIG_HOME/tilo/identities`, while every other reader
@@ -305,7 +305,7 @@ There are seven ways to add a device:
 | Enrolment logic in the `tilo-enroll` and `tilo-approve` binaries (thin CLIs over `tilo-enrollment`) | ~800 |
 | `tilo-auth` `PeerRegistrar` enrolment (moves onto the enrolment transport) | ~400 |
 | `tilo-device-admin` `install_cert` (duplicates `tilo-enroll install-cert`) | ~200 |
-| Direct `fleet.json` and `registry.json` writes in `tilo-enrollment` `install.rs` | ~300 |
+| Direct `fleet.json` writes in `tilo-enrollment` `install.rs` | ~300 |
 
 Owner: **One identity** session.
 
@@ -318,12 +318,11 @@ A person's identity root is kept in more than one place:
 | Store | Code | Location | Size |
 |---|---|---|---|
 | Native person records | `tilo-identity` `store/` (`unix.rs`, `backup.rs`, `recovery_words.rs`, `secure_store.rs`) | `$XDG_CONFIG_HOME/tilo/identity/{<id>.json,active,secrets/}` | 4,986 |
-| Registry | `tilo-identity` `registry/` `IdentityRegistryStore` | `<identity_dir>/registry.json` | 1,061 |
 | Browser root | `tilo-browser-runtime` `root_identity.rs`, `web/identity.mjs` `RootEnvelope`, wrapped by a passkey PRF | IndexedDB | 1,466 |
 | Old CLI location | `tilo-cli` `identity.rs` `earlier()` | `$XDG_STATE_HOME/tilo/identity/user-identity/pubkey.bin` | ~20 |
 
-`tilo-identity` as a whole is 22,760 lines, with `registry/`,
-`identity_store`, `device_fleet/`, `certificates` and `local_person` layered
+`tilo-identity` as a whole is 22,760 lines, with `store/`, `identity_store`,
+`device_fleet/`, `certificates` and `local_person` layered
 over each other. `DeviceIdentity` means two different things: public
 metadata in `tilo-user-identity` `lib.rs`, and a certificate plus signer in
 `tilo-identity` `identity_store.rs`.
@@ -340,9 +339,10 @@ used.
 
 - **One identity root type**, `tilo-user-identity` (`RootEnvelope`,
   `DeviceCert`, `SignInProof`), shared by the OS, the CLI and the browser.
-- **One person store**, `tilo_identity::store` with `IdentityRegistryStore`,
-  holding `IdentityRecord`. The browser keeps its wrapped root in IndexedDB,
-  in the same record format.
+- **One person store**, `tilo_identity::store`: the `IdentityRecord` files,
+  the `active` selection, and the profiles derived from them. Nothing else
+  indexes them. The browser keeps its wrapped root in IndexedDB, in the same
+  record format.
 - **One recovery format**: the 24 words.
 - **One sign-in proof**, `SignInProof`. The greeter, the web page, the API
   and `tilo login` all prove the same thing (a current device of this

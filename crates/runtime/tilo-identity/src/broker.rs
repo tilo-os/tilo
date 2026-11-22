@@ -52,8 +52,8 @@ fn read_workspace<T>(
 fn identity_in(
     tree: &dyn WorkspaceMembership,
     workspace: &WorkspaceId,
-) -> Result<crate::registry::IdentityProfile, String> {
-    let profile = match crate::registry::identity_for_workspace(&workspace.to_string()) {
+) -> Result<crate::store::IdentityProfile, String> {
+    let profile = match crate::store::identity_for_workspace(&workspace.to_string()) {
         Ok(Some(profile)) => profile,
         Ok(None) => return Err("this device has no identity to sign in with".into()),
         Err(error) => return Err(error.to_string()),
@@ -357,7 +357,7 @@ impl Bound<'_> {
     /// workspace's identity is, and the app keeps records of theirs there.
     fn in_personal_cluster(
         &self,
-        profile: &crate::registry::IdentityProfile,
+        profile: &crate::store::IdentityProfile,
         workspace_id: &str,
     ) -> bool {
         collab_types::personal_cluster(&profile.user_public_key).to_string() == workspace_id
@@ -382,7 +382,7 @@ fn sign_collaboration_join(
 ) -> Response {
     // The launch workspace, or the person's own cluster for the records of
     // theirs the app declares; the broker admits each of those records alone.
-    let foreign = |profile: &crate::registry::IdentityProfile| {
+    let foreign = |profile: &crate::store::IdentityProfile| {
         workspace_id != bound.workspace.to_string()
             && !bound.in_personal_cluster(profile, workspace_id)
     };
@@ -680,7 +680,7 @@ fn group_keys(
 pub fn trusted_current_device(
     workspace: &str,
 ) -> io::Result<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
-    let profile = crate::registry::identity_for_workspace(workspace)?
+    let profile = crate::store::identity_for_workspace(workspace)?
         .ok_or_else(|| io::Error::other("this device has no identity to sign in with"))?;
     require_trusted_current_device(&profile)
 }
@@ -702,7 +702,7 @@ pub fn sign_external_moderation(
 /// a valid, non-revoked `identity -> device` certificate. Apps never receive
 /// either key; this check makes revocation effective at the local broker too.
 fn require_trusted_current_device(
-    profile: &crate::registry::IdentityProfile,
+    profile: &crate::store::IdentityProfile,
 ) -> io::Result<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
     let paths = crate::provisioning::collaboration_identity_paths();
     let device = tilo_device_identity::persist::load_device_key(&paths)
@@ -959,7 +959,7 @@ mod tests {
         let mut invalid = operation.clone();
         invalid.expires_at_unix = invalid.issued_at_unix;
         assert!(sign_external_moderation(&workspace, &invalid).is_err());
-        let profile = crate::registry::identity_for_workspace(&workspace)
+        let profile = crate::store::identity_for_workspace(&workspace)
             .expect("registry")
             .expect("profile");
         crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
@@ -994,7 +994,7 @@ mod tests {
             let workspace_id = workspace.to_string();
             let app_id = "so.tilo.notes";
             let document_id = "meeting-notes";
-            let profile = crate::registry::identity_for_workspace(&workspace_id)
+            let profile = crate::store::identity_for_workspace(&workspace_id)
                 .expect("registry")
                 .expect("profile");
             let device = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
@@ -1256,7 +1256,7 @@ params = []
             let launched = "so.tilo.notes";
             let owner = collab_types::WORKSPACE_DOCUMENTS[0];
             let emoji = collab_types::workspace_document_id(owner.kind);
-            let profile = crate::registry::identity_for_workspace(&workspace_id)
+            let profile = crate::store::identity_for_workspace(&workspace_id)
                 .expect("registry")
                 .expect("profile");
             let device = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
@@ -1324,7 +1324,7 @@ params = []
             let workspace_id = workspace.to_string();
             let app_id = "so.tilo.notes";
             let document_id = "meeting-notes";
-            let profile = crate::registry::identity_for_workspace(&workspace_id)
+            let profile = crate::store::identity_for_workspace(&workspace_id)
                 .expect("registry")
                 .expect("profile");
             let device = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
@@ -1408,7 +1408,7 @@ params = []
             crate::store::update_identity_photo(&identity_dir, "primary", Some(photo.clone()))
                 .unwrap();
             let workspace = WorkspaceId::new();
-            let profile = crate::registry::identity_for_workspace(&workspace.to_string())
+            let profile = crate::store::identity_for_workspace(&workspace.to_string())
                 .unwrap()
                 .unwrap();
             let original = std::fs::read(&profile.record_path).unwrap();
@@ -1516,7 +1516,7 @@ params = []
 
             let workspace = WorkspaceId::new();
             let workspace_id = workspace.to_string();
-            let profile = crate::registry::identity_for_workspace(&workspace_id)
+            let profile = crate::store::identity_for_workspace(&workspace_id)
                 .expect("registry")
                 .expect("profile");
             let mut committed = Workspace::new(workspace, "Workspace");
@@ -1855,7 +1855,7 @@ params = []
             let fixture = crate::join_proof::tests::Fixture::new();
             let workspace = WorkspaceId::parse(&fixture.workspace).expect("workspace");
             let app_id = "so.tilo.notes";
-            let profile = crate::registry::identity_for_workspace(&fixture.workspace)
+            let profile = crate::store::identity_for_workspace(&fixture.workspace)
                 .expect("registry")
                 .expect("profile");
             let mut committed = Workspace::new(workspace, "Workspace");

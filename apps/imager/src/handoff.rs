@@ -611,7 +611,7 @@ pub fn local_identity_from_env() -> Result<LocalIdentity<'static>, String> {
     static HOME_PEERS: OnceLock<PathBuf> = OnceLock::new();
     let system = SYSTEM.get_or_init(tilo_identity::provisioning::collaboration_identity_paths);
     let identity_dir = IDENTITY_DIR.get_or_init(|| {
-        tilo_identity::registry::IdentityRegistryStore::from_env().map_or_else(
+        tilo_identity::store::IdentityRegistryStore::from_env().map_or_else(
             |_| dirs_fallback().join(".config/tilo/identity"),
             |store| store.identity_dir().to_path_buf(),
         )
@@ -788,8 +788,7 @@ mod tests {
         assert_eq!(presentation.avatar_color, [3, 4, 5]);
         assert_eq!(presentation.profile_photo, Some(photo));
         assert_eq!(presentation.group_public_key, local_cert.user_public_key);
-        assert!(!target_identity.join("registry.json").exists());
-        let registry = tilo_identity::registry::IdentityRegistryStore::at(&target_identity)
+        let registry = tilo_identity::store::IdentityRegistryStore::at(&target_identity)
             .load_reconciled()
             .unwrap();
         assert_eq!(registry.identities[&identity_id].record_path, target_record);

@@ -882,12 +882,13 @@ mod tests {
         environment.set("XDG_CONFIG_HOME", &config);
         environment.set("TILO_IDENTITY_ROOT", root.join("system"));
         let record = identity.ownership_directory().join("primary.json");
-        let mut registry = tilo_identity::registry::IdentityRegistry::default();
-        let id = registry.register_record(&record).unwrap().id.clone();
-        tilo_identity::registry::IdentityRegistryStore::from_env()
-            .unwrap()
-            .save(&registry)
-            .unwrap();
+        let identity_dir = config.join("tilo/identity");
+        std::fs::create_dir_all(&identity_dir).unwrap();
+        std::fs::set_permissions(&identity_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let copied = identity_dir.join("primary.json");
+        std::fs::write(&copied, std::fs::read(&record).unwrap()).unwrap();
+        std::fs::set_permissions(&copied, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let id = hex::encode(identity.public_key());
         let paths = tilo_identity::provisioning::collaboration_identity_paths();
         let cert_path =
             tilo_identity::provisioning::ensure_device_certificate_for_record(&record, &paths)

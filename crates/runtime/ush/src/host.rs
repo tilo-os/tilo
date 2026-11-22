@@ -152,12 +152,12 @@ pub trait DeviceOwnership {
 /// The device owner and the signed-in person, from the files provisioning
 /// and sign-in write: the owner's root key at
 /// `$TILO_IDENTITY_ROOT|/var/lib/tilo` + `/user-identity/pubkey.bin`, and the
-/// session's default identity in `$XDG_CONFIG_HOME/tilo/identity/registry.json`.
+/// session's active identity record in `$XDG_CONFIG_HOME/tilo/identity`.
 /// Anything missing or unreadable answers "not the owner".
 #[derive(Debug, Clone)]
 pub struct SessionOwnership {
     pub owner_key: PathBuf,
-    pub registry: Option<PathBuf>,
+    pub identity_dir: Option<PathBuf>,
 }
 
 impl SessionOwnership {
@@ -167,9 +167,9 @@ impl SessionOwnership {
             .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
         Self {
             owner_key: root.join("user-identity/pubkey.bin"),
-            registry: tilo_paths::xdg::config_home()
+            identity_dir: tilo_paths::xdg::config_home()
                 .filter(|dir| dir.is_absolute())
-                .map(|config| config.join("tilo/identity/registry.json")),
+                .map(|config| config.join("tilo/identity")),
         }
     }
 
@@ -183,19 +183,30 @@ impl SessionOwnership {
 
     fn signed_in(&self) -> Option<[u8; 32]> {
         #[derive(serde::Deserialize)]
-        struct Profile {
-            user_public_key: [u8; 32],
+        struct Threshold {
+            group_public_key: [u8; 32],
         }
         #[derive(serde::Deserialize)]
-        struct Registry {
-            default_identity: Option<String>,
-            #[serde(default)]
-            identities: std::collections::BTreeMap<String, Profile>,
+        struct Record {
+            threshold_identity: Threshold,
         }
-        let bytes = std::fs::read(self.registry.as_ref()?).ok()?;
-        let registry: Registry = serde_json::from_slice(&bytes).ok()?;
-        let id = registry.default_identity?;
-        registry.identities.get(&id).map(|p| p.user_public_key)
+        let dir = self.identity_dir.as_ref()?;
+        let id = std::fs::read_to_string(dir.join("active"))
+            .ok()
+            .map(|selector| selector.trim().to_owned())
+            .filter(|id| {
+                !id.is_empty()
+                    && id.len() <= 64
+                    && id.bytes().all(|byte| {
+                        byte.is_ascii_lowercase()
+                            || byte.is_ascii_digit()
+                            || matches!(byte, b'_' | b'-')
+                    })
+            })
+            .unwrap_or_else(|| "primary".to_owned());
+        let bytes = std::fs::read(dir.join(format!("{id}.json"))).ok()?;
+        let record: Record = serde_json::from_slice(&bytes).ok()?;
+        Some(record.threshold_identity.group_public_key)
     }
 }
 
@@ -432,7 +443,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let ownership = SessionOwnership {
                 owner_key: dir.path().join("pubkey.bin"),
-                registry: Some(dir.path().join("registry.json")),
+                identity_dir: Some(dir.path().to_path_buf()),
             };
             assert!(!ownership.signed_in_person_owns_device(), "nothing claimed");
             std::fs::write(&ownership.owner_key, [7u8; 32]).unwrap();
@@ -440,19 +451,28 @@ mod tests {
                 !ownership.signed_in_person_owns_device(),
                 "nobody signed in"
             );
-            let registry = |key: u8| {
+            let record = |key: u8| {
                 serde_json::json!({
-                    "schema_version": 1,
-                    "default_identity": "me",
-                    "identities": {"me": {"id": "me", "display_name": "Me",
-                        "record_path": "/x", "user_public_key": vec![key; 32]}},
-                    "workspace_identities": {}
+                    "display_name": "Me",
+                    "avatar_color": [0, 0, 0],
+                    "threshold_identity": {
+                        "single_device": true,
+                        "group_public_key": vec![key; 32],
+                        "threshold": 1,
+                        "total_shares": 1,
+                        "share_index": 1,
+                        "secret_bytes": []
+                    },
+                    "created_at": "now",
+                    "schema_version": 1
                 })
                 .to_string()
             };
-            std::fs::write(ownership.registry.as_ref().unwrap(), registry(7)).unwrap();
+            let identity_dir = ownership.identity_dir.as_ref().unwrap();
+            std::fs::write(identity_dir.join("active"), "me\n").unwrap();
+            std::fs::write(identity_dir.join("me.json"), record(7)).unwrap();
             assert!(ownership.signed_in_person_owns_device());
-            std::fs::write(ownership.registry.as_ref().unwrap(), registry(8)).unwrap();
+            std::fs::write(identity_dir.join("me.json"), record(8)).unwrap();
             assert!(
                 !ownership.signed_in_person_owns_device(),
                 "another person signed in to the owner's device"

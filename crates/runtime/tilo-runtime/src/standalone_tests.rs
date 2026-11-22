@@ -310,7 +310,7 @@ pub(super) fn isolated_home(root: &Path) -> PathBuf {
 /// The synthetic caller still uses its independently certified admission.
 pub(super) fn isolated_signing_identity(test: &str) -> Option<PathBuf> {
     let root = isolated_root(test)?;
-    let registry = tilo_identity::registry::IdentityRegistryStore::from_env().unwrap();
+    let registry = tilo_identity::store::IdentityRegistryStore::from_env().unwrap();
     tilo_identity::provisioning::ensure_collaboration_identity(
         registry.identity_dir(),
         &tilo_identity::provisioning::collaboration_identity_paths(),
@@ -697,7 +697,7 @@ fn listed_workspace(root: &Path) -> String {
 /// A running host holds the person's own documents store: asserted on the
 /// host a test starts first on its new profile, before anything is written.
 fn holds_the_persons_own_documents_store(session: &Standalone) {
-    let identity = tilo_identity::registry::identity_for_workspace(session.workspace())
+    let identity = tilo_identity::store::identity_for_workspace(session.workspace())
         .unwrap()
         .unwrap();
     let personal = session.personal();

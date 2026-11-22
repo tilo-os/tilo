@@ -286,12 +286,12 @@ fn open_profile_workspace(
     stage: &mut dyn FnMut(&str),
 ) -> io::Result<(
     ProfileWorkspace,
-    tilo_identity::registry::IdentityProfile,
+    tilo_identity::store::IdentityProfile,
     String,
 )> {
     stage("loading the workspace");
     let workspace = ProfileWorkspace::open(root)?;
-    let identity = tilo_identity::registry::identity_for_workspace(&workspace.workspace())?
+    let identity = tilo_identity::store::identity_for_workspace(&workspace.workspace())?
         .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
     let actor = identity.person_id();
     stage("saving the workspace");
@@ -994,7 +994,7 @@ impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority f
 /// in, the identity this device acts as, and the workspace this runtime runs.
 struct PersonalServing<'a> {
     root: &'a Path,
-    identity: &'a tilo_identity::registry::IdentityProfile,
+    identity: &'a tilo_identity::store::IdentityProfile,
     /// The workspace this runtime runs, by its id.
     workspace_id: &'a str,
     workspaces: &'a ServiceWorkspaces,

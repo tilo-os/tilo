@@ -223,7 +223,7 @@ tilo_test_env::scenario! {
         // What the runtime starts the identity from is the registry this
         // wrote, read by the code that reads it: a field it does not know
         // keeps the member it holds from starting at all.
-        let registry = tilo_identity::registry::IdentityRegistryStore::at(identity_dir.path())
+        let registry = tilo_identity::store::IdentityRegistryStore::at(identity_dir.path())
             .load()
             .expect("the registry this join wrote is one the runtime reads");
         let (id, _) = registry
@@ -282,21 +282,10 @@ tilo_test_env::scenario! {
             std::fs::read(tilo_server_protocol::home_peer_registry_path(identity_root.path())).unwrap(),
             b"[]"
         );
-        let registry: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(identity_dir.path().join("registry.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(registry["default_identity"], hex::encode(user));
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt as _;
             let uid = rustix::process::geteuid().as_raw();
-            assert_eq!(
-                std::fs::metadata(identity_dir.path().join("registry.json"))
-                    .unwrap()
-                    .uid(),
-                uid
-            );
             assert_eq!(
                 std::fs::metadata(
                     fleet_store(identity_root.path(), identity_dir.path(), None)

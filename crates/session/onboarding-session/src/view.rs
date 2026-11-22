@@ -171,7 +171,7 @@ fn import_identity(
     source: &Path,
     passphrase: &[u8],
 ) -> Result<MintedIdentity, String> {
-    let store = tilo_identity::registry::IdentityRegistryStore::at(import_dir);
+    let store = tilo_identity::store::IdentityRegistryStore::at(import_dir);
     let profile = if passphrase.is_empty() {
         // Explicit compatibility path for schema-1 exports from
         // older Tilo builds. New backups always require a

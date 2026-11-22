@@ -1,5 +1,5 @@
-//! Where a Linux desktop keeps the identities: one record per identity and a registry index of
-//! them, in the identity directory.
+//! The identities a Linux desktop holds: every record file in the identity
+//! directory, and which of them the `active` selection names.
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -9,10 +9,9 @@ use std::os::unix::fs::OpenOptionsExt;
 
 use tilo_user_identity::DeviceCert;
 
-use super::{IdentityProfile, IdentityRegistry, REGISTRY_SCHEMA_VERSION, short_fingerprint};
+use super::{IdentityProfile, IdentityRegistry, short_fingerprint};
 use crate::provisioning::IdentityStorage;
 
-const REGISTRY_FILE: &str = "registry.json";
 const MAX_IMPORTED_IDENTITY_BYTES: u64 = 1024 * 1024;
 #[cfg(test)]
 const LEGACY_PRIMARY_FILE: &str = "primary.json";
@@ -237,27 +236,23 @@ thread_local! {
     static RECONCILES_ON_THIS_THREAD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Disk owner for the registry.
+/// The record files this account's identity directory holds.
 #[derive(Clone, Debug)]
 pub struct IdentityRegistryStore {
     identity_dir: PathBuf,
-    registry_path: PathBuf,
 }
 
 impl IdentityRegistryStore {
-    /// Open the identity registry rooted at the environment's identity
-    /// directory (`XDG_CONFIG_HOME` or `HOME`).
+    /// Open the identities rooted at the environment's identity directory
+    /// (`XDG_CONFIG_HOME` or `HOME`).
     pub fn from_env() -> io::Result<Self> {
         Ok(Self::at(resolve_identity_dir()?))
     }
 
     #[must_use]
     pub fn at(identity_dir: impl Into<PathBuf>) -> Self {
-        let identity_dir = identity_dir.into();
-        let registry_path = identity_dir.join(REGISTRY_FILE);
         Self {
-            identity_dir,
-            registry_path,
+            identity_dir: identity_dir.into(),
         }
     }
 
@@ -266,68 +261,10 @@ impl IdentityRegistryStore {
         &self.identity_dir
     }
 
-    #[must_use]
-    pub fn registry_path(&self) -> &Path {
-        &self.registry_path
-    }
-
+    /// The identities this account holds, with the `active` selection's as the
+    /// default. Reads each record; there is no second index to read or write.
     pub fn load(&self) -> io::Result<IdentityRegistry> {
-        if !self.registry_path.exists() {
-            return Ok(IdentityRegistry::default());
-        }
-        let bytes = fs::read(&self.registry_path)?;
-        let registry: IdentityRegistry = serde_json::from_slice(&bytes)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if registry.schema_version != REGISTRY_SCHEMA_VERSION {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "unsupported identity registry schema {}",
-                    registry.schema_version
-                ),
-            ));
-        }
-        Ok(registry)
-    }
-
-    pub fn save(&self, registry: &IdentityRegistry) -> io::Result<()> {
-        fs::create_dir_all(&self.identity_dir)?;
-        set_private_dir_mode(&self.identity_dir)?;
-        let bytes = serde_json::to_vec_pretty(registry)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let written =
-            tilo_files::native::atomic::write_with_mode(&self.registry_path, &bytes, 0o600);
-        // A change made here is read back by the writer's next query, not one
-        // refresh later.
-        refresh_prompt_registry(&self.identity_dir);
-        // The identity this device presents decides whose fleet admits.
-        crate::policy_change::announce();
-        written
-    }
-
-    /// Load the registry after registering every identity record in the
-    /// directory and adopting the runtime's active record as the default.
-    /// Provisioning, onboarding and the Users pane write records and the
-    /// active marker through `tilo_identity::store`, not through this registry.
-    /// Idempotent.
-    pub fn load_reconciled(&self) -> io::Result<IdentityRegistry> {
-        fs::create_dir_all(&self.identity_dir)?;
-        set_private_dir_mode(&self.identity_dir)?;
-        let (registry, changed) = self.reconcile()?;
-        if changed {
-            self.save(&registry)?;
-        }
-        Ok(registry)
-    }
-
-    /// The registry with every record in the directory registered and the
-    /// runtime's active record as its default, and whether that differs from
-    /// the saved one. Reads only.
-    fn reconcile(&self) -> io::Result<(IdentityRegistry, bool)> {
-        #[cfg(test)]
-        RECONCILES_ON_THIS_THREAD.with(|count| count.set(count.get().saturating_add(1)));
-        let mut registry = self.load()?;
-        let mut changed = false;
+        let mut registry = IdentityRegistry::default();
         for summary in crate::store::list_identities(&self.identity_dir)? {
             let id = hex::encode(summary.public_key);
             let path = self.identity_dir.join(format!("{}.json", summary.id));
@@ -341,22 +278,50 @@ impl IdentityRegistryStore {
                 record_path: absolute_path(&path)?,
                 user_public_key: summary.public_key,
             };
-            if registry.identities.get(&id) != Some(&profile) {
-                registry.identities.insert(id.clone(), profile);
-                changed = true;
-            }
-            if summary.active && registry.default_identity.as_deref() != Some(id.as_str()) {
+            registry.identities.insert(id.clone(), profile);
+            if summary.active {
                 registry.default_identity = Some(id);
-                changed = true;
             }
         }
-        if registry.default_identity.is_none()
-            && let Some(id) = registry.identities.keys().next().cloned()
-        {
-            registry.default_identity = Some(id);
-            changed = true;
+        if registry.default_identity.is_none() {
+            registry.default_identity = registry.identities.keys().next().cloned();
         }
-        Ok((registry, changed))
+        Ok(registry)
+    }
+
+    /// The identities, creating a private identity directory first when this
+    /// account has none. The records themselves are the only state.
+    pub fn load_reconciled(&self) -> io::Result<IdentityRegistry> {
+        fs::create_dir_all(&self.identity_dir)?;
+        set_private_dir_mode(&self.identity_dir)?;
+        self.load()
+    }
+
+    /// [`Self::load_reconciled`]'s read, counted for the cache below.
+    fn reconcile(&self) -> io::Result<IdentityRegistry> {
+        #[cfg(test)]
+        RECONCILES_ON_THIS_THREAD.with(|count| count.set(count.get().saturating_add(1)));
+        self.load()
+    }
+
+    /// Tell every reader of this account's identity that a record changed.
+    fn announce(&self) {
+        refresh_prompt_registry(&self.identity_dir);
+        // The identity this device presents decides whose device list admits.
+        crate::policy_change::announce();
+    }
+
+    /// Make `record_path`'s identity the one this login presents, when it names
+    /// none yet.
+    fn select_when_none(&self, record_path: &Path) -> io::Result<()> {
+        if crate::store::resolve_active_identity(&self.identity_dir).is_some() {
+            return Ok(());
+        }
+        let id = record_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or_else(|| io::Error::other("an identity record has no id"))?;
+        crate::store::set_active_identity(&self.identity_dir, id)
     }
 
     /// [`Self::load_reconciled`] for read-only queries that run on every
@@ -392,7 +357,7 @@ impl IdentityRegistryStore {
         {
             return Ok(registry.clone());
         }
-        let (registry, _) = self.reconcile()?;
+        let registry = self.reconcile()?;
         if let Some(stamp) = DirStamp::of(&self.identity_dir)
             && before == Some(stamp)
             && stamp.settled()
@@ -446,7 +411,7 @@ impl IdentityRegistryStore {
                 let mut last = last_good
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Ok((registry, _)) = store.reconcile() {
+                if let Ok(registry) = store.reconcile() {
                     *last = Some(std::sync::Arc::new(registry));
                 }
                 last.clone()
@@ -464,7 +429,8 @@ impl IdentityRegistryStore {
     pub fn import(&self, source: &Path) -> io::Result<IdentityProfile> {
         let mut registry = self.load_reconciled()?;
         let profile = registry.import_record(source, &self.identity_dir)?.clone();
-        self.save(&registry)?;
+        self.select_when_none(&profile.record_path)?;
+        self.announce();
         Ok(profile)
     }
 
@@ -492,7 +458,8 @@ impl IdentityRegistryStore {
             info.group_public_key,
         )?;
         let profile = registry.register_record(&destination)?.clone();
-        self.save(&registry)?;
+        self.select_when_none(&destination)?;
+        self.announce();
         Ok(profile)
     }
 
@@ -543,7 +510,8 @@ impl IdentityRegistryStore {
             ),
         }?;
         let profile = registry.register_record(&destination)?.clone();
-        self.save(&registry)?;
+        self.select_when_none(&destination)?;
+        self.announce();
         Ok(profile)
     }
 
@@ -687,7 +655,6 @@ mod tests {
                 .expect("default");
             assert_eq!(selected.display_name, "Alice");
             assert_eq!(entries(), before);
-            assert!(!store.registry_path().exists());
             fs::remove_dir_all(dir).expect("cleanup");
         }
 
@@ -799,13 +766,13 @@ mod tests {
                     .expect("default");
                 assert_eq!(selected.display_name, "Alice");
                 assert_eq!(selected.record_path, dir.join(LEGACY_PRIMARY_FILE));
-                assert!(store.registry_path().exists());
                 fs::remove_dir_all(dir).expect("cleanup");
             }
             {
                 let dir = temp_dir("binding");
-                let alice_path = dir.join("alice-source.json");
-                let bob_path = dir.join("bob-source.json");
+                let sources = temp_dir("binding-sources");
+                let alice_path = sources.join("alice-source.json");
+                let bob_path = sources.join("bob-source.json");
                 write_record(&alice_path, &record("Alice", 11));
                 write_record(&bob_path, &record("Bob", 12));
                 let store = IdentityRegistryStore::at(&dir);
@@ -825,6 +792,7 @@ mod tests {
                 );
                 assert_ne!(alice.id, bob.id);
                 fs::remove_dir_all(dir).expect("cleanup");
+                fs::remove_dir_all(sources).expect("cleanup");
             }
             {
                 let dir = temp_dir("oversized-import");
@@ -883,11 +851,11 @@ mod tests {
                 Some(&profile)
             );
             // The record is one every reader of the identity directory accepts:
-            // the ceremony's own decoder sees secured public metadata, and the
-            // runtime loader signs as the original.
+            // the store's own decoder sees secured public metadata, and its
+            // loader signs as the original.
             let record =
                 IdentityRecord::from_json_bytes(&fs::read(&profile.record_path).expect("read"))
-                    .expect("ceremony decodes");
+                    .expect("store decodes");
             assert_eq!(record.public_key().as_bytes(), &minted.group_public_key());
             assert!(record.secret_ref.is_some());
             assert!(record.threshold_identity.secret_bytes.is_empty());

@@ -12,7 +12,7 @@ use std::sync::LazyLock;
 use ed25519_dalek::{Signer as _, SigningKey};
 use parking_lot::Mutex;
 use tilo_identity::join_proof::{CurrentDeviceStamp, current_device_stamp};
-use tilo_identity::registry::IdentityRegistryStore;
+use tilo_identity::store::IdentityRegistryStore;
 use tilo_user_identity::DeviceCert;
 
 /// One-shot fault injection. Admission signs on a blocking thread, so a test
@@ -148,7 +148,7 @@ mod tests {
     struct Fixture {
         identity_dir: PathBuf,
         paths: IdentityPaths,
-        profile: tilo_identity::registry::IdentityProfile,
+        profile: tilo_identity::store::IdentityProfile,
         workspace: String,
         _env: tilo_test_env::ScopedEnv,
         _root: tempfile::TempDir,
@@ -172,7 +172,7 @@ mod tests {
             )
             .expect("provision");
             let workspace = uuid::Uuid::new_v4().to_string();
-            let profile = tilo_identity::registry::identity_for_workspace(&workspace)
+            let profile = tilo_identity::store::identity_for_workspace(&workspace)
                 .expect("registry")
                 .expect("selected identity");
             let fixture = Self {
@@ -195,7 +195,6 @@ mod tests {
         fn settle(&self) {
             for path in [
                 self.identity_dir.clone(),
-                self.identity_dir.join("registry.json"),
                 self.paths.device_privkey.clone(),
                 self.cert_file(),
                 self.identity_dir
@@ -323,16 +322,10 @@ mod tests {
             cache
                 .sign_at(&fixture.workspace, b"before", Fixture::now())
                 .expect("sign");
-            let store = IdentityRegistryStore::at(&fixture.identity_dir);
-            let mut registry = store.load().expect("registry");
-            registry.default_identity = None;
-            registry.identities.clear();
-            // Reconciliation restores identities from records still on disk, so
-            // removing only the registry entry leaves a legitimate fallback.
+            // The record is the identity: removing it removes the person.
             std::fs::remove_file(&fixture.profile.record_path).expect("remove identity record");
-            store.save(&registry).expect("remove identity");
             assert!(
-                tilo_identity::registry::identity_for_workspace(&fixture.workspace)
+                tilo_identity::store::identity_for_workspace(&fixture.workspace)
                     .expect("a read")
                     .is_none()
             );

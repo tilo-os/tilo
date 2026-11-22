@@ -197,7 +197,7 @@ impl OnboardingView {
                 return Err(());
             }
             let signer = resolved.load().map_err(|_| ())?;
-            let registry = tilo_identity::registry::IdentityRegistryStore::at(directory)
+            let registry = tilo_identity::store::IdentityRegistryStore::at(directory)
                 .load()
                 .map_err(|_| ())?;
             let profile = registry
@@ -232,10 +232,9 @@ impl OnboardingView {
         if signer.group_public_key() != imported.identity_public_key {
             return Err(());
         }
-        let store = tilo_identity::registry::IdentityRegistryStore::at(directory);
+        let store = tilo_identity::store::IdentityRegistryStore::at(directory);
         let mut registry = store.load_reconciled().map_err(|_| ())?;
         let profile = registry.register_record(&primary).map_err(|_| ())?.clone();
-        store.save(&registry).map_err(|_| ())?;
         let runtime_id = profile
             .record_path
             .file_stem()

@@ -212,7 +212,7 @@ pub fn is_secret_service_unavailable(error: &io::Error) -> bool {
 /// Returns an error if the identity directory cannot be resolved or the
 /// enrolled device cannot be completed.
 pub fn complete_enrolled_device() -> io::Result<bool> {
-    let store = tilo_identity::registry::IdentityRegistryStore::from_env()?;
+    let store = tilo_identity::store::IdentityRegistryStore::from_env()?;
     tilo_identity::provisioning::complete_enrolled_device(
         store.identity_dir(),
         &crate::firstboot::collaboration_identity_paths(),

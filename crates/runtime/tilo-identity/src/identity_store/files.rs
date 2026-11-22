@@ -49,8 +49,7 @@ impl IdentityStore for Files {
         if stored_key.verifying_key() != *device {
             return Err("native device identity store changed".into());
         }
-        let store =
-            crate::registry::IdentityRegistryStore::from_env().map_err(|e| e.to_string())?;
+        let store = crate::store::IdentityRegistryStore::from_env().map_err(|e| e.to_string())?;
         let registry = store.load_reconciled_cached().map_err(|e| e.to_string())?;
         // The certificate these paths hold names the person whose device this is: the registry
         // knows that person, and their fleet holds the revocations.
@@ -74,7 +73,7 @@ impl IdentityStore for Files {
             .map(|device| device.join("certs"))
             .into_iter()
             .collect();
-        if let Ok(store) = crate::registry::IdentityRegistryStore::from_env() {
+        if let Ok(store) = crate::store::IdentityRegistryStore::from_env() {
             directories.push(store.identity_dir().join("fleets"));
             directories.push(store.identity_dir().to_path_buf());
         }

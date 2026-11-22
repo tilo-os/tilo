@@ -2,31 +2,24 @@
 //!
 //! An identity is the person's root: their key, the name this device calls it, and the record that
 //! holds it. A device presents the person its own certificate was issued by; a device without one
-//! presents the identity this login marked active. Which records a host holds is its own
-//! ([`store`] on a Linux desktop).
+//! presents the identity this login marked active. The profiles are read from the record files
+//! this store keeps and the `active` selection; nothing here keeps a second index.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
 use tilo_user_identity::DeviceCert;
 
-#[cfg(not(target_arch = "wasm32"))]
 mod store;
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use store::DirStamp;
-#[cfg(not(target_arch = "wasm32"))]
 pub use store::{
     IdentityRegistryStore, identity_for_workspace, selected_actor_id_prompt, selected_identity_path,
 };
 
-pub(crate) const REGISTRY_SCHEMA_VERSION: u32 = 1;
-
 /// Public metadata for one locally available signing identity.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdentityProfile {
-    /// Lowercase Ed25519 public-key hex. Also the stable registry key.
+    /// Lowercase Ed25519 public-key hex. Also the identity's key here.
     pub id: String,
     /// User-selected label. Empty records receive a fingerprint label.
     pub display_name: String,
@@ -45,30 +38,13 @@ impl IdentityProfile {
     }
 }
 
-/// Versioned local identity index.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// The identities this account holds, and the one it presents by default.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct IdentityRegistry {
-    pub schema_version: u32,
     /// Identity this login marked active; the person a device without a
     /// certificate of its own presents.
     pub default_identity: Option<String>,
     pub identities: BTreeMap<String, IdentityProfile>,
-    /// Durable workspace-id string to [`IdentityProfile::id`], as builds that
-    /// let a workspace pick an identity stored it. Read for those files,
-    /// never written.
-    pub workspace_identities: BTreeMap<String, String>,
-}
-
-impl Default for IdentityRegistry {
-    fn default() -> Self {
-        Self {
-            schema_version: REGISTRY_SCHEMA_VERSION,
-            default_identity: None,
-            identities: BTreeMap::new(),
-            workspace_identities: BTreeMap::new(),
-        }
-    }
 }
 
 impl IdentityRegistry {

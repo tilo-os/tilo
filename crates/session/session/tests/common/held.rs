@@ -91,7 +91,7 @@ pub fn fixture() -> Fixture {
         IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    let _profile = tilo_identity::registry::identity_for_workspace(WORKSPACE)
+    let _profile = tilo_identity::store::identity_for_workspace(WORKSPACE)
         .expect("the identity registry")
         .expect("the workspace is answered by this device's person");
     let device = tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");

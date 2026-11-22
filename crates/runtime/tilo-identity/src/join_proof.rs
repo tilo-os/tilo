@@ -16,7 +16,7 @@ use tilo_device_identity::persist::DeviceKeyOwnership;
 use tilo_user_identity::{DeviceCert, StatementSigner};
 
 use crate::device_fleet::{DeviceFleetStore, FileStamp, FleetStamps};
-use crate::registry::{DirStamp, IdentityRegistryStore};
+use crate::store::{DirStamp, IdentityRegistryStore};
 
 /// This device's certificate and its signed join proof for one workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,22 +58,15 @@ impl CurrentDeviceStamp {
 struct RegistryStamp {
     /// `None` while there is no identity directory at all.
     dir: Option<DirStamp>,
-    file: Option<FileStamp>,
 }
 
 impl RegistryStamp {
     fn settled(&self) -> bool {
-        self.dir.is_none_or(DirStamp::settled) && self.file.is_none_or(FileStamp::settled)
+        self.dir.is_none_or(DirStamp::settled)
     }
 
     fn settles_at(&self) -> Option<std::time::SystemTime> {
-        [
-            self.dir.map(DirStamp::settles_at),
-            self.file.map(FileStamp::settles_at),
-        ]
-        .into_iter()
-        .flatten()
-        .max()
+        self.dir.map(DirStamp::settles_at)
     }
 }
 
@@ -173,7 +166,6 @@ impl Files {
     fn registry_stamp(&self) -> Option<RegistryStamp> {
         Some(RegistryStamp {
             dir: dir_stamp(self.registry.identity_dir()).ok()?,
-            file: FileStamp::of(self.registry.registry_path()).ok()?,
         })
     }
 
@@ -202,7 +194,7 @@ impl Files {
     /// The identity `workspace` selects now, read from the registry.
     fn selected(workspace: &str) -> io::Result<Option<Selected>> {
         Ok(
-            crate::registry::identity_for_workspace(workspace)?.map(|profile| Selected {
+            crate::store::identity_for_workspace(workspace)?.map(|profile| Selected {
                 id: profile.id,
                 user_public_key: profile.user_public_key,
             }),
@@ -241,10 +233,7 @@ pub fn current_device_stamp(workspace: &str) -> Option<CurrentDeviceStamp> {
     // call: no identity, and nothing to change.
     let Ok(files) = Files::from_env() else {
         return Some(CurrentDeviceStamp {
-            registry: RegistryStamp {
-                dir: None,
-                file: None,
-            },
+            registry: RegistryStamp { dir: None },
             device: None,
         });
     };
@@ -379,7 +368,7 @@ pub(crate) mod tests {
             )
             .expect("provision");
             let workspace = uuid_like_workspace();
-            let profile = crate::registry::identity_for_workspace(&workspace)
+            let profile = crate::store::identity_for_workspace(&workspace)
                 .expect("registry")
                 .expect("selected identity");
             let fixture = Self {
@@ -408,9 +397,6 @@ pub(crate) mod tests {
         pub(crate) fn settle(&self) {
             for path in [
                 self.identity_dir.clone(),
-                IdentityRegistryStore::at(&self.identity_dir)
-                    .registry_path()
-                    .to_path_buf(),
                 self.paths.device_privkey.clone(),
                 self.cert_file(),
                 self.fleet_file(),

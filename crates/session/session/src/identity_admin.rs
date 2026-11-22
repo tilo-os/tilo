@@ -23,7 +23,7 @@ use std::time::Duration;
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
 use tilo_identity::device_admin::{command_error, node_id};
-use tilo_identity::registry::IdentityProfile;
+use tilo_identity::store::IdentityProfile;
 
 use crate::pairing::{Answer, Finished, HostCommand, Runner, Started, run_bounded};
 
@@ -510,7 +510,7 @@ pub(crate) fn authorize(
             "{person} may not administer devices for this workspace's identity"
         ));
     }
-    tilo_identity::registry::identity_for_workspace(workspace)
+    tilo_identity::store::identity_for_workspace(workspace)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "no identity selected".into())
 }
@@ -716,7 +716,7 @@ mod tests {
             tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("provision");
-        let registry = tilo_identity::registry::IdentityRegistryStore::at(&dir)
+        let registry = tilo_identity::store::IdentityRegistryStore::at(&dir)
             .load()
             .expect("registry");
         let id = registry.default_identity.clone().expect("default identity");

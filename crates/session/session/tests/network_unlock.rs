@@ -94,7 +94,7 @@ fn person() -> Person {
         IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    let registry = tilo_identity::registry::IdentityRegistryStore::from_env()
+    let registry = tilo_identity::store::IdentityRegistryStore::from_env()
         .expect("the identity registry")
         .load_reconciled_cached()
         .expect("the registry reads");

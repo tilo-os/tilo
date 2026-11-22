@@ -159,7 +159,7 @@ struct TwoDevices {
 impl TwoDevices {
     fn new() -> Self {
         let (_runtime, env, root) = person();
-        let registry = tilo_identity::registry::IdentityRegistryStore::from_env()
+        let registry = tilo_identity::store::IdentityRegistryStore::from_env()
             .expect("the identity registry")
             .load_reconciled_cached()
             .expect("the registry reads");
