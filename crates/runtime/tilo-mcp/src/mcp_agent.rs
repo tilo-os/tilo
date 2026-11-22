@@ -1376,6 +1376,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         structured: bool,
     ) -> Result<Reply, Failure> {
         let id = asked.unwrap_or_default();
+        // Asked again under the same id, a call that went unanswered is answered by what it
+        // did: a typed caller is handed that id, as a pending answer hands it.
+        if structured && asked.is_some() && answer::asks_again(&failure) {
+            self.watch_invocation_ended(id, "refused");
+            let mut reply = Reply::failed(String::new());
+            reply.structured = Some(answer::refused_under(&failure, id, true));
+            return Ok(reply);
+        }
         if !(path.contains('#') && super::confirm::needs_the_person(&failure)) {
             if asked.is_some() {
                 self.watch_invocation_ended(id, "refused");

@@ -113,3 +113,115 @@ tilo_test_env::scenario! {
         });
     }
 }
+
+/// Notes whose apps' catalogues go unanswered while `mute` holds, as a workspace that just
+/// started does while it opens the documents a listing reads: a path is not resolved, and
+/// nothing is invoked.
+#[derive(Clone)]
+struct Opening {
+    notes: Notes,
+    mute: Arc<Mutex<bool>>,
+    held: Arc<Mutex<Vec<Unanswered>>>,
+}
+
+/// A catalogue page asked and held unanswered.
+type Unanswered = tilo_actions::remote::Completer<Result<CataloguePage, ActionCallError>>;
+
+impl ActionProvider for Opening {
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        let of_an_app = query
+            .provider
+            .as_deref()
+            .is_some_and(|provider| tilo_actions::remote::provider_workspace(provider).is_none());
+        if of_an_app && *self.mute.lock().unwrap() {
+            let (unanswered, answer) = tilo_actions::remote::pending();
+            self.held.lock().unwrap().push(unanswered);
+            return answer;
+        }
+        self.notes.query(caller, query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.notes.invoke(caller, request)
+    }
+
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        self.notes.observe(caller, id)
+    }
+
+    fn here(&self, caller: &Caller) -> Option<Vec<Here>> {
+        self.notes.here(caller)
+    }
+
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        self.notes.cancel(caller, id)
+    }
+
+    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
+        self.notes.resource_search()
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_write_whose_path_went_unanswered_is_asked_again_by_its_id;
+
+    phase it_is_told_its_id_and_what_to_do;
+    // A write whose path the workspace did not resolve in time is told so typed, with what
+    // to do and the invocation id to do it under; asked again under that id once the
+    // workspace answers, it is done.
+    {
+        let opening = Opening {
+            notes: Notes::new(true),
+            mute: Arc::new(Mutex::new(true)),
+            held: Arc::default(),
+        };
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap()
+            .block_on(async {
+                let server = agent(&opening);
+                let rename = json!({"path": "notes/Todo#rename", "args": {"title": "Later"}});
+                let (refused, failed) = answer(&server, "tilo_do", rename.clone()).await;
+                assert!(failed, "{refused}");
+                assert_eq!(refused["status"], "failed", "{refused}");
+                assert_eq!(refused["error"]["code"], "unanswered", "{refused}");
+                let next = refused["error"]["next_steps"][0].as_str().unwrap_or_default();
+                assert!(next.contains("invocation_id"), "{refused}");
+                let id = refused["invocation_id"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("it names its invocation: {refused}"))
+                    .to_owned();
+                assert!(
+                    opening.notes.invoked.lock().unwrap().is_empty(),
+                    "nothing ran before its path was resolved"
+                );
+
+                *opening.mute.lock().unwrap() = false;
+                let mut again = rename;
+                again["invocation_id"] = json!(id);
+                let (done, failed) = answer(&server, "tilo_do", again).await;
+                assert!(!failed, "{done}");
+                assert_eq!(done["status"], "ok", "{done}");
+                let renamed: Vec<String> = opening
+                    .notes
+                    .invoked
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|request| request.target.address.action == "rename")
+                    .map(|request| request.invocation.0.to_string())
+                    .collect();
+                assert_eq!(renamed, [id], "done once, under the id it was told");
+            });
+    }
+}

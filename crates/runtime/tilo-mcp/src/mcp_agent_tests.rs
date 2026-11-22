@@ -38,7 +38,7 @@ pub(super) struct Notes {
     running: Arc<Mutex<bool>>,
     /// Which publication the bound ids belong to: a restart changes it.
     publication: &'static str,
-    invoked: Arc<Mutex<Vec<InvokeRequest>>>,
+    pub(super) invoked: Arc<Mutex<Vec<InvokeRequest>>>,
     /// How many times the app's directory moves on while a level is being
     /// read: while it is above zero the app's top level comes in two pages,
     /// and asking for the second finds the revision changed.
