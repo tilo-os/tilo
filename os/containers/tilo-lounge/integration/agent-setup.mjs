@@ -87,9 +87,9 @@ const finish = async (code, message) => {
     // Whose channels the page holds keys for: a page without its workspace's
     // keys joins no live session, so it hears nobody and nobody hears it.
     report[`${name}Channels`] = await read(tab, `globalThis.tiloChannels?.() ?? ''`);
-    // The windows the page's shell holds and which one is in view: a window
-    // the workspace's layout holds but the page does not show is said here.
-    report[`${name}Layout`] = await read(tab, `JSON.stringify(globalThis.tiloMount?.navigation?.getSnapshot?.() ?? null).slice(0, 6000)`);
+    // What the page shows of the workspace: one app at a time, so what a
+    // window would have said is the page's own text.
+    report[`${name}Layout`] = await read(tab, `(document.getElementById('tilo-page')?.innerText ?? '').slice(0, 6000)`);
     report[`${name}Kept`] = await read(tab, `JSON.stringify(Object.fromEntries(Object.keys(localStorage)
       .filter(key => /workspace|membership|entered/i.test(key)).map(key => [key, localStorage.getItem(key)])))`);
   }
@@ -310,15 +310,11 @@ const followSteps = async (tab, done) => {
 /** Everyone the page shows as being here, read where the page shows them: a
  * desktop's mount, or the people view the server renders, which lists each
  * person with what they are doing. */
-const peopleOf = `(() => {
-  const mounted = globalThis.tiloMount?.people?.();
-  if (mounted) return mounted;
-  return [...document.querySelectorAll('#tilo-page .tilo-person')].map(row => ({
-    label: row.querySelector('.tilo-person-name')?.textContent ?? '',
-    doing: row.querySelector('.tilo-person-what')?.textContent ?? null,
-    here: row.hasAttribute('data-present'),
-  }));
-})()`;
+const peopleOf = `[...document.querySelectorAll('#tilo-page .tilo-person')].map(row => ({
+  label: row.querySelector('.tilo-person-name')?.textContent ?? '',
+  doing: row.querySelector('.tilo-person-what')?.textContent ?? null,
+  here: row.hasAttribute('data-present'),
+}))`;
 
 // The person is who the page keeps its memberships as, on the server's host.
 const person = tab => tab.evaluate(`JSON.stringify({
@@ -410,14 +406,8 @@ await until(first, `document.documentElement.dataset.firstScreen === undefined`,
 // host admitted it to is presented, and the tab is titled after that
 // workspace, never the Lounge.
 const ownWorkspace = `(() => {
-  const state = globalThis.tiloMount?.state?.() ?? null;
-  if (state) {
-    const title = document.title ?? '';
-    return state.phase === 'presented' && state.workspaceName
-      && /^Tilo · /.test(title) && !/lounge/i.test(title) ? title : '';
-  }
-  // A page the server renders names its workspace where it says it arrived,
-  // and is titled after the workspace when it shows the workspace itself.
+  // The page names its workspace where it says it arrived, and is titled
+  // after the workspace when it shows the workspace itself.
   const name = document.documentElement.dataset.workspace ?? '';
   const drawn = document.documentElement.dataset.arrival === 'done' && !!document.querySelector('#tilo-page [data-p]');
   return drawn && name && !/lounge/i.test(name) ? name : '';
@@ -502,58 +492,23 @@ report.firstAfterSecond = firstSaid.slice(-600);
 if (!firstSaid.includes(noteTitle)) await fail(`the first agent no longer reads the workspace after the second acted: ${firstSaid.slice(-600)}`);
 // The window the second agent's open put on the workspace's shared desktop
 // reaches the person's page as a window of Notes, and its content shows the
-// note it wrote. The shell draws windows in one canvas, so what a window
-// shows is read from the semantics it publishes, as the other pages do, and
-// the window's own state says when it has presented (or what it says instead).
-// A window is named in the status by its tab in hex, and by its tab's own
-// decimal in the navigation's route. It counts as here once its app runs on
-// its record (`landed`), drawn or not: a window on a strip the person is not
-// looking at is not drawn. One that could not open says why, and the wait
-// answers that at once rather than at its deadline.
-const openedWindow = app => `(() => {
-  const entries = globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? [];
-  const windows = globalThis.tiloMount?.state?.()?.windows ?? {};
-  const found = entries.find(entry => entry.app === ${JSON.stringify(app)});
-  const state = found ? windows[BigInt(found.route?.tab ?? '0').toString(16)] : null;
-  if (state?.state === 'could-not-open') return 'could not open: ' + (state.reason ?? '');
-  return state && (state.state === 'landed' || state.state === 'drawn') ? state.state : '';
-})()`;
-// On a failure, what the page held: its windows' states and the apps its
-// navigation names, which tells a window never placed from one never landed.
+// note it wrote. On a failure, what the page holds: its text, and the address it is at, which
+// tells a page that never opened from one showing nothing.
 const windowsHeld = `JSON.stringify({
-  windows: globalThis.tiloMount?.state?.()?.windows ?? null,
-  entries: (globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).map(entry => ({app: entry.app, tab: entry.route?.tab})),
   page: document.getElementById('tilo-page')?.innerText?.slice(0, 600) ?? null,
+  at: location.pathname,
 })`;
 // The page the server renders shows one app at a time: the note the second
 // agent wrote is read where Notes lists it, at the app's own address.
 const pageWorkspace = await first.evaluate(`document.getElementById('tilo-page') ? (location.pathname.split('/')[2] ?? '') : ''`).catch(() => '');
-let opened = '';
-if (pageWorkspace) {
-  await first.navigate(`${site}/w/${pageWorkspace}/notes`);
-  opened = await first.waitFor(`[...document.querySelectorAll('#tilo-page [data-a=activate][data-t^="note-"]')]
-    .some(row => (row.innerText || '').includes(${JSON.stringify(noteTitle)}))`, {timeout: stepLimit(4)}).then(() => 'shown').catch(() => '');
-} else {
-  opened = await first.waitFor(openedWindow('so.tilo.tasks'), {timeout: stepLimit(3)}).catch(() => '');
-}
+await first.navigate(`${site}/w/${pageWorkspace}/notes`);
+const opened = await first.waitFor(`[...document.querySelectorAll('#tilo-page [data-a=activate][data-t^="note-"]')]
+  .some(row => (row.innerText || '').includes(${JSON.stringify(noteTitle)}))`, {timeout: stepLimit(4)}).then(() => 'shown').catch(() => '');
 if (!opened) await fail(`the person's tab showing the note the second agent opened never happened: ${await briefly(first, windowsHeld, '(the page did not answer)')}; the second agent was answered: ${JSON.stringify(report.secondAgent ?? []).slice(0, 1500)}`);
-if (opened.startsWith('could not open')) await fail(`the Notes window the second agent opened ${opened}`);
-const windowText = `(() => {
-  const out = [];
-  const node = n => { for (const part of [n.name, n.value]) if (part) out.push(part); (n.children || []).forEach(node); };
-  const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
-  const root = globalThis.tiloMount?.state()?.semantics?.root;
-  if (root) walk(root);
-  return out.join('\\n');
-})()`;
-report.noteWindow = await first.evaluate(`document.getElementById('tilo-page')
-  ? (document.getElementById('tilo-page').innerText || '').replace(/\\s+/g, ' ').slice(0, 2000)
-  : ${windowText}`).catch(() => '(the tab did not answer)');
-await until(first, `(() => {
-  const page = document.getElementById('tilo-page');
-  const text = page ? (page.innerText || '') : ${windowText};
-  return text.includes(${JSON.stringify(noteTitle)});
-})()`, 'the person\'s tab showing the second agent\'s note', stepLimit(3));
+const windowText = `(document.getElementById('tilo-page')?.innerText ?? '')`;
+report.noteWindow = await first.evaluate(`(${windowText}).replace(/\s+/g, ' ').slice(0, 2000)`)
+  .catch(() => '(the tab did not answer)');
+await until(first, `(${windowText}).includes(${JSON.stringify(noteTitle)})`, 'the person\'s tab showing the second agent\'s note', stepLimit(3));
 otherAgent.stdin.end();
 mark('a second agent on the computer wrote a note the tab shows, the first still connected');
 
@@ -571,14 +526,8 @@ if (how !== 'presented') {
 // Who is here is what the workspace's page shows: on the page the server
 // renders, the workspace's people, read there; on a desktop, its mount.
 if (pageWorkspace) await first.navigate(`${site}/w/${pageWorkspace}`);
-await until(first, `(() => {
-  const page = document.getElementById('tilo-page');
-  if (page) {
-    return page.dataset.arrival !== 'failed'
-      && (document.querySelector('#tilo-page .tilo-people')?.innerText ?? '').includes('Claude Code');
-  }
-  return !!globalThis.tiloMount && JSON.stringify(globalThis.tiloMount.people?.() ?? null).includes('Claude Code');
-})()`, 'Claude Code present in the workspace after a reload', stepLimit(2));
+await until(first, `(document.querySelector('#tilo-page .tilo-people')?.innerText ?? '').includes('Claude Code')`,
+  'Claude Code present in the workspace after a reload', stepLimit(2));
 mcp.stdin.end();
 const after = await person(first);
 mark('the tab reloaded as the same person, with the agent still there');
@@ -594,17 +543,11 @@ if (/lounge/i.test(after.title) || after.title !== signedUp.title) {
 }
 // The reloaded tab opens its layout from the copy its profile kept of the workspace's, and shows
 // that workspace with the Notes window still on it.
-let reopened = '';
-if (pageWorkspace) {
-  await first.navigate(`${site}/w/${pageWorkspace}/notes`);
-  reopened = await first.waitFor(`[...document.querySelectorAll('#tilo-page [data-a=activate][data-t^="note-"]')]
-    .some(row => (row.innerText || '').includes(${JSON.stringify(noteTitle)}))`, {timeout: stepLimit(4)})
-    .then(() => 'shown').catch(() => '');
-} else {
-  reopened = await first.waitFor(openedWindow('so.tilo.tasks'), {timeout: stepLimit(3)}).catch(() => '');
-}
+await first.navigate(`${site}/w/${pageWorkspace}/notes`);
+const reopened = await first.waitFor(`[...document.querySelectorAll('#tilo-page [data-a=activate][data-t^="note-"]')]
+  .some(row => (row.innerText || '').includes(${JSON.stringify(noteTitle)}))`, {timeout: stepLimit(4)})
+  .then(() => 'shown').catch(() => '');
 if (!reopened) await fail(`after a reload the note the second agent wrote is gone: ${await briefly(first, windowsHeld, '(the page did not answer)')}; the tab says: ${(await pageText(first)).slice(0, 600)}`);
-if (reopened.startsWith('could not open')) await fail(`after a reload the Notes window ${reopened}`);
 mark('the reloaded tab still shows the note the second agent wrote');
 
 // 2. Back on a browser that keeps nothing: signed in through the agent.
@@ -627,10 +570,7 @@ if (approved.code !== 0) await fail(`tilo login did not approve the tab (${appro
 const signedInOrAsked = await until(second, `(() => {
     if (document.querySelector('[data-card="pair-whose"]')) return 'asked';
     if (document.documentElement.dataset.firstScreen !== undefined) return false;
-    if (document.getElementById('tilo-page')) {
-      return document.documentElement.dataset.arrival === 'done' && !!document.querySelector('#tilo-page [data-p]');
-    }
-    return !!globalThis.tiloMount;
+    return document.documentElement.dataset.arrival === 'done' && !!document.querySelector('#tilo-page [data-p]');
   })()`, 'the returning tab signed in', stepLimit(4));
 if (signedInOrAsked === 'asked') {
   await fail('the tab its person signed in with their agent asked whose device it becomes, as for a link someone else made');
@@ -641,8 +581,7 @@ if (!signedUp.user || back.user !== signedUp.user) {
   await fail(`the returning tab is ${back.user ?? 'nobody'}, not the person who set up (${signedUp.user ?? 'unknown'})`);
 }
 // Signed in, it opens the person's own workspace, as the first tab did.
-await until(second, `!/lounge/i.test(JSON.stringify({title: document.title,
-  own: document.getElementById('tilo-page') ? (document.documentElement.dataset.workspace ?? null) : (globalThis.tiloMount?.state?.()?.entry ?? null)}))`,
+await until(second, `!/lounge/i.test(document.documentElement.dataset.workspace ?? '')`,
   'the returning tab in the person\'s own workspace, not the Lounge', stepLimit(2));
 mark('the returning tab signed in as the person, in their own workspace');
 await finish(0);

@@ -57,88 +57,6 @@ export const shellMetrics = {width: SHELL.width, height: SHELL.height, deviceSca
  * joining (6), an answer crossing to another person's page (4). */
 export const stepLimit = n => n * STEP_MS;
 
-/** The page's own word for whether the open search still has rows to find:
- * a source still to answer, or rows not yet cut to the card. A settled search
- * (and a closed one) reads false. */
-export const searching = tab => tab.evaluate('globalThis.tiloMount?.state()?.searchSearching === true');
-
-/** Whether the open search is up, as the page publishes it. */
-export const searchOpen = tab => tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen');
-
-/** The shown strip at rest, as the page publishes it: its pan has nowhere left
- * to go — no slide easing, no window waiting to be revealed — so the page
- * answers the pan as JSON. A strip still moving draws frames; one at rest
- * draws none, so a wait that counted frames would time out on a shell that has
- * finished. Empty while the strip still has to move. */
-export const STRIP_REST = `(() => {
-  const pan = globalThis.tiloMount?.navigation?.getSnapshot?.()?.desktopPan ?? null;
-  return pan && pan.moving === false ? JSON.stringify(pan) : '';
-})()`;
-
-/** Whether the `desktopPan` a page publishes says the strip is at rest. */
-export const stripAtRest = pan => Boolean(pan) && pan.moving === false;
-
-/**
- * Wait until the shell has presented `by` more frames, or says it owes none: a
- * shell with nothing to draw presents none — it waits for what changes — so a
- * frame count is progress only while it still owes work. `owed` is the shell's
- * own answer to that, read each turn: the wait ends when the frames came or
- * `owed` says there is nothing left to draw, and never outlives the work it
- * waits for.
- *
- * `idleMs` ends the wait when the shell has presented no frame for that long,
- * for a shell that has no answer of its own to give: a shell drawing a
- * megapixel through a software rasteriser presents every second or two, so a
- * longer silence is a shell with nothing left to draw, and waiting for the
- * timeout instead spends it on every step.
- *
- * `evaluate` reads an expression in the page (`tab.evaluate` in the check,
- * a stub in a test); `pause(ms)` waits for the page's next change, at most
- * `ms` (the page's own `tiloChanges`), and `now` is the clock, both
- * injectable so a test can prove the wait ends on state without any frame
- * advancing. Nothing here waits on a clock: each read follows a change.
- * `onTimeout` runs when the frames did not come and the shell still owes them.
- */
-export async function settle({
-  evaluate,
-  by = 2,
-  owed = () => true,
-  idleMs = 0,
-  pause = ms => evaluate(nextChange(ms)),
-  now = () => Date.now(),
-  timeoutMs = stepLimit(3),
-  onTimeout = null,
-}) {
-  const from = await evaluate('globalThis.tiloMount?.state()?.frames ?? 0');
-  const deadline = now() + timeoutMs;
-  let lastFrame = from;
-  let lastChange = now();
-  for (;;) {
-    const frames = await evaluate('globalThis.tiloMount?.state()?.frames ?? 0');
-    if (frames >= from + by) return 'frames';
-    if (!await owed()) return 'settled';
-    if (frames !== lastFrame) {
-      lastFrame = frames;
-      lastChange = now();
-    } else if (idleMs && now() - lastChange >= idleMs) {
-      return 'idle';
-    }
-    if (now() > deadline) {
-      if (onTimeout) return onTimeout({from, by});
-      return 'timeout';
-    }
-    // Until the page changes, or what this wait ends on next (its idle
-    // spell, its deadline) is due.
-    const due = idleMs ? Math.min(deadline, lastChange + idleMs) : deadline;
-    await pause(Math.max(1, due - now() + 1));
-  }
-}
-
-/** [`settle`] over the open search's own answer: it ends when the search owes
- * no rows (`searchSearching` false) as much as when the frames came. */
-export const settleSearch = (tab, {evaluate = tab.evaluate.bind(tab), ...rest} = {}) =>
-  settle({evaluate, owed: () => searching(tab), ...(tab.changed ? {pause: ms => tab.changed(ms)} : {}), ...rest});
-
 /**
  * Reload `tab` and wait until the document that answers is the one it loaded,
  * with its shell drawn.
@@ -185,14 +103,13 @@ export async function reloaded(
     const at = await evaluate(`JSON.stringify({
       old: globalThis[${JSON.stringify(mark)}] === true,
       ready: document.readyState === 'complete',
-      phase: globalThis.tiloMount?.state?.()?.phase ?? null,
-      // A page the server renders has no mount: it has arrived when its own
-      // script said so and the workspace's page is drawn.
+      // The page has arrived when its own script said so and the workspace's
+      // page is drawn.
       page: document.documentElement.dataset.arrival === 'done'
         && !!document.querySelector('#tilo-page [data-p]'),
-    })`).then(text => JSON.parse(text ?? '{}'), () => ({old: true, ready: false, phase: null}));
-    // A new document, its shell up, and still the tab's newest.
-    if (!at.old && (at.phase === 'presented' || at.page === true) && documents() === before) return 'presented';
+    })`).then(text => JSON.parse(text ?? '{}'), () => ({old: true, ready: false}));
+    // A new document, its page up, and still the tab's newest.
+    if (!at.old && at.page === true && documents() === before) return 'presented';
     if (now() > deadline) return at.old || !at.ready ? 'timeout' : 'stalled';
     await pause(Math.max(1, deadline - now() + 1));
   }

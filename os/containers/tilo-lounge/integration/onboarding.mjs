@@ -84,7 +84,7 @@ const state = tab => tab.evaluate(`JSON.stringify({
   entry: document.documentElement.dataset.entry ?? null,
   firstScreen: document.documentElement.dataset.firstScreen ?? null,
   title: document.title,
-  workspace: globalThis.tiloMount?.state?.()?.workspaceName ?? null,
+  workspace: document.documentElement.dataset.workspace ?? null,
 })`).then(JSON.parse).catch(error => ({unreachable: String(error?.message ?? error).slice(0, 300)}));
 
 const dump = async (tab, name) => {
@@ -223,21 +223,16 @@ const person = tab => tab.evaluate(`JSON.stringify({
 })`).then(JSON.parse).catch(() => ({}));
 /** The person's own workspace, as the page titles it: never the Lounge's. */
 const ownWorkspace = tab => tab.evaluate(`/^Tilo · /.test(document.title) && !/lounge/i.test(document.title) && document.title`).catch(() => '');
-/** The person's own workspace, drawn, as the page publishes it: the shell its
- * host admitted it to is presented, and the tab is titled after that
- * workspace, never the Lounge. */
+/** The person's own workspace, drawn, as the page publishes it: arrived, its
+ * page drawn, named after a workspace that is not the Lounge. */
 const OWN_WORKSPACE = `(() => {
-  const state = globalThis.tiloMount?.state?.() ?? null;
-  const title = document.title ?? '';
-  return state?.phase === 'presented' && state.workspaceName
-    && /^Tilo · /.test(title) && !/lounge/i.test(title) ? title : '';
+  const name = document.documentElement.dataset.workspace ?? '';
+  const drawn = document.documentElement.dataset.arrival === 'done'
+    && !!document.querySelector('#tilo-page [data-p]');
+  return drawn && name && !/lounge/i.test(name) ? name : '';
 })()`;
 
-// -- the desktop -------------------------------------------------------------
-const canvasBox = tab => tab.evaluate(`(() => {
-  const rect = globalThis.tiloMount?.canvas?.getBoundingClientRect();
-  return JSON.stringify(rect ? {x: rect.left, y: rect.top} : null);
-})()`);
+// -- the page's own controls --------------------------------------------------
 const clickAt = async (tab, x, y) => {
   await Promise.all([
     tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y}),
@@ -247,15 +242,6 @@ const clickAt = async (tab, x, y) => {
   // read after this (the waits themselves end on the page's changes).
   await sleep(400);
 };
-const key = async (tab, name, modifiers = 0) => {
-  const named = {Enter: 13, Escape: 27, ArrowDown: 40, ArrowUp: 38};
-  const pressed = {key: name, code: name.length === 1 ? `Key${name.toUpperCase()}` : name,
-    windowsVirtualKeyCode: named[name] ?? name.toUpperCase().charCodeAt(0), modifiers};
-  await Promise.all([
-    tab.send('Input.dispatchKeyEvent', {type: 'rawKeyDown', ...pressed, ...(name === 'Enter' ? {text: '\r'} : {})}),
-    tab.send('Input.dispatchKeyEvent', {type: 'keyUp', ...pressed}),
-  ]);
-};
 const type = async (tab, text) => {
   await Promise.all([...text].flatMap(ch => [
     tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key: ch, text: ch}),
@@ -264,16 +250,6 @@ const type = async (tab, text) => {
   // The shell reads the query on its next frame; the wait that follows is on
   // its own answer to it.
   await sleep(600);
-};
-/** The rows the command palette offers once it has answered `query`. */
-const searchRows = async (tab, query) => {
-  const asked = JSON.stringify(query);
-  const answered = `(() => {
-    const s = globalThis.tiloMount?.state?.() ?? null;
-    const card = s?.searchCard ?? null;
-    return card && s.searchSearching === false && card.query === ${asked} ? JSON.stringify(card.rows ?? []) : '';
-  })()`;
-  return JSON.parse(await until(tab, answered, `the shell answering "${query}"`, stepLimit(4)));
 };
 /** A person's search on the page the server renders: the workspace's own
  * search, at the address that names it, typed into and its row titled `title`
@@ -305,57 +281,25 @@ const pageSearch = async (tab, query, title) => {
   await clickAt(tab, box.x, box.y);
   return rows;
 };
-/** A person's search: the chord, the query, and Enter on the row titled
- * `title` — an app, or one of the workspace's own actions. On a page the
- * server renders there is no mount to open a palette over: the page's own
- * search is opened instead. */
-const search = async (tab, query, title) => {
-  if (await tab.evaluate(`!!document.getElementById('tilo-page')`).catch(() => false)) {
-    return pageSearch(tab, query, title);
-  }
-  if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen')) {
-    const box = JSON.parse(await canvasBox(tab));
-    await clickAt(tab, box.x + shellMetrics.width / 2, box.y + shellMetrics.height - 100);
-    await key(tab, 'k', 2);
-  }
-  await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search opening', stepLimit(3));
-  await type(tab, query);
-  const rows = await searchRows(tab, query).catch(() => []);
-  if (rows[0]?.title !== title) {
-    await fail(`the palette offers no "${title}" first for "${query}": ${JSON.stringify(rows.map(row => row.title))}`);
-  }
-  await key(tab, 'Enter');
-  await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after "${title}"`, stepLimit(4));
-  return rows;
-};
-/** A real pointer press on the desktop's node named `name`, once it is drawn. */
+/** A person's search: the page's own, typed into, its row titled `title`
+ * pressed. */
+const search = (tab, query, title) => pageSearch(tab, query, title);
+/** A real pointer press on the control the page draws named `name`, once it
+ * is drawn. */
 const pressName = async (tab, name, timeout = stepLimit(3)) => {
-  // The tree the shell publishes is asked for once; every change to it wakes
-  // the wait.
-  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
   const shown = await poll(tab, `(() => {
+    const page = document.getElementById('tilo-page');
     const found = [];
-    const node = n => { found.push({name: n.name ?? '', bounds: n.bounds ?? n.rect ?? null}); (n.children || []).forEach(node); };
-    const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
-    const root = globalThis.tiloMount?.state()?.semantics?.root;
-    if (root) walk(root);
-    // A page the server renders has no mount: a control is the element that
-    // carries the name, in the window's own coordinates.
-    if (!root) {
-      const page = document.getElementById('tilo-page');
-      for (const el of page?.querySelectorAll('[aria-label], button, a') ?? []) {
-        const box = el.getBoundingClientRect();
-        if (!box.width || !box.height) continue;
-        found.push({name: el.getAttribute('aria-label') ?? (el.innerText || '').trim().split('\n')[0],
-          bounds: {x0: box.x, y0: box.y, x1: box.right, y1: box.bottom}});
-      }
+    for (const el of page?.querySelectorAll('[aria-label], button, a') ?? []) {
+      const box = el.getBoundingClientRect();
+      if (!box.width || !box.height) continue;
+      found.push({name: el.getAttribute('aria-label') ?? (el.innerText || '').trim().split('\n')[0],
+        bounds: {x0: box.x, y0: box.y, x1: box.right, y1: box.bottom}});
     }
     const hit = found.find(n => n.name === ${JSON.stringify(name)} && n.bounds);
     if (!hit) return '';
-    const b = Array.isArray(hit.bounds) ? hit.bounds : [hit.bounds.x0 ?? hit.bounds.x, hit.bounds.y0 ?? hit.bounds.y,
-      hit.bounds.x1 ?? hit.bounds.x + hit.bounds.width, hit.bounds.y1 ?? hit.bounds.y + hit.bounds.height];
-    const corner = globalThis.tiloMount?.canvas?.getBoundingClientRect() ?? {left: 0, top: 0};
-    return JSON.stringify({x: Math.round(corner.left + (b[0] + b[2]) / 2), y: Math.round(corner.top + (b[1] + b[3]) / 2)});
+    const b = hit.bounds;
+    return JSON.stringify({x: Math.round((b.x0 + b.x1) / 2), y: Math.round((b.y0 + b.y1) / 2)});
   })()`, timeout);
   if (!shown) return false;
   const box = JSON.parse(shown);
@@ -765,8 +709,10 @@ try {
   // link someone else made, is for a link handed to a device.
   const signedInOrAsked = await until(returning.tab, `(() => {
     if (document.querySelector('[data-card="pair-whose"]')) return 'asked';
-    const mounted = globalThis.tiloMount?.state?.() ?? null;
-    return mounted?.phase === 'presented' ? ${JSON.stringify(report.joined.workspace)} : '';
+    const name = document.documentElement.dataset.workspace ?? '';
+    const drawn = document.documentElement.dataset.arrival === 'done'
+      && !!document.querySelector('#tilo-page [data-p]');
+    return drawn ? name : '';
   })()`, 'the signed-in tab in the workspace the person is in', stepLimit(8));
   if (signedInOrAsked === 'asked') {
     await fail('the tab its person signed in with their agent asked whose device it becomes, as for a link someone else made');
