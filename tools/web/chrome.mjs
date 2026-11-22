@@ -325,6 +325,15 @@ const BASELINE = [
   '--disable-component-update',
   '--disable-domain-reliability',
   '--disable-features=MediaRouter,CastMediaRouteProvider,CastStreamingMediaRouteProvider,OptimizationHints,OptimizationGuideModelDownloading,Translate',
+  '--disable-sync',
+  '--no-pings',
+  '--disable-client-side-phishing-detection',
+  '--disable-component-extensions-with-background-pages',
+  // What a check gives the browser is every address it may reach: loopback,
+  // and the names a test site answers at. Anything else does not resolve, so
+  // the browser's own services cannot reach for the network at all — the
+  // services that ignore the flags above included.
+  '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE *.localhost, EXCLUDE 127.0.0.1, EXCLUDE [::1]',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ];
 
