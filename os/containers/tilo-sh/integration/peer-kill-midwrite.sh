@@ -127,10 +127,9 @@ wait_for 900 "the writer finished" test -e "$scratch/written"
 want=$count
 files_in_folder() { (($(find "$folder/bulk" -type f | wc -l) == want)); }
 wait_for 120 "all $want files in the folder" files_in_folder
-converged() {
-  [[ $(mounted files) -ge $want && $(mounted sent) == true && $(mounted durable) == true ]]
-}
-wait_for 600 "the tree names all $want files and is durable on the server" converged
+converged() { synced "$want"; }
+wait_for 600 "the tree names all $want files and is durable on the server" converged \
+  || { say "$(short)"; exit 1; }
 kill "${pids[0]}" 2>/dev/null || true
 wait "${pids[0]}" 2>/dev/null || true
 
@@ -180,6 +179,7 @@ kept=$(find "$scratch/state/tilo/device/files" -mindepth 2 -maxdepth 2 -type d -
 [[ -n $kept ]] || { say "no kept tree under $scratch/state/tilo/device/files"; exit 1; }
 rm -rf "$kept"
 wait_for 180 "a fresh holder shows the folder" shown
-wait_for 600 "the fresh holder's tree names all $want files" converged
+wait_for 600 "the fresh holder's tree names all $want files" converged \
+  || { say "$(short)"; exit 1; }
 wait_for 120 "all $want files in the fresh holder's folder" files_in_folder
 say "ok: $want files written across a SIGKILL after $before; no status replaced a holder; the server's tree reads whole"

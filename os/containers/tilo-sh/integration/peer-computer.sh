@@ -49,6 +49,32 @@ v = m[0].get(sys.argv[1])
 print("" if v is None else (str(v).lower() if isinstance(v, bool) else v))' "$1"
 }
 shown() { mounted at >/dev/null; }
+# Whether the first mount names at least WANT files and is durable on the server, and, unless the
+# second argument is `any-sent`, every change made here went out. Each record that differs from the
+# last is logged with its time in folder.log, so a wait that runs out shows when the folder
+# stopped moving, and `short` names what it still lacks.
+synced() { # WANT [any-sent]
+  as_computer "$tilo" folders --json 2>/dev/null | python3 -c '
+import json, sys, time
+want, sent, log = int(sys.argv[1]), sys.argv[2] != "any-sent", sys.argv[3]
+m = ((json.load(sys.stdin).get("peer") or {}).get("mounted") or [{}])[0]
+keys = ("files", "sent", "durable", "opened", "state", "stuck", "host_lacks", "connected")
+record = json.dumps({k: m.get(k) for k in keys}, sort_keys=True)
+try:
+    last = open(log).read().splitlines()[-1].split(" ", 1)[1]
+except (OSError, IndexError):
+    last = None
+if record != last:
+    with open(log, "a") as out:
+        out.write(f"{time.time():.1f} {record}\n")
+files = m.get("files") or 0
+short = [f"files {files} of {want}"] if files < want else []
+short += [k for k in (("sent", "durable") if sent else ("durable",)) if m.get(k) is not True]
+open(log + ".short", "w").write(", ".join(short))
+sys.exit(1 if short else 0)' "$1" "${2:-}" "$logs/folder.log"
+}
+# What the folder lacked at the last `synced`, and the record it stood at.
+short() { printf 'short of %s; the folder stood at %s' "$(cat "$logs/folder.log.short" 2>/dev/null)" "$(tail -n 1 "$logs/folder.log" 2>/dev/null)"; }
 # Log in as a new person who owns the stack, and wait for the holder to show the folder.
 #
 # The person's own computer holds their root. It joins the workspace the stack lets them in to by

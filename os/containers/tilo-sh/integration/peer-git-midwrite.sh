@@ -394,8 +394,8 @@ wait_for 40 "the holder stopped" bash -c "! kill -0 '$holder' 2>/dev/null" || tr
 kept=$(find "$scratch/state/tilo/device/files" -mindepth 2 -maxdepth 2 -type d -name tree | head -n 1)
 [[ -n $kept ]] && rm -rf "$kept" || fail "no kept tree under $scratch/state/tilo/device/files"
 wait_for 180 "a fresh holder shows the folder" answers_again || fail "no fresh holder shows the folder"
-converged() { [[ $(mounted files) -ge $want && $(mounted durable) == true ]]; }
-wait_for 600 "the fresh holder's tree names all $want files" converged || fail "the fresh holder's tree names $(mounted files) of $want files"
+converged() { synced "$want" any-sent; }
+wait_for 600 "the fresh holder's tree names all $want files" converged || fail "the fresh holder's tree is $(short)"
 if ((whole_ok)); then
   whole "$folder/tilo" "the whole checkout, read back by a fresh holder" || true
 fi

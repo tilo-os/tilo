@@ -145,10 +145,9 @@ rounds=$(cat "$scratch/rounds")
 # Each round leaves 45 files: 50 written, 5 removed in the next (the last round's stay whole).
 want=$((rounds * 45 + 5))
 say "$rounds rounds written; the tree names all $want files and is durable on the server"
-converged() {
-  [[ $(mounted files) -ge $want && $(mounted sent) == true && $(mounted durable) == true ]]
-}
-wait_for 600 "the tree names all $want files and is durable on the server" converged
+converged() { synced "$want"; }
+wait_for 600 "the tree names all $want files and is durable on the server" converged \
+  || { say "$(short)"; exit 1; }
 kill "${pids[0]}" 2>/dev/null || true
 wait "${pids[0]}" 2>/dev/null || true
 
