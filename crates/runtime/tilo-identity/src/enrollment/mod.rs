@@ -292,10 +292,8 @@ pub enum Certifier<'a> {
     /// The root this device holds signs it, so its issuer must be allowed to
     /// admit devices.
     Root(RootSign<'a>),
-    /// The person's devices that hold the identity's key signed exactly this
-    /// certificate, each after asking the person
-    /// ([`crate::certification_ceremony`]); the issuer only introduced the
-    /// device.
+    /// The person's root already signed exactly this certificate elsewhere;
+    /// the issuer only introduced the device.
     Approved(&'a DeviceCert),
 }
 

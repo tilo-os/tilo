@@ -104,7 +104,6 @@ impl Device {
                     request,
                 )),
                 name: String::new(),
-                renewal: None,
             })
             .expect("the peer network takes the enrollment");
         self.enrolled()

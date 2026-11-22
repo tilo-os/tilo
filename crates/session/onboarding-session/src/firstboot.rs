@@ -165,9 +165,7 @@ pub fn renew_due_device_certificates() -> std::io::Result<()> {
     let now = tilo_clock::unix_now_ns();
     // A device that joined another person's identity holds no root, so the
     // provisioning below has no key to reissue its certificate with and
-    // writes none. The session asks the person's devices for the renewal once
-    // its fabric is up (`tilo_session`'s fleet renewal); what is due here is
-    // said, not pretended to be renewed.
+    // writes none: what is due here is said, not pretended to be renewed.
     if let Some(held) = tilo_identity::provisioning::joined_device_renewal_due(&paths, now) {
         tracing::info!(
             target: JOIN_FLOW_TARGET,
@@ -175,8 +173,8 @@ pub fn renew_due_device_certificates() -> std::io::Result<()> {
             device = %hex::encode(held.device_public_key),
             expires_at_ns = held.expires_at_ns,
             now_ns = now,
-            outcome = "due, through the person's devices",
-            "renewal: this joined device's certificate is due; it is renewed by the person's devices, not here"
+            outcome = "due, with no root here",
+            "renewal: this joined device's certificate is due, and this device holds no root to renew it with"
         );
         return Ok(());
     }

@@ -28,10 +28,7 @@ use tilo_actions::{ActionArgs, ActionParam, ParamType};
 use tilo_enrollment::discovery::{self, PairCandidate};
 use tilo_enrollment::protocol::EnrollmentKind;
 use tilo_identity::device_admin::DeviceKind;
-use tilo_identity::device_admin::{
-    Approval, ENROLL, KeyHolding, PersonPaths, approval_args, command_error, node_id,
-    propose_device_certificate,
-};
+use tilo_identity::device_admin::{Approval, PersonPaths, approval_args, command_error, node_id};
 use tilo_identity::enrollment::{DECLARATION, Methods};
 use tilo_lock::MutexRecover as _;
 
@@ -252,8 +249,8 @@ struct Flights {
     approving: Option<(String, Arc<AtomicBool>)>,
 }
 
-/// What of the identity's key the device holds, read from its identity.
-pub(crate) type Holding = Arc<dyn Fn(&PersonPaths) -> Result<KeyHolding, String> + Send + Sync>;
+/// Whether the device holds the identity's whole key, read from its identity.
+pub(crate) type Holding = Arc<dyn Fn(&PersonPaths) -> Result<bool, String> + Send + Sync>;
 
 type Discoverer = Arc<dyn Fn(EnrollmentKind) -> Result<PairCandidate, String> + Send + Sync>;
 
@@ -279,7 +276,7 @@ pub(crate) struct Pairing {
 
 static SESSION: LazyLock<Pairing> = LazyLock::new(|| {
     Pairing::with_runner(Arc::new(run_bounded))
-        .holding(Arc::new(tilo_identity::device_admin::key_holding))
+        .holding(Arc::new(tilo_identity::device_admin::holds_whole_key))
 });
 
 impl Pairing {
@@ -294,7 +291,7 @@ impl Pairing {
         Self {
             runner,
             discoverer: Arc::new(discover_nearby),
-            holding: Arc::new(|_| Ok(KeyHolding::Whole)),
+            holding: Arc::new(|_| Ok(true)),
             flights: Arc::default(),
         }
     }
@@ -346,14 +343,13 @@ impl Pairing {
     }
 
     /// Admit the device `approval` names, which discovery found here, to the identity at `paths` .
-    /// A device holding the identity's key signs its certificate through the helper, after an
-    /// administrator authenticated. The answer arrives once the device joined, or with why it did
-    /// not.
+    /// A device holding the identity's whole key signs its certificate through the helper, after an
+    /// administrator authenticated; one holding less refuses. The answer arrives once the device
+    /// joined, or with why it did not.
     pub(crate) fn approve(
         &self,
         approval: &Approval,
         paths: &PersonPaths,
-        fabric: Option<&SharedLink>,
     ) -> Result<Pending<Answer>, String> {
         let workspace_ids = match approval.role {
             DeviceKind::HomePeer => approval
@@ -363,11 +359,10 @@ impl Pairing {
                 .unwrap_or_default(),
             DeviceKind::Personal => Vec::new(),
         };
-        let holding = (self.holding)(paths)?;
-        if holding != KeyHolding::Whole && approval.role == DeviceKind::HomePeer {
-            return Err("a home server is added from the device you set up first".into());
+        if !(self.holding)(paths)? {
+            return Err(tilo_identity::store::CANNOT_SIGN_ALONE.into());
         }
-        let (label, candidate, stop) = {
+        let (label, stop) = {
             let mut flights = self.flights();
             refuse_busy(&flights)?;
             let candidate = flights.candidates.get(&approval.device).ok_or_else(|| {
@@ -379,27 +374,19 @@ impl Pairing {
                 return Err("that is not the device discovered with this key".into());
             }
             let label = candidate.label.clone();
-            let candidate = candidate.clone();
             let stop = Arc::new(AtomicBool::new(false));
             flights.approving = Some((approval.device.clone(), Arc::clone(&stop)));
             drop(flights);
-            (label, candidate, stop)
+            (label, stop)
         };
-        let admission = Admission {
-            holding,
-            approval: approval.clone(),
-            paths: paths.clone(),
-            workspace_ids,
-            candidate,
-            fabric: fabric.cloned(),
-        };
+        let command = approval_command(approval, paths, &workspace_ids);
         let (completer, answer) = pending();
         let runner = Arc::clone(&self.runner);
         let flights = Arc::clone(&self.flights);
         let device = approval.device.clone();
         let role = approval.role;
         let started = spawn_step(move || {
-            let ran = admission.run(&runner, &stop);
+            let ran = runner(&command, &stop);
             let mut flights = flights.lock_recover();
             flights.approving = None;
             let answer = if stop.load(Ordering::Acquire) {
@@ -454,7 +441,7 @@ impl Pairing {
                 }
                 let approval = approval(args)?;
                 let paths = PersonPaths::from_env()?;
-                self.approve(&approval, &paths, fabric).map(Started::Later)
+                self.approve(&approval, &paths).map(Started::Later)
             }
             REJECT => self
                 .reject(args.text("device").unwrap_or_default())
@@ -501,70 +488,6 @@ impl Pairing {
             "forgotten": forgotten,
             "stopped": stopped,
         }))
-    }
-}
-
-/// One approval, as its worker runs it.
-struct Admission {
-    holding: KeyHolding,
-    approval: Approval,
-    paths: PersonPaths,
-    workspace_ids: Vec<u64>,
-    candidate: PairCandidate,
-    /// The person's device fabric, where their other devices are asked to certify the device when
-    /// this one holds only a share of their key.
-    fabric: Option<SharedLink>,
-}
-
-impl Admission {
-    fn run(&self, runner: &Runner, stop: &AtomicBool) -> Result<Finished, String> {
-        let KeyHolding::Part {
-            person,
-            threshold,
-            total,
-        } = self.holding
-        else {
-            return runner(
-                &approval_command(&self.approval, &self.paths, &self.workspace_ids),
-                stop,
-            );
-        };
-        let fabric = self
-            .fabric
-            .as_ref()
-            .ok_or_else(crate::certification::cannot_certify_here)?;
-        let proposal = propose_device_certificate(
-            person,
-            self.candidate.device_public_key,
-            self.candidate.label.clone(),
-            tilo_clock::unix_now_ns(),
-        );
-        let cert = crate::certification::certify(
-            fabric,
-            proposal,
-            self.candidate.server_node_id,
-            threshold,
-            total,
-        )?;
-        if stop.load(Ordering::Acquire) {
-            return Err("stopped".into());
-        }
-        let file = tempfile::NamedTempFile::new()
-            .map_err(|error| format!("could not keep the approved certificate: {error}"))?;
-        tilo_device_identity::persist::write_device_cert(file.path(), &cert)
-            .map_err(|error| format!("could not keep the approved certificate: {error}"))?;
-        runner(
-            &HostCommand {
-                program: PathBuf::from(ENROLL),
-                args: tilo_identity::device_admin::approved_args(
-                    &self.approval,
-                    &self.paths,
-                    file.path(),
-                ),
-                timeout: APPROVAL_TIMEOUT,
-            },
-            stop,
-        )
     }
 }
 
@@ -1077,7 +1000,7 @@ mod tests {
                 service: "bb".repeat(32),
                 workspace_ids: None,
             };
-            let approved = answered(pairing.approve(&approval, &paths, None).expect("approval"));
+            let approved = answered(pairing.approve(&approval, &paths).expect("approval"));
             assert_eq!(
                 approved,
                 serde_json::json!({
@@ -1105,7 +1028,7 @@ mod tests {
                 workspace_ids: Some(vec![7]),
             };
             let refused = pairing
-                .approve(&approval, &paths, None)
+                .approve(&approval, &paths)
                 .err()
                 .expect("a home server needs the whole key");
             assert!(refused.contains("the device you set up first"), "{refused}");
@@ -1116,7 +1039,7 @@ mod tests {
             );
         }
 
-        phase a_device_holding_a_share_signs_nothing_without_the_other_devices;
+        phase a_device_holding_a_share_adds_no_device;
         {
             let (pairing, commands) = sharing();
             let paths = PersonPaths {
@@ -1130,17 +1053,15 @@ mod tests {
                 service: "bb".repeat(32),
                 workspace_ids: None,
             };
-            let refused = answering(
-                pairing
-                    .approve(&approval, &paths, None)
-                    .expect("the approval starts"),
-            )
-            .expect_err("this session runs no device fabric");
-            assert!(refused.contains("runs no device fabric"), "{refused}");
+            let refused = pairing
+                .approve(&approval, &paths)
+                .err()
+                .expect("a phone needs the whole key too");
+            assert_eq!(refused, tilo_identity::store::CANNOT_SIGN_ALONE);
             assert_eq!(
                 commands.lock().expect("commands").len(),
                 0,
-                "no helper signed for a device this session cannot certify"
+                "no helper signed for a device this one cannot certify"
             );
         }
     }
@@ -1164,13 +1085,7 @@ mod tests {
     /// Pairing on a device holding only a share of the person's key.
     fn sharing() -> (Pairing, Arc<Mutex<Vec<HostCommand>>>) {
         let (pairing, commands) = recording();
-        let pairing = pairing.holding(Arc::new(|_| {
-            Ok(KeyHolding::Part {
-                person: [0x11; 32],
-                threshold: 2,
-                total: 3,
-            })
-        }));
+        let pairing = pairing.holding(Arc::new(|_| Ok(false)));
         (pairing, commands)
     }
 }

@@ -291,7 +291,6 @@ impl tilo_session_client::engine::Founder for Founding {
                     workspace_id: workspace,
                     way: tilo_workspace_directory::Way::Invitation(invitation),
                     name,
-                    renewal: None,
                 },
                 self.link.as_deref(),
                 Some(&self.service),

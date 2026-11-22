@@ -803,10 +803,13 @@ mod unix {
         elevate: Elevate,
     ) -> anyhow::Result<()> {
         let identity = context.require_identity()?;
-        let holding = device_admin::key_holding(&context.person)
-            .map_err(|error| guided(error, "check this account with `tilo-identity status`"))?;
-        if holding != device_admin::KeyHolding::Whole {
-            return approve_through_session(context, code, device);
+        if !device_admin::holds_whole_key(&context.person)
+            .map_err(|error| guided(error, "check this account with `tilo-identity status`"))?
+        {
+            return Err(guided(
+                "this device holds only part of your identity's key, so it cannot add devices",
+                "approve from the device that created the identity",
+            ));
         }
         if !context
             .device_cert(&identity)
@@ -1082,90 +1085,6 @@ mod unix {
                 .join("\n")
         };
         context.emit(&json!({ "asking": listed }), &text);
-        Ok(())
-    }
-
-    /// `approve` on a device that holds none of the identity's key, or a
-    /// share of it: the session finds the device and has the devices that
-    /// hold the key certify it, each asking the person
-    /// (`identity.device.pair.*`, as Settings pairs).
-    fn approve_through_session(
-        context: &Context,
-        code: Option<&str>,
-        device: Option<&str>,
-    ) -> anyhow::Result<()> {
-        let mut session = Session::connect().map_err(|_| {
-            guided(
-                "this device adds devices through its Tilo session, which asks your other \
-                 devices to approve them, and the session is not running",
-                "start the Tilo session here (`tilo-board-headless-session@$USER` on a board), \
-                 then run this again",
-            )
-        })?;
-        let mut run = |id: &str, args: Value| session.run(id, &args);
-        if !context.json {
-            eprintln!("Looking for a device waiting in `tilo-identity pair`...");
-        }
-        let found = run(
-            "identity.device.pair.discover",
-            json!({"role": DeviceKind::Personal.name()}),
-        )
-        .map_err(|error| {
-            guided(
-                error,
-                "start `tilo-identity pair` on the new device first, on this network, and run \
-                 this while it waits",
-            )
-        })?;
-        let text = |key: &str| found.get(key).and_then(Value::as_str).unwrap_or_default();
-        let (key, label, shown) = (text("device"), text("label"), text("verification_code"));
-        let mismatch =
-            if device.is_some_and(|wanted| !key.starts_with(&wanted.trim().to_ascii_lowercase())) {
-                Some(format!(
-                    "'{label}' ({key}) is waiting, not the device you named"
-                ))
-            } else if code.is_some_and(|code| digits(code) != digits(shown)) {
-                Some(format!(
-                    "'{label}' shows the code {shown}, not {}",
-                    code.unwrap_or_default().trim()
-                ))
-            } else {
-                None
-            };
-        if let Some(mismatch) = mismatch {
-            let _ = run("identity.device.pair.reject", json!({"device": key}));
-            return Err(guided(
-                mismatch,
-                "nothing was approved; make sure you approve the device you meant to",
-            ));
-        }
-        if !context.json {
-            eprintln!(
-                "'{label}' shows {shown}. Your other devices ask you to approve it: approve \
-                 it there when it shows the same code."
-            );
-        }
-        run(
-            "identity.device.pair.approve",
-            json!({
-                "role": DeviceKind::Personal.name(),
-                "device": key,
-                "service": text("service"),
-                "confirm": true,
-            }),
-        )
-        .map_err(|detail| {
-            guided(
-                format!("'{label}' was not approved: {detail}"),
-                "check both devices with `tilo-identity status`, then try again; trying again \
-                 is safe",
-            )
-        })?;
-        let next = format!("on '{label}', log in again so its session runs as the identity");
-        context.emit(
-            &json!({"device": key, "label": label, "code": shown, "next": next}),
-            &format!("Approved '{label}' ({key}).\nnext: {next}"),
-        );
         Ok(())
     }
 

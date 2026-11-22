@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use tilo_actions::remote::identity_admin::FleetDevice;
 use tilo_device_identity::IdentityPaths;
@@ -157,108 +157,18 @@ pub fn approval_args(
     args
 }
 
-/// What of the identity's key this device holds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KeyHolding {
-    /// All of it: this device certifies the devices it pairs itself.
-    Whole,
-    /// None, or one share: the devices it pairs are certified by the
-    /// person's devices that hold the key ([`crate::certification_ceremony`]),
-    /// `threshold` of the key's `total` devices together.
-    Part {
-        person: [u8; 32],
-        threshold: u16,
-        total: u16,
-    },
-}
-
-/// What of the identity at `paths` this device holds, without opening its
-/// secret.
-pub fn key_holding(paths: &PersonPaths) -> Result<KeyHolding, String> {
+/// Whether this device holds the whole of the identity at `paths`, without
+/// opening its secret: only such a device certifies the devices it adds.
+///
+/// # Errors
+///
+/// When this account has no identity, or it cannot be read.
+pub fn holds_whole_key(paths: &PersonPaths) -> Result<bool, String> {
     let record = tilo_identity_client::resolve_active_identity(&paths.dir)
         .ok_or("this account has no identity yet")?;
     let metadata = tilo_identity_client::load_metadata_from_path(&record)
         .map_err(|error| format!("could not read your identity: {error}"))?;
-    Ok(if metadata.single_device {
-        KeyHolding::Whole
-    } else {
-        KeyHolding::Part {
-            person: metadata.group_public_key,
-            threshold: metadata.threshold,
-            total: metadata.total_shares,
-        }
-    })
-}
-
-/// The certificate to propose for `candidate`, a personal device of
-/// `person`, valid from about `now_ns`; and the server service it announced.
-pub fn proposed_certificate(
-    person: [u8; 32],
-    candidate: &Candidate,
-    now_ns: u64,
-) -> Result<(tilo_user_identity::DeviceCert, [u8; 32]), String> {
-    let key = |text: &str| -> Result<[u8; 32], String> {
-        hex::decode(text)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or_else(|| "the discovered device has a malformed key".to_string())
-    };
-    Ok((
-        propose_device_certificate(
-            person,
-            key(&candidate.device_node_id)?,
-            candidate.label.clone(),
-            now_ns,
-        ),
-        key(&candidate.server_node_id)?,
-    ))
-}
-
-/// The unsigned certificate the person's key holders are asked to sign.
-#[must_use]
-pub fn propose_device_certificate(
-    person: [u8; 32],
-    device_public_key: [u8; 32],
-    device_label: String,
-    now_ns: u64,
-) -> tilo_user_identity::DeviceCert {
-    tilo_user_identity::DeviceCert {
-        user_public_key: person,
-        device_public_key,
-        device_label,
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        // Backdate the start for a new device whose clock trails.
-        issued_at_ns: now_ns.saturating_sub(60 * 1_000_000_000),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    }
-}
-
-/// `tilo-enroll`'s arguments that pair `approval`'s personal device with the
-/// certificate at `approved_cert`, which the person's key holders signed.
-/// No administrator is involved: this device signs nothing as the identity.
-#[must_use]
-pub fn approved_args(
-    approval: &Approval,
-    paths: &PersonPaths,
-    approved_cert: &Path,
-) -> Vec<OsString> {
-    let mut args: Vec<OsString> = vec![approve_command(DeviceKind::Personal).into()];
-    for (flag, value) in [
-        ("--identity-root", paths.root.as_os_str()),
-        ("--identity-dir", paths.dir.as_os_str()),
-        ("--expected-device", std::ffi::OsStr::new(&approval.device)),
-        (
-            "--expected-service",
-            std::ffi::OsStr::new(&approval.service),
-        ),
-        ("--approved-cert", approved_cert.as_os_str()),
-    ] {
-        args.push(flag.into());
-        args.push(value.to_owned());
-    }
-    args
+    Ok(metadata.single_device)
 }
 
 /// A device key or relay service node id: 32 bytes as hex, lowercased.

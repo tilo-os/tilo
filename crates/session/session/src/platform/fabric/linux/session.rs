@@ -704,7 +704,8 @@ impl crate::Session {
             | PersonalFabricAction::WakeProbe { .. }
             | PersonalFabricAction::WakeProbeReply { .. }
             | PersonalFabricAction::WindowViews { .. }
-            // The device-certification exchange answered above, for the other API's preconditions.
+            // No device of the person certifies another over the fabric any more: an ask or an
+            // answer from an older device is dropped.
             | PersonalFabricAction::CertifyAsk { .. }
             | PersonalFabricAction::CertifyAnswer { .. }
             | PersonalFabricAction::SpeakerGroupInvite { .. }
@@ -729,7 +730,7 @@ impl crate::Session {
     }
 
     /// Whether one of this session's services took `envelope` 's action: a Bluetooth accessory's
-    /// move, a device to wake, a certification, a speaker service's, the person's keyboard and
+    /// move, a device to wake, a speaker service's, the person's keyboard and
     /// pointer. What they did not take is the
     /// session's own.
     fn service_took(&self, fabric: &SharedLink, envelope: &PersonalFabricActionEnvelope) -> bool {
@@ -740,7 +741,6 @@ impl crate::Session {
                 .shared
                 .waking
                 .handle_action(&self.shared, fabric, envelope)
-            || crate::certification::handle_action(fabric, envelope)
             || tilo_speaker_service::remote_audio::handle_action(fabric.as_ref(), envelope)
             || tilo_speaker_service::groups::handle_action(fabric.as_ref(), envelope)
             || self

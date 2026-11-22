@@ -1357,7 +1357,6 @@ impl crate::Shared {
             name: crate::platform::directory::person()
                 .map(|person| person.name)
                 .unwrap_or_default(),
-            renewal: self.fleet_renewal.clone(),
         });
         match asked {
             Ok(()) => {

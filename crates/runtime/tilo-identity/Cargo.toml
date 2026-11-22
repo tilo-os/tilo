@@ -35,7 +35,7 @@ collab-types = { path = "../../collab/collab-types" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 # The answers the identity steps give every action API (`device_admin`).
 tilo-actions = { path = "../../collab/actions" }
-# The pairing code every screen of a pairing shows (`certification_ceremony`).
+# The pairing code every screen of a pairing shows (`certification_ceremony::pairing_code`).
 blake3.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core", "serde"] }
 getrandom.workspace = true

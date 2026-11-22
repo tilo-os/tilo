@@ -1746,8 +1746,6 @@ impl Session {
             layout,
             underway: busy,
             settings: crate::settings_sync::SettingsSync::new(),
-            fleet_renewal: crate::renewal::FleetRenewal::for_joined_device(fabric)
-                .map(std::sync::Arc::new),
             overview,
             dictation,
             emoji,

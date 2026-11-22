@@ -427,8 +427,7 @@ tilo_test_env::scenario! {
 
         // Nothing on this device can sign a renewal: it holds no part of the
         // person's key. Its own provisioning therefore writes no renewal — it
-        // can only report the lapsed certificate as a clock refusal, which is why
-        // the session has to ask the person's devices instead.
+        // can only report the lapsed certificate as a clock refusal.
         let error = ensure_collaboration_identity(&personal, &paths, FILES)
             .expect_err("a lapsed joined certificate is refused for the clock");
         assert!(
@@ -441,75 +440,12 @@ tilo_test_env::scenario! {
             "a joined device's own session writes no renewal: it has no key to sign one with"
         );
 
-        // What is due is said, in a form the session can act on by asking the
-        // person's devices.
+        // What is due is said, so the session reports it rather than
+        // pretending to renew it.
         let due = joined_device_renewal_due(&paths, now)
-            .expect("a lapsed joined certificate is due, for the person's devices to renew");
+            .expect("a lapsed joined certificate is due");
         assert_eq!(due, expired);
         // And a certificate that has not run out is not due.
         assert!(joined_device_renewal_due(&paths, expired.issued_at_ns.saturating_add(HOUR)).is_none());
-    }
-
-    phase a_renewal_a_persons_device_signed_replaces_the_joined_certificate_it_came_from;
-    {
-        let tmp = tempfile::tempdir().unwrap();
-        let now = tilo_clock::unix_now_ns();
-        let (personal, paths, expired) = joined_device(tmp.path(), now.saturating_sub(48 * HOUR));
-        let root = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
-
-        // The person's device signs a renewal of the certificate that ran out.
-        let mut renewed = expired.clone();
-        renewed.issued_at_ns = now;
-        renewed.expires_at_ns = Some(now.saturating_add(24 * HOUR));
-        renewed.signature = [0; 64];
-        let digest = tilo_user_identity::device_cert_signing_digest(&renewed).unwrap();
-        renewed.signature = {
-            use ed25519_dalek::Signer as _;
-            root.sign(&digest).to_bytes()
-        };
-
-        install_renewed_certificate(&personal, &paths, &expired, &renewed, now)
-            .expect("the renewal is installed");
-        let presented = persist::read_device_cert(&paths.device_cert).expect("the certificate");
-        assert_eq!(
-            presented, renewed,
-            "the certificate this device presents is the renewal"
-        );
-        tilo_user_identity::verify_device_cert_at(&presented, now).expect("valid now");
-        assert_eq!(
-            persist::read_device_cert(&paths.device_cert_for_user(&expired.user_public_key)).unwrap(),
-            renewed,
-            "the identity's own copy is the renewal too"
-        );
-        // The identity's fleet holds the renewal, which is where a host reads it.
-        let fleet = crate::device_fleet::DeviceFleetStore::at(&personal, paths.clone())
-            .load(&hex::encode(expired.user_public_key))
-            .expect("the fleet");
-        assert!(
-            fleet.certificates.contains(&renewed),
-            "the fleet holds the renewal"
-        );
-        assert!(
-            !fleet.certificates.contains(&expired),
-            "and no longer the certificate it replaced"
-        );
-        // Nothing is due now.
-        assert!(joined_device_renewal_due(&paths, now).is_none());
-
-        // A certificate that is not that device's renewal is refused, so a
-        // joined device never widens or replaces another's.
-        let mut wider = renewed.clone();
-        wider.issued_at_ns = now.saturating_add(1);
-        wider.capabilities.can_admit_devices = true;
-        wider.signature = [0; 64];
-        let digest = tilo_user_identity::device_cert_signing_digest(&wider).unwrap();
-        wider.signature = {
-            use ed25519_dalek::Signer as _;
-            root.sign(&digest).to_bytes()
-        };
-        assert!(
-            install_renewed_certificate(&personal, &paths, &renewed, &wider, now).is_err(),
-            "a renewal may not widen what the device may do"
-        );
     }
 }

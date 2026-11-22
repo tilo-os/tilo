@@ -3,8 +3,6 @@
 //! carries both ([`session`]).
 
 mod live;
-#[cfg(test)]
-pub(crate) use live::Live;
 mod session;
 mod store;
 

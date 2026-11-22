@@ -54,14 +54,10 @@ fn join_client(
 /// The workspace's state arrives as the host's answer: a person who joins late reads the whole
 /// history, not only what is recorded from now on.
 /// Renew this device's certificate before it is presented: a device that slept past the end of its
-/// certificate joins with the renewal, reissued here or signed by the person's devices, and a join
-/// that cannot renew says why rather than presenting what the host refuses.
-async fn renew_before_joining(
-    renewal: Option<std::sync::Arc<crate::renewal::FleetRenewal>>,
-) -> Result<(), tilo_session_client::EnrollFailure> {
-    let before =
-        tokio::task::spawn_blocking(move || crate::renewal::before_presenting(renewal.as_deref()))
-            .await;
+/// certificate joins with the renewal reissued here, and a join that cannot renew says why rather
+/// than presenting what the host refuses.
+async fn renew_before_joining() -> Result<(), tilo_session_client::EnrollFailure> {
+    let before = tokio::task::spawn_blocking(crate::renewal::before_presenting).await;
     match before {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(error.into()),
@@ -79,7 +75,7 @@ pub(super) async fn redeem(
     own_service: Option<&OwnService>,
 ) -> Result<(), tilo_session_client::EnrollFailure> {
     let topic = request.workspace_id;
-    renew_before_joining(request.renewal.clone()).await?;
+    renew_before_joining().await?;
     // The workspace is joined as this computer's person: the device's own certificate signs the
     // enrollment, so there is nothing to pick here.
     identity.current_material(topic)?;

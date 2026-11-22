@@ -607,9 +607,7 @@ impl DeviceFleetStore {
         Ok(fleet)
     }
 
-    /// This device's material of `identity_id`'s key, which signs only
-    /// after the person approved what it signs
-    /// ([`crate::certification_ceremony`]).
+    /// This device's material of `identity_id`'s key.
     pub fn identity_key(&self, identity_id: &str) -> io::Result<crate::store::SigningIdentity> {
         self.identity(identity_id).map(|(key, _)| key)
     }

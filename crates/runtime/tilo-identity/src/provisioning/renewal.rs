@@ -229,12 +229,9 @@ pub fn next_device_certificate_renewal(identity_dir: &Path, paths: &IdentityPath
 ///
 /// A device that joined another person's identity holds no root, so nothing
 /// here can reissue its certificate ([`ensure_collaboration_identity`]
-/// answers `Existing`). Its renewal has to be signed by a device of the
-/// person that holds the root
-/// ([`crate::certification_ceremony::Gathering::renewal`]), which a session
-/// asks for over the person's fabric and installs with
-/// [`install_renewed_certificate`]. This answers `Some(held)` when such a
-/// renewal is due, so a caller knows to ask.
+/// answers `Existing`). The certificate a device gets when it joins never
+/// expires, so this is `Some(held)` only for one that was made to
+/// expire, which a caller says rather than pretends to renew.
 ///
 /// Whether this device holds the person's root is
 /// [`persist::joined_device_is_enrolled`]'s question, not a file's presence:
@@ -250,36 +247,6 @@ pub fn joined_device_renewal_due(paths: &IdentityPaths, now_ns: u64) -> Option<D
     let held = persist::read_device_cert(&paths.device_cert).ok()?;
     let due = renewal_due_at(&held)?;
     (now_ns >= due).then_some(held)
-}
-
-/// Write `renewed`, a certificate the person's root signed for this device,
-/// over the one it replaces: the system-facing certificate, this identity's
-/// own copy, and the identity's fleet.
-///
-/// The person's own root never comes here. [`persist::install_device_cert`]
-/// refuses a certificate that is not this device's key, does not verify,
-/// grants device admission, or belongs to another identity; a renewal adds
-/// none of that. The fleet is the one a joined device's identity directory
-/// keeps ([`crate::device_fleet::DeviceFleetStore`]), so the certificate a
-/// host is shown is the one this fleet holds.
-pub fn install_renewed_certificate(
-    identity_dir: &Path,
-    paths: &IdentityPaths,
-    held: &DeviceCert,
-    renewed: &DeviceCert,
-    now_ns: u64,
-) -> io::Result<()> {
-    if !renewed.renews(held) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "the renewed certificate is not the same device under the same root, later",
-        ));
-    }
-    persist::install_device_cert(paths, renewed, now_ns)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-    crate::device_fleet::DeviceFleetStore::at(identity_dir, paths.clone())
-        .remember_certificate(&hex::encode(renewed.user_public_key), renewed.clone())
-        .map(drop)
 }
 
 #[cfg(test)]

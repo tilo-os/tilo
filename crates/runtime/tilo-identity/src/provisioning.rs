@@ -215,9 +215,8 @@ impl DeviceClass {
 mod renewal;
 
 pub use renewal::{
-    RENEWAL_CAUSES, RenewalCauses, RenewalClock, install_renewed_certificate,
-    joined_device_renewal_due, keep_device_certificates_renewed, next_device_certificate_renewal,
-    renewal_due_at,
+    RENEWAL_CAUSES, RenewalCauses, RenewalClock, joined_device_renewal_due,
+    keep_device_certificates_renewed, next_device_certificate_renewal, renewal_due_at,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -773,7 +772,7 @@ fn ensure_collaboration_identity_in_context(
     if !signer.is_single_device() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            crate::certification_ceremony::cannot_sign_alone(),
+            crate::store::CANNOT_SIGN_ALONE,
         ));
     }
     paths.ensure_directories()?;
@@ -1155,7 +1154,7 @@ pub fn verify_collaboration_identity(
     if !identity.is_single_device() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            crate::certification_ceremony::cannot_sign_alone(),
+            crate::store::CANNOT_SIGN_ALONE,
         ));
     }
     let root_public = persist::read_public_key(&paths.user_pubkey)

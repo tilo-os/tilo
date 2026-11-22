@@ -22,7 +22,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::Value;
 use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::persist::{load_device_key, read_device_cert};
-use tilo_identity::certification_ceremony::PersonSigner;
+use tilo_enrollment::root::PersonSigner;
 use tilo_identity::provisioning::IdentityStorage;
 use tilo_server_client::https::{self, Origin};
 use tilo_session_client::device::{self, Entering, Held};
@@ -132,7 +132,7 @@ pub fn held() -> Result<Option<Person>> {
     } else {
         String::new()
     };
-    let root = PersonSigner::new(Box::new(identity));
+    let root = PersonSigner::new(identity);
     let user = root.public_key();
     let paths = paths();
     let cert = read_device_cert(&paths.device_cert_for_user(&user))
@@ -693,9 +693,7 @@ mod tests {
         )
         .unwrap();
         let person = Person {
-            root: PersonSigner::new(Box::new(
-                tilo_identity::store::load_from_path(kept).unwrap(),
-            )),
+            root: PersonSigner::new(tilo_identity::store::load_from_path(kept).unwrap()),
             device: device_key,
             cert,
             name: "Ada".into(),

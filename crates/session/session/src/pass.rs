@@ -829,17 +829,9 @@ impl Session {
             tilo_speaker_service::remote_audio::pump(fabric.as_ref(), media_enabled, None);
             tilo_speaker_service::groups::pump(fabric.as_ref(), media_enabled);
             tilo_speaker_service::settings::observe(fabric.as_ref());
-            // A device another of the person's devices found asks here to be them: its answer
-            // leaves, and a new ask is put to the person from their own top bar, where they decide
-            // it.
-            crate::certification::pump(fabric.as_ref());
+            // A new device that opened this device's pairing link asks here to be the person: it
+            // is put to them from their own top bar, where they decide it.
             self.shared.follow_device_asks();
-            // A device that joined a person's identity holds no root of their own, so nothing here
-            // can reissue its certificate. Once the person's devices are reachable, this asks them
-            // for the renewal the certificate is due.
-            if let Some(renewal) = &self.shared.fleet_renewal {
-                renewal.follow();
-            }
             // A Bluetooth accessory the person moved to another of their devices, and what came of
             // the moves under way.
             self.shared.bluetooth.pump(&self.shared, fabric);

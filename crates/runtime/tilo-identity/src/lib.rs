@@ -5,8 +5,8 @@
 //! [`registry`] selected for their workspace, only while this device holds a
 //! valid, enrolled, non-revoked certificate ([`device_fleet`],
 //! [`certificates`]). [`enrollment`] is the one place a token admits another
-//! device; [`certification_ceremony`] gathers the identity key's signature
-//! for it from the person's devices that hold the key. [`provisioning`] creates that chain, [`identity store`]
+//! device; [`certification_ceremony`] holds the code a new device shows.
+//! [`provisioning`] creates that chain, [`identity store`]
 //! selects the certificate this device presents to the device serving each
 //! workspace, and [`join_proof`] keeps the signed proof it presents there.
 //! [`store`] is the person's identity at rest: its secret providers,

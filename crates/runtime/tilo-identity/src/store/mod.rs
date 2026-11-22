@@ -15,3 +15,8 @@ pub mod connected;
 pub(crate) mod test_wire;
 
 pub use unix::*;
+
+/// Why a device that holds only part of the identity's key signs nothing as
+/// the identity, said as a person reads it.
+pub const CANNOT_SIGN_ALONE: &str = "this device holds only part of your identity's key, so it \
+     signs nothing as your identity: use the device you set up first";

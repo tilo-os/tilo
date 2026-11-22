@@ -227,12 +227,6 @@ enum Command {
         expected_device: Option<String>,
         #[arg(long)]
         expected_service: Option<String>,
-        /// The expected device's certificate, canonically encoded, already
-        /// signed by the person's devices that hold the identity's key, each
-        /// after asking the person. This device then needs none of the key,
-        /// nor the right to admit devices: it only introduces the device.
-        #[arg(long, requires = "expected_device")]
-        approved_cert: Option<PathBuf>,
     },
     /// Withdraw a device the root certified: sign a revocation with a root key
     /// kept in a file and append it to a server's revocation log, so that host
@@ -994,7 +988,6 @@ fn run() -> anyhow::Result<()> {
             timeout,
             expected_device,
             expected_service,
-            approved_cert,
         } => {
             ensure_offered(tilo_identity::enrollment::Method::LocalNetwork)?;
             approve(&ApprovalOptions {
@@ -1009,11 +1002,7 @@ fn run() -> anyhow::Result<()> {
                 kind: EnrollmentKind::PersonalDevice,
                 port: NEARBY_PORT,
                 ready: None,
-                approved: approved_cert
-                    .map(|path| tilo_device_identity::persist::read_device_cert(&path))
-                    .transpose()
-                    .context("read the approved certificate")?
-                    .as_ref(),
+                approved: None,
                 person_uid: PERSON_UID.get().copied(),
             })
         }

@@ -385,10 +385,6 @@ pub(crate) struct Shared {
     /// The person's settings, kept in step with their other devices.
     #[cfg(target_os = "linux")]
     pub(crate) settings: crate::settings_sync::SettingsSync,
-    /// A joined device's certificate, renewed through the person's devices
-    /// once it is due: this device holds no root to reissue it with.
-    #[cfg(target_os = "linux")]
-    pub(crate) fleet_renewal: Option<std::sync::Arc<crate::renewal::FleetRenewal>>,
     /// The overview's pictures and the clock they fly on, which its panel
     /// in the chrome draws with.
     pub(crate) overview: crate::overview::Overview,

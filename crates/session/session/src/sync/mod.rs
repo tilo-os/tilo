@@ -49,11 +49,6 @@ pub struct Enrolling {
     pub way: tilo_workspace_directory::Way,
     /// How the workspace's people see the person: the name an API entry gives it.
     pub name: String,
-    /// Renewing this device's certificate before it is presented, when this device joined a
-    /// person's identity: the ask the session's pass may already have under way, waited for rather
-    /// than presented past.
-    #[cfg(target_os = "linux")]
-    pub(crate) renewal: Option<std::sync::Arc<crate::renewal::FleetRenewal>>,
 }
 
 /// One of the person's workspaces this device holds nothing of yet: it takes the workspace in as a

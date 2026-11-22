@@ -24,7 +24,7 @@ use anyhow::{Context as _, bail};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use tilo_device_identity::{IdentityPaths, persist};
-use tilo_identity::certification_ceremony::PersonSigner;
+use tilo_enrollment::root::PersonSigner;
 use tilo_server_client::questions::{MemberQuestions, QuestionServer};
 use tilo_server_client::{MemberApprover, ServerAddress};
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
@@ -202,7 +202,7 @@ fn person_root(root: &std::path::Path) -> anyhow::Result<PersonSigner> {
     })?;
     let identity = tilo_identity::store::load_from_path(active)
         .map_err(|error| anyhow::anyhow!("open the person's root: {error}"))?;
-    Ok(PersonSigner::new(Box::new(identity)))
+    Ok(PersonSigner::new(identity))
 }
 
 /// Certify a fresh key as a device of the person whose root `root` holds,
