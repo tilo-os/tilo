@@ -214,6 +214,16 @@ impl ServerInfo {
             origin: self.origin.clone(),
         }
     }
+
+    /// This host's `web-host.json`, as the host writes it in its state: what
+    /// a site hands its page about it and what an API server is configured
+    /// with (`TILO_API_HOST`).
+    ///
+    /// # Errors
+    /// Only as `serde_json` may fail to write a plain struct.
+    pub fn web_host_json(&self) -> serde_json::Result<Vec<u8>> {
+        serde_json::to_vec(&self.for_site())
+    }
 }
 
 /// The session with the host (the server ALPN's): its first stream carries

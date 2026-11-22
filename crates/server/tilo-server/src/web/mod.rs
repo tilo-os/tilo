@@ -537,11 +537,11 @@ impl Server {
             origin: public_origin.clone(),
         };
         // What a site hands its page about this host, kept in its state (`web-host.json`).
-        let published = serde_json::to_vec(&server_info.for_site())
-            .map_err(|error| failed(format!("name this host: {error}")))?;
         tilo_files::native::atomic::write_with_mode(
             &self.state_root().join("web-host.json"),
-            &published,
+            &server_info
+                .web_host_json()
+                .map_err(|error| failed(format!("name this host: {error}")))?,
             0o644,
         )
         .map_err(|error| failed(format!("keep this host's name: {error}")))?;

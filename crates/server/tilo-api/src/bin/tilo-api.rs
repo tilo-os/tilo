@@ -17,7 +17,7 @@
 
 use std::path::PathBuf;
 use tilo_api::{Config, Server, store::Store};
-use tilo_server_protocol::web::{PageHost, ServerInfo};
+use tilo_server_protocol::web::ServerInfo;
 
 fn var(name: &str) -> Result<String, String> {
     std::env::var(name).map_err(|_| format!("{name} is required"))
@@ -32,26 +32,9 @@ fn origin(name: &str) -> Result<String, String> {
     Ok(value.trim_end_matches('/').to_owned())
 }
 
-/// The hosts `name` names: one `web-host.json` line, or a JSON array of them.
+/// The hosts `name` names ([`tilo_api::hosts::read`]).
 fn hosts(name: &str) -> Result<Vec<ServerInfo>, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(&var(name)?).map_err(|error| format!("{name}: {error}"))?;
-    let hosts: Vec<PageHost> = match value {
-        serde_json::Value::Array(_) => serde_json::from_value(value),
-        one => serde_json::from_value(one).map(|host| vec![host]),
-    }
-    .map_err(|error| format!("{name}: {error} (what the host writes in `web-host.json`)"))?;
-    for host in &hosts {
-        let names_itself = host.origin.as_deref().is_some_and(|origin| {
-            url::Url::parse(origin).is_ok_and(|origin| tilo_net::secure_origin(&origin))
-        });
-        if !names_itself {
-            return Err(format!(
-                "{name}: a host names no https origin (what the host writes in `web-host.json`)"
-            ));
-        }
-    }
-    Ok(hosts.into_iter().map(ServerInfo::from).collect())
+    tilo_api::hosts::read(&var(name)?).map_err(|error| format!("{name}: {error}"))
 }
 
 fn main() -> Result<(), String> {

@@ -164,20 +164,31 @@ fn host_info(origin: &str) -> tilo_server_protocol::web::ServerInfo {
 /// A host is named by its HTTPS origin, as its grants' devices and its links are, even where its
 /// WebTransport listener answers at another name and port (tilo.sh's `link-eu1.tilo.sh:4443`
 /// beside `eu1.tilo.sh`): naming it by the listener would move every grant to another device.
+/// `TILO_API_HOST` takes the bytes the host writes in `web-host.json`, as they are.
 #[test]
 fn a_host_is_named_by_its_https_origin_not_its_link() {
-    let info = host_info("https://eu1.tilo.sh");
-    let link = info
+    let mut info = host_info("https://eu1.tilo.sh");
+    if let Some(web) = info
         .address
-        .as_ref()
-        .and_then(|address| address.web.as_ref());
-    assert_eq!(
-        link.map(|web| web.origin.as_str()),
-        Some("https://link.server.example.test:4443")
-    );
-    let server = crate::server::Server::new(info);
+        .as_mut()
+        .and_then(|address| address.web.as_mut())
+    {
+        web.origin = "https://link-eu1.tilo.sh:4443".into();
+    }
+    let written = String::from_utf8(info.web_host_json().unwrap()).unwrap();
+    let read = crate::hosts::read(&written).unwrap();
+    assert_eq!(read, vec![info.clone()]);
+    let server = crate::server::Server::new(read.into_iter().next().unwrap());
     assert_eq!(server.name(), "eu1.tilo.sh");
     assert_eq!(server.origin(), "https://eu1.tilo.sh");
+
+    // A host's info that names no https origin of its own names no host.
+    info.origin = None;
+    let unnamed = String::from_utf8(info.web_host_json().unwrap()).unwrap();
+    assert!(crate::hosts::read(&unnamed).is_err());
+    info.origin = Some("http://eu1.tilo.sh".into());
+    let plain = String::from_utf8(info.web_host_json().unwrap()).unwrap();
+    assert!(crate::hosts::read(&plain).is_err());
 }
 
 fn server() -> Arc<Server> {
