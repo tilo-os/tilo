@@ -246,7 +246,7 @@ launcher = { path = "../../packaging/launcher" }
 # The launcher contract the app broker starts and attests a hosted workspace's apps through.
 tilo-broker-core = { path = "../../collab/broker-core" }
 # Installed packages and their integrity records.
-package-store = { path = "../../packaging/package-store" }
+package-store = { path = "../../packaging/package-store", features = ["store"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # App surfaces, fetched by hash from the registry's reviewed payload blobs.
 clap.workspace = true
