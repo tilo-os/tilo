@@ -317,16 +317,25 @@ pub fn held_api(keys: IdentityPaths) -> Result<Option<PathBuf>> {
 /// [`held_api`] for the login `place` keeps.
 #[cfg(unix)]
 fn held_api_in(place: &Place) -> Result<Option<PathBuf>> {
-    let key = match load_public(place)? {
-        Some(device) => device.cert.device_public_key,
+    // Whose the holders' directory must be is read off what names the device: the login, or
+    // with none (a computer that made its own identity and never logged in, whose state
+    // directory holds no login) its certificate.
+    let (key, named_by) = if let Some(device) = load_public(place)? {
+        (device.cert.device_public_key, place.dir())
+    } else {
         // No login: the device key the daemon serves as, named by its certificate so the secret
         // is not read here.
-        None => match read_device_cert(&place.keys().device_cert) {
-            Ok(cert) => cert.device_public_key,
-            Err(_) => return Ok(None),
-        },
+        let path = &place.keys().device_cert;
+        let Ok(cert) = read_device_cert(path) else {
+            return Ok(None);
+        };
+        (
+            cert.device_public_key,
+            path.parent()
+                .context("a device certificate is in a directory")?,
+        )
     };
-    let holders = holder_dir(place.dir()).map_err(|why| anyhow!(why))?;
+    let holders = holder_dir(named_by).map_err(|why| anyhow!(why))?;
     Ok(Some(holder_api_socket(&holders, &holder_name(&key))))
 }
 
@@ -433,6 +442,42 @@ mod tests {
                     "finding this computer's daemon reads no device key"
                 );
             },
+        );
+    }
+
+    /// A computer that made its own identity and never logged in keeps no login, so its state
+    /// directory may not even exist: its daemon is still found, from the device's certificate.
+    #[test]
+    fn a_device_that_never_logged_in_finds_its_daemon_without_a_login_directory() {
+        let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let login_dir = root.path().join("state/tilo/device");
+        let keys = IdentityPaths::under(root.path().join("identity"));
+        keys.ensure_directories().unwrap();
+        let root_key = SigningKey::from_bytes(&[9; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root_key.verifying_key().to_bytes(),
+            device_public_key: SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes(),
+            device_label: "server".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1_000,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root_key).unwrap();
+        write_device_cert(&keys.device_cert, &cert).unwrap();
+        assert!(!login_dir.exists(), "this computer never logged in");
+
+        let socket = held_api_in(&Place::at(login_dir, keys.clone()))
+            .unwrap()
+            .expect("a device of its own names its daemon");
+        assert_eq!(
+            socket,
+            holder_api_socket(
+                &holder_dir(keys.device_cert.parent().unwrap()).unwrap(),
+                &holder_name(&cert.device_public_key),
+            ),
+            "the daemon is the one the device's certificate names"
         );
     }
 }
