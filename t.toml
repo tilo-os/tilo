@@ -2803,6 +2803,47 @@ isolation = "vm"
 default = false
 
 [[check]]
+name = "source-date-os-vm"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/os-vm os/Containerfile.os-vm tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt tools/ci/packages/qemu-aarch64.txt"
+git = true
+outputs = ["/target/source-date/os-vm"]
+default = false
+
+# The image the checks that boot a Tilo guest in the job sandbox run in
+# (os/Containerfile.os-vm): QEMU, its firmware and the tools os/dev/vm.sh drives a disk with,
+# so a boot-only check installs nothing and needs no root. Its checks name it with
+# `image = { check = "image-os-vm-{arch}", path = … }` in place of `isolation = "vm"`, which
+# would run them in a micro-VM of their own, three virtualisation levels deep.
+[[check]]
+name = "image-os-vm-{arch}"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/os-vm)\nexport SOURCE_DATE_EPOCH\n# The package lists are the build's context, so the image installs exactly what they name.\ncontext=$TMPDIR/os-vm-context\nrm -rf \"$context\"\nmkdir -p \"$context\"\ncp tools/ci/packages/os-vm.txt \"$context/os-vm.txt\"\ncp tools/ci/packages/qemu-{arch}.txt \"$context/qemu.txt\"\nbash tools/ci/publish/oci-build.sh \"$context\" os/Containerfile.os-vm /target/publish/os-vm/{arch} --build-arg \"TILO_BUILD_EPOCH=$SOURCE_DATE_EPOCH\"\n"
+needs = ["source-date-os-vm"]
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+requires = ["arch={arch}"]
+isolation = "vm"
+outputs = ["/target/publish/os-vm/{arch}/image.oci.tar", "/target/publish/os-vm/{arch}/digest"]
+timeout_secs = 3600
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# One guest kernel booted under the sandbox's /dev/kvm, and again on the software emulator: a
+# guest with real acceleration reaches its clocksource switch several times sooner, so this is
+# how a check says the sandbox still gives its guests hardware before a Tilo disk's boot, minutes
+# long, would.
+[[check]]
+name = "os-kvm-boot-x86_64"
+run = "bash tools/ci/kvm-boot.sh /target/kvm-boot"
+image = { check = "image-os-vm-x86_64", path = "/target/publish/os-vm/x86_64/image.oci.tar" }
+requires = ["arch=x86_64", "/dev/kvm"]
+isolation = "nested"
+cache = false
+default = false
+on = ["dispatch"]
+
+[[check]]
 name = "model-catalog-compiler"
 # Fetches the crates Cargo.lock pins, by their checksums.
 egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
@@ -4870,11 +4911,14 @@ name = "server-plan-install-cycle"
 # dnf in the guests installs from Fedora's mirrors, and the enrolment and unlock cross the
 # public iroh relay of two user-mode networks; no fixed host list names either.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt && bash os/dev/test-server-plan-install-cycle.sh --bundle-dir /target/publish/server-installer-bundle/x86_64 --imager /target/server-installer-imager/imager --owner-disk /target/publish/os-dev-disk/x86_64/disk/disk.qcow2 --release-tag imager-v0.0.0 --out /target/server-plan-install-cycle"
+run = "bash os/dev/test-server-plan-install-cycle.sh --bundle-dir /target/publish/server-installer-bundle/x86_64 --imager /target/server-installer-imager/imager --owner-disk /target/publish/os-dev-disk/x86_64/disk/disk.qcow2 --release-tag imager-v0.0.0 --out /target/server-plan-install-cycle"
 needs = ["server-installer-medium-x86_64", "server-installer-imager-x86_64", "os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
+# QEMU runs in the job sandbox, directly under the worker's VM, so the guests it boots are two
+# virtualisation levels deep and not three: the image carries the emulator and its firmware.
+image = { check = "image-os-vm-x86_64", path = "/target/publish/os-vm/x86_64/image.oci.tar" }
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
-isolation = "vm"
+isolation = "nested"
 outputs = ["/target/server-plan-install-cycle/**"]
 # What a failed run leaves: its steps, its guests' serials and QEMU logs, the owner's logs.
 evidence = ["/target/server-plan-install-cycle/**"]
@@ -4945,11 +4989,13 @@ name = "server-plan-install-retry"
 # The base comes from the registry by digest; dnf in the guests installs from Fedora's mirrors, and
 # the enrolment and unlock cross the public iroh relay; no fixed host list names them all.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt && bash tools/ci/server-plan-retry.sh proof /target/server-plan-retry-layers /target/server-plan-base-fetch /target/server-plan-install-retry"
+run = "bash tools/ci/server-plan-retry.sh proof /target/server-plan-retry-layers /target/server-plan-base-fetch /target/server-plan-install-retry"
 needs = ["server-plan-retry-layers", "server-plan-base-fetch", "tilo-vm-binary-x86_64"]
+# The proof's QEMU runs in the job sandbox, as server-plan-install-cycle's does.
+image = { check = "image-os-vm-x86_64", path = "/target/publish/os-vm/x86_64/image.oci.tar" }
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
-isolation = "vm"
+isolation = "nested"
 outputs = ["/target/server-plan-install-retry/**"]
 evidence = ["/target/server-plan-install-retry/**"]
 cache = false

@@ -1,4 +1,5 @@
-# QEMU and UEFI firmware for arm64 guests on a native arm64 host.
+# QEMU and UEFI firmware for arm64 guests on a native arm64 host, installed into
+# image-os-vm-aarch64 (os/Containerfile.os-vm).
 edk2-aarch64
 qemu-system-aarch64-core
 qemu-device-display-virtio-gpu

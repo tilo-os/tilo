@@ -1,0 +1,20 @@
+# The image the checks that boot a Tilo guest in the job sandbox run in: QEMU, its firmware and
+# the tools os/dev/vm.sh drives a disk with. A check that only boots a guest needs no root, and
+# the sandbox gives it /dev/kvm; what it could not do there was install these packages, so the
+# image carries them and its checks install nothing at run time. Built by t's image-os-vm-ARCH
+# check, which copies the two package lists in as this build's context.
+#
+# The base is the pinned Fedora bootc image every Tilo image builds FROM, for the kernel the
+# sandbox's boot proof reads (tools/ci/kvm-boot.sh) and for a release the package names agree
+# with. The packages come from Fedora's mirrors, named rather than pinned by bytes, as the
+# ci-fast image's do.
+ARG BASE_REF=registry.tilo.so/tilo/fedora-bootc@sha256:5da3e5d18dfc666e6c3bc7d47cb7abde0d75492cafc924f65a8f70a937aa20c5
+FROM ${BASE_REF}
+COPY os-vm.txt qemu.txt /tmp/os-vm/
+ARG TILO_BUILD_EPOCH
+RUN test -n "${TILO_BUILD_EPOCH}" \
+    && export SOURCE_DATE_EPOCH="${TILO_BUILD_EPOCH}" \
+    && dnf install -y --setopt=install_weak_deps=False \
+         $(sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' /tmp/os-vm/os-vm.txt /tmp/os-vm/qemu.txt) \
+    && dnf clean all \
+    && rm -rf /tmp/os-vm

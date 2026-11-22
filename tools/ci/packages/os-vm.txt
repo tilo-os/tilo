@@ -1,7 +1,7 @@
-# What the OS checks that install, boot and publish a dev disk under KVM need beside the
-# OS assembler image (tools/ci/publish/os-dev-disk.sh, os-dev-check.sh, os-acceptance.sh,
-# os-dev-publish.sh, tools/ci/os-vm.sh); the emulator and firmware are qemu-<arch>.txt.
-# One list for all of them, so they share one setup layer per architecture.
+# What the checks that install, boot and publish a disk under KVM need: image-os-vm-<arch>
+# (os/Containerfile.os-vm) installs this list and qemu-<arch>.txt into the image the checks that
+# boot a guest in the job sandbox run in, so they install nothing at run time. The emulator and
+# firmware are qemu-<arch>.txt.
 podman
 skopeo
 fuse-overlayfs

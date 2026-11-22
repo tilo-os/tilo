@@ -1,4 +1,5 @@
-# QEMU and UEFI firmware for x86-64 guests on a native x86-64 host.
+# QEMU and UEFI firmware for x86-64 guests on a native x86-64 host, installed into
+# image-os-vm-x86_64 (os/Containerfile.os-vm).
 edk2-ovmf
 qemu-system-x86-core
 qemu-device-display-virtio-vga

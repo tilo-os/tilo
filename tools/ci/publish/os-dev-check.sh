@@ -4,7 +4,8 @@
 # image with bootc and applies it with `tilo-extension live:system` (live, or recording that a
 # restart applies it), restarts into it to a greeter that takes input and the device's own boot
 # assessment (tilo-boot-health) accepts, and from there takes the next update live. As root in a
-# micro-VM step with a /dev/kvm of its own. Nothing here holds a secret or publishes.
+# micro-VM step with a /dev/kvm of its own: its scratch registry is a podman container, which the
+# job sandbox cannot start. Nothing here holds a secret or publishes.
 #
 #   os-dev-check.sh ARCH DEV OUT   DEV: os-dev-image-ARCH's layout; the logs into OUT
 #
