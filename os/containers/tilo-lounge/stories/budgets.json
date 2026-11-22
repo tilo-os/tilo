@@ -72,7 +72,9 @@
       "A newcomer opens their workspace": 15000,
       "They add a strip": 15000,
       "They switch to another workspace and back": 40000,
-      "They find their settings": 20000
+      "They find their settings": 20000,
+      "They pick a light and a dark look": 30000,
+      "They come back to their desk": 30000
     },
     "large-workspace": {
       "The workspace is filled": 3600000
