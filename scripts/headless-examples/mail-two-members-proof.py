@@ -9,7 +9,8 @@ and presses Reply, and their composer answers the message's sender under "Re:" i
 
     python3 scripts/headless-examples/mail-two-members-proof.py --out DIR [--build]
 
-Both shells are written to DIR at each step (ada-STEP.png, bo-STEP.png) with the controls each
+Neither shell may show an error notice at any point: one fails the proof. Both shells are
+written to DIR at each step (ada-STEP.png, bo-STEP.png) with the controls each
 shows (ada-STEP.json, bo-STEP.json); a step that fails leaves both shells as they stood
 (host-failed.png, peer-failed.png). The verdict is DIR/summary.json.
 """
@@ -192,6 +193,19 @@ def reply(session: Session, out: Path) -> dict:
             "composer": [name for name in names if name in ("Send", "Cc", "Subject", "To")]}
 
 
+def no_error_notices(sessions: dict[str, Session]) -> None:
+    """Fail on any error notice either shell shows: an error the person reads is a failure of
+    the flow, whichever step it came up in."""
+    told = [
+        f"{who}: " + " — ".join(part for part in (notice.get("title"), notice.get("body")) if part)
+        for who, session in sessions.items()
+        for notice in session.state_dump().get("notifications", [])
+        if notice.get("severity") == "error"
+    ]
+    if told:
+        raise Failed("an error notice came up: " + "; ".join(told))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -211,6 +225,7 @@ def main() -> int:
             # workspace's, so Bo opens it without a sheet of his own.
             open_mail(ada)
             open_mail(bo)
+            no_error_notices({"Ada": ada, "Bo": bo})
             for session in (ada, bo):
                 shown(session, out, "opened")
             summary["delivered"] = deliver(ada)
@@ -226,6 +241,7 @@ def main() -> int:
             summary["bo_opened"] = open_it(bo, out)
             summary["ada_reply"] = reply(ada, out)
             summary["bo_reply"] = reply(bo, out)
+            no_error_notices({"Ada": ada, "Bo": bo})
             summary["passed"] = True
     finally:
         (out / "summary.json").write_text(json.dumps(summary, indent=1, default=str))
