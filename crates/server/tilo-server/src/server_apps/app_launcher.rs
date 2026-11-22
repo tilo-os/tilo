@@ -95,39 +95,56 @@ impl ServerLauncher {
         self.processes.as_ref().map_err(Clone::clone)
     }
 
-    /// What every window and call of `app` here is handed beside its collaboration connection: the
-    /// server's identity service and its content store, each scoped to the app in this
-    /// workspace exactly as a device's launcher scopes them.
-    fn services(&self, app: &str) -> Result<(OwnedFd, Option<OwnedFd>), String> {
-        let identity = launcher::services::resolve_identity_bind(app, Some(&self.workspace), false)
-            .map_err(|error| format!("the identity service: {error}"))?
-            .ok_or("this server's identity service is not running")?;
+    /// What every page and call of `app` here is handed beside its collaboration connection: the
+    /// server's identity service, serving the call `call` alone when it is made for one, and its
+    /// content store, each scoped to the app in this workspace exactly as a device's launcher
+    /// scopes them.
+    fn services(
+        &self,
+        app: &str,
+        call: Option<[u8; 16]>,
+    ) -> Result<(OwnedFd, Option<OwnedFd>), String> {
+        let identity = match call {
+            Some(call) => {
+                launcher::services::resolve_identity_bind_for_call(app, &self.workspace, call)
+            }
+            None => launcher::services::resolve_identity_bind(app, Some(&self.workspace), false),
+        }
+        .map_err(|error| format!("the identity service: {error}"))?
+        .ok_or("this server's identity service is not running")?;
         let content = launcher::services::resolve_blob_bind(app, Some(&self.workspace), false)
             .map_err(|error| format!("the content store: {error}"))?
             .map(|bind| bind.host);
         Ok((identity.host, content))
     }
 
-    /// Open a window of `app` for `person` at the page that holds the other end of `patch`:
-    /// its view runs in the workspace's process of the app, started when none runs. Answers
-    /// the window's tab.
+    /// Open a page of `app` for `person`, asked for on the other end of `page`: its view runs in
+    /// the workspace's process of the app, started when none runs, and lays its window out
+    /// there. Every request it makes of the identity service is decided as whoever made the call
+    /// `call` (the page's reader). Answers the page's tab.
     ///
     /// # Errors
-    /// No process can start here, the package does not verify, or the window's connections
-    /// cannot be made.
-    pub fn open_window(&self, app: &str, person: &str, patch: OwnedFd) -> Result<u64, String> {
+    /// No process can start here, the package does not verify, or the page's connections cannot
+    /// be made.
+    pub fn open_page(
+        &self,
+        app: &str,
+        person: &str,
+        call: [u8; 16],
+        page: OwnedFd,
+    ) -> Result<u64, String> {
         let processes = Arc::clone(self.processes()?);
-        let (identity, content) = self.services(app)?;
+        let (identity, content) = self.services(app, Some(call))?;
         let tab = self.tabs.fetch_add(1, Ordering::Relaxed);
         let collaboration = self
             .connect(app, tab, Made::Window)
             .map_err(|error| format!("{app} could not reach its workspace: {error}"))?;
         processes
-            .hand_over_now(self.handed(
+            .show_page(self.handed(
                 app,
                 person,
                 tab,
-                Some(patch),
+                Some(page),
                 collaboration,
                 identity,
                 content,
@@ -205,7 +222,7 @@ impl LauncherServices for ServerLauncher {
             ));
         }
         let processes = Arc::clone(self.processes()?);
-        let (identity, content) = self.services(app)?;
+        let (identity, content) = self.services(app, None)?;
         let tab = self.tabs.fetch_add(1, Ordering::Relaxed);
         let collaboration = self
             .connect(app, tab, Made::Call)

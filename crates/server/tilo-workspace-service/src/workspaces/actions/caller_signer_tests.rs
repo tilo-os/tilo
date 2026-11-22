@@ -25,7 +25,7 @@ use tilo_peer_state::join::Role;
 use tilo_user_identity::DeviceCert;
 
 use super::tests::{admit_device, governed};
-use crate::apps::caller_signer::{CallerSigner, Callers, editing_unavailable};
+use crate::apps::caller_signer::{CallerSigner, Callers, VerifiedCaller, editing_unavailable};
 use crate::apps::service_workspaces::{block_on, describe};
 use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
 use crate::workspaces::{SetMemberRoleRequest, Workspaces};
@@ -38,10 +38,13 @@ const RESOURCE: &str = "meeting-notes";
 struct Running(Mutex<HashMap<[u8; 16], DeviceCert>>);
 
 impl Callers for Running {
-    fn caller(&self, _: &WorkspaceId, app: &str, invocation: [u8; 16]) -> Option<DeviceCert> {
-        (app == APP)
-            .then(|| self.0.lock().expect("the calls").get(&invocation).cloned())
-            .flatten()
+    fn caller(&self, _: &WorkspaceId, app: &str, invocation: [u8; 16]) -> Option<VerifiedCaller> {
+        let calls = self.0.lock().expect("the calls");
+        let cert = calls.get(&invocation).filter(|_| app == APP)?;
+        Some(VerifiedCaller {
+            device_public_key: cert.device_public_key,
+            user_public_key: cert.user_public_key,
+        })
     }
 }
 
@@ -72,6 +75,7 @@ impl App {
                 workspace_id: workspace.to_owned(),
                 app_id: APP.to_owned(),
                 surface: None,
+                call: None,
             },
             presentation_version: 0,
         };

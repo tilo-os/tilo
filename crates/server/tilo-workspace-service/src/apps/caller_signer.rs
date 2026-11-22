@@ -18,25 +18,23 @@ use tilo_user_identity::DeviceCert;
 use crate::apps::service_workspaces::block_on;
 use crate::workspaces::Workspaces;
 
+/// Whoever made a call, as the connection it arrived on proved them: their device and the person
+/// who certified it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VerifiedCaller {
+    pub device_public_key: [u8; 32],
+    pub user_public_key: [u8; 32],
+}
+
 /// Who made each call an app serves on this device, while it runs.
 pub trait Callers: Send + Sync {
-    /// The certificate of whoever made the call `invocation` that `app` serves in `workspace`,
-    /// while the call runs.
+    /// Whoever made the call `invocation` that `app` serves in `workspace`, while the call runs.
     fn caller(
         &self,
         workspace: &WorkspaceId,
         app: &str,
         invocation: [u8; 16],
-    ) -> Option<DeviceCert>;
-}
-
-/// A device that is told of no call: every request made for one is refused.
-pub struct NoCalls;
-
-impl Callers for NoCalls {
-    fn caller(&self, _: &WorkspaceId, _: &str, _: [u8; 16]) -> Option<DeviceCert> {
-        None
-    }
+    ) -> Option<VerifiedCaller>;
 }
 
 /// The signer of a device that runs apps for the people who call them.
@@ -69,27 +67,29 @@ impl CallerSigner {
             callers,
         }
     }
+}
 
-    /// What the workspace allows the caller `cert` now: they are on its list of devices, and
-    /// nothing beyond what its policy gives them.
-    fn allowed(
-        &self,
-        workspace: WorkspaceId,
-        cert: &DeviceCert,
-    ) -> Result<tilo_action_policy::MemberAccess, String> {
-        tilo_user_identity::verify_device_cert(cert)
-            .map_err(|_| "the caller's device is no longer certified".to_owned())?;
-        let workspaces = self.workspaces.clone();
-        let device = cert.device_public_key;
-        block_on(&self.runtime, async move {
-            let (_, peer) = workspaces
-                .governed_copy(workspace)
-                .await
-                .ok_or_else(|| format!("this device keeps no workspace {workspace}"))?;
-            peer.permissions(device, tilo_clock::wall())
-                .map_err(|_| "the caller may no longer act in this workspace".to_owned())
-        })
-    }
+/// What `workspace`, as `workspaces` keeps it, allows `caller` now: their device is on its list
+/// of devices, and nothing beyond what its policy gives them.
+///
+/// # Errors
+/// The device keeps no such workspace, or the caller's device is not on its list.
+pub fn allowed(
+    workspaces: &Workspaces,
+    runtime: &tokio::runtime::Handle,
+    workspace: WorkspaceId,
+    caller: &VerifiedCaller,
+) -> Result<tilo_action_policy::MemberAccess, String> {
+    let workspaces = workspaces.clone();
+    let device = caller.device_public_key;
+    block_on(runtime, async move {
+        let (_, peer) = workspaces
+            .governed_copy(workspace)
+            .await
+            .ok_or_else(|| format!("this device keeps no workspace {workspace}"))?;
+        peer.permissions(device, tilo_clock::wall())
+            .map_err(|_| "the caller may no longer act in this workspace".to_owned())
+    })
 }
 
 /// What a person who asks this device to change `app` is told: it changes nothing for anyone
@@ -122,14 +122,13 @@ impl SignerSource for CallerSigner {
         app: &str,
         call: Option<[u8; 16]>,
     ) -> Result<Presented, Undecided> {
-        let cert = call
+        let caller = call
             .and_then(|invocation| self.callers.caller(workspace, app, invocation))
             .ok_or_else(|| Undecided::Refused(editing_unavailable(app)))?;
-        let access = self
-            .allowed(*workspace, &cert)
+        let access = allowed(&self.workspaces, &self.runtime, *workspace, &caller)
             .map_err(Undecided::Refused)?;
         Ok(Presented {
-            person: cert.user_public_key,
+            person: caller.user_public_key,
             access: Some(access),
             their_device: false,
             profile: None,
