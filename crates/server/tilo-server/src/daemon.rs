@@ -1456,6 +1456,10 @@ async fn bind_endpoint(
     };
     builder
         .transport_config(tilo_server_client::host::transport())
+        // A host binds the address it was told to, and opens no port on a
+        // router it was not asked about: the portmapper probes UPnP over SSDP
+        // and resolves names for a port it would never use.
+        .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
         .secret_key(secret)
         .bind_addr(cfg.iroh_listen)
         .map_err(|e| ServerError::Iroh(format!("invalid iroh listen address: {e}")))?
