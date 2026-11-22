@@ -221,8 +221,8 @@ pub struct PersistentArgs {
     /// of `https://api.openai.com/v1`.
     #[arg(long = "openai-api", value_name = "URL")]
     pub openai_api: Option<String>,
-    /// A directory of signed `.tapp` packages, each installed as the version
-    /// of its app the workspace runs, at every start that finds it newer.
+    /// A directory of signed `.tapp` packages: the system's apps this server
+    /// ships, installed in every workspace whose apps it governs.
     #[arg(long = "packages", value_name = "DIR")]
     pub packages: Option<std::path::PathBuf>,
     /// What to install at the workspace's first start, approved by the workspace's
@@ -994,41 +994,6 @@ pub(crate) async fn seed_chat(
     mark_settled(workspaces, workspace, cert, "seeded", app, "seeded").await
 }
 
-/// Install every signed `.tapp` in `dir` as the version of its app the
-/// workspace runs ([`Workspaces::install_package`]), as the workspace's
-/// governor. A package the workspace already runs is left as it is, so each
-/// start installs only what the operator shipped since.
-pub(crate) async fn install_packages(
-    workspaces: &Workspaces,
-    workspace: &str,
-    cert: &DeviceCert,
-    dir: &Path,
-) -> anyhow::Result<()> {
-    let mut packages: Vec<_> = std::fs::read_dir(dir)
-        .map_err(|error| anyhow::anyhow!("read the packages in {}: {error}", dir.display()))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<Result<_, _>>()
-        .map_err(|error| anyhow::anyhow!("read the packages in {}: {error}", dir.display()))?;
-    packages.retain(|path| {
-        path.extension()
-            .is_some_and(|extension| extension == "tapp")
-    });
-    packages.sort();
-    if packages.is_empty() {
-        anyhow::bail!("{} holds no .tapp package", dir.display());
-    }
-    for path in packages {
-        let bytes = std::fs::read(&path)
-            .map_err(|error| anyhow::anyhow!("read {}: {error}", path.display()))?;
-        let app = workspaces
-            .install_package(workspace, cert, &bytes)
-            .await
-            .map_err(|error| anyhow::anyhow!("install {}: {error}", path.display()))?;
-        tracing::info!(%workspace, %app, package = %path.display(), "the workspace runs the shipped package");
-    }
-    Ok(())
-}
-
 /// What the workspace keeps of the files members post in its Chat; `None`
 /// when it keeps none.
 fn attachment_limits(
@@ -1465,6 +1430,7 @@ pub(crate) async fn run(
             .iroh_listen
             .unwrap_or_else(|| tilo_server::ServerConfig::default().iroh_listen),
         work: hold_for(persistent.hold_for.as_deref())?,
+        packages: persistent.packages.clone(),
         ..Default::default()
     };
     let identity = hosted_identity(&root, host, server_cert, &config.state_root)?;
@@ -1571,9 +1537,6 @@ pub(crate) async fn run(
         {
             if !persistent.chat_channels.is_empty() {
                 seed_chat(&workspaces, &workspace, &server_cert).await?;
-            }
-            if let Some(dir) = &persistent.packages {
-                install_packages(&workspaces, &workspace, &server_cert, dir).await?;
             }
             settle_chat(
                 &workspaces,

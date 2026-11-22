@@ -25,26 +25,71 @@
 use std::path::{Path, PathBuf};
 
 /// The packages of the workspaces this server hosts, each installed into a store of its
-/// workspace's own under `root` and verified there as a launch verifies it.
+/// workspace's own under `root` and verified there as a launch verifies it, and the system's apps
+/// the server ships, which are to its workspaces what an image's apps are to a device's.
 pub struct WorkspacePackages {
     root: PathBuf,
+    shipped: Option<package_store::SystemStore>,
 }
 
 impl WorkspacePackages {
     /// Packages kept under `root`.
     #[must_use]
     pub const fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            shipped: None,
+        }
     }
 
-    /// Packages kept under the host's data home, beside the app directories its launcher mounts.
+    /// These packages, with `packages`, the system's apps this server ships, installed in the
+    /// store at `store` as an image's are.
     ///
     /// # Errors
-    /// The host has no data home.
-    pub fn at_host_data_home() -> Result<Self, String> {
-        let data_home = launcher::appdir::host_data_home()
-            .ok_or("this server has no data home to keep its workspaces' apps in")?;
-        Ok(Self::new(data_home.join("tilo").join("workspace-packages")))
+    /// A package does not install.
+    pub fn shipping(mut self, store: &Path, packages: &[Vec<u8>]) -> Result<Self, String> {
+        let installer = package_store::PackageStore::at(store.to_path_buf());
+        for tapp in packages {
+            installer
+                .install(
+                    tapp.as_slice(),
+                    |_| {
+                        Ok::<_, String>(package_store::Admission {
+                            pinned: true,
+                            attested_by: String::new(),
+                            source: "shipped with this server".to_owned(),
+                            held: false,
+                        })
+                    },
+                    None,
+                )
+                .map_err(|error| format!("a package this server ships: {error}"))?;
+        }
+        let layout = package_store::Layout::new(store);
+        self.shipped = Some(package_store::SystemStore {
+            data_dir: layout.root().to_path_buf(),
+            payload_dir: layout.packages(),
+            interfaces: None,
+        });
+        Ok(self)
+    }
+
+    /// The ids the apps `workspace` runs here were published under before, as the installed
+    /// catalogue believes them ([`app_catalogue::apps::earlier_ids`]): the workspace's own store
+    /// over the system's apps this server ships, as a device's store lies over its image.
+    #[must_use]
+    pub fn earlier_ids(&self, workspace: &str) -> tilo_action_policy::EarlierIds {
+        let Ok(id) = uuid::Uuid::parse_str(workspace) else {
+            return tilo_action_policy::EarlierIds::default();
+        };
+        let catalog = package_store::Catalog::at(
+            self.root.join(id.hyphenated().to_string()),
+            self.shipped.clone(),
+        );
+        app_catalogue::apps::earlier_ids(&catalog).unwrap_or_else(|error| {
+            tracing::warn!(%workspace, %error, "the earlier ids of the workspace's apps are not read");
+            tilo_action_policy::EarlierIds::default()
+        })
     }
 
     /// The package store of `workspace`.
@@ -197,9 +242,9 @@ mod brokers;
 #[cfg(feature = "agents")]
 mod pages;
 #[cfg(feature = "agents")]
-pub use app_launcher::{ProcessStart, ServerLauncher};
+pub use app_launcher::{ProcessStart, ServerLauncher, Sockets};
 #[cfg(feature = "agents")]
-pub use brokers::{ServerApps, ServerWorkspaces};
+pub use brokers::{ServerApps, ServerWorkspaces, Shipped};
 #[cfg(feature = "agents")]
 pub use pages::{Readers, Reading, ServerPages};
 
@@ -209,7 +254,7 @@ pub use pages::{Readers, Reading, ServerPages};
 #[cfg(feature = "agents")]
 pub fn server_processes(
     workspaces: ServerWorkspaces,
-    packages: WorkspacePackages,
+    packages: std::sync::Arc<WorkspacePackages>,
     data_home: PathBuf,
 ) -> ProcessStart {
     use tilo_app_launch::tilolang_processes::Processes;
@@ -238,45 +283,98 @@ pub struct Device {
     pub keys: Option<tilo_workspace_keys::KeyProvider>,
 }
 
-/// Run the apps of the workspaces `workspaces` keeps on this server, whose device is `device`,
-/// until the server stops: the content store they keep their files in, under `state_root`, the
-/// identity service that signs their changes as this device for the callers they serve, and
-/// one broker for each workspace, each running the workspace's packages in this server's
-/// processes. Their pages show beside those of `pages`, the server's own, when it shows any. A
-/// server that cannot run apps says why once, and keeps serving its workspaces.
+/// The apps of the workspaces a server keeps, started: they run until the server stops
+/// ([`Serving::run`]).
 #[cfg(feature = "agents")]
-pub async fn serve(
+pub struct Serving {
+    apps: std::sync::Arc<ServerApps>,
+    _identity: tilo_identity::broker::IdentityBrokerHandle,
+    _content: ContentService,
+}
+
+#[cfg(feature = "agents")]
+impl Serving {
+    /// Run the workspaces' apps until the server stops.
+    pub async fn run(self) {
+        let Self {
+            apps,
+            _identity,
+            _content,
+        } = self;
+        apps.run().await;
+    }
+}
+
+/// The signed packages in `dir`, each a system app this server ships.
+///
+/// # Errors
+/// The directory does not read, or holds no `.tapp`.
+fn shipped_packages(dir: &Path) -> Result<Vec<Vec<u8>>, String> {
+    let unread = |error: std::io::Error| format!("read the packages in {}: {error}", dir.display());
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map_err(unread)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<_, _>>()
+        .map_err(unread)?;
+    paths.retain(|path| {
+        path.extension()
+            .is_some_and(|extension| extension == "tapp")
+    });
+    paths.sort();
+    if paths.is_empty() {
+        return Err(format!("{} holds no .tapp package", dir.display()));
+    }
+    paths
+        .iter()
+        .map(|path| {
+            std::fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))
+        })
+        .collect()
+}
+
+/// Start the apps of the workspaces `workspaces` keeps on this server, whose device is `device`:
+/// the content store they keep their files in and the identity service that signs their changes
+/// as this device for the callers they serve, both under `state_root` with the sockets of the
+/// workspaces' brokers, and the processes that run each workspace's packages. The packages in
+/// `shipped` are installed in every workspace whose apps this server governs. Their pages show
+/// beside those of `pages`, the server's own, when it shows any.
+///
+/// # Errors
+/// Why this server can run no app: the packages it ships do not read, or its content store,
+/// identity service, data home or launcher is missing.
+#[cfg(feature = "agents")]
+pub async fn start(
     workspaces: crate::workspaces::Workspaces,
     device: Device,
-    state_root: PathBuf,
+    state_root: &Path,
+    shipped: Option<&Path>,
     pages: Option<std::sync::Arc<dyn crate::app_serving::AppActionServer>>,
-) {
+) -> Result<Serving, String> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    let shipped = shipped
+        .map(shipped_packages)
+        .transpose()?
+        .unwrap_or_default();
     let apps = state_root.join("apps");
-    let content = match ContentService::start(
+    // The services of this server's apps listen in a directory only it may enter, under its own
+    // state: never a default of the machine's, which a server running as its own user may not
+    // be able to make.
+    let sockets = apps.join("sockets");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&sockets)
+        .map_err(|error| format!("make {}: {error}", sockets.display()))?;
+    let content = ContentService::start(
         &apps.join("content"),
-        &launcher::services::blob_socket(),
+        &sockets.join(brokers::CONTENT_SOCKET),
     )
     .await
-    {
-        Ok(content) => content,
-        Err(error) => {
-            tracing::warn!(%error, "this server's apps have no content store, so none runs");
-            return;
-        }
-    };
-    let Some(data_home) = launcher::appdir::host_data_home() else {
-        tracing::warn!("this server has no data home to keep its apps' storage in, so none runs");
-        return;
-    };
+    .map_err(|error| format!("the content store of this server's apps: {error}"))?;
+    let data_home = launcher::appdir::host_data_home()
+        .ok_or("this server has no data home to keep its apps' storage in")?;
     let runtime = tokio::runtime::Handle::current();
     let server = ServerWorkspaces::new(workspaces.clone(), runtime.clone());
-    let identity_socket = launcher::services::identity_socket();
-    if let Some(parent) = identity_socket.parent()
-        && let Err(error) = std::fs::create_dir_all(parent)
-    {
-        tracing::warn!(%error, "this server's apps have no identity service, so none runs");
-        return;
-    }
     // Every request a page makes is decided as the one who reads it.
     let readers = std::sync::Arc::new(Readers::default());
     let signer = tilo_workspace_service::apps::caller_signer::CallerSigner::new(
@@ -291,44 +389,44 @@ pub async fn serve(
         Some(keys) => std::sync::Arc::new(keys),
         None => std::sync::Arc::new(()),
     };
-    let identity = match tilo_identity::broker::spawn_signing(
-        identity_socket,
+    let identity = tilo_identity::broker::spawn_signing(
+        sockets.join(brokers::IDENTITY_SOCKET),
         std::sync::Arc::new(server.clone()),
         keys,
         std::sync::Arc::new(()),
         std::sync::Arc::new(signer),
-    ) {
-        Ok(identity) => identity,
-        Err(error) => {
-            tracing::warn!(%error, "this server's apps have no identity service, so none runs");
-            return;
-        }
-    };
-    let packages = data_home.join("tilo").join("workspace-packages");
-    let processes = server_processes(
-        server.clone(),
-        WorkspacePackages::new(packages.clone()),
-        data_home,
-    );
-    if let Err(error) = &processes {
-        tracing::warn!(%error, "this server runs no app");
+    )
+    .map_err(|error| format!("the identity service of this server's apps: {error}"))?;
+    let mut packages = WorkspacePackages::new(data_home.join("tilo").join("workspace-packages"));
+    if !shipped.is_empty() {
+        packages = packages.shipping(&data_home.join("tilo").join("shipped-packages"), &shipped)?;
     }
+    let packages = std::sync::Arc::new(packages);
+    let processes = server_processes(server.clone(), std::sync::Arc::clone(&packages), data_home);
+    let processes = std::sync::Arc::clone(processes.as_ref()?);
     let apps = ServerApps::new(
         server,
-        tilo_paths::xdg::services_dir().join("apps"),
+        sockets,
         apps.join("journals"),
         device.cert.device_public_key,
-        processes,
+        Ok(processes),
+        Shipped {
+            packages: shipped,
+            kept: std::sync::Arc::clone(&packages),
+        },
     );
     if let Some(pages) = pages {
         pages.host_pages(std::sync::Arc::new(ServerPages::new(
             std::sync::Arc::clone(&apps),
-            WorkspacePackages::new(packages),
+            packages,
             readers,
         )));
     }
-    apps.run().await;
-    drop((identity, content));
+    Ok(Serving {
+        apps,
+        _identity: identity,
+        _content: content,
+    })
 }
 
 /// What a workspace's broker is made of.

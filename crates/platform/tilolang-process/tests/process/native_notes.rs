@@ -277,7 +277,7 @@ fn run_on_the_server(
 /// The workspace's document as it holds `before` and what a run handed it since.
 fn handed(before: &automerge::AutoCommit, sent: &Sent) -> automerge::AutoCommit {
     let mut held = before.clone();
-    held.merge(&mut workspace_copy(sent)).unwrap();
+    tilo_automerge::ApplyIncoming::merge_incoming(&mut held, &mut workspace_copy(sent)).unwrap();
     held
 }
 

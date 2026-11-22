@@ -9,6 +9,11 @@ const MODULE: &[u8] = b"\0asm the fixture's compiled module";
 /// A tilolang package `id` as `tilolang build` signs it: its entrypoint runs the tilolang runtime,
 /// its payload is the module that runtime runs.
 fn tilolang_package(id: &str, identity: &SigningIdentity) -> Vec<u8> {
+    renamed_package(id, &[], identity)
+}
+
+/// [`tilolang_package`], published under the ids `previously` before.
+fn renamed_package(id: &str, previously: &[&str], identity: &SigningIdentity) -> Vec<u8> {
     let scratch = tempfile::tempdir().unwrap();
     let payload = scratch.path().join("payload");
     std::fs::create_dir_all(&payload).unwrap();
@@ -23,6 +28,7 @@ fn tilolang_package(id: &str, identity: &SigningIdentity) -> Vec<u8> {
         r#"
 [package]
 id = "{id}"
+previously = [{}]
 kind = "app"
 version = "0.1.0"
 runtime = "tilo-runtime/2026.11"
@@ -45,6 +51,11 @@ runtime = "tilolang/0.1.0+tilolang"
 bin = "bin/tilolang-app"
 type = "gui"
 "#,
+        previously
+            .iter()
+            .map(|old| format!("\"{old}\""))
+            .collect::<Vec<_>>()
+            .join(", "),
         hex::encode(identity.public_key_bytes()),
     ))
     .unwrap();
@@ -54,6 +65,16 @@ type = "gui"
 }
 
 /// A server's workspace packages kept in a fresh directory, and a publisher's key.
+/// Sockets no service listens on.
+#[cfg(feature = "agents")]
+fn nowhere() -> Sockets {
+    Sockets {
+        collab: PathBuf::from("/nonexistent/collab.sock"),
+        identity: PathBuf::from("/nonexistent/identity.sock"),
+        content: PathBuf::from("/nonexistent/content.sock"),
+    }
+}
+
 fn packages() -> (tempfile::TempDir, WorkspacePackages, SigningIdentity) {
     let root = tempfile::tempdir().unwrap();
     let packages = WorkspacePackages::new(root.path().to_path_buf());
@@ -190,9 +211,10 @@ tilo_test_env::scenario! {
         use tilo_broker_core::services::{LaunchPlace, LauncherServices};
         let launcher = ServerLauncher::new(
             WORKSPACE.to_owned(),
-            PathBuf::from("/nonexistent/collab.sock"),
+            nowhere(),
             "server".to_owned(),
             Err("no launcher".to_owned()),
+            std::sync::Arc::new(WorkspacePackages::new(PathBuf::from("/nonexistent/packages"))),
         );
         let workspace = tilo_desktop_model::Workspace::new(
             tilo_desktop_model::WorkspaceId::parse(WORKSPACE).unwrap(),
@@ -209,9 +231,10 @@ tilo_test_env::scenario! {
         use tilo_broker_core::services::LauncherServices;
         let launcher = ServerLauncher::new(
             WORKSPACE.to_owned(),
-            PathBuf::from("/nonexistent/collab.sock"),
+            nowhere(),
             "server".to_owned(),
             Err("no tilo-launcher is installed on this server".to_owned()),
+            std::sync::Arc::new(WorkspacePackages::new(PathBuf::from("/nonexistent/packages"))),
         );
         let other = "0b1c2a52-8a2b-4c39-9d6b-1f3b0e0c7a10";
         let elsewhere = launcher.windowless(APP, other).unwrap_err();
@@ -225,9 +248,10 @@ tilo_test_env::scenario! {
         use tilo_broker_core::services::LauncherServices;
         let launcher = ServerLauncher::new(
             WORKSPACE.to_owned(),
-            PathBuf::from("/nonexistent/collab.sock"),
+            nowhere(),
             "server".to_owned(),
             Err("no launcher".to_owned()),
+            std::sync::Arc::new(WorkspacePackages::new(PathBuf::from("/nonexistent/packages"))),
         );
         assert!(!launcher.attest_process(std::process::id(), APP, WORKSPACE));
         assert!(!launcher.attest_process(1, APP, WORKSPACE));
@@ -267,6 +291,10 @@ async fn a_server_runs_one_broker_for_each_workspace_while_it_keeps_it() {
         dir.path().join("journals"),
         cert.device_public_key,
         Err("no tilo-launcher is installed on this server".to_owned()),
+        Shipped {
+            packages: Vec::new(),
+            kept: std::sync::Arc::new(WorkspacePackages::new(dir.path().join("packages"))),
+        },
     );
     assert_eq!(apps.reconcile().await, BTreeMap::new());
     assert_eq!(apps.workspaces(), BTreeSet::from([team, other]));
@@ -283,6 +311,109 @@ async fn a_server_runs_one_broker_for_each_workspace_while_it_keeps_it() {
     workspaces.delete(&team.to_string()).await.unwrap();
     assert_eq!(apps.reconcile().await, BTreeMap::new());
     assert_eq!(apps.workspaces(), BTreeSet::from([other]));
+}
+
+/// The system's apps a server ships are installed in every workspace whose apps it governs, the
+/// one it was started for or not, once: a later start installs nothing again.
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the host serves its workspaces until the test ends"
+)]
+async fn a_server_installs_the_apps_it_ships_in_every_workspace_it_governs() {
+    use tilo_desktop_model::WorkspaceId;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = crate::workspaces::fixtures::governor();
+    let host =
+        crate::workspaces::fixtures::test_host(&dir.path().join("server"), &key, &cert).await;
+    let workspaces = host.workspaces().clone();
+    let team = workspaces.create("Team").await.unwrap().workspace;
+    let identity = SigningIdentity::generate();
+    let shipped = vec![tilolang_package(APP, &identity)];
+    let start = || {
+        ServerApps::new(
+            ServerWorkspaces::new(workspaces.clone(), tokio::runtime::Handle::current()),
+            dir.path().join("sockets"),
+            dir.path().join("journals"),
+            cert.device_public_key,
+            Err("no tilo-launcher is installed on this server".to_owned()),
+            Shipped {
+                packages: shipped.clone(),
+                kept: std::sync::Arc::new(WorkspacePackages::new(dir.path().join("packages"))),
+            },
+        )
+    };
+    let runs = |workspace: String| {
+        let workspaces = workspaces.clone();
+        async move {
+            workspaces
+                .app_versions(&workspace)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|installed| installed.release.app)
+                .collect::<Vec<_>>()
+        }
+    };
+    let apps = start();
+    apps.reconcile().await;
+    assert_eq!(runs(team.clone()).await, [APP]);
+    // A workspace the running server starts governing gets them too.
+    let later = workspaces.create("Later").await.unwrap().workspace;
+    apps.reconcile().await;
+    assert_eq!(runs(later.clone()).await, [APP]);
+    assert!(
+        apps.workspaces()
+            .contains(&WorkspaceId::parse(&later).unwrap())
+    );
+    drop(apps);
+    // The next start finds them installed, and installs nothing again.
+    let mut changes = workspaces.governance_changes();
+    let again = start();
+    again.reconcile().await;
+    assert_eq!(runs(team).await, [APP]);
+    assert!(
+        matches!(
+            changes.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "a start that finds the system's apps installed changes nothing"
+    );
+}
+
+/// An app the server ships keeps the records of the id its publisher published it under before,
+/// as an app an image ships does on a device; an id a package of a workspace's own claims is
+/// believed only as the store checked it.
+#[cfg(feature = "agents")]
+#[test]
+fn a_shipped_apps_earlier_id_is_its_own() {
+    use tilo_broker_core::services::LauncherServices;
+    let dir = tempfile::tempdir().unwrap();
+    let identity = SigningIdentity::generate();
+    let notes = renamed_package("so.tilo.notes", &["so.tilo.lang.notes"], &identity);
+    let packages = WorkspacePackages::new(dir.path().join("packages"))
+        .shipping(&dir.path().join("shipped"), &[notes])
+        .unwrap();
+    assert_eq!(
+        packages.earlier_ids(WORKSPACE).of("so.tilo.notes"),
+        ["so.tilo.lang.notes"].map(str::to_owned)
+    );
+    // A package only the workspace installed names an id nothing here was installed under.
+    let claim = renamed_package(APP, &["so.tilo.lang.someone"], &SigningIdentity::generate());
+    packages.verified(WORKSPACE, APP, &claim).unwrap();
+    assert!(packages.earlier_ids(WORKSPACE).of(APP).is_empty());
+    let launcher = ServerLauncher::new(
+        WORKSPACE.to_owned(),
+        nowhere(),
+        "server".to_owned(),
+        Err("no launcher".to_owned()),
+        std::sync::Arc::new(packages),
+    );
+    assert_eq!(
+        launcher.earlier_ids().of("so.tilo.notes"),
+        ["so.tilo.lang.notes"].map(str::to_owned)
+    );
 }
 
 /// A page asking the server's identity service for its keys, on the connection it was opened
@@ -500,10 +631,18 @@ async fn a_page_shows_nothing_to_someone_who_may_not_read_its_app() {
         dir.path().join("journals"),
         owner.device_public_key,
         Err("no tilo-launcher is installed on this server".to_owned()),
+        Shipped {
+            packages: Vec::new(),
+            kept: std::sync::Arc::new(WorkspacePackages::new(dir.path().join("packages"))),
+        },
     );
     apps.reconcile().await;
     let (_root, packages, _) = packages();
-    let pages = ServerPages::new(apps, packages, std::sync::Arc::new(Readers::default()));
+    let pages = ServerPages::new(
+        apps,
+        std::sync::Arc::new(packages),
+        std::sync::Arc::new(Readers::default()),
+    );
     assert!(
         pages.apps(id).iter().any(|(app, _)| app == APP),
         "the installed app is offered"

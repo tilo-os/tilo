@@ -34,3 +34,11 @@ bins=(tilo-server discord-worker)
 cargo build --locked --profile "$profile" -p tilo-server -p discord-worker \
   --features tilo-server/agents "${bins[@]/#/--bin=}"
 for bin in "${bins[@]}"; do cp "$target/$profile/$bin" "$out/"; done
+# The image is a minimal system with no display: a program that needs a display
+# or compositor library would not start there. Each one's needed libraries are
+# read from the program itself, so a dependency that pulls one in fails here.
+for bin in "${bins[@]}"; do
+  needed=$(readelf -d "$out/$bin" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
+  display=$(grep -E '^lib(xkbcommon|wayland|X11|xcb|EGL|GL|gbm|drm|input|seat|pixman)' <<<"$needed" || true)
+  [[ -z $display ]] || die "$bin needs display libraries the image does not carry: $(tr '\n' ' ' <<<"$display")"
+done

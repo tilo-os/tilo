@@ -5,6 +5,11 @@
 //! Every broker hands the workspace's apps the same three things: what the workspace says of its
 //! people and policy ([`ServerWorkspaces`]), the server's commits into it, and the launcher that
 //! runs the workspace's packages in this server's processes ([`ServerLauncher`]).
+//!
+//! The system's apps a server ships are installed in every workspace whose apps it governs, as
+//! the apps they replace were in every workspace: when it starts and finds one that lacks them,
+//! and when it starts governing one. Installing a package is what carries what the native app of
+//! its id kept there ([`ServerApps::carry_installed`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -13,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_workspace_service::apps::collab_broker::{BrokerHandle, FanoutState};
 use tilo_workspace_service::apps::collab_core::BrokerChannels;
+use tilo_workspace_service::apps::package_runs::Sockets;
 use tilo_workspace_service::apps::service_reads::ServiceReads;
 use tilo_workspace_service::apps::service_workspaces::{ServiceCommits, block_on, describe};
 use tilo_workspace_service::apps::services::{
@@ -83,7 +89,6 @@ impl ServerWorkspaces {
         &self.runtime
     }
 
-    /// The `.tapp` file `workspace` installed as `app`, as the server keeps it.
     /// What a native app of the id `app` kept in `workspace`, as this server holds it: each of
     /// its documents there by the key a store keeps it under, and none of the records a tilolang
     /// package keeps under the same id (its document and their chunks). While one of them does
@@ -127,6 +132,7 @@ impl ServerWorkspaces {
         })
     }
 
+    /// The `.tapp` file `workspace` installed as `app`, as the server keeps it.
     #[must_use]
     pub fn installed_package(&self, workspace: &str, app: &str) -> Option<Vec<u8>> {
         let workspaces = self.workspaces.clone();
@@ -178,6 +184,9 @@ impl WorkspaceAuthority for OneWorkspace {
 struct Running {
     _broker: BrokerHandle,
     launcher: Arc<ServerLauncher>,
+    /// The releases the workspace had installed when its apps started here, and each installed
+    /// since whose carry has run: each is carried once, when it is installed.
+    installed: Arc<Mutex<BTreeSet<(String, String)>>>,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
 }
@@ -185,19 +194,35 @@ struct Running {
 /// The apps this server runs for the workspaces it keeps.
 pub struct ServerApps {
     workspaces: ServerWorkspaces,
-    /// Where each workspace's broker listens: one socket per workspace, under this directory.
+    /// Where the services of this server's apps listen: one broker socket per workspace, the
+    /// identity service's and the content store's.
     sockets: PathBuf,
     /// Where each workspace's invocation journal is kept.
     journals: PathBuf,
     device: [u8; 32],
     processes: ProcessStart,
+    shipped: Shipped,
     running: Mutex<BTreeMap<WorkspaceId, Running>>,
 }
 
+/// The system's apps a server ships, and the packages its workspaces run, which it keeps.
+pub struct Shipped {
+    /// The signed packages of the system's apps, each installed in every workspace whose apps
+    /// the server governs.
+    pub packages: Vec<Vec<u8>>,
+    /// The packages kept here: what tells the ids an app was published under before.
+    pub kept: Arc<super::WorkspacePackages>,
+}
+
+/// The identity service's socket among a server's app sockets.
+pub const IDENTITY_SOCKET: &str = "identity.sock";
+/// The content store's socket among a server's app sockets.
+pub const CONTENT_SOCKET: &str = "content.sock";
+
 impl ServerApps {
     /// The apps of the workspaces `workspaces` keeps, signed by this server's device `device`
-    /// and run in `processes`. Each workspace's broker listens under `sockets` and journals under
-    /// `journals`.
+    /// and run in `processes`, with the system's apps it ships installed in each whose apps it
+    /// governs. Their services listen under `sockets`, and each broker journals under `journals`.
     #[must_use]
     pub fn new(
         workspaces: ServerWorkspaces,
@@ -205,6 +230,7 @@ impl ServerApps {
         journals: PathBuf,
         device: [u8; 32],
         processes: ProcessStart,
+        shipped: Shipped,
     ) -> Arc<Self> {
         Arc::new(Self {
             workspaces,
@@ -212,6 +238,7 @@ impl ServerApps {
             journals,
             device,
             processes,
+            shipped,
             running: Mutex::new(BTreeMap::new()),
         })
     }
@@ -305,6 +332,14 @@ impl ServerApps {
             .into_iter()
             .filter_map(|summary| WorkspaceId::parse(&summary.workspace))
             .collect();
+        // What each workspace whose apps start now had installed, before this server installs
+        // the system's apps it lacks: those it installs are carried as every install is.
+        let running = self.workspaces();
+        let mut found = BTreeMap::new();
+        for workspace in kept.iter().filter(|workspace| !running.contains(workspace)) {
+            found.insert(*workspace, self.releases(*workspace).await);
+            self.install_shipped(*workspace).await;
+        }
         let apps = Arc::clone(self);
         // Starting a broker binds its socket and starts its thread, and stopping one joins it:
         // never on the runtime's own workers.
@@ -319,20 +354,22 @@ impl ServerApps {
             };
             drop(gone);
             let mut refused = BTreeMap::new();
-            for workspace in kept {
-                if apps.running().contains_key(&workspace) {
+            for workspace in &kept {
+                if apps.running().contains_key(workspace) {
                     continue;
                 }
-                match apps.start(workspace) {
+                let installed = found.remove(workspace).unwrap_or_default();
+                match apps.start(*workspace, installed) {
                     Ok(running) => {
-                        let launcher = Arc::clone(&running.launcher);
-                        apps.running().insert(workspace, running);
-                        apps.carry_earlier(workspace, &launcher);
+                        apps.running().insert(*workspace, running);
                     }
                     Err(error) => {
-                        refused.insert(workspace, error.to_string());
+                        refused.insert(*workspace, error.to_string());
                     }
                 }
+            }
+            for workspace in kept {
+                apps.carry_installed(workspace);
             }
             refused
         })
@@ -343,27 +380,102 @@ impl ServerApps {
         }
     }
 
-    /// Start `workspace`'s broker.
-    /// For each package `workspace` installed under the id of a native app whose documents the
-    /// workspace holds, start a run that shows nothing, for the workspace's server: the server
-    /// governs the workspace, so the package's migrations carry those documents here. The run
-    /// reads the server's own copy of that native app's documents in this workspace alone; its
-    /// migration marks what it carried, so a later start carries nothing again, and it ends once
-    /// its migrations ran, as does a package with none that read them.
-    fn carry_earlier(&self, workspace: WorkspaceId, launcher: &ServerLauncher) {
-        for installed in self.workspaces.installed(workspace) {
-            let app = installed.release.app;
-            let carried = self
-                .workspaces
-                .native_documents(workspace, &app)
-                .and_then(|documents| launcher.runs().carry(&app, documents));
-            if let Err(error) = carried {
-                tracing::warn!(%workspace, app, %error, "what the native app kept is not carried yet");
+    /// The releases `workspace` runs now, each its app and package.
+    async fn releases(&self, workspace: WorkspaceId) -> BTreeSet<(String, String)> {
+        self.workspaces
+            .workspaces
+            .app_versions(&workspace.to_string())
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|installed| (installed.release.app, installed.release.package))
+            .collect()
+    }
+
+    /// Install each package this server ships that `workspace` does not run yet, when this
+    /// server governs the workspace's apps: as a member installs one, through the workspace's
+    /// governance, signed by this server's device for the person it belongs to.
+    async fn install_shipped(&self, workspace: WorkspaceId) {
+        if self.shipped.packages.is_empty() {
+            return;
+        }
+        let workspaces = &self.workspaces.workspaces;
+        let id = workspace.to_string();
+        if !workspaces.governs_applications(&id).await.unwrap_or(false) {
+            return;
+        }
+        let cert = workspaces.serving_certificate().clone();
+        for package in &self.shipped.packages {
+            match workspaces.install_package(&id, &cert, package).await {
+                Ok(app) => tracing::info!(%workspace, %app, "the workspace runs the system's app"),
+                Err(error) => {
+                    tracing::error!(%workspace, %error, "a system app was not installed");
+                }
             }
         }
     }
 
-    fn start(&self, workspace: WorkspaceId) -> std::io::Result<Running> {
+    /// Carry what a native app kept in `workspace` into each package installed there since its
+    /// apps started here, under the native app's id: a run that shows nothing, for the
+    /// workspace's server, whose migrations carry those documents. The run reads the server's own
+    /// copy of that native app's documents in this workspace alone; its migration marks what it
+    /// carried, and it ends once its migrations ran, as does a package with none that read them.
+    fn carry_installed(&self, workspace: WorkspaceId) {
+        let Some((launcher, carried)) = self.running().get(&workspace).map(|running| {
+            (
+                Arc::clone(&running.launcher),
+                Arc::clone(&running.installed),
+            )
+        }) else {
+            return;
+        };
+        for installed in self.workspaces.installed(workspace) {
+            let app = installed.release.app;
+            if !carried
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert((app.clone(), installed.release.package))
+            {
+                continue;
+            }
+            let documents = match self.workspaces.native_documents(workspace, &app) {
+                Ok(documents) if documents.is_empty() => continue,
+                Ok(documents) => documents,
+                Err(error) => {
+                    tracing::warn!(%workspace, app, %error, "what the native app kept is not read");
+                    continue;
+                }
+            };
+            let count = documents.len();
+            match launcher.runs().carry(&app, documents) {
+                Ok(()) => tracing::info!(
+                    %workspace,
+                    app,
+                    documents = count,
+                    "the installed app carries what the native app kept"
+                ),
+                Err(error) => {
+                    tracing::error!(%workspace, app, %error, "what the native app kept is not carried");
+                }
+            }
+        }
+    }
+
+    /// The sockets the apps of `workspace` reach this server's services on.
+    fn sockets(&self, workspace: WorkspaceId) -> Sockets {
+        Sockets {
+            collab: self.socket(workspace),
+            identity: self.sockets.join(IDENTITY_SOCKET),
+            content: self.sockets.join(CONTENT_SOCKET),
+        }
+    }
+
+    /// Start `workspace`'s broker, whose workspace runs the releases `installed` as it starts.
+    fn start(
+        &self,
+        workspace: WorkspaceId,
+        installed: BTreeSet<(String, String)>,
+    ) -> std::io::Result<Running> {
         use std::os::unix::fs::DirBuilderExt as _;
         // Only this server's own processes reach a workspace's broker, and each workspace's
         // journal is a private directory of its own: both under directories only it may enter.
@@ -376,9 +488,10 @@ impl ServerApps {
         let socket = self.socket(workspace);
         let launcher = Arc::new(ServerLauncher::new(
             workspace.to_string(),
-            socket.clone(),
+            self.sockets(workspace),
             hex::encode(self.device),
             self.processes.clone(),
+            Arc::clone(&self.shipped.kept),
         ));
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
         let fanout = Arc::new(FanoutState::new());
@@ -410,6 +523,7 @@ impl ServerApps {
         Ok(Running {
             _broker: broker,
             launcher,
+            installed: Arc::new(Mutex::new(installed)),
             channels,
             fanout,
         })

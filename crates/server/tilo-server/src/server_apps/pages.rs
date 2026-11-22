@@ -90,7 +90,7 @@ pub struct ServerPages(Arc<Pages>);
 
 struct Pages {
     apps: Arc<ServerApps>,
-    packages: WorkspacePackages,
+    packages: Arc<WorkspacePackages>,
     readers: Arc<Readers>,
     /// The name each installed package gives its app, by workspace, app and package, or `None`
     /// for one that is no app this server runs.
@@ -101,7 +101,11 @@ impl ServerPages {
     /// The pages of the apps `apps` runs, whose packages `packages` keeps, each read by the
     /// reader `readers` names for it.
     #[must_use]
-    pub fn new(apps: Arc<ServerApps>, packages: WorkspacePackages, readers: Arc<Readers>) -> Self {
+    pub fn new(
+        apps: Arc<ServerApps>,
+        packages: Arc<WorkspacePackages>,
+        readers: Arc<Readers>,
+    ) -> Self {
         Self(Arc::new(Pages {
             apps,
             packages,
@@ -214,7 +218,7 @@ impl Pages {
 /// Whether `access` lets its holder read what `app` keeps in `workspace`.
 fn may_read(access: &tilo_action_policy::MemberAccess, workspace: WorkspaceId, app: &str) -> bool {
     access.allows(
-        &tilo_action_policy::TreePath::workspace(&workspace.to_string()).app(app),
+        &tilo_action_policy::TreePath::workspace(workspace.to_string()).app(app),
         tilo_actions::ActionKind::Read,
         std::time::SystemTime::now(),
     )

@@ -262,8 +262,16 @@ enum Step {
     Waiting,
     /// It runs, its window's connection watched by the second (none for an instance that shows
     /// nothing), with the page window it draws into for one that shows a page.
-    Open(Box<Hosted>, Option<OwnedFd>, Option<page::PageWindow>),
+    Open(Box<Hosted>, Option<OwnedFd>, Option<Box<page::PageWindow>>),
 }
+
+/// Where an instance's patches go, the connection that watches it, and the page window it draws
+/// into for one that shows a page.
+type Transported = (
+    Box<dyn tilo_render_protocol::patch::Transport>,
+    Option<OwnedFd>,
+    Option<Box<page::PageWindow>>,
+);
 
 /// The host: its storage, what wakes it, and its instances.
 pub struct TilolangProcess {
@@ -619,10 +627,7 @@ impl TilolangProcess {
                 None,
             ),
             // A page is laid out here, and asked for on its own connection.
-            (Shows::Page, Some(page)) => (
-                None,
-                Some(std::os::unix::net::UnixStream::from(OwnedFd::from(page))),
-            ),
+            (Shows::Page, Some(page)) => (None, Some(std::os::unix::net::UnixStream::from(page))),
             // The session draws nothing for it: it has no window to hand, and none to expect.
             (Shows::Nothing, _) => (None, None),
             (Shows::View | Shows::Page, None) => {
@@ -958,36 +963,7 @@ impl TilolangProcess {
                 .clone()
                 .unwrap_or_else(tilo_content_device::for_app),
         );
-        // A window's instance draws and hears its window; one that shows nothing sends its
-        // patches nowhere and hears nothing.
-        let mut page_window = None;
-        let (transport, watched): (Box<dyn tilo_render_protocol::patch::Transport>, _) =
-            match spec.shows {
-                Shows::View => {
-                    let window = opening
-                        .window
-                        .take()
-                        .ok_or_else(|| AdmitError::Join("its window is gone".to_owned()))?;
-                    let watched = window
-                        .as_fd()
-                        .try_clone_to_owned()
-                        .map_err(AdmitError::Window)?;
-                    let transport = ChannelTransport::new(window).map_err(AdmitError::Window)?;
-                    (Box::new(transport), Some(watched))
-                }
-                // A page's window is drawn here, beside the app's code, and watched by its
-                // connection.
-                Shows::Page => {
-                    let connection = opening
-                        .page
-                        .take()
-                        .ok_or_else(|| AdmitError::Join("its page is gone".to_owned()))?;
-                    let (app_end, window_end) = tilo_render_protocol::patch::local::pair();
-                    page_window = Some(page::PageWindow::new(connection, window_end));
-                    (Box::new(app_end), None)
-                }
-                Shows::Nothing => (Box::new(hosted::NoView), None),
-            };
+        let (transport, watched, page_window) = Self::transport(spec.shows, opening)?;
         let shows = spec.shows;
         let mut hosted = Hosted::with_document(
             spec,
@@ -1038,6 +1014,37 @@ impl TilolangProcess {
             "tilolang instance opened"
         );
         Ok(Step::Open(Box::new(hosted), watched, page_window))
+    }
+
+    /// Where an instance showing `shows` sends its patches. A window's instance draws and hears
+    /// its window, watched by its connection; a page's is drawn here, beside the app's code, and
+    /// watched by the page's connection; one that shows nothing sends its patches nowhere and
+    /// hears nothing.
+    fn transport(shows: Shows, opening: &mut Opening) -> Result<Transported, AdmitError> {
+        Ok(match shows {
+            Shows::View => {
+                let window = opening
+                    .window
+                    .take()
+                    .ok_or_else(|| AdmitError::Join("its window is gone".to_owned()))?;
+                let watched = window
+                    .as_fd()
+                    .try_clone_to_owned()
+                    .map_err(AdmitError::Window)?;
+                let transport = ChannelTransport::new(window).map_err(AdmitError::Window)?;
+                (Box::new(transport), Some(watched), None)
+            }
+            Shows::Page => {
+                let connection = opening
+                    .page
+                    .take()
+                    .ok_or_else(|| AdmitError::Join("its page is gone".to_owned()))?;
+                let (app_end, window_end) = tilo_render_protocol::patch::local::pair();
+                let page = page::PageWindow::new(connection, window_end);
+                (Box::new(app_end), None, Some(Box::new(page)))
+            }
+            Shows::Nothing => (Box::new(hosted::NoView), None, None),
+        })
     }
 
     fn attach_origin(&self, opening: &mut Opening, hosted: &mut Hosted) -> Result<(), AdmitError> {
@@ -1106,7 +1113,7 @@ impl TilolangProcess {
         for (hosted, watched, page) in started {
             changed = true;
             match page {
-                Some(page) => self.show(hosted, page),
+                Some(page) => self.show(hosted, *page),
                 None => self.add(hosted, watched),
             }
         }

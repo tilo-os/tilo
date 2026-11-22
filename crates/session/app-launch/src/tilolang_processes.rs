@@ -1064,6 +1064,7 @@ mod tests {
     /// workspace's process is granted it.
     #[test]
     fn what_the_server_keeps_for_a_workspace_is_read_there_alone() {
+        use durable_store::DurableStore as _;
         const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000e1";
         const ELSEWHERE: &str = "7a110d00-0000-4000-8000-0000000000e2";
         let home = tempfile::tempdir().expect("the server's data home");
@@ -1108,7 +1109,6 @@ mod tests {
             .expect("the store's root")
             .to_path_buf();
         let store = app_state::FsStore::provisioned(&root);
-        use durable_store::DurableStore as _;
         assert_eq!(
             store.documents(NOTES, WORKSPACE).unwrap(),
             ["ours"],

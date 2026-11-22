@@ -31,6 +31,18 @@ pub fn through_launcher(launcher: PathBuf) -> Arc<Processes> {
     Processes::new(launcher)
 }
 
+/// Where a device's services for its apps listen, each named by the device that runs them: a run
+/// reaches only these, never a default of the machine's.
+#[derive(Clone, Debug)]
+pub struct Sockets {
+    /// The workspace's broker, which every connection is made on.
+    pub collab: PathBuf,
+    /// The identity service that signs what the apps write.
+    pub identity: PathBuf,
+    /// The content store the apps keep files and pictures in.
+    pub content: PathBuf,
+}
+
 /// One connection this device made for an app, waiting for the broker to believe it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Made {
@@ -43,8 +55,7 @@ enum Made {
 /// The runs of one workspace's packages on this device.
 pub struct PackageRuns {
     workspace: String,
-    /// The workspace's broker socket, which every connection is made on.
-    collab_socket: PathBuf,
+    sockets: Sockets,
     /// Who this device is in the workspace: whose the process of a run that shows nothing is.
     /// Each call it runs still runs as the caller who made it.
     device_person: String,
@@ -55,18 +66,18 @@ pub struct PackageRuns {
 }
 
 impl PackageRuns {
-    /// The runs of `workspace`'s packages, connected to its broker on `collab_socket`, started
+    /// The runs of `workspace`'s packages, reaching the device's services on `sockets`, started
     /// through `processes`.
     #[must_use]
     pub fn new(
         workspace: String,
-        collab_socket: PathBuf,
+        sockets: Sockets,
         device_person: String,
         processes: ProcessStart,
     ) -> Self {
         Self {
             workspace,
-            collab_socket,
+            sockets,
             device_person,
             processes,
             made: Mutex::new(BTreeMap::new()),
@@ -89,7 +100,7 @@ impl PackageRuns {
     /// The collaboration connection of the tab `tab` of `app`, which the broker believes as
     /// what `made` says it is, once.
     fn connect(&self, app: &str, tab: u64, made: Made) -> std::io::Result<OwnedFd> {
-        let mut stream = std::os::unix::net::UnixStream::connect(&self.collab_socket)?;
+        let mut stream = std::os::unix::net::UnixStream::connect(&self.sockets.collab)?;
         let key = (app.to_owned(), tab);
         self.made().insert(key.clone(), made);
         if let Err(error) =
@@ -113,17 +124,22 @@ impl PackageRuns {
         app: &str,
         call: Option<[u8; 16]>,
     ) -> Result<(OwnedFd, Option<OwnedFd>), String> {
-        let identity = match call {
-            Some(call) => {
-                launcher::services::resolve_identity_bind_for_call(app, &self.workspace, call)
-            }
-            None => launcher::services::resolve_identity_bind(app, Some(&self.workspace), false),
-        }
+        let identity = launcher::services::resolve_identity_bind_at(
+            &self.sockets.identity,
+            app,
+            &self.workspace,
+            call,
+        )
         .map_err(|error| format!("the identity service: {error}"))?
         .ok_or("this device's identity service is not running")?;
-        let content = launcher::services::resolve_blob_bind(app, Some(&self.workspace), false)
-            .map_err(|error| format!("the content store: {error}"))?
-            .map(|bind| bind.host);
+        let content = launcher::services::resolve_blob_bind_at(
+            &self.sockets.content,
+            app,
+            Some(&self.workspace),
+            false,
+        )
+        .map_err(|error| format!("the content store: {error}"))?
+        .map(|bind| bind.host);
         Ok((identity.host, content))
     }
 

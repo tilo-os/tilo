@@ -57,6 +57,9 @@ pub enum ServerError {
     /// An additional endpoint protocol conflicts with the server router.
     #[error("protocol registration: {0}")]
     ProtocolRegistration(String),
+    /// A server that ships apps cannot run them.
+    #[error("this server ships apps and can run none: {0}")]
+    Apps(String),
 }
 
 impl From<crate::service::ServiceError> for ServerError {
@@ -801,20 +804,25 @@ impl Server {
             );
             push_background_task(&background_tasks, tokio::spawn(kept.keep_content()));
             // The apps the workspaces kept here installed run here too, for whoever calls them.
+            // A server that ships apps runs them, or does not start.
             #[cfg(feature = "agents")]
-            push_background_task(
-                &background_tasks,
-                tokio::spawn(crate::server_apps::serve(
-                    governed.clone(),
-                    crate::server_apps::Device {
-                        identity_root: cfg.identity_root.clone(),
-                        cert: identity.device_cert.clone(),
-                        keys: workspace_keys.as_ref().map(|keys| keys.keys()),
-                    },
-                    cfg.state_root.clone(),
-                    app_serving.clone(),
-                )),
-            );
+            match crate::server_apps::start(
+                governed.clone(),
+                crate::server_apps::Device {
+                    identity_root: cfg.identity_root.clone(),
+                    cert: identity.device_cert.clone(),
+                    keys: workspace_keys.as_ref().map(|keys| keys.keys()),
+                },
+                &cfg.state_root,
+                cfg.packages.as_deref(),
+                app_serving.clone(),
+            )
+            .await
+            {
+                Ok(serving) => push_background_task(&background_tasks, tokio::spawn(serving.run())),
+                Err(error) if cfg.packages.is_some() => return Err(ServerError::Apps(error)),
+                Err(error) => tracing::warn!(%error, "this server runs no app"),
+            }
             push_background_task(
                 &background_tasks,
                 tokio::spawn(crate::content::collection::run(

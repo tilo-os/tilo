@@ -184,7 +184,7 @@ rustix = { workspace = true, features = ["process"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The tilolang processes a device that holds a workspace runs its packages in (`apps::package_runs`).
-tilo-app-launch = { path = "../../session/app-launch", optional = true }
+tilo-app-launch = { path = "../../session/app-launch", optional = true, default-features = false }
 
 [dev-dependencies]
 # The stand-in authorization server a sign-in test walks the browser through.

@@ -138,7 +138,11 @@ impl Apps {
                 .unwrap_or_default();
             tilo_workspace_service::apps::package_runs::PackageRuns::new(
                 self.workspace.clone(),
-                self.root.join(COLLAB_SOCKET),
+                tilo_workspace_service::apps::package_runs::Sockets {
+                    collab: self.root.join(COLLAB_SOCKET),
+                    identity: self.root.join(crate::IDENTITY_SOCKET),
+                    content: self.root.join(crate::BLOB_SOCKET),
+                },
                 person,
                 linux::resolve_launcher(&self.launcher_candidates)
                     .map(tilo_workspace_service::apps::package_runs::through_launcher),

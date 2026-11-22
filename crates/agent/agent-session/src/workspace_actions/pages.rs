@@ -840,7 +840,7 @@ impl Worker {
                     let Some(action) = row.action else { continue };
                     let fields = RowField::of(&action.params).unwrap_or_default();
                     rows.push(SearchRow {
-                        id: next_row(&rows),
+                        id: next_row(rows),
                         label: action.action_label,
                         secondary: row.resource.label,
                         href: None,
@@ -869,7 +869,7 @@ impl Worker {
                 continue;
             };
             rows.push(SearchRow {
-                id: next_row(&rows),
+                id: next_row(rows),
                 label: action.action_label,
                 secondary: row.resource.label,
                 href: None,

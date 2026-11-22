@@ -10,7 +10,7 @@ use tilo_broker_core::services::{
 };
 use tilo_desktop_model::Workspace;
 use tilo_workspace_service::apps::package_runs::PackageRuns;
-pub use tilo_workspace_service::apps::package_runs::ProcessStart;
+pub use tilo_workspace_service::apps::package_runs::{ProcessStart, Sockets};
 
 /// Why a launch with no page to show it in starts nothing.
 pub const NO_WINDOW: &str =
@@ -19,20 +19,25 @@ pub const NO_WINDOW: &str =
 /// The app broker's launcher for one workspace a server holds.
 pub struct ServerLauncher {
     runs: PackageRuns,
+    /// The packages this server keeps: what tells the ids an app was published under before.
+    packages: std::sync::Arc<super::WorkspacePackages>,
 }
 
 impl ServerLauncher {
-    /// The launcher of `workspace`'s broker on `collab_socket`, starting processes through
-    /// `processes` as the server's device, `device_person`.
+    /// The launcher of `workspace`'s broker, its apps reaching the server's services on
+    /// `sockets`, starting processes through `processes` as the server's device, `device_person`,
+    /// each the package `packages` keeps.
     #[must_use]
     pub fn new(
         workspace: String,
-        collab_socket: std::path::PathBuf,
+        sockets: Sockets,
         device_person: String,
         processes: ProcessStart,
+        packages: std::sync::Arc<super::WorkspacePackages>,
     ) -> Self {
         Self {
-            runs: PackageRuns::new(workspace, collab_socket, device_person, processes),
+            runs: PackageRuns::new(workspace, sockets, device_person, processes),
+            packages,
         }
     }
 
@@ -76,6 +81,12 @@ impl LauncherServices for ServerLauncher {
 
     fn windowless(&self, app: &str, workspace: &str) -> Result<Option<WindowlessStart>, String> {
         self.runs.windowless(app, workspace)
+    }
+
+    /// The ids the workspace's apps were published under before, as the packages this server
+    /// keeps for it say: an app renamed by its publisher keeps its earlier id's records.
+    fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
+        self.packages.earlier_ids(self.runs.workspace())
     }
 
     fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {

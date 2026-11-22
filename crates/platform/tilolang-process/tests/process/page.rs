@@ -58,8 +58,8 @@ fn numbered(html: &str, label: &str) -> Option<u32> {
     let at = html
         .find(&format!("aria-label=\"{label}\""))
         .or_else(|| html.find(&format!(">{label}<")))?;
-    let tag = html[..at].rfind("data-p=\"")?;
-    let number = html[tag..].split('"').nth(1)?;
+    let tag = html.get(..at)?.rfind("data-p=\"")?;
+    let number = html.get(tag..)?.split('"').nth(1)?;
     number.parse().ok()
 }
 
@@ -73,7 +73,10 @@ fn a_page_shows_the_apps_view_and_acts_on_it_as_the_person_did() {
     assert!(css.contains("--tilo-ground"), "the theme's colours: {css}");
     let new_note = numbered(&body, "New note").unwrap_or_else(|| {
         let at = body.find("New").unwrap_or_default();
-        panic!("no New note in {}", &body[at.saturating_sub(1500)..])
+        panic!(
+            "no New note in {}",
+            body.get(at.saturating_sub(1500)..).unwrap_or(&body)
+        )
     });
     assert!(!body.contains("<textarea"), "no note is open yet: {body}");
 
