@@ -9,8 +9,7 @@ use super::{
     Point, Rect, SECTION_GAP, Theme, WindowToolbar, picker_width,
 };
 
-/// The space a location takes back from the gaps beside it, each side: the section gap down to
-/// the gap controls keep.
+/// The gap a location takes back beside it, each side: the space the row keeps between parts.
 const SHARED_GAP: f64 = 2.0 * (SECTION_GAP - CONTROL_GAP);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,6 +69,8 @@ pub(crate) struct ViewsMeasure {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct LocationForms {
     pub text: Vec<f64>,
+    /// A breadcrumb's own name: the place it stands in, its narrowest whole form.
+    pub name: Option<f64>,
     pub chrome: f64,
     /// Each of the notice's buttons as a text button (none: the notice up
     /// has none, or it is not measured).
@@ -85,6 +86,17 @@ impl LocationForms {
             .iter()
             .position(|words| words + self.chrome <= widest)
             .unwrap_or_else(|| self.text.len().saturating_sub(1))
+    }
+
+    /// The width the location's narrowest form needs whole: its chrome and the gaps beside it.
+    pub(super) fn whole(&self) -> f64 {
+        let words = self.text.last().copied().or(self.name);
+        words.map_or(MIN_LOCATION_PX, |words| words + self.chrome)
+    }
+
+    /// The least width the location takes: [`Self::whole`], less the gap it takes back each side.
+    pub(super) fn least(&self) -> f64 {
+        (self.whole() - SHARED_GAP).max(MIN_LOCATION_PX)
     }
 
     pub(super) fn width(&self, form: usize) -> f64 {
@@ -146,6 +158,7 @@ pub(super) struct MeasureKey {
     pub(super) leading: Vec<(String, bool)>,
     pub(super) actions: Vec<(String, bool)>,
     pub(super) forms: Vec<String>,
+    pub(super) name: Option<String>,
     pub(super) editable: bool,
     pub(super) picker: bool,
     pub(super) lead: LocationLead,
@@ -328,14 +341,11 @@ impl Parts {
                 .width();
         let form = forms.fit(leftover);
         let notice = forms.notice(toolbar, leftover);
-        let least = notice.as_ref().map_or_else(
-            || match (toolbar.location.is_some(), forms.text.len()) {
-                (false, _) => 0.0,
-                (true, 0 | 1) => MIN_LOCATION_PX,
-                (true, n) => forms.width(n - 1) + forms.chrome - SHARED_GAP,
-            },
-            |notice| notice.least,
-        );
+        let least = match notice.as_ref() {
+            Some(notice) => notice.least,
+            None if toolbar.location.is_none() => 0.0,
+            None => forms.least(),
+        };
         let shown = (forms.width(form), least);
         let icons = Self::arranged(toolbar, row, views, shown, (&[], &[]));
         let names = labels
@@ -457,39 +467,41 @@ impl Parts {
             let notice = forms.notice(toolbar, leftover);
             parts.settle(form, labels, action_labels, notice, forms);
         }
-        if toolbar.notice.is_none() && forms.text.len() > 1 && !parts.views_in_location() {
+        if toolbar.notice.is_none() && !parts.views_in_location() {
             parts.fit_shown_form(row, forms);
         }
         parts
     }
 
-    /// Where the location names itself in shorter forms, the form it shows stands whole; where
-    /// even the space beside it does not hold that, it leaves the row rather than be cut.
+    /// The location's form stands whole: where the row left it short of that, it takes back the
+    /// gap beside it, each side. Where even that does not hold it, a location with shorter forms
+    /// leaves the row rather than be cut, and one without is cut inside its place.
     fn fit_shown_form(&mut self, row: Rect, forms: &LocationForms) {
         self.form = forms.fit(self.location.width());
-        let need = forms.width(self.form) + forms.chrome;
+        // A breadcrumb's form is its own name, not a line of the location's text.
+        let need = if forms.text.is_empty() {
+            forms.whole()
+        } else {
+            forms.width(self.form) + forms.chrome
+        };
         if self.location.area() <= 0.0 || need <= self.location.width() {
             return;
         }
-        // Whole pixels: a `f32` measure never leaves the last glyph outside its place.
         let short = (need - self.location.width()).ceil();
         let shared = SHARED_GAP / 2.0;
-        let left_room = if self.location.x0 > row.x0 {
-            shared
+        let left = if self.location.x0 > row.x0 {
+            shared.min(short)
         } else {
             0.0
         };
-        let right_room = if self.location.x1 < row.x1 {
-            shared
+        let right = if self.location.x1 < row.x1 {
+            shared.min(short - left)
         } else {
             0.0
         };
-        let left = (short / 2.0).min(left_room);
-        let right = (short - left).min(right_room);
-        let left = left + (short - left - right).min(left_room - left);
         self.location.x0 -= left;
         self.location.x1 += right;
-        if self.location.width() < need {
+        if forms.text.len() > 1 && self.location.width() < need {
             self.location = Rect::ZERO;
         }
     }
@@ -697,15 +709,17 @@ impl Parts {
         let plain = (0..=all.plain)
             .rev()
             .map(|plain| (Kept { plain, ..all }, views));
-        let navigating = (0..=all.navigating).rev().map(|navigating| {
-            let kept = Kept {
+        // The leading actions that move through the content are a pair: half of one is worse
+        // than neither, so they stand together or fold together.
+        let navigating = std::iter::once((
+            Kept {
                 plain: 0,
-                navigating,
+                navigating: 0,
                 inline: 0,
                 ..all
-            };
-            (kept, ViewsPlace::Overflow)
-        });
+            },
+            ViewsPlace::Overflow,
+        ));
         let bare = Kept {
             plain: 0,
             navigating: 0,
@@ -820,7 +834,7 @@ impl Parts {
             }
             _ => {}
         }
-        if toolbar.location.is_some() && x1 - x0 >= MIN_LOCATION_PX {
+        if toolbar.location.is_some() && x1 > x0 {
             parts.location = Rect::new(x0, y0, x1, y0 + CONTROL_PX);
         }
         if let ViewsPlace::InLocation(least) = place

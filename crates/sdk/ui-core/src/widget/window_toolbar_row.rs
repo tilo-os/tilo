@@ -42,8 +42,6 @@ use layout::{
 use location_label::edited_word;
 use location_label::{LocationLabel, trailing_word};
 pub(crate) use paint::labelled_face;
-#[cfg(test)]
-pub(crate) use paint::location_shown;
 use paint::picker_width;
 #[cfg(test)]
 use paint::shows_on;
@@ -67,7 +65,7 @@ const VIEWS_SIZE: super::ControlSize = super::ControlSize::Small;
 
 const SECTION_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 const LOCATION_ICON_PX: f64 = crate::tokens::Metrics::BASE.icon_control as f64;
-/// A location narrower than this is not shown: the bar keeps its buttons.
+/// The least a location that names nothing takes: below it the bar keeps its buttons.
 pub(crate) const MIN_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_min_width as f64;
 /// The width a location's edited field measures its text in, so its padding stays its own.
 const FIELD_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_comfortable_width as f64;
@@ -431,6 +429,9 @@ impl ToolbarRow {
                     .collect()
             })
             .unwrap_or_default();
+        let name = location
+            .and_then(|location| location.segments.last())
+            .map(|segment| segment.label.clone());
         let words = |actions: &[crate::window_toolbar::ToolbarAction]| -> Vec<(String, bool)> {
             actions
                 .iter()
@@ -457,6 +458,7 @@ impl ToolbarRow {
             leading,
             actions,
             forms,
+            name,
             editable: location.is_some_and(|location| location.editable),
             picker: location
                 .is_some_and(|location| !location.editable && !location.choices.is_empty()),
@@ -477,6 +479,7 @@ impl ToolbarRow {
         };
         if key.labels.is_empty()
             && key.forms.is_empty()
+            && key.name.is_none()
             && key.leading.iter().all(|(name, _)| name.is_empty())
             && key.actions.iter().all(|(name, _)| name.is_empty())
         {
@@ -505,6 +508,7 @@ impl ToolbarRow {
             let mut width = |label: &str| f64::from(text.measure_style(label, None, &style).0);
             let forms = LocationForms {
                 text: key.forms.iter().map(|form| width(form)).collect(),
+                name: key.name.as_deref().map(|name| width(name)),
                 chrome: location_chrome((key.editable, key.picker, key.lead), theme),
                 actions,
                 trailing: key
@@ -554,15 +558,19 @@ impl ToolbarRow {
         self.shown.as_ref().map(|(_, toolbar)| toolbar)
     }
 
-    /// Whether the location or a leading action gave up its place in the row: what a strip's
-    /// "+" beside the parts costs them. A bar that can give the row more width asks before it
-    /// keeps it.
+    /// Whether the location stands cut short of its name or a leading action gave up its place
+    /// in the row: what a strip's "+" beside the parts costs them. A bar that can give the row
+    /// more width asks before it keeps it.
     pub(crate) fn parts_yield(&self) -> bool {
-        let location_gone = self.parts.location.area() <= 0.0
-            && self
-                .toolbar()
-                .is_some_and(|toolbar| toolbar.location.is_some());
-        location_gone || self.parts.leading.iter().any(|rect| rect.area() <= 0.0)
+        let whole = self
+            .views_size
+            .as_ref()
+            .map_or(MIN_LOCATION_PX, |measured| measured.forms.whole());
+        let cut = self
+            .toolbar()
+            .is_some_and(|toolbar| toolbar.location.is_some())
+            && whole > self.parts.location.width();
+        cut || self.parts.leading.iter().any(|rect| rect.area() <= 0.0)
     }
 
     pub(crate) fn take_measured(&mut self) -> bool {

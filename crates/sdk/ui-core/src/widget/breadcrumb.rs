@@ -178,33 +178,16 @@ impl Breadcrumb {
             candidates.push(vec![Some(0), None, Some(last)]);
         }
         candidates.push(vec![None, Some(last)]);
+        // The current place's name stands whole before a trail that cuts it: it is what the
+        // trail is for.
+        candidates.push(vec![Some(last)]);
         if let Some(fits) = candidates
             .iter()
             .find(|origins| self.width_of(origins, theme, tr) <= available_width)
         {
             return fits.clone();
         }
-        let style = theme.text(self.role);
-        let label = self.segments.get(last).map_or("", String::as_str);
-        let first: String = crate::text_break::grapheme_indices(label)
-            .next()
-            .map(|(_, grapheme)| grapheme)
-            .unwrap_or_default()
-            .to_owned();
-        let least = f64::from(
-            tr.measure_style(
-                &format!("{first}{}", crate::text_render::ELLIPSIS),
-                None,
-                &style,
-            )
-            .0,
-        );
-        let beside = self.width_of(&[None], theme, tr) + self.separator_block(theme);
-        if beside + least <= available_width {
-            vec![None, Some(last)]
-        } else {
-            vec![Some(last)]
-        }
+        vec![Some(last)]
     }
 
     fn labels_of(&self, origins: &[Option<usize>]) -> Vec<String> {
