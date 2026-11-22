@@ -175,7 +175,7 @@ async fn a_file_a_message_carries_is_told_to_the_turn_and_read_as_content_from_o
     let mut posting = saying(&conversation, "What does Bo ask for?");
     posting["attachments"] =
         json!([{"kind": "file", "name": "from Bo.md", "blob": blob, "size": PASSED_ON.len()}]);
-    tilo_server::workspace_agents::invoke_named(
+    tilo_workspace_service::agents::invoke_named(
         &WorkspaceActionProvider::new(hosted.actions.clone(), id),
         &person,
         &tilo_peer_state::document_frame::DocumentRoute {

@@ -23,10 +23,6 @@ __all__ = [
     "Agent",
     "AgentState",
     "Bound",
-    "Coding",
-    "CodingHarness",
-    "CodingProcess",
-    "NewCoding",
     "NewSubAgent",
     "Note",
     "Produced",
@@ -39,7 +35,6 @@ __all__ = [
     "CreateAgentArgs",
     "SetAgentSpendLimitArgs",
     "RecordAgentSpendArgs",
-    "SetAgentOnHostArgs",
     "RenameAgentArgs",
     "SetAgentModelArgs",
     "SetAgentInstructionArgs",
@@ -50,7 +45,6 @@ __all__ = [
     "StopSubAgentArgs",
     "SubAgentStandsArgs",
     "SubAgentProducedArgs",
-    "SubAgentCodingArgs",
     "SetSubAgentLimitsArgs",
 ]
 
@@ -58,7 +52,6 @@ class Agent(TypedDict):
     id: str
     name: str
     keeper: str
-    on_host: bool
     model: str | None
     mcp_client: str | None
     bound: list[Bound]
@@ -78,36 +71,6 @@ class Bound(TypedDict):
     kinds: list[str]
     answer: str
 
-class Coding(TypedDict):
-    harness: str
-    harness_name: str
-    repository: str
-    directory: str
-    branch: str
-    base: str
-    session: str
-    process: CodingProcess | None
-    spent_micros: int
-
-class CodingHarness(TypedDict):
-    id: str
-    name: str
-
-class CodingProcess(TypedDict):
-    started_ms: int
-    ended_ms: int | None
-    ended: str
-    exit: int | None
-    words: str
-    stopped_by: str
-    command: str
-
-class NewCoding(TypedDict):
-    harness: str | None
-    repository: str
-    branch: str | None
-    base: str | None
-
 class NewSubAgent(TypedDict):
     name: str
     job: str
@@ -117,7 +80,6 @@ class NewSubAgent(TypedDict):
     model: str | None
     task: str | None
     id: str | None
-    coding: NewCoding | None
 
 class Note(TypedDict):
     id: str
@@ -158,7 +120,6 @@ class Sub(TypedDict):
     line: str
     notes: list[Note]
     produced: list[Produced]
-    coding: Coding | None
 
 CreateAgentArgs = TypedDict("CreateAgentArgs", {
     "name": "str",
@@ -180,12 +141,6 @@ RecordAgentSpendArgs = TypedDict("RecordAgentSpendArgs", {
     "cost_micros": "int",
 })
 """The arguments of `record-agent-spend`."""
-
-SetAgentOnHostArgs = TypedDict("SetAgentOnHostArgs", {
-    "agent": "str",
-    "on_host": "bool",
-})
-"""The arguments of `set-agent-on-host`."""
 
 RenameAgentArgs = TypedDict("RenameAgentArgs", {
     "agent": "str",
@@ -225,7 +180,6 @@ StartSubAgentArgs = TypedDict("StartSubAgentArgs", {
     "model": NotRequired["str | None"],
     "task": NotRequired["str | None"],
     "id": NotRequired["str | None"],
-    "coding": NotRequired["NewCoding | None"],
 })
 """The arguments of `start-sub-agent`."""
 
@@ -256,15 +210,6 @@ SubAgentProducedArgs = TypedDict("SubAgentProducedArgs", {
 })
 """The arguments of `sub-agent-produced`."""
 
-SubAgentCodingArgs = TypedDict("SubAgentCodingArgs", {
-    "agent": "str",
-    "process": NotRequired["CodingProcess | None"],
-    "session": NotRequired["str | None"],
-    "spent_micros": NotRequired["int | None"],
-    "harness": NotRequired["CodingHarness | None"],
-})
-"""The arguments of `sub-agent-coding`."""
-
 SetSubAgentLimitsArgs = TypedDict("SetSubAgentLimitsArgs", {
     "agent": "str",
     "depth": NotRequired["int | None"],
@@ -274,11 +219,11 @@ SetSubAgentLimitsArgs = TypedDict("SetSubAgentLimitsArgs", {
 
 class Window(Resource):
     """Assistant window — `assistant.window`."""
-    __surface__ = "so.tilo.assistant@3278f28281833894"
+    __surface__ = "so.tilo.assistant@8141836cb464d498"
 
 class WorkspaceAgent(Resource):
     """Agents — `tilo.workspace.agent`."""
-    __surface__ = "so.tilo.assistant@3278f28281833894"
+    __surface__ = "so.tilo.assistant@8141836cb464d498"
     agents: list[Entry[Agent]]
 
     def create_agent(self,
@@ -331,18 +276,6 @@ class WorkspaceAgent(Resource):
     def record_agent_spend_many(self, items: list[RecordAgentSpendArgs]) -> list[dict[str, Any]]:
         """Runs `record-agent-spend` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("record-agent-spend", items)
-
-    def set_agent_on_host(self,
-        *,
-        agent: str,
-        on_host: bool,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("set-agent-on-host", agent=agent, on_host=on_host)
-
-    def set_agent_on_host_many(self, items: list[SetAgentOnHostArgs]) -> list[dict[str, Any]]:
-        """Runs `set-agent-on-host` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set-agent-on-host", items)
 
     def rename_agent(self,
         *,
@@ -418,7 +351,6 @@ class WorkspaceAgent(Resource):
         model: str | None = None,
         task: str | None = None,
         id: str | None = None,
-        coding: NewCoding | None = None,
     ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
@@ -436,8 +368,6 @@ class WorkspaceAgent(Resource):
             args["task"] = task
         if id is not None:
             args["id"] = id
-        if coding is not None:
-            args["coding"] = coding
         return self.action("start-sub-agent", **args)
 
     def start_sub_agent_many(self, items: list[StartSubAgentArgs]) -> list[dict[str, Any]]:
@@ -505,31 +435,6 @@ class WorkspaceAgent(Resource):
         """Runs `sub-agent-produced` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("sub-agent-produced", items)
 
-    def sub_agent_coding(self,
-        *,
-        agent: str,
-        process: CodingProcess | None = None,
-        session: str | None = None,
-        spent_micros: int | None = None,
-        harness: CodingHarness | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["agent"] = agent
-        if process is not None:
-            args["process"] = process
-        if session is not None:
-            args["session"] = session
-        if spent_micros is not None:
-            args["spent_micros"] = spent_micros
-        if harness is not None:
-            args["harness"] = harness
-        return self.action("sub-agent-coding", **args)
-
-    def sub_agent_coding_many(self, items: list[SubAgentCodingArgs]) -> list[dict[str, Any]]:
-        """Runs `sub-agent-coding` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("sub-agent-coding", items)
-
     def set_sub_agent_limits(self,
         *,
         agent: str,
@@ -551,6 +456,6 @@ class WorkspaceAgent(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"create_agent", "create_agent_many", "set_agent_spend_limit", "set_agent_spend_limit_many", "record_agent_spend", "record_agent_spend_many", "set_agent_on_host", "set_agent_on_host_many", "rename_agent", "rename_agent_many", "set_agent_model", "set_agent_model_many", "set_agent_instruction", "set_agent_instruction_many", "set_agent_bound", "set_agent_bound_many", "retire_agent", "retire_agent_many", "start_sub_agent", "start_sub_agent_many", "note_sub_agent", "note_sub_agent_many", "stop_sub_agent", "stop_sub_agent_many", "sub_agent_stands", "sub_agent_stands_many", "sub_agent_produced", "sub_agent_produced_many", "sub_agent_coding", "sub_agent_coding_many", "set_sub_agent_limits", "set_sub_agent_limits_many"})
+    __actions__ = frozenset({"create_agent", "create_agent_many", "set_agent_spend_limit", "set_agent_spend_limit_many", "record_agent_spend", "record_agent_spend_many", "rename_agent", "rename_agent_many", "set_agent_model", "set_agent_model_many", "set_agent_instruction", "set_agent_instruction_many", "set_agent_bound", "set_agent_bound_many", "retire_agent", "retire_agent_many", "start_sub_agent", "start_sub_agent_many", "note_sub_agent", "note_sub_agent_many", "stop_sub_agent", "stop_sub_agent_many", "sub_agent_stands", "sub_agent_stands_many", "sub_agent_produced", "sub_agent_produced_many", "set_sub_agent_limits", "set_sub_agent_limits_many"})
 
 

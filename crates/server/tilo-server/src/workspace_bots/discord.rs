@@ -9,8 +9,8 @@ use tilo_agent_session::AppCatalogue;
 use tilo_resource::Replica;
 use tilo_user_identity::DeviceCert;
 
-use super::workspace_resource;
 use crate::workspaces::Workspaces;
+use tilo_workspace_service::agents::workspace_resource;
 
 /// The Discord connector's app id, whose records the bridge keeps.
 pub use tilo_app_id::apps::DISCORD as APP;
@@ -121,7 +121,7 @@ pub async fn connect(
     // A record an older server or older devices wrote reads once migrated.
     let guild = automerge::AutoCommit::load(&guild)
         .map_err(|error| format!("the Discord record does not load: {error}"))
-        .and_then(|mut doc| super::opened::<discord::Guild>(&mut doc))
+        .and_then(|mut doc| tilo_workspace_service::agents::opened::<discord::Guild>(&mut doc))
         .map_err(|error| format!("the Discord record does not read: {error}"))?;
     if !guild.guild_id.is_empty() {
         let connected = DiscordLink {

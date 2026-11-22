@@ -4,9 +4,10 @@
 use super::*;
 use tilo_actions::remote::{ActionProvider as _, Caller, Found, Within};
 use tilo_server::{
-    workspace_agents as turns, workspace_join,
+    workspace_join,
     workspaces::{IssueInvitationRequest, Workspaces},
 };
+use tilo_workspace_service::agents as turns;
 use ui::tilo_workspace_agent::{Agent, Bound, Sub};
 
 /// What Ada tells her agent, and nobody else.

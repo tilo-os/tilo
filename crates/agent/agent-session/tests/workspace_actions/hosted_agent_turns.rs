@@ -6,10 +6,7 @@ use std::sync::Mutex;
 use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, ToolCall, Usage,
 };
-use tilo_server::{
-    workspace_agents::{Model, ServerAgents},
-    workspace_bots::events::WorkspaceEvents,
-};
+use tilo_workspace_service::agents::{Model, ServerAgents, events::WorkspaceEvents};
 use ui::tilo_resource::{Id, Resource as _};
 use ui::tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 
@@ -108,13 +105,6 @@ pub(super) async fn make_agent(
         }),
     )
     .unwrap();
-    made.apply(
-        WorkspaceAgents::SET_AGENT_ON_HOST.with(workspace_agents::SetAgentOnHost {
-            agent: Id::from_raw(SCOUT.to_owned()),
-            on_host: true,
-        }),
-    )
-    .unwrap();
     if limit_micros.is_some() {
         made.apply(WorkspaceAgents::SET_AGENT_SPEND_LIMIT.with(
             workspace_agents::SetAgentSpendLimit {
@@ -159,13 +149,13 @@ pub(super) async fn file_issue(
     (governor, browser): (&crate::support::Device, &crate::support::Device),
 ) -> String {
     let catalogue = crate::common::catalogue();
-    let tracker = tilo_server::workspace_bots::workspace_resource(&catalogue, TASKS);
+    let tracker = tilo_workspace_service::agents::workspace_resource(&catalogue, TASKS);
     workspaces
         .prepare_application(workspace, &governor.cert, &catalogue, TASKS, &tracker)
         .await
         .unwrap();
     let id = WorkspaceId::parse(workspace).unwrap();
-    let service = tilo_server::workspace_agents::WorkspaceActionProvider::new(actions.clone(), id);
+    let service = tilo_workspace_service::agents::WorkspaceActionProvider::new(actions.clone(), id);
     let person = tilo_actions::remote::Caller::authenticated(
         root.verifying_key().to_bytes(),
         browser.cert.device_public_key,
@@ -178,7 +168,7 @@ pub(super) async fn file_issue(
     };
     let arguments =
         serde_json::json!({"title": "Plan the launch", "assignee": format!("agent:{SCOUT}")});
-    tilo_server::workspace_agents::invoke_named(
+    tilo_workspace_service::agents::invoke_named(
         &service,
         &person,
         &route,
@@ -465,7 +455,7 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
         .unwrap()
         .0
         .clone();
-    let service = tilo_server::workspace_agents::WorkspaceActionProvider::new(
+    let service = tilo_workspace_service::agents::WorkspaceActionProvider::new(
         actions,
         WorkspaceId::parse(&workspace).unwrap(),
     );
@@ -478,7 +468,7 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
         document: kept_in.clone(),
     };
     let words = serde_json::json!({"issue": issue.as_str(), "text": "I linked one: try again."});
-    tilo_server::workspace_agents::invoke_named(
+    tilo_workspace_service::agents::invoke_named(
         &service,
         &asking,
         &route,
@@ -721,7 +711,7 @@ pub(super) async fn write_to_agent(
 ) -> Id {
     let person = hex::encode(root.verifying_key().to_bytes());
     let id = WorkspaceId::parse(workspace).unwrap();
-    let service = tilo_server::workspace_agents::WorkspaceActionProvider::new(actions.clone(), id);
+    let service = tilo_workspace_service::agents::WorkspaceActionProvider::new(actions.clone(), id);
     let caller = tilo_actions::remote::Caller::authenticated(
         root.verifying_key().to_bytes(),
         browser.cert.device_public_key,
@@ -734,7 +724,7 @@ pub(super) async fn write_to_agent(
     };
     let conversation = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(SCOUT)]);
     let arguments = saying(&conversation, text);
-    tilo_server::workspace_agents::invoke_named(
+    tilo_workspace_service::agents::invoke_named(
         &service,
         &caller,
         &route,
@@ -1444,7 +1434,11 @@ async fn what_a_persons_events_answer_reaches_the_model_of_a_turn() {
         .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
         .await
         .unwrap();
-    let events = WorkspaceEvents::start(workspaces.clone(), None);
+    let events = WorkspaceEvents::start(
+        workspaces.clone(),
+        None,
+        std::sync::Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+    );
 
     write_to_agent(
         &actions,
@@ -1562,7 +1556,6 @@ fn member_approval(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_members_own_agent_on_the_host_works_for_them() {
     use tilo_peer_state::join::Role;
-    use tilo_server::workspace_agents::ServerAgents;
     use tilo_server_client::MemberApprover;
     use tilo_server_client::MemberServer as _;
     use tilo_server_protocol::agents::{
@@ -1570,6 +1563,7 @@ async fn a_members_own_agent_on_the_host_works_for_them() {
     };
     use tilo_server_protocol::certify::{ApproverReply, ApproverRequest};
     use tilo_user_identity::{CertificationPolicy, issue_device_cert};
+    use tilo_workspace_service::agents::ServerAgents;
 
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (member, _) = tilo_user_identity::UserIdentity::generate("Bob", 1);
@@ -1706,7 +1700,7 @@ async fn a_members_own_agent_on_the_host_works_for_them() {
     let agents = ServerAgents::with_sessions(
         workspaces.clone(),
         actions.clone(),
-        &server.server,
+        Arc::new(server.server.agent_link()),
         server.roster.sessions.clone(),
     )
     .scripted(looks_then_answers(1_000, Arc::clone(&asked)));

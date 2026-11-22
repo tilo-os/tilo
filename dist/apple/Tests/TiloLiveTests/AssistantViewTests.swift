@@ -156,10 +156,9 @@ final class AssistantViewTests: XCTestCase {
     /// The line of the assistant view that says where the assistant works, as it was last told.
     private var places: Wording.Line? { supervisions.last.map { wording.places($0) } }
 
-    /// A sub-agent of Ada's as the workspace keeps one: who started it and how it stands, and,
-    /// for a coding agent, what its item holds of its harness.
-    private static func sub(_ id: String, _ stands: String, coding: String = "null") -> String {
-        "kept('\(id)', {\(TiloSource.answeredByServer): true, sub: {started_by: 'reed', role: 'Researcher', stands: {$variant: '\(stands)'}, coding: \(coding)}})"
+    /// A sub-agent of Ada's as the workspace keeps one: who started it and how it stands.
+    private static func sub(_ id: String, _ stands: String) -> String {
+        "kept('\(id)', {\(TiloSource.answeredByServer): true, sub: {started_by: 'reed', role: 'Researcher', stands: {$variant: '\(stands)'}}})"
     }
 
     func testWhereItWorksSaysTheServerThatWorksTheAssistantAndTheSubAgentsAtWorkThere() async throws {
@@ -171,24 +170,6 @@ final class AssistantViewTests: XCTestCase {
         try await until("the sub-agent at work") { self.places == Wording.Line(first: "Your Tilo server, always, with 1 sub-agent at work") }
         try await inPage("window.agents.push(\(Self.sub("asks", "needs_person"))); touch()")
         try await until("two at work") { self.places == Wording.Line(first: "Your Tilo server, always, with 2 sub-agents at work") }
-    }
-
-    func testACodingAgentIsSaidInTheWorkspacesMachineWithItsNameAndItsFolderWhileItWorks() async throws {
-        try await start(at: "2026-11-17T12:00:00Z")
-        let coding = "{harness: 'claude-code', harness_name: 'Claude Code', repository: 'dev/tilo', directory: 'dev/tilo.agents/coder'}"
-        try await enter("[kept('reed', {name: 'Reed', \(TiloSource.answeredByServer): true}), \(Self.sub("coder", "working", coding: coding))]")
-        try await until("the coding agent's place") {
-            self.places == Wording.Line(first: "Your Tilo server, always", second: "The workspace's machine, Claude Code in dev/tilo")
-        }
-        // One whose harness has not said its name yet is a coding agent, in its folder.
-        let unnamed = "{harness: '', harness_name: '', repository: 'dev/site', directory: ''}"
-        try await inPage("window.agents.push(\(Self.sub("new", "working", coding: unnamed))); touch()")
-        try await until("the second coding agent") {
-            self.supervisions.last?.places.last == Supervision.Place(name: "The workspace's machine", detail: "Claude Code in dev/tilo · A coding agent in dev/site")
-        }
-        // Stopped, they work nowhere: the machine is said no more.
-        try await inPage("for (const one of window.agents) if (one.sub) one.sub.stands = {$variant: 'stopped'}; touch()")
-        try await until("no coding agent at work") { self.places == Wording.Line(first: "Your Tilo server, always") }
     }
 
     func testAnAssistantNoServerAnswersForIsSaidOnItsPersonsOwnDevicesAndOneThatIsRetiredNowhere() async throws {

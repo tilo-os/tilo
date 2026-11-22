@@ -562,7 +562,6 @@ workspace-settings-agent-name-number = Agent { $number }
 workspace-settings-agent-added-by-you = Added by you
 workspace-settings-agent-added-by = Added by { $name }
 workspace-settings-agent-model-line = Model: { $model }
-workspace-settings-agent-on-host = Runs on the workspace's server
 workspace-settings-agents-unavailable = The workspace's agents cannot be read on this device
 workspace-settings-agent-name-needed = Name the agent first
 workspace-settings-review-access = Review access

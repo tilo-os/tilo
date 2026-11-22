@@ -43,7 +43,6 @@ doc = false
 "aes-0_9_3" = { package = "aes", version = "^0.9.3", default-features = false, features = ["zeroize"] }
 "aes-gcm-0_10_3" = { package = "aes-gcm", version = "^0.10.3", default-features = false, features = ["aes", "alloc", "default", "getrandom", "rand_core"] }
 "aes-gcm-0_11_1" = { package = "aes-gcm", version = "^0.11.1", default-features = false, features = ["aes", "zeroize"] }
-"agent" = { path = "../../../apps/agent", default-features = false, features = [] }
 "agent-provider-config" = { path = "../../../crates/agent/provider-config", default-features = false, features = ["model"] }
 "ahash-0_8_12" = { package = "ahash", version = "^0.8.12", default-features = false, features = ["default", "getrandom", "no-rng", "runtime-rng", "std"] }
 "aho-corasick-1_1_4" = { package = "aho-corasick", version = "^1.1.4", default-features = false, features = ["default", "perf-literal", "std"] }
@@ -1160,7 +1159,6 @@ doc = false
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
 "tilo-agent-session" = { path = "../../../crates/agent/agent-session", default-features = false, features = ["test-support"] }
 "tilo-agent-turn" = { path = "../../../crates/agent/agent-turn", default-features = false, features = [] }
-"tilo-agent-web-tools" = { path = "../../../crates/agent/agent-web-tools", default-features = false, features = ["fixture-servers"] }
 "tilo-api" = { path = "../../../crates/server/tilo-api", default-features = false, features = ["test-support"] }
 "tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support", "webview-adblock"] }
 "tilo-app-cli" = { path = "../../../crates/dev/tilo-app-cli", default-features = false, features = [] }
@@ -2717,7 +2715,6 @@ doc = false
 "aes-0_9_3" = { package = "aes", version = "^0.9.3", default-features = false, features = ["zeroize"] }
 "aes-gcm-0_10_3" = { package = "aes-gcm", version = "^0.10.3", default-features = false, features = ["aes", "alloc", "default", "getrandom", "rand_core"] }
 "aes-gcm-0_11_1" = { package = "aes-gcm", version = "^0.11.1", default-features = false, features = ["aes", "zeroize"] }
-"agent" = { path = "../../../apps/agent", default-features = false, features = [] }
 "agent-provider-config" = { path = "../../../crates/agent/provider-config", default-features = false, features = ["model"] }
 "ahash-0_8_12" = { package = "ahash", version = "^0.8.12", default-features = false, features = ["default", "getrandom", "no-rng", "runtime-rng", "std"] }
 "aho-corasick-1_1_4" = { package = "aho-corasick", version = "^1.1.4", default-features = false, features = ["default", "perf-literal", "std"] }
@@ -3834,7 +3831,6 @@ doc = false
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
 "tilo-agent-session" = { path = "../../../crates/agent/agent-session", default-features = false, features = ["test-support"] }
 "tilo-agent-turn" = { path = "../../../crates/agent/agent-turn", default-features = false, features = [] }
-"tilo-agent-web-tools" = { path = "../../../crates/agent/agent-web-tools", default-features = false, features = ["fixture-servers"] }
 "tilo-api" = { path = "../../../crates/server/tilo-api", default-features = false, features = ["test-support"] }
 "tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support", "webview-adblock"] }
 "tilo-app-cli" = { path = "../../../crates/dev/tilo-app-cli", default-features = false, features = [] }

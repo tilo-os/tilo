@@ -104,7 +104,6 @@ mod tests {
             &request
         ));
         let mut forbidden = vec![
-            serde_json::json!({"verb":"transform", "profile_id":"p", "model_id":"m", "instructions":"x", "input":"x", "max_output_tokens":1, "timeout_ms":1}),
             serde_json::json!({"verb":"analyze_image", "profile_id":"p", "model_id":"m", "image":{"media_type":"image/png", "data_base64":"AA==", "source_content_hash":"hash"}}),
             serde_json::json!({"verb":"trace", "trace":{"id":1,"turn":0}, "event":"plan_ready"}),
             serde_json::json!({"verb":"cluster_faces", "profile_id":"p", "model_id":"m", "images":[]}),
@@ -158,7 +157,6 @@ mod tests {
                     .await;
             assert!(!response.ok, "{value}");
             let expected = match value["verb"].as_str().unwrap() {
-                "transform" => "only tilo-agent may run transforms",
                 "cluster_faces" => "only Photos may request fixed local face clustering",
                 "analyze_image" => "only Photos may request fixed local image analysis",
                 "complete" | "complete_default" | "get_provider_config" | "set_provider_config" => {

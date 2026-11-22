@@ -4,8 +4,8 @@
 //! refusal that is the key's fault is the turn's answer at once.
 use super::*;
 use std::collections::VecDeque;
-use tilo_server::workspace_bots::events::WorkspaceEvents;
 use tilo_server::workspaces::person_model::protocol::ErrorKind;
+use tilo_workspace_service::agents::events::WorkspaceEvents;
 
 /// A model whose calls are written out, its provider's refusals among them: each ask takes the
 /// next. What each request asked is kept.
@@ -110,7 +110,11 @@ async fn a_refusal_between_two_steps_is_asked_again_and_no_step_is_done_twice() 
     team!(
         root, browser, actions, workspaces, workspace, page, person, served
     );
-    let events = WorkspaceEvents::start(workspaces.clone(), None);
+    let events = WorkspaceEvents::start(
+        workspaces.clone(),
+        None,
+        std::sync::Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+    );
     let first = write_to_agent(&actions, &workspaces, &workspace, (&root, &browser), ASK).await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
@@ -181,7 +185,11 @@ async fn a_provider_that_stays_down_ends_the_turn_saying_what_it_had_done() {
     team!(
         root, browser, actions, workspaces, workspace, page, person, served
     );
-    let events = WorkspaceEvents::start(workspaces.clone(), None);
+    let events = WorkspaceEvents::start(
+        workspaces.clone(),
+        None,
+        std::sync::Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+    );
     let first = write_to_agent(&actions, &workspaces, &workspace, (&root, &browser), ASK).await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(

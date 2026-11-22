@@ -7,7 +7,7 @@
 use super::*;
 use serde_json::{Value, json};
 use tilo_actions::remote::Caller;
-use tilo_server::workspace_agents::{WorkspaceActionProvider, invoke_named};
+use tilo_workspace_service::agents::{WorkspaceActionProvider, invoke_named};
 use ui::tilo_resource::Resource as _;
 
 const TASKS: &str = "so.tilo.tasks";
@@ -61,7 +61,7 @@ async fn a_tracker_of_three_thousand_issues_lands_at_the_cost_of_its_first_lists
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let _page = Browser::open_at(&served, &browser, &server, &workspace).await;
     let catalogue = crate::common::catalogue();
-    let tracker = tilo_server::workspace_bots::workspace_resource(&catalogue, TASKS);
+    let tracker = tilo_workspace_service::agents::workspace_resource(&catalogue, TASKS);
     workspaces
         .prepare_application(&workspace, &server.cert, &catalogue, TASKS, &tracker)
         .await

@@ -1,5 +1,0 @@
-reason = "The agent's two web tools (search_web and read_page) moved from its tapp into the engine library that already carried their search, page reader, HTTP client and runtime (crates/agent/agent-web-tools): the tapp fell from 1,525,760 to 1,351,168 bytes and the library rose from 393,216 to 567,496, measured by t's app-sizes-x86_64 (run r38fd252f6a) at e09a6c2181a; the tapp's budget in tools/perf/tapp-size-budget/budget.toml falls by the same move. The amount is the library's overage plus the ratchet's 1 % headroom, rounded up to 64 KiB. The aarch64 numbers are the same move: its first run prints what to raise them to."
-run = "r38fd252f6a"
-
-[engines.x86_64]
-"libtilo_agent_web_engine.so" = 196608

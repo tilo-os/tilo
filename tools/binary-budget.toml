@@ -43,7 +43,6 @@
 "pdf-viewer" = 30   # 25.9 MB
 "photos" = 25   # 21.0 MB
 "tilo" = 1   # 0.7 MB
-"tilo-agent" = 11   # 9.4 MB
 "tilo-package-service" = 4   # 3.1 MB
 "app" = 5   # 4.1 MB
 "tilo-cli-shim" = 1   # 0.5 MB

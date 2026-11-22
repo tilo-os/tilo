@@ -57,14 +57,6 @@ pub(crate) fn view(
             None => trf("assistant-spent-no-limit", &[("spent", spent.into())]),
         },
     );
-    let works = Property::new(
-        tr("assistant-works"),
-        tr(if assistant.on_host {
-            "assistant-works-on-host"
-        } else {
-            "assistant-works-on-devices"
-        }),
-    );
     let not_here = || tr("assistant-not-here");
     let learned = Property::new(
         tr("assistant-learned"),
@@ -89,7 +81,6 @@ pub(crate) fn view(
             PropertyList::new(vec![
                 model,
                 spent,
-                works,
                 Property::new(tr("assistant-connections"), not_here()),
                 Property::new(tr("assistant-logins"), not_here()),
                 Property::new(tr("assistant-important"), not_here()),

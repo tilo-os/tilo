@@ -81,7 +81,7 @@ use std::time::{Duration, Instant};
 mod environment_device;
 mod turn_fills;
 
-pub use turn_fills::{FILL_PAGE_ITEM, Release, Releasing, TurnFill};
+pub use turn_fills::FILL_PAGE_ITEM;
 
 use crate::WorkspaceId;
 use crate::certification::CertificationProtocol;
@@ -92,15 +92,16 @@ use tilo_actions::remote::server_account::{NextStep, NextStepKind, Reason, Refus
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, Caller, Completer,
     Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
-    ReceiptStatus, RemoteActionMessage, RemoteActionTarget, argument_digest, pending,
-    provider_workspace,
+    ReceiptStatus, RemoteActionMessage, argument_digest, pending, provider_workspace,
 };
-use tilo_actions::selection::logical_resource_id;
 use tilo_actions::{ActionFailure, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::certify::{ConfirmationAnswer, PageDeparture, PendingConfirmation};
 use tilo_user_identity::{
     Answered, DeviceCapabilities, DeviceCert, HostApproval, Parties, sign_device_cert,
+};
+use tilo_workspace_service::agents::windows::{
+    Ends, Releasing, TurnFill, Windows, opened_resource, opens_browser_at, page_action,
 };
 
 // A page action handed to a window for a turn this server carries out itself.
@@ -158,9 +159,6 @@ pub fn keep_stand_in(
 ) -> Result<(), String> {
     crate::web::keep_stand_in(state_root, root)
 }
-/// The resource the window's page actions are actions of (`browser.page`);
-/// their provider names the window (`browser@42`).
-pub const PAGE_RESOURCE: &str = "browser.page";
 /// The page actions a key holding [`DeviceCapabilities::browser_pages`]
 /// runs without asking: navigating, filling and choosing in a page, clicking
 /// and pressing what it found, scrolling and pointing. Submitting the page,
@@ -1885,13 +1883,6 @@ fn certified(
     Ok((minted, secret))
 }
 
-/// Whether `target` is an action of the page `provider`'s window publishes:
-/// the window's provider ([`Window::provider`]) and the page's resource.
-#[must_use]
-pub fn page_action(target: &RemoteActionTarget, provider: &str) -> bool {
-    target.provider == provider && logical_resource_id(&target.address.resource) == PAGE_RESOURCE
-}
-
 /// The held request `argument` names (`{"id": "4"}`), as the window publishes
 /// each hold's answer action with the id it holds.
 #[must_use]
@@ -2591,20 +2582,46 @@ pub fn refused(invocation: tilo_actions::InvocationId, reason: String) -> Remote
     })
 }
 
+/// The windows this server places, as a turn it carries out itself reaches them.
+impl Windows for HostedBrowsers {
+    fn window_provider(&self, workspace_id: WorkspaceId) -> Option<String> {
+        self.window(workspace_id).map(|window| window.provider)
+    }
+
+    fn page_for_turn(
+        &self,
+        workspace_id: WorkspaceId,
+        person: [u8; 32],
+        request: InvokeRequest,
+    ) -> Ends<'_, Result<InvocationUpdate, ActionCallError>> {
+        Box::pin(Self::page_for_turn(self, workspace_id, person, request))
+    }
+
+    fn fill_for_turn(
+        &self,
+        workspace_id: WorkspaceId,
+        fill: TurnFill,
+        releasing: Releasing,
+    ) -> Ends<'_, Result<InvocationUpdate, ActionCallError>> {
+        Box::pin(Self::fill_for_turn(self, workspace_id, fill, releasing))
+    }
+
+    fn placed(
+        self: Arc<Self>,
+        workspace_id: WorkspaceId,
+        invocation: tilo_actions::InvocationId,
+        made: RemoteActionMessage,
+        caller: &Caller,
+    ) -> Ends<'_, RemoteActionMessage> {
+        Box::pin(async move { placed(&self, workspace_id, invocation, made, None, caller).await })
+    }
+}
+
 /// Whether `request` opens Browser (`app.so.tilo.browser#open`): the open the
 /// action service places a session after.
 #[must_use]
 pub fn opens_browser(request: &InvokeRequest) -> bool {
     opens_browser_at(&request.target)
-}
-
-/// Whether `target` is the open of Browser in a workspace: what [`opens_browser`] asks of a
-/// request, for whoever holds only what the request addresses.
-#[must_use]
-pub fn opens_browser_at(target: &RemoteActionTarget) -> bool {
-    provider_workspace(&target.provider).is_some()
-        && target.address.resource == format!("{APPLICATION_RESOURCE_PREFIX}{APP}")
-        && target.address.action == APPLICATION_OPEN_ACTION
 }
 
 /// The Linux app `request` opens (`app.so.tilo.linux#open`, naming its
@@ -2721,29 +2738,13 @@ pub fn refused_by_plan(
     })
 }
 
-/// The record an answered [`opens_browser`] open made, when it made one: the
-/// record its answer names.
-#[must_use]
-pub fn opened_resource(message: &RemoteActionMessage) -> Option<String> {
-    let RemoteActionMessage::Receipt(receipt) = message else {
-        return None;
-    };
-    let tilo_actions::remote::ReceiptStatus::Completed { output } = &receipt.status else {
-        return None;
-    };
-    output
-        .value
-        .as_ref()
-        .and_then(|value| value.get("record"))
-        .and_then(|record| record.as_str())
-        .map(str::to_owned)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tilo_actions::ActionAddress;
     use tilo_actions::ActionOutput;
+    use tilo_actions::remote::RemoteActionTarget;
+    use tilo_workspace_service::agents::windows::PAGE_RESOURCE;
 
     fn page(provider: &str, resource: &str) -> RemoteActionTarget {
         RemoteActionTarget {

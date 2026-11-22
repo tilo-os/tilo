@@ -11,12 +11,10 @@ use tasks::model::{StoppedWhy, TaskState};
 use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, workspace_events,
 };
-use tilo_server::{
-    workspace_agents::{
-        ServerAgents, Turn, WorkspaceActionProvider as ActionService, invoke_named,
-    },
-    workspace_bots::events::WorkspaceEvents,
-    workspaces::Workspaces,
+use tilo_server::workspaces::Workspaces;
+use tilo_workspace_service::agents::{
+    ServerAgents, Turn, WorkspaceActionProvider as ActionService, events::WorkspaceEvents,
+    invoke_named,
 };
 
 /// A day, in milliseconds.
@@ -621,7 +619,7 @@ fn on_automations(
         .serve(
             WorkspaceId::parse(&given.workspace).unwrap(),
             &given.person(),
-            tilo_server::workspace_bots::events::Authority::Turn,
+            tilo_workspace_service::agents::events::Authority::Turn,
             RemoteActionMessage::Invoke(request),
         )
         .and_then(|answer| answer.wait_timeout(Duration::from_secs(5)).ok().flatten());
@@ -646,7 +644,11 @@ async fn a_task_goes_on_when_the_automation_it_waits_for_comes() {
         .started(looks_then_answers(1_000, Arc::clone(&asked)))
         .await;
     given.answered(&agents, now_ms()).await;
-    let automations = WorkspaceEvents::start(given.workspaces.clone(), None);
+    let automations = WorkspaceEvents::start(
+        given.workspaces.clone(),
+        None,
+        std::sync::Arc::new(tilo_server::workspace_bots::installed::EventRunner),
+    );
     let set_up = |name: &str, at_ms: i64, instruction: &str| {
         on_automations(
             &automations,
@@ -809,7 +811,7 @@ async fn a_server_with_an_agent_founds_the_tracker_of_a_workspace_nobody_opened_
         let route = DocumentRoute {
             app_id: TASKS.into(),
             cluster_id: workspace.clone(),
-            document: tilo_server::workspace_bots::workspace_resource(&catalogue, TASKS),
+            document: tilo_workspace_service::agents::workspace_resource(&catalogue, TASKS),
         };
         let person = tilo_actions::remote::Caller::authenticated(
             root.verifying_key().to_bytes(),
@@ -848,7 +850,7 @@ async fn a_server_with_an_agent_founds_the_tracker_of_a_workspace_nobody_opened_
     assert!(
         matches!(
             owed[0].ask,
-            tilo_server::workspace_agents::Ask::Issue { .. }
+            tilo_workspace_service::agents::Ask::Issue { .. }
         ),
         "{:?}",
         owed[0].ask

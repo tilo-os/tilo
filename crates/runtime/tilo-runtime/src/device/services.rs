@@ -388,6 +388,7 @@ impl Daemon {
                 &policy_origin,
             )?;
         }
+        start_agents(&broker, &workspaces);
         let replicas = take_work_files(
             &TakenFiles {
                 root,
@@ -1609,6 +1610,21 @@ impl Daemon {
     pub fn joined_files_status(&self, workspace: &str) -> Option<tilo_fs::tree_sync::Status> {
         self.replicas.as_ref()?.status(workspace)
     }
+}
+
+/// Run the agents of the workspaces this device's service holds, in this daemon: the one engine
+/// a workspace's host runs, each turn's calls decided by `broker` as the person's own calls are.
+fn start_agents(broker: &BrokerHandle, workspaces: &ServiceWorkspaces) {
+    let Some(broker) = broker.app_action_broker() else {
+        tracing::warn!("this device's broker is not up, so it runs no agents of its workspaces");
+        return;
+    };
+    tilo_rt::app()
+        .handle()
+        .spawn(tilo_workspace_service::agents::run_on_device(
+            workspaces.copies().clone(),
+            broker.device_host(),
+        ));
 }
 
 /// Answer the record actions of the workspace founded here (`workspace`, as

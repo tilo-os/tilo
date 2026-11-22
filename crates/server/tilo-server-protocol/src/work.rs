@@ -164,6 +164,11 @@ pub struct WorkSetting {
     pub from: WorkFrom,
     /// The states it takes them in.
     pub when: WorkWhen,
+    /// Whether it runs the agents of the workspaces it holds: their turns, on each workspace's
+    /// linked model, in this device's own workspace service. A person's own device does
+    /// ([`Self::own_device`]); a machine that takes work for others does only where it is the
+    /// workspace's host, which runs its agents whatever this says.
+    pub agents: bool,
 }
 
 impl WorkSetting {
@@ -174,6 +179,17 @@ impl WorkSetting {
             kinds: WorkKinds::NONE,
             from: WorkFrom::Nobody,
             when: WorkWhen::default(),
+            agents: false,
+        }
+    }
+
+    /// What a person's own device runs with: no work for anyone else, and the agents of the
+    /// workspaces it holds, with no flag or setup.
+    #[must_use]
+    pub fn own_device() -> Self {
+        Self {
+            agents: true,
+            ..Self::none()
         }
     }
 

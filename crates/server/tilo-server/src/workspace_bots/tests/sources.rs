@@ -1,5 +1,5 @@
 //! A person's event that waits on the workspace's mail, through the server's
-//! own actions ([`crate::workspace_bots::events`]) and the watch it keeps of
+//! own actions ([`tilo_workspace_service::agents::events`]) and the watch it keeps of
 //! the accounts the workspace holds, with no device of theirs asking: a
 //! message that arrives starts the event once with what arrived as data,
 //! nothing that arrives asks nobody anything, and what another workspace
@@ -16,8 +16,8 @@ use tilo_server_protocol::WorkspaceId;
 use super::judging::ASSISTANT;
 use super::times::person_with_an_assistant;
 use super::*;
-use crate::workspace_bots::events::{Authority, WorkspaceEvents};
 use crate::workspaces::fixtures::mail::{InboxSeen, Inboxes, held_message};
+use tilo_workspace_service::agents::events::{Authority, WorkspaceEvents};
 
 /// The account the event watches.
 const WORK: &str = "ada@example.test";
@@ -72,7 +72,11 @@ impl Hers {
     /// The workspace's events on this holder, with `assistant` taking what
     /// they hand over.
     fn events(&self, assistant: &Arc<Assistant>) -> WorkspaceEvents {
-        WorkspaceEvents::start_with(self.workspaces.clone(), assistant.clone())
+        WorkspaceEvents::start_with(
+            self.workspaces.clone(),
+            assistant.clone(),
+            std::sync::Arc::new(crate::workspace_bots::installed::EventRunner),
+        )
     }
 
     /// One action on the workspace's events as a turn this server carries

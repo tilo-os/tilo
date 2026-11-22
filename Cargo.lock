@@ -352,42 +352,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agent"
-version = "0.1.0"
-dependencies = [
- "agent-provider-config",
- "anyhow",
- "blake3",
- "ed25519-dalek 3.0.0",
- "hex",
- "runtime-collab",
- "runtime-dylib",
- "runtime-portal",
- "serde",
- "serde_json",
- "settings-store",
- "tempfile",
- "tilo-action-policy",
- "tilo-actions",
- "tilo-agent-turn",
- "tilo-agent-web-engine",
- "tilo-agent-web-tools",
- "tilo-app",
- "tilo-automation",
- "tilo-copy-lint",
- "tilo-identity-client",
- "tilo-model-client",
- "tilo-test-env",
- "tilo-user-identity",
- "tilo-workspace-service",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "agent-provider-config"
 version = "0.1.0"
 dependencies = [
@@ -4314,6 +4278,7 @@ dependencies = [
  "tilo-server",
  "tilo-test-env",
  "tilo-user-identity",
+ "tilo-workspace-service",
  "tokio",
  "tokio-rustls",
  "tokio-websockets",
@@ -17490,7 +17455,7 @@ version = "0.1.0"
 dependencies = [
  "accounts",
  "activity",
- "agent",
+ "agent-provider-config",
  "api-tester",
  "assistant",
  "base64 0.22.1",
@@ -17630,32 +17595,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-agent-web-engine"
-version = "0.1.0"
-dependencies = [
- "runtime-dylib",
- "tilo-agent-web-tools",
- "tilo-rt",
- "tilo-web-search",
- "url",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-agent-web-tools"
-version = "0.1.0"
-dependencies = [
- "agent-provider-config",
- "serde_json",
- "tilo-app",
- "tilo-net",
- "tilo-rt",
- "tilo-test-env",
- "tilo-web-search",
  "workspace-hack",
 ]
 
@@ -21859,7 +21798,6 @@ dependencies = [
  "rand 0.10.3",
  "rcgen",
  "ring",
- "runtime-collab",
  "runtime-fs",
  "rustix 1.1.6",
  "rustls",
@@ -21867,8 +21805,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "tasks",
- "tasks-model",
  "tempfile",
  "test-http",
  "test-server",
@@ -21876,7 +21812,6 @@ dependencies = [
  "tilo-action-policy",
  "tilo-actions",
  "tilo-agent-session",
- "tilo-agent-turn",
  "tilo-app-id",
  "tilo-app-package",
  "tilo-automation",
@@ -21902,7 +21837,6 @@ dependencies = [
  "tilo-live",
  "tilo-lock",
  "tilo-mcp",
- "tilo-model-gateway",
  "tilo-moderation",
  "tilo-net",
  "tilo-paths",
@@ -23621,6 +23555,7 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-blobs",
+ "jiff",
  "key-group",
  "launcher",
  "libc",
@@ -23645,6 +23580,7 @@ dependencies = [
  "settings-store",
  "sha2 0.11.0",
  "store",
+ "tasks",
  "tasks-model",
  "tempfile",
  "test-http",
@@ -23654,6 +23590,7 @@ dependencies = [
  "tilo-actions",
  "tilo-advisory-lock",
  "tilo-agent-session",
+ "tilo-agent-turn",
  "tilo-app",
  "tilo-app-id",
  "tilo-app-package",
@@ -23697,6 +23634,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
+ "tilo-web-search",
  "tilo-workspace-agent",
  "tilo-workspace-keys",
  "tokio",
@@ -28010,7 +27948,6 @@ dependencies = [
  "aes 0.9.3",
  "aes-gcm 0.10.3",
  "aes-gcm 0.11.1",
- "agent",
  "agent-provider-config",
  "ahash",
  "aho-corasick",
@@ -29254,7 +29191,6 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-agent-session",
  "tilo-agent-turn",
- "tilo-agent-web-tools",
  "tilo-api",
  "tilo-app",
  "tilo-app-cli",

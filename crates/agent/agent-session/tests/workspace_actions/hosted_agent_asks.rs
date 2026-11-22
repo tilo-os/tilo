@@ -75,8 +75,8 @@ async fn chat_action(
     action: &str,
     arguments: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    use tilo_server::workspace_agents;
-    let provider = workspace_agents::WorkspaceActionProvider::new(
+    use tilo_workspace_service::agents;
+    let provider = agents::WorkspaceActionProvider::new(
         actions.clone(),
         WorkspaceId::parse(workspace).unwrap(),
     );
@@ -85,7 +85,7 @@ async fn chat_action(
         cluster_id: workspace.into(),
         document: record.into(),
     };
-    workspace_agents::invoke_named(
+    agents::invoke_named(
         &provider,
         caller,
         &route,
@@ -300,7 +300,7 @@ fn end_of(reply: &chat::chat::Message) -> Option<chat::agent_stream::AgentFinish
 async fn dies_at(
     agents: &ServerAgents,
     workspace: &str,
-    turn: &tilo_server::workspace_agents::Turn,
+    turn: &tilo_workspace_service::agents::Turn,
     asked: &Arc<Mutex<Vec<ModelRequest>>>,
     calls: usize,
 ) {

@@ -31,7 +31,7 @@ const AGENT: (&str, &str) = (
 );
 const NOTES_APP: &str = "so.tilo.notes";
 const CHAT_APP: &str = "so.tilo.lang.chat";
-const AGENT_APP: &str = "so.tilo.lang.agent";
+const AGENT_APP: &str = "so.tilo.agent";
 
 fn helper() -> MemberId {
     MemberId::agent("helper")

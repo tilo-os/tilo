@@ -19,6 +19,7 @@ use tilo_actions::MemberId;
 use tilo_agent_session::bot::host_steps::{
     HostStepError, HostSteps, Instruction, Judgement, Question,
 };
+use tilo_workspace_service::agents::{assistant, workspace_resource};
 
 /// A workspace's events through the host's own actions.
 mod events;

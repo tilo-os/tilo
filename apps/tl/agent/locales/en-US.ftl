@@ -1,7 +1,7 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
-d-so-tilo-lang-agent = Agents
+d-so-tilo-agent = Agents
 
 d-vxjq7y2k = Claim
     .doc = A device that took an ask's turn, and when.

@@ -10,18 +10,16 @@ use super::hosted_agent_turns::{SCOUT, conversation_part, make_agent, write_to_a
 use super::*;
 use std::sync::Mutex;
 use tilo_actions::remote::person_asking::{self, ActionName, Asked, Words};
-use tilo_server::{
-    workspace_agents::{
-        Answered, Carried, Carries, ServerAgents, ServerAsk, WorkspaceActionProvider, invoke_named,
+use tilo_server::workspaces::{
+    Workspaces,
+    person_asking::kept_asks::KeptAsk,
+    person_model::{
+        ProviderProtocol,
+        scripted::{Linking, Reply, ScriptedProvider},
     },
-    workspaces::{
-        Workspaces,
-        person_asking::kept_asks::KeptAsk,
-        person_model::{
-            ProviderProtocol,
-            scripted::{Linking, Reply, ScriptedProvider},
-        },
-    },
+};
+use tilo_workspace_service::agents::{
+    Answered, Carried, Carries, ServerAgents, ServerAsk, WorkspaceActionProvider, invoke_named,
 };
 use ui::tilo_resource::{Id, NonBlank, Resource as _};
 use ui::tilo_workspace_agent::{WorkspaceAgents, workspace_agents};

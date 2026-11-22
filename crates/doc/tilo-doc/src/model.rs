@@ -1998,7 +1998,7 @@ impl DocRef<'_> {
 // an object this same method just created a line above — never anything derived from untrusted
 // document *content* (text, attrs, offsets). Automerge only errors these ops when the target object
 // id has been deleted, which cannot happen mid-call here. Threading `Result` through every mutator
-// would also break the many external callers (apps/word-processor, apps/agent, fs, …) that already
+// would also break the many external callers (apps/word-processor, fs, …) that already
 // depend on `DocMut`'s infallible method signatures — out of scope for a lint-only pass.
 #[allow(
     clippy::unwrap_used,

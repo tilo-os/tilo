@@ -1520,7 +1520,7 @@ fn asks(r: &Replica) -> Vec<String> {
         .collect()
 }
 
-const AGENT_APP: &str = "so.tilo.lang.agent";
+const AGENT_APP: &str = "so.tilo.agent";
 
 /// Writing to an agent asks it: each message sent in a direct conversation with one makes one
 /// ask of it, made from the message by whoever wrote it, whether a person presses Send or a

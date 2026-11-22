@@ -446,7 +446,7 @@ def agent_sessions(ctx) -> list[dict]:
 
 
 def session_keys(ctx) -> list[str]:
-    return sorted(a.get("key", "") for a in agent_sessions(ctx) if a.get("stoppable", True))
+    return sorted(a.get("key", "") for a in agent_sessions(ctx))
 
 
 # What the shell says beside each agent's name of where it works from: the other device it came
@@ -457,7 +457,7 @@ WHERE = ("device", "device_name", "environment", "environment_id")
 def sessions_in(ctx, env: dict) -> list[dict]:
     """The agents the shell registers as come in by `env`'s socket: by the environment's id beside
     their names, the one its shell reads as TILO_ENVIRONMENT. Never by the words of a name."""
-    return [a for a in agent_sessions(ctx) if a.get("stoppable", True) and env["environment"]
+    return [a for a in agent_sessions(ctx) if env["environment"]
             and a.get("environment_id") == env["environment"]]
 
 
@@ -1027,7 +1027,7 @@ def host_agent_registered(ctx, res) -> None:
         res.metrics["host_agent_sheet"] = dialog
 
         def new_agents():
-            fresh = [a for a in agent_sessions(ctx) if a.get("stoppable", True) and a.get("key") not in before]
+            fresh = [a for a in agent_sessions(ctx) if a.get("key") not in before]
             return fresh or None
 
         fresh = wait_until(new_agents, 30, interval=0.5) or []

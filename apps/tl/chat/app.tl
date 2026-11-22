@@ -5,7 +5,7 @@ app so.tilo.lang.chat "Chat" (
     keywords: ["messenger", "instant messaging", "conversation"],
 )
 
-use so.tilo.lang.agent as agent
+use so.tilo.agent as agent
 
 /// The workspace's conversations in the sidebar's order: channels outside any category, the
 /// categories each with its own, and the direct messages, in the list as people.

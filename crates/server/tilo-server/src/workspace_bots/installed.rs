@@ -18,7 +18,7 @@
 //! the steps already in history instead of repeating them.
 //!
 //! What the program itself keeps between its runs, its counts and its note,
-//! is in a file beside that one ([`super::kept`]), written whenever it
+//! is in a file beside that one ([`tilo_workspace_service::agents::kept`]), written whenever it
 //! changes.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -48,9 +48,9 @@ use tilo_connector::ConnectorProcess;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::DeviceCert;
 
-use super::kept::KeptFile;
 use crate::workspaces::{MemberMark, Workspaces};
 use tilo_content::{ContentStore, WorkspaceStores};
+use tilo_workspace_service::agents::kept::KeptFile;
 
 // The field a connector's records keep their outbox under, which the bot's
 // grant lets it settle.
@@ -102,6 +102,51 @@ pub struct InstalledBot {
     /// the program and keeps the installation.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub release: String,
+}
+
+/// What an event's installation says it was installed from.
+const EVENT_ENTRY: &str = "event";
+
+/// What runs a workspace's events here: each one's program as a bot of its own, for the
+/// member who set it up.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EventRunner;
+
+impl tilo_workspace_service::agents::events::Runner for EventRunner {
+    fn run(
+        &self,
+        workspaces: &Workspaces,
+        workspace: &str,
+        definition: &tilo_agent_session::bot::event::Definition,
+        person: String,
+        steps: Arc<dyn HostSteps>,
+        progress: PathBuf,
+    ) -> Result<(Arc<KeptFile>, tokio::task::JoinHandle<()>), String> {
+        let bot = InstalledBot {
+            installation: definition.id.clone(),
+            entry: EVENT_ENTRY.to_owned(),
+            name: definition.name.clone(),
+            program: definition.program_text()?,
+            inputs: definition.inputs(),
+            installed_at_ms: definition.set_up_at_ms,
+            release: String::new(),
+        };
+        // An event changes no record, so nothing is ever signed with this
+        // key: it only names the run's caller, anew at each start.
+        let key = SigningKey::from_bytes(&rand::random());
+        let runner = BotRunner::new(
+            workspaces.clone(),
+            workspace.to_owned(),
+            workspaces.governor().clone(),
+            key,
+            bot,
+            BTreeMap::new(),
+            progress,
+        )?
+        .runs_for(person, steps);
+        let kept = runner.kept();
+        Ok((kept, tokio::spawn(runner.run())))
+    }
 }
 
 impl InstalledBot {
@@ -1182,15 +1227,6 @@ fn stopped_at(report: &tilo_automation::InvocationReport) -> Option<(Ended, Stri
             Some((Ended::Failed, "the run was cancelled".to_owned()))
         }
     }
-}
-
-/// The next time `trigger` fires after `now_ms` on this host's clock, ms
-/// since the epoch: a schedule's next time, a moment itself. None for a
-/// trigger that is not on the clock.
-#[must_use]
-pub fn next_fire_ms(trigger: &TriggerSpec, now_ms: i64) -> Option<i64> {
-    let now = jiff::Timestamp::from_millisecond(now_ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-    Timed::of(trigger)?.first_ms(now, &jiff::tz::TimeZone::system())
 }
 
 /// `record` of `app`, as the runner names one record across passes.

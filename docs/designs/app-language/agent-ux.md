@@ -1,8 +1,8 @@
 # Tilo's agent: point, type, get a view
 
-This improves the agent Tilo already has. Model calls stay in `tilo-model-gateway`; the Tasks
-agent (`apps/agent`) keeps its loop, tools, budgets and Tasks issues; asks stay in
-`action-policy`. What changes is how a person reaches it and what comes back. The canvas
+This improves the agent Tilo already has. Model calls go to the model the workspace linked; the
+one agent engine (`agents` in tilo-workspace-service, which a workspace's host and a person's own
+device both run) keeps its loop, tools, budgets and Tasks issues; asks stay in `action-policy`. What changes is how a person reaches it and what comes back. The canvas
 (canvas.md) is the end state; everything here works on today's desktop first.
 
 ## 1. Point and type, everywhere

@@ -62,13 +62,13 @@ async fn read_by(
     document: &str,
 ) -> Result<String, String> {
     let id = WorkspaceId::parse(workspace).unwrap();
-    let service = tilo_server::workspace_agents::WorkspaceActionProvider::new(actions.clone(), id);
+    let service = tilo_workspace_service::agents::WorkspaceActionProvider::new(actions.clone(), id);
     let route = DocumentRoute {
         app_id: WRITER.into(),
         cluster_id: workspace.into(),
         document: document.into(),
     };
-    tilo_server::workspace_agents::invoke_named(
+    tilo_workspace_service::agents::invoke_named(
         &service,
         caller,
         &route,

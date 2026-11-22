@@ -116,7 +116,7 @@ impl Web {
                 if let (Some(workspaces), Ok(runtime)) =
                     (&self.workspaces, tokio::runtime::Handle::try_current())
                 {
-                    let teller = crate::workspace_telling::Teller::new(
+                    let teller = tilo_workspace_service::agents::telling::Teller::new(
                         workspaces.clone(),
                         Arc::new(push.clone()),
                     );

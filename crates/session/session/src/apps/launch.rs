@@ -146,21 +146,6 @@ impl Apps {
             if self.outdated_ended(&event) {
                 continue;
             }
-            // An agent has no window and no place of its own on the shell: its end is logged, and
-            // the record's next change starts it again rather than this pass starting it in a loop.
-            // The next pass, woken for it, takes its face off the workspace.
-            if let Some((workspace, agent)) = self.agent_ended(event.id) {
-                tracing::warn!(
-                    %agent,
-                    %workspace,
-                    end = %event.end,
-                    "an agent stopped"
-                );
-                if let Some(wake) = &self.state.borrow().wake {
-                    wake();
-                }
-                continue;
-            }
             // The launch is over: its link retires with it, so the app's next window there starts a
             // process again, and its record keeps how far it got, for whoever reads it later.
             self.state.borrow_mut().held.remove(&event.id);

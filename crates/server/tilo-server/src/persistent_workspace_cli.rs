@@ -981,7 +981,7 @@ pub(crate) async fn seed_apps(
     let seeded = settled_in(workspaces, workspace, "seeded").await?;
     let catalogue = tilo_agent_session::AppCatalogue::native();
     for app in apps.iter().filter(|app| !seeded.contains(*app)) {
-        let record = tilo_server::workspace_bots::workspace_resource(&catalogue, app);
+        let record = tilo_workspace_service::agents::workspace_resource(&catalogue, app);
         workspaces
             .prepare_application(workspace, cert, &catalogue, app, &record)
             .await
@@ -1037,7 +1037,7 @@ pub(crate) async fn settle_chat(
         return Ok(());
     }
     let catalogue = tilo_agent_session::AppCatalogue::native();
-    let record = tilo_server::workspace_bots::workspace_resource(
+    let record = tilo_workspace_service::agents::workspace_resource(
         &catalogue,
         crate::workspace_chat::CHAT_APP,
     );

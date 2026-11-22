@@ -5,10 +5,10 @@ use super::*;
 use tilo_actions::remote::Caller;
 use tilo_peer_state::join::decode_and_verify_invitation;
 use tilo_server::{
-    workspace_agents::{Turn, WorkspaceActionProvider, invoke_named},
     workspace_join::WorkspaceJoinClient,
     workspaces::{IssueInvitationRequest, Workspaces},
 };
+use tilo_workspace_service::agents::{Turn, WorkspaceActionProvider, invoke_named};
 use ui::collaboration::recall::{INSTRUCTION_CONVERSATION, INSTRUCTION_LEARNED};
 
 /// The four tools a turn that is its keeper's own keeps what it learns with.

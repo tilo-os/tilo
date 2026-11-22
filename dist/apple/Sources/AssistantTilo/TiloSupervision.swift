@@ -78,9 +78,7 @@ final class AssistantDay {
 ///
 /// An agent's item says whether the workspace's server works it, around the clock and with
 /// every device of its person off, or its keeper's own devices do. A sub-agent is worked by
-/// the server's own loop, unless its item holds what a coding agent's holds (`sub.coding`):
-/// then a coding harness works it in the workspace's machine, and the item says the harness's
-/// name and the folder it was started in.
+/// the server's own loop.
 @MainActor
 enum AssistantPlaces {
     /// The places, the assistant's own first. A sub-agent counts while it is at work: one that
@@ -90,16 +88,11 @@ enum AssistantPlaces {
         guard let assistant, let own = all.first(where: { $0["id"]?.string == assistant }), variant(own["state"]) == "active"
         else { return [] }
         var onServer = 0
-        var coders: [String] = []
         for agent in all {
             guard let sub = agent["sub"], !sub.isNull, ChatMember(agent["keeper"])?.id == person, variant(agent["state"]) == "active",
                   ["working", "needs_person"].contains(variant(sub["stands"]) ?? "working")
             else { continue }
-            if let coding = sub["coding"], !coding.isNull {
-                coders.append(coder(coding))
-            } else {
-                onServer += 1
-            }
+            onServer += 1
         }
         typealias W = AssistantWords
         var places: [Supervision.Place] = []
@@ -112,25 +105,11 @@ enum AssistantPlaces {
                 places.append(.init(name: server, detail: W.counted(onServer, one: .placeSubAgentOne, many: .placeSubAgentMany)))
             }
         }
-        if !coders.isEmpty {
-            var said = Array(coders.prefix(2))
-            if coders.count > 2 { said.append(W.moreCount.said(["count": String(coders.count - 2)])) }
-            places.append(.init(name: machine, detail: said.joined(separator: " · ")))
-        }
         return places
     }
 
-    /// The two places by name, as a line begins with them.
+    /// The server by name, as a line begins with it.
     private static var server: String { AssistantWords.placeServer.said }
-    private static var machine: String { AssistantWords.placeMachine.said }
-
-    /// A coding agent as a person reads one: its harness by the name its item says, and the
-    /// folder it was started in.
-    private static func coder(_ coding: JSON) -> String {
-        let name = coding["harness_name"]?.string.flatMap { $0.isEmpty ? nil : $0 } ?? AssistantWords.codingAgent.said
-        let folder = [coding["repository"]?.string, coding["directory"]?.string].compactMap { $0 }.first { !$0.isEmpty }
-        return folder.map { AssistantWords.coderIn.said(["name": name, "folder": $0]) } ?? name
-    }
 
     /// An enum's case, however the read spells it: the bare word, or `{"$variant": word}`.
     private static func variant(_ value: JSON?) -> String? {

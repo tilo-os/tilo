@@ -1,5 +1,5 @@
 //! What a person's assistant finds to do on its own, through the server's own
-//! actions ([`crate::workspace_bots::initiative`]) and the steps the events'
+//! actions ([`tilo_workspace_service::agents::initiative`]) and the steps the events'
 //! engine hands the server, with no device of the person on: a look that
 //! finds nothing new asks no model and writes nothing, the look-round's own
 //! day holds, its switch and rhythm are those of one of its person's
@@ -25,8 +25,8 @@ use tilo_agent_session::bot::host_steps::{
 use super::bot_server;
 use super::*;
 use crate::WorkspaceId;
-use crate::workspace_bots::events::{Authority, WorkspaceEvents};
-use crate::workspace_bots::initiative::{Initiative, look_round_spender};
+use tilo_workspace_service::agents::events::{Authority, WorkspaceEvents};
+use tilo_workspace_service::agents::initiative::{Initiative, look_round_spender};
 
 /// One action of the server's own, to take.
 fn asking(target: RemoteActionTarget, arguments: Value) -> RemoteActionMessage {
@@ -197,7 +197,11 @@ async fn fires(
 /// A server with a workspace of `cert`'s person, their events and their
 /// assistant's initiative, the events' steps answered by `assistant`.
 fn started(workspaces: &Workspaces, assistant: &Arc<Assistant>) -> (Initiative, WorkspaceEvents) {
-    Initiative::start_with(workspaces.clone(), assistant.clone())
+    Initiative::start_with(
+        workspaces.clone(),
+        assistant.clone(),
+        std::sync::Arc::new(crate::workspace_bots::installed::EventRunner),
+    )
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -394,7 +398,7 @@ async fn the_look_rounds_own_day_holds_and_only_its_person_raises_it() {
         &WorkspaceId::parse(&workspace).unwrap().to_string(),
         &event,
         "Look-round",
-        &crate::workspace_agents::today(),
+        &tilo_workspace_service::agents::today(),
         on.day_limit_micros,
     );
     let model = workspaces
@@ -784,7 +788,7 @@ async fn what_the_assistant_and_its_server_did_themselves_is_not_news_to_a_look(
     // list of its agents, and the person writes to their assistant in the
     // thread of the two. Both are the assistant's own business: a look that
     // took them for news would start the turn that makes the next ones.
-    let kept = crate::workspace_bots::assistant::assistant_of(
+    let kept = tilo_workspace_service::agents::assistant::assistant_of(
         &workspaces,
         &workspace,
         &cert.user_public_key,
@@ -792,11 +796,11 @@ async fn what_the_assistant_and_its_server_did_themselves_is_not_news_to_a_look(
     .await
     .unwrap()
     .expect("the person keeps an assistant");
-    crate::workspace_agents::count_spend(
+    tilo_workspace_service::agents::count_spend(
         &workspaces,
         &workspace,
         &kept,
-        &crate::workspace_agents::today(),
+        &tilo_workspace_service::agents::today(),
         1_500,
     )
     .await
@@ -910,7 +914,7 @@ async fn what_a_look_found_and_nothing_took_is_said_and_still_new_at_the_next_lo
     // look's id, and no other message is.
     let person = hex::encode(cert.user_public_key);
     let place = WorkspaceId::parse(&workspace).unwrap().to_string();
-    let day = crate::workspace_agents::today();
+    let day = tilo_workspace_service::agents::today();
     let asks = chat::cause::message_id(
         &tilo_actions::policy::MemberId::person(person.clone()),
         &told.id,

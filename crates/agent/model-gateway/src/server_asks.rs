@@ -11,9 +11,7 @@
 
 use std::time::Duration;
 
-use agent_provider_config::protocol::{
-    Content, ErrorKind, Message, ModelError, ModelRequest, ModelResponse, Role, ToolChoice,
-};
+use agent_provider_config::protocol::{ErrorKind, ModelError, ModelRequest, ModelResponse};
 use serde_json::Value;
 
 use crate::Response;
@@ -95,38 +93,4 @@ fn refusal(why: &anyhow::Error) -> ModelError {
         },
         _ => offline(),
     }
-}
-
-/// One single-shot transformation as a turn of the person's model: the
-/// instructions as the system's words, the input as the person's, no tools,
-/// and the answer's words back.
-pub(super) async fn transform(
-    instructions: &str,
-    input: &str,
-    max_output_tokens: u32,
-    timeout: Duration,
-) -> Result<String, ModelError> {
-    let request = ModelRequest {
-        messages: vec![
-            Message::text(Role::System, instructions),
-            Message::text(Role::User, input),
-        ],
-        tools: Vec::new(),
-        tool_choice: ToolChoice::None,
-        max_output_tokens,
-    };
-    let answer = ask(&request, timeout, &mut |_| true).await?;
-    let text: String = answer
-        .message
-        .content
-        .iter()
-        .filter_map(|content| match content {
-            Content::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    if text.len() > crate::MAX_TRANSFORM_OUTPUT_BYTES {
-        return Err(ModelError::new(ErrorKind::Truncated));
-    }
-    Ok(text)
 }

@@ -15,7 +15,7 @@ use tilo_clock::Clock as _;
 
 use super::times::person_with_an_assistant;
 use super::*;
-use crate::workspace_bots::events::watched_address;
+use tilo_workspace_service::agents::events::watched_address;
 
 /// When the tests' clock starts, ms since the epoch.
 const START: u64 = 1_800_000_000_000;

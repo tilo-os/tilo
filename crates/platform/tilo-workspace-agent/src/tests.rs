@@ -642,7 +642,6 @@ const GOLDEN: &str = r#"{
       "id": "claude",
       "name": "Claude",
       "keeper": "ada",
-      "on_host": false,
       "model": "anthropic/sonnet",
       "mcp_client": null,
       "bound": [
@@ -692,40 +691,6 @@ fn golden_state() -> WorkspaceAgents {
         ))
         .unwrap();
     record.state().unwrap()
-}
-
-fn on_host(agent: &str, there: bool) -> tilo_resource::Invoke<WorkspaceAgents> {
-    WorkspaceAgents::SET_AGENT_ON_HOST.with(workspace_agents::SetAgentOnHost {
-        agent: id(agent),
-        on_host: there,
-    })
-}
-
-/// A new agent runs on a member's device until a member moves it to the workspace's host, whoever
-/// made it; an agent an MCP client connects as stays where that client runs.
-#[test]
-fn a_member_moves_the_workspaces_agent_to_the_host() {
-    let mut record = as_person(ADA);
-    record.apply(make("Scout")).unwrap();
-    let agent = record.state().unwrap().agents[0].id.0.clone();
-    assert!(!record.state().unwrap().agents[0].on_host);
-    let mut grace = record.fork().as_author(GRACE);
-    grace.apply(on_host(&agent, true)).unwrap();
-    assert!(grace.state().unwrap().agents[0].on_host);
-    record.apply(on_host(&agent, true)).unwrap();
-    assert!(record.state().unwrap().agents[0].on_host);
-
-    record
-        .apply(
-            WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
-                name: NonBlank::parse("Claude Code").expect("a name"),
-                id: Some("claude-code".to_owned()),
-                model: None,
-                mcp_client: Some("Claude Code".to_owned()),
-            }),
-        )
-        .unwrap();
-    assert!(record.apply(on_host("claude-code", true)).is_err());
 }
 
 fn tell(agent: &str, instruction: Option<&str>) -> tilo_resource::Invoke<WorkspaceAgents> {
@@ -889,7 +854,7 @@ fn whatever_acts_for_a_member_is_refused_what_a_member_does_only_in_person() {
         ),
         ("an app by itself", Acting::by_app("so.tilo.chat")),
     ];
-    let verbs: [(&str, InPersonVerb); 6] = [
+    let verbs: [(&str, InPersonVerb); 5] = [
         ("names it", |agents, cx, agent| {
             let name = NonBlank::parse("Mine now").expect("a name");
             agents.rename_agent(cx, id(agent), name)
@@ -900,9 +865,6 @@ fn whatever_acts_for_a_member_is_refused_what_a_member_does_only_in_person() {
         }),
         ("bounds it", |agents, cx, agent| {
             agents.set_agent_bound(cx, id(agent), Vec::new())
-        }),
-        ("says where it works", |agents, cx, agent| {
-            agents.set_agent_on_host(cx, id(agent), true)
         }),
         (
             "says how many sub-agents it may have",

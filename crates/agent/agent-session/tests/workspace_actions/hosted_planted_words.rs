@@ -50,7 +50,7 @@ async fn stops_sharing(
     message: &Id,
 ) -> Result<serde_json::Value, String> {
     let id = WorkspaceId::parse(workspace).unwrap();
-    let service = tilo_server::workspace_agents::WorkspaceActionProvider::new(actions.clone(), id);
+    let service = tilo_workspace_service::agents::WorkspaceActionProvider::new(actions.clone(), id);
     let caller = tilo_actions::remote::Caller::authenticated(
         root.verifying_key().to_bytes(),
         browser.cert.device_public_key,
@@ -63,7 +63,7 @@ async fn stops_sharing(
     };
     let mut arguments = serde_json::Map::new();
     arguments.insert("message".into(), serde_json::json!(message.as_str()));
-    tilo_server::workspace_agents::invoke_named(
+    tilo_workspace_service::agents::invoke_named(
         &service,
         &caller,
         &route,

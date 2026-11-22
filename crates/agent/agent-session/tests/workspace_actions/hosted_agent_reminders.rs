@@ -6,10 +6,8 @@
 use super::*;
 use tilo_actions::remote::ReceiptStatus;
 use tilo_actions::remote::workspace_events::{self, Ended, EventView, Events, Sort};
-use tilo_server::{
-    workspace_bots::events::{Authority, WorkspaceEvents},
-    workspaces::Workspaces,
-};
+use tilo_server::workspaces::Workspaces;
+use tilo_workspace_service::agents::events::{Authority, WorkspaceEvents};
 
 type Actions = tilo_agent_session::workspace_actions::WorkspaceActions;
 /// The agents a server keeps working for its workspaces.

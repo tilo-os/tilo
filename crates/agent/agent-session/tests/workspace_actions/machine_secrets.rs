@@ -3,14 +3,13 @@
 //! a variable, and the next command their agent starts in the machine hands its program it.
 //! The token is in no record, no answer, no log line and no file on the server's disk in the
 //! clear. Removed, it stops arriving with the next command; an item the vault does not hold stops
-//! the command in plain words; whoever may not read the vault is refused it; and the coding
-//! agent's program, started in the machine, gets it too.
+//! the command in plain words; whoever may not read the vault is refused it; and a terminal the
+//! person opens in the machine starts its programs with it too.
 use super::*;
 use serde_json::{Value, json};
 use tilo_actions::remote::person_vault;
 use tilo_environment::machine_secrets::{DOCUMENT, MachineSecrets};
 use tilo_mcp::McpServer;
-use tilo_server::coding_agents::runner::Machines as _;
 use tilo_session_actions::SessionActions;
 use tilo_session_client::Outbox as _;
 /// A stand-in for the service selling the workspace's Linux machines.
@@ -271,46 +270,11 @@ async fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_els
         "nor do the program's arguments"
     );
 
-    // The coding agent's program, started in the machine for the agent, gets it too.
-    let start = ush::environment_programs::Start {
-        argv: vec!["claude".into()],
-        env: Vec::new(),
-        directory: std::path::PathBuf::new(),
-        endpoints: Vec::new(),
-        stop_grace: Duration::from_secs(1),
-        agent_program: "tilo-linux-vm-agent".into(),
-        secrets: Vec::new(),
-    };
-    let coding = tilo_server::coding_agents::runner::CodingAgent {
-        workspace: WORKSPACE.into(),
-        id: "coder".into(),
-        harness: String::new(),
-        repository: String::new(),
-        copy: None,
-        session: None,
-        instruction: None,
-        person: person.clone(),
-        under: "scout".into(),
-    };
-    let before = vm.launched().len();
-    let serving = Arc::clone(&shells);
-    let starter = coding.starter();
-    let served = tokio::task::spawn_blocking(move || serving.serve(WORKSPACE, &starter, start))
-        .await
-        .unwrap();
-    assert!(served.is_ok(), "the coding agent's program starts");
-    let started = tilo_test_env::wait_for("the coding agent's program to start", || {
-        vm.launched()
-            .into_iter()
-            .skip(before)
-            .find(|(argv, _)| argv.iter().any(|argument| argument == "claude"))
-    });
-    assert!(has_secret(&started.1), "its program starts with the token");
-    drop(served);
+    let opener = tilo_actions::remote::Caller::local_person(person.clone());
 
     // A terminal the person opens on the session starts its programs with it too, and the
     // shell itself never holds it.
-    let opened = open_terminal(&shells, &browser_device, &coding.starter())
+    let opened = open_terminal(&shells, &browser_device, &opener)
         .await
         .expect("the terminal opens");
     let tilo_server::agents::ShellsAt::Here(terminals, _) = shells.shells() else {
@@ -396,7 +360,7 @@ async fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_els
         failed && ran.contains("That item is not kept here"),
         "{ran}"
     );
-    let refused = open_terminal(&shells, &browser_device, &coding.starter()).await;
+    let refused = open_terminal(&shells, &browser_device, &opener).await;
     assert!(
         refused
             .as_ref()

@@ -8,7 +8,7 @@ use super::*;
 use serde_json::json;
 use tilo_actions::remote::{ActionProvider as _, Caller, CatalogueQuery, ViewResourceQuery};
 use tilo_agent_session::workspace_actions::slowed::Slowed;
-use tilo_server::workspace_agents::{WorkspaceActionProvider, invoke_named};
+use tilo_workspace_service::agents::{WorkspaceActionProvider, invoke_named};
 use ui::feedback::{Destination, Draft, Submission};
 
 const TASKS: &str = "so.tilo.tasks";
@@ -187,7 +187,7 @@ async fn a_slow_read_leaves_its_thread_answering() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let catalogue = crate::common::catalogue();
-    let tracker = tilo_server::workspace_bots::workspace_resource(&catalogue, TASKS);
+    let tracker = tilo_workspace_service::agents::workspace_resource(&catalogue, TASKS);
     let issues = ui::resource::chain_resource_id(&tasks::issue_list::chain());
     let device = Caller::authenticated(
         root.verifying_key().to_bytes(),

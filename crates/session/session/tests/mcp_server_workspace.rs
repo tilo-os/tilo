@@ -377,9 +377,7 @@ impl Shell {
                     .read("session:agents")
                     .and_then(|agents| agents.get("sessions").and_then(Value::as_array).cloned())
                     .unwrap_or_default()
-                    .into_iter()
-                    .filter(|agent| agent["stoppable"] == true)
-                    .count();
+                    .len();
                 (here == sessions).then_some(())
             },
         );

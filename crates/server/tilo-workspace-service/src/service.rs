@@ -837,12 +837,28 @@ pub fn local_caller(cert: &DeviceCert) -> tilo_actions::remote::Caller {
 /// Where an embedder whose router is built before any workspace is placed on it
 /// installs the service its [`deferred_protocols`] forward to.
 #[derive(Clone, Default)]
-pub struct ServiceSlot(Arc<std::sync::RwLock<Option<Arc<WorkspaceService>>>>);
+pub struct ServiceSlot(Arc<Slot>);
+
+/// What a [`ServiceSlot`] holds: the service, and a count of its installs that a waiter for one
+/// follows.
+struct Slot {
+    service: std::sync::RwLock<Option<Arc<WorkspaceService>>>,
+    installs: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for Slot {
+    fn default() -> Self {
+        Self {
+            service: std::sync::RwLock::default(),
+            installs: tokio::sync::watch::Sender::new(0),
+        }
+    }
+}
 
 impl std::fmt::Debug for ServiceSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("ServiceSlot")
-            .field(&self.0.read_recover().is_some())
+            .field(&self.0.service.read_recover().is_some())
             .finish()
     }
 }
@@ -850,19 +866,35 @@ impl std::fmt::Debug for ServiceSlot {
 impl ServiceSlot {
     /// Forward this slot's connections to `service` from now on.
     pub fn install(&self, service: Arc<WorkspaceService>) {
-        *self.0.write_recover() = Some(service);
+        *self.0.service.write_recover() = Some(service);
+        self.0
+            .installs
+            .send_modify(|installs| *installs = installs.wrapping_add(1));
     }
 
     /// Refuse this slot's connections again, handing back the service it
     /// forwarded to.
     pub fn clear(&self) -> Option<Arc<WorkspaceService>> {
-        self.0.write_recover().take()
+        self.0.service.write_recover().take()
     }
 
     /// The service this slot forwards to.
     #[must_use]
     pub fn service(&self) -> Option<Arc<WorkspaceService>> {
-        self.0.read_recover().clone()
+        self.0.service.read_recover().clone()
+    }
+
+    /// The service this slot forwards to, once one is installed: what starts work on a device's
+    /// service that its embedder opens later than it builds what the work needs.
+    pub async fn installed(&self) -> Arc<WorkspaceService> {
+        let mut installs = self.0.installs.subscribe();
+        loop {
+            if let Some(service) = self.service() {
+                return service;
+            }
+            // The sender lives as long as this slot, which this call borrows.
+            let _ = installs.changed().await;
+        }
     }
 }
 

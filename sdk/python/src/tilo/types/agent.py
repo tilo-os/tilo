@@ -1,9 +1,9 @@
-"""Types for Agents (`so.tilo.lang.agent`), from the app's surface.
+"""Types for Agents (`so.tilo.agent`), from the app's surface.
 
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Claim` is the app's `tl.so.tilo.lang.agent.Claim` at `agent/<resource>`, read with
+`Claim` is the app's `tl.so.tilo.agent.Claim` at `agent/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -80,8 +80,8 @@ SupersedeArgs = TypedDict("SupersedeArgs", {
 """The arguments of `supersede`."""
 
 class Claim(Resource):
-    """Claim — `tl.so.tilo.lang.agent.Claim`."""
-    __surface__ = "so.tilo.lang.agent@a4cfbb45d30ca102"
+    """Claim — `tl.so.tilo.agent.Claim`."""
+    __surface__ = "so.tilo.agent@69d22e04512e4cc3"
     @property
     def _6qikspks(self) -> str:
         """device (`6qikspks` on the wire)."""
@@ -101,8 +101,8 @@ class Claim(Resource):
 
 
 class Ask(Resource):
-    """Ask — `tl.so.tilo.lang.agent.Ask`."""
-    __surface__ = "so.tilo.lang.agent@a4cfbb45d30ca102"
+    """Ask — `tl.so.tilo.agent.Ask`."""
+    __surface__ = "so.tilo.agent@69d22e04512e4cc3"
     mcsi6vp5: str  # agent
     @property
     def _7j5pok54(self) -> str | None:
@@ -162,16 +162,16 @@ class Ask(Resource):
 
 
 class Step(Resource):
-    """Step — `tl.so.tilo.lang.agent.Step`."""
-    __surface__ = "so.tilo.lang.agent@a4cfbb45d30ca102"
+    """Step — `tl.so.tilo.agent.Step`."""
+    __surface__ = "so.tilo.agent@69d22e04512e4cc3"
     ippal7k2: str  # called
     cyu3le2j: str  # answered
     cma7vgpx: bool  # failed
 
 
 class Reply(Resource):
-    """Reply — `tl.so.tilo.lang.agent.Reply`."""
-    __surface__ = "so.tilo.lang.agent@a4cfbb45d30ca102"
+    """Reply — `tl.so.tilo.agent.Reply`."""
+    __surface__ = "so.tilo.agent@69d22e04512e4cc3"
     gjd462ep: Ask  # ask
     oka345cb: str  # body
     hzlmnzzw: AskState  # state
@@ -227,8 +227,8 @@ class Reply(Resource):
 
 
 class Agents(Resource):
-    """Agents — `tl.so.tilo.lang.agent.Agents`."""
-    __surface__ = "so.tilo.lang.agent@a4cfbb45d30ca102"
+    """Agents — `tl.so.tilo.agent.Agents`."""
+    __surface__ = "so.tilo.agent@69d22e04512e4cc3"
     mzzoxssv: list[Entry[Ask]]  # asks
     @property
     def _353i7jsi(self) -> list[Entry[Reply]]:
@@ -259,6 +259,6 @@ class Agents(Resource):
 
 
 class Agent(Resource):
-    """Agents — `tl.so.tilo.lang.agent`."""
-    __surface__ = "so.tilo.lang.agent@a4cfbb45d30ca102"
+    """Agents — `tl.so.tilo.agent`."""
+    __surface__ = "so.tilo.agent@69d22e04512e4cc3"
 

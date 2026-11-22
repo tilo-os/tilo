@@ -5,8 +5,6 @@
 
 [apps.activity]
 description = "See what changed in a workspace while you were away, who changed it, and replay or undo it."
-[apps.agent]
-description = "A collaborative assistant that works through your apps' own actions."
 [apps.api-tester]
 description = "Build, send, and inspect HTTP requests without leaving Tilo."
 [apps.assistant]

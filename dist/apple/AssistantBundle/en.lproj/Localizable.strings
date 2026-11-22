@@ -199,9 +199,6 @@
 "place-sub-agent-many" = "{count} sub-agents at work";
 "place-own-devices" = "Your own devices";
 "place-while-open" = "only while Tilo is open on one";
-"place-machine" = "The workspace's machine";
-"coder-in" = "{name} in {folder}";
-"coding-agent" = "A coding agent";
 "none" = "Nothing yet";
 "forget" = "Forget";
 "sign-out" = "Sign out of this device";

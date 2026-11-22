@@ -356,16 +356,13 @@ RUN set -eu; \
       if [ -e "$node_bin/$program" ]; then ln -sf "$node_bin/$program" "/usr/local/bin/$program"; fi; \
     done
 
-# Claude Code, at the one version the server starts
-# (crates/server/tilo-server/src/coding_agents/claude_code.rs, which
-# hosted-guest.sh reads it from) and in the folder the server starts it from,
-# so a coding agent's first run fetches nothing and a person who types `claude`
-# in Terminal gets the same program. Signing in is the person's, inside the VM.
-# The image pins that version, so Claude Code's own updater stays off for every
-# start, the server's and a person's alike: its managed settings, which a user's
-# settings cannot override, give every claude DISABLE_AUTOUPDATER. Otherwise a
-# person's first run installs a newer build into the workspace's files (HOME)
-# and the next start runs a version the server never chose.
+# Claude Code, at the version os/hosted-guest/base.env pins (hosted-guest.sh
+# reads it from there), so a person or agent who types `claude` in Terminal
+# fetches nothing. Signing in is the person's, inside the VM. The image pins
+# that version, so Claude Code's own updater stays off: its managed settings,
+# which a user's settings cannot override, give every claude
+# DISABLE_AUTOUPDATER. Otherwise a first run installs a newer build into the
+# workspace's files (HOME) and the next start runs another version.
 ARG CLAUDE_CODE_VERSION
 RUN set -eu; \
     test -n "$CLAUDE_CODE_VERSION"; \

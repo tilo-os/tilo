@@ -62,7 +62,7 @@ async fn agents_document(hosted: &Hosted) -> Option<automerge::AutoCommit> {
 /// The workspace's agents as its server holds them, once it holds any.
 async fn agents(hosted: &Hosted) -> Option<WorkspaceAgents> {
     let mut doc = agents_document(hosted).await?;
-    tilo_server::workspace_bots::opened::<WorkspaceAgents>(&mut doc).ok()
+    tilo_workspace_service::agents::opened::<WorkspaceAgents>(&mut doc).ok()
 }
 
 /// The agent `id` as the workspace's list of its agents names it, once it names it as `until`

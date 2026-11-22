@@ -47,9 +47,9 @@ use tilo_net::Method;
 use tilo_server::workspace_bots::discord::{self, DiscordLink};
 use tilo_server::workspace_bots::installed::{self, BotRunner};
 use tilo_server::workspace_bots::membership::{HostRootCertifier, keep_member};
-use tilo_server::workspace_bots::workspace_resource;
 use tilo_server::workspaces::Workspaces;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_workspace_service::agents::workspace_resource;
 use ui::tilo_actions::ActionContext;
 use ui::tilo_resource::{Id, Invoke, Resource as _};
 

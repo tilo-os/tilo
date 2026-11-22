@@ -9,10 +9,6 @@ use tilo_server::workspaces::Workspaces;
 use ui::tilo_resource::{Invoke, NonBlank, Replica};
 use ui::tilo_workspace_agent::{Agent, NewSubAgent, Stands, workspace_agents};
 
-/// A coding agent: a sub-agent whose work a coding program does in the workspace's machine.
-#[path = "hosted_coding_agents.rs"]
-mod hosted_coding_agents;
-
 /// Who ends a share an agent made for its person.
 #[path = "hosted_share_ends.rs"]
 mod share_ends;
@@ -436,7 +432,6 @@ async fn a_sub_agent_works_in_a_conversation_of_its_own_and_reads_nothing_of_its
     let started = stands_as(&workspaces, &workspace, "find-the-deck", Stands::Working).await;
     let sub = started.sub.clone().unwrap();
     assert_eq!(started.keeper, person, "it works for the same person");
-    assert!(started.on_host);
     assert_eq!(
         (
             sub.started_by.as_str(),

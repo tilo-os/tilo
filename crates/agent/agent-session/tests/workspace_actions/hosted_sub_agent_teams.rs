@@ -911,7 +911,7 @@ async fn outside_a_turn(
     provider: &str,
     arguments: &Value,
 ) -> String {
-    let service = tilo_server::workspace_agents::WorkspaceActionProvider::new(
+    let service = tilo_workspace_service::agents::WorkspaceActionProvider::new(
         actions.clone(),
         WorkspaceId::parse(workspace).unwrap(),
     );

@@ -911,8 +911,7 @@ jobs:
                        "calendar libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                        "contacts libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                        "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
-                       "sheets libtilo_spreadsheet_engine.so --probe-spreadsheet-engine" \
-                       "agent libtilo_agent_web_engine.so --probe-agent-web-engine"; do
+                       "sheets libtilo_spreadsheet_engine.so --probe-spreadsheet-engine"; do
             read -r app library option <<<"$probe"
             if [[ ! -x target/thin-app/$app ]]; then
               echo "$app is not among this run's apps; no $library to run" | tee -a "$GITHUB_STEP_SUMMARY"

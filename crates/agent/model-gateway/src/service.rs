@@ -1,6 +1,6 @@
 //! Per-user model gateway.
 //!
-//! An app's model turn (`Complete`, `CompleteDefault`, `Transform`) is the
+//! An app's model turn (`Complete`, `CompleteDefault`) is the
 //! person's own model on their workspace's server, asked through the session
 //! this computer holds with it ([`server_asks`]): this computer keeps no
 //! provider key. What stays here runs on this computer alone: local vision
@@ -565,12 +565,6 @@ pub(super) async fn handle_streaming(
         {
             return permission_denied();
         }
-        request @ Request::Transform { .. } if app_id == AGENT_APP => {
-            return transform_request(request).await;
-        }
-        Request::Transform { .. } => {
-            Err("only tilo-agent may run transforms through the model gateway".into())
-        }
         Request::Trace {
             trace,
             event,
@@ -750,38 +744,6 @@ async fn complete_request(
     };
     let answer = server_asks::ask(&request, Duration::from_millis(timeout_ms), emit).await?;
     serde_json::to_string(&answer).map_err(|_| ModelError::new(ErrorKind::InvalidResponse))
-}
-
-/// Run a transform request for tilo-agent, as one turn of the person's own
-/// model ([`server_asks::transform`]).
-async fn transform_request(request: Request) -> Response {
-    let Request::Transform {
-        instructions,
-        input,
-        max_output_tokens,
-        timeout_ms,
-        ..
-    } = request
-    else {
-        return rejected("not a transform request");
-    };
-    let ask = TransformAsk {
-        instructions,
-        input,
-        max_output_tokens,
-        timeout: Duration::from_millis(timeout_ms),
-    };
-    if let Err(why) = validate_transform(&ask) {
-        return rejected(&why);
-    }
-    server_asks::transform(
-        &ask.instructions,
-        &ask.input,
-        ask.max_output_tokens,
-        ask.timeout.min(crate::MAX_TRANSFORM_TIMEOUT),
-    )
-    .await
-    .map_or_else(Response::failure, |text| succeeded(Some(text), None))
 }
 
 /// Run synchronous configuration and vault work — file reads, key
@@ -1479,36 +1441,6 @@ fn log_token(value: &str) -> String {
     }
 }
 
-/// One single-shot transformation, as tilo-agent asked for it.
-struct TransformAsk {
-    instructions: String,
-    input: String,
-    max_output_tokens: u32,
-    timeout: Duration,
-}
-
-/// Refuse a transformation past any of the published bounds. Refused, not
-/// truncated: a silently shortened input would be answered as if it were
-/// whole.
-fn validate_transform(ask: &TransformAsk) -> Result<(), String> {
-    if ask.instructions.trim().is_empty() || ask.input.trim().is_empty() {
-        return Err("a transform needs instructions and an input".into());
-    }
-    if ask.instructions.len() > crate::MAX_TRANSFORM_INSTRUCTIONS_BYTES {
-        return Err("transform instructions exceed the 16 KiB limit".into());
-    }
-    if ask.input.len() > crate::MAX_TRANSFORM_INPUT_BYTES {
-        return Err("transform input exceeds the 256 KiB limit".into());
-    }
-    if ask.max_output_tokens == 0 || ask.max_output_tokens > crate::MAX_TRANSFORM_OUTPUT_TOKENS {
-        return Err("transform output must be between 1 and 4096 tokens".into());
-    }
-    if ask.timeout.is_zero() {
-        return Err("a transform needs a deadline".into());
-    }
-    Ok(())
-}
-
 /// Validate Photos' one fixed local-only visual-analysis operation and
 /// build its request. No arbitrary prompt crosses the app boundary: the
 /// schema, token budget, and image URL shape are all constructed here after
@@ -2132,55 +2064,6 @@ mod tests {
             assert!(encoded.contains("face detection and clustering"));
             assert!(encoded.contains("Never output a person's name"));
             assert!(!encoded.contains("identify the person"));
-        }
-    }
-
-    fn ask(input: &str) -> TransformAsk {
-        TransformAsk {
-            instructions: "Answer with JSON.".into(),
-            input: input.into(),
-            max_output_tokens: 512,
-            timeout: tilo_test_env::hang_bound(),
-        }
-    }
-
-    tilo_test_env::scenario! {
-        /// The Transform verb: its bounds and who may ask.
-        fn a_transform_is_one_bounded_tool_free_text_turn_for_the_agent_alone;
-
-        phase transform_requests_are_bounded_before_any_provider_is_asked;
-        {
-            assert!(validate_transform(&ask("text")).is_ok());
-            let huge = "x".repeat(crate::MAX_TRANSFORM_INPUT_BYTES + 1);
-            assert!(validate_transform(&ask(&huge)).is_err());
-            assert!(validate_transform(&ask("  ")).is_err());
-            let mut greedy = ask("text");
-            greedy.max_output_tokens = crate::MAX_TRANSFORM_OUTPUT_TOKENS + 1;
-            assert!(validate_transform(&greedy).is_err());
-            let mut rushed = ask("text");
-            rushed.timeout = Duration::ZERO;
-            assert!(validate_transform(&rushed).is_err());
-        }
-
-        phase only_the_agent_may_transform;
-        {
-            let http = provider_client().unwrap();
-            let request = || Request::Transform {
-                profile_id: "hosted".into(),
-                model_id: "model".into(),
-                instructions: "Answer.".into(),
-                input: "text".into(),
-                max_output_tokens: 16,
-                timeout_ms: 1000,
-            };
-            for caller in [PHOTOS_APP, SETTINGS_APP] {
-                let response = tilo_rt::block_on(handle(caller, request(), &http)).unwrap();
-                assert!(!response.ok, "{caller}");
-                assert_eq!(
-                    response.error.as_deref(),
-                    Some("only tilo-agent may run transforms through the model gateway")
-                );
-            }
         }
     }
 

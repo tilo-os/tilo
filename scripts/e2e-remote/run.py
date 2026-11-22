@@ -759,7 +759,7 @@ class Run:
         ready = f"$HOME/{GUEST_DIR}/stop-ready"
         a.vm.exec(f'rm -f "{ready}"')
         thread, holder = self.agent_beside(a, "stop", facts["command"], E2E_READY=ready, E2E_WAIT_S="90")
-        sessions = wait_until(lambda: [s for s in self.agent_sessions(b) if s.get("stoppable")], 60, 1.0)
+        sessions = wait_until(lambda: self.agent_sessions(b), 60, 1.0)
         res.facts["sessions"] = sessions
         if not sessions:
             raise Failed("B registers no agent although its setting lets it in")
@@ -773,7 +773,7 @@ class Run:
         last = (t.get("after_stop") or [{}])[-1].get("reply")
         if not isinstance(last, dict) or "stopped this agent" not in json.dumps(last):
             raise Failed(f"B did not refuse the agent after its Stop: {t.get('after_stop')}")
-        if [s for s in self.agent_sessions(b) if s.get("stoppable")]:
+        if self.agent_sessions(b):
             raise Failed(f"B still registers the agent after its Stop: {self.agent_sessions(b)}")
         # The person lets agents from their other devices in again for the steps that follow.
         self.set_accept(b, True)
@@ -804,7 +804,7 @@ class Run:
         thread, holder = self.agent_beside(a, "work", facts["command"], E2E_READY=ready, E2E_GO=go,
                                            E2E_ASKING=asking, E2E_TITLE=title, E2E_WAIT_S="60",
                                            E2E_COMMAND=f"echo e2e-remote-asked-{int(time.time())}")
-        sessions = wait_until(lambda: [s for s in self.agent_sessions(b) if s.get("stoppable")], 90, 1.0)
+        sessions = wait_until(lambda: self.agent_sessions(b), 90, 1.0)
         res.facts["sessions"] = sessions
         if not sessions:
             names = [t.get("name") for t in self.targets(b)]
@@ -860,7 +860,7 @@ class Run:
             raise Failed(f"E08 did not show in this run that terminal#run is asked with the second "
                          f"setting off: {before}")
         self.no_sheet_before(b)
-        if wait_until(lambda: not [s for s in self.agent_sessions(b) if s.get("stoppable")], 60, 1.0) is None:
+        if wait_until(lambda: not self.agent_sessions(b), 60, 1.0) is None:
             raise Failed(f"E08's agent is still registered on B: {self.agent_sessions(b)}")
         res.facts["setting"] = self.set_accept(b, True)
         res.facts["unasked"] = self.set_unasked(b, True)
@@ -879,7 +879,7 @@ class Run:
 
         def sessions_now() -> list:
             watch()
-            return [s for s in self.agent_sessions(b) if s.get("stoppable")]
+            return self.agent_sessions(b)
 
         sessions = wait_until(sessions_now, 90, 1.0)
         res.facts["sessions"] = sessions
@@ -1143,7 +1143,7 @@ class Run:
                 if not reads():
                     raise Failed(f"the agent on {box.letter.upper()} never read the form in B's tab: "
                                  f"{json.dumps(held, ensure_ascii=False)[:600]}")
-            sessions = [s for s in self.agent_sessions(b) if s.get("stoppable")]
+            sessions = self.agent_sessions(b)
             res.facts["sessions"] = sessions
             # Every agent is in B's tab now: how B's shell registers each of them is E12's to judge.
             self.tab_sessions.append({
@@ -2333,7 +2333,7 @@ class Run:
         from_c = (sc.get("this_device") or {}).get("device", "")
         if len(from_c) != 64:
             raise Failed(f"C's identity names no device: {sc}")
-        if [s for s in self.agent_sessions(b) if s.get("stoppable") and s.get("device") == from_c]:
+        if [s for s in self.agent_sessions(b) if s.get("device") == from_c]:
             raise Failed(f"B registers C's agent: {self.agent_sessions(b)}")
 
 

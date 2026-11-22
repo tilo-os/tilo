@@ -171,16 +171,6 @@ fn creating_the_assistant_makes_an_agent_of_the_workspace_the_person_keeps() {
     assert_eq!(made[0].0, "assistant", "the id its actor works under");
     assert_eq!(made[0].1, "Assistant");
     assert_eq!(made[0].2, None, "no client of its own connects as it");
-    let hosted = app
-        .shared_workspace::<WorkspaceAgents>(workspace_agent::OWNER)
-        .expect("the workspace's agents")
-        .get()
-        .active()
-        .all(|agent| agent.on_host);
-    assert!(
-        hosted,
-        "the workspace's host runs it, so it answers while every device is off"
-    );
     // The window shows it at once: the conversation is Chat's, and there is someone to hand
     // a job to.
     assert!(!shows(&mut app, "assistant-create"));

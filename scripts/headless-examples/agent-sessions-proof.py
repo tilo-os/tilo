@@ -297,8 +297,6 @@ def main() -> int:
         sessions = {agent.get("name") for agent in shell.agents()}
         check("the shell shows both agent sessions, each as itself",
               sessions == set(CLIENTS), ", ".join(sorted(map(str, sessions))))
-        check("each session is the person's own to end",
-              all(agent.get("stoppable") for agent in shell.agents()), json.dumps(shell.agents())[:160])
 
         print("\n[3] each agent acts as itself")
         for agent, name in zip(agents, CLIENTS):

@@ -91,7 +91,7 @@ impl Hosted {
         &self,
         workspace: &str,
         agents: &[&str],
-    ) -> tilo_server::workspace_agents::ServerAgents {
+    ) -> tilo_workspace_service::agents::ServerAgents {
         Box::pin(self.approving_for(workspace, agents, &[])).await
     }
 
@@ -101,7 +101,7 @@ impl Hosted {
         workspace: &str,
         agents: &[&str],
         apps: &[&str],
-    ) -> tilo_server::workspace_agents::ServerAgents {
+    ) -> tilo_workspace_service::agents::ServerAgents {
         let root = &self.root;
         let laptop = crate::support::enrol(
             root,
@@ -173,10 +173,10 @@ impl Hosted {
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
         }
-        tilo_server::workspace_agents::ServerAgents::with_sessions(
+        tilo_workspace_service::agents::ServerAgents::with_sessions(
             self.server.workspaces().unwrap().clone(),
             self.roster.actions.clone(),
-            &self.server,
+            std::sync::Arc::new(self.server.agent_link()),
             self.roster.sessions.clone(),
         )
     }

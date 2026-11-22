@@ -132,7 +132,7 @@ pub(crate) fn settle_threads(
         .iter()
         .map(|entry| Ok((entry.thread_id()?, entry)))
         .collect::<Result<Vec<_>, String>>()?;
-    tilo_server::workspace_bots::opened::<Chat>(doc)
+    tilo_workspace_service::agents::opened::<Chat>(doc)
         .map_err(|error| format!("read the chat: {error}"))?;
     let current = Chat::read_fields(doc, &automerge::ROOT)
         .map_err(|error| format!("read the chat: {error}"))?;

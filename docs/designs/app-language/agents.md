@@ -237,10 +237,10 @@ agent's runs in the workspace; `undo task` reverses this task's steps.
 
 ## 9. Evals
 
-One mechanism, the agent's own: `apps/agent/tests/data/instruction_mode_eval.jsonl` holds the
-cases, `apps/agent/tests/instruction_mode_eval.rs` scores the production transform against them
-in the test suite, and `apps/agent/examples/instruction_mode_eval.rs` records a real provider
-over the same set and prints accuracy and latency. Growing the evals is adding cases there.
+One mechanism, the engine's own: the transforms the one agent engine answers (classify, extract,
+a free-form prompt, a task, a person's request) are `tilo_agent_session::transform`, and its tests
+score each decision against scripted model answers. Growing the evals is adding cases there, and
+a recorded run against a real provider belongs beside them, over the same cases.
 
 What this does not cover yet, and the shape that would: a seeded simulated workspace (chat,
 mail, notes, files, tasks), about 30 tasks with checkable outcomes, cheap and strong models,

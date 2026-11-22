@@ -9,9 +9,8 @@
 //! join at once: the member it added is listed for the broker there
 //! ([`crate::Shared::mcp_member`]) before anyone is told to join as it, and a pass that cannot
 //! read the record keeps that listing.
-//! The person who keeps an agent runs it: the pass hands the agents kept here to the session's
-//! launches ([`Kept`]), which start each one's process — the record is who works, and whose device
-//! runs them.
+//! The agents the person here keeps ([`Kept`]) are whom what they type is handed to. Their turns
+//! are worked by the workspace's agent engine, which this device's workspace service runs.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -29,7 +28,7 @@ use ui::resource::workspace::WorkspaceResources;
 /// How this session names a record it opened, where the record's history is told.
 const SESSION_APP: (&str, &str) = ("tilo-session", "Workspace settings");
 
-/// An agent this device runs because the person sitting here keeps it.
+/// An agent the person sitting here keeps.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Kept {
     /// The workspace whose record names it.
@@ -38,9 +37,6 @@ pub(crate) struct Kept {
     pub id: String,
     /// Its name, as people read it.
     pub name: String,
-    /// The model its keeper chose for it, as `provider/model` ; `None` follows the keeper's default
-    /// here.
-    pub model: Option<String>,
 }
 
 pub(crate) use crate::search::ListedAgent as Listed;
@@ -143,8 +139,8 @@ impl Agents {
     }
 
     /// Read each workspace's agents record as `person` , hand who keeps each agent to the broker,
-    /// and answer the agents kept here — this device runs those — beside every agent each
-    /// workspace lists, whoever keeps it.
+    /// and answer the agents `person` keeps beside every agent each workspace lists, whoever
+    /// keeps it.
     pub(crate) fn feed(
         &self,
         person: &str,
@@ -216,14 +212,12 @@ impl Agents {
                         spent_micros: agent.spent_on(&day),
                     },
                 );
-                // An MCP agent connects on its own and the workspace's host runs the agents made to
-                // run there; the keeper's device runs every other one.
-                if agent.mcp_client.is_none() && !agent.on_host && agent.keeper == person {
+                // An MCP agent connects on its own: what the person types goes to the others.
+                if agent.mcp_client.is_none() && agent.keeper == person {
                     kept.push(Kept {
                         workspace: workspace.clone(),
                         id: agent.id.0.clone(),
                         name: agent.name.clone(),
-                        model: agent.model.clone(),
                     });
                 }
             }
@@ -341,9 +335,7 @@ impl crate::Shared {
     /// grants its people gave, and the turns the conversations of each give its agents. Who keeps
     /// each workspace's agents is read from the workspace's own record of them, as the broker
     /// admits an agent's session on: an agent works in the turns of the conversations it takes part
-    /// in, and its actions are admitted as its keeper's grants say. The agents kept here are this
-    /// device's to run: it starts each one's process, which answers the turns the broker delivers
-    /// it.
+    /// in, and its actions are admitted as its keeper's grants say.
     pub(crate) fn feed_agents(&self) {
         // What moved in the workspaces' records, and what this session wrote into them, before
         // anything here reads them.
@@ -360,13 +352,6 @@ impl crate::Shared {
         let (kept, listed) = self.agents.feed(&self.person, &workspaces);
         self.search.set_kept_agents(&kept);
         self.search.set_listed_agents(&listed);
-        if let Some(apps) = &self.launch {
-            for agent in &kept {
-                apps.start_agent(agent);
-            }
-            // Each agent whose process is up here is in its workspace, as present as its people.
-            self.agent_sessions.processes(&apps.agent_processes());
-        }
         self.conversations.feed(
             &self.person,
             workspaces

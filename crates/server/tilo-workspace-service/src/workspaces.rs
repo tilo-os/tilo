@@ -1648,6 +1648,12 @@ impl Workspaces {
         &self.inner.host.cert
     }
 
+    /// The work this device takes: whether it runs its workspaces' agents among it.
+    #[must_use]
+    pub fn work(&self) -> &tilo_server_protocol::WorkSetting {
+        &self.inner.host.work
+    }
+
     /// Whether this server's own person governs `governed`: they own it, or
     /// its governance keeps them as an administrator of a workspace that is
     /// no person's own here. A workspace a deployment handed to its owner is

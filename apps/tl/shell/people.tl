@@ -38,10 +38,8 @@ view people_button() {
 /// the connection the person admitted.
 view agent_chip(a: device.Agent) {
     ui.MenuButton(a.name, icon: .bot, role: .bar) {
-        if a.stoppable {
-            ui.MenuItem("Stop", icon: .square, destructive: true) {
-                on choose: device.stop_agent(device.agents, agent: a.key)
-            }
+        ui.MenuItem("Stop", icon: .square, destructive: true) {
+            on choose: device.stop_agent(device.agents, agent: a.key)
         }
     }
 }

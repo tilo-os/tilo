@@ -43,6 +43,10 @@ pub mod compaction;
 pub mod own_device;
 // The services a person connected by their address: a server calls out
 // for them, which a page cannot.
+/// The agents a device runs for the workspaces it holds, and the events and look-rounds
+/// their turns reach.
+#[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
+pub mod agents;
 #[cfg(not(target_arch = "wasm32"))]
 mod connections;
 /// Content a record references, reaching the devices that may read it.

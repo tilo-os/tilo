@@ -18,12 +18,12 @@
 
 use std::collections::BTreeMap;
 
+use crate::transform::MAX_PROMPT_BYTES;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tilo_actions::ActionKey;
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::person_telling::Kind;
-use tilo_agent::transform::MAX_PROMPT_BYTES;
 use tilo_automation::schedule::Timed;
 use tilo_automation::{
     AGENT_APP_ID, AGENT_TASK_ACTION, AGENT_TRANSFORM_KIND, Binding, Condition,

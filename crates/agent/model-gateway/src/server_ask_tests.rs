@@ -248,23 +248,6 @@ async fn offline() {
         "{}",
         refused.message
     );
-    let transformed = handle(
-        AGENT_APP,
-        Request::Transform {
-            profile_id: "any".into(),
-            model_id: "any".into(),
-            instructions: "Answer as JSON.".into(),
-            input: "{}".into(),
-            max_output_tokens: 64,
-            timeout_ms: 5000,
-        },
-        &provider_client().unwrap(),
-    )
-    .await;
-    assert_eq!(
-        transformed.model_error.map(|refused| refused.kind),
-        Some(agent_provider_config::protocol::ErrorKind::Offline)
-    );
 }
 
 /// Run `name`'s `story` in a process of its own, whose only API is the

@@ -831,7 +831,7 @@ fn chat_route(
     let route = tilo_peer_state::document_frame::DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: cluster.into(),
-        document: tilo_server::workspace_bots::workspace_resource(&catalogue, CHAT),
+        document: tilo_workspace_service::agents::workspace_resource(&catalogue, CHAT),
     };
     (host, server_cert, route)
 }
@@ -1315,7 +1315,7 @@ fn a_persistent_workspace_reopens_after_hard_stops() {
         let route = tilo_peer_state::document_frame::DocumentRoute {
             app_id: CHAT.into(),
             cluster_id: id.clone(),
-            document: tilo_server::workspace_bots::workspace_resource(&catalogue, CHAT),
+            document: tilo_workspace_service::agents::workspace_resource(&catalogue, CHAT),
         };
         let visiting = page(host, key, cert, &server_cert);
         let visiting_heard = visiting.events();

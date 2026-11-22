@@ -49,7 +49,7 @@ pub(crate) fn settle_chat(
     use chat::chat::{CHAT_CHANNEL, Conversation, VOICE_CHANNEL};
     use tilo_resource::Id;
 
-    tilo_server::workspace_bots::opened::<chat::Chat>(doc)
+    tilo_workspace_service::agents::opened::<chat::Chat>(doc)
         .map_err(|error| format!("read the chat: {error}"))?;
     let current = chat::Chat::read_fields(doc, &automerge::ROOT)
         .map_err(|error| format!("read the chat: {error}"))?;
@@ -113,7 +113,7 @@ pub(crate) fn settle_feedback_channel(
     use chat::chat::{Conversation, VOICE_CHANNEL};
     use tilo_resource::Id;
 
-    tilo_server::workspace_bots::opened::<chat::Chat>(doc)
+    tilo_workspace_service::agents::opened::<chat::Chat>(doc)
         .map_err(|error| format!("read the chat: {error}"))?;
     let current = chat::Chat::read_fields(doc, &automerge::ROOT)
         .map_err(|error| format!("read the chat: {error}"))?;
@@ -153,7 +153,7 @@ pub(crate) fn settle_files(
     doc: &mut automerge::AutoCommit,
     files: chat::chat::WorkspaceFiles,
 ) -> Result<(), String> {
-    tilo_server::workspace_bots::opened::<chat::Chat>(doc)
+    tilo_workspace_service::agents::opened::<chat::Chat>(doc)
         .map_err(|error| format!("read the chat: {error}"))?;
     let current = chat::Chat::read_fields(doc, &automerge::ROOT)
         .map_err(|error| format!("read the chat: {error}"))?;

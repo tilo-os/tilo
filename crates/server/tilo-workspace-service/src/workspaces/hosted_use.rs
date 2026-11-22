@@ -1324,13 +1324,19 @@ impl Workspaces {
     /// acting as `actor`: this server's own device where they delegated that work
     /// to it as `actor`, else the newest of their own devices it admits now.
     /// `None` for a workspace not governed here, or a person whose work no device
-    /// here is admitted on: a turn of theirs does not start.
+    /// here is admitted on: a turn of theirs does not start. On a device of the person's own, the
+    /// turn is this device's: what it writes for the agent is this device's member write.
     pub async fn work_device(
         &self,
         workspace: WorkspaceId,
         person: [u8; 32],
         actor: &tilo_action_policy::MemberId,
     ) -> Option<[u8; 32]> {
+        if let Ok(device) = self.member_identity()
+            && device.cert.user_public_key == person
+        {
+            return Some(device.cert.device_public_key);
+        }
         let placed = &self.inner.host.environments;
         let now_ns = tilo_clock::unix_now_ns();
         let server = self.governor().device_public_key;

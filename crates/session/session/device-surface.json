@@ -2522,10 +2522,6 @@
               "type": "int"
             },
             {
-              "name": "stoppable",
-              "type": "bool"
-            },
-            {
               "name": "device",
               "type": "text"
             },

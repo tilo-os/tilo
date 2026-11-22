@@ -34,9 +34,6 @@ pub(crate) struct Assistant {
     pub(crate) spent_micros: u64,
     /// The most it may spend in a day; `None` is unmetered.
     pub(crate) limit_micros: Option<u64>,
-    /// Whether the workspace's host runs it, around the clock, rather than a member's device
-    /// while one is on.
-    pub(crate) on_host: bool,
 }
 
 impl Assistant {
@@ -47,7 +44,6 @@ impl Assistant {
             model: agent.model.clone(),
             spent_micros: agent.spent_on(day),
             limit_micros: agent.spend_limit_micros,
-            on_host: agent.on_host,
         }
     }
 }

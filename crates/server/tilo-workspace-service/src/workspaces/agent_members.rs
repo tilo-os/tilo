@@ -416,7 +416,6 @@ fn roster_entry<'a>(
 ) -> Option<&'a tilo_workspace_agent::Agent> {
     let entry = agents.get(&tilo_resource::Id::from_raw(agent.to_owned()))?;
     if !entry.is_active()
-        || !entry.on_host
         || tilo_action_policy::PersonId::parse(&entry.keeper)
             .ok()?
             .root()

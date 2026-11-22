@@ -6,7 +6,7 @@ use super::*;
 use serde_json::{Value, json};
 use tilo_actions::remote::{ActionProvider as _, Caller};
 use tilo_mcp::McpServer;
-use tilo_server::workspace_agents::WorkspaceActionProvider;
+use tilo_workspace_service::agents::WorkspaceActionProvider;
 
 /// How long a watch here holds: far longer than the change takes to reach it, so an answer
 /// inside [`PROMPTLY`] came on the change and not from the hold running out.
@@ -225,7 +225,7 @@ async fn a_turn_on_the_server_wakes_on_a_persons_write_and_is_told_only_what_it_
         .delegated_to(SCOUT.to_owned())
         .named("Scout")
         .in_agent_session("agent-session:watch".to_owned());
-        let rules = tilo_server::workspace_agents::workspace_agent(&workspaces, id, &asking).await;
+        let rules = tilo_workspace_service::agents::workspace_agent(&workspaces, id, &asking).await;
         assert!(
             !rules.is_empty(),
             "the agent is held to the rules kept for it"

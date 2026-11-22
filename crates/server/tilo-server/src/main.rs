@@ -96,10 +96,12 @@ fn install_logging() {
     // The channel service says at info what an operator acts on once: state
     // an earlier build saved upgraded in place, or a copied machine joining
     // as itself; so does a workspace's governance brought up from an earlier
-    // release's, with each grant it holds no grant for and why.
+    // release's, with each grant it holds no grant for and why. The agents this server runs
+    // say at info what they did, as the rest of the server does.
     let filter = EnvFilter::try_from_env("TILO_SERVER_LOG").unwrap_or_else(|_| {
         EnvFilter::new(
-            "tilo_server=info,tilo_workspace_keys=info,tilo_peer_state::state::rebase=info,warn",
+            "tilo_server=info,tilo_workspace_service::agents=info,tilo_workspace_keys=info,\
+             tilo_peer_state::state::rebase=info,warn",
         )
     });
     fmt()

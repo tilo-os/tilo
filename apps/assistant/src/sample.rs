@@ -44,7 +44,6 @@ fn assistant() -> Assistant {
         model: Some("google/gemini-3-pro".to_owned()),
         spent_micros: 3_120_000,
         limit_micros: Some(10_000_000),
-        on_host: true,
     }
 }
 

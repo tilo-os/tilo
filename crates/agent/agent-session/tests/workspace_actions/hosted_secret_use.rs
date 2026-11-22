@@ -13,16 +13,14 @@ use super::hosted_agent_turns::{SCOUT, conversation_part, make_agent, write_to_a
 use super::*;
 use std::sync::Mutex;
 use tilo_actions::remote::{person_accounts, person_vault};
-use tilo_server::{
-    workspace_agents::ServerAgents as Agents,
-    workspaces::{
-        Workspaces,
-        person_model::{
-            ProviderProtocol,
-            scripted::{Linking, Reply, ScriptedProvider},
-        },
+use tilo_server::workspaces::{
+    Workspaces,
+    person_model::{
+        ProviderProtocol,
+        scripted::{Linking, Reply, ScriptedProvider},
     },
 };
+use tilo_workspace_service::agents::{ServerAgents as Agents, windows::Windows};
 use ui::tilo_resource::{Id, Resource as _};
 
 const CHAT: &str = "so.tilo.chat";
@@ -306,7 +304,7 @@ impl Hosted {
         let agents = server
             .approving(&workspace, &[SCOUT])
             .await
-            .placing(browsers);
+            .placing(browsers.map(|browsers| browsers as Arc<dyn Windows>));
         Self {
             server,
             actions,

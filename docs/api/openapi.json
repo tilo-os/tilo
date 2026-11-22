@@ -3871,22 +3871,6 @@
         ],
         "description": ""
       },
-      "tilo.workspace.agent.set-agent-on-host.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "on_host": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "agent",
-          "on_host"
-        ],
-        "description": ""
-      },
       "tilo.workspace.agent.rename-agent.Arguments": {
         "type": "object",
         "properties": {
@@ -4036,39 +4020,6 @@
               "string",
               "null"
             ]
-          },
-          "coding": {
-            "additionalProperties": false,
-            "properties": {
-              "base": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "branch": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "harness": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "repository": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "repository"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
           }
         },
         "required": [
@@ -4197,91 +4148,6 @@
           "agent",
           "kind",
           "label"
-        ],
-        "description": ""
-      },
-      "tilo.workspace.agent.sub-agent-coding.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "process": {
-            "additionalProperties": false,
-            "properties": {
-              "command": {
-                "type": "string"
-              },
-              "ended": {
-                "type": "string"
-              },
-              "ended_ms": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "exit": {
-                "maximum": 2147483647,
-                "minimum": -2147483648,
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "started_ms": {
-                "type": "integer"
-              },
-              "stopped_by": {
-                "type": "string"
-              },
-              "words": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "started_ms"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "session": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "spent_micros": {
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "harness": {
-            "additionalProperties": false,
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "agent"
         ],
         "description": ""
       },
@@ -27907,13 +27773,13 @@
         "required": [],
         "description": "Keep reviewed runs"
       },
-      "tl.so.tilo.lang.agent.Claim.$create.Arguments": {
+      "tl.so.tilo.agent.Claim.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.agent.Claim.edit-text.Arguments": {
+      "tl.so.tilo.agent.Claim.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -27932,7 +27798,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Claim.edit-flag.Arguments": {
+      "tl.so.tilo.agent.Claim.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -27950,13 +27816,13 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Ask.$create.Arguments": {
+      "tl.so.tilo.agent.Ask.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.agent.Ask.edit-text.Arguments": {
+      "tl.so.tilo.agent.Ask.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -27975,7 +27841,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Ask.edit-flag.Arguments": {
+      "tl.so.tilo.agent.Ask.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -27993,25 +27859,25 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Ask.withdraw.Arguments": {
+      "tl.so.tilo.agent.Ask.withdraw.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Takes an ask back before a device took its turn. Only its asker may."
       },
-      "tl.so.tilo.lang.agent.Ask.reopen.Arguments": {
+      "tl.so.tilo.agent.Ask.reopen.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Asks again what was withdrawn: the mention that made it is back, as redo puts it back. Only\nits asker may."
       },
-      "tl.so.tilo.lang.agent.Ask.stop.Arguments": {
+      "tl.so.tilo.agent.Ask.stop.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Stops a turn that is working; what the agent did until then stays."
       },
-      "tl.so.tilo.lang.agent.Ask.claim.Arguments": {
+      "tl.so.tilo.agent.Ask.claim.Arguments": {
         "type": "object",
         "properties": {
           "device": {
@@ -28027,19 +27893,19 @@
         ],
         "description": "The agent takes the turn of `a` on `device` at `at`. When several devices took it, the\nearliest claim wins and a tie goes to the lowest device key; the others leave it."
       },
-      "tl.so.tilo.lang.agent.Ask.answer.Arguments": {
+      "tl.so.tilo.agent.Ask.answer.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The agent starts its reply to `a`, the ask's next attempt."
       },
-      "tl.so.tilo.lang.agent.Step.$create.Arguments": {
+      "tl.so.tilo.agent.Step.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.agent.Step.edit-text.Arguments": {
+      "tl.so.tilo.agent.Step.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -28059,7 +27925,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Step.edit-flag.Arguments": {
+      "tl.so.tilo.agent.Step.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -28079,13 +27945,13 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Reply.$create.Arguments": {
+      "tl.so.tilo.agent.Reply.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.agent.Reply.edit-text.Arguments": {
+      "tl.so.tilo.agent.Reply.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -28104,7 +27970,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Reply.edit-flag.Arguments": {
+      "tl.so.tilo.agent.Reply.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -28124,7 +27990,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Reply.say.Arguments": {
+      "tl.so.tilo.agent.Reply.say.Arguments": {
         "type": "object",
         "properties": {
           "more": {
@@ -28146,7 +28012,7 @@
         ],
         "description": "The agent writes `more` at the end of its answer."
       },
-      "tl.so.tilo.lang.agent.Reply.step.Arguments": {
+      "tl.so.tilo.agent.Reply.step.Arguments": {
         "type": "object",
         "properties": {
           "called": {
@@ -28175,7 +28041,7 @@
         ],
         "description": "The agent called `called` on the way, and it answered `answered`."
       },
-      "tl.so.tilo.lang.agent.Reply.finish.Arguments": {
+      "tl.so.tilo.agent.Reply.finish.Arguments": {
         "type": "object",
         "properties": {
           "state": {
@@ -28205,19 +28071,19 @@
         ],
         "description": "The agent's turn ended as `state`: done, failed, or stopped when a person stopped it."
       },
-      "tl.so.tilo.lang.agent.Reply.supersede.Arguments": {
+      "tl.so.tilo.agent.Reply.supersede.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Another device's answer to the same ask stands instead of `r`."
       },
-      "tl.so.tilo.lang.agent.Agents.$create.Arguments": {
+      "tl.so.tilo.agent.Agents.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.agent.Agents.edit-text.Arguments": {
+      "tl.so.tilo.agent.Agents.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -28234,7 +28100,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Agents.edit-flag.Arguments": {
+      "tl.so.tilo.agent.Agents.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -28252,7 +28118,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.agent.Agents.ask.Arguments": {
+      "tl.so.tilo.agent.Agents.ask.Arguments": {
         "type": "object",
         "properties": {
           "agent": {
@@ -36544,12 +36410,6 @@
     {
       "app": "so.tilo.assistant",
       "resource": "tilo.workspace.agent",
-      "action": "set-agent-on-host",
-      "arguments": "#/components/schemas/tilo.workspace.agent.set-agent-on-host.Arguments"
-    },
-    {
-      "app": "so.tilo.assistant",
-      "resource": "tilo.workspace.agent",
       "action": "rename-agent",
       "arguments": "#/components/schemas/tilo.workspace.agent.rename-agent.Arguments"
     },
@@ -36606,12 +36466,6 @@
       "resource": "tilo.workspace.agent",
       "action": "sub-agent-produced",
       "arguments": "#/components/schemas/tilo.workspace.agent.sub-agent-produced.Arguments"
-    },
-    {
-      "app": "so.tilo.assistant",
-      "resource": "tilo.workspace.agent",
-      "action": "sub-agent-coding",
-      "arguments": "#/components/schemas/tilo.workspace.agent.sub-agent-coding.Arguments"
     },
     {
       "app": "so.tilo.assistant",
@@ -41498,172 +41352,172 @@
       "arguments": "#/components/schemas/word-processor.document.export-content.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
+      "app": "so.tilo.agent",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
+      "app": "so.tilo.agent",
       "resource": "tilolang.personal",
       "action": "seen",
       "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
+      "app": "so.tilo.agent",
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Claim",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Claim",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Claim.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Claim.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Claim",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Claim",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Claim.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Claim.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Claim",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Claim",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Claim.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Claim.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Ask",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Ask",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Ask",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Ask",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Ask",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Ask",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Ask",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Ask",
       "action": "withdraw",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.withdraw.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.withdraw.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Ask",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Ask",
       "action": "reopen",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.reopen.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.reopen.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Ask",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Ask",
       "action": "stop",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.stop.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.stop.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Ask",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Ask",
       "action": "claim",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.claim.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.claim.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Ask",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Ask",
       "action": "answer",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Ask.answer.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.answer.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Step",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Step",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Step.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Step.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Step",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Step",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Step.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Step.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Step",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Step",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Step.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Step.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Reply",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Reply",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Reply",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Reply",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
       "action": "say",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.say.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.say.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Reply",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
       "action": "step",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.step.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.step.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Reply",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
       "action": "finish",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.finish.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.finish.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Reply",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Reply",
       "action": "supersede",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Reply.supersede.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Reply.supersede.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Agents",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Agents",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Agents.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Agents.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Agents",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Agents",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Agents.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Agents.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Agents",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Agents",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Agents.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Agents.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.agent",
-      "resource": "tl.so.tilo.lang.agent.Agents",
+      "app": "so.tilo.agent",
+      "resource": "tl.so.tilo.agent.Agents",
       "action": "ask",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.agent.Agents.ask.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.agent.Agents.ask.Arguments"
     },
     {
       "app": "so.tilo.lang.board",

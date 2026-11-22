@@ -63,6 +63,8 @@ tokio = { workspace = true, features = ["test-util"] }
 tilo-secrets = { path = "../../../crates/platform/tilo-secrets" }
 # The bridge end to end: its program on a workspace's host, with this binary.
 tilo-server = { path = "../../../crates/server/tilo-server", features = ["agents"] }
+# The record of an app a workspace keeps and seeds, as the bridge's host names it.
+tilo-workspace-service = { path = "../../../crates/server/tilo-workspace-service", features = ["agents"] }
 tilo-agent-session = { path = "../../../crates/agent/agent-session" }
 tilo-automation = { path = "../../../crates/collab/automation" }
 tilo-user-identity = { path = "../../../crates/collab/tilo-user-identity" }

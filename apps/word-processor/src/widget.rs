@@ -562,8 +562,7 @@ struct PartsUpdate {
 }
 
 /// The presence key of a paragraph: its stable CRDT block id, not its index, so a peer's
-/// caret stays on the same paragraph while the document is restructured. `apps/agent`
-/// reproduces this key shape from outside.
+/// caret stays on the same paragraph while the document is restructured.
 fn block_presence_key(block_id: &str) -> PresenceKey {
     ui::framework::ResourceSelection::Item(block_id.to_owned())
         .presence::<tilo_document::RichText>(

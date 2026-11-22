@@ -312,6 +312,46 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase an_agent_on_its_persons_device_is_held_to_its_own_bound;
+    // The engine on a person's own device acts as the agent: a change its person
+    // runs, and allowed it, is refused when the agent's own record bounds it away.
+    {
+        use tilo_action_policy::agent_answers::AnswerScope;
+        let owner = "a1".repeat(32);
+        let (state, person, mut app) = fixture_granting(Vec::new(), Vec::new(), |workspace| {
+            let mut grants = tilo_action_policy::Acting::handed_agent("scribe", owner.as_str())
+                .handed_preset(workspace);
+            grants.push(tilo_action_policy::agent_answers::grant(
+                workspace,
+                "scribe",
+                (&AnswerScope::app("so.tilo.test"), tilo_action_policy::ActionKind::Undoable),
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Grantee::person(owner.clone()),
+            ));
+            grants
+        });
+        let workspace = person.workspace().unwrap().to_owned();
+        let bound = vec![tilo_action_policy::Rule::new(
+            AnswerScope::kind("so.tilo.test", "test.block").node(&workspace),
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Deny,
+        )];
+        let agent = Caller::authenticated([0xa1; 32], [2; 32])
+            .in_workspace(workspace)
+            .in_new_execution()
+            .delegated_to("scribe")
+            .on_turn(tilo_action_policy::turn::Turn::new("chat/workspace/channels/1", "m1"), bound);
+        let answered = state.action_invoke(&agent, None, None, &request()).poll_ready();
+        assert!(
+            matches!(answered, PendingPoll::Ready(Err(ActionCallError::UnknownAction))),
+            "{answered:?}"
+        );
+        assert!(app.try_recv().is_err(), "the app never hears of it");
+        let ran = state.action_invoke(&person, None, None, &request()).poll_ready();
+        assert!(matches!(ran, PendingPoll::Ready(Ok(_))), "{ran:?}");
+        assert!(app.try_recv().is_ok(), "the person runs it");
+    }
+
     phase an_admitted_agent_acting_for_its_person_holds_only_its_own_grants;
     // An agent acting for the person who admitted it may do no more than the
     // workspace grants it: the owner's authority does not widen it, and it

@@ -77,8 +77,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     // Where it works: a place, and what is to say of it.
     case placeServer = "place-server", placeAlways = "place-always", placeAlwaysWithOne = "place-always-with-one"
     case placeAlwaysWithMany = "place-always-with-many", placeSubAgentOne = "place-sub-agent-one", placeSubAgentMany = "place-sub-agent-many"
-    case placeOwnDevices = "place-own-devices", placeWhileOpen = "place-while-open", placeMachine = "place-machine"
-    case coderIn = "coder-in", codingAgent = "coding-agent"
+    case placeOwnDevices = "place-own-devices", placeWhileOpen = "place-while-open"
     case none, forget, signOut = "sign-out", addConnectionDraft = "add-connection-draft"
     // The way in.
     case wayInTitle = "way-in-title", wayInLead = "way-in-lead", wayInReset = "way-in-reset", scanCode = "scan-code", pasteLink = "paste-link"
@@ -310,9 +309,6 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .placeSubAgentMany: "{count} sub-agents at work"
         case .placeOwnDevices: "Your own devices"
         case .placeWhileOpen: "only while Tilo is open on one"
-        case .placeMachine: "The workspace's machine"
-        case .coderIn: "{name} in {folder}"
-        case .codingAgent: "A coding agent"
         case .none: "Nothing yet"
         case .forget: "Forget"
         case .signOut: "Sign out of this device"

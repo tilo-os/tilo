@@ -1,6 +1,6 @@
 //! Asking an agent by mentioning it: a run of rich text marked `mention` with an agent's id, in
 //! any app's resource, asks that agent about the item the text is in, through the agent
-//! package's own actions (`so.tilo.lang.agent`). No app writes code for it.
+//! package's own actions (`so.tilo.agent`). No app writes code for it.
 //!
 //! An ask is named by the item and the mention (an `Ask`'s `mention`): the item's text
 //! mentioning an agent makes one ask however often it is edited, undone or redone. When the
@@ -25,7 +25,7 @@ use crate::resources::Watch;
 use crate::runtime::Actor;
 
 /// The package asks are made in.
-pub const AGENT_APP: &str = "so.tilo.lang.agent";
+pub const AGENT_APP: &str = "so.tilo.agent";
 
 /// What the asks from mentions follow of the store.
 pub(crate) struct Asking {

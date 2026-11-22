@@ -4,7 +4,7 @@
 //! transform the agent app answers on a device: the same instructions, the
 //! same bounds, and an answer held to the shape the step asked for, sent
 //! back once with the reason when it does not fit
-//! ([`tilo_agent::transform::run`]). What differs on a host is who answers:
+//! ([`crate::transform::run`]). What differs on a host is who answers:
 //! the model of the person the program runs for, which the host reaches for
 //! them. [`answer`] is that transform over whatever asks the model.
 //!
@@ -16,8 +16,8 @@
 use std::fmt::Write as _;
 use std::sync::Mutex;
 
+use crate::transform::{self, Call, Interaction, TransformModel};
 use serde_json::Value;
-use tilo_agent::transform::{self, Call, Interaction, TransformModel};
 use tilo_lock::MutexRecover as _;
 use ui::time::Duration;
 

@@ -1,10 +1,10 @@
 /**
- * Types for Agents (`so.tilo.lang.agent`), from the app's surface.
+ * Types for Agents (`so.tilo.agent`), from the app's surface.
  *
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Claim` is a `Resource` of the app's `tl.so.tilo.lang.agent.Claim`, made by its factory with the
+ * `Claim` is a `Resource` of the app's `tl.so.tilo.agent.Claim`, made by its factory with the
  * resource's path (`agent/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.lang.agent@a4cfbb45d30ca102";
+export const SURFACE = "so.tilo.agent@69d22e04512e4cc3";
 
 /** Where an ask stands. The workspace's agent engine moves it on, except that its asker withdraws it and a person stops a turn that is working. One of "waiting", "working", "done", "failed", "stopped", "withdrawn", "cannot_read". */
 export type AskState = "waiting" | "working" | "done" | "failed" | "stopped" | "withdrawn" | "cannot_read";
@@ -66,7 +66,7 @@ export interface FinishArgs {
 export interface SupersedeArgs {
 }
 
-/** Claim — `tl.so.tilo.lang.agent.Claim`. */
+/** Claim — `tl.so.tilo.agent.Claim`. */
 export interface Claim extends tilo.Resource {
   "6qikspks": string;  // device
   "7yz7w4tm": number;  // at
@@ -76,12 +76,12 @@ export interface Claim extends tilo.Resource {
   `load()` first. */
 export const CLAIM_ACTIONS = [] as const;
 
-/** The `tl.so.tilo.lang.agent.Claim` kind at `path`. */
+/** The `tl.so.tilo.agent.Claim` kind at `path`. */
 export function claim(ws: tilo.Workspace, path: string): Claim {
   return resourceProxy(ws, path, SURFACE, CLAIM_ACTIONS) as unknown as Claim;
 }
 
-/** Ask — `tl.so.tilo.lang.agent.Ask`. */
+/** Ask — `tl.so.tilo.agent.Ask`. */
 export interface Ask extends tilo.Resource {
   mcsi6vp5: string;  // agent
   "7j5pok54": string | null;  // said
@@ -115,12 +115,12 @@ export interface Ask extends tilo.Resource {
   `load()` first. */
 export const ASK_ACTIONS = ["withdraw", "withdrawMany", "reopen", "reopenMany", "stop", "stopMany", "claim", "claimMany", "answer"] as const;
 
-/** The `tl.so.tilo.lang.agent.Ask` kind at `path`. */
+/** The `tl.so.tilo.agent.Ask` kind at `path`. */
 export function ask(ws: tilo.Workspace, path: string): Ask {
   return resourceProxy(ws, path, SURFACE, ASK_ACTIONS) as unknown as Ask;
 }
 
-/** Step — `tl.so.tilo.lang.agent.Step`. */
+/** Step — `tl.so.tilo.agent.Step`. */
 export interface Step extends tilo.Resource {
   ippal7k2: string;  // called
   cyu3le2j: string;  // answered
@@ -131,12 +131,12 @@ export interface Step extends tilo.Resource {
   `load()` first. */
 export const STEP_ACTIONS = [] as const;
 
-/** The `tl.so.tilo.lang.agent.Step` kind at `path`. */
+/** The `tl.so.tilo.agent.Step` kind at `path`. */
 export function step(ws: tilo.Workspace, path: string): Step {
   return resourceProxy(ws, path, SURFACE, STEP_ACTIONS) as unknown as Step;
 }
 
-/** Reply — `tl.so.tilo.lang.agent.Reply`. */
+/** Reply — `tl.so.tilo.agent.Reply`. */
 export interface Reply extends tilo.Resource {
   gjd462ep: Ask;  // ask
   oka345cb: string;  // body
@@ -174,12 +174,12 @@ export interface Reply extends tilo.Resource {
   `load()` first. */
 export const REPLY_ACTIONS = ["say", "sayMany", "step", "stepMany", "finish", "finishMany", "supersede", "supersedeMany"] as const;
 
-/** The `tl.so.tilo.lang.agent.Reply` kind at `path`. */
+/** The `tl.so.tilo.agent.Reply` kind at `path`. */
 export function reply(ws: tilo.Workspace, path: string): Reply {
   return resourceProxy(ws, path, SURFACE, REPLY_ACTIONS) as unknown as Reply;
 }
 
-/** Agents — `tl.so.tilo.lang.agent.Agents`. */
+/** Agents — `tl.so.tilo.agent.Agents`. */
 export interface Agents extends tilo.Resource {
   mzzoxssv: Array<tilo.Entry<Ask>>;  // asks
   "353i7jsi": Array<tilo.Entry<Reply>>;  // replies
@@ -195,12 +195,12 @@ export interface Agents extends tilo.Resource {
   `load()` first. */
 export const AGENTS_ACTIONS = ["ask"] as const;
 
-/** The `tl.so.tilo.lang.agent.Agents` kind at `path`. */
+/** The `tl.so.tilo.agent.Agents` kind at `path`. */
 export function agents(ws: tilo.Workspace, path: string): Agents {
   return resourceProxy(ws, path, SURFACE, AGENTS_ACTIONS) as unknown as Agents;
 }
 
-/** Agents — `tl.so.tilo.lang.agent`. */
+/** Agents — `tl.so.tilo.agent`. */
 export interface Agent extends tilo.Resource {
 }
 
@@ -208,7 +208,7 @@ export interface Agent extends tilo.Resource {
   `load()` first. */
 export const AGENT_ACTIONS = [] as const;
 
-/** The `tl.so.tilo.lang.agent` kind at `path`. */
+/** The `tl.so.tilo.agent` kind at `path`. */
 export function agent(ws: tilo.Workspace, path: string): Agent {
   return resourceProxy(ws, path, SURFACE, AGENT_ACTIONS) as unknown as Agent;
 }

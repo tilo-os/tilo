@@ -69,8 +69,6 @@ pub mod apple_push;
 pub mod browser_actions;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
-#[cfg(feature = "agents")]
-pub mod coding_agents;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod content;
 #[cfg(feature = "web")]
@@ -92,7 +90,6 @@ pub mod placed_browsers;
 #[cfg(feature = "agents")]
 pub mod placed_machines;
 #[cfg(feature = "agents")]
-pub mod placed_programs;
 #[cfg(feature = "agents")]
 pub mod placed_shells;
 #[cfg(feature = "agents")]
@@ -110,13 +107,9 @@ pub mod web;
 #[cfg(feature = "web")]
 pub mod web_push;
 #[cfg(feature = "agents")]
-pub mod workspace_agents;
-#[cfg(feature = "agents")]
 pub mod workspace_bots;
 pub mod workspace_join;
 mod workspace_keys;
-#[cfg(feature = "agents")]
-pub mod workspace_telling;
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

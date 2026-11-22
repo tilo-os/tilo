@@ -24,8 +24,6 @@
 //! Nothing here keeps a text: it is held for the one sealing and wiped.
 
 use std::collections::{HashMap, VecDeque};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -37,9 +35,9 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
-use zeroize::Zeroizing;
+use tilo_workspace_service::agents::windows::{PAGE_RESOURCE, Release, Releasing, TurnFill};
 
-use super::{HostedBrowsers, PAGE_RESOURCE, Window};
+use super::{HostedBrowsers, Window};
 use crate::WorkspaceId;
 
 /// The Browser's page action that fills a field from a vault item by reference.
@@ -52,37 +50,6 @@ const ANSWER_HOLD_MS: u32 = 20_000;
 const ASK_AGAIN: Duration = Duration::from_millis(250);
 /// The most fills that wait on windows at a time.
 const MAX_FILLS: usize = 256;
-
-/// What a turn asks a window to fill.
-pub struct TurnFill {
-    /// The turn's own call: the page action the window is handed carries its id.
-    pub invocation: InvocationId,
-    /// The field, by its reference in the page's outline.
-    pub element: String,
-    /// The item, by its reference.
-    pub item: String,
-    /// Why the agent says it needs the item; empty when it gave none.
-    pub reason: String,
-}
-
-/// What comes of the vault item, for the site a window says its page is at.
-pub enum Release {
-    /// The text and the kind of field it is for, in the engine's word: held for the one
-    /// sealing and wiped.
-    Text {
-        text: Zeroizing<String>,
-        into: &'static str,
-    },
-    /// The person is asked first and nothing is released: what the agent is told.
-    Asked(String),
-    /// Not released there, and why, in words that name no secret.
-    Refused(String),
-}
-
-/// What decides one fill once its window said where its page is: called at most once, with
-/// that origin.
-pub type Releasing =
-    Box<dyn FnOnce(String) -> Pin<Box<dyn Future<Output = Release> + Send>> + Send>;
 
 /// A fill handed to a window that has not said how it ended.
 struct Waiting {

@@ -662,8 +662,7 @@ daemon, the person's servers).
 
 A server is a device that stores more. Today the server side is
 `tilo-server` (122,096: the daemon with `init`, `run`, `workspace`, its own
-iroh relay, the web entry, and agents and
-bots in `workspace_agents` (13,311) and `workspace_bots` (15,464)), with the
+iroh relay, the web entry, and bots in `workspace_bots` (15,464)), with the
 `tilo-server-admin`, `tilo-enroll`, `tilo-approve` and
 `tilo-home-peer-control` binaries beside it. `tilo-api` (21,745) is the MCP
 and OAuth endpoint with its own grant and token store. A device without a
@@ -678,12 +677,14 @@ is one binary that the CLI, a server and tilo.sh all run, with one MCP socket
 locally and `device-mcp` as its remote face. A server differs only in its
 what it keeps and which work it takes, set per workspace.
 The relay is a mode of that daemon. `tilo-api` reads grants from the
-workspace, not from its own file. The agent and bot runner
-(`tilo-server` `workspace_agents` and `workspace_bots`, the only copy) moves
-into the workspace service, so any device that takes agent work
-runs it. A device's first run needs no server: it creates the person's
-identity and their first workspace, an ordinary workspace whose signed member
-list names them as owner.
+workspace, not from its own file. The agent runner is in the workspace
+service (`agents`, under its `agents` feature) and reaches what only a server
+has today (its Browser windows, its coding runner, its signing sessions and
+its bot runner) through traits; the bot runner (`tilo-server`
+`workspace_bots`) follows it, so any device that takes agent work runs it. A
+device's first run needs no server: it creates the person's identity and
+their first workspace, an ordinary workspace whose signed member list names
+them as owner.
 
 What goes: `tilo-api`'s grant file; the separate binaries once their verbs are
 actions of the daemon. Owner:

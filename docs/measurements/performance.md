@@ -36,8 +36,7 @@ the current numbers come from there, not from `docs/benchmarks/`. Read them with
 own desktop surface to its budgets (`session_perf`, `[devices.<class>.session.*]`), and
 `search` runs the palette search's own measurement test, which fails over its budget and
 writes no record. `agent` times what an agent's calls cost through the session's agent
-action API, and `agent-native` the agent's own task loop; a whole app task is not this job's,
-because a builder starts no app. A group's numbers are compared with the store without
+action API; a whole app task is not this job's, because a builder starts no app. A group's numbers are compared with the store without
 writing to it by `python3 tools/perf/compare.py --results <records.jsonl> --store
 https://code.tilo.so --groups <group>` on the records it wrote to `/target/perf/<group>/`.
 `compare.py`'s `--accept` takes this run's values as

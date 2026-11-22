@@ -13,9 +13,9 @@ use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId, MemberId};
-use tilo_server::workspace_agents::{WorkspaceActionProvider, invoke_named};
 use tilo_server::workspaces::Workspaces;
 use tilo_server::workspaces::hosted_use::{HostedTurn, OpenAsk, TurnUse, UseAnswer};
+use tilo_workspace_service::agents::{WorkspaceActionProvider, invoke_named};
 use ui::tilo_resource::{Id, Resource as _};
 
 const CHAT: &str = "so.tilo.chat";
@@ -190,7 +190,7 @@ async fn a_use_on_a_server_asks_the_person_where_their_device_hears_it_and_their
     let proved = proving(&workspaces);
     // The server reads its conversations for the questions that wait for a person, so a
     // question reaches them with no device of theirs looking.
-    tilo_server::workspace_telling::start(&workspaces);
+    tilo_workspace_service::agents::telling::start(&workspaces);
 
     // Their password goes from their device to their vault on the server, as Settings does.
     let mut page = page;
@@ -312,7 +312,7 @@ async fn a_use_on_a_server_asks_the_person_where_their_device_hears_it_and_their
         Some(chat::question::ALLOW)
     );
     // What a device shows of it: the agent's name over the reason it gives.
-    let (title, body) = tilo_server::workspace_telling::words_outside(&told);
+    let (title, body) = tilo_workspace_service::agents::telling::words_outside(&told);
     assert_eq!(title, "Scout needs you");
     assert_eq!(body, "You asked me to read your mail.");
 

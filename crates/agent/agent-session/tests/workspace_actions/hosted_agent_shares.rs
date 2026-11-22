@@ -157,7 +157,7 @@ async fn reads_to_the_person(
     document: &str,
 ) -> String {
     let id = WorkspaceId::parse(workspace).unwrap();
-    let service = tilo_server::workspace_agents::WorkspaceActionProvider::new(actions.clone(), id);
+    let service = tilo_workspace_service::agents::WorkspaceActionProvider::new(actions.clone(), id);
     let caller = tilo_actions::remote::Caller::authenticated(
         root.verifying_key().to_bytes(),
         browser.cert.device_public_key,
@@ -168,7 +168,7 @@ async fn reads_to_the_person(
         cluster_id: workspace.into(),
         document: document.into(),
     };
-    tilo_server::workspace_agents::invoke_named(
+    tilo_workspace_service::agents::invoke_named(
         &service,
         &caller,
         &route,

@@ -221,6 +221,11 @@ pub(crate) struct Knitted {
     clippy::too_many_lines,
     reason = "the app wire's services are all decided in one place, so a service added is not missed"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the service slot the agents start on is moved into their start once the broker \
+              serves, not held to the end"
+)]
 pub(crate) fn start_app_wire(
     options: &Options,
     live_activities: &std::sync::Arc<runtime_collab::LiveActivities>,
@@ -249,6 +254,7 @@ pub(crate) fn start_app_wire(
     let Some(path) = app_wire_path(options)? else {
         return Ok(None);
     };
+    let agents_service = service.clone();
     let link = app_wire::Link::new(options.wake.handle());
     let layout = layout_authority(options, handle, revocations);
     // The workspace's activity as this session's apps read it: the shell's own model.
@@ -369,6 +375,17 @@ pub(crate) fn start_app_wire(
         options,
         services.folders,
     )?;
+    // This device runs its workspaces' agents in its own workspace service once that opens: the
+    // one engine a workspace's host runs, in this process, each turn's calls decided by this
+    // broker as the person's own calls are.
+    if let Some(broker) = broker.app_action_broker() {
+        tilo_rt::app()
+            .handle()
+            .spawn(tilo_workspace_service::agents::on_device(
+                agents_service,
+                broker.device_host(),
+            ));
+    }
     Ok(Some(AppWire {
         link,
         path,

@@ -5,7 +5,7 @@ use chat::skills::{Skills, skills::WriteSkill};
 use serde_json::json;
 use tilo_actions::remote::{ActionProvider as _, CatalogueQuery};
 use tilo_peer_state::join::Role;
-use tilo_server::workspace_agents::WorkspaceActionProvider;
+use tilo_workspace_service::agents::WorkspaceActionProvider;
 
 const SKILLS: &str = chat::skills::KIND;
 const INSTRUCTIONS: &str = "Put the weekly numbers first.";

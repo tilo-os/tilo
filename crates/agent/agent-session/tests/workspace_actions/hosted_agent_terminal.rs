@@ -9,7 +9,6 @@ use super::api_unattended::{Person, Sheet, beside};
 use super::hosted_agent_turns::{SCOUT, conversation_part, make_agent, write_to_agent};
 use super::*;
 use std::sync::Arc;
-use tilo_server::workspace_agents::ServerAgents;
 use tilo_server::workspaces::{
     Workspaces,
     person_model::{
@@ -19,6 +18,7 @@ use tilo_server::workspaces::{
 };
 use tilo_server_client::MemberApprover;
 use tilo_server_client::questions::{MemberQuestions, answer_questions};
+use tilo_workspace_service::agents::ServerAgents;
 use tokio::sync::mpsc;
 use ui::tilo_resource::{Id, Resource as _};
 
@@ -56,7 +56,7 @@ impl OnTheirServer {
     /// given: she then links no model of her own. Her assistant is approved for `apps` alone,
     /// where she names any.
     async fn start_with(
-        servers_model: Option<tilo_server::workspace_agents::Model>,
+        servers_model: Option<tilo_workspace_service::agents::Model>,
         apps: &[&str],
     ) -> Self {
         Self::start_on(servers_model, apps, false).await
@@ -69,7 +69,7 @@ impl OnTheirServer {
     }
 
     async fn start_on(
-        servers_model: Option<tilo_server::workspace_agents::Model>,
+        servers_model: Option<tilo_workspace_service::agents::Model>,
         apps: &[&str],
         in_vm: bool,
     ) -> Self {
@@ -696,7 +696,7 @@ async fn servers_model_failed_turn_then_next_message() {
     use tilo_action_policy::agent_answers::AnswerScope;
     use tilo_model_gateway::host_backend::protocol::{Content, ErrorKind, ModelError};
     let plays: Arc<std::sync::Mutex<std::collections::VecDeque<Play>>> = Arc::default();
-    let model: tilo_server::workspace_agents::Model = {
+    let model: tilo_workspace_service::agents::Model = {
         let plays = Arc::clone(&plays);
         Arc::new(move || {
             Some(Box::new(Played(Arc::clone(&plays)))

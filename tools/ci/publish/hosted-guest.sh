@@ -77,13 +77,11 @@ chromium_runtime_version() {
   printf '%s' "$version"
 }
 
-# The version of Claude Code the server's coding agents start, which the guest
-# ships in the folder they start it from.
+# The version of Claude Code the guest ships (os/hosted-guest/base.env).
 claude_code_version() {
   local version
-  version=$(sed -n '/^macro_rules! version {/,/^}/s/^ *"\([0-9][^"]*\)"$/\1/p' \
-    crates/server/tilo-server/src/coding_agents/claude_code.rs)
-  [[ -n $version ]] || die 'the coding agents name no Claude Code version'
+  version=$(. os/hosted-guest/base.env && printf '%s' "$HOSTED_GUEST_CLAUDE_CODE_VERSION")
+  [[ -n $version ]] || die 'os/hosted-guest/base.env names no Claude Code version'
   printf '%s' "$version"
 }
 

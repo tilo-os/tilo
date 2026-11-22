@@ -215,7 +215,7 @@ pub struct HostedServer {
     host_agents: Option<tokio::task::JoinHandle<()>>,
     /// What lets those agents' turns end before it stops.
     #[cfg(feature = "agents")]
-    draining: Option<tilo_server::workspace_agents::Draining>,
+    draining: Option<tilo_workspace_service::agents::Draining>,
     /// Its state's lock, released once it stopped.
     _lock: tilo_server::state_lock::StateLock,
 }
@@ -316,13 +316,13 @@ pub async fn start_server_lending(
         options.feedback_reviewer = lent.feedback_reviewer;
         let shells = tilo_server::agents::host_shells(state_root.join("shells"))
             .map_err(anyhow::Error::msg)?;
-        options.shell = Some(std::sync::Arc::clone(&shells));
+        options.shell = Some(shells);
         let browsers = options.browsers.clone();
         let (server, agents, roster) =
             tilo_server::agents::start_workspace_documents(cfg, identity, options)
                 .await
                 .context("start the server with workspace documents and roster agents")?;
-        let (draining, host_agents) = start_roster(&server, roster, shells, browsers);
+        let (draining, host_agents) = start_roster(&server, roster, browsers);
         return Ok(HostedServer {
             server,
             agents: Some(agents),
@@ -350,10 +350,9 @@ pub async fn start_server_lending(
 fn start_roster(
     server: &Server,
     roster: tilo_server::agents::RosterServices,
-    shells: std::sync::Arc<tilo_server::agents::HostShells>,
     browsers: Option<std::sync::Arc<tilo_server::hosted_browser::HostedBrowsers>>,
 ) -> (
-    Option<tilo_server::workspace_agents::Draining>,
+    Option<tilo_workspace_service::agents::Draining>,
     Option<tokio::task::JoinHandle<()>>,
 ) {
     // The agents each workspace made to run here work around the clock, on the model their workspace linked.
@@ -362,22 +361,21 @@ fn start_roster(
     let started = server.workspaces().cloned().map(|workspaces| {
         // What is judged for a person is counted on their assistant's day,
         // and a question that waits for them reaches their log.
-        tilo_server::workspace_telling::start(&workspaces);
+        tilo_workspace_service::agents::telling::start(&workspaces);
         tracing::info!(
             "the workspaces' agents run on this host, each on the model its workspace linked"
         );
-        let agents = tilo_server::workspace_agents::ServerAgents::with_sessions(
+        let agents = tilo_workspace_service::agents::ServerAgents::with_sessions(
             workspaces,
             roster.actions,
-            server,
+            std::sync::Arc::new(server.agent_link()),
             roster.sessions,
         )
-        // A coding agent among them is worked by its harness in its workspace's
-        // machine, where the shells are.
-        .with_coding(shells)
         .with_events(roster.events)
         .with_initiative(roster.initiative)
-        .placing(browsers)
+        .placing(browsers.map(|browsers| {
+            browsers as std::sync::Arc<dyn tilo_workspace_service::agents::windows::Windows>
+        }))
         .knowing_placed(placed);
         (agents.draining(), tokio::spawn(agents.run()))
     });

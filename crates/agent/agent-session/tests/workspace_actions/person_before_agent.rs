@@ -14,7 +14,7 @@ use super::*;
 use serde_json::{Value, json};
 use tilo_actions::remote::{ActionProvider as _, Caller, InvocationState, ReceiptStatus};
 use tilo_actions::{InvocationUpdate, WorkGroup};
-use tilo_server::workspace_agents::{WorkspaceActionProvider, invoke_named};
+use tilo_workspace_service::agents::{WorkspaceActionProvider, invoke_named};
 
 const TASKS: &str = "so.tilo.tasks";
 /// What the agent brings in, in lists of `LIST`, from `STREAMS` workers at once.
@@ -125,7 +125,7 @@ async fn a_persons_requests_go_before_an_agents_bulk_import() {
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let _page = Browser::open_at(&served, &browser, &server, &workspace).await;
     let catalogue = crate::common::catalogue();
-    let tracker = tilo_server::workspace_bots::workspace_resource(&catalogue, TASKS);
+    let tracker = tilo_workspace_service::agents::workspace_resource(&catalogue, TASKS);
     workspaces
         .prepare_application(&workspace, &server.cert, &catalogue, TASKS, &tracker)
         .await

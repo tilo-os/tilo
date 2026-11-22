@@ -16,10 +16,10 @@ path = "src/lib.rs"
 # Test-only hooks and helpers: the checkpoint-prefix fault marker, the store's
 # test barriers, and the replay and staging entry points the host's tests
 # drive the store through.
-test-support = ["tilo-workspace-service/test-support", "dep:tilo-test-env", "dep:tempfile"]
+test-support = ["tilo-workspace-service/test-support"]
 # The workspaces' records and roster agents on the host (`--workspace-documents`):
 # tilo-agent-session, which links every web app, as the app-serving protocol.
-agents = ["web", "tilo-workspace-service/agents", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-workspace-emoji", "dep:collaboration", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:tasks-model", "dep:tasks", "dep:runtime-collab", "dep:tilo-workspace-agent", "dep:tilo-model-gateway", "dep:tilo-web-search", "dep:feed-rs"]
+agents = ["web", "tilo-workspace-service/agents", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-workspace-emoji", "dep:collaboration", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs"]
 web = ["tilo-workspace-service/device-keys", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac", "dep:ring"]
 
 [[bin]]
@@ -218,16 +218,10 @@ app-cli = { path = "../../packaging/app-cli", optional = true }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 # The workspace's emoji, which a bot's program may be told of.
 tilo-workspace-emoji = { path = "../../platform/tilo-workspace-emoji", optional = true }
-# The agents a workspace's host runs: who they are (the workspace's record of its agents), what
-# people ask them (Chat's conversations and the tracker's issues), the tools they act through (the
-# MCP server's agent surface) and the turns their model takes.
+# Who the agents a workspace's host runs are (the workspace's record of its agents), and the
+# tools an agent on a machine of the workspace acts through (the MCP server's agent surface).
 tilo-workspace-agent = { path = "../../platform/tilo-workspace-agent", optional = true }
-tasks-model = { path = "../../../apps/tasks-model", optional = true }
-tasks = { path = "../../../apps/tasks", optional = true }
-runtime-collab = { path = "../../runtime/runtime-collab", optional = true }
 tilo-mcp = { path = "../../runtime/tilo-mcp", optional = true }
-tilo-agent-turn = { path = "../../agent/agent-turn", optional = true }
-tilo-model-gateway = { default-features = false, features = ["host-backend"], path = "../../agent/model-gateway", optional = true }
 # The workspace's default resource identity, permissions and the collaboration wire's types.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", optional = true }
 # Read existing signed document envelopes through the shared, read-only cipher.
@@ -236,10 +230,6 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# What the coding agents' tests are built on, offered to the tests of whatever joins coding
-# agents to a workspace (`coding_agents::testing`, with `test-support`).
-tilo-test-env = { path = "../../dev/test-env", optional = true }
-tempfile = { workspace = true, optional = true }
 # The host keeps its workspaces' content in directories, one per workspace.
 tilo-content = { path = "../../system/content", features = ["dir"] }
 bounded-command = { path = "../../system/bounded-command" }

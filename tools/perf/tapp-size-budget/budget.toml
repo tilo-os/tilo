@@ -61,10 +61,6 @@ p90 = 4521984   # 4,447,232 (osk)
 x86_64 = 1048576
 aarch64 = 1048576
 
-[apps."so.tilo.agent"]
-x86_64 = 1114112
-aarch64 = 1048576
-
 [apps."so.tilo.api-tester"]
 x86_64 = 1572864
 aarch64 = 1507328

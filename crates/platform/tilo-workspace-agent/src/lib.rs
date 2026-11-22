@@ -12,8 +12,7 @@
 //! tells them how to work ([`Agent::instruction`]); a viewer only reads them.
 //!
 //! An agent starts sub-agents for the member it works for. Each is an item here too, with what
-//! it was started for and how it stands ([`sub`]). One whose work a coding harness does in the
-//! workspace's machine is a sub-agent like the others, with that said on it ([`coding`]).
+//! it was started for, how it stands ([`sub`]) and what it made ([`produced`]).
 
 use std::fmt;
 
@@ -25,15 +24,15 @@ use tilo_resource::{
     resource,
 };
 
-pub mod coding;
 pub mod learned;
+pub mod produced;
 pub mod sub;
 
-pub use coding::{Coding, NewCoding, Produced, ProducedAt};
+pub use produced::{Produced, ProducedAt};
 pub use sub::{NewSubAgent, Stands, Sub};
 
 #[cfg(test)]
-mod coding_tests;
+mod produced_tests;
 #[cfg(test)]
 mod sub_tests;
 #[cfg(test)]
@@ -195,10 +194,6 @@ pub struct Agent {
     /// The member who made it, or for whom an agent started it. It is no owner: the agent is
     /// the workspace's, and the workspace's grants alone decide who changes it.
     pub keeper: String,
-    /// Whether the host that governs the workspace runs it, around the clock and on the
-    /// host's model, rather than a member's device: what a workspace a page works in (a
-    /// page runs no agent) gives a new agent.
-    pub on_host: bool,
     /// The model it plans with as `provider/model`, the workspace's choice; `None` follows
     /// the workspace's default.
     pub model: Option<String>,
@@ -405,7 +400,6 @@ impl WorkspaceAgents {
         self.agents.push(Agent {
             id: Atom(id),
             name,
-            on_host: false,
             keeper,
             model,
             mcp_client,
@@ -470,30 +464,6 @@ impl WorkspaceAgents {
             _ => Some(Spent { day, cost_micros }),
         };
         found.spent = counted;
-        Ok(())
-    }
-
-    /// Choose where an agent runs: on the workspace's host, around the clock and on the host's
-    /// model, or on a member's device. Chosen by a member in person; an agent an MCP client
-    /// connects as runs where that client does.
-    #[action(item = agents)]
-    pub fn set_agent_on_host(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("The agent")] agent: Id,
-        #[param("Whether the workspace's host runs it")] on_host: bool,
-    ) -> Result<(), Refusal> {
-        in_person(cx)?;
-        let found = self
-            .agents
-            .find_mut(&agent)
-            .ok_or_else(|| no_such(&agent))?;
-        if on_host && found.mcp_client.is_some() {
-            return Err(Refusal::new(
-                "an agent an MCP client connects as runs where that client does",
-            ));
-        }
-        found.on_host = on_host;
         Ok(())
     }
 
@@ -693,39 +663,6 @@ impl WorkspaceAgents {
         >,
     ) -> Result<(), Refusal> {
         self.produced(cx, &agent, (&kind, label.as_str()), url, at)
-    }
-
-    /// Say how a coding agent's work in the machine stands.
-    ///
-    /// Written by whatever works it, as the sub-agent itself: which coding harness it started,
-    /// the harness's own id for its conversation, when its process began and how it ended, and
-    /// what its model calls cost so far. Only what is named changes.
-    #[action(item = agents, audience = "agents")]
-    pub fn sub_agent_coding(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("The sub-agent")] agent: Id,
-        #[param(
-            "Its process in the machine: when it started and, once it ended, when, how and why"
-        )]
-        process: Option<coding::CodingProcess>,
-        #[param("The harness's own id for its conversation")] session: Option<String>,
-        #[param("What its model calls cost so far, in millionths of the currency")]
-        spent_micros: Option<u64>,
-        #[param("Which coding harness it started: its id and its name")] harness: Option<
-            coding::CodingHarness,
-        >,
-    ) -> Result<(), Refusal> {
-        self.coding_stands(
-            cx,
-            &agent,
-            coding::CodingReport {
-                process,
-                session,
-                spent_micros,
-                harness,
-            },
-        )
     }
 
     /// Say how many sub-agents an agent may have.

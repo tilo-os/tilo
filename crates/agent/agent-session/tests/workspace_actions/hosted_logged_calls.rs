@@ -167,7 +167,7 @@ async fn a_refused_call_is_logged_by_its_tool_and_its_arguments_names_and_sizes(
     // What the lines keep: the tool, and each argument by its name and its size.
     for line in [refused[0], told[0]] {
         assert!(
-            line.contains("tilo_server::workspace_agents: ") && line.contains(" tool=tilo_do "),
+            line.contains("tilo_workspace_service::agents: ") && line.contains(" tool=tilo_do "),
             "{line}"
         );
         assert_eq!(
@@ -270,7 +270,7 @@ async fn a_call_that_succeeds_is_logged_without_what_it_wrote_or_its_tool_answer
     {
         assert!(
             line.contains("DEBUG ")
-                && line.contains("tilo_server::workspace_agents: ")
+                && line.contains("tilo_workspace_service::agents: ")
                 && line.contains(&format!(" tool={tool} ")),
             "{line}"
         );

@@ -143,27 +143,16 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) and binary(it) and test(lounge_e2e::)"
 setup = "lounge-siblings"
 
-# The server's coding-agent tests start the guest's own agent program in its
-# serving mode (`tilo-linux-vm-agent serve-run`), as a workspace's machine starts
-# it: a program of another package, which Cargo builds for no test of the server's.
+# A host holds a served run in its workspace's machine by starting the guest's own
+# agent program in its serving mode (`tilo-linux-vm-agent serve-run`): a program of
+# another package, which Cargo builds for no test of the packages that start it.
 [scripts.setup.machine-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
     "linux-vm-agent:tilo-linux-vm-agent",
 ]
 
-[[profile.default.scripts]]
-platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-server) and test(coding_agents::)"
-setup = "machine-siblings"
-
-[[profile.ci.scripts]]
-platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-server) and test(coding_agents::)"
-setup = "machine-siblings"
-
-# A host holds a served run in its workspace's machine by starting the same agent
-# program (`ush`'s served-run and environment-program tests).
+# `ush`'s served-run and environment-program tests.
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(ush) and (test(served_runs::) or test(environment_programs::))"
@@ -172,18 +161,6 @@ setup = "machine-siblings"
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(ush) and (test(served_runs::) or test(environment_programs::))"
-setup = "machine-siblings"
-
-# So do the agent session's tests of a coding agent on a person's server, which start it
-# through that server's own keeper of coding agents.
-[[profile.default.scripts]]
-platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-agent-session) and test(hosted_coding_agents::)"
-setup = "machine-siblings"
-
-[[profile.ci.scripts]]
-platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-agent-session) and test(hosted_coding_agents::)"
 setup = "machine-siblings"
 
 # The browser peer's Lounge test starts the same workspace service the deployment
@@ -371,7 +348,6 @@ setup = "pam-module"
 # the pool is still empty. The longest tests follow, so a run ends on short ones.
 [test-groups]
 gpu-golden = { max-threads = 1 }
-agent-collaboration = { max-threads = 1 }
 imager-durable-disk = { max-threads = 2 }
 agent-sessions = { max-threads = 2 }
 
@@ -394,14 +370,6 @@ test-group = "gpu-golden"
 filter = 'package(tilolang-app) and binary(it) and test(=hosted::cost::what_the_interactions_a_person_feels_cost)'
 success-output = "final"
 slow-timeout = { period = "60s", terminate-after = 8 }
-
-# Not started with the pool-wide and longest tests: each suite's first route
-# join runs under the SDK's 4.5 s primary-route deadline, which the opening
-# burst of a whole-workspace shard (every slot starting a process at once)
-# exceeds.
-[[profile.default.overrides]]
-filter = 'package(agent) and binary(it) and test(presence_semantics::)'
-test-group = "agent-collaboration"
 
 # A company's workspace at real size: a thousand notes and five hundred issues
 # written through the API one at a time, then every call an agent makes most

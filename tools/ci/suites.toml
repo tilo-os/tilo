@@ -933,12 +933,6 @@ inputs = ["crates/agent/provider-config/tests/fixtures/openrouter-models.json"]
 readers = ["crates/sdk/provider-settings-ui/src/app_tests.rs"]
 
 [[cargo]]
-package = "tilo-agent-web-tools"
-# The tools' own tests serve the same fixture pages.
-inputs = ["crates/platform/tilo-web-search/tests/fixtures/"]
-readers = ["crates/agent/agent-web-tools/src/lib.rs"]
-
-[[cargo]]
 package = "calendar"
 # Its tests of what it writes to a calendar server start the server the
 # holder's own tests start, from its source, so both writers are judged by
