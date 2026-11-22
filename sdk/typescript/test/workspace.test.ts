@@ -116,7 +116,8 @@ describe("reading a workspace", () => {
     const link = await open(api).workspace("jane-doe").link(TODO, { mode: "app" });
 
     expect(link).toBe(linkTo(TODO));
-    expect(api.last()?.query).toEqual({ path: TODO, mode: "app" });
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/resources/${TODO}/actions/share-link`);
+    expect(JSON.parse(api.last()?.body ?? "{}")).toEqual({ mode: "app" });
   });
 
   it("lists the people in it, and invites one more", async () => {

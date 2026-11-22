@@ -13,7 +13,8 @@
 //! - [`lines`]: the lines `tilo` prints for a listing of workspaces, keys and people;
 //! - [`errors`]: the one refusal shape, and its statuses;
 //! - [`idempotency`]: retried mutating calls answer what the first did;
-//! - [`events`] and [`webhooks`]: what happens, as a stream and posted.
+//! - [`events`] and [`webhooks`]: what happens, as a stream and posted; a key's webhooks are
+//!   the account's (`account/webhooks`).
 
 pub mod answers;
 pub mod errors;
@@ -419,16 +420,12 @@ impl<'a> Caller<'a> {
             "listResources"
             | "readResource"
             | "search"
-            | "getLink"
             | "viewResource"
             | "listAccountResources"
             | "readAccountResource" => self.resource_operation(operation.id).await,
             "runAction" | "runAccountAction" | "getInvocation" | "cancelInvocation"
             | "undoInvocation" | "invocationOutput" => {
                 self.invocation_operation(operation.id).await
-            }
-            "listWebhooks" | "createWebhook" | "deleteWebhook" => {
-                self.webhook_operation(operation.id)
             }
             "askModel" => model_asks::ask(&self.session, &self.workspace(), self.body).await,
             other => self.workspace_operation(other).await,
@@ -486,7 +483,7 @@ impl<'a> Caller<'a> {
                 );
                 shaped::<answers::View>(self.call("tilo_view", args).await?).map(Answer::ok)
             }
-            "search" => {
+            _ => {
                 let query = self
                     .query("q")
                     .ok_or_else(|| ApiError::new("invalid_arguments", "`q` is required"))?;
@@ -496,13 +493,6 @@ impl<'a> Caller<'a> {
                 let args = with(json!({"query": query}), "app", self.query("app"));
                 let found = self.call("tilo_find", with(args, "limit", limit)).await?;
                 shaped::<answers::SearchHits>(found).map(Answer::ok)
-            }
-            _ => {
-                let path = self
-                    .query("path")
-                    .ok_or_else(|| ApiError::new("invalid_arguments", "`path` is required"))?;
-                let args = with(json!({"path": path}), "mode", self.query("mode"));
-                shaped::<answers::Link>(self.call("tilo_link", args).await?).map(Answer::ok)
             }
         }
     }
@@ -705,45 +695,6 @@ impl<'a> Caller<'a> {
                 })
             }
             other => Err(ApiError::new("not_found", format!("{other} is not served"))),
-        }
-    }
-
-    /// The key's webhooks in the workspace.
-    fn webhook_operation(&self, id: &str) -> Result<Answer, ApiError> {
-        let ws = self.workspace();
-        match id {
-            "listWebhooks" => {
-                let hooks: Vec<Value> = self
-                    .server
-                    .store
-                    .webhooks(Some((&self.grant.id, &ws)))
-                    .into_iter()
-                    .map(|hook| {
-                        let undelivered = self.server.posting.refusal(&hook.url);
-                        webhook_row(&hook, false, undelivered)
-                    })
-                    .collect();
-                Ok(Answer::ok(json!({"webhooks": hooks})))
-            }
-            "createWebhook" => self.create_webhook(),
-            _ => {
-                let id = self.params.get("webhook");
-                let removed = self
-                    .server
-                    .store
-                    .remove_webhook(&self.grant.id, &ws, id)
-                    .map_err(|_| {
-                        ApiError::new("unavailable", "the webhook could not be removed")
-                    })?;
-                if !removed {
-                    return Err(ApiError::new(
-                        "not_found",
-                        "no such webhook of this key here",
-                    ));
-                }
-                self.server.v1.deliveries.stop(id);
-                Ok(Answer::ok(json!({"deleted": id})))
-            }
         }
     }
 
@@ -951,44 +902,6 @@ impl<'a> Caller<'a> {
             .ok_or_else(|| ApiError::malformed("a file", "no bytes"))?;
         let size = piece.get("size").and_then(Value::as_u64).unwrap_or(0);
         Ok((size, bytes))
-    }
-
-    fn create_webhook(&self) -> Result<Answer, ApiError> {
-        let new: answers::NewWebhook = self.json_body()?;
-        if let Some(why) = self.server.posting.refusal(&new.url) {
-            return Err(ApiError::new("invalid_arguments", why));
-        }
-        let kinds = ["change", "invocation", "presence"];
-        if let Some(unknown) = new
-            .events
-            .iter()
-            .find(|kind| !kinds.contains(&kind.as_str()))
-        {
-            return Err(ApiError::new(
-                "invalid_arguments",
-                format!("{unknown} is no kind of event: change, invocation or presence"),
-            ));
-        }
-        let (Ok(id), Ok(secret)) = (crate::store::secret(12), crate::store::secret(32)) else {
-            return Err(ApiError::new("unavailable", "no randomness is available"));
-        };
-        let hook = crate::store::Webhook {
-            id: format!("wh_{id}"),
-            grant: self.grant.id.clone(),
-            workspace: self.workspace(),
-            url: new.url,
-            events: new.events,
-            path: new.path,
-            secret,
-            cursor: None,
-        };
-        self.server
-            .store
-            .add_webhook(hook.clone())
-            .map_err(|_| ApiError::new("unavailable", "the webhook could not be kept"))?;
-        let row = webhook_row(&hook, true, None);
-        webhooks::Deliveries::start(self.server, hook);
-        Ok(Answer::created(row))
     }
 }
 
@@ -1209,22 +1122,6 @@ fn json_of<T: serde::Serialize>(value: &T) -> String {
         tracing::error!(%why, "an export's answer is not JSON");
         "null".to_owned()
     })
-}
-
-/// `hook` as its holder reads it: with its secret when it is made, and with
-/// why nothing is posted to its URL (`undelivered`) where nothing is.
-fn webhook_row(
-    hook: &crate::store::Webhook,
-    with_secret: bool,
-    undelivered: Option<&str>,
-) -> Value {
-    let row = with(
-        json!({"id": hook.id, "url": hook.url, "events": hook.events}),
-        "path",
-        hook.path.as_ref(),
-    );
-    let row = with(row, "secret", with_secret.then_some(&hook.secret));
-    with(row, "undelivered", undelivered)
 }
 
 /// `object` with `name` set to `value` when there is one.

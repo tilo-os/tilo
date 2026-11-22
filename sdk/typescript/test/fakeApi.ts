@@ -337,13 +337,6 @@ export class FakeApi {
         }
         return this.json(view);
       }
-      case "links": {
-        const path = call.query.path ?? "";
-        if (!(path in this.fields)) {
-          return this.refuse("not_found", 404, `${path} names nothing`);
-        }
-        return this.json({ path, link: linkTo(path) });
-      }
       case "programs": {
         const asked = JSON.parse(call.body || "{}") as Answer;
         if (asked.program === "boom") {
@@ -464,6 +457,12 @@ export class FakeApi {
     }
     const invocation = `inv-${this.calls.length}`;
     const whole = `${path}#${action}`;
+    if (action === "share-link") {
+      if (!(path in this.fields)) {
+        return this.refuse("not_found", 404, `${path} names nothing`);
+      }
+      return this.json({ status: "ok", invocation, path: whole, result: { url: linkTo(path) } });
+    }
     if (action === "group") {
       const members = Array.isArray(args.actions) ? (args.actions as Answer[]) : [];
       this.groups.push({ resource: path, actions: members });

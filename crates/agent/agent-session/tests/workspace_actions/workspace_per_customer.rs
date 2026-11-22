@@ -507,7 +507,6 @@ fn route_against(template: &str, other: &str, page: &str, content: &str, grant: 
         .replace("{action}", "rename")
         .replace("{run}", "00000000-0000-4000-8000-000000000001")
         .replace("{content}", content)
-        .replace("{webhook}", "00000000-0000-4000-8000-000000000002")
         .replace("{grant}", grant)
 }
 
@@ -618,6 +617,10 @@ async fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() 
             ("account/keys#revoke", json!({"grant": b_grant})),
             ("account/workspaces#create", json!({"name": "cus_c"})),
             (
+                "account/webhooks#create",
+                json!({"workspace": b, "url": "https://example.com/hook"}),
+            ),
+            (
                 "account/workspaces#branch",
                 json!({"workspace": b, "name": "cus_c"}),
             ),
@@ -635,7 +638,6 @@ async fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() 
         let route = route_against(operation.path, &b, &b_page, &b_content, &b_grant);
         let body = match operation.id {
             "runProgram" => json!({"program": "notes"}),
-            "createWebhook" => json!({"url": "https://example.com/hook"}),
             _ => json!({"title": PLANTED}),
         };
         let (status, answer) = rest(

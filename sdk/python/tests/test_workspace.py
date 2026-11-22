@@ -263,10 +263,12 @@ async def test_a_run_across_records_hands_over_each_link_once(workspace):
 
 async def test_any_path_has_a_link_and_a_bad_one_is_refused(workspace, api):
     assert await workspace.link(PDF) == link_to(PDF)
-    assert api.asked("GET", "/v1/workspaces/")[-1]["query"] == {"path": PDF}
+    asked = api.asked("POST", "/v1/workspaces/")[-1]
+    assert asked["path"].endswith("/actions/share-link")
+    assert json.loads(asked["body"]) == {}
 
     await workspace.link(TODO, mode="desktop")
-    assert api.asked("GET", "/v1/workspaces/")[-1]["query"] == {"path": TODO, "mode": "desktop"}
+    assert json.loads(api.asked("POST", "/v1/workspaces/")[-1]["body"]) == {"mode": "desktop"}
 
     with pytest.raises(Refused):
         await workspace.link("notes/Nothing")

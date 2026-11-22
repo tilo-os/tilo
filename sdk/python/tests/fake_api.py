@@ -293,8 +293,6 @@ class FakeApi:
             return self.resource_route(request, call, after.removeprefix("resources/"))
         if after == "search":
             return self.search(call)
-        if after == "links":
-            return self.link(call)
         if after == "views":
             return self.view(call)
         if after == "programs":
@@ -579,6 +577,10 @@ class FakeApi:
         args = json.loads(call["body"] or b"{}")
         if at == "invocations#list":
             return self.list_invocations(args)
+        if action == "share-link":
+            if path not in self.fields:
+                return self.refuse(404, "not_found", f"{path} names nothing")
+            return self.done(at, {"url": link_to(path)})
         if at == "workspace/members#list":
             row = {"person": "cd" * 32, "name": "Rosa Ortiz", "role": "editor"}
             return self.done(at, [row | {"administrator": False}], [path], link_to(path))
@@ -832,14 +834,6 @@ class FakeApi:
         if call["query"].get("picture") == "true":
             view["picture"] = "tilo.content:look"
         return self.answer(200, view)
-
-    def link(self, call: dict[str, Any]) -> httpx.Response:
-        path = call["query"].get("path")
-        if path is None:
-            return self.refuse(400, "invalid_arguments", "`path` is required")
-        if path not in self.fields:
-            return self.refuse(404, "not_found", f"{path} names nothing", ["GET /v1/workspaces/…/search finds it"])
-        return self.answer(200, {"path": path, "link": link_to(path)})
 
     def invite(self, at: str, asked: dict[str, Any]) -> httpx.Response:
         roles = ("viewer", "commenter", "editor", "moderator", "administrator", "owner")

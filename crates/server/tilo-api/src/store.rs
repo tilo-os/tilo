@@ -446,16 +446,16 @@ impl Store {
         })
     }
 
-    /// Forget `grant`'s webhook `id` in `workspace`: whether it was there.
+    /// Forget `grant`'s webhook `id`: whether it was there.
     ///
     /// # Errors
     /// The store could not be written.
-    pub fn remove_webhook(&self, grant: &str, workspace: &str, id: &str) -> io::Result<bool> {
+    pub fn remove_webhook(&self, grant: &str, id: &str) -> io::Result<bool> {
         self.change(|state| {
             let theirs = state
                 .webhooks
                 .get(id)
-                .is_some_and(|hook| hook.grant == grant && hook.workspace == workspace);
+                .is_some_and(|hook| hook.grant == grant);
             theirs && state.webhooks.remove(id).is_some()
         })
     }

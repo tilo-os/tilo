@@ -1,8 +1,8 @@
 //! The API's `/v1` routes against a workspace's server, as tilo.sh runs them: a
 //! person's key makes a workspace (a retry of the same request makes no
 //! second one), puts a form in, runs actions on it, follows its runs and
-//! reads the workspace's events as they happen, is refused a webhook to the
-//! API's own machine, mints a key for that workspace alone, and
+//! reads the workspace's events as they happen, is refused a webhook
+//! (`account/webhooks#create`) to the API's own machine, mints a key for that workspace alone, and
 //! deletes the workspace. Every route is one of the calls an agent makes
 //! over MCP, so this is that same path through HTTP and JSON.
 
@@ -202,18 +202,16 @@ async fn a_webhook_of_a_hosted_api_is_delivered() {
         )
         .await;
     assert_eq!(status, 200, "{made}");
-    let base = format!(
-        "/v1/workspaces/{}",
-        made["workspace"]["id"].as_str().unwrap()
-    );
+    let workspace = made["workspace"]["id"].as_str().unwrap();
+    let base = format!("/v1/workspaces/{workspace}");
 
     let receiver = HookReceiver::start();
     let beside = test_http::Responder::silent();
     api.webhooks_stand_in(receiver.at());
     let (status, refused) = backend
-        .post(
-            &format!("{base}/webhooks"),
-            &json!({"url": format!("{}/hook", beside.url()), "events": ["invocation"]}),
+        .account(
+            "webhooks#create",
+            &json!({"workspace": workspace, "url": format!("{}/hook", beside.url()), "events": ["invocation"]}),
             &[],
         )
         .await;
@@ -223,13 +221,13 @@ async fn a_webhook_of_a_hosted_api_is_delivered() {
         "a hosted API kept a webhook to a receiver nobody handed it: {refused}"
     );
     let (status, hook) = backend
-        .post(
-            &format!("{base}/webhooks"),
-            &json!({"url": receiver.url(), "events": ["invocation"]}),
+        .account(
+            "webhooks#create",
+            &json!({"workspace": workspace, "url": receiver.url(), "events": ["invocation"]}),
             &[],
         )
         .await;
-    assert_eq!(status, 201, "the webhook to the receiver is kept");
+    assert_eq!(status, 200, "the webhook to the receiver is kept: {hook}");
 
     // An app is opened and takes a file, as the long story begins.
     let named = [
@@ -273,7 +271,9 @@ async fn a_webhook_of_a_hosted_api_is_delivered() {
     let posted = receiver.next().await;
     is_a_signed_delivery_of(&posted, &hook);
     beside.assert_untouched();
-    let (status, kept) = backend.get(&format!("{base}/webhooks")).await;
+    let (status, kept) = backend
+        .account("webhooks#list", &json!({"workspace": workspace}), &[])
+        .await;
     assert_eq!(status, 200, "{kept}");
     let rows = kept["webhooks"].as_array().unwrap();
     assert_eq!(rows.len(), 1, "{kept}");
@@ -385,9 +385,9 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
         "https://10.0.0.7/hook",
     ] {
         let (status, refused) = backend
-            .post(
-                &format!("{base}/webhooks"),
-                &json!({"url": own, "events": ["invocation"]}),
+            .account(
+                "webhooks#create",
+                &json!({"workspace": workspace, "url": own, "events": ["invocation"]}),
                 &claims,
             )
             .await;
@@ -397,7 +397,9 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
             "a hosted API kept a webhook to {own}: {refused}"
         );
     }
-    let (status, kept) = backend.get(&format!("{base}/webhooks")).await;
+    let (status, kept) = backend
+        .account("webhooks#list", &json!({"workspace": workspace}), &[])
+        .await;
     assert_eq!((status, &kept["webhooks"]), (200, &json!([])), "{kept}");
 
     let run_headers = [

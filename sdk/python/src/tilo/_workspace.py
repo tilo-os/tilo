@@ -353,7 +353,7 @@ class Workspace:
     def link(self, path: str, *, mode: str | None = None) -> Any:
         """The link to hand a person for what `path` names (`notes/Todo`).
 
-        It opens the record in its app for the workspace's members and
+        It is the record's `share-link` action. It opens the record in its app for the workspace's members and
         carries no secret: anyone else must be invited first. `mode` is
         `app` (the app alone, the default) or `desktop`.
         """
@@ -361,10 +361,10 @@ class Workspace:
 
     async def _link(self, path: str, mode: str | None) -> str:
         endpoint = await self._endpoint()
-        answer = await endpoint.json(
-            "GET", endpoint.path("links"), query={"path": path, "mode": mode}
+        answer = await endpoint.act(
+            f"{path}#share-link", {} if mode is None else {"mode": mode}
         )
-        link = answer.get("link")
+        link = answer.get("url") if isinstance(answer, Mapping) else None
         if not isinstance(link, str) or not link:
             raise ProtocolError(f"the workspace answered no link for {path}")
         return link

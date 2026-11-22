@@ -152,7 +152,8 @@ curl -sS "$api/workspaces" -H "$agent" -H "$json" -d '{"name": "Applicant: someo
 
 # Later, for review: your backend takes the letter out and hands a person the link to it.
 bytes=$(curl -sS --fail-with-body "$api/workspaces/$jane/content/$letter" -H "$auth" | wc -c)
-link=$(curl -sS --fail-with-body "$api/workspaces/$jane/links?path=word-processor" -H "$auth" | jq -r .link)
+link=$(curl -sS --fail-with-body "$api/workspaces/$jane/resources/word-processor/actions/share-link" \
+  -H "$auth" -H "$json" -d '{}' | jq -r .result.url)
 echo "the letter is $bytes bytes; a person opens it at $link"
 ```
 

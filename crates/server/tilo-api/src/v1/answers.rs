@@ -313,13 +313,6 @@ pub struct SearchHits {
     pub query: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Link {
-    pub path: String,
-    /// Opens it in its app for the workspace's members; carries no secret.
-    pub link: String,
-}
-
 /// What an app's window shows for a resource: its view's semantic lines, the
 /// same ones an MCP client's `tilo_view` prints, and a picture with `picture`.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -484,43 +477,6 @@ pub struct ModelAsk {
     pub max_output_tokens: u32,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct NewWebhook {
-    /// `https://…`, where each event is posted.
-    pub url: String,
-    /// The kinds to post (`change`, `invocation`, `presence`); all without it.
-    #[serde(default)]
-    pub events: Vec<String>,
-    /// One resource's changes only, and what is under it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Webhook {
-    pub id: String,
-    pub url: String,
-    pub events: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    /// What deliveries are signed with: answered once, when it is made.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret: Option<String>,
-    /// Why nothing is posted to its URL, where nothing is: it is not one this API posts to.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub undelivered: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct WebhookList {
-    pub webhooks: Vec<Webhook>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct DeletedWebhook {
-    pub deleted: String,
-}
-
 /// An upload dropped before every byte of it was sent.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct DeletedUpload {
@@ -545,7 +501,6 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         Resource,
         ActionAnswer,
         SearchHits,
-        Link,
         View,
         Program,
         ProgramAnswer,
@@ -558,10 +513,6 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         Upload,
         Event,
         ModelAsk,
-        NewWebhook,
-        Webhook,
-        WebhookList,
-        DeletedWebhook,
         DeletedUpload,
     ]
 }

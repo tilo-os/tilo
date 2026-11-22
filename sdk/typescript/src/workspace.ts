@@ -329,22 +329,22 @@ export class Workspace {
   }
 
   /**
-   * The link to hand a person for what `path` names (`notes/Todo`). It opens
-   * the record in its app for the workspace's members and carries no secret:
-   * anyone else must be invited first. `mode` is `app` (the app alone, the
-   * default) or `desktop`.
+   * The link to hand a person for what `path` names (`notes/Todo`): its
+   * `share-link` action. It opens the record in its app for the workspace's
+   * members and carries no secret: anyone else must be invited first. `mode`
+   * is `app` (the app alone, the default) or `desktop`.
    */
   async link(path: string, options: { mode?: "app" | "desktop" | null } = {}): Promise<string> {
-    const endpoint = await this.endpoint();
-    const answer = await endpoint.answer(
-      "GET",
-      `${routes.links(endpoint.id)}${queryOf({ path, mode: options.mode })}`,
-      { idempotent: false },
+    const mode = options.mode ?? null;
+    const result = await (await this.endpoint()).action(
+      `${path}#share-link`,
+      mode === null ? {} : { mode },
     );
-    if (typeof answer.link !== "string" || answer.link === "") {
+    const url = (result as Record<string, unknown> | null)?.url;
+    if (typeof url !== "string" || url === "") {
       throw new ProtocolError(`the workspace answered no link for ${path}`);
     }
-    return answer.link;
+    return url;
   }
 
   /**

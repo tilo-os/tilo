@@ -121,7 +121,6 @@ action of the account answers `not_permitted`.
 | `GET /v1/workspaces/{workspace}/resources?path=&cursor=&limit=&kind=` | what is under `path` (the apps without one): `{"path", "kind", "rows": [...], "actions": [...], "kinds": {...}, "next_cursor", "text"}` |
 | `GET /v1/workspaces/{workspace}/resources/{path}?cursor=` | one resource: `{"path", "kind", "fields": {...}, "children": [...], "cursor", "text"}` |
 | `GET /v1/workspaces/{workspace}/search?q=&limit=` | `{"hits": [{"path", "kind", "label", "action"}], "query"}`, best first |
-| `GET /v1/workspaces/{workspace}/links?path=&mode=` | `{"path", "link"}`: the link a person opens it with (invite them first) |
 | `GET /v1/workspaces/{workspace}/views?path=&picture=&scale=` | what the app's window shows for `path`: `{"path", "app", "shown", "text", "tree", "nodes", "viewport", "window_origin", "revision"}`, and `picture` (a `tilo.content:` of a PNG) with `picture=true` |
 
 A row of `rows` is `{"path", "name", "label", "kind", "has_children", "reads", "actions"}`, its
@@ -211,9 +210,11 @@ On the API server, a workspace's events can be posted to a URL instead:
 
 | | |
 |---|---|
-| `POST /v1/workspaces/{workspace}/webhooks` `{url, events?, path?}` | `201` `{"id", "url", "events", "secret"}`; `secret` is shown once |
-| `GET /v1/workspaces/{workspace}/webhooks` | the webhooks, without their secrets |
-| `DELETE /v1/workspaces/{workspace}/webhooks/{id}` | removes one |
+| `account/webhooks#create` `{workspace, url, events?, path?}` | `{"id", "workspace", "url", "events", "secret"}`; `secret` is shown once |
+| `account/webhooks#list` `{workspace?}` | the key's webhooks, without their secrets |
+| `account/webhooks#delete` `{webhook}` | removes one |
+
+Each is an action of the account, run as any other: `POST /v1/resources/account/webhooks/actions/create`.
 
 Each delivery is `POST url` with the event as the body (`{"id", "type", "workspace", "data"}`),
 `Tilo-Webhook-Id`, `Tilo-Delivery` (unique per event) and `Tilo-Signature: t=<unix seconds>,

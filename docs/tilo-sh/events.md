@@ -129,7 +129,7 @@ polling its status.
 
 ## Webhooks
 
-On an API server, `POST /v1/workspaces/{workspace}/webhooks` with `{"url", "events"?, "path"?}` posts each
+On an API server, the account's `account/webhooks#create` with `{"workspace", "url", "events"?, "path"?}` posts each
 event to `url` as it happens: the same events, as JSON, with a `Tilo-Signature` header (an HMAC-SHA256 of
 the timestamp and the body under the secret the call answers once) and a `Tilo-Delivery` id to deduplicate
 by. A delivery not answered with a `2xx` is tried again, in order, for close to three hours. The

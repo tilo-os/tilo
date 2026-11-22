@@ -229,17 +229,6 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         ])
         .json(200, "SearchHits"),
         op(
-            "getLink",
-            Method::GET,
-            "/v1/workspaces/{workspace}/links",
-            "The link a person opens what a path names with",
-        )
-        .query(&[
-            ("path", "The resource"),
-            ("mode", "`app` (the default) or `desktop`"),
-        ])
-        .json(200, "Link"),
-        op(
             "runProgram",
             Method::POST,
             "/v1/workspaces/{workspace}/programs",
@@ -316,28 +305,5 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         )
         .query(&[("path", "One resource's changes, and what is under it")])
         .answers(Answer::Events),
-        op(
-            "listWebhooks",
-            Method::GET,
-            "/v1/workspaces/{workspace}/webhooks",
-            "The workspace's webhooks, without their secrets",
-        )
-        .json(200, "WebhookList"),
-        op(
-            "createWebhook",
-            Method::POST,
-            "/v1/workspaces/{workspace}/webhooks",
-            "Post the workspace's events to a URL, signed",
-        )
-        .body(Body::Json("NewWebhook"))
-        .json(201, "Webhook"),
-        op(
-            "deleteWebhook",
-            Method::DELETE,
-            "/v1/workspaces/{workspace}/webhooks/{webhook}",
-            "Stop posting to a webhook",
-        )
-        .mutating()
-        .json(200, "DeletedWebhook"),
     ]
 });
