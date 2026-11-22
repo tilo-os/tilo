@@ -553,14 +553,15 @@ impl ToolbarRow {
         self.shown.as_ref().map(|(_, toolbar)| toolbar)
     }
 
-    /// Whether the last layout was short of the width the parts need: a button
-    /// sharing another's place, the app's location with nowhere to stand, or
-    /// that location cut short in the shorter form it names itself in. A bar
-    /// that can give the row more width asks before it keeps it.
-    pub(crate) fn crowded(&self) -> bool {
-        let (app_row, _, _) = self.place_reactions(self.row);
-        let forms = self.views_size.as_ref().map(|measured| &measured.forms);
-        self.parts.crowded(self.toolbar(), app_row, forms)
+    /// Whether the location or a leading action gave up its place in the row: what a strip's
+    /// "+" beside the parts costs them. A bar that can give the row more width asks before it
+    /// keeps it.
+    pub(crate) fn parts_yield(&self) -> bool {
+        let location_gone = self.parts.location.area() <= 0.0
+            && self
+                .toolbar()
+                .is_some_and(|toolbar| toolbar.location.is_some());
+        location_gone || self.parts.leading.iter().any(|rect| rect.area() <= 0.0)
     }
 
     pub(crate) fn take_measured(&mut self) -> bool {

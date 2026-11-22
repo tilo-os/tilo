@@ -583,8 +583,13 @@ pub(super) fn paint_location(
     if shown.is_empty() || text_rect.width() <= 0.0 {
         return None;
     }
-    let label =
-        LocationLabel::measure(tr, theme, shown, trailing_word(location), text_rect.width());
+    // The row made room for the location's form; a notice's text is still cut where it must be.
+    let room = if notice.is_some() {
+        text_rect.width()
+    } else {
+        f64::INFINITY
+    };
+    let label = LocationLabel::measure(tr, theme, shown, trailing_word(location), room);
     let y = rect.center().y - label.height / 2.0;
     label.paint(scene, transform, (tr, theme), (text_rect.x0, y), ink);
     if let Some(words) = words {

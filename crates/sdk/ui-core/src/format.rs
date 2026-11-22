@@ -1068,5 +1068,17 @@ pub fn arithmetic_operator(symbol: char) -> Option<char> {
     }
 }
 
+/// This thread's window language, as a window shipping English and German speaks it.
+#[cfg(test)]
+pub(crate) fn speak_locale(locale: &str) {
+    let mut catalogues = vec![("en-US", "")];
+    if locale != "en-US" {
+        catalogues.push((locale, ""));
+    }
+    crate::i18n::I18nManager::install("en-US", locale, &catalogues)
+        .expect("the window's catalogues install");
+    crate::i18n::I18nManager::register_widget_messages();
+}
+
 #[cfg(test)]
 mod tests;

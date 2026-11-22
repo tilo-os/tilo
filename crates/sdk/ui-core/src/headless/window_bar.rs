@@ -1209,7 +1209,7 @@ mod tests {
         );
     }
 
-    /// An app that is only its name.
+    /// An app that is only its name: the calendar's, as a shell window's tab wears it.
     pub(super) struct NamedApp;
 
     impl Widget for NamedApp {
@@ -1229,13 +1229,13 @@ mod tests {
 
     impl crate::widget::AppWidget for NamedApp {
         fn app_kind(&self) -> crate::widget::AppKind {
-            crate::widget::AppKind::Files
+            crate::widget::AppKind::App(crate::icons::Icon::Calendar)
         }
         fn app_title(&self) -> &str {
-            "Files"
+            "Calendar"
         }
         fn app_icon(&self) -> crate::widget::IconDescriptor {
-            crate::widget::IconDescriptor::Glyph("F")
+            crate::widget::IconDescriptor::Named("calendar".into())
         }
     }
 
@@ -1257,8 +1257,11 @@ mod tests {
             ..crate::window_toolbar::WindowToolbar::default()
         }));
         let tab = harness.window_tab();
-        assert_eq!(tab.app_kind, Some(crate::widget::AppKind::Files));
-        assert_eq!(tab.title, "Files");
+        assert_eq!(
+            tab.app_kind,
+            Some(crate::widget::AppKind::App(crate::icons::Icon::Calendar))
+        );
+        assert_eq!(tab.title, "Calendar");
         let mut scene = Scene::new();
         harness.paint_window_bar(&mut scene, Affine::IDENTITY, 800.0);
         crate::window_toolbar::declare(None);
@@ -1467,9 +1470,9 @@ mod tests {
     }
 
     /// The calendar's whole bar (the sidebar, previous, next and Today, a week as its period, five
-    /// views, New event and a menu of more) in a compact (420 px) window that lists History, painted
+    /// views, New event and a menu of more) in a `width`-wide window that lists History, painted
     /// once so its views are measured.
-    fn compact_calendar_bar() -> (HostedReset, FrameHarness, TabBar) {
+    fn compact_calendar_bar_at(width: u32) -> (HostedReset, FrameHarness, TabBar) {
         use crate::window_toolbar::{
             ToolbarAction, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
         };
@@ -1477,7 +1480,7 @@ mod tests {
         let mut harness = FrameHarness::for_app(
             crate::State::new(),
             NamedApp,
-            (420, 800),
+            (width, 800),
             crate::theme::Theme::dark(),
         );
         harness.present_in_window_bar();
@@ -1514,9 +1517,10 @@ mod tests {
             }
             .bounded(),
         ));
-        let mut bar = harness.window_bar(420.0);
+        let width = f64::from(width);
+        let mut bar = harness.window_bar(width);
         bar.set_history_control(TAB, Some(crate::widget::HistoryControl::of(false)));
-        lay_out_bar(&mut bar, 420.0, &harness.theme);
+        lay_out_bar(&mut bar, width, &harness.theme);
         bar.draw(
             &mut Scene::new(),
             Affine::IDENTITY,
@@ -1529,7 +1533,7 @@ mod tests {
 
     /// A compact (420 px) window's bar, beside its search and History, cannot fit the calendar's
     /// views beside its navigation and period: the views and Today (which jumps rather than steps) go
-    /// into the overflow menu, previous and next stay, and the period stays, elided.
+    /// into the overflow menu, and the period stays, whole.
     #[test]
     fn a_compact_window_keeps_its_navigation_and_location_and_folds_the_views() {
         use crate::a11y::{AccessNode, Role};
@@ -1541,7 +1545,7 @@ mod tests {
                 .iter()
                 .find_map(|child| find(child, role, name))
         }
-        let (_hosted, _harness, bar) = compact_calendar_bar();
+        let (_hosted, _harness, bar) = compact_calendar_bar_at(420);
         let rects = bar.test_rects();
         let rect = |name: &str| {
             rects
@@ -1595,39 +1599,66 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
-    /// A compact window's bar cannot fit the week as `Mon, Jun 29 to Sun, Jul 5`: it names it `Jun
-    /// 29 to Jul 5`, whole, instead of cutting the wider form short.
-    #[test]
-    fn a_compact_window_names_its_period_in_a_form_that_fits() {
-        let (_hosted, mut harness, bar) = compact_calendar_bar();
+    /// The period the bar names, whole and one of its forms; `None` where it leaves the row.
+    fn period_shown(bar: &TabBar, harness: &mut FrameHarness) -> Option<String> {
         let location = bar
             .test_rects()
             .into_iter()
             .find(|(name, _)| name == "window_location")
             .map_or(Rect::ZERO, |(_, rect)| rect);
-        assert!(location.area() > 0.0, "the period stands in the bar");
+        if location.area() <= 0.0 {
+            return None;
+        }
         let toolbar = crate::window_toolbar::declared().expect("the calendar declared its bar");
         let declared = toolbar.location.as_ref().expect("with its period");
         let forms = week_across_a_month().forms();
-        assert_eq!(declared.label, forms[0]);
-        let style = harness.theme.text(crate::tokens::TextRole::Body);
-        let widest = f64::from(harness.text.measure_style(&forms[0], None, &style).0);
-        assert!(
-            widest > location.width(),
-            "the widest form does not fit: {location:?}"
-        );
+        assert_eq!(declared.label, forms[0], "the widest form is the label");
         let (shown, _) = crate::widget::window_toolbar_row::location_shown(
             declared,
             bar.toolbar_row().parts().form,
             &harness.theme,
         );
+        assert!(
+            forms.iter().any(|form| form == shown),
+            "{shown:?} is one of the period's forms {forms:?}"
+        );
+        let style = harness.theme.text(crate::tokens::TextRole::Body);
+        let width = f64::from(harness.text.measure_style(shown, None, &style).0);
+        assert!(
+            width <= location.width(),
+            "{shown:?} stands whole in {location:?}"
+        );
+        Some(shown.to_owned())
+    }
+
+    /// A compact bar cannot fit a period's widest form: it names it in a narrower one, whole.
+    /// English drops `Mon, Jun 29 to Sun, Jul 5` for `Jun 29 to Jul 5`; a long language's period
+    /// folds its navigation and the sidebar's toggle, or leaves the row rather than be cut.
+    #[test]
+    fn a_compact_window_names_its_period_whole() {
+        use crate::format::speak_locale as speak;
+        let (_hosted, mut harness, bar) = compact_calendar_bar_at(420);
+        let shown = period_shown(&bar, &mut harness).expect("the period stands in the bar");
         assert_eq!(
-            shown, forms[1],
+            shown,
+            week_across_a_month().forms()[1],
             "the bar names the week in its narrower form"
         );
-        let shown_width = f64::from(harness.text.measure_style(shown, None, &style).0);
-        assert!(shown_width <= location.width(), "whole");
         crate::window_toolbar::declare(None);
+        speak("de-DE");
+        for width in [420_u32, 360] {
+            let (_hosted, mut harness, bar) = compact_calendar_bar_at(width);
+            if width > 360 {
+                assert!(
+                    period_shown(&bar, &mut harness).is_some(),
+                    "{width} px: it stands"
+                );
+            } else {
+                period_shown(&bar, &mut harness);
+            }
+            crate::window_toolbar::declare(None);
+        }
+        speak("en-US");
     }
 
     #[test]

@@ -548,10 +548,10 @@ completeness does not exempt a screen from these requirements.
 - **Every control gets its slot before the location.** The location takes
   what the controls leave; only where that is less than its least width (a
   phone's) do Forward and then the sidebar's toggle fold into More, Back
-  staying. A location that names itself in shorter forms (a period's
-  `Jun 29 to Jul 5`) keeps the form it shows whole by taking the space
-  that parts it from its neighbours, down to the gap controls keep. A
-  breadcrumb that does not fit folds its middle
+  staying. A location that names itself in shorter forms folds what
+  stands beside it until the form it shows stands whole, or leaves the
+  row rather than cut a date in half. A breadcrumb that does not fit
+  folds its middle
   levels into the `…`, then cuts the current level short, then shows the
   current level alone, cut short; it never paints past its own bounds.
 - **Theme-driven, pixel-clean.** Every color and metric comes from the `Theme`

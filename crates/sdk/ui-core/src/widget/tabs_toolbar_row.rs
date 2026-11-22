@@ -79,7 +79,7 @@ impl TabBar {
         {
             return false;
         }
-        self.toolbar_row.crowded() || self.search_would_be_cramped()
+        self.toolbar_row.parts_yield() || self.search_would_be_cramped()
     }
 
     fn search_would_be_cramped(&self) -> bool {

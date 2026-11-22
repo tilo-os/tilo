@@ -219,7 +219,8 @@ pub struct ToolbarLocation {
     /// `Jun 29 to Jul 5` for `Mon, Jun 29 to Sun, Jul 5`): where the label does not fit,
     /// the bar shows the widest of them that fits the width the location has once
     /// everything else it can fold is in the menu, and keeps that width for it, so a wider
-    /// window never shows a narrower form.
+    /// window never shows a narrower form; where even the narrowest does not stand whole, the
+    /// location leaves the row.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shorter: Vec<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]

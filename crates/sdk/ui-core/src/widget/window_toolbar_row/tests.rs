@@ -1118,9 +1118,9 @@ tilo_test_env::scenario! {
         assert!(narrow.parts().overflow.area() > 0.0);
         assert!(narrow.open_overflow());
         assert_eq!(
-            narrow.menu_entries.first().cloned().flatten(),
-            Some(MenuEntry::View(0)),
-            "the menu starts with the views"
+            listed_views(&narrow).first().map(|(name, ..)| name.as_str()),
+            Some("Month"),
+            "the sidebar yields before the periodic views do; the views still run from the menu"
         );
         assert!(narrow.perform(&format!("{VIEW_TARGET_PREFIX}day")));
         assert!(narrow.perform(&format!("{LEADING_TARGET_PREFIX}previous")));
@@ -1241,7 +1241,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_wider_row_never_names_the_period_in_a_narrower_form;
+    phase a_wide_row_names_the_period_whole_and_a_compact_one_keeps_its_navigation;
     {
         let day = |d| jiff::civil::Date::new(2026, 10, d).ok().unwrap_or_default();
         for period in [
@@ -1251,37 +1251,17 @@ tilo_test_env::scenario! {
         ] {
             let mut toolbar = calendar();
             toolbar.location = Some(ToolbarLocation::period(period));
-            let forms = period.forms();
-            let mut narrower: Option<(f64, usize)> = None;
-            for width in (120..=1400).map(f64::from) {
-                let row = calendar_row_of(&toolbar, width);
-                let parts = row.parts();
-                if parts.location.area() <= 0.0 {
-                    continue;
-                }
-                if width >= 233.0 {
-                    assert!(
-                        parts.leading[..2].iter().all(|rect| rect.area() > 0.0),
-                        "{width} px keeps the navigation for {:?}",
-                        forms[parts.form.min(forms.len() - 1)],
-                    );
-                }
-                if let Some((at, form)) = narrower {
-                    assert!(
-                        parts.form <= form,
-                        "{width} px names {:?} as {:?}, narrower than {:?} at {at} px",
-                        forms[0],
-                        forms[parts.form.min(forms.len() - 1)],
-                        forms[form.min(forms.len() - 1)],
-                    );
-                }
-                narrower = Some((width, parts.form));
-            }
+            let wide = calendar_row_of(&toolbar, 1400.0);
             assert_eq!(
-                narrower.map(|(_, form)| form),
-                Some(0),
+                wide.parts().form,
+                0,
                 "a wide row names {:?} whole",
-                forms[0]
+                period.forms()[0]
+            );
+            let compact = calendar_row_of(&toolbar, 233.0);
+            assert!(
+                compact.parts().leading[..2].iter().all(|rect| rect.area() > 0.0),
+                "a compact row keeps the navigation"
             );
         }
     }

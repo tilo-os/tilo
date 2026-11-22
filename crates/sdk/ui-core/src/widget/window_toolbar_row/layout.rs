@@ -9,6 +9,10 @@ use super::{
     MIN_LOCATION_PX, Point, Rect, SECTION_GAP, Theme, WindowToolbar, picker_width,
 };
 
+/// The space a location takes back from the gaps beside it, each side: the section gap down to
+/// the gap controls keep.
+const SHARED_GAP: f64 = 2.0 * (SECTION_GAP - CONTROL_GAP);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Part {
     Sidebar,
@@ -74,20 +78,19 @@ pub(crate) struct LocationForms {
 }
 
 impl LocationForms {
-    pub(super) fn fitting(&self, leftover: f64) -> usize {
-        self.text
+    /// The form the location shows in `width` and the width the row must leave it: the widest
+    /// that stands whole once it takes back the space beside it, where it names itself in more
+    /// than one; where none does, the narrowest, so the row folds what it can for it.
+    pub(super) fn fit(&self, width: f64) -> (usize, f64) {
+        let widest = width + SHARED_GAP;
+        let form = self
+            .text
             .iter()
-            .position(|width| width + self.chrome <= leftover)
-            .unwrap_or_else(|| self.text.len().saturating_sub(1))
-    }
-
-    pub(super) fn least(&self, form: usize, leftover: f64) -> f64 {
-        match self.text.get(form) {
-            Some(width) if self.text.len() > 1 && width + self.chrome <= leftover => {
-                width + self.chrome
-            }
-            _ => 0.0,
-        }
+            .position(|words| words + self.chrome <= widest)
+            .unwrap_or_else(|| self.text.len().saturating_sub(1));
+        let least = self.text.len() > 1;
+        let need = self.text.get(form).copied().unwrap_or(0.0) + self.chrome;
+        (form, if least { need - SHARED_GAP } else { 0.0 })
     }
 
     pub(super) fn width(&self, form: usize) -> f64 {
@@ -334,11 +337,9 @@ impl Parts {
             Self::with_inline(toolbar, row, navigation, ViewsPlace::Overflow, (&[], &[]))
                 .location
                 .width();
-        let form = forms.fitting(leftover);
+        let (form, least) = forms.fit(leftover);
         let notice = forms.notice(toolbar, leftover);
-        let least = notice
-            .as_ref()
-            .map_or_else(|| forms.least(form, leftover), |notice| notice.least);
+        let least = notice.as_ref().map_or(least, |notice| notice.least);
         let shown = (forms.width(form), least, form > 0);
         let icons = Self::arranged(toolbar, row, views, shown, (&[], &[]));
         let names = labels
@@ -466,43 +467,34 @@ impl Parts {
         parts
     }
 
-    /// Where the location names itself in shorter forms, the form it shows stands whole: it takes
-    /// the space that parts it from its neighbours, down to the gap controls keep.
+    /// Where the location names itself in shorter forms, the form it shows stands whole; where
+    /// even the space beside it does not hold that, it leaves the row rather than be cut.
     fn fit_shown_form(&mut self, row: Rect, forms: &LocationForms) {
-        if self.location.area() <= 0.0 {
+        let need = forms.width(self.form) + forms.chrome;
+        if self.location.area() <= 0.0 || need <= self.location.width() {
             return;
         }
-        let short = forms.width(self.form) + forms.chrome - self.location.width();
-        if short <= 0.0 {
-            return;
-        }
-        // Whole pixels, as every edge in the row: a measure rounded to `f32` never leaves the
-        // last glyph outside the place the location keeps for it.
-        let short = short.ceil();
-        let shared = SECTION_GAP - CONTROL_GAP;
-        let before = self
-            .leading
-            .iter()
-            .map(|rect| rect.x1)
-            .chain([self.sidebar.x1, self.back.x1, self.forward.x1, row.x0])
-            .fold(f64::NEG_INFINITY, f64::max);
-        let after = self
-            .actions
-            .first()
-            .map(|rect| rect.x0)
-            .into_iter()
-            .chain((self.views_menu.area() > 0.0).then_some(self.views_menu.x0))
-            .chain(self.views.first().map(|rect| rect.x0))
-            .chain((self.overflow.area() > 0.0).then_some(self.overflow.x0))
-            .chain([row.x1])
-            .fold(f64::INFINITY, f64::min);
-        let left_room = (self.location.x0 - before - CONTROL_GAP).clamp(0.0, shared);
-        let right_room = (after - self.location.x1 - CONTROL_GAP).clamp(0.0, shared);
+        // Whole pixels: a `f32` measure never leaves the last glyph outside its place.
+        let short = (need - self.location.width()).ceil();
+        let shared = SHARED_GAP / 2.0;
+        let left_room = if self.location.x0 > row.x0 {
+            shared
+        } else {
+            0.0
+        };
+        let right_room = if self.location.x1 < row.x1 {
+            shared
+        } else {
+            0.0
+        };
         let left = (short / 2.0).min(left_room);
         let right = (short - left).min(right_room);
-        let left = left + (short - left - right).clamp(0.0, left_room - left);
+        let left = left + (short - left - right).min(left_room - left);
         self.location.x0 -= left;
         self.location.x1 += right;
+        if self.location.width() < need {
+            self.location = Rect::ZERO;
+        }
     }
 
     fn settle(
@@ -858,28 +850,6 @@ impl Parts {
             .chain((self.views_menu.area() > 0.0).then_some(&self.views_menu))
             .chain((self.overflow.area() > 0.0).then_some(&self.overflow))
             .all(|rect| rect.x0 >= lead)
-    }
-
-    /// Whether the parts could not keep the width they need across `row`: a button on
-    /// another's place, a location `toolbar` declared with nowhere to stand, or a location with
-    /// shorter forms cut short in the one it shows. Where the bar itself took that width (its
-    /// strip's "+" ahead of the row), it asks before it keeps it.
-    pub(super) fn crowded(
-        &self,
-        toolbar: Option<&WindowToolbar>,
-        row: Rect,
-        forms: Option<&LocationForms>,
-    ) -> bool {
-        let declared = toolbar.is_some_and(|toolbar| toolbar.location.is_some());
-        if declared && self.location.area() <= 0.0 {
-            return true;
-        }
-        let cut = declared
-            && forms.is_some_and(|forms| {
-                forms.text.len() > 1
-                    && self.location.width() < forms.width(self.form) + forms.chrome
-            });
-        cut || !self.fits(row)
     }
 
     pub(crate) fn views_in_location(&self) -> bool {

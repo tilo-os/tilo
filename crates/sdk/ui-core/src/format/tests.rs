@@ -1,16 +1,8 @@
+use super::speak_locale as speak;
 use super::*;
 use crate::clock::TimeStyle;
 use crate::i18n::I18nManager;
 use crate::widget::Tone;
-
-fn speak(locale: &str) {
-    let mut catalogues = vec![("en-US", "")];
-    if locale != "en-US" {
-        catalogues.push((locale, ""));
-    }
-    I18nManager::install("en-US", locale, &catalogues).expect("the window's catalogues install");
-    I18nManager::register_widget_messages();
-}
 
 fn day(y: i16, m: i8, d: i8) -> Date {
     Date::new(y, m, d).unwrap()
