@@ -833,11 +833,18 @@ impl<'a> ListRowFace<'a> {
             name.push(' ');
         }
         name.push_str(&title);
+        // A description explains the row after its name, and the secondary line is how it is
+        // painted: said once, there. Otherwise the secondary line is the row's own text, and a
+        // reader hears all of it as the row's name: a message is its sender and its subject.
+        if let Some(secondary) = self.secondary.filter(|s| !s.is_empty() && !self.described) {
+            name.push_str(", ");
+            name.push_str(secondary);
+        }
         name
     }
 
-    /// The row's accessibility node: a list item named by its badge and title, with the
-    /// subtitle, secondary line, meta, value, count, tags and status as its value, and one
+    /// The row's accessibility node: a list item named by its badge, title and secondary
+    /// line, with the subtitle, meta, value, count, tags and status as its value, and one
     /// button child per action.
     pub fn accessibility(&self, rect: Rect, action_target: impl Into<String>) -> AccessNode {
         let spans: String = self
@@ -854,14 +861,10 @@ impl<'a> ListRowFace<'a> {
             .collect::<Vec<_>>()
             .join(", ");
         let meta = self.meta.filter(|_| self.meta_spans.is_empty());
-        // A description explains the row after its name, and the secondary
-        // line is how it is painted: said once, never counted as a value too.
-        let secondary = self.secondary.filter(|_| !self.described);
         let mut value: Vec<&str> = self.tags.iter().map(|(label, _)| *label).collect();
         value.extend(
             [
                 self.subtitle,
-                secondary,
                 (!facts.is_empty()).then_some(facts.as_str()),
                 self.note,
                 meta,
