@@ -12,6 +12,7 @@
 //! broker answers as it does for any host that does not provide one.
 
 use super::commits::{RecordCreation, ServiceCommits};
+use super::ticket::Tickets;
 use super::workspaces::{MemberListGrants, Opening, ServiceWorkspaces, block_on_owned};
 use super::{host_runs, take_work};
 use crate::personal_devices::PersonalDevices;
@@ -90,11 +91,17 @@ pub struct Daemon {
     _personal_router: iroh::protocol::Router,
     /// The person's other devices, asked from this runtime's endpoint as this device.
     other_devices: Option<crate::other_devices::OtherDevices>,
-    /// The apps installed for this profile: what each publishes, before it
-    /// runs here.
+    /// The apps installed for this profile: what each publishes, before it runs here.
     apps: Arc<apps::Apps>,
     /// The login this daemon serves, when this computer logged in.
     login: Option<(SigningKey, Device)>,
+    /// The device actions this daemon answers: a ticket for a new computer, and a login with one.
+    tickets: Arc<Tickets>,
+    /// The device this daemon is, as the API it serves locally acts.
+    key: SigningKey,
+    cert: DeviceCert,
+    /// The account's own actions, forwarded over the login's one session.
+    account: std::sync::Mutex<Option<Arc<tilo_api::server::Connection>>>,
     place: DaemonPlace,
     _lock: advisory_lock::FileLock,
 }
@@ -217,6 +224,33 @@ impl Daemon {
         self.login.as_ref()
     }
 
+    /// Tilo's API as this daemon: its own workspaces answered locally, and the account forwarded
+    /// over the login's one session when `keep_account` gave it one.
+    ///
+    /// # Errors
+    /// The API server cannot be built.
+    pub(crate) fn api(self: &Arc<Self>) -> io::Result<Arc<tilo_api::direct::Direct>> {
+        let here = Arc::clone(self) as Arc<dyn tilo_api::session::Here>;
+        Ok(Arc::new(
+            tilo_api::direct::Direct::here(
+                here,
+                self.key.clone(),
+                self.cert.clone(),
+                &self.cert.device_label,
+            )
+            .map_err(io::Error::other)?,
+        ))
+    }
+
+    /// Answer the account's own actions over `connection`, the login's one session with its
+    /// server: the daemon's workspaces are answered locally, the account is not its to keep.
+    pub(crate) fn keep_account(&self, connection: Arc<tilo_api::server::Connection>) {
+        *self
+            .account
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(connection);
+    }
+
     /// Where this daemon's connections reach it.
     pub(crate) fn place(&self) -> &DaemonPlace {
         &self.place
@@ -285,6 +319,19 @@ impl Daemon {
         let taking = take_work.is_some();
         let take_work =
             take_work_action_service(root, &workspaces, take_work, &replica_slot, stage)?;
+        // The device actions the daemon answers itself, and the one service that serves a
+        // ticket's certify call on the router already open below.
+        stage("opening the device's tickets");
+        let tickets = Arc::new({
+            let _entered = tilo_rt::app().handle().enter();
+            Tickets::new(
+                identity.key.clone(),
+                identity.cert.clone(),
+                workspaces.endpoint(),
+                identity.login.clone(),
+                identity.place.clone(),
+            )
+        });
         stage("opening the person's store to their other devices");
         let personal = serve_personally(PersonalServing {
             root,
@@ -295,6 +342,7 @@ impl Daemon {
             channels: Arc::clone(&brokers),
             fanout: Arc::clone(&fanout),
             take_work,
+            tickets: Some(tickets.service()),
             host: founded.map(|_| workspaces.service().as_ref()),
         })?;
         // What the person answers about this device's camera and microphone is kept in their own
@@ -375,6 +423,10 @@ impl Daemon {
             _personal_links: personal.links,
             _personal_router: personal.router,
             login: identity.login,
+            tickets,
+            key: identity.key.clone(),
+            cert: identity.cert,
+            account: std::sync::Mutex::new(None),
             place,
             _lock: lock,
         })
@@ -639,34 +691,7 @@ impl RuntimeServices for Daemon {
     }
 
     fn action_provider(&self) -> io::Result<RuntimeActionProvider> {
-        let broker = self
-            .broker
-            .app_action_broker()
-            .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))?;
-        let workspaces = Arc::clone(&self.workspaces);
-        let (workspace, actor) = (self.workspace.clone(), self.actor.clone());
-        let admission =
-            block_on_owned(async move { workspaces.admit_execution(&workspace, &actor).await })
-                .map_err(io::Error::other)?;
-        let provider = broker
-            .certified_local_action_provider(admission.caller(), admission.presentation())
-            .map_err(io::Error::other)?;
-        admission
-            .check(self.workspaces.copies())
-            .map_err(io::Error::other)?;
-        Ok(RuntimeActionProvider {
-            broker,
-            workspace: self.workspace.clone(),
-            workspaces: Arc::clone(&self.workspaces),
-            apps: Some(self.apps.clone()),
-            session: Some(Arc::new(AdmittedRuntimeSession {
-                policy_time: self.policy_origin.capture().map_err(io::Error::other)?,
-                provider,
-                admission,
-                agent: None,
-                projection: Some(Caller::local_person(&self.actor).in_workspace(&self.workspace)),
-            })),
-        })
+        self.provider_for(&self.workspace)
     }
 
     fn mcp_session_factory(
@@ -708,6 +733,87 @@ impl RuntimeServices for Daemon {
     }
 }
 
+impl Daemon {
+    /// The person's provider in `workspace`: every action of one answered locally, as apps and the
+    /// person's input are.
+    ///
+    /// # Errors
+    /// The workspace is not one this device may act in, or its admission cannot be opened.
+    fn provider_for(&self, workspace: &str) -> io::Result<RuntimeActionProvider> {
+        let workspaces = Arc::clone(&self.workspaces);
+        let actor = self.actor.clone();
+        let named = workspace.to_owned();
+        let admission =
+            block_on_owned(async move { workspaces.admit_execution(&named, &actor).await })
+                .map_err(io::Error::other)?;
+        let broker = self
+            .broker
+            .app_action_broker()
+            .ok_or_else(|| io::Error::other("the action broker is unavailable"))?;
+        let provider = broker
+            .certified_local_action_provider(admission.caller(), admission.presentation())
+            .map_err(io::Error::other)?;
+        admission
+            .check(self.workspaces.copies())
+            .map_err(io::Error::other)?;
+        Ok(RuntimeActionProvider {
+            broker,
+            workspace: workspace.to_owned(),
+            workspaces: Arc::clone(&self.workspaces),
+            apps: Some(Arc::clone(&self.apps)),
+            session: Some(Arc::new(AdmittedRuntimeSession {
+                policy_time: self.policy_origin.capture().map_err(io::Error::other)?,
+                provider,
+                admission,
+                agent: None,
+                projection: Some(Caller::local_person(&self.actor).in_workspace(workspace)),
+            })),
+            tickets: Some(Arc::clone(&self.tickets)),
+        })
+    }
+}
+
+impl tilo_api::session::Here for Daemon {
+    fn workspaces(&self) -> Vec<tilo_api::session::Workspace> {
+        self.workspaces
+            .workspaces()
+            .into_iter()
+            .map(|workspace| tilo_api::session::held(workspace.id().to_string(), workspace.name))
+            .collect()
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the provider is moved into the session it answers"
+    )]
+    fn enter(&self, workspace: &str) -> Result<tilo_api::session::Reached, String> {
+        let provider = self
+            .provider_for(workspace)
+            .map_err(|error| error.to_string())?;
+        // The run is the person's own, admitted beside the workspace's broker: the session keeps
+        // that admission rather than minting another.
+        let caller = provider
+            .admission_caller()
+            .ok_or_else(|| "this daemon has no person's admission".to_owned())?;
+        let catalogue = tilo_mcp::task_hosts::WorkspaceCatalogue::new(provider.clone(), caller);
+        Ok(tilo_api::session::Reached {
+            provider: Arc::new(provider),
+            person: self.actor.clone(),
+            tasks: Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
+                Some(&self.actor),
+                Arc::new(catalogue),
+            )),
+        })
+    }
+
+    fn connection(&self) -> Option<Arc<tilo_api::server::Connection>> {
+        self.account
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
 /// The broker's action links as one more local caller, for no app
 /// connection. Its callers act from this foreign device.
 #[derive(Clone)]
@@ -722,6 +828,9 @@ pub struct RuntimeActionProvider {
     // Retains original ownership for both owner/search and MCP callers. An
     // owner projection is not the local person and never acquires the local person's authority.
     session: Option<Arc<AdmittedRuntimeSession>>,
+    /// The daemon's device actions, for the person's own session: serving a ticket for a new
+    /// computer, and a login with one. `None` for an agent's run, which cannot add a device.
+    tickets: Option<Arc<Tickets>>,
 }
 
 struct AdmittedRuntimeSession {
@@ -808,6 +917,37 @@ impl AdmittedRuntimeSession {
 }
 
 impl RuntimeActionProvider {
+    /// The caller the run was admitted as, where it has a run: the caller the API session keeps
+    /// rather than minting another.
+    fn admission_caller(&self) -> Option<Caller> {
+        self.session
+            .as_ref()
+            .map(|session| session.admission.caller().clone())
+    }
+
+    /// Whether `caller` is the person's own run, not an agent's: only the person adds a device.
+    fn is_the_person(&self, caller: &Caller) -> bool {
+        self.session.as_ref().is_some_and(|session| {
+            session.agent.is_none()
+                && (session.projection.as_ref() == Some(caller)
+                    || caller == session.admission.caller())
+        })
+    }
+
+    /// `answer`, with the daemon's own `tilo.device` provider listed beside the workspace's apps,
+    /// and its page answered whole when the query names it.
+    fn with_devices(
+        &self,
+        answer: Pending<Result<CataloguePage, ActionCallError>>,
+        query: &CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        let query = query.clone();
+        let workspace = self.workspace.clone();
+        answer.map(move |answer| {
+            answer.map(|page| super::ticket::with_device_actions(page, &query, &workspace))
+        })
+    }
+
     fn session_factory(
         self,
         workspace: String,
@@ -860,6 +1000,7 @@ impl RuntimeActionProvider {
                 agent: Some(agent.clone()),
                 projection: None,
             })),
+            tickets: None,
         };
         Ok((run, caller, agent))
     }
@@ -928,10 +1069,11 @@ impl ActionProvider for RuntimeActionProvider {
                 if !self.admitted(caller) {
                     return Pending::ready(Err(ActionCallError::NotPermitted));
                 }
-                return self
+                let answer = self
                     .broker
                     .state()
                     .action_query(&on_this_device(caller), &query);
+                return self.with_devices(answer, &query);
             }
             if let Err(refusal) = session.check(caller, &self.workspaces) {
                 return Pending::ready(Err(refusal.into()));
@@ -941,19 +1083,23 @@ impl ActionProvider for RuntimeActionProvider {
                 .as_ref()
                 .is_some_and(|provider| certified_provider(provider))
             {
-                return session.provider.query(caller, query);
+                let answer = session.provider.query(caller, query.clone());
+                return self.with_devices(answer, &query);
             }
             // Existing general catalogue/builtin APIs retain the exact
             // authenticated run. They make no SDK original-ownership claim.
             let answer = self.broker.state().action_query(&session.acting(), &query);
-            return session.guarded(Arc::clone(&self.workspaces), caller.clone(), answer);
+            let answer = session.guarded(Arc::clone(&self.workspaces), caller.clone(), answer);
+            return self.with_devices(answer, &query);
         }
         if !self.admitted(caller) {
             return Pending::ready(Err(ActionCallError::NotPermitted));
         }
-        self.broker
+        let answer = self
+            .broker
             .state()
-            .action_query(&on_this_device(caller), &query)
+            .action_query(&on_this_device(caller), &query);
+        self.with_devices(answer, &query)
     }
 
     fn invoke(
@@ -963,6 +1109,12 @@ impl ActionProvider for RuntimeActionProvider {
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
+        }
+        if let Some(tickets) = &self.tickets
+            && self.is_the_person(caller)
+            && Tickets::answers(&request)
+        {
+            return tickets.invoke(&request);
         }
         if let Some(session) = &self.session {
             if let Err(refusal) = session.check(caller, &self.workspaces) {
@@ -974,6 +1126,12 @@ impl ActionProvider for RuntimeActionProvider {
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
+        if let Some(tickets) = &self.tickets
+            && self.is_the_person(caller)
+            && let Some(state) = tickets.observe(id)
+        {
+            return Some(state);
+        }
         if let Some(session) = &self.session {
             session.check(caller, &self.workspaces).ok()?;
             return session.provider.observe(session.admission.caller(), id);
@@ -1079,6 +1237,14 @@ impl ActionProvider for RuntimeActionProvider {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Pending<Result<(), ActionCallError>> {
+        if let Some(tickets) = &self.tickets
+            && self.is_the_person(caller)
+            && tickets.observe(id).is_some()
+        {
+            return Pending::ready(Err(ActionCallError::NotCancellable {
+                reason: "a device action ends by itself".into(),
+            }));
+        }
         if let Some(session) = &self.session {
             if let Err(refusal) = session.check(caller, &self.workspaces) {
                 return Pending::ready(Err(refusal.into()));
@@ -1181,6 +1347,8 @@ struct PersonalServing<'a> {
     /// The device action service this profile answers its server's work on, when it
     /// takes work at all.
     take_work: Option<take_work::TakesWork>,
+    /// The action service that serves a ticket's certify call while a new computer logs in.
+    tickets: Option<tilo_peer_state::actions::ActionService>,
     /// The workspace host this device runs, when it governs the workspace founded here: the
     /// person's keys open their sessions with it here.
     host: Option<&'a tilo_workspace_service::service::WorkspaceService>,
@@ -1215,6 +1383,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         channels,
         fanout,
         take_work,
+        tickets,
         host,
     } = serving;
     let person = cert.user_public_key;
@@ -1257,6 +1426,11 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
             .flatten()
         {
             router = router.accept(alpn, handler);
+        }
+        // A ticket's certify call, answered on the one router while a new computer asks: never a
+        // second endpoint of its own.
+        if let Some(tickets) = tickets {
+            router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, tickets);
         }
         router.spawn()
     };
@@ -1460,6 +1634,7 @@ fn serve_key_sessions(
                 workspaces: Arc::clone(workspaces),
                 apps: None,
                 session: None,
+                tickets: None,
             },
             workspace: workspace.to_owned(),
             actor: actor.to_owned(),

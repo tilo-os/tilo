@@ -271,23 +271,25 @@ pub fn holder_api_socket(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{name}.api.sock"))
 }
 
-/// Where this computer's device holder serves Tilo's API, when this computer
-/// logged in: every program of the login acts as the device there, over the
-/// device's one session, and never opens a second one under the same key,
-/// which would cut the first off at the server. `keys` are this computer's device key and
-/// certificates.
+/// Where this computer's daemon serves Tilo's API: every program of the account acts as its
+/// device there, over the one session it keeps. A computer with no login is still the device it
+/// made for itself, with the workspace it founded, so its programs reach the daemon here too.
+/// `keys` are this computer's device key and certificates.
 ///
 /// # Errors
 /// The login is damaged, or the holders' directory is not this account's.
 #[cfg(unix)]
 pub fn held_api(keys: IdentityPaths) -> Result<Option<PathBuf>> {
     let place = Place::here(keys)?;
-    let Some((key, _)) = load(&place)? else {
-        return Ok(None);
+    let key = match load(&place)? {
+        Some((key, _)) => key.verifying_key().to_bytes(),
+        // No login: the device key the daemon serves as, named by its certificate so the secret
+        // is not read here.
+        None => match read_device_cert(&place.keys().device_cert) {
+            Ok(cert) => cert.device_public_key,
+            Err(_) => return Ok(None),
+        },
     };
     let holders = holder_dir(place.dir()).map_err(|why| anyhow!(why))?;
-    Ok(Some(holder_api_socket(
-        &holders,
-        &holder_name(&key.verifying_key().to_bytes()),
-    )))
+    Ok(Some(holder_api_socket(&holders, &holder_name(&key))))
 }

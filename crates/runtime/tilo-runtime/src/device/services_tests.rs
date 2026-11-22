@@ -159,6 +159,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
             agent: None,
             projection: Some(owner.clone()),
         })),
+        tickets: None,
     };
     let other = owner.clone().in_new_execution();
     let id = tilo_actions::InvocationId::new();

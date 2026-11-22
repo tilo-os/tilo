@@ -86,7 +86,7 @@ impl Session {
         let connection = self.connection().map_err(|error| refused(&error))?;
         let id = connection
             .server()
-            .enter(connection, workspace)
+            .enter(&connection, workspace)
             .await
             .map_err(|error| refused(&error))?;
         let target = RemoteActionTarget::workspace_governance(workspace, verb);
@@ -218,10 +218,10 @@ impl Session {
             tilo_server_session::workspaces::SIGNED_BY_CALLER.into(),
             json!(true),
         );
-        if let Err(outcome) = admitted(connection, workspace, verb, asked).await {
+        if let Err(outcome) = admitted(&connection, workspace, verb, asked).await {
             return Some(Err(outcome));
         }
-        Some(sign_as(connection, workspace, change).await)
+        Some(sign_as(&connection, workspace, change).await)
     }
 
     /// Move the member `args.person` names to `args.role`: what adding them
@@ -263,7 +263,7 @@ impl Session {
         };
         match connection
             .server()
-            .remove_member(connection, workspace, person)
+            .remove_member(&connection, workspace, person)
             .await
         {
             Ok(()) => self.list(workspace).await,

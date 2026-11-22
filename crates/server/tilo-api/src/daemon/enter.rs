@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use ed25519_dalek::SigningKey;
-use tilo_device_identity::login::{Device, LOGIN_DAMAGED};
+use tilo_device_identity::login::{CertifyAnswer, Device, LOGIN_DAMAGED, Reached};
 use tilo_server_client::login::{PairingLink, SignIn};
 use tilo_session_client::device::Device as Entered;
 
@@ -145,4 +145,58 @@ pub fn host_of(origin: &str) -> &str {
         .trim_start_matches("https://")
         .trim_start_matches("http://")
         .trim_end_matches('/')
+}
+
+/// The iroh address `reached` names.
+///
+/// # Errors
+/// The endpoint id is no key.
+pub fn address_of(reached: &Reached) -> Result<iroh::EndpointAddr> {
+    let id = iroh::EndpointId::from_bytes(&reached.endpoint)
+        .map_err(|_| anyhow!("this ticket names no device: ask for a new one"))?;
+    let mut addr = iroh::EndpointAddr::new(id);
+    if let Some(relay) = reached
+        .relay
+        .as_deref()
+        .and_then(|url| url.parse::<iroh::RelayUrl>().ok())
+    {
+        addr = addr.with_relay_url(relay);
+    }
+    for direct in &reached.direct {
+        addr = addr.with_ip_addr(*direct);
+    }
+    Ok(addr)
+}
+
+/// Where `addr` is reached, as a ticket and its answer carry it.
+#[must_use]
+pub fn reached_of(addr: &iroh::EndpointAddr) -> Reached {
+    Reached {
+        endpoint: *addr.id.as_bytes(),
+        relay: addr.relay_urls().next().map(ToString::to_string),
+        direct: addr.ip_addrs().copied().collect(),
+    }
+}
+
+/// The login `answer` makes of this computer, for `agent`.
+#[must_use]
+pub fn device_of(answer: CertifyAnswer, agent: &str) -> Device {
+    let enter = answer.enter;
+    let address = address_of(&enter.server)
+        .ok()
+        .map(|endpoint_addr| ServerAddress {
+            relay_url: enter.server.relay.clone(),
+            endpoint_addr,
+            web: None,
+        });
+    Device {
+        site: enter.site,
+        host_origin: enter.host_origin,
+        workspace: enter.workspace,
+        workspace_name: enter.workspace_name,
+        agent: agent.to_owned(),
+        cert: answer.cert,
+        server_cert: enter.server_cert,
+        server_address: address,
+    }
 }

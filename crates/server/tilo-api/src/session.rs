@@ -116,6 +116,12 @@ pub trait Here: Send + Sync {
     /// # Errors
     /// It holds no such workspace, or cannot serve it now.
     fn enter(&self, workspace: &str) -> Result<Reached, String>;
+
+    /// The connection the account's own actions go over, when this host forwards them to the
+    /// server its login reaches: `None` for a desktop, which answers no account action itself.
+    fn connection(&self) -> Option<Arc<crate::server::Connection>> {
+        None
+    }
 }
 
 /// A workspace a desktop holds, as the account lists it: the person's own.
@@ -259,10 +265,10 @@ impl Session {
     }
 
     /// The grant's own connection, for the account's own actions.
-    pub(crate) fn connection(&self) -> Result<&Arc<Connection>, Refusal> {
+    pub(crate) fn connection(&self) -> Result<Arc<Connection>, Refusal> {
         match &self.reach {
-            Reach::Forwarded(connection) => Ok(connection),
-            Reach::Here(_) => Err(Refusal::NoAccountHere),
+            Reach::Forwarded(connection) => Ok(Arc::clone(connection)),
+            Reach::Here(here) => here.connection().ok_or(Refusal::NoAccountHere),
         }
     }
 

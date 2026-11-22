@@ -692,10 +692,13 @@ fn serve_api<E: Enter>(place: &DaemonPlace, shared: &Arc<Shared<E>>) -> Result<(
     tokio::spawn(tilo_api::direct::serve_current(listener, move || {
         let shared = Arc::clone(&shared);
         async move {
-            let session = shared.session(false, super::Ask::Agent).await?;
-            session.api.clone().ok_or_else(|| {
-                "this computer's login does not reach Tilo's API here; log in again".to_owned()
-            })
+            let fallback = shared.fallback_api();
+            match shared.session(false, super::Ask::Agent).await {
+                Ok(session) => session.api.clone().or(fallback).ok_or_else(|| {
+                    "this computer's login does not reach Tilo's API here; log in again".to_owned()
+                }),
+                Err(why) => fallback.ok_or(why),
+            }
         }
     }));
     Ok(())

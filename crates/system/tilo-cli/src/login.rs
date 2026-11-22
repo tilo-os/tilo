@@ -19,17 +19,17 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
+use serde_json::{Value, json};
+use tilo_api::daemon::DaemonPlace;
 use tilo_api::server::ServerAddress;
-use tilo_device_identity::login::{
-    CERTIFY, CertifyAnswer, CertifyInput, PROVIDER, RESOURCE, Reached, SCOPE, TICKET_LIFETIME_NS,
-    Ticket,
-};
+use tilo_device_identity::login::Ticket;
 use tilo_server_client::CertifyError;
 use tilo_server_client::LinkError;
 use tilo_session_client::Outbox as _;
 use tilo_session_client::device::Device as Entered;
 
 use crate::agent::{self, Agent, Tool};
+use crate::api::Client;
 pub(crate) use tilo_api::daemon::enter::{
     IROH_ONLY, LOGIN_ENDED, NOT_LOGGED_IN, TOO_OLD, UNREACHED, connect, debug_why, enter_said,
     host_of, server_of, signed_over_iroh,
@@ -679,193 +679,90 @@ fn not_a_ticket(text: &str) -> anyhow::Error {
 /// The text is no ticket, the issuing device is not reached, the ticket is spent or wrong, the
 /// person declined, or the answer cannot be kept.
 pub fn login(ticket: &str, agent: Option<&str>) -> Result<ExitCode> {
-    let parsed = Ticket::parse(ticket).map_err(|_| not_a_ticket(ticket))?;
+    crate::identity::convert_earlier()?;
+    Ticket::parse(ticket).map_err(|_| not_a_ticket(ticket))?;
     let agent = agent_named(agent);
     let key = this_device_key()?;
+    let login_place = Place::here(crate::identity::paths())?;
+    let place = DaemonPlace::of(login_place.dir(), &key.verifying_key().to_bytes())
+        .map_err(anyhow::Error::msg)?;
+    ensure_daemon(&place)?;
     let runtime = runtime()?;
+    let said = label(&agent.name, &hostname());
     eprintln!("Asking your device to add this computer; it may ask you to approve it…");
-    let answer = runtime.block_on(certified_with(
-        &parsed,
-        &key,
-        &agent.name,
-        &label(&agent.name, &hostname()),
-    ))?;
-    let device = device_of(answer, &agent.name);
-    store(&Place::here(crate::identity::paths())?, &device)?;
+    runtime.block_on(async {
+        let client = Client::open(crate::api::Reach {
+            api: None,
+            key_file: None,
+            json: false,
+        })?;
+        let workspace = founded_workspace(&client).await?;
+        client
+            .act(
+                &workspace,
+                "devices",
+                tilo_device_identity::login::LOG_IN,
+                &json!({"ticket": ticket.trim(), "agent": agent.name, "label": said}),
+                "Log in",
+            )
+            .await?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+    // The daemon kept the login; one serving it hands this computer its workspace.
+    let device = load(&login_place)?.ok_or_else(|| anyhow!(LOGIN_DAMAGED))?.1;
     let days = device.cert.expires_at_ns.map_or(0, |end| {
         end.saturating_sub(device.cert.issued_at_ns) / (24 * 3600 * 1_000_000_000)
     });
     println!("{}", logged_in_said(device.label(), days, &agent.name));
-    entered_after_login(&runtime, &key, &device, &agent)
+    let code = entered_after_login(&runtime, &key, &device, &agent)?;
+    restart_after_login(&place)?;
+    Ok(code)
 }
 
-/// The iroh address `reached` names.
+/// The workspace this computer's daemon serves before a login exists: the one it founded.
+async fn founded_workspace(client: &Client) -> Result<String> {
+    let listed = client.get("/v1/workspaces").await?;
+    listed
+        .get("workspaces")
+        .and_then(Value::as_array)
+        .and_then(|workspaces| workspaces.first())
+        .and_then(|workspace| workspace.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .context("this computer's daemon serves no workspace to log in to")
+}
+
+/// How long `tilo login` waits for the daemon it logged in to end before starting the one the
+/// new login needs.
+const RESTART_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Start this computer's daemon and wait until its API socket is served: the actions a ticket is
+/// served and logged in with are calls there.
 ///
 /// # Errors
-/// The endpoint id is no key.
-pub(crate) fn address_of(reached: &Reached) -> Result<iroh::EndpointAddr> {
-    let id = iroh::EndpointId::from_bytes(&reached.endpoint)
-        .map_err(|_| anyhow!("this ticket names no device: ask for a new one"))?;
-    let mut addr = iroh::EndpointAddr::new(id);
-    if let Some(relay) = reached
-        .relay
-        .as_deref()
-        .and_then(|url| url.parse::<iroh::RelayUrl>().ok())
-    {
-        addr = addr.with_relay_url(relay);
-    }
-    for direct in &reached.direct {
-        addr = addr.with_ip_addr(*direct);
-    }
-    Ok(addr)
-}
-
-/// Where `addr` is reached, as a ticket and its answer carry it.
-pub(crate) fn reached_of(addr: &iroh::EndpointAddr) -> Reached {
-    Reached {
-        endpoint: *addr.id.as_bytes(),
-        relay: addr.relay_urls().next().map(ToString::to_string),
-        direct: addr.ip_addrs().copied().collect(),
-    }
-}
-
-/// How many times the call asking the device to certify this computer is sent: a connection that
-/// ends under its answer is asked again, which the device that took the call answers where it is.
-const CERTIFY_TRIES: u32 = 3;
-
-/// Whether `error` is a call lost on its way rather than answered: it is asked again, and a
-/// refusal or a wrong ticket is not.
-fn is_a_lost_call(error: &tilo_actions::remote::ActionCallError) -> bool {
-    matches!(
-        error,
-        tilo_actions::remote::ActionCallError::Unavailable { .. }
-    )
-}
-
-/// Ask the device that issued `ticket` to have the person's root certify `key`, for `agent`,
-/// listed as `label`: its answer, once the person approved.
-///
-/// # Errors
-/// The device is not reached, it refused the ticket, or the person declined.
-pub(crate) async fn certified_with(
-    ticket: &Ticket,
-    key: &SigningKey,
-    agent: &str,
-    label: &str,
-) -> Result<CertifyAnswer> {
-    use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
-    let issuer = address_of(&ticket.issuer)?;
-    let dialed = tilo_server_client::ServerAddress::at(issuer);
-    let endpoint = dialed.bind(Some(key.to_bytes())).await.map_err(|error| {
-        debug_why("binding this computer's endpoint", &error);
-        anyhow!(UNREACHED)
-    })?;
-    let input = CertifyInput {
-        secret: ticket.secret_hex(),
-        device_public_key: hex::encode(key.verifying_key().to_bytes()),
-        agent: agent.to_owned(),
-        label: Some(label.to_owned()),
-    };
-    let serde_json::Value::Object(argument) = serde_json::to_value(&input)? else {
-        bail!("the certify input is an object");
-    };
-    let service = tilo_peer_state::actions::ActionService::new(
-        key.clone(),
-        Arc::new(tilo_peer_state::actions::NoActions),
-    );
-    let device = Arc::new(service.remote(&endpoint, &dialed.addr(), SCOPE));
-    let request = InvokeRequest {
-        on_behalf_of: None,
-        invocation: tilo_actions::InvocationId::new(),
-        target: RemoteActionTarget {
-            provider: PROVIDER.to_owned(),
-            address: tilo_actions::ActionAddress::new(RESOURCE, CERTIFY),
-        },
-        argument: InvokeArgument::Json(argument),
-        context: None,
-        confirmation: None,
-        revision: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    };
-    let settled = {
-        // The ticket lives once: a connection that ends under its answer is asked again, which the
-        // device that took the call answers where it is rather than spending the secret twice.
-        let now = std::time::Instant::now();
-        let deadline = now
-            .checked_add(std::time::Duration::from_nanos(TICKET_LIFETIME_NS))
-            .unwrap_or(now);
-        let mut sent = 1;
-        loop {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            let answer = Arc::clone(&device)
-                .invoke_until_settled(request.clone(), left)
-                .await;
-            match answer {
-                Some(Err(error)) if sent < CERTIFY_TRIES && is_a_lost_call(&error) => {
-                    debug_why("asking the device to certify this computer", &error);
-                    sent = sent.saturating_add(1);
-                }
-                answer => break answer,
-            }
+/// The daemon did not start, or did not serve its API in time.
+pub(crate) fn ensure_daemon(place: &DaemonPlace) -> Result<()> {
+    crate::mcp::held::ensure(place).map_err(anyhow::Error::msg)?;
+    let started = std::time::Instant::now();
+    while !place.api().exists() {
+        if started.elapsed() > RESTART_WAIT {
+            bail!("This computer's daemon did not serve its API in time: try again.");
         }
-    };
-    endpoint.close().await;
-    match settled {
-        Some(Ok(tilo_actions::InvocationUpdate::Succeeded { output, .. })) => output
-            .value
-            .and_then(|value| serde_json::from_value(value).ok())
-            .ok_or_else(|| anyhow!(TOO_OLD)),
-        Some(Ok(tilo_actions::InvocationUpdate::Failed { error, .. })) => Err(anyhow!(
-            "Your device didn't add this computer: {}.",
-            error.message.trim_end_matches('.')
-        )),
-        Some(Ok(_)) | None => Err(anyhow!(UNREACHED)),
-        Some(Err(error)) => {
-            debug_why("asking the device to certify this computer", &error);
-            Err(anyhow!(certify_refused(&error)))
-        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    Ok(())
 }
 
-/// What a certify call the issuing device did not take says.
-fn certify_refused(error: &tilo_actions::remote::ActionCallError) -> String {
-    use tilo_actions::remote::ActionCallError;
-    match error {
-        ActionCallError::Refused { reason } => {
-            format!(
-                "Your device didn't take this ticket: {}.",
-                reason.trim_end_matches('.')
-            )
+/// Start the daemon the new login needs, once the one serving the login before it ended.
+fn restart_after_login(place: &DaemonPlace) -> Result<()> {
+    let started = std::time::Instant::now();
+    while place.alive() || place.listening() {
+        if started.elapsed() > RESTART_WAIT {
+            return Ok(());
         }
-        ActionCallError::UnknownAction => TOO_OLD.to_owned(),
-        _ => "The device that made this ticket can't be reached from here: it may be asleep, or \
-              its `tilo device add` ended. Ask for a new ticket."
-            .to_owned(),
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
-}
-
-/// The login `answer` makes of this computer, for `agent`.
-pub(crate) fn device_of(answer: CertifyAnswer, agent: &str) -> Device {
-    let enter = answer.enter;
-    let address = address_of(&enter.server)
-        .ok()
-        .map(|endpoint_addr| ServerAddress {
-            relay_url: enter.server.relay.clone(),
-            endpoint_addr,
-            web: None,
-        });
-    Device {
-        site: enter.site,
-        host_origin: enter.host_origin,
-        workspace: enter.workspace,
-        workspace_name: enter.workspace_name,
-        agent: agent.to_owned(),
-        cert: answer.cert,
-        server_cert: enter.server_cert,
-        server_address: address,
-    }
+    crate::mcp::held::ensure(place).map_err(|why| anyhow!(why))
 }
 
 fn entered_after_login(
@@ -1023,10 +920,6 @@ pub(crate) fn certified_for_test(
     tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
     cert
 }
-
-#[cfg(test)]
-#[path = "ticket_tests.rs"]
-mod ticket_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1194,13 +1087,6 @@ mod tests {
             )),
             "The workspace did not let this device in: the name is empty."
         );
-        let said = certify_refused(&tilo_actions::remote::ActionCallError::Refused {
-            reason: "this ticket was used already: ask for a new one".into(),
-        });
-        assert_eq!(
-            said,
-            "Your device didn't take this ticket: this ticket was used already: ask for a new one."
-        );
     }
 
     #[test]
@@ -1208,12 +1094,17 @@ mod tests {
         let said = login("K7Q-MX2P", None).unwrap_err().to_string();
         assert!(said.contains("is not a Tilo ticket"), "{said}");
         assert!(said.contains("tilo device add"), "{said}");
-        let reached = Reached {
+        let reached = tilo_device_identity::login::Reached {
             endpoint: *SigningKey::from_bytes(&[5; 32]).verifying_key().as_bytes(),
             relay: Some("https://relay.example./".into()),
             direct: vec!["192.0.2.1:4433".parse().unwrap()],
         };
-        assert_eq!(reached_of(&address_of(&reached).unwrap()), reached);
+        assert_eq!(
+            tilo_api::daemon::enter::reached_of(
+                &tilo_api::daemon::enter::address_of(&reached).unwrap()
+            ),
+            reached
+        );
     }
 
     tilo_test_env::scenario! {

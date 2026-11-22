@@ -1,156 +1,29 @@
 //! `tilo device add`, `tilo device ls` and `tilo device revoke`: the person's devices, from a
 //! computer that is logged in and holds their root.
 //!
-//! `add` serves a ticket ([`tilo_device_identity::login`]) on an endpoint of its own while the
-//! ticket lasts. A computer that runs `tilo login` with it reaches this one directly and calls the
-//! certify action there; the person's root here certifies its key. The person ran `add`
-//! themselves, so this tilo approves the computer that comes with the ticket ([`RootApprover`]).
-//! A device that does not hold the root forwards the same question to one that does through
-//! another [`Approver`].
+//! `add` has this computer's daemon serve a ticket ([`tilo_device_identity::login`]) on the
+//! endpoint it already runs, while the ticket lasts. A computer that runs `tilo login` with it
+//! reaches this one directly and calls the certify action there; the person's root here certifies
+//! its key. The person ran `add` themselves, so the daemon approves the computer that comes with
+//! the ticket automatically. A device that does not hold the root forwards the same question to
+//! one that does through another approver.
 
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use ed25519_dalek::{Signer as _, SigningKey};
-use iroh::protocol::Router;
-use serde_json::json;
-use tilo_device_identity::login::{
-    Approval, Approved, Approver, Asked, Declined, Entry, SCOPE, TICKET_LIFETIME_NS, Ticket,
-};
-use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, NoActions};
-use tilo_peer_state::new_device::ServedTicket;
+use ed25519_dalek::SigningKey;
+use serde_json::{Value, json};
+use tilo_api::daemon::DaemonPlace;
 use tilo_server_session::workspaces::{PersonalDevice, WorkspaceLabels};
 use tilo_session_client::device::Device as Entered;
-use tilo_user_identity::{DeviceCert, RevocationList, RevocationReason, StatementSigner};
+use tilo_user_identity::{DeviceCert, RevocationReason};
 
+use crate::api::{Client, Reach};
 use crate::login::{self, Device};
-
-/// How long the issuer keeps serving once the computer is certified, for it to read its answer.
-const TELL_WAIT: Duration = Duration::from_secs(30);
-
-/// How long the issuer keeps serving after it told the computer how its call ended: an answer
-/// that ended with its connection is asked for again, and answered where the call is.
-const TELL_GRACE: Duration = Duration::from_secs(5);
 
 /// How long a revocation is waited for to show in the person's list.
 const REVOKED_WAIT: Duration = Duration::from_secs(20);
-
-/// The person's root on this computer approving the computer that came with a ticket: it signs
-/// the computer's certificate with the root, and the approval with this device's own key, which
-/// the root certified as [`Self::cert`].
-pub(crate) struct RootApprover<R> {
-    pub root: R,
-    pub device: SigningKey,
-    pub cert: DeviceCert,
-}
-
-impl<R: StatementSigner + Send + Sync + 'static> Approver for RootApprover<R> {
-    fn approve(&self, asked: Asked) -> Approval {
-        let mut cert = asked.cert.clone();
-        let approved = tilo_user_identity::sign_device_cert(&mut cert, &self.root)
-            .map(|()| Approved {
-                cert,
-                approver: self.cert.clone(),
-                signature: self.device.sign(&asked.digest).to_bytes(),
-            })
-            .map_err(|error| Declined(format!("this device's root could not sign: {error}")));
-        Box::pin(std::future::ready(approved))
-    }
-}
-
-/// A ticket served from this computer, and what serves it.
-pub(crate) struct Issued {
-    pub ticket: Ticket,
-    pub served: ServedTicket,
-    router: Router,
-}
-
-impl Issued {
-    /// Stop serving the ticket.
-    pub async fn end(self) {
-        let _ = self.router.shutdown().await;
-    }
-}
-
-/// Serve a new ticket for a computer to enter where the login `here` enters, approved by
-/// `approver`, on an endpoint of its own bound to the server's relay.
-///
-/// # Errors
-/// The login names no server, or no endpoint binds.
-pub(crate) async fn issue(here: &Device, approver: Arc<dyn Approver>) -> Result<Issued> {
-    let published = here
-        .server_address
-        .as_ref()
-        .ok_or_else(|| anyhow!(login::LOGIN_ENDED))?;
-    let dialed = login::server_of(here).await?;
-    // A key of its own: the endpoint lives as long as the ticket, beside any other this
-    // computer runs with its device key.
-    let key = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
-    let endpoint = dialed
-        .bind(Some(key.to_bytes()))
-        .await
-        .map_err(|error| anyhow!("this computer could not listen for the new one: {error}"))?;
-    if dialed.relay().is_some() {
-        // The ticket names the relay only once the endpoint reached it.
-        let _ = tokio::time::timeout(Duration::from_secs(15), endpoint.online()).await;
-    }
-    let ticket = Ticket::new(login::reached_of(&endpoint.addr()));
-    let mut reached = login::reached_of(&published.endpoint_addr);
-    if reached.relay.is_none() {
-        reached.relay.clone_from(&published.relay_url);
-    }
-    let enter = Entry {
-        workspace: here.workspace.clone(),
-        workspace_name: here.workspace_name.clone(),
-        server_cert: here.server_cert.clone(),
-        server: reached,
-        site: here.site.clone(),
-        host_origin: here.host_origin.clone(),
-    };
-    let served = ServedTicket::new(
-        ticket.clone(),
-        here.cert.user_public_key,
-        enter,
-        approver,
-        RevocationList::new(),
-    );
-    let service = ActionService::new(key, Arc::new(NoActions));
-    service.admit_uncertified(SCOPE, Arc::new(served.clone()));
-    let router = Router::builder(endpoint)
-        .accept(ACTIONS_ALPN, service)
-        .spawn();
-    Ok(Issued {
-        ticket,
-        served,
-        router,
-    })
-}
-
-/// Wait for `issued` to certify its computer, while its ticket lasts, then for the computer to
-/// read its answer: the certificate it was given.
-///
-/// # Errors
-/// The ticket ran out with no computer certified.
-pub(crate) async fn certified(issued: &Issued) -> Result<DeviceCert> {
-    let mut certified = issued.served.certified();
-    let given = tokio::time::timeout(
-        Duration::from_nanos(TICKET_LIFETIME_NS),
-        certified.wait_for(Option::is_some),
-    )
-    .await
-    .map(|found| found.map(|cert| cert.clone()));
-    let Ok(Ok(cert)) = given else {
-        bail!(
-            "No computer logged in with the ticket before it ran out: run `tilo device add` again."
-        );
-    };
-    let mut told = issued.served.told();
-    let _ = tokio::time::timeout(TELL_WAIT, told.wait_for(|told| *told)).await;
-    tokio::time::sleep(TELL_GRACE).await;
-    cert.context("the certificate given is there")
-}
 
 /// Keep `cert` in the person's list of devices, named for the agent it runs: what every device
 /// of theirs reads back.
@@ -200,16 +73,34 @@ fn person_here() -> Result<(SigningKey, Device, crate::identity::Person)> {
 /// This computer cannot add devices, or no computer came before the ticket ran out.
 pub fn add(json: bool) -> Result<ExitCode> {
     login::trust_test_certificates()?;
-    let (key, here, person) = person_here()?;
+    crate::identity::convert_earlier()?;
+    let login_place = login::Place::here(crate::identity::paths())?;
+    let (key, here) = login::load(&login_place)?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    let place = DaemonPlace::of(login_place.dir(), &key.verifying_key().to_bytes())
+        .map_err(anyhow::Error::msg)?;
+    login::ensure_daemon(&place)?;
     let runtime = login::runtime()?;
-    runtime.block_on(async {
-        let approver = Arc::new(RootApprover {
-            root: person.root,
-            device: person.device,
-            cert: person.cert,
-        });
-        let issued = issue(&here, approver).await?;
-        let ticket = issued.ticket.encode();
+    let cert = runtime.block_on(async {
+        let client = Client::open(Reach {
+            api: None,
+            key_file: None,
+            json: false,
+        })?;
+        let workspace = here.workspace.clone();
+        let issued = client
+            .act(
+                &workspace,
+                "devices",
+                tilo_device_identity::login::ISSUE,
+                &json!({}),
+                "Add a device",
+            )
+            .await?;
+        let ticket = issued
+            .get("result")
+            .and_then(|answer| answer.get("ticket"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("this computer's daemon answered no ticket"))?;
         if json {
             println!("{}", json!({ "ticket": ticket }));
         } else {
@@ -217,9 +108,23 @@ pub fn add(json: bool) -> Result<ExitCode> {
             println!("tilo login {ticket}");
             eprintln!("The ticket works once, for 10 minutes. Waiting for it…");
         }
-        let cert = certified(&issued).await;
-        issued.end().await;
-        let cert = cert?;
+        let done = client
+            .act(
+                &workspace,
+                "devices",
+                tilo_device_identity::login::ISSUE,
+                &json!({ "wait": true }),
+                "Add a device",
+            )
+            .await?;
+        let encoded = done
+            .get("result")
+            .and_then(|answer| answer.get("cert"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("this computer's daemon answered no certificate"))?;
+        let bytes = hex::decode(encoded).map_err(|error| anyhow!("the certificate: {error}"))?;
+        let cert: DeviceCert = tilo_user_identity::canonical::from_canonical_bytes(&bytes)
+            .map_err(|error| anyhow!("the certificate: {error}"))?;
         // The person's other devices list it as soon as the host keeps it there.
         match login::connect(&key, &here, None).await {
             Ok(entered) => {
@@ -231,17 +136,18 @@ pub fn add(json: bool) -> Result<ExitCode> {
             }
             Err(error) => eprintln!("Your other devices list it once it enters: {error}"),
         }
-        let key_hex = hex::encode(cert.device_public_key);
-        if json {
-            println!(
-                "{}",
-                json!({ "device": key_hex, "label": cert.device_label })
-            );
-        } else {
-            println!("Added {} ({}).", cert.device_label, short(&cert));
-        }
-        Ok(ExitCode::SUCCESS)
-    })
+        Ok::<DeviceCert, anyhow::Error>(cert)
+    })?;
+    let key_hex = hex::encode(cert.device_public_key);
+    if json {
+        println!(
+            "{}",
+            json!({ "device": key_hex, "label": cert.device_label })
+        );
+    } else {
+        println!("Added {} ({}).", cert.device_label, short(&cert));
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// The person's devices as the host this computer's login reaches lists them.

@@ -21,6 +21,7 @@
 //! session ([`serve_current`]), so no program of its opens a second one.
 
 use crate::grant_key::GrantKey;
+use crate::server::Connection;
 use crate::store::{GrantKind, Store};
 use crate::{Body, Config, Reply, Server, now_ms};
 use http_body_util::BodyExt as _;
@@ -234,6 +235,24 @@ impl Direct {
             .ok_or_else(|| "the key names no server".to_owned())?;
         let _ = server.held.set(held);
         Self::as_key(server, &key, &file.name)
+    }
+
+    /// The connection [`Self::over`] answers over, without an API of its own: the daemon's
+    /// workspaces are answered locally, and the account's own actions still go to the server the
+    /// login reaches, over this one session.
+    ///
+    /// # Errors
+    /// The key or its certificate is not one, or names no server.
+    pub fn held_for(
+        file: &KeyFile,
+        device: tilo_session_client::device::Device,
+    ) -> Result<Arc<Connection>, String> {
+        let (server, key) = Self::server_for(file)?;
+        server
+            .hosts
+            .first()
+            .map(|first| Arc::new(first.held(&key, device)))
+            .ok_or_else(|| "the key names no server".to_owned())
     }
 
     /// The server `file`'s key reaches, and the key.

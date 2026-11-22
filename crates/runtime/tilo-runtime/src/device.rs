@@ -31,9 +31,13 @@ mod confirm;
 mod content;
 mod host_runs;
 pub mod peer;
+mod person;
 pub mod serve;
 pub mod services;
 pub mod take_work;
+mod ticket;
+#[cfg(test)]
+mod ticket_tests;
 pub mod workspaces;
 
 use std::process::ExitCode;
@@ -70,7 +74,7 @@ const CLOSING: Duration = Duration::from_secs(5);
 ///
 /// # Errors
 /// The device's sockets cannot be listened at.
-pub(crate) fn hold(daemon: &services::Daemon) -> Result<ExitCode> {
+pub(crate) fn hold(daemon: &Arc<services::Daemon>) -> Result<ExitCode> {
     let device = daemon
         .login()
         .cloned()
@@ -80,7 +84,15 @@ pub(crate) fn hold(daemon: &services::Daemon) -> Result<ExitCode> {
         .map(|(_, device)| device.clone())
         .map_err(Clone::clone);
     let own = daemon.login().map(|_| Arc::clone(daemon.serving()));
-    let shared = Arc::new(Shared::new(LoggedIn { device, own }, login));
+    let shared = Arc::new(Shared::new(
+        LoggedIn {
+            device,
+            own,
+            local: Some(Arc::clone(daemon)),
+            device_api: Some(daemon.api()?),
+        },
+        login,
+    ));
     let home = tilo_paths::home().ok_or_else(|| anyhow::anyhow!("HOME is missing"))?;
     serve::hold(daemon.place(), shared, home)
 }
@@ -130,6 +142,12 @@ impl Drop for Session {
 pub(crate) trait Enter: Send + Sync + 'static {
     /// Enter the workspace as this computer's device.
     fn enter(&self) -> impl std::future::Future<Output = Result<Arc<Session>, String>> + Send;
+
+    /// Tilo's API for a computer with no login: the daemon's founded workspace, answered
+    /// locally. `None` where the entry always answers one.
+    fn fallback_api(&self) -> Option<Arc<tilo_api::direct::Direct>> {
+        None
+    }
 }
 
 /// This computer's device, as `tilo login` left it, or why there is none to enter with, and the
@@ -137,9 +155,17 @@ pub(crate) trait Enter: Send + Sync + 'static {
 pub(crate) struct LoggedIn {
     pub(crate) device: Result<(SigningKey, Device), String>,
     pub(crate) own: Option<Arc<ServiceWorkspaces>>,
+    /// The daemon's own workspaces, as Tilo's API serves them.
+    pub(crate) local: Option<Arc<services::Daemon>>,
+    /// Tilo's API as the daemon itself, for a computer with no login.
+    pub(crate) device_api: Option<Arc<tilo_api::direct::Direct>>,
 }
 
 impl Enter for LoggedIn {
+    fn fallback_api(&self) -> Option<Arc<tilo_api::direct::Direct>> {
+        self.device_api.clone()
+    }
+
     async fn enter(&self) -> Result<Arc<Session>, String> {
         let (key, device) = self.device.as_ref().map_err(Clone::clone)?;
         let own = self.own.clone();
@@ -162,11 +188,18 @@ impl Enter for LoggedIn {
             .ok()
             .flatten()
             .and_then(|file| {
-                tilo_api::direct::Direct::over(&file, entered.clone())
+                let local = self.local.as_ref()?;
+                // The account's own actions go to the server over the one session; the
+                // workspaces are answered here.
+                let connection = tilo_api::direct::Direct::held_for(&file, entered.clone())
+                    .map_err(|why| tracing::warn!(%why, "the account is not forwarded"))
+                    .ok()?;
+                local.keep_account(connection);
+                local
+                    .api()
                     .map_err(|why| tracing::warn!(%why, "Tilo's API is not served here"))
                     .ok()
-            })
-            .map(Arc::new);
+            });
         Ok(Arc::new(Session {
             device: entered,
             api,
@@ -225,6 +258,11 @@ impl<E: Enter> Shared<E> {
             held_as: std::sync::OnceLock::new(),
             stepping_down: tokio::sync::Notify::new(),
         }
+    }
+
+    /// Tilo's API for a computer with no session to enter: the daemon's founded workspace.
+    pub(crate) fn fallback_api(&self) -> Option<Arc<tilo_api::direct::Direct>> {
+        self.enter.fallback_api()
     }
 
     /// The device's session, entering the workspace when it is not in it
@@ -614,6 +652,8 @@ mod tests {
             LoggedIn {
                 device: Err(why.to_owned()),
                 own: None,
+                local: None,
+                device_api: None,
             },
             Err(why.to_owned()),
         )))

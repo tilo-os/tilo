@@ -123,7 +123,7 @@ impl Session {
         let connection = self.connection().map_err(|error| refused(&error))?;
         let id = connection
             .server()
-            .enter(connection, workspace)
+            .enter(&connection, workspace)
             .await
             .map_err(|error| refused(&error))?;
         let mut arguments = Map::new();

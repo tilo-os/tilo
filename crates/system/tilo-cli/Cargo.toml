@@ -94,8 +94,6 @@ install-plan = { path = "../../session/install-plan" }
 # `tilo folders` sets on a file.
 tilo-fs = { package = "tilo-fs", path = "../fs" }
 fs-protocol = { path = "../fs-protocol" }
-# The actions this device asks and answers when it certifies another of the person's computers.
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 futures-util.workspace = true
 iroh.workspace = true
 tracing.workspace = true
