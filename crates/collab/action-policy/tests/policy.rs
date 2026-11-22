@@ -2546,8 +2546,6 @@ tilo_test_env::scenario! {
             serde_json::from_value(serde_json::to_value(&stored).unwrap()).unwrap();
         let mut expected = vec![adjustment];
         expected.extend(roles::workspace_role_grants("r", &alice()));
-        expected.push(roles::person_view_grant("r", ALICE));
-        expected.push(roles::person_view_grant("r", BOB));
         expected.push(custom);
         assert_eq!(loaded.grants, expected);
         assert_eq!(stored.clone().with_current_roles().grants, expected);
@@ -2606,10 +2604,6 @@ tilo_test_env::scenario! {
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one walk: each person's change to the layout, and every other person's refusal"
-)]
 fn each_person_changes_their_own_view_of_the_layout_and_no_one_elses() {
     let mut workspace = WorkspacePolicy::new("r", ALICE);
     for (person, role) in [(BOB, Role::Editor), (CAROL, Role::Viewer)] {
@@ -2701,12 +2695,10 @@ fn each_person_changes_their_own_view_of_the_layout_and_no_one_elses() {
             false,
         )
         .unwrap();
-    assert!(
-        !workspace
-            .grants
-            .iter()
-            .any(|grant| grant.id == roles::person_view_grant_id(BOB)),
-        "one who leaves keeps no grant on their view"
+    assert_eq!(
+        answer(&workspace, BOB, BOB, ActionKind::Undoable),
+        Answer::Deny,
+        "one who leaves no longer changes their view"
     );
     let stored: WorkspacePolicy =
         serde_json::from_value(serde_json::to_value(&workspace).unwrap()).unwrap();
@@ -2717,10 +2709,10 @@ fn each_person_changes_their_own_view_of_the_layout_and_no_one_elses() {
 }
 
 /// A person's private record (what they watched, what they are writing and have not sent) is
-/// theirs by a grant the workspace gives each of its people: no role reaches another's, and
+/// theirs as one of the workspace's people: no role reaches another's, and
 /// owning the workspace does not either, wherever the record is asked from.
 #[test]
-fn each_persons_private_record_is_theirs_alone_by_the_workspaces_grant() {
+fn each_persons_private_record_is_theirs_alone() {
     let (owner, editor) = ("aa".repeat(32), "bb".repeat(32));
     let mut workspace = WorkspacePolicy::new("r", owner.clone());
     let held = workspace.clone();

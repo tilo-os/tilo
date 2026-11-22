@@ -354,7 +354,6 @@ impl WorkspacePolicy {
             custom_roles: BTreeMap::new(),
             assigned_roles: BTreeMap::new(),
         }
-        .with_person_records()
     }
 
     /// Whether anyone besides `person` belongs to the workspace, its owner or
@@ -388,42 +387,7 @@ impl WorkspacePolicy {
     #[must_use]
     pub fn with_current_roles(mut self) -> Self {
         self.grants = roles::current_role_grants(std::mem::take(&mut self.grants));
-        self.with_person_records()
-    }
-
-    /// The policy with the grants each of its people holds for their own records
-    /// ([`roles::person_record_grants`]), and none for anyone else.
-    #[must_use]
-    fn with_person_records(mut self) -> Self {
-        self.place_person_records();
         self
-    }
-
-    /// Give each of the policy's people the grants for their own records
-    /// ([`roles::person_record_grants`]) and take them from anyone no longer one: what a
-    /// change to who belongs to the workspace calls after it.
-    pub fn place_person_records(&mut self) {
-        let people: BTreeSet<String> = self
-            .owner
-            .iter()
-            .chain(self.members.keys())
-            .cloned()
-            .collect();
-        let workspace = &self.workspace;
-        self.grants.retain(|grant| {
-            !roles::is_person_record_grant(grant)
-                || grant.grantee.person_id().is_some_and(|person| {
-                    people.contains(person)
-                        && roles::person_record_grants(workspace, person).contains(grant)
-                })
-        });
-        for person in people {
-            for grant in roles::person_record_grants(&self.workspace, &person) {
-                if !self.grants.iter().any(|held| held.id == grant.id) {
-                    self.grants.push(grant);
-                }
-            }
-        }
     }
 
     /// Move the policy to another workspace id: every grant on this
@@ -581,7 +545,6 @@ impl WorkspacePolicy {
             }
             if let Some(person) = grant.grantee.person_id()
                 && roles::administrator_named(&grant.id).is_none()
-                && !roles::is_person_record_grant(grant)
             {
                 let extra = grants.extra.entry(person).or_default();
                 *extra = extra.saturating_add(1);
@@ -661,7 +624,10 @@ impl WorkspacePolicy {
         let held_off = self.grants.iter().filter(|grant| {
             grant.grantee.person_id() == Some(person) && moderation.contains(&grant.id)
         });
-        let party = Party::new(self.grantees_of(person), &self.grants).held_off_by(held_off);
+        let mut party = Party::new(self.grantees_of(person), &self.grants).held_off_by(held_off);
+        if self.is_owner(person) || self.members.contains_key(person) {
+            party = party.owning_records(roles::own_records(&self.workspace, person));
+        }
         if self.is_owner(person) {
             party.owning(self.node())
         } else {
@@ -1038,7 +1004,6 @@ impl WorkspacePolicy {
                 }
             }
         }
-        self.place_person_records();
         Ok(())
     }
 
