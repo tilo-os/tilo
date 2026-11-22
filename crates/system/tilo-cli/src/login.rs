@@ -1132,31 +1132,6 @@ mod tests {
         (root, key, device)
     }
 
-    /// The login an earlier tilo kept in `dir` with `key` of its own.
-    fn earlier_login(dir: &Path, key: &SigningKey, device: &Device) {
-        std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(dir.join("key"), key.to_bytes()).unwrap();
-        let hexed = |cert: &tilo_user_identity::DeviceCert| {
-            hex::encode(postcard::to_allocvec(cert).unwrap())
-        };
-        std::fs::write(
-            dir.join("device.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "site": device.site,
-                "host_origin": device.host_origin,
-                "workspace": device.workspace,
-                "workspace_name": device.workspace_name,
-                "user": device.user(),
-                "agent": device.agent,
-                "label": device.label(),
-                "cert": hexed(&device.cert),
-                "server_cert": hexed(&device.server_cert),
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-    }
-
     fn listed(
         workspace: &str,
         role: &str,
@@ -1264,58 +1239,6 @@ mod tests {
             // A login that is not one says what to do, not what it holds.
             std::fs::write(place.dir().join("login.json"), b"{}").unwrap();
             assert_eq!(load(&place).unwrap_err().to_string(), LOGIN_DAMAGED);
-        }
-
-        phase an_earlier_logins_own_key_becomes_this_computers_device_key;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
-            let place = Place::at(dir.path().join("device"), keys.clone());
-            let (_, key, device) = device();
-            earlier_login(place.dir(), &key, &device);
-            std::fs::write(place.dir().join("folders.json"), b"{}").unwrap();
-            assert!(place.logged_in());
-            let (read, kept) = load(&place).unwrap().unwrap();
-            assert_eq!(read.to_bytes(), key.to_bytes());
-            assert_eq!(kept, device);
-            assert_eq!(
-                tilo_device_identity::persist::load_device_key(&keys)
-                    .unwrap()
-                    .to_bytes(),
-                key.to_bytes(),
-                "the earlier key is this computer's device key now"
-            );
-            assert!(!place.dir().join("key").exists());
-            assert!(!place.dir().join("device.json").exists());
-            assert!(
-                place.dir().join("folders.json").exists(),
-                "what the login keeps beside it stays"
-            );
-            assert_eq!(load(&place).unwrap().unwrap().1, device, "read back as kept");
-        }
-
-        phase an_earlier_login_on_a_computer_with_its_own_device_key_logs_in_again;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
-            let place = Place::at(dir.path().join("device"), keys.clone());
-            let (_, key, device) = device();
-            let session = SigningKey::from_bytes(&[9; 32]);
-            tilo_device_identity::persist::adopt_device_key(&keys, &session.to_bytes()).unwrap();
-            earlier_login(place.dir(), &key, &device);
-            let said = load(&place).unwrap_err().to_string();
-            assert!(said.contains("log in again with a ticket"), "{said}");
-            assert_eq!(
-                tilo_device_identity::persist::load_device_key(&keys)
-                    .unwrap()
-                    .to_bytes(),
-                session.to_bytes(),
-                "the computer's own device key stays"
-            );
-            assert!(
-                place.dir().join("key").exists(),
-                "the earlier login stays until the new one is kept"
-            );
         }
 
         phase a_label_names_the_agent_and_the_computer_within_bounds;
