@@ -399,18 +399,27 @@ impl Personal {
         }
     }
 
+    /// Whether `workspace` is the person's own, which holds what is theirs alone (their devices,
+    /// their settings, this list): the shell never shows it, nor counts it as one to work in.
+    fn is_own(&self, workspace: WorkspaceId) -> bool {
+        workspace.to_string()
+            == tilo_server_protocol::servers::person_workspace_id(
+                &self.identity.device_cert.user_public_key,
+            )
+    }
+
     /// The workspace the shell started with, while it is not known whether the person has
     /// workspaces of their own: it is neither founded nor listed meanwhile.
     pub(crate) const fn seed(&self) -> Option<WorkspaceId> {
         self.seed
     }
 
-    /// Whether the person's list names a workspace of theirs besides `except`: one this device
-    /// or another of theirs made, or one a host of theirs lists.
+    /// Whether the person's list names a workspace of theirs besides `except` and their own:
+    /// one this device or another of theirs made, or one a host of theirs lists.
     fn names_besides(&self, except: WorkspaceId) -> bool {
         entries_of(&self.directory)
             .iter()
-            .any(|(workspace, _)| *workspace != except)
+            .any(|(workspace, _)| *workspace != except && !self.is_own(*workspace))
     }
 
     /// Settle the workspace the shell started with ([`Self::seed`]) once what the person has is
@@ -432,7 +441,9 @@ impl Personal {
             return false;
         };
         let theirs = |workspace: &WorkspaceId| {
-            *workspace != seed && (!self.borrowed.contains(workspace) || owned.contains(workspace))
+            *workspace != seed
+                && !self.is_own(*workspace)
+                && (!self.borrowed.contains(workspace) || owned.contains(workspace))
         };
         let has = self.names_besides(seed)
             || held.iter().any(theirs)
@@ -708,11 +719,8 @@ impl Personal {
         handle: &DesktopHandle,
         unknown_here: &dyn Fn(WorkspaceId) -> bool,
     ) -> Adoption {
-        let own = tilo_server_protocol::servers::person_workspace_id(
-            &self.identity.device_cert.user_public_key,
-        );
         let mut entries = entries_of(&self.directory);
-        entries.retain(|(workspace, _)| workspace.to_string() != own);
+        entries.retain(|(workspace, _)| !self.is_own(*workspace));
         let mut adoption = Adoption::default();
         let present: Vec<WorkspaceId> =
             handle.read(|tree| tree.workspaces.iter().map(Workspace::id).collect());
@@ -953,14 +961,9 @@ impl Personal {
             .into_iter()
             .map(|(workspace, _)| workspace)
             .collect();
-        // The person's own workspace holds what is theirs alone (their devices, their settings,
-        // this list): Settings shows what is in it, and the shell never shows it as a workspace.
-        let own = tilo_server_protocol::servers::person_workspace_id(
-            &self.identity.device_cert.user_public_key,
-        );
         let mut moved = false;
         for (workspace, entry) in listed {
-            if workspace.to_string() == own {
+            if self.is_own(workspace) {
                 continue;
             }
             let host = entry.host.host.writes_for();
