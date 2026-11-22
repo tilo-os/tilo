@@ -1802,6 +1802,9 @@ impl AppBrokerState {
         if let Err(error) = check_execution(caller) {
             return Pending::ready(Err(error));
         }
+        if let Err(error) = self.signed_by_agent(caller, request) {
+            return Pending::ready(Err(error));
+        }
         // An agent asks the person it works for something in its own words:
         // the question goes on this device's sheet, and their answer is the
         // invocation's outcome.

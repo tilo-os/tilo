@@ -48,8 +48,22 @@ fn fixture_granting(
     Caller,
     mpsc::UnboundedReceiver<InvocationEnvelope>,
 ) {
+    fixture_owned_by(&"a1".repeat(32), tags, params, grants)
+}
+
+/// [`fixture_granting`], the workspace owned by `owner`, who is the caller it returns.
+fn fixture_owned_by(
+    owner: &str,
+    tags: Vec<String>,
+    params: Vec<tilo_actions::ActionParam>,
+    grants: impl FnOnce(&str) -> Vec<tilo_action_policy::Grant>,
+) -> (
+    Arc<AppBrokerState>,
+    Caller,
+    mpsc::UnboundedReceiver<InvocationEnvelope>,
+) {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(52), "Synthetic execution presence");
-    workspace.set_owner("a1".repeat(32));
+    workspace.set_owner(owner);
     let workspace_id = workspace.id().to_string();
     workspace.policy.grants.extend(grants(&workspace_id));
     let mut tree = WorkspaceTree::default();
@@ -98,10 +112,164 @@ fn fixture_granting(
         .lock()
         .unwrap()
         .insert(7);
-    let caller = Caller::local_person("a1".repeat(32))
+    let caller = Caller::local_person(owner)
         .in_workspace(workspace_id)
         .in_new_execution();
     (state, caller, receiver)
+}
+
+/// An agent on its person's device acts as itself, under the key its person's root certified
+/// for it: within the bound its own record keeps it runs what its person allowed it, beyond it,
+/// unsigned, signed by another key or with its bound unread it runs nothing, and cancelled
+/// while it runs it leaves nothing.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one agent's walk through every way its call is refused, then run and cancelled"
+)]
+async fn an_agent_on_its_persons_device_is_held_to_its_own_bound() {
+    use tilo_action_policy::agent_answers::AnswerScope;
+    use tilo_user_identity::{AgentScope, DeviceCapabilities as Caps};
+    let root = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+    let person = root.verifying_key().to_bytes();
+    let owner = hex::encode(person);
+    let (state, _, mut app) = fixture_owned_by(&owner, Vec::new(), Vec::new(), |workspace| {
+        let scope = (
+            &AnswerScope::app("so.tilo.test"),
+            tilo_action_policy::ActionKind::Undoable,
+        );
+        let allow = tilo_action_policy::Answer::Allow;
+        let by = tilo_action_policy::Grantee::person(owner.clone());
+        vec![tilo_action_policy::agent_answers::grant(
+            workspace, "scribe", scope, allow, by,
+        )]
+    });
+    let workspace = WorkspaceId::from_u128(52).to_string();
+    let now = tilo_clock::unix_now_ns();
+    let certify = |seed, capabilities| {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let mut cert = tilo_user_identity::DeviceCert {
+            user_public_key: person,
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Scribe".into(),
+            capabilities,
+            issued_at_ns: now - 1_000_000_000,
+            expires_at_ns: Some(now + 3_600_000_000_000),
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        (cert, key)
+    };
+    let id = *uuid::Uuid::parse_str(&workspace).unwrap().as_bytes();
+    let (grant, key) = certify(6, Caps::agent_grant(AgentScope::agent_in(id, "scribe")));
+    // The same key certified for another of the person's agents, or for none in particular.
+    let (critic, _) = certify(6, Caps::agent_grant(AgentScope::agent_in(id, "critic")));
+    let (plain, _) = certify(6, Caps::agent_grant(AgentScope::Workspace(id)));
+    let (device, laptop) = certify(7, Caps::primary());
+    let sign = |cert, by| {
+        let mut asked = request();
+        let signed = tilo_server_protocol::invocation::sign_invocation_now(
+            &workspace, &asked, cert, by, now,
+        );
+        asked.signed = Some(Box::new(signed.unwrap()));
+        asked
+    };
+    let agent = Caller::delegated_agent("scribe", person, grant.device_public_key)
+        .in_workspace(workspace.clone())
+        .in_new_execution()
+        .on_roster(1, person);
+    let free = agent.clone().held_to(Vec::new());
+    let helper = free.clone().working_under("helper", "Helper");
+    let deny = tilo_action_policy::Rule::new(
+        AnswerScope::kind("so.tilo.test", "test.block").node(&workspace),
+        tilo_action_policy::KindSet::ALL,
+        tilo_action_policy::Answer::Deny,
+    );
+    let answered =
+        |caller: &Caller, asked| state.action_invoke(caller, None, None, &asked).poll_ready();
+    // Beyond its bound it runs nothing, and neither does a sub-agent it started, which works
+    // under its key and its bound.
+    let held = agent.clone().held_to(vec![deny]);
+    for caller in [held.clone(), held.working_under("helper", "Helper")] {
+        let bounded = answered(&caller, sign(&grant, &key));
+        assert!(
+            matches!(
+                bounded,
+                PendingPoll::Ready(Err(ActionCallError::UnknownAction))
+            ),
+            "{bounded:?}"
+        );
+    }
+    let mut forged = sign(&grant, &key);
+    let original = forged.signed.take().unwrap();
+    let message = original.statement().signing_message();
+    let signature = collab_types::signer::sign_now(&laptop, message).unwrap();
+    forged.signed = Some(Box::new(
+        tilo_server_protocol::invocation::SignedInvocation::new(
+            original.statement().clone(),
+            signature,
+            original.signer_cert().to_vec(),
+        ),
+    ));
+    for (caller, asked, code) in [
+        (&free, sign(&device, &laptop), "invocation_not_agent_signed"),
+        (&free, sign(&critic, &key), "invocation_not_invoker"),
+        (&free, sign(&plain, &key), "invocation_not_invoker"),
+        // A sub-agent scribe started works under scribe's key alone, never another agent's.
+        (&helper, sign(&critic, &key), "invocation_not_invoker"),
+        (&free, forged, "invocation_signature_invalid"),
+        (&free, request(), "invocation_unsigned"),
+        (&agent, sign(&grant, &key), "the agent's bound was not read"),
+    ] {
+        let refused = answered(caller, asked);
+        assert!(
+            matches!(&refused, PendingPoll::Ready(Err(ActionCallError::Refused { reason }))
+                if reason.starts_with(code)),
+            "{code}: {refused:?}"
+        );
+    }
+    assert!(
+        app.try_recv().is_err(),
+        "the app never hears of any of them"
+    );
+    // Within its bound it runs; cancelled while it runs, what the app answers after is no
+    // outcome of it, and asked again under its id it runs nothing.
+    let asked = sign(&grant, &key);
+    assert!(matches!(
+        answered(&free, asked.clone()),
+        PendingPoll::Ready(Ok(_))
+    ));
+    let delivered = app.try_recv().unwrap();
+    assert!(
+        crate::apps::collab_app_broker::answered(state.action_cancel(&free, &asked.invocation))
+            .is_ok()
+    );
+    let cancelled = tilo_actions::InvocationUpdate::Cancelled {
+        invocation: delivered.invocation,
+        message: None,
+    };
+    state
+        .apply_invocation_update(7, delivered.id, cancelled, None)
+        .await
+        .unwrap();
+    let succeeded = tilo_actions::InvocationUpdate::Succeeded {
+        invocation: delivered.invocation,
+        output: tilo_actions::ActionOutput::default(),
+    };
+    let late = state
+        .apply_invocation_update(7, delivered.id, succeeded, None)
+        .await;
+    let ended = state.action_observe(&free, &asked.invocation).unwrap();
+    assert!(
+        matches!(
+            ended.update,
+            tilo_actions::InvocationUpdate::Cancelled { .. }
+        ),
+        "{ended:?} after {late:?}"
+    );
+    let again = answered(&free, asked);
+    assert!(app.try_recv().is_err(), "{again:?}");
 }
 
 fn request() -> InvokeRequest {
@@ -310,46 +478,6 @@ tilo_test_env::scenario! {
             );
             assert!(heard, "the app runs it");
         }
-    }
-
-    phase an_agent_on_its_persons_device_is_held_to_its_own_bound;
-    // The engine on a person's own device acts as the agent: a change its person
-    // runs, and allowed it, is refused when the agent's own record bounds it away.
-    {
-        use tilo_action_policy::agent_answers::AnswerScope;
-        let owner = "a1".repeat(32);
-        let (state, person, mut app) = fixture_granting(Vec::new(), Vec::new(), |workspace| {
-            let mut grants = tilo_action_policy::Acting::handed_agent("scribe", owner.as_str())
-                .handed_preset(workspace);
-            grants.push(tilo_action_policy::agent_answers::grant(
-                workspace,
-                "scribe",
-                (&AnswerScope::app("so.tilo.test"), tilo_action_policy::ActionKind::Undoable),
-                tilo_action_policy::Answer::Allow,
-                tilo_action_policy::Grantee::person(owner.clone()),
-            ));
-            grants
-        });
-        let workspace = person.workspace().unwrap().to_owned();
-        let bound = vec![tilo_action_policy::Rule::new(
-            AnswerScope::kind("so.tilo.test", "test.block").node(&workspace),
-            tilo_action_policy::KindSet::ALL,
-            tilo_action_policy::Answer::Deny,
-        )];
-        let agent = Caller::authenticated([0xa1; 32], [2; 32])
-            .in_workspace(workspace)
-            .in_new_execution()
-            .delegated_to("scribe")
-            .on_turn(tilo_action_policy::turn::Turn::new("chat/workspace/channels/1", "m1"), bound);
-        let answered = state.action_invoke(&agent, None, None, &request()).poll_ready();
-        assert!(
-            matches!(answered, PendingPoll::Ready(Err(ActionCallError::UnknownAction))),
-            "{answered:?}"
-        );
-        assert!(app.try_recv().is_err(), "the app never hears of it");
-        let ran = state.action_invoke(&person, None, None, &request()).poll_ready();
-        assert!(matches!(ran, PendingPoll::Ready(Ok(_))), "{ran:?}");
-        assert!(app.try_recv().is_ok(), "the person runs it");
     }
 
     phase an_admitted_agent_acting_for_its_person_holds_only_its_own_grants;

@@ -1506,7 +1506,11 @@ impl StatePeer {
             document.map(|document| document.doc.committed_document()),
             &self.surfaces,
             &allows,
-        );
+        )
+        .and_then(|receipt| match receipt {
+            collab_types::Receipt::Admit => self.recorded_invocations(envelope).map(|()| receipt),
+            collab_types::Receipt::Hold => Ok(receipt),
+        });
         let delegated = live && delegation.is_some();
         match decided {
             Ok(collab_types::Receipt::Admit) => Ok((
@@ -1527,6 +1531,30 @@ impl StatePeer {
                 Err(AuthorizeRefusal::Rules(refusal, said))
             }
         }
+    }
+}
+
+impl StatePeer {
+    /// That every invocation `envelope`'s changes keep shows who asked for it
+    /// ([`tilo_server_protocol::invocation::verify_recorded`]), against this workspace's
+    /// revocations: an agent acting with its own key asked under a key its person certified for
+    /// it. What a sealed op keeps is checked by the devices that open it.
+    fn recorded_invocations(
+        &self,
+        envelope: &SignedOp,
+    ) -> Result<(), collab_types::ReceiptRefusal> {
+        for context in collab_types::recorded_contexts(envelope)? {
+            tilo_server_protocol::invocation::verify_recorded(
+                &context,
+                &self.core.workspace,
+                &self.core.revocations,
+            )
+            .map_err(|error| collab_types::ReceiptRefusal::Invocation {
+                code: error.code(),
+                reason: error.to_string(),
+            })?;
+        }
+        Ok(())
     }
 }
 

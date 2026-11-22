@@ -234,7 +234,7 @@ impl OnServer {
         if killed {
             drop(server);
         } else {
-            server.shutdown().await;
+            Box::pin(server.shutdown()).await;
         }
         // A server that ran its workspaces' Terminal sessions runs them again, on the files
         // they kept.

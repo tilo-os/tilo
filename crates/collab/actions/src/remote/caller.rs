@@ -79,6 +79,10 @@ pub struct Caller {
     // What the agent's own record bounds it to on its turn (`Self::on_turn`), narrowing the
     // grants a delegated agent acts with; empty follows the default.
     pub(super) bound: Vec<tilo_action_policy::Rule>,
+    // What the agent's own record bounds an agent acting with its own key to, read by the
+    // provider that runs it on its person's device (`Self::held_to`). `None` there holds it to
+    // nothing: it carries no delegation at all.
+    own_bound: Option<Vec<tilo_action_policy::Rule>>,
 }
 
 impl Caller {
@@ -100,6 +104,7 @@ impl Caller {
             agent_name: None,
             asked: None,
             bound: Vec::new(),
+            own_bound: None,
         }
     }
 
@@ -499,6 +504,7 @@ impl Caller {
             agent_name: None,
             asked: None,
             bound: Vec::new(),
+            own_bound: None,
             ..self.clone()
         })
     }
@@ -557,27 +563,49 @@ impl Caller {
         &self.acting
     }
 
-    /// The grants made for this caller's software: the bound held on the agent a person's
-    /// own device handed its session to, `kept`, the bound the workspace's list of its agents
-    /// keeps for it, when no turn carries one. The delegation's preset is its acting's own
-    /// ([`Acting::handed_preset`]).
+    /// An agent acting with its own key on its person's device, held to `bound`, the rules its
+    /// own record narrows it to: it carries the delegation its person's grant gives an agent,
+    /// narrowed by them ([`Self::granted`]). The provider that runs the agent and read its record
+    /// sets it, never a payload. Changes nothing for any other caller.
+    #[must_use]
+    pub fn held_to(mut self, bound: Vec<tilo_action_policy::Rule>) -> Self {
+        if !self.session_delegated && self.acting.is_agent() && self.device_public_key.is_some() {
+            self.own_bound = Some(bound);
+        }
+        self
+    }
+
+    /// The grants made for this caller's software, the one place an agent's bound becomes
+    /// grants, so every host and every receiver narrows an agent alike. An agent a person's own
+    /// device handed its session to is held to the bound its turn carries, else `kept`, the one
+    /// the workspace's list of its agents keeps for it; its delegation is its acting's own
+    /// ([`Acting::handed_preset`]). An agent acting with its own key carries, where its person's
+    /// device read its record ([`Self::held_to`]), its person's delegation narrowed by that
+    /// bound; elsewhere it carries nothing of its own, and the host that admits it bounds what
+    /// the workspace gives its approved key. An agent whose bound nobody read is never more than
+    /// its person allows.
     #[must_use]
     pub fn granted(&self, kept: &[tilo_action_policy::Rule]) -> Vec<tilo_action_policy::Grant> {
         let (Some(agent), Some(person)) = (self.acting.agent_id(), self.acting.acted_for_person())
         else {
             return Vec::new();
         };
-        if !self.session_delegated {
-            return Vec::new();
+        if self.session_delegated {
+            let bound = if self.turn.is_some() {
+                &self.bound[..]
+            } else {
+                kept
+            };
+            return tilo_action_policy::roles::agent_bound(agent, person, bound);
         }
-        // A turn's agent carries the bound its server read for the turn; an agent outside a turn
-        // (one a person's computer works with) is held to what the workspace's list keeps for it.
-        let bound = if self.turn.is_some() {
-            &self.bound[..]
-        } else {
-            kept
-        };
-        tilo_action_policy::roles::agent_bound(agent, person, bound)
+        match (&self.own_bound, &self.workspace) {
+            (Some(bound), Some(workspace)) => {
+                let mut grants = Acting::handed_agent(agent, person).handed_preset(workspace);
+                grants.extend(tilo_action_policy::roles::agent_bound(agent, person, bound));
+                grants
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// The group a session named `id` is, as this caller's provider admitted

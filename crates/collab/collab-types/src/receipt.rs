@@ -162,6 +162,11 @@ pub enum ReceiptRefusal {
     /// The change writes a unit its claim does not name.
     #[error("the change writes the unit {0}, which its claim does not name")]
     UnclaimedUnit(String),
+    /// The invocation a change keeps does not show who asked for it: its signature or its
+    /// signer's certificate does not check, or an agent acting with its own key asked under
+    /// no key of its own. `code` is the identity layer's stable name for why.
+    #[error("{code}: {reason}")]
+    Invocation { code: &'static str, reason: String },
 }
 
 /// The node of the published tree `action` acts on in `record`.
@@ -1090,6 +1095,23 @@ pub fn claimed_invokers(op: &crate::op::SignedOp) -> Vec<Acting> {
         }
     }
     invokers
+}
+
+/// The context each change of a cleartext op keeps in its history entry, where it keeps one:
+/// what a receiver checks the invocations they record against. Empty for a sealed op, a
+/// snapshot or one segment of a larger mutation.
+///
+/// # Errors
+/// [`ReceiptRefusal::Unclaimed`] for a payload whose changes do not read.
+pub fn recorded_contexts(
+    op: &crate::op::SignedOp,
+) -> Result<Vec<tilo_actions::ActionContext>, ReceiptRefusal> {
+    Ok(cleartext_changes(op)?
+        .unwrap_or_default()
+        .iter()
+        .filter_map(automerge::Change::message)
+        .filter_map(tilo_actions::ActionContext::from_change_message)
+        .collect())
 }
 
 /// The hashes of the changes a cleartext op carries; `None` for a sealed

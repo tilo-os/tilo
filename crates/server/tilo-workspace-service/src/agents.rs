@@ -831,10 +831,17 @@ async fn agent_caller(
             .ok_or("the hosted agent has no approved signing session for this workspace")?,
         Roster::Device(keys) => keys.grant(workspace, &agent.id.0, &agent.name, root)?,
     };
-    Ok(Caller::delegated_agent(agent.id.0.clone(), root, key)
+    let caller = Caller::delegated_agent(agent.id.0.clone(), root, key)
         .in_workspace(workspace.to_string())
         .named(&agent.name)
-        .on_roster(agent.created_at, person))
+        .on_roster(agent.created_at, person);
+    Ok(match roster {
+        // A host reads the agent's bound where it decides its approved key; on the person's
+        // device the agent carries the one its record keeps, which the device's broker holds
+        // it to.
+        Roster::Hosted(..) => caller,
+        Roster::Device(_) => caller.held_to(agent.turn_rules(&workspace.to_string())),
+    })
 }
 
 /// The agents a host runs for the workspaces it governs.

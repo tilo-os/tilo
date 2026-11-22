@@ -470,6 +470,17 @@ impl ServiceWorkspaces {
 }
 
 impl WorkspaceAuthority for ServiceWorkspaces {
+    /// The revocations the workspace's replica on this device holds: what an agent's key and a
+    /// saved shortcut's signer are checked against here.
+    fn workspace_revocations(&self, workspace: &str) -> Option<tilo_user_identity::RevocationList> {
+        let peer = self.peer(WorkspaceId::parse(workspace)?)?;
+        let mut revocations = tilo_user_identity::RevocationList::new();
+        for entry in peer.revocations() {
+            revocations.insert(entry).ok()?;
+        }
+        Some(revocations)
+    }
+
     /// Every workspace this device holds, as one tree.
     fn with_tree(&self, read: &mut dyn FnMut(&Layout)) -> Result<(), String> {
         let tree = Layout {

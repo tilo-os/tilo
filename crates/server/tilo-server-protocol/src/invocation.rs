@@ -69,6 +69,10 @@ pub enum InvocationError {
     /// names as its invoker.
     #[error("the invocation a change keeps is signed by someone it does not name")]
     NotInvoker,
+    /// An agent acts, but the key that signed is not a key its person certified for an agent:
+    /// a device's own key, or a key that acts as the person.
+    #[error("an agent acts here without its own certified key")]
+    NotAgentSigned,
 }
 
 impl InvocationError {
@@ -88,6 +92,7 @@ impl InvocationError {
             Self::Replayed => "invocation_replayed",
             Self::Signer(_) => "invocation_signer_failed",
             Self::NotInvoker => "invocation_not_invoker",
+            Self::NotAgentSigned => "invocation_not_agent_signed",
         }
     }
 }
@@ -254,8 +259,14 @@ pub fn verify_recorded(
     workspace: &str,
     revocations: &RevocationList,
 ) -> Result<Option<DeviceCert>, InvocationError> {
+    let invoker = context.invoker.as_ref().map(|invoker| &invoker.acting);
     let Some(call) = context.signed.as_deref() else {
-        return Ok(None);
+        // An agent with a key of its own asks under that key: a change naming one that keeps
+        // no invocation it signed has nothing to show it asked.
+        return match invoker.and_then(own_key_agent) {
+            Some(_) => Err(InvocationError::NotAgentSigned),
+            None => Ok(None),
+        };
     };
     let signed = &call.signed;
     check_signature(signed)?;
@@ -281,7 +292,89 @@ pub fn verify_recorded(
     if !names_signer {
         return Err(InvocationError::NotInvoker);
     }
+    agent_signed(invoker, &cert)?;
     Ok(Some(cert))
+}
+
+/// Check `request` in `workspace` as [`verify_invocation`] does, for the agent `agent` acting
+/// with its own key for the person `person`: the key that signed is one that person certified
+/// for that agent, reaching this workspace, and the very key `agent_key` the caller was
+/// admitted as.
+///
+/// # Errors
+///
+/// As [`verify_invocation`]; [`InvocationError::NotAgentSigned`] when a device's own key or a
+/// key that acts as the person signed, [`InvocationError::NotInvoker`] when another person's
+/// key signed, or a key certified for another agent or for no agent in particular.
+pub fn verify_agent_invocation(
+    workspace: &str,
+    request: &InvokeRequest,
+    (person, agent, agent_key): (&[u8; 32], &str, &[u8; 32]),
+    revocations: &RevocationList,
+    now_ns: u64,
+) -> Result<DeviceCert, InvocationError> {
+    let cert = verify_invocation(workspace, request, revocations, now_ns)?;
+    if !agent_grant(&cert) {
+        return Err(InvocationError::NotAgentSigned);
+    }
+    if &cert.user_public_key != person
+        || &cert.device_public_key != agent_key
+        || !certified_for(&cert, agent)
+    {
+        return Err(InvocationError::NotInvoker);
+    }
+    Ok(cert)
+}
+
+/// Whether the agent's key `cert` was certified for the agent `agent` alone: a key's agent is
+/// the key its id names, an agent device acts by the delegation naming it beside its
+/// certificate, and any other agent's grant names it ([`tilo_user_identity::AgentScope::is_agent`]).
+/// A grant naming only a workspace, or every one, is no single agent's.
+fn certified_for(cert: &DeviceCert, agent: &str) -> bool {
+    match tilo_action_policy::key_of_agent(agent) {
+        Some(key) => key == cert.device_public_key,
+        None => cert.capabilities.agent.map_or_else(
+            || cert.capabilities == tilo_user_identity::DeviceCapabilities::nothing(),
+            |scope| scope.is_agent(agent),
+        ),
+    }
+}
+
+/// Whether `cert` is a key its person certified for an agent: an agent's grant, or an agent
+/// device's certificate, which carries no capability and acts by the delegation beside it.
+/// Never a device's own key, nor a key the person made for their own programs: those act as
+/// the person.
+fn agent_grant(cert: &DeviceCert) -> bool {
+    let capabilities = &cert.capabilities;
+    (capabilities.agent.is_some() && !capabilities.server_key)
+        || *capabilities == tilo_user_identity::DeviceCapabilities::nothing()
+}
+
+/// The agent `acting` names as the one who acted with its own key: an agent no device of its
+/// person handed its session to. `None` for a person, and for an agent a person's own device
+/// signs for ([`tilo_action_policy::Acting::handed`]).
+fn own_key_agent(acting: &tilo_action_policy::Acting) -> Option<&str> {
+    acting.agent_id().filter(|_| !acting.handed)
+}
+
+/// That the invoker a change names and the key that signed its invocation agree: an agent
+/// acting with its own key is signed by a key of the person it acts for certified for that
+/// agent ([`certified_for`]), and an agent's grant signs only for an agent, never as its
+/// person: for itself, or for a sub-agent it started, which it hands its work as a person's
+/// device hands an agent its session.
+fn agent_signed(
+    invoker: Option<&tilo_action_policy::Acting>,
+    cert: &DeviceCert,
+) -> Result<(), InvocationError> {
+    let agent = invoker.and_then(own_key_agent);
+    match (agent, agent_grant(cert)) {
+        (Some(_), false) => Err(InvocationError::NotAgentSigned),
+        (None, true) if !invoker.is_some_and(|acting| acting.handed && acting.is_agent()) => {
+            Err(InvocationError::NotInvoker)
+        }
+        (Some(agent), true) if !certified_for(cert, agent) => Err(InvocationError::NotInvoker),
+        _ => Ok(()),
+    }
 }
 
 /// That `signed`'s signature verifies under the key it names.
@@ -413,6 +506,7 @@ fn request_digest(statement: &InvocationStatement) -> [u8; 32] {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
+    use tilo_action_policy::Acting;
     use tilo_actions::ActionAddress;
     use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
     use tilo_user_identity::{
@@ -434,6 +528,15 @@ mod tests {
             signature: [0; 64],
             issuer: None,
         };
+        sign_device_cert(&mut cert, root).unwrap();
+        cert
+    }
+
+    /// `key` certified by `root` as an agent's grant reaching `scope`, as a person's device
+    /// certifies the key it gives an agent.
+    fn agent_grant_of(root: &SigningKey, key: &SigningKey, scope: AgentScope) -> DeviceCert {
+        let mut cert = cert_of(root, key, Some(NOW + 1_000_000_000));
+        cert.capabilities = DeviceCapabilities::agent_grant(scope);
         sign_device_cert(&mut cert, root).unwrap();
         cert
     }
@@ -592,6 +695,93 @@ mod tests {
                 verify_invocation(other, &elsewhere, &none, NOW),
                 Err(InvocationError::OutOfScope)
             );
+        }
+
+        phase an_agent_asks_only_under_the_key_its_person_certified_for_it;
+        {
+            let (root, _) = UserIdentity::generate("Alice", 1);
+            let person = root.verifying_key().to_bytes();
+            let workspace = *uuid::Uuid::parse_str(WORKSPACE).unwrap().as_bytes();
+            let key = |seed| SigningKey::from_bytes(&[seed; 32]);
+            let grant = |key: &SigningKey, scope| agent_grant_of(&root, key, scope);
+            let mut own = cert_of(&root, &key(13), None);
+            own.capabilities = DeviceCapabilities::own_key_grant(AgentScope::Workspace(workspace));
+            sign_device_cert(&mut own, &root).unwrap();
+            let mut entry = RevocationEntry {
+                user_public_key: person,
+                revoked_device_public_key: key(11).verifying_key().to_bytes(),
+                revoked_at_ns: NOW - 1,
+                reason: RevocationReason::Compromised,
+                signature: [0; 64],
+            };
+            sign_revocation_entry(&mut entry, &root).unwrap();
+            let mut revoked = RevocationList::new();
+            revoked.insert(entry).unwrap();
+            let none = RevocationList::new();
+            let agent = key(11).verifying_key().to_bytes();
+            let scribe = |workspace| AgentScope::agent_in(workspace, "scribe");
+            let ours = grant(&key(11), scribe(workspace));
+            for (cert, by, revocations, expected) in [
+                (ours.clone(), key(11), &none, Ok(ours.clone())),
+                // A key the person made to act as themselves never acts as their agent.
+                (own, key(13), &none, Err(InvocationError::NotAgentSigned)),
+                // Another of their agents' keys is not this agent's, nor is a key certified for
+                // another agent, or for no agent in particular, though the very key signs.
+                (grant(&key(14), scribe(workspace)), key(14), &none, Err(InvocationError::NotInvoker)),
+                (grant(&key(11), AgentScope::agent_in(workspace, "critic")), key(11), &none, Err(InvocationError::NotInvoker)),
+                (grant(&key(11), AgentScope::Workspace(workspace)), key(11), &none, Err(InvocationError::NotInvoker)),
+                (grant(&key(11), scribe([7; 16])), key(11), &none, Err(InvocationError::OutOfScope)),
+                (ours, key(11), &revoked, Err(InvocationError::Revoked)),
+            ] {
+                let asked = signed(&request(), &cert, &by, NOW);
+                assert_eq!(
+                    verify_agent_invocation(WORKSPACE, &asked, (&person, "scribe", &agent), revocations, NOW),
+                    expected
+                );
+            }
+        }
+
+        phase a_change_names_an_agent_only_when_its_own_key_asked;
+        {
+            let (root, _) = UserIdentity::generate("Alice", 1);
+            let person = hex::encode(root.verifying_key().to_bytes());
+            let workspace = *uuid::Uuid::parse_str(WORKSPACE).unwrap().as_bytes();
+            let agent_key = SigningKey::from_bytes(&[11; 32]);
+            let agent = agent_grant_of(&root, &agent_key, AgentScope::agent_in(workspace, "scout"));
+            let laptop = SigningKey::from_bytes(&[12; 32]);
+            let device = cert_of(&root, &laptop, None);
+            let by_agent = signed(&request(), &agent, &agent_key, NOW);
+            let by_device = signed(&request(), &device, &laptop, NOW);
+            let for_person = |acting: Acting| acting.acting_for(Acting::person(person.clone()));
+            let kept = |asked: &InvokeRequest, invoker: &Acting, signed: bool| {
+                verify_recorded(
+                    &tilo_actions::ActionContext {
+                        source_invocation: Some(asked.invocation),
+                        signed: signed.then(|| tilo_actions::remote::SignedCall::of(asked).map(Box::new)).flatten(),
+                        invoker: Some(tilo_actions::ActionInvoker::admitted(invoker)),
+                        ..tilo_actions::ActionContext::default()
+                    },
+                    WORKSPACE,
+                    &RevocationList::new(),
+                )
+            };
+            let scout = for_person(Acting::agent("scout"));
+            assert_eq!(kept(&by_agent, &scout, true), Ok(Some(agent.clone())));
+            // The agent's key never stands for its person, nor for a key's agent it is not.
+            let keyed = for_person(Acting::agent(tilo_action_policy::key_agent_id(&[9; 32])));
+            let critic = for_person(Acting::agent("critic"));
+            for invoker in [Acting::person(person.clone()), keyed, critic] {
+                assert_eq!(kept(&by_agent, &invoker, true), Err(InvocationError::NotInvoker));
+            }
+            // An agent only its person's device signed for, or that kept no signed call, is refused.
+            assert_eq!(kept(&by_device, &scout, true), Err(InvocationError::NotAgentSigned));
+            assert_eq!(kept(&by_agent, &scout, false), Err(InvocationError::NotAgentSigned));
+            // An agent the person's own device handed its session to is that device's to sign.
+            let handed = Acting::handed_agent("scout", person.as_str());
+            assert_eq!(kept(&by_device, &handed, true), Ok(Some(device)));
+            // A sub-agent the agent started works under the agent's key.
+            let helper = Acting::handed_agent("helper", person.as_str());
+            assert_eq!(kept(&by_agent, &helper, true), Ok(Some(agent)));
         }
 
         phase one_invocation_id_names_one_request;
