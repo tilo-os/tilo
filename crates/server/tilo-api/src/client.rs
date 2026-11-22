@@ -1164,42 +1164,10 @@ pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
 /// # Errors
 /// The key file cannot be read, or, with no key named, the login is damaged.
 pub fn held_api_for(reach: Reach<'_>) -> Result<Option<std::path::PathBuf>> {
-    let named: Option<Option<[u8; 32]>> = match (reach.key_file, api_key()) {
-        (Some(path), _) => {
-            let file = crate::direct::KeyFile::read(path).map_err(anyhow::Error::msg)?;
-            Some(public_key_of(&file.key))
-        }
-        (None, Some(token)) => Some(
-            crate::store::carried_key(&token).map(|(_, key)| key.key().verifying_key().to_bytes()),
-        ),
-        (None, None) => None,
-    };
-    match named {
-        // A key this computer cannot read is no device key.
-        Some(None) => return Ok(None),
-        Some(Some(named)) => {
-            let Ok(Some(device)) =
-                device::Place::here(device_keys()).and_then(|place| device::load_public(&place))
-            else {
-                return Ok(None);
-            };
-            if named != device.cert.device_public_key {
-                return Ok(None);
-            }
-        }
-        None => {}
+    if !crate::direct::names_this_device(reach.key_file, api_key())? {
+        return Ok(None);
     }
     device::held_api(device_keys())
-}
-
-/// The public key the 32-byte hex secret in a key file names.
-fn public_key_of(secret: &str) -> Option<[u8; 32]> {
-    let seed: [u8; 32] = hex::decode(secret).ok()?.try_into().ok()?;
-    Some(
-        ed25519_dalek::SigningKey::from_bytes(&seed)
-            .verifying_key()
-            .to_bytes(),
-    )
 }
 
 /// The key a script was approved (`token`, as `tilo keys create` answers it),

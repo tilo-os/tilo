@@ -123,7 +123,7 @@ fn keeper_required() -> ActionCallError {
     }
 }
 
-fn check_keeper_session(caller: &Caller, cert: &DeviceCert) -> Result<(), ActionCallError> {
+fn check_the_persons_session(caller: &Caller, cert: &DeviceCert) -> Result<(), ActionCallError> {
     if !caller.acting().is_person()
         || caller.user_public_key() != Some(&cert.user_public_key)
         || caller.device_public_key() != Some(&cert.device_public_key)
@@ -143,7 +143,7 @@ async fn revoke_grant(
     id: &str,
 ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
     let workspaces = link.workspaces.as_ref().ok_or_else(keeper_required)?;
-    check_keeper_session(caller, cert)?;
+    check_the_persons_session(caller, cert)?;
     if !workspaces
         .roster_keeper_device(workspace, &cert.user_public_key, cert)
         .await
@@ -170,7 +170,7 @@ async fn provision(
                 reason: error.to_string(),
             }
         })?;
-    check_keeper_session(caller, cert)?;
+    check_the_persons_session(caller, cert)?;
     if asked.workspaces.as_slice() != [workspace.to_string()]
         || asked.agent_id.is_empty()
         || asked.agent_id.len() > tilo_server_protocol::delegation::MAX_DELEGATE_TEXT_BYTES

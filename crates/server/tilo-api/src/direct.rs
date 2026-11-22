@@ -30,6 +30,52 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tilo_user_identity::DeviceCert;
 
+/// Whether `key_file`, or the login `token` carries, names this computer's
+/// own device key: only then do a program's calls go to the session the
+/// computer holds. `None` for both is the login itself, and so this
+/// computer's.
+///
+/// A key named outright needs no login here: a login this computer cannot read
+/// is no device key, so the key's calls go their own way rather than failing on
+/// it. Only the key's public half is compared, from the login's certificate, so
+/// naming the device's own key keeps this process dumpable, which the daemon
+/// requires of a caller it admits.
+pub(crate) fn names_this_device(
+    key_file: Option<&std::path::Path>,
+    token: Option<String>,
+) -> anyhow::Result<bool> {
+    let named: Option<[u8; 32]> = match (key_file, token) {
+        (Some(path), _) => {
+            let file = KeyFile::read(path).map_err(anyhow::Error::msg)?;
+            public_key_of(&file.key)
+        }
+        (None, Some(token)) => {
+            crate::store::carried_key(&token).map(|(_, key)| key.key().verifying_key().to_bytes())
+        }
+        (None, None) => return Ok(true),
+    };
+    // A key this computer cannot read is no device key.
+    let Some(named) = named else {
+        return Ok(false);
+    };
+    let Ok(Some(device)) = tilo_device_identity::login::Place::here(crate::client::device_keys())
+        .and_then(|place| tilo_device_identity::login::load_public(&place))
+    else {
+        return Ok(false);
+    };
+    Ok(named == device.cert.device_public_key)
+}
+
+/// The public key the 32-byte hex secret in a key file names.
+fn public_key_of(secret: &str) -> Option<[u8; 32]> {
+    let seed: [u8; 32] = hex::decode(secret).ok()?.try_into().ok()?;
+    Some(
+        ed25519_dalek::SigningKey::from_bytes(&seed)
+            .verifying_key()
+            .to_bytes(),
+    )
+}
+
 /// A key as a file holds it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KeyFile {

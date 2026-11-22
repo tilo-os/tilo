@@ -445,7 +445,7 @@ impl AgentSupervisor {
         requester: &DeviceCert,
     ) -> Result<InvocationReceipt, ActionCallError> {
         tilo_actions::appearance::refuse_here(invocation)?;
-        if !keeper_session(caller, &requester.user_public_key)
+        if !the_persons_session(caller, &requester.user_public_key)
             || caller.device_public_key() != Some(&requester.device_public_key)
         {
             return Err(ActionCallError::UnknownAction);
@@ -673,7 +673,9 @@ impl AgentSupervisor {
         let grant = grants
             .iter_mut()
             .find(|grant| {
-                grant.id() == id && grant.is_in(workspace) && keeper_session(caller, &grant.keeper)
+                grant.id() == id
+                    && grant.is_in(workspace)
+                    && the_persons_session(caller, &grant.keeper)
             })
             .ok_or("no such agent")?;
         if let (Some(identity), Some(link)) = (&grant.identity, self.link()) {
@@ -830,10 +832,10 @@ impl AgentSupervisor {
     }
 }
 
-/// Whether `caller` is `keeper` themselves, in a session of theirs: who alone
-/// manages the grants of their agent.
-fn keeper_session(caller: &Caller, keeper: &[u8; 32]) -> bool {
-    caller.acting().is_person() && caller.user_public_key() == Some(keeper)
+/// Whether `caller` is the person the agent acts for, in a session of theirs:
+/// who alone manages the grants of their agent.
+fn the_persons_session(caller: &Caller, person: &[u8; 32]) -> bool {
+    caller.acting().is_person() && caller.user_public_key() == Some(person)
 }
 
 fn trim_grants(grants: &mut Vec<Grant>) {

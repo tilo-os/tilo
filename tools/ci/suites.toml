@@ -717,6 +717,13 @@ readers = [
 ]
 
 [[cargo]]
+package = "tilo-api"
+# The sign-in tests build a host's answers from the fixture file the API's image ships, so a
+# change to either checks and tests the other.
+inputs = ["os/containers/tilo-api/host-info.json"]
+readers = ["crates/server/tilo-api/src/tests.rs"]
+
+[[cargo]]
 package = "tilolang-app"
 # The tests compile the built-in tilolang packages (source and ids lock).
 inputs = ["apps/tl/"]
