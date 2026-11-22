@@ -597,7 +597,12 @@ workspace vault, despite their names.
   it does not belong to.
 - **One set of resources per workspace.** Mail, calendar, vault, models,
   connections, agents and skills belong to the workspace. Privacy between
-  members is a reader rule on a record, never a private store.
+  members is a reader rule on a record, never a private store. The keys
+  enforce it, not a filter: a record with its own readers (a direct
+  conversation, a private note) is its own resource, sealed under the key
+  group of exactly those readers. Every device may keep and forward its
+  sealed changes, and only the readers' devices can open them. A private
+  record is never a row inside a document that has more readers.
 - **What is a person's alone** (their keys, devices, appearance, the list of
   their workspaces, their servers) lives in the person's own workspace,
   where no other person is a member (their agents may be, acting for
