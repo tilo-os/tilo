@@ -387,7 +387,7 @@ fn listed(session: &Session, name: &str) -> Option<(String, String, String)> {
         .and_then(|agents| agents.get("sessions").and_then(Value::as_array).cloned())
         .unwrap_or_default()
         .into_iter()
-        .find(|agent| agent["stoppable"] == true && agent["name"] == name)
+        .find(|agent| agent["name"] == name)
         .map(|agent| {
             let said = |field: &str| agent[field].as_str().unwrap_or_default().to_owned();
             (said("key"), said("device"), said("device_name"))
