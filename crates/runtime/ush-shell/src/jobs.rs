@@ -56,6 +56,8 @@ pub struct Job {
     phase: Mutex<Phase>,
     changed: Condvar,
     killed: AtomicBool,
+    /// The signal it was ended with, for a program that attaches after the end was sent.
+    ended_with: Mutex<Option<Signal>>,
     foreground: AtomicBool,
     signallers: Mutex<Vec<(u64, Signaller)>>,
     next_signaller: Mutex<u64>,
@@ -96,6 +98,7 @@ impl Job {
             phase: Mutex::new(Phase::Running),
             changed: Condvar::new(),
             killed: AtomicBool::new(false),
+            ended_with: Mutex::new(None),
             foreground: AtomicBool::new(foreground),
             signallers: Mutex::new(Vec::new()),
             next_signaller: Mutex::new(0),
@@ -123,12 +126,24 @@ impl Job {
         lock(&self.group)
     }
 
+    /// Let the job signal a program the host started for it. A program attaches once it was
+    /// started, so a stop or an end sent while it was starting reached no program of the job:
+    /// it is sent that first.
     pub fn attach(self: &Arc<Self>, signal: impl Fn(Signal) + Send + Sync + 'static) -> Attached {
         let mut next = lock(&self.next_signaller);
         *next = next.wrapping_add(1);
         let id = *next;
         drop(next);
-        lock(&self.signallers).push((id, Arc::new(signal)));
+        let signal: Signaller = Arc::new(signal);
+        // Under the phase lock, as `stop` and `kill` decide, so none is missed between them.
+        let phase = lock(&self.phase);
+        lock(&self.signallers).push((id, Arc::clone(&signal)));
+        let ended_with = *lock(&self.ended_with);
+        let missed = ended_with.or_else(|| (*phase == Phase::Stopped).then_some(Signal::Stop));
+        drop(phase);
+        if let Some(missed) = missed {
+            signal(missed);
+        }
         Attached {
             job: Arc::clone(self),
             id,
@@ -139,11 +154,15 @@ impl Job {
         lock(&self.signallers).len()
     }
 
-    fn signal_programs(&self, signal: Signal) -> usize {
-        let signallers: Vec<Signaller> = lock(&self.signallers)
+    fn signallers(&self) -> Vec<Signaller> {
+        lock(&self.signallers)
             .iter()
             .map(|(_, s)| Arc::clone(s))
-            .collect();
+            .collect()
+    }
+
+    fn signal_programs(&self, signal: Signal) -> usize {
+        let signallers = self.signallers();
         for signaller in &signallers {
             signaller(signal);
         }
@@ -167,8 +186,19 @@ impl Job {
     /// Stop the job: its programs, and its own commands at their next step. A job running
     /// programs is stopped once one of them stops ([`Self::stopped`]), never before.
     pub fn stop(&self) {
-        if self.signal_programs(Signal::Stop) == 0 {
-            self.set_phase(Phase::Stopped);
+        let mut phase = lock(&self.phase);
+        let signallers = self.signallers();
+        if signallers.is_empty() {
+            if !matches!(*phase, Phase::Done(_)) {
+                *phase = Phase::Stopped;
+            }
+            drop(phase);
+            self.changed.notify_all();
+            return;
+        }
+        drop(phase);
+        for signaller in &signallers {
+            signaller(Signal::Stop);
         }
     }
 
@@ -181,7 +211,10 @@ impl Job {
     /// End the job: its commands stop at their next step, its programs get
     /// `signal`.
     pub fn kill(&self, signal: Signal) {
+        let phase = lock(&self.phase);
         self.killed.store(true, Ordering::SeqCst);
+        *lock(&self.ended_with) = Some(signal);
+        drop(phase);
         self.signal_programs(signal);
         if self.phase() == Phase::Stopped {
             self.set_phase(Phase::Running);

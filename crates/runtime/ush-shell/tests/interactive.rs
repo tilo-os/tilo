@@ -631,3 +631,42 @@ fn a_run_an_agent_asked_for_gets_the_agent_rendering() {
     let forged = typed_on(&host, &asked(true).replace(KEY, "forged"));
     assert!(forged.runs().is_empty());
 }
+
+#[test]
+fn a_program_that_attaches_after_its_job_was_stopped_or_ended_is_sent_that_first() {
+    // A background program attaches to its job once the host started it; `kill -STOP %1` or
+    // `kill %1` can come in between, while it is starting.
+    let attach = |job: &Arc<Job>| {
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&got);
+        let attached = job.attach(move |signal| seen.lock().unwrap().push(signal));
+        (attached, got)
+    };
+
+    let stopped = Job::new("serve", 1, false);
+    stopped.stop();
+    let (_attached, got) = attach(&stopped);
+    assert_eq!(
+        *got.lock().unwrap(),
+        [Signal::Stop],
+        "a stopped job's program stops"
+    );
+    stopped.resume(false);
+    assert_eq!(*got.lock().unwrap(), [Signal::Stop, Signal::Continue]);
+
+    let ended = Job::new("serve", 2, false);
+    ended.kill(Signal::Terminate);
+    let (_attached, got) = attach(&ended);
+    assert_eq!(
+        *got.lock().unwrap(),
+        [Signal::Terminate],
+        "an ended job's program ends"
+    );
+
+    let running = Job::new("serve", 3, false);
+    let (_attached, got) = attach(&running);
+    assert!(
+        got.lock().unwrap().is_empty(),
+        "a running job's program is left alone"
+    );
+}
