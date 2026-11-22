@@ -52,10 +52,7 @@ fn workspace(reads: bool) -> Replica {
         });
     ada.host.runtime().set_members(
         vec![
-            tilolang_runtime::members::Member::person(
-                "ada",
-                tilo_action_policy::Role::Owner,
-            ),
+            tilolang_runtime::members::Member::person("ada", tilo_action_policy::Role::Owner),
             tilolang_runtime::members::Member::agent("helper"),
         ],
         Some(grants),
@@ -166,13 +163,10 @@ fn find(r: &Replica, note: &ResourceRef, said: &str) -> (String, usize) {
     body.blocks
         .iter()
         .find_map(|block| {
-            block
-                .text
-                .find(said)
-                .map(|byte| {
-                    let before = block.text.get(..byte).unwrap_or_default();
-                    (block.id.clone(), before.chars().count())
-                })
+            block.text.find(said).map(|byte| {
+                let before = block.text.get(..byte).unwrap_or_default();
+                (block.id.clone(), before.chars().count())
+            })
         })
         .unwrap_or_else(|| panic!("the body says {said}: {:?}", body.written_text()))
 }

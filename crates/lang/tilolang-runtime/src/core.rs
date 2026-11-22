@@ -504,14 +504,10 @@ impl Core {
             | ListEnd | ListIndexOf | ListPrevious | TupleNew | TupleSetI | TupleSetF
             | TupleSetH | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV
             | IsSome | UnwrapI | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
-            // An argument a call left out before one it gives: it is no value, and the
-            // invocation has the default in its place before anything reads it.
             MissingV => self.ret_h(Value::Missing),
             CollWhere => self.ret_h(self.coll_where(a.h(0)?, a.h(1)?)?),
             CollWhereWith => self.ret_h(self.coll_where_with(a.h(0)?, a.h(1)?, a.h(2)?)?),
-            CollRelatives => {
-                self.ret_h(self.coll_relatives(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?, a.h(4)?)?)
-            }
+            CollRelatives => self.ret_h(self.coll_relatives(a)?),
             CollOrdered => self.ret_h(self.coll_ordered(a.h(0)?, a.h(1)?)?),
             Query => self.ret_h(self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?),
             Filters | FilterLit | SortLit => self.catalogue_import(imp, a),

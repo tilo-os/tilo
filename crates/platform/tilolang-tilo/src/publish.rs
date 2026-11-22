@@ -1330,15 +1330,18 @@ impl Publications {
     }
 
     /// The document of the resource `address` names, published down to it: what an invocation is
-    /// resolved against when the window shows nothing of it. `None` when the address is no
-    /// resource of `app`.
+    /// resolved against when the window shows nothing of it. A document of any package the host
+    /// runs is reached so, the ones its own app uses too: what a window shows bounds what it
+    /// publishes, never what a caller reaches, which the API decides by the caller's grants.
+    /// `None` when the address is no resource of a package the host runs.
     pub fn addressed(
         &mut self,
         host: &crate::host::Host,
         planner: &Arc<dyn Planner>,
-        app: &str,
         address: &str,
     ) -> Option<Rc<ResourceSpec>> {
+        let app = app_of(address)?;
+        host.package(app)?;
         let reached = reached_by_doc(app, &[address.to_owned()]);
         let (doc, reached) = reached.into_iter().next()?;
         let whole = self.whole_of(host, planner, &doc)?;

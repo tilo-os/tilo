@@ -18,7 +18,7 @@
 
 use std::rc::Rc;
 
-use crate::core::{Core, HResult, trap};
+use crate::core::{Args, Core, HResult, trap};
 use crate::meta::FieldKind;
 use crate::store::{FieldRead, FieldSpec, Listing, Store, StoreError};
 use crate::value::{CollRef, RefValue, Value};
@@ -390,14 +390,8 @@ impl Core {
     ///
     /// A view is not answered: what it depends on is the `parent` field of every item that is
     /// not under the one it asks after, which the walk reads and records one item at a time.
-    pub(crate) fn coll_relatives(
-        &self,
-        holder: i32,
-        field: i32,
-        parent: i32,
-        node: i32,
-        down: i32,
-    ) -> HResult<Value> {
+    pub(crate) fn coll_relatives(&self, a: &Args<'_>) -> HResult<Value> {
+        let (holder, field, parent, node, down) = (a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?, a.h(4)?);
         if self.frames.borrow().view().is_some() {
             return Ok(Value::none());
         }

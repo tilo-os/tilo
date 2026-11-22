@@ -95,11 +95,16 @@ pub fn session_document(person: &str) -> Result<ResourceService, String> {
 
 /// The record of the installed app `app`: its root made and filled by its first scenario as
 /// steps its authorship names, in a record of its own.
+///
+/// Its reads and actions are decided by the person's access in the workspace the session keeps
+/// the record in ([`tilo_service::WorkspaceDocument::access`]).
 fn seeded_app(person: &str, app: &InstalledApp) -> Result<ResourceService, String> {
+    let access = tilo_service::WorkspaceAccess::default();
+    let source = std::rc::Rc::clone(&access);
     let host = Host::new(
         &tilo_resource::Doc::new(),
         tilo_actions::Actor::from(tilo_actions::MemberId::person(person)),
-        || None,
+        move || source.borrow().as_ref().and_then(|access| access()),
     )
     .map_err(|e| e.to_string())?;
     host.set_words(crate::i18n::SeededWords);
@@ -121,7 +126,7 @@ fn seeded_app(person: &str, app: &InstalledApp) -> Result<ResourceService, Strin
             )
             .map_err(|error| format!("{name} {:?}: {error}", scenario.name))?;
     }
-    Ok(ResourceService::of_app(name, host, person))
+    Ok(ResourceService::of_app(name, host, person, access))
 }
 
 /// `service`, what its apps tell reaching the person through the platform's notifier this

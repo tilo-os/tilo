@@ -184,6 +184,12 @@ impl TiloAuthority {
         state.trusted.insert(ModuleHash::written_by(actor));
     }
 
+    /// The access of the person at the window it decides by now, when it has one.
+    #[must_use]
+    pub fn access(&self) -> Option<MemberAccess> {
+        (self.access)()
+    }
+
     /// Whether `actor` was admitted as software acting for a person.
     #[must_use]
     pub fn is_agent(&self, actor: &Actor) -> bool {

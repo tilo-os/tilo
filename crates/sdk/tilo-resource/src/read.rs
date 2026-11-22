@@ -67,6 +67,30 @@ fn spec_on(record: Option<&str>, item: Option<&str>) -> tilo_actions::ActionSpec
                 "How many entries of each list a page holds (default 25, at most 200)",
             )
             .nullable(),
+            tilo_actions::ActionParam::optional(
+                "field",
+                tilo_actions::ParamType::Text,
+                "The collection to read a page of, by field name (default: the one collection it has)",
+            )
+            .nullable(),
+            tilo_actions::ActionParam::optional(
+                "where",
+                tilo_actions::ParamType::Object,
+                "Only the collection's items whose fields hold these values, by field name, a reference by its id; `from`: the items made from that resource",
+            )
+            .nullable(),
+            tilo_actions::ActionParam::optional(
+                "after",
+                tilo_actions::ParamType::Text,
+                "The page starts after this item: the `next` an earlier page answered",
+            )
+            .nullable(),
+            tilo_actions::ActionParam::optional(
+                "limit",
+                tilo_actions::ParamType::Integer,
+                "How many items of the collection the page holds (default 25, at most 200)",
+            )
+            .nullable(),
         ]
         .into_iter()
         .filter(|param| item.is_none() || !matches!(param.name.as_ref(), "item" | "cursor" | "pageSize"))
@@ -77,6 +101,16 @@ fn spec_on(record: Option<&str>, item: Option<&str>) -> tilo_actions::ActionSpec
             asked.insert("version".into(), args.text("version").into());
             asked.insert("cursor".into(), args.text("cursor").into());
             asked.insert("pageSize".into(), args.integer("pageSize").into());
+            asked.insert("field".into(), args.text("field").into());
+            asked.insert(
+                "where".into(),
+                match args.get("where") {
+                    Some(tilo_actions::ArgValue::Object(matching)) => matching.clone().into(),
+                    _ => serde_json::Value::Null,
+                },
+            );
+            asked.insert("after".into(), args.text("after").into());
+            asked.insert("limit".into(), args.integer("limit").into());
             if let Some(record) = &record {
                 asked.insert("record".into(), record.as_str().into());
             }
@@ -89,7 +123,7 @@ fn spec_on(record: Option<&str>, item: Option<&str>) -> tilo_actions::ActionSpec
     )
     .of_kind(tilo_actions::ActionKind::Read)
     .with_description(
-        "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content. With version, read frozen historical content and its exact heads without changing the live resource.",
+        "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content, each resource with who made it, when and what from (`created`). With field, where, after and limit, a page of one collection's items: those whose fields hold the values `where` names, or that were made from its `from`. With version, read frozen historical content and its exact heads without changing the live resource.",
     )
     // Typed data for a program to reason about; a person reads what the
     // app shows.

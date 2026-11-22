@@ -120,6 +120,41 @@ pub fn reads_of(access: &MemberAccess, me: &PersonId, host: &Host) -> Rc<Reads> 
     })
 }
 
+impl Host {
+    /// Give the runtime the workspace's members as the policy the host decides by has them now
+    /// (its authority's access), when it changed: who is in it, their roles, and who reads what.
+    /// A window's instance follows them each frame, and a read follows them before it reads, so
+    /// a host the session keeps decides who reads what as a window's does. Whether it did.
+    pub fn follow_members(&self) -> bool {
+        let Some(access) = self.authority().access() else {
+            return false;
+        };
+        let person = access.person_id().unwrap_or_default();
+        let seen = self
+            .inner
+            .members_from
+            .borrow()
+            .as_ref()
+            .is_some_and(|(was, policy)| was == person && *policy == *access.policy);
+        if seen {
+            return false;
+        }
+        let me = PersonId::from(
+            self.viewer()
+                .member_id()
+                .and_then(MemberId::person_id)
+                .unwrap_or(person),
+        );
+        self.runtime()
+            .set_members(members_of(&access, &me), Some(reads_of(&access, &me, self)));
+        *self.inner.members_from.borrow_mut() = Some((
+            person.to_owned(),
+            std::sync::Arc::unwrap_or_clone(access.policy),
+        ));
+        true
+    }
+}
+
 /// Whether `who` may read `node` by `access`'s policy: a person by their own party, an
 /// agent by the grants the workspace gave it.
 fn reads_node(access: &MemberAccess, me: &PersonId, who: &Actor, node: &TreePath) -> bool {

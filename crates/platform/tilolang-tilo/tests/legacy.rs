@@ -51,7 +51,10 @@ fn fixtures() -> Vec<(&'static str, Vec<Package>)> {
                 include_str!("legacy/letters/app.ids"),
             )],
         ),
-        (include_str!("legacy/chat.hex"), vec![app!("agent"), app!("chat")]),
+        (
+            include_str!("legacy/chat.hex"),
+            vec![app!("agent"), app!("chat")],
+        ),
         (include_str!("legacy/board.hex"), vec![app!("board")]),
         (
             include_str!("legacy/today.hex"),

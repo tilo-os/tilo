@@ -119,6 +119,8 @@ struct KeptDocument {
     /// The heads of [`Self::document`] the store last took in: the workspace moved the document
     /// when they differ (an app's window wrote).
     read_at: RefCell<Vec<automerge::ChangeHash>>,
+    /// The person's access in the workspace, which the service's host decides by.
+    access: tilo_service::WorkspaceAccess,
 }
 
 impl ResourceService {
@@ -182,8 +184,16 @@ impl ResourceService {
     /// open, so what the service publishes is what the workspace holds, and what it changes is
     /// the workspace's change. What the workspace takes in from elsewhere is read on the next
     /// [`Service::poll`].
+    ///
+    /// `host` decides by `access` ([`Host::new`]), which the session fills with the person's
+    /// access in the workspace as it keeps the document there.
     #[must_use]
-    pub fn of_app(app: impl Into<String>, host: Host, person: impl Into<String>) -> Self {
+    pub fn of_app(
+        app: impl Into<String>,
+        host: Host,
+        person: impl Into<String>,
+        access: tilo_service::WorkspaceAccess,
+    ) -> Self {
         let mut service = Self::new(host, person);
         let mut document = service.record();
         let read_at = document.get_heads();
@@ -191,6 +201,7 @@ impl ResourceService {
             app: app.into(),
             document: Rc::new(RefCell::new(document)),
             read_at: RefCell::new(read_at),
+            access,
         });
         service
     }
@@ -748,6 +759,33 @@ impl ResourceService {
                     .map(Started::Done)
                     .map_err(ApiError::Failed);
             }
+            if encoded.type_id == tilo_resource::read::TYPE {
+                let args: Json = if encoded.payload.is_empty() {
+                    Json::Null
+                } else {
+                    tilo_actions::decode_json(&encoded.payload)
+                        .map_err(|error| ApiError::InvalidArguments(error.to_string()))?
+                };
+                if args
+                    .get("version")
+                    .is_some_and(|version| !version.is_null())
+                {
+                    return Err(ApiError::Failed(
+                        "a past version is read where its app runs".to_owned(),
+                    ));
+                }
+                let reader = crate::publish::Caller::from(invoker).reader();
+                return self
+                    .host
+                    .answer_read(&args, &reader)
+                    .map(|value| {
+                        Started::Done(ActionOutput {
+                            value: Some(value),
+                            resources: Vec::new(),
+                        })
+                    })
+                    .map_err(ApiError::Failed);
+            }
             if encoded.type_id != ACTION_TYPE {
                 return Err(ApiError::Unknown(address));
             }
@@ -1222,10 +1260,12 @@ impl Service for ResourceService {
     /// session keeps this service's copy of it there.
     fn workspace_document(&self) -> Option<tilo_service::WorkspaceDocument> {
         let (app, id) = self.kept_document()?;
+        let kept = self.kept_in_workspace.as_ref()?;
         Some(tilo_service::WorkspaceDocument {
             app,
             id,
-            document: Rc::clone(&self.kept_in_workspace.as_ref()?.document),
+            document: Rc::clone(&kept.document),
+            access: Rc::clone(&kept.access),
         })
     }
 

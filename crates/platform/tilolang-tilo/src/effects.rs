@@ -35,15 +35,6 @@ pub enum HostEffect {
         #[param("The block's source, such as `letters.send(@letters.Draft:id)` or a view body")]
         source: String,
     },
-    /// Read a resource's fields.
-    ///
-    /// The resource's type and every field as stored, by field id: how an agent task's
-    /// programs read what this app holds (agents.md, "How a program runs").
-    #[effect(kind = "read", returns)]
-    ReadValues {
-        #[param("The resource's id in its document, as `tl:<app>:<id>` ends")]
-        item: String,
-    },
     /// Read for a program.
     ///
     /// Answer what a program running in another app's host asks to read of this app: the
@@ -198,6 +189,122 @@ fn output(value: Json) -> ActionOutput {
     }
 }
 
+/// What a reader asks of a resource: the resource, and a page of one of its collections.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReadAsk {
+    /// The resource, by its published id; the workspace's documents when `None`.
+    pub item: Option<String>,
+    /// The collection to page, by field name; the item's one collection when it has one.
+    pub field: Option<String>,
+    /// The values the items' fields hold, by field name, a reference by its published id; `from`
+    /// the resource the items were made from.
+    pub matching: serde_json::Map<String, Json>,
+    /// The page starts after this item, by its published id: the `next` of the page before.
+    pub after: Option<String>,
+    /// How many items the page holds.
+    pub limit: Option<usize>,
+}
+
+impl ReadAsk {
+    /// The ask a `read`'s arguments make (`tilo_resource::read`).
+    ///
+    /// # Errors
+    /// An argument of the wrong type.
+    pub fn of_arguments(args: &Json) -> Result<Self, String> {
+        let text = |name: &str| -> Result<Option<String>, String> {
+            match args.get(name) {
+                None | Some(Json::Null) => Ok(None),
+                Some(Json::String(text)) => Ok(Some(text.clone())),
+                Some(other) => Err(format!("`{name}` is text, not {other}")),
+            }
+        };
+        let matching = match args.get("where") {
+            None | Some(Json::Null) => serde_json::Map::new(),
+            Some(Json::Object(matching)) => matching.clone(),
+            Some(other) => {
+                return Err(format!(
+                    "`where` names fields and their values, not {other}"
+                ));
+            }
+        };
+        let limit = match args.get("limit") {
+            None | Some(Json::Null) => None,
+            Some(limit) => Some(
+                limit
+                    .as_u64()
+                    .and_then(|limit| usize::try_from(limit).ok())
+                    .ok_or_else(|| format!("`limit` is a count, not {limit}"))?,
+            ),
+        };
+        Ok(Self {
+            item: text("item")?,
+            field: text("field")?,
+            matching,
+            after: text("after")?,
+            limit,
+        })
+    }
+
+    /// The ask of the resource `item` as a whole, or of the workspace's documents.
+    #[must_use]
+    pub fn of(item: Option<&str>) -> Self {
+        Self {
+            item: item.map(str::to_owned),
+            ..Self::default()
+        }
+    }
+
+    /// Whether it pages a collection.
+    #[must_use]
+    pub fn pages(&self) -> bool {
+        self.field.is_some()
+            || !self.matching.is_empty()
+            || self.after.is_some()
+            || self.limit.is_some()
+    }
+}
+
+/// What a read of `item` says when the workspace holds no resource of that id the reader may
+/// read: the same for one that is not there and one they may not read.
+fn unknown(item: &str) -> String {
+    format!("no resource `{item}`; read the app for the documents it holds")
+}
+
+/// Each resource a projection of `host`'s shows (`{"type", "id", ...}`) that the reader may not
+/// read, cut to the reference itself: what holds it names it, and nothing it holds.
+fn withheld(shown: &mut Json, host: &Host, reads: &dyn Fn(&ResourceRef) -> bool) {
+    use tilolang_runtime::store::Store as _;
+    match shown {
+        Json::Object(fields) => {
+            let hidden = fields
+                .get("id")
+                .and_then(Json::as_str)
+                .filter(|_| fields.contains_key("type"))
+                .and_then(|id| ResourceRef::parse_id(id, String::new()))
+                .and_then(|at| {
+                    Some(ResourceRef {
+                        ty: host.store().type_of(&at).ok()?,
+                        ..at
+                    })
+                })
+                .is_some_and(|at| !reads(&at));
+            if hidden {
+                fields.retain(|key, _| key == "id" || key == "type");
+                return;
+            }
+            for nested in fields.values_mut() {
+                withheld(nested, host, reads);
+            }
+        }
+        Json::Array(items) => {
+            for nested in items {
+                withheld(nested, host, reads);
+            }
+        }
+        _ => {}
+    }
+}
+
 impl Host {
     /// Answer `effect` for `caller`, the actor the API admitted (the person at the window
     /// when `None`). An agent's code is written by its own actor, so what it applies to
@@ -243,7 +350,6 @@ impl Host {
                     }),
                 }))
             }
-            HostEffect::ReadValues { item } => self.read_values(&item).map(output),
             HostEffect::ReadForProgram { request } => {
                 let request: ReadRequest = serde_json::from_str(&request)
                     .map_err(|error| format!("the request is not one a program makes: {error}"))?;
@@ -330,96 +436,314 @@ impl Host {
         })
     }
 
-    /// What the workspace's resources hold, as an agent or a script reads it through the API's
-    /// `read`: with no `item`, every document of the workspace with its id, kind and title; with an
-    /// `item` (a published id, `tl:<app>:<id>`, an item of a document by its path), that resource
-    /// with its fields, each of the items it holds named by its published id.
+    /// What the workspace's resources hold, as an agent, a script or an app outside tilolang reads
+    /// it through the API's `read`: with no `item`, every document of the workspace with its id,
+    /// kind and title; with an `item` (a published id, `tl:<app>:<id>`), that resource with its
+    /// fields, each collection as a page of the items it holds, each item named by its published
+    /// id. Every resource it shows carries who made it, when, and what from (`created`).
     ///
-    /// It shows what `reads` lets the reader read ([`Self::reads_for`]): a resource they may not
-    /// read reads as one that is not there, and an item of a collection they may not read is not
-    /// listed.
+    /// `ask` pages one collection of the item: the items whose fields hold the values its `where`
+    /// names (`from`: made from that resource), after the item `after`, `limit` of them. The
+    /// index answers it, so a page of a collection of ten thousand costs the page.
+    ///
+    /// What it shows is what `reads` says the reader may read ([`Self::reads_for`]): a resource
+    /// they may not read reads as one that is not there, an item of a collection they may not read
+    /// is left off the page, and a reference to one names it without what it holds.
     ///
     /// # Errors
-    /// The item names nothing in this workspace the reader may read.
-    pub fn read_content(
+    /// The item names nothing the reader may read in this workspace, or the ask does not fit it.
+    pub fn read_resource(
         &self,
-        item: Option<&str>,
+        ask: &ReadAsk,
         reads: &dyn Fn(&ResourceRef) -> bool,
     ) -> Result<Json, String> {
         use crate::meta::MetaExt as _;
-        use tilolang_runtime::store::Store as _;
-        let Some(item) = item else {
-            let records = self
-                .records()
-                .into_iter()
-                .filter(|(package, type_name, doc)| {
-                    package.meta.type_named(type_name).is_some_and(|declared| {
-                        reads(&ResourceRef::root(doc.clone(), declared.id.clone()))
-                    })
-                })
-                .map(|(package, type_name, doc)| {
-                    json!({
-                        "item": crate::publish::resource_id(&package.meta.app, &doc),
-                        "kind": package.meta.kind_of(&type_name),
-                        "title": self.label_of(&doc),
-                    })
-                })
-                .collect::<Vec<_>>();
-            let kind = self
-                .packages()
-                .first()
-                .map(|package| package.meta.resource_type())
-                .unwrap_or_default();
-            return Ok(json!({ "kind": kind, "records": records }));
+        let Some(item) = ask.item.as_deref() else {
+            if ask.pages() {
+                return Err(
+                    "a page of a collection is read of the resource that holds it: name its `item`"
+                        .to_owned(),
+                );
+            }
+            return Ok(self.documents(reads));
         };
-        let unknown = || format!("no resource `{item}`; read the app for the documents it holds");
-        let (app, path) = item
-            .strip_prefix("tl:")
-            .and_then(|rest| rest.split_once(':'))
-            .ok_or_else(unknown)?;
-        let package = self.package(app).ok_or_else(unknown)?;
-        let probe = ResourceRef::parse_id(path, String::new()).ok_or_else(unknown)?;
-        let ty = self.store().type_of(&probe).map_err(|_| unknown())?;
-        let at = ResourceRef::parse_id(path, ty).ok_or_else(unknown)?;
-        if !reads(&at) {
-            return Err(unknown());
-        }
+        let (app, at) = self.readable(item, reads)?;
+        let package = self.package(app).ok_or_else(|| unknown(item))?;
+        let declared = package
+            .meta
+            .type_named(&at.ty)
+            .ok_or_else(|| unknown(item))?;
+        let specs = self
+            .runtime()
+            .field_specs(&at.ty)
+            .ok_or_else(|| unknown(item))?;
+        let collections: Vec<&str> = specs
+            .iter()
+            .filter(|spec| spec.kind == tilolang_runtime::meta::FieldKind::Collection)
+            .filter_map(|spec| declared.fields.iter().find(|field| field.id == spec.id))
+            .map(|field| field.name.as_str())
+            .collect();
+        let paged = match ask.field.as_deref() {
+            Some(field) => Some(*collections.iter().find(|name| **name == field).ok_or_else(
+                || {
+                    format!(
+                        "`{field}` is no collection of `{item}`; its collections are: {}",
+                        collections.join(", ")
+                    )
+                },
+            )?),
+            None if ask.pages() => match collections.as_slice() {
+                [only] => Some(*only),
+                _ => {
+                    return Err(format!(
+                        "name the collection to page as `field`; those of `{item}` are: {}",
+                        collections.join(", ")
+                    ));
+                }
+            },
+            None => None,
+        };
+        let runtime = self.runtime();
         let options = tilolang_runtime::project::ProjectOptions {
             max_items: READ_ITEMS,
             max_text_chars: READ_TEXT_CHARS,
             depth: 1,
         };
-        let runtime = self.runtime();
-        let mut read = runtime.project_with(&tilolang_runtime::Value::resource(&at), options);
-        if let Some(Json::Object(fields)) = read.get_mut("fields") {
-            for (name, shown) in fields.iter_mut() {
-                // A collection projects as its size alone, which is what a prompt needs; a read
-                // is how an agent learns the ids of what the resource holds, so it lists them.
-                if let Ok(tilolang_runtime::Value::List(items)) = runtime.read(&at, name)
-                    && shown.get("items").is_none()
-                {
-                    let items: Vec<_> = items
-                        .into_iter()
-                        .filter(|item| match item {
-                            tilolang_runtime::Value::Ref(held) => reads(&held.target),
-                            _ => true,
-                        })
-                        .collect();
-                    *shown = self.listed(&items);
-                }
-            }
+        let mut fields = serde_json::Map::new();
+        for field in &declared.fields {
+            let shown = if collections.contains(&field.name.as_str()) {
+                // Each collection reads its first page; the one the ask names, the page it asks.
+                let whole = ReadAsk::default();
+                let asked = if paged == Some(field.name.as_str()) {
+                    ask
+                } else {
+                    &whole
+                };
+                self.page(&at, &field.name, asked, reads)?
+            } else {
+                let Ok(value) = runtime.read(&at, &field.id) else {
+                    continue;
+                };
+                let mut shown = runtime.project_with(&value, options);
+                withheld(&mut shown, self, reads);
+                shown
+            };
+            fields.insert(field.name.clone(), shown);
         }
+        let mut read = json!({
+            "type": at.ty,
+            "id": at.id_string(),
+            "fields": fields,
+        });
         published_ids(&mut read, app);
-        if let Json::Object(fields) = &mut read {
-            fields.insert("label".into(), json!(self.label_at(&at)));
-            fields.insert("item".into(), json!(item));
-            let type_name = package
-                .meta
-                .type_named(&at.ty)
-                .map_or_else(|| at.ty.clone(), |declared| declared.name.clone());
-            fields.insert("kind".into(), json!(package.meta.kind_of(&type_name)));
+        if let Json::Object(out) = &mut read {
+            out.insert("label".into(), json!(self.label_at(&at)));
+            out.insert("item".into(), json!(item));
+            out.insert("kind".into(), json!(package.meta.kind_of(&declared.name)));
+            out.insert("created".into(), self.created_json(&at, reads));
         }
         Ok(read)
+    }
+
+    /// Every document of the workspace the reader may read, with its id, kind and title.
+    fn documents(&self, reads: &dyn Fn(&ResourceRef) -> bool) -> Json {
+        use crate::meta::MetaExt as _;
+        let records = self
+            .records()
+            .into_iter()
+            .filter_map(|(package, type_name, doc)| {
+                let ty = package.meta.type_named(&type_name)?.id.clone();
+                let at = ResourceRef::root(doc.clone(), ty);
+                reads(&at).then(|| {
+                    json!({
+                        "item": crate::publish::resource_id(&package.meta.app, &doc),
+                        "kind": package.meta.kind_of(&type_name),
+                        "title": self.label_of(&doc),
+                        "created": self.created_json(&at, reads),
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        let kind = self
+            .packages()
+            .first()
+            .map(|package| package.meta.resource_type())
+            .unwrap_or_default();
+        json!({ "kind": kind, "records": records })
+    }
+
+    /// The app and the resource the published id `item` names, when the reader may read it.
+    fn readable<'a>(
+        &self,
+        item: &'a str,
+        reads: &dyn Fn(&ResourceRef) -> bool,
+    ) -> Result<(&'a str, ResourceRef), String> {
+        use tilolang_runtime::store::Store as _;
+        let (app, path) = item
+            .strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+            .ok_or_else(|| unknown(item))?;
+        self.package(app).ok_or_else(|| unknown(item))?;
+        let probe = ResourceRef::parse_id(path, String::new()).ok_or_else(|| unknown(item))?;
+        let ty = self.store().type_of(&probe).map_err(|_| unknown(item))?;
+        let at = ResourceRef { ty, ..probe };
+        if !reads(&at) {
+            return Err(unknown(item));
+        }
+        Ok((app, at))
+    }
+
+    /// A page of the collection `field` of `at` as `ask` asks it: its items, each as a row names
+    /// it, and where the next page starts.
+    fn page(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        ask: &ReadAsk,
+        reads: &dyn Fn(&ResourceRef) -> bool,
+    ) -> Result<Json, String> {
+        let mut matching = Vec::new();
+        let mut from = None;
+        for (name, value) in &ask.matching {
+            if name == "from" {
+                let Json::String(id) = value else {
+                    return Err("`from` names a resource by its published id".to_owned());
+                };
+                from = Some(self.readable(id, reads)?.1);
+                continue;
+            }
+            // A reference is matched by the resource it names, which the reader must read.
+            let value = match value {
+                Json::String(id) if id.starts_with("tl:") => {
+                    Json::String(self.readable(id, reads)?.1.id_string())
+                }
+                other => other.clone(),
+            };
+            matching.push((name.clone(), value));
+        }
+        let after = match ask.after.as_deref() {
+            Some(after) => Some(
+                self.readable(after, reads)?
+                    .1
+                    .item
+                    .ok_or_else(|| unknown(after))?,
+            ),
+            None => None,
+        };
+        let limit = ask
+            .limit
+            .unwrap_or(tilo_resource::read::PAGE_SIZE)
+            .clamp(1, tilo_resource::read::MAX_PAGE_SIZE);
+        let page = self
+            .runtime()
+            .page(
+                &tilolang_runtime::paging::PageAsk {
+                    at,
+                    field,
+                    matching: &matching,
+                    from: from.as_ref(),
+                    after: after.as_deref(),
+                    limit,
+                },
+                reads,
+            )
+            .map_err(|error| error.to_string())?;
+        let app = self.app_of_type(&at.ty).unwrap_or_default();
+        let items: Vec<Json> = page
+            .items
+            .iter()
+            .map(|item| self.row(item, &app, reads))
+            .collect();
+        let mut out = serde_json::Map::new();
+        out.insert("items".into(), Json::Array(items));
+        if let Some(next) = page.next {
+            let next = at.item(&next, String::new());
+            out.insert(
+                "next".into(),
+                json!(crate::publish::resource_id(&app, &next.id_string())),
+            );
+        }
+        Ok(Json::Object(out))
+    }
+
+    /// A resource as a page of a collection lists it: its type, id, published id and label, and
+    /// who made it.
+    fn row(&self, at: &ResourceRef, app: &str, reads: &dyn Fn(&ResourceRef) -> bool) -> Json {
+        let mut row = self.runtime().project_with(
+            &tilolang_runtime::Value::resource(at),
+            tilolang_runtime::project::ProjectOptions {
+                max_items: READ_ITEMS,
+                max_text_chars: READ_TEXT_CHARS,
+                depth: 0,
+            },
+        );
+        withheld(&mut row, self, reads);
+        published_ids(&mut row, app);
+        if let Json::Object(fields) = &mut row {
+            fields.insert("label".into(), json!(self.label_at(at)));
+            fields.insert("created".into(), self.created_json(at, reads));
+        }
+        row
+    }
+
+    /// Who made `at`, when, and what from, as a read shows it: what it was made from only when
+    /// the reader may read that.
+    fn created_json(&self, at: &ResourceRef, reads: &dyn Fn(&ResourceRef) -> bool) -> Json {
+        let Ok(Some(created)) = self.runtime().created(at) else {
+            return Json::Null;
+        };
+        let mut out = serde_json::Map::new();
+        out.insert(
+            "who".into(),
+            self.runtime()
+                .project(&tilolang_runtime::Value::Actor(created.who)),
+        );
+        out.insert("at".into(), json!(created.at));
+        if let Some(from) = created.from.filter(|from| reads(from)) {
+            let app = self.app_of_type(&from.ty).unwrap_or_default();
+            out.insert(
+                "from".into(),
+                json!(crate::publish::resource_id(&app, &from.id_string())),
+            );
+        }
+        Json::Object(out)
+    }
+
+    /// The app whose package declares the type `ty`.
+    fn app_of_type(&self, ty: &str) -> Option<String> {
+        self.find_in_packages(|package| {
+            package
+                .meta
+                .types
+                .iter()
+                .any(|declared| declared.id == ty)
+                .then(|| package.meta.app.clone())
+        })
+    }
+
+    /// Answer a `read` (`tilo_resource::read`) whose arguments are `args` for `reader`, of the
+    /// resources as they are now ([`Self::read_resource`]): the workspace's documents a page at a
+    /// time, as every app's read lists them.
+    ///
+    /// # Errors
+    /// As [`ReadAsk::of_arguments`] and [`Self::read_resource`].
+    pub fn answer_read(
+        &self,
+        args: &Json,
+        reader: &tilolang_runtime::Actor,
+    ) -> Result<Json, String> {
+        let ask = ReadAsk::of_arguments(args)?;
+        // Who reads what is the policy's now, whichever host answers the read.
+        self.follow_members();
+        let content = self.read_resource(&ask, &self.reads_for(reader))?;
+        if ask.item.is_some() {
+            return Ok(content);
+        }
+        tilo_resource::read::page(
+            content,
+            args.get("cursor").and_then(Json::as_str),
+            args.get("pageSize").and_then(Json::as_i64),
+        )
     }
 
     /// Whether the reader `reader` may read a resource: what the workspace's grants give them, as
@@ -431,39 +755,6 @@ impl Host {
     ) -> impl Fn(&ResourceRef) -> bool + 'a {
         let known = self.runtime().knows_members();
         move |at| !known || self.runtime().may_read(reader, at)
-    }
-
-    /// The resources of a collection as a read lists them: each with its type, id and label, up
-    /// to [`READ_ITEMS`], with the count of all of them.
-    fn listed(&self, items: &[tilolang_runtime::Value]) -> Json {
-        let shown: Vec<Json> = items
-            .iter()
-            .take(READ_ITEMS)
-            .map(|item| match item {
-                tilolang_runtime::Value::Ref(held) => {
-                    let mut listed = self.runtime().project_with(
-                        item,
-                        tilolang_runtime::project::ProjectOptions {
-                            max_items: READ_ITEMS,
-                            max_text_chars: READ_TEXT_CHARS,
-                            depth: 0,
-                        },
-                    );
-                    if let Json::Object(fields) = &mut listed {
-                        fields.insert("label".into(), json!(self.label_at(&held.target)));
-                    }
-                    listed
-                }
-                other => self.runtime().project(other),
-            })
-            .collect();
-        let mut listed = serde_json::Map::new();
-        listed.insert("count".into(), json!(items.len()));
-        listed.insert("items".into(), Json::Array(shown));
-        if items.len() > READ_ITEMS {
-            listed.insert("truncated".into(), json!(true));
-        }
-        Json::Object(listed)
     }
 
     fn resolve_suggestion(

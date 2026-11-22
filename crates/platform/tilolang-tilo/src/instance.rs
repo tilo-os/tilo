@@ -389,8 +389,6 @@ pub struct Instance {
     /// The lenses on each resource of the package, as presence last reported them.
     lenses: HashMap<String, Vec<(Actor, bool, bool)>>,
     lenses_changed: bool,
-    /// The person and the workspace's policy the runtime's members were last read from.
-    members_from: Option<(String, tilo_action_policy::WorkspacePolicy)>,
     /// The person's environment moved: their language, their formats, or what the member list
     /// calls someone. What a view shows of any of them is shown again, and what it sent is sent again.
     person_changed: bool,
@@ -520,7 +518,6 @@ impl Instance {
             out: Vec::new(),
             lenses: HashMap::new(),
             lenses_changed: false,
-            members_from: None,
             person_changed: false,
             outgoing: Rc::default(),
             in_flight: VecDeque::new(),
@@ -2563,30 +2560,9 @@ impl Instance {
     }
 
     /// Give the runtime the workspace's members as the workspace's policy has them now, when it
-    /// changed: who is in it, their roles, and who reads what. Whether it did.
-    fn follow_members(&mut self) -> bool {
-        let Some(host) = self.host() else {
-            return false;
-        };
-        let access = self.access.borrow().as_ref().and_then(|source| source());
-        let Some(access) = access else {
-            return false;
-        };
-        let seen = self.members_from.as_ref().is_some_and(|(person, policy)| {
-            *person == access.person_id().unwrap_or_default() && *policy == *access.policy
-        });
-        if seen {
-            return false;
-        }
-        host.runtime().set_members(
-            crate::members::members_of(&access, &self.me),
-            Some(crate::members::reads_of(&access, &self.me, &host)),
-        );
-        self.members_from = Some((
-            access.person_id().unwrap_or_default().to_owned(),
-            std::sync::Arc::unwrap_or_clone(access.policy),
-        ));
-        true
+    /// changed ([`Host::follow_members`]): the host reads the access this instance gives it.
+    fn follow_members(&self) -> bool {
+        self.host().is_some_and(|host| host.follow_members())
     }
 
     /// What the workspace calls the person `me` and each of `others` by id now, and the colour
