@@ -44,7 +44,6 @@ fn host_worker(record: usize) -> AdmittedJoinIdentity {
         role: CapRole::Owner,
         agent_id: None,
         session_delegated: false,
-        agent_cert: None,
     }
 }
 fn retained(state: &AppBrokerState) -> usize {

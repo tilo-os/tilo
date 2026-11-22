@@ -25,7 +25,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use collab_types::MemberId;
 
-use super::turns::answers_turns;
 use super::*;
 
 mod join;
@@ -919,7 +918,7 @@ impl JoinedChannel {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "one remote message's routing: a turn's requests, an agent session's and the device's own"
+        reason = "one remote message's routing: an agent session's and the device's own"
     )]
     fn remote_action_answer(
         &self,
@@ -954,31 +953,6 @@ impl JoinedChannel {
                 Some(Err(refused)) => (Some(Err(refused)), None),
                 None => (None, None),
             }
-        } else if let Some(caller) = self.state.turn_caller(self.peer_id) {
-            // An agent answering a turn makes every request as the turn, through its session.
-            let api = self.state.agent_session_api(
-                &caller,
-                InvocationCaller::Local {
-                    route,
-                    time: original_time,
-                    admitted: Box::new(current),
-                },
-            );
-            let Some(api) = api else {
-                return refusal(
-                    &request.message,
-                    tilo_actions::remote::ActionCallError::NotPermitted,
-                );
-            };
-            let answer =
-                tilo_actions::remote::serve(&api, &caller, request.message).ok_or_else(|| {
-                    BrokerError::failed("only remote-action requests are answered".into())
-                })?;
-            return Ok(Box::pin(async move {
-                answer.await.ok_or_else(|| {
-                    BrokerError::failed("the action provider dropped the request".into())
-                })
-            }));
         } else {
             (
                 self.state.continued_caller(self.peer_id, &request.message),
@@ -1283,8 +1257,7 @@ impl JoinedChannel {
         // No app changes another app's route: a channel held to read refuses.
         self.writable()?;
         let route = self.route();
-        let current = self
-            .state
+        self.state
             .revalidate_admission(&route, &self.verified_identity)?;
         if route.app_id.is_empty() || claimed_app != route.app_id {
             return Err(BrokerError::failed(
@@ -1340,15 +1313,6 @@ impl JoinedChannel {
         // a directory alone is offered before the app is ready.
         self.state
             .launch_published(&surface, self.resource_type.as_deref());
-        // An agent that publishes how it answers a turn is handed its turns.
-        if let Some(agent) = &current.agent_id
-            && answers_turns(&surface)
-        {
-            self.state
-                .turns
-                .answer(peer_id, &surface.route.cluster_id, agent);
-            self.state.local_turn.notify_one();
-        }
         Ok(())
     }
 

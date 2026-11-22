@@ -183,9 +183,8 @@ mod realtime_service_boundary_tests;
 #[path = "collab_app_broker/device_continuity_service_boundary_tests.rs"]
 mod device_continuity_service_boundary_tests;
 
-use tilo_peer_state::join::agent_cert::AgentCert;
 mod agent_cert;
-use agent_cert::{admit_agent_cert, admit_listed_agent, verify_agent_cert, verify_agent_join};
+use agent_cert::admit_listed_agent;
 
 /// The node of opening the application `app` in `workspace`: launching it is
 /// an action of the app itself.
@@ -265,6 +264,7 @@ mod agent_connection;
 mod agent_tests;
 mod app_consent;
 mod app_open_api;
+mod approval;
 #[cfg(test)]
 mod cancel_tests;
 mod foreign_ask;
@@ -274,14 +274,11 @@ mod invocation_update;
 mod launchable;
 mod live_views;
 mod local_action_provider;
-mod remaining_workspace_actions;
-mod turns;
-#[cfg(all(test, feature = "agents"))]
-mod web_search_tests;
-pub use agent_connection::AgentConnection;
-mod approval;
 mod person_answer;
 mod person_ask;
+mod remaining_workspace_actions;
+#[cfg(all(test, feature = "agents"))]
+mod web_search_tests;
 mod window_provider;
 mod windowless_instances;
 use approval::requires_store_approval;
@@ -491,8 +488,6 @@ pub struct AppBrokerState {
     /// someone acting for them makes; see [`Self::approval_confirmation`].
     approved_confirmations: Mutex<HashMap<String, Approval>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
-    /// The turns people asked agents in, and the agent connections that answer them.
-    turns: turns::Turns,
     invocation_id: AtomicU64,
     services: ProcessServices,
     workers: Mutex<Vec<PendingWorker>>,

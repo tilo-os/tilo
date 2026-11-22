@@ -174,41 +174,6 @@ impl CertifiedJoinIdentity {
     }
 }
 
-/// Version tag of an agent's join presentation.
-pub const AGENT_JOIN_PREFIX: &[u8] = b"tilo-collab-agent-join-v1\0";
-
-/// An agent's join: the certifying device's certificate (JSON, as in
-/// [`CertifiedJoinIdentity`]), the agent certificate that device signed
-/// (`tilo_workspace_join::agent_cert::AgentCert::encode`), and the agent
-/// key's signature over the workspace's join bytes, which proves the agent
-/// holds the key the certificate names.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentJoinIdentity {
-    pub workspace_id: String,
-    pub device_certificate: Vec<u8>,
-    pub certificate: Vec<u8>,
-    pub proof: Vec<u8>,
-}
-
-impl AgentJoinIdentity {
-    /// Encode with [`AGENT_JOIN_PREFIX`].
-    pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
-        let mut bytes = AGENT_JOIN_PREFIX.to_vec();
-        bytes.extend_from_slice(&postcard::to_stdvec(self)?);
-        Ok(bytes)
-    }
-
-    /// Decode an agent's presentation. `Ok(None)` means the bytes are not
-    /// one.
-    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, postcard::Error> {
-        let Some(encoded) = bytes.strip_prefix(AGENT_JOIN_PREFIX) else {
-            return Ok(None);
-        };
-        postcard::from_bytes(encoded).map(Some)
-    }
-}
-
 mod speakers;
 pub use speakers::*;
 
@@ -690,13 +655,7 @@ pub struct Invocation {
     pub context_json: String,
 }
 
-/// The resource of the action an agent answers a turn with.
-pub const TURN_RESOURCE: &str = "turn";
-/// The action an agent answers a turn with: the host invokes it on the agent's connection with a
-/// [`TurnRequest`] for each turn the agent is asked in.
-pub const ANSWER: &str = "answer";
-
-/// The turn an agent's [`ANSWER`] action is invoked with.
+/// A turn a person asked an agent in.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TurnRequest {

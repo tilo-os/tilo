@@ -407,9 +407,6 @@ impl WorkspaceActions {
         else {
             return Ok(());
         };
-        if caller.is_session_delegated() {
-            return Ok(());
-        }
         let revocations = self
             .shared
             .link
@@ -1418,16 +1415,15 @@ fn unknown_action() -> Outcome {
     Outcome::Rejected(ActionCallError::UnknownAction)
 }
 
-/// Whether `caller` is `person`, or an agent a device of theirs handed its
-/// session to.
+/// Whether `caller` is `person`, or an agent a device of theirs runs under a key they
+/// certified for it.
 fn acts_for(caller: &Caller, person: &str) -> bool {
     if let Some(id) = caller.acting().person_id() {
         return id == person;
     }
-    caller.acting().is_agent()
-        && caller
-            .delegating_person()
-            .is_some_and(|delegating| delegating.acting().person_id() == Some(person))
+    caller.is_device_agent()
+        && caller.acting().acted_for_person() == Some(person)
+        && caller.user_public_key().map(hex::encode).as_deref() == Some(person)
 }
 
 /// What a held record publishes that its API runs now.

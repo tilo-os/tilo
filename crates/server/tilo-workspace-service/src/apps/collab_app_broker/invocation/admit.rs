@@ -60,15 +60,12 @@ impl AppBrokerState {
             origin,
             retained_time,
         } = provenance;
-        if turns::is_answer(&offered.0.app_id, &offered.1) {
-            return Err("an agent answers a turn only when the host hands it one".into());
-        }
         let continuing = ContinuingCaller::admitted(caller, origin.as_ref());
         let owner = self.invocation_owner(origin.as_ref(), &offered.0.route.cluster_id, actor)?;
         owner.validate()?;
         // In native workspaces an agent acts only in an agent session that still goes, never on
         // a workspace grant alone.
-        let session = self.agent_session_of(caller, origin.as_ref(), &offered.0.route.cluster_id);
+        let session = self.agent_session_of(caller, &offered.0.route.cluster_id);
         if actor.is_agent() && !actor.is_app() && self.confines_agents(&offered.0.route.cluster_id)
         {
             match &session {

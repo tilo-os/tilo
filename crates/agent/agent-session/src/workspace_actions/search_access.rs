@@ -64,7 +64,6 @@ fn item_node(route: &DocumentRoute, resource: &str) -> Option<TreePath> {
 pub(super) struct Reader {
     person: ui::permissions::policy::PersonId,
     agent: Option<String>,
-    delegated: bool,
     on_turn: bool,
     user: Option<[u8; 32]>,
     device: Option<[u8; 32]>,

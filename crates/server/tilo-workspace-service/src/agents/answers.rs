@@ -220,10 +220,10 @@ impl ServerAgents {
             .person_device(workspace_id, person)
             .await
             .ok_or("the person who answered is admitted here on no device")?;
+        // The person's own answer wakes the agent: an automation of theirs, with their authority.
         let waker = Caller::authenticated(person, device)
             .in_workspace(workspace)
-            .delegated_to(WAKER)
-            .named("The answer to a question");
+            .running_shortcut(WAKER);
         let mut arguments = Map::new();
         arguments.insert("text".into(), json!(wake.text));
         arguments.insert("channel".into(), json!(wake.conversation_id));

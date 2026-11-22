@@ -2650,7 +2650,7 @@ pub async fn workspace_agent(
     ) else {
         return Vec::new();
     };
-    if !caller.is_session_delegated() {
+    if !caller.is_device_agent() {
         return Vec::new();
     }
     let workspace = workspace.to_string();

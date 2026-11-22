@@ -250,20 +250,12 @@ pub(super) async fn serve_broker_thread(
         tilo_identity::policy_change::Watch::new(move || turn.notify_one())
     };
     let mut policy = crate::apps::policy_schedule::PolicySchedule::default();
-    // Runs are delivered, and their questions told, as the workspace's record
-    // that holds them announces each publication: the epoch they were last
-    // delivered at.
-    let mut delivered = None;
     loop {
         let now = tilo_clock::now();
         let epoch = tilo_identity::policy_change::epoch();
         if policy.due(now, epoch).is_some_and(|due| due <= now) {
             let clocked = state.refresh_policy_surfaces();
             policy.checked(now, epoch, clocked);
-        }
-        if state.turns.answering() && (delivered != Some(epoch) || state.turns.take_due()) {
-            state.refresh_turns();
-            delivered = Some(epoch);
         }
         let workers = state
             .workers
@@ -307,9 +299,7 @@ pub(super) async fn serve_broker_thread(
         let now = tilo_clock::now();
         let mut recheck = policy.due(now, tilo_identity::policy_change::epoch());
         let armed = policy_watch.arm();
-        if (recheck.is_none() && armed != policy.epoch())
-            || (state.turns.answering() && delivered != Some(armed))
-        {
+        if recheck.is_none() && armed != policy.epoch() {
             // Announced between the checks above and arming: nothing will
             // wake the turn for it.
             recheck = Some(now);
@@ -575,20 +565,13 @@ impl AppBrokerState {
     /// in flight, so the accept loop parks instead of waking every 100 ms.
     pub(super) fn next_invocation_deadline(&self) -> Option<std::time::Instant> {
         let opens = self.workspace_opens.next_deadline();
-        // A turn whose person is being asked has no idle deadline: their answer is not its
-        // silence. Its cancellation deadline still stands.
-        let waiting = self.turns.waiting();
         let pending = self.pending_invocations.lock().ok()?;
         pending
-            .iter()
-            .filter_map(|(id, invocation)| {
-                let idle_at = (!waiting.contains(id))
-                    .then(|| {
-                        invocation
-                            .last_activity
-                            .checked_add(Self::INVOCATION_IDLE_TIMEOUT)
-                    })
-                    .flatten();
+            .values()
+            .filter_map(|invocation| {
+                let idle_at = invocation
+                    .last_activity
+                    .checked_add(Self::INVOCATION_IDLE_TIMEOUT);
                 let cancel_at = invocation
                     .cancellation_requested_at
                     .and_then(|requested| requested.checked_add(Self::CANCELLATION_GRACE));
@@ -606,9 +589,6 @@ impl AppBrokerState {
         idle_timeout: std::time::Duration,
         cancellation_grace: std::time::Duration,
     ) {
-        // A turn whose person is being asked is not idle, however long they take: only its
-        // cancellation ends it.
-        let waiting = self.turns.waiting();
         let expired = {
             let Ok(mut pending) = self.pending_invocations.lock() else {
                 return;
@@ -627,8 +607,8 @@ impl AppBrokerState {
                             .is_some_and(|requested| {
                                 now.saturating_duration_since(requested) >= cancellation_grace
                             });
-                    let idle_expired = !waiting.contains(id)
-                        && now.saturating_duration_since(invocation.last_activity) >= idle_timeout;
+                    let idle_expired =
+                        now.saturating_duration_since(invocation.last_activity) >= idle_timeout;
                     (cancellation_expired || idle_expired).then_some((*id, cancellation_expired))
                 })
                 .collect::<Vec<_>>();
@@ -683,7 +663,6 @@ impl AppBrokerState {
             }
             self.publish_activity(pending.activity.as_ref(), &update);
             self.record_completion(id, pending.completion_owner(), update.clone());
-            self.turn_updated(id, &update);
             if let Ok(mut requests) = self.cancellation_requests.lock() {
                 requests.remove(&id);
             }
@@ -825,7 +804,6 @@ impl AppBrokerState {
                 confirmation_grants: Mutex::new(HashMap::new()),
                 approved_confirmations: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
-                turns: turns::Turns::default(),
                 invocation_id: AtomicU64::new(next_invocation),
                 services,
                 workers: Mutex::new(Vec::new()),

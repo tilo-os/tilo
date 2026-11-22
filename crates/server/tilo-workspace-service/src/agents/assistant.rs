@@ -347,8 +347,7 @@ impl Hosted {
         // software acts for. It acts for them as their event, by its own id.
         let caller = Caller::authenticated(person, device)
             .in_workspace(instruction.workspace.clone())
-            .delegated_to(asking.asked_as.clone())
-            .named(starter.name.trim());
+            .running_shortcut(asking.asked_as.clone());
         let route = DocumentRoute {
             app_id: CHAT.to_owned(),
             cluster_id: instruction.workspace.clone(),

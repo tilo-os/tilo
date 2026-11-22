@@ -12,14 +12,8 @@ use tilo_peer_state::owner_commit::{
 };
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
-#[path = "agent_connection_tests.rs"]
-mod agent_connection;
-#[path = "agent_tools_tests.rs"]
-mod agent_tools;
-#[path = "certified_agent_tests.rs"]
-mod certified_agents;
-#[path = "turns_tests.rs"]
-mod turns;
+#[path = "agent_session_tests.rs"]
+mod agent_session;
 
 struct Native {
     owner: tilo_peer_state::owner::NativeWorkspaceOwner,
@@ -327,12 +321,6 @@ impl Fixture {
     ) -> Self {
         Self::built(launcher, host_steps, resource_changes, true)
     }
-    /// As [`Self::with_services`], on a device of this host's own: its connections are the local
-    /// socket's, which reach the host's own steps (`is_local_host_caller`), as the agent app's
-    /// connection to the person's own session does.
-    fn on_this_device(host_steps: Vec<Arc<dyn crate::apps::services::HostStepServices>>) -> Self {
-        Self::built(None, host_steps, None, false)
-    }
     /// The fixture, its signed device `foreign` to this host or one of its own.
     #[allow(
         clippy::too_many_lines,
@@ -473,9 +461,6 @@ impl Fixture {
         .encode()
         .unwrap()
     }
-    fn app_channel(&self, peer: u64, app: &str, agent: bool) -> runtime_collab::ChannelHandle {
-        wire_channel(self.app_handle(peer, app, agent))
-    }
     fn app_handle(&self, peer: u64, app: &str, agent: bool) -> JoinedChannel {
         let workspace = workspace_id().to_string();
         let mut admitted = self
@@ -550,41 +535,6 @@ async fn notes_target(f: &Fixture) -> (runtime_collab::ChannelHandle, Invocation
     target.publish_actions(&[notes_append()]).await.unwrap();
     let (stream, _end) = handle.invocation_feed(true).unwrap();
     (target, stream)
-}
-fn grant_notes(f: &Fixture) {
-    set_notes_permission(f, true);
-}
-fn set_notes_permission(f: &Fixture, may_write: bool) {
-    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
-    let workspace_id = workspace_id().to_string();
-    let append = tilo_actions::action_node(
-        &TreePath::workspace(&workspace_id),
-        "so.tilo.notes",
-        "document",
-        "notes:release",
-        None,
-        "append",
-    );
-    let grant = if may_write {
-        Grant::new(
-            "fixture-notes-append",
-            Grantee::agent("scribe"),
-            append,
-            KindSet::UNDOABLE,
-            Answer::Allow,
-            Grantee::person(hex::encode(f.native.certificate.user_public_key)),
-        )
-    } else {
-        Grant::new(
-            "fixture-notes-restrict",
-            Grantee::agent("scribe"),
-            append,
-            KindSet::ALL,
-            Answer::Deny,
-            Grantee::person(hex::encode(f.native.certificate.user_public_key)),
-        )
-    };
-    put_grant(f, grant);
 }
 fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
     f.native

@@ -110,10 +110,6 @@ pub(crate) struct AdmittedJoinIdentity {
     /// MCP client): it carries the delegation a device gives its agents,
     /// not grants the workspace holds for it.
     pub(super) session_delegated: bool,
-    /// The agent certificate an agent joined under, verified: a device's
-    /// chain to its person, for one session in this workspace. Every
-    /// revalidation verifies it again and asks whether its session still goes.
-    pub(super) agent_cert: Option<Box<AgentCert>>,
 }
 
 impl AdmittedJoinIdentity {
@@ -199,15 +195,10 @@ impl AdmittedJoinIdentity {
         let actor = match &self.agent_id {
             Some(agent) => {
                 let actor = BrokerActor::agent(agent.clone()).for_person(self.actor_key.clone());
-                let actor = if self.session_delegated {
+                if self.session_delegated {
                     actor.session_delegated()
                 } else {
                     actor
-                };
-                // A certified agent works in its session alone.
-                match &self.agent_cert {
-                    Some(cert) => actor.in_session(cert.session.clone()),
-                    None => actor,
                 }
             }
             None => BrokerActor::person(self.actor_key.clone()),
@@ -361,7 +352,6 @@ pub(super) fn admit_verified_join_at(
             display_handle: None,
             agent_id: None,
             session_delegated: false,
-            agent_cert: None,
         });
     }
     let workspace = workspace
@@ -381,7 +371,6 @@ pub(super) fn admit_verified_join_at(
         display_handle: None,
         agent_id: None,
         session_delegated: false,
-        agent_cert: None,
     })
 }
 
@@ -458,11 +447,6 @@ pub(super) fn verify_join_identity(
     trusted_devices: Option<&[[u8; 32]]>,
     authority: Option<&dyn crate::apps::certificate_authority::CertificateAuthority>,
 ) -> Result<AdmittedJoinIdentity, String> {
-    if let Some(presentation) = runtime_collab::AgentJoinIdentity::decode(identity_bytes)
-        .map_err(|error| format!("agent join presentation is malformed: {error}"))?
-    {
-        return verify_agent_join(route, &presentation, membership, trusted_devices, authority);
-    }
     admit_join_presentation(
         route,
         &join_presentation(identity_bytes)?,

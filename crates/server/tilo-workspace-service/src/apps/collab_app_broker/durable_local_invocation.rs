@@ -190,7 +190,7 @@ impl AppBrokerState {
         // that confines its agents keeps an agent from observing on a grant
         // alone: only one in an agent session that still goes observes.
         if actor.is_agent() && !actor.is_app() && self.confines_agents(workspace) {
-            match self.agent_session_of(Some(caller), Some(origin), workspace) {
+            match self.agent_session_of(Some(caller), workspace) {
                 Some(Ok(_)) => {}
                 Some(Err(ended)) => return Err(ActionCallError::unavailable(ended)),
                 None => {

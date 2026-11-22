@@ -80,15 +80,19 @@ impl Workspaces {
     /// asked as before: a key reaching all their workspaces, a key for another
     /// workspace, an agent on a device of theirs, and any other person's key.
     pub async fn runs_unattended(&self, workspace_id: WorkspaceId, caller: &Caller) -> bool {
-        // An agent's key, as the server names one: its person's agent on a
-        // session its own certificate opened.
-        if !(caller.acting().is_agent() && caller.is_session_delegated()) {
-            return false;
-        }
+        // An agent's key, as the server names one: the agent is the key.
         let (Some(user), Some(device)) = (caller.user_public_key(), caller.device_public_key())
         else {
             return false;
         };
+        if caller
+            .acting()
+            .agent_id()
+            .and_then(tilo_action_policy::key_of_agent)
+            != Some(*device)
+        {
+            return false;
+        }
         let Some(own) = self.own() else {
             return false;
         };
@@ -161,11 +165,14 @@ impl Workspaces {
             })
             .ok_or_else(unknown)?;
         // The person on a device of theirs, or an agent's key of theirs; an
-        // agent a device handed its session to asks through neither.
+        // agent a device of theirs runs asks through neither.
         let asks = caller.acting().is_person()
             || (certificate.capabilities.agent.is_some()
-                && caller.is_session_delegated()
-                && caller.acting().is_agent());
+                && caller
+                    .acting()
+                    .agent_id()
+                    .and_then(tilo_action_policy::key_of_agent)
+                    == Some(certificate.device_public_key));
         if !asks {
             return Err(unknown());
         }

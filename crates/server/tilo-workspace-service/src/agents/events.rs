@@ -776,9 +776,7 @@ fn asker_of(caller: &Caller) -> Option<Asker> {
         None
     } else if acting.is_person() {
         Some(Asker::Person)
-    } else if acting.is_agent()
-        && (caller.is_session_delegated() || caller.roster_created_at().is_some())
-    {
+    } else if caller.is_device_agent() || caller.roster_created_at().is_some() {
         Some(Asker::Assistant)
     } else {
         None

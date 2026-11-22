@@ -326,23 +326,7 @@ impl AppBrokerState {
                 current
                     .worker_registration
                     .clone_from(&admitted.worker_registration);
-                if let Some(agent_cert) = &admitted.agent_cert {
-                    // The chain again, now: the device still certified and in
-                    // the workspace's device list (checked above), the agent
-                    // certificate inside its window.
-                    let cert = admitted
-                        .certificate
-                        .as_ref()
-                        .ok_or("agent session lost its device certificate")?;
-                    verify_agent_cert(
-                        agent_cert,
-                        cert,
-                        collab_types::WorkspaceId::parse(&route.cluster_id)
-                            .ok_or("the agent's workspace is not a workspace id")?,
-                        now,
-                    )?;
-                    admit_agent_cert(&mut current, (**agent_cert).clone());
-                } else if let Some(agent_id) = &admitted.agent_id {
+                if let Some(agent_id) = &admitted.agent_id {
                     let roster = agents.ok_or("this host reads no workspace's agents")?;
                     admit_listed_agent(roster, &route.cluster_id, &mut current, agent_id).map_err(
                         |error| format!("certified agent session is no longer admitted: {error}"),
@@ -353,12 +337,6 @@ impl AppBrokerState {
                 Ok::<_, String>(current)
             })
             .and_then(std::convert::identity)
-            .and_then(|current| {
-                if let Some(cert) = &current.agent_cert {
-                    self.agent_session_goes(&route.cluster_id, cert)?;
-                }
-                Ok(current)
-            })
             .map_err(BrokerError::failed)
     }
     /// Bind a certified operation to the route, typed document protocol and
