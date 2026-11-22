@@ -16,7 +16,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use serde_json::{Value as Json, json};
+use serde_json::Value as Json;
 use tilo_actions::surface::{FieldType, TypeSet};
 use tilo_render_protocol::patch::{self as ui, Level};
 
@@ -741,8 +741,10 @@ fn read(host: &Host, meta: &Meta, field: &Field, text: &str) -> Result<Value, St
             return Ok(Value::none());
         }
         return match inner(&field.field_type) {
-            FieldType::Text | FieldType::RichText => host.argument(meta, &json!(""), &field.ty),
+            // A switch says nothing and is still off, which is an answer.
             FieldType::Bool => Ok(Value::Bool(false)),
+            // Anything else is an argument the action needs: a form asking for one reads whole
+            // only once it is given, never submitting nothing for it.
             _ => Err("Required".to_owned()),
         };
     }

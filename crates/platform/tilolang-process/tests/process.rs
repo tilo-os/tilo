@@ -3042,3 +3042,71 @@ fn a_process_keeps_no_documents_copy_and_reads_what_it_holds_from_the_workspace(
         "the process started again holds what the workspace holds"
     );
 }
+
+/// The tags the note `note` carries, as the runtime reads them.
+fn tags_of(host: &TilolangProcess, note: &patch::ResourceRef) -> Vec<String> {
+    let notes = host.instances().next().unwrap().instance();
+    let live = notes.host().expect("the runtime");
+    let resource = tilolang_tilo::instance::wire::runtime_resource(note).unwrap();
+    match live
+        .runtime()
+        .read(&resource, "tags")
+        .expect("the note's tags")
+    {
+        Value::List(tags) => tags
+            .iter()
+            .filter_map(|tag| tag.as_text().map(str::to_owned))
+            .collect(),
+        other => panic!("a note's tags read as {other:?}"),
+    }
+}
+
+/// A form asking for a required text does not read whole while it is empty: pressing its
+/// button before the person typed files nothing, and the words typed after it are the answer.
+#[test]
+fn a_form_asking_for_a_required_text_takes_it_before_it_answers() {
+    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", NOTES, notes());
+    settle(&mut host, &mut window);
+    press_new_note(&mut window);
+    settle(&mut host, &mut window);
+    let note = window
+        .in_place
+        .clone()
+        .expect("the press showed the note beside the list");
+    let address = host
+        .instances()
+        .next()
+        .expect("the runs")
+        .published()
+        .iter()
+        .find(|action| action.action_label == "Tag…")
+        .expect("Tag… is published")
+        .address
+        .clone();
+    window.send(&[ToApp::Invoke {
+        address,
+        argument: None,
+    }]);
+    settle(&mut host, &mut window);
+    let form = window.form.as_ref().expect("the action asks for a tag");
+    assert!(!form.ready, "a form asking a required text is not whole yet");
+    submit_form(&mut window);
+    settle(&mut host, &mut window);
+    assert!(
+        tags_of(&host, &note).is_empty(),
+        "submitting nothing files nothing"
+    );
+    type_into(&mut window, "form~t", "travel");
+    settle(&mut host, &mut window);
+    assert!(
+        window.form.as_ref().is_some_and(|form| form.ready),
+        "the form reads whole once the words are in it"
+    );
+    submit_form(&mut window);
+    settle(&mut host, &mut window);
+    assert_eq!(
+        tags_of(&host, &note),
+        ["travel"],
+        "the words the person typed are the tag"
+    );
+}
