@@ -960,14 +960,17 @@ impl Workspaces {
         let device = self.member_identity()?;
         self.wait_member_link(workspace_id).await?;
         let body = commit.body.clone();
-        let order = self
-            .inner
-            .host
-            .records
-            .carry(workspace_id, device.device(), commit)
-            .await?
-            .durable()
-            .await?;
+        let admission = crate::timing::said_if_long(
+            "the member copy's order",
+            self.inner
+                .host
+                .records
+                .carry(workspace_id, device.device(), commit),
+        )
+        .await?;
+        let order =
+            crate::timing::said_if_long("the member copy keeping the write", admission.durable())
+                .await?;
         let message: NeighbourMsg =
             NeighbourMsg::decode(&body).map_err(|error| error.to_string())?;
         // This device's own write is this copy's from the moment it is made, as the engine's was:
@@ -978,7 +981,8 @@ impl Workspaces {
                 .workspace(workspace)
                 .await
                 .map_err(|error| error.to_string())?;
-            let mut governed = state.lock().await;
+            let mut governed =
+                crate::timing::said_if_long("the member copy's lock", state.lock()).await;
             self.follow_member_document(&mut governed, device.device(), &message);
         }
         if let NeighbourMsg::AppDocument {

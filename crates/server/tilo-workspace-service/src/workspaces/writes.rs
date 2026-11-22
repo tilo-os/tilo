@@ -36,13 +36,12 @@ impl Workspaces {
     ) -> Result<AppWrite, WriteRefusal> {
         let device = self.signing_device();
         let now = tilo_clock::wall();
-        let state = self
-            .workspace(workspace)
+        let state = crate::timing::said_if_long("opening the workspace", self.workspace(workspace))
             .await
             .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
         let drafting = crate::timing::start();
         let (mut request, author) = {
-            let governed = state.lock().await;
+            let governed = crate::timing::said_if_long("the workspace's lock", state.lock()).await;
             tilo_peer_state::owner::draft_local_write(
                 &governed.peer(),
                 governed.workspace(),
@@ -71,9 +70,12 @@ impl Workspaces {
         let (envelope, own) = ((**envelope).clone(), own.clone());
         crate::timing::event("own_write.sign", signing, 0);
         let committing = crate::timing::start();
-        self.commit_local_document(workspace, request)
-            .await
-            .map_err(WriteRefusal::Refused)?;
+        crate::timing::said_if_long(
+            "the commit to the workspace",
+            self.commit_local_document(workspace, request),
+        )
+        .await
+        .map_err(WriteRefusal::Refused)?;
         crate::timing::event("own_write.commit", committing, 0);
         Ok(AppWrite {
             peer: neighbour_wire::peer_handle(&device.device()),

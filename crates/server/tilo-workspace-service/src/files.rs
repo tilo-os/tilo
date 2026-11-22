@@ -387,7 +387,12 @@ async fn write_as_device(
     (founding, snapshot): (bool, bool),
 ) -> Result<(), Refusal> {
     let route = route(copy.workspace, chunk);
-    let keys = match copy.workspaces.own_route_keys(&route, founding).await {
+    let keys = match crate::timing::said_if_long(
+        "the keys of the workspace's files",
+        copy.workspaces.own_route_keys(&route, founding),
+    )
+    .await
+    {
         Some(Err(why)) => {
             return Err(Refusal::Other(format!(
                 "the keys of the workspace's files: {why}"
