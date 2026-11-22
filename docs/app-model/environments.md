@@ -250,7 +250,7 @@ agent the person can tell apart, attribute and stop.
 **Two agents in two workspaces.** In the workspace *Studio*, open Terminal in
 the environment *dev* and run `claude`; switch to *Garden*, open Terminal in
 the environment *site* and run `claude` again. Each one's MCP server is
-`tilo-runtime --connect` (`tilo-runtime-mcp --connect`), with nothing else to
+`tilo-runtime --connect`, with nothing else to
 configure:
 
 ```json

@@ -20,16 +20,16 @@ class LocalAppTests(unittest.TestCase):
         self.app = self.root / 'SDK App.app'
         self.payload = self.root / 'payload'
         self.binary = self.file(self.app / 'Contents/MacOS/main', b'original app')
-        self.helper = self.file(self.app / 'Contents/MacOS/tilo-runtime-mcp', b'original helper')
+        self.helper = self.file(self.app / 'Contents/MacOS/tilo-runtime', b'original helper')
         self.info = {'CFBundleIdentifier': 'so.tilo.fixture', 'LSMinimumSystemVersion': '13.0',
                      'NSCameraUsageDescription': 'SDK generated description'}
         self.file(self.app / 'Contents/Info.plist', plistlib.dumps(self.info))
-        self.file(self.payload / 'Contents/MacOS/tilo-runtime-mcp', b'launcher')
-        self.file(self.payload / 'Contents/MacOS/tilo-runtime-mcp.real', b'relocated helper')
+        self.file(self.payload / 'Contents/MacOS/tilo-runtime', b'launcher')
+        self.file(self.payload / 'Contents/MacOS/tilo-runtime.real', b'relocated helper')
         self.file(self.payload / 'Contents/Resources/locale/de/LC_MESSAGES/glib20.mo', b'catalog')
         self.file(self.payload / 'receipt.json', b'{}')
         self.plan = {'payload': str(self.payload), 'runtime_plan': {'images': {
-            'original helper': {'destination': 'Contents/MacOS/tilo-runtime-mcp.real', 'sha256': digest(self.helper)}}}}
+            'original helper': {'destination': 'Contents/MacOS/tilo-runtime.real', 'sha256': digest(self.helper)}}}}
         self.pin()
 
     def pin(self):
@@ -48,7 +48,7 @@ class LocalAppTests(unittest.TestCase):
         self.assertEqual(info, {**self.info, 'LSMinimumSystemVersion': '27.0'})
         self.assertEqual(self.binary.read_bytes(), b'original app')
         self.assertEqual(self.helper.read_bytes(), b'launcher')
-        self.assertEqual((self.app / 'Contents/MacOS/tilo-runtime-mcp.real').read_bytes(), b'relocated helper')
+        self.assertEqual((self.app / 'Contents/MacOS/tilo-runtime.real').read_bytes(), b'relocated helper')
         self.assertFalse((self.app / 'receipt.json').exists())
 
     def test_wrong_original_helper_is_rejected_before_replacement(self):
@@ -71,7 +71,7 @@ class LocalAppTests(unittest.TestCase):
             apps.overlay(self.app, self.plan)
 
     def test_payload_and_receipt_replacement_after_plan_is_rejected(self):
-        (self.payload / 'Contents/MacOS/tilo-runtime-mcp').write_bytes(b'changed')
+        (self.payload / 'Contents/MacOS/tilo-runtime').write_bytes(b'changed')
         write_receipt(self.payload, self.plan['runtime_plan'], 'local-runtime')
         with self.assertRaisesRegex(ValueError, 'SHA-256 mismatch'):
             apps.overlay(self.app, self.plan)
@@ -93,7 +93,7 @@ class LocalAppTests(unittest.TestCase):
 
     def test_signing_inventory_orders_libraries_before_processes_and_app(self):
         facts = {'runtime': {
-            'Contents/MacOS/tilo-runtime-mcp.real': {'slices': {'arm64': {'filetype': 'EXECUTE'}}},
+            'Contents/MacOS/tilo-runtime.real': {'slices': {'arm64': {'filetype': 'EXECUTE'}}},
             'Contents/Frameworks/a.dylib': {'slices': {'arm64': {'filetype': 'DYLIB'}}}}}
         result = apps.signing_inventory(self.app, self.app.with_suffix('.entitlements'), facts)
         self.assertEqual(result['nested_code_in_order'][0], 'Contents/Frameworks/a.dylib')

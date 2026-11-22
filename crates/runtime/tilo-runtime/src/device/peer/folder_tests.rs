@@ -26,8 +26,8 @@ use tilo_workspace_service::device_documents::ServiceWrites;
 use tilo_workspace_service::workspaces::Workspaces;
 
 use super::Peer;
-use super::folders::{Folder, Folders};
-use crate::own_device::OwnDevice;
+use crate::device::workspaces::ServiceWorkspaces;
+use tilo_api::daemon::folders::{Folder, Folders};
 
 /// A device `root` certified, and its key.
 fn enrol(
@@ -252,7 +252,7 @@ async fn reaches_server(
 /// The computer as `tilo login` leaves it running: its own workspace service, the session its
 /// login holds over that service's endpoint, and the peer showing the person's folders.
 struct Computer {
-    own: Arc<OwnDevice>,
+    own: Arc<ServiceWorkspaces>,
     entered: tilo_session_client::device::Device,
     peer: Peer,
 }
@@ -263,14 +263,14 @@ impl Computer {
         dir: &Path,
         home: &Path,
         (key, cert): (&SigningKey, &DeviceCert),
-        login: &crate::login::Device,
+        login: &tilo_device_identity::login::Device,
     ) -> Self {
-        let server = crate::login::server_of(login).await.unwrap();
+        let server = tilo_api::daemon::enter::server_of(login).await.unwrap();
         // The last run's service lets go of its store as its tasks end.
         let own = tilo_test_env::within("the computer's own service opens", async {
             loop {
-                match OwnDevice::open(&dir.join("own"), key, cert, &server).await {
-                    Ok(own) => return Arc::new(own),
+                match ServiceWorkspaces::open_for_test(&dir.join("own"), key, cert, &server).await {
+                    Ok(own) => return own,
                     Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
                 }
             }
@@ -278,7 +278,7 @@ impl Computer {
         .await;
         let entered = tilo_test_env::within(
             "the login enters its workspace",
-            crate::login::connect(key, login, Some(own.lent())),
+            tilo_api::daemon::enter::connect(key, login, Some(own.lent())),
         )
         .await
         .expect("the login enters");
@@ -318,9 +318,7 @@ impl Computer {
         drop(self.peer);
         self.entered.close();
         drop(self.entered);
-        let own = Arc::try_unwrap(self.own)
-            .unwrap_or_else(|_| panic!("nothing else holds the computer's service"));
-        own.shutdown().await;
+        self.own.shutdown().await;
     }
 }
 
@@ -330,8 +328,8 @@ fn login_to(
     server: &tilo_server::daemon::Server,
     workspace: &str,
     (laptop_cert, server_cert): (&DeviceCert, &DeviceCert),
-) -> crate::login::Device {
-    crate::login::Device {
+) -> tilo_device_identity::login::Device {
+    tilo_device_identity::login::Device {
         site: "https://tilo.test/".into(),
         host_origin: "https://eu1.tilo.test".into(),
         workspace: workspace.to_owned(),
@@ -499,7 +497,7 @@ async fn a_synced_folder_follows_the_server_both_ways_across_a_restart() {
         .await
         .expect("the server's tree names the file");
     put_in_tree(
-        computer.own.workspaces(),
+        computer.own.copies(),
         &workspace,
         "copy.txt",
         (&address, size),
@@ -513,222 +511,5 @@ async fn a_synced_folder_follows_the_server_both_ways_across_a_restart() {
     .await;
 
     computer.stop().await;
-    server.shutdown().await;
-}
-
-/// Call `action` of the ticket's provider on the device that issued `ticket`, as the computer
-/// with `key` and no certificate, in `scope`: how it ended.
-async fn ask_issuer(
-    ticket: &tilo_device_identity::login::Ticket,
-    key: &SigningKey,
-    scope: &str,
-    action: &str,
-) -> Option<Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionCallError>> {
-    use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
-    use tilo_device_identity::login::{PROVIDER, RESOURCE};
-    let dialed =
-        tilo_server_client::ServerAddress::at(crate::login::address_of(&ticket.issuer).unwrap());
-    let endpoint = dialed.bind(Some(key.to_bytes())).await.unwrap();
-    let service = tilo_peer_state::actions::ActionService::new(
-        key.clone(),
-        Arc::new(tilo_peer_state::actions::NoActions),
-    );
-    let device = Arc::new(service.remote(&endpoint, &dialed.addr(), scope));
-    let input = tilo_device_identity::login::CertifyInput {
-        secret: ticket.secret_hex(),
-        device_public_key: hex::encode(key.verifying_key().to_bytes()),
-        agent: "Codex".into(),
-        label: None,
-    };
-    let serde_json::Value::Object(argument) = serde_json::to_value(&input).unwrap() else {
-        panic!("the input is an object");
-    };
-    let request = InvokeRequest {
-        on_behalf_of: None,
-        invocation: tilo_actions::InvocationId::new(),
-        target: RemoteActionTarget {
-            provider: PROVIDER.to_owned(),
-            address: tilo_actions::ActionAddress::new(RESOURCE, action),
-        },
-        argument: InvokeArgument::Json(argument),
-        context: None,
-        confirmation: None,
-        revision: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    };
-    let settled = device
-        .invoke_until_settled(request, Duration::from_secs(10))
-        .await;
-    endpoint.close().await;
-    settled
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one person adding a computer, from the ticket to a file read on it, read top to bottom"
-)]
-async fn a_computer_logged_in_with_a_ticket_reads_what_another_device_wrote() {
-    use tilo_actions::remote::ActionCallError;
-    use tilo_device_identity::login::{CERTIFY, SCOPE};
-
-    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
-    let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
-    let state = tempfile::tempdir().unwrap();
-    let server = tilo_server::daemon::Server::start_with_relay_mode(
-        tilo_server::ServerConfig {
-            state_root: state.path().join("server"),
-            ..Default::default()
-        },
-        tilo_server::daemon::ServerIdentity {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_signing_key: server_key,
-            device_cert: server_cert.clone(),
-            revocations: RevocationList::new(),
-        },
-        iroh::RelayMode::Disabled,
-    )
-    .await
-    .unwrap();
-    let hosted = server
-        .workspaces()
-        .expect("the server holds workspaces")
-        .clone();
-    let workspace = hosted.create("Studio").await.unwrap().workspace;
-    hosted
-        .enter(&workspace, &laptop_cert)
-        .await
-        .expect("a device of the person enters the workspace");
-
-    // The laptop holds the person's root and writes a file in its folder.
-    let laptop_login = login_to(&server, &workspace, (&laptop_cert, &server_cert));
-    let (laptop_dir, laptop_home) = (
-        state.path().join("laptop"),
-        state.path().join("laptop-home"),
-    );
-    let laptop_folder = folder_at(&laptop_dir, &laptop_home, &workspace);
-    let laptop = Computer::start(
-        &laptop_dir,
-        &laptop_home,
-        (&laptop_key, &laptop_cert),
-        &laptop_login,
-    )
-    .await;
-    let notes = b"Ship on Friday.\n";
-    std::fs::write(laptop_folder.join("notes.txt"), notes).unwrap();
-    reaches_server(
-        &server,
-        &workspace,
-        "notes.txt",
-        notes,
-        "the laptop's file reaches the server",
-    )
-    .await;
-
-    // `tilo device add` on the laptop: a ticket its root approves.
-    let issued = crate::device::issue(
-        &laptop_login,
-        Arc::new(crate::device::RootApprover {
-            root: root.clone(),
-            device: laptop_key.clone(),
-            cert: laptop_cert.clone(),
-        }),
-    )
-    .await
-    .unwrap();
-    let text = issued.ticket.encode();
-    let ticket = tilo_device_identity::login::Ticket::parse(&text).unwrap();
-    let desk_key = SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(getrandom::SysRng));
-
-    // A computer with no certificate gets nothing but the certify action.
-    let other = ask_issuer(&ticket, &desk_key, SCOPE, "list").await;
-    assert!(
-        matches!(other, Some(Err(ActionCallError::UnknownAction))),
-        "another action of the ticket's provider is refused: {other:?}"
-    );
-    let in_workspace = ask_issuer(&ticket, &desk_key, &workspace, CERTIFY).await;
-    assert!(
-        matches!(
-            in_workspace,
-            Some(Err(
-                ActionCallError::NotPermitted | ActionCallError::Refused { .. }
-            ))
-        ),
-        "a call in the person's workspace is refused to a device it does not know: {in_workspace:?}"
-    );
-    // A wrong secret is refused.
-    let mut wrong = ticket.clone();
-    wrong.secret = [7; 32];
-    let refused = crate::login::certified_with(&wrong, &desk_key, "Codex", "Codex on desk")
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(refused.contains("didn't take this ticket"), "{refused}");
-
-    // `tilo login <ticket>` on the desk.
-    let answer = crate::login::certified_with(&ticket, &desk_key, "Codex", "Codex on desk")
-        .await
-        .expect("the laptop certifies the desk");
-    assert!(answer.cert.is_root_signed_device());
-    assert_eq!(answer.cert.user_public_key, root.verifying_key().to_bytes());
-    assert_eq!(
-        answer.cert.device_public_key,
-        desk_key.verifying_key().to_bytes()
-    );
-    assert_eq!(answer.enter.workspace, workspace);
-    let given = crate::device::certified(&issued).await.unwrap();
-    assert_eq!(
-        given, answer.cert,
-        "the laptop says which computer it added"
-    );
-    // The ticket is spent.
-    let spent_key = SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(getrandom::SysRng));
-    let spent = crate::login::certified_with(&ticket, &spent_key, "Codex", "Codex on desk")
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(spent.contains("didn't take this ticket"), "{spent}");
-    issued.end().await;
-
-    // The desk enters as the person's device: it lists their workspaces and holds the laptop's
-    // file in its own folder.
-    let desk_login = crate::login::device_of(answer.clone(), "Codex");
-    let (desk_dir, desk_home) = (state.path().join("desk"), state.path().join("desk-home"));
-    let desk_folder = folder_at(&desk_dir, &desk_home, &workspace);
-    let desk = Computer::start(
-        &desk_dir,
-        &desk_home,
-        (&desk_key, &answer.cert),
-        &desk_login,
-    )
-    .await;
-    let listed = desk
-        .entered
-        .personal_list(
-            &tilo_server_session::workspaces::WorkspaceLabels::new(),
-            None,
-        )
-        .await
-        .expect("the desk reads the person's workspaces");
-    assert!(
-        listed
-            .workspaces
-            .iter()
-            .any(|known| known.workspace == workspace),
-        "the desk lists the person's workspace: {:?}",
-        listed.workspaces
-    );
-    holds(
-        &desk_folder.join("notes.txt"),
-        notes,
-        "the laptop's file appears on the desk",
-    )
-    .await;
-
-    desk.stop().await;
-    laptop.stop().await;
     server.shutdown().await;
 }

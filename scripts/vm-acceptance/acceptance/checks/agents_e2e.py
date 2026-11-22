@@ -957,15 +957,15 @@ print("E2E-HOST " + json.dumps(out))
 
 
 # A program of the login, outside every environment, coming in by the session's own server as
-# Claude Code on the host does (`tilo-runtime-mcp --connect`): admitted, it stays connected until
+# Claude Code on the host does (`tilo-runtime --connect`): admitted, it stays connected until
 # the harness writes the file named first, then leaves.
 HOST_AGENT = r'''
 import json, os, select, shutil, subprocess, sys, time
 done = sys.argv[1]
 out = {}
-mcp = shutil.which("tilo-runtime-mcp") or "/usr/libexec/tilo/tilo-runtime-mcp"
+mcp = shutil.which("tilo-runtime") or "/usr/libexec/tilo/tilo-runtime"
 if not os.path.exists(mcp):
-    out["missing"] = "tilo-runtime-mcp"
+    out["missing"] = "tilo-runtime"
     print("E2E-HOST-AGENT " + json.dumps(out))
     sys.exit(0)
 proc = subprocess.Popen([mcp, "--connect"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,

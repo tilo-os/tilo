@@ -2,9 +2,9 @@
 //!
 //! Each of the person's workspaces has one folder, the same everywhere: on
 //! Tilo OS at `/var/workspace`, on any other computer logged in with
-//! `tilo login` at `~/<workspace>` by default. The peer `tilo login` leaves
-//! running ([`crate::peer`]) mounts them; this command changes which, where,
-//! and whether each syncs ([`crate::peer::folders`]), and the peer applies it
+//! `tilo login` at `~/<workspace>` by default. The daemon `tilo login` leaves
+//! running (`tilo-runtime --hold`) mounts them; this command changes which, where,
+//! and whether each syncs ([`tilo_api::daemon::folders`]), and the daemon applies it
 //! within seconds.
 
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use clap::Subcommand;
 use serde_json::{Value, json};
 
-use crate::peer::folders::Folders;
+use tilo_api::daemon::folders::{self, Folders};
 
 /// How long a command waits for the peer to apply what it changed.
 const APPLYING: Duration = Duration::from_secs(20);
@@ -279,7 +279,7 @@ fn list(dir: &Path, json: bool) -> ExitCode {
         println!("No workspace has a folder here yet.");
     }
     for folder in &mounted {
-        println!("  {}", crate::peer::describe_folder(folder));
+        println!("  {}", describe_folder(folder));
     }
     for (id, folder) in &folders.workspaces {
         if gone(id) {
@@ -352,7 +352,7 @@ fn add(
             })?;
             folders.workspaces.insert(
                 id.clone(),
-                crate::peer::folders::Folder {
+                folders::Folder {
                     path: folders.free_path(home, &name),
                     name,
                     paused: false,
@@ -397,7 +397,7 @@ fn change(
     dir: &Path,
     named: &str,
     json: bool,
-    change: impl FnOnce(&mut crate::peer::folders::Folder) -> String,
+    change: impl FnOnce(&mut folders::Folder) -> String,
 ) -> Result<ExitCode> {
     let mut folders = Folders::load(dir)?;
     let id = folders
@@ -583,4 +583,229 @@ fn say_answered_late(peer: &Value) {
         "Tilo's background sync is busy and hasn't answered for {ago}s, so this is how it stood \
          then. If it stays busy for {restarts}s, it starts again by itself."
     );
+}
+
+/// `n` bytes as a person reads them: one decimal in the largest unit that
+/// holds a whole one.
+pub(crate) fn size(n: u64) -> String {
+    let units = [
+        ("TB", 1_000_000_000_000_u64),
+        ("GB", 1_000_000_000),
+        ("MB", 1_000_000),
+        ("KB", 1_000),
+    ];
+    units.iter().find(|(_, scale)| n >= *scale).map_or_else(
+        || format!("{n} B"),
+        |(unit, scale)| {
+            let tenths = n.saturating_mul(10).checked_div(*scale).unwrap_or(0);
+            format!("{}.{} {unit}", tenths / 10, tenths % 10)
+        },
+    )
+}
+
+/// What `tilo status` prints of the peer's answer to its status request.
+pub(crate) fn describe(status: &serde_json::Value) -> String {
+    use std::fmt::Write as _;
+    let text = |key: &str| {
+        status
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("?")
+    };
+    let mut said = format!(
+        "This computer is \"{}\" in Tilo, one of the person's computers, through {}.\n",
+        text("device"),
+        text("host"),
+    );
+    if let Some(why) = status.get("not_in").and_then(serde_json::Value::as_str) {
+        let _ = writeln!(said, "{why}");
+    }
+    let mounted = status
+        .get("mounted")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if mounted.is_empty() {
+        said.push_str("No workspace has a folder here yet.\n");
+    }
+    for workspace in &mounted {
+        let _ = writeln!(said, "  {}", describe_folder(workspace));
+    }
+    for failed in status
+        .get("failed")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let _ = writeln!(
+            said,
+            "  {} has no folder here: {}",
+            failed
+                .get("workspace")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?"),
+            failed
+                .get("why")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?"),
+        );
+    }
+    said
+}
+
+/// One folder in a sentence: where, what state, and how much is here.
+pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
+    let field = |key: &str| {
+        workspace
+            .get(key)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    };
+    let number = |key: &str| {
+        workspace
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    };
+    let at = workspace
+        .get("at")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("?");
+    let name = workspace
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("?");
+    // A peer that does not say is one that answers for its session itself.
+    let connected = workspace
+        .get("connected")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let stuck = workspace
+        .get("stuck")
+        .and_then(serde_json::Value::as_str)
+        .map(|why| format!("changes made here wait: {why}"));
+    // The folder says what it is doing as one state; only whether this computer reaches the
+    // workspace at all is the daemon's own word beside it.
+    let said = workspace
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("opening");
+    let state = match said {
+        "paused" => "paused",
+        "waiting-for-workspace" => "waiting for the workspace to reach this computer",
+        _ if !connected => "not connected to the workspace; changes made here wait to go out",
+        "opening" => "waiting for the workspace's files",
+        "stuck" => stuck.as_deref().unwrap_or("sending changes"),
+        "content-going-out" => "the workspace's server doesn't have all its files yet",
+        "in-sync" => "in sync",
+        _ => "sending changes",
+    };
+    let read_only = if field("read_only") {
+        ", read-only"
+    } else {
+        ""
+    };
+    format!(
+        "{name}: {at} ({state}{read_only}; {} files, {} of {} on this computer)",
+        number("files"),
+        size(number("local_bytes")),
+        size(number("bytes")),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What `tilo folders` says of a folder whose sync stands as `status`, on a computer that
+    /// reaches the workspace or not.
+    fn said(mut status: tilo_fs::tree_sync::Status, connected: bool) -> String {
+        status.files = 1;
+        status.bytes = 1;
+        status.state = status.folder_state();
+        let mut folder = serde_json::to_value(&status).unwrap();
+        folder["name"] = serde_json::json!("Tilo");
+        folder["at"] = serde_json::json!("/home/ada/Tilo");
+        folder["connected"] = serde_json::json!(connected);
+        describe_folder(&folder)
+    }
+
+    /// A folder whose every change went out and whose content a holder keeps whole.
+    fn whole() -> tilo_fs::tree_sync::Status {
+        tilo_fs::tree_sync::Status {
+            opened: true,
+            sent: true,
+            durable: true,
+            host_lacks: Some(0),
+            ..tilo_fs::tree_sync::Status::default()
+        }
+    }
+
+    /// A folder whose device has no live session with the workspace is never "in sync": what it
+    /// last sent says nothing of what is written there since.
+    #[test]
+    fn a_folder_without_a_session_is_not_in_sync() {
+        assert!(said(whole(), true).contains("(in sync;"));
+        let offline = said(whole(), false);
+        assert!(!offline.contains("in sync"), "{offline}");
+        assert!(offline.contains("not connected"), "{offline}");
+    }
+
+    /// A folder whose changes all went out is not "in sync" while the workspace's server still
+    /// lacks some of its files' content: wiping this computer then could lose them.
+    #[test]
+    fn a_folder_the_server_lacks_files_of_is_not_in_sync() {
+        let lacking = said(
+            tilo_fs::tree_sync::Status {
+                host_lacks: Some(3),
+                ..whole()
+            },
+            true,
+        );
+        assert!(
+            lacking.contains("(the workspace's server doesn't have all its files yet;"),
+            "{lacking}"
+        );
+    }
+
+    /// A folder whose workspace is not on this computer says it waits for it, rather than
+    /// reading as sending changes forever.
+    #[test]
+    fn a_folder_waiting_for_its_workspace_says_so() {
+        let waiting = said(
+            tilo_fs::tree_sync::Status {
+                opened: false,
+                waiting_for_workspace: true,
+                ..whole()
+            },
+            true,
+        );
+        assert!(
+            waiting.contains("(waiting for the workspace to reach this computer;"),
+            "{waiting}"
+        );
+        assert!(said(whole(), true).contains("(in sync;"));
+    }
+
+    /// A folder whose changes wait for part of the workspace's file list that has not arrived
+    /// says so and why, rather than that it is sending changes for as long as that lasts.
+    #[test]
+    fn a_folder_whose_changes_wait_says_why() {
+        let sending = tilo_fs::tree_sync::Status {
+            sent: false,
+            ..whole()
+        };
+        assert!(said(sending.clone(), true).contains("(sending changes;"));
+        let waiting = said(
+            tilo_fs::tree_sync::Status {
+                stuck: Some("a part has not arrived".to_owned()),
+                ..sending
+            },
+            true,
+        );
+        assert!(
+            waiting.contains("(changes made here wait: a part has not arrived;"),
+            "{waiting}"
+        );
+    }
 }

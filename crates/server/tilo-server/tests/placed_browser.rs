@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use linux_vm::hosted::control::{self, OpenBrowser, Reply, Request};
-use tilo_runtime::standalone::take_work;
+use tilo_runtime::device::take_work;
 use tilo_server::placed_browsers::{OpenError, PlacedBrowsers};
 use tilo_server::placed_shells::{Member, Members, PlacedShells};
 use tilo_server_protocol::WorkSetting;

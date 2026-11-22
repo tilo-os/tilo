@@ -32,7 +32,7 @@ with tempfile.TemporaryDirectory(prefix='tilo dmg fixture ') as temporary:
     app = root / entry['bundle']
     (app / 'Contents/MacOS').mkdir(parents=True)
     (app / 'Contents/Resources').mkdir()
-    for name in ['calculator', 'tilo-runtime-mcp']:
+    for name in ['calculator', 'tilo-runtime']:
         shutil.copy2(root / 'fixture', app / 'Contents/MacOS' / name)
     shutil.copy2(c.ROOT / entry['manifest'], app / 'Contents/Resources/tilo-app.toml')
     info = {'CFBundleExecutable': 'calculator', 'CFBundleIdentifier': entry['id'],

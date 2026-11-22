@@ -11,22 +11,22 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization as _;
 
 /// The file, in the device's directory.
-pub(crate) const FILE: &str = "folders.json";
+pub const FILE: &str = "folders.json";
 
 /// This computer's synced folders.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Folders {
+pub struct Folders {
     /// Whether a workspace of the person's own gets a folder as soon as this
     /// computer learns of it.
     #[serde(default = "yes")]
-    pub(crate) auto_own: bool,
+    pub auto_own: bool,
     /// Whether a workspace the person joined gets one too: on unless turned
     /// off, since a workspace added on one of their devices is on all of them.
     #[serde(default = "yes")]
-    pub(crate) auto_joined: bool,
+    pub auto_joined: bool,
     /// By workspace id.
     #[serde(default)]
-    pub(crate) workspaces: BTreeMap<String, Folder>,
+    pub workspaces: BTreeMap<String, Folder>,
 }
 
 impl Default for Folders {
@@ -45,17 +45,17 @@ const fn yes() -> bool {
 
 /// One workspace's folder here.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Folder {
+pub struct Folder {
     /// The workspace's name when the folder was made.
-    pub(crate) name: String,
+    pub name: String,
     /// Where it is.
-    pub(crate) path: PathBuf,
+    pub path: PathBuf,
     /// Not syncing: changes made here wait, others' changes do not arrive.
     #[serde(default)]
-    pub(crate) paused: bool,
+    pub paused: bool,
     /// Removed by the person: not shown here, and not added back by itself.
     #[serde(default)]
-    pub(crate) removed: bool,
+    pub removed: bool,
 }
 
 impl Folders {
@@ -63,7 +63,7 @@ impl Folders {
     ///
     /// # Errors
     /// The file exists but cannot be read.
-    pub(crate) fn load(device_dir: &Path) -> anyhow::Result<Self> {
+    pub fn load(device_dir: &Path) -> anyhow::Result<Self> {
         match std::fs::read(device_dir.join(FILE)) {
             Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -75,7 +75,7 @@ impl Folders {
     ///
     /// # Errors
     /// They cannot be written.
-    pub(crate) fn save(&self, device_dir: &Path) -> anyhow::Result<()> {
+    pub fn save(&self, device_dir: &Path) -> anyhow::Result<()> {
         let bytes = serde_json::to_vec_pretty(self)?;
         tilo_files::native::atomic::write_with_mode(&device_dir.join(FILE), &bytes, 0o600)?;
         Ok(())
@@ -84,7 +84,7 @@ impl Folders {
     /// Give `workspace`, called `name`, a folder when this computer has none
     /// for it and the person did not remove it: of their own when `auto_own`,
     /// one they joined when `auto_joined`. Whether one was added.
-    pub(crate) fn offer(&mut self, workspace: &str, name: &str, own: bool, home: &Path) -> bool {
+    pub fn offer(&mut self, workspace: &str, name: &str, own: bool, home: &Path) -> bool {
         if self.workspaces.contains_key(workspace)
             || !(if own { self.auto_own } else { self.auto_joined })
         {
@@ -108,7 +108,7 @@ impl Folders {
     /// `~/<name>`, suffixed when that is taken; one the person moved keeps
     /// its place and only takes the name. The folder's old and new path when
     /// it moves.
-    pub(crate) fn follow_rename(
+    pub fn follow_rename(
         &mut self,
         workspace: &str,
         name: &str,
@@ -147,7 +147,7 @@ impl Folders {
 
     /// The folder a workspace called `name` gets below `home`: `~/<name>`,
     /// unless that path is another folder's or holds the person's own files.
-    pub(crate) fn free_path(&self, home: &Path, name: &str) -> PathBuf {
+    pub fn free_path(&self, home: &Path, name: &str) -> PathBuf {
         let name = folder_name(name);
         let taken = |path: &Path| {
             self.workspaces
@@ -175,7 +175,7 @@ impl Folders {
     /// workspace it no longer names was deleted, and no folder of it is left
     /// to show or to bring back. `listed` is the whole list the host answered,
     /// never one it could not. Whether anything went.
-    pub(crate) fn forget_unlisted(&mut self, listed: &[String]) -> bool {
+    pub fn forget_unlisted(&mut self, listed: &[String]) -> bool {
         let before = self.workspaces.len();
         self.workspaces
             .retain(|id, _| listed.iter().any(|held| held == id));
@@ -183,7 +183,7 @@ impl Folders {
     }
 
     /// The workspace whose folder is `at` or holds it, or whose id or name is `at`.
-    pub(crate) fn find(&self, at: &str) -> Option<String> {
+    pub fn find(&self, at: &str) -> Option<String> {
         let path = std::path::absolute(at).ok();
         self.workspaces
             .iter()
@@ -201,7 +201,7 @@ impl Folders {
 /// A workspace's name as a folder name: one path component, composed as
 /// macOS and Linux both read it back (NFC), with what no folder name may hold
 /// replaced.
-pub(crate) fn folder_name(name: &str) -> String {
+pub fn folder_name(name: &str) -> String {
     let name: String = name
         .nfc()
         .map(|c| {

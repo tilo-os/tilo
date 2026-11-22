@@ -380,7 +380,7 @@ case "$TILO_RUST_LTO" in \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
-         DESKTOP_RELEASE_ARGS="-p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime-mcp -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
+         DESKTOP_RELEASE_ARGS="-p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
        fi \
     && if [ "$tilolang_apps" != 0 ]; then \
          TILOLANG_RELEASE_ARGS="-p tilolang-cli"; \
@@ -431,8 +431,8 @@ case "$TILO_RUST_LTO" in \
        cargo build --release -p pam-tilo --lib \
     && build_phase rust-output-validation \
     && missing=0 \
-    && for b in tilo-session tilo-runtime-mcp tilo-projector tilo-flight-recorder tilo-session-report tilo-pdf-helper fs tilo-server tilo-server-admin tilo-enroll tilo-home-peer-control tilo-linux-vm tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-model-http tilo-secret-service tilo-greeter tilo-installer tilo-firstboot-home-seeds tilo-installer-prepared-setup-extract tilo-prepared-setup tilo-runtime-bundle tilo-launcher tilo-package-service tilo-unlock-helper tilo-rollback tilo-authd tilo-auth tilo-boot-signin tilo-esp-write tilo-extension tilo-staging-reclaim tilo-install-handoff-copy tilo-install-dev-ssh tilo-installer-offline-target tilo-staging-handoff tilo-vm-install-proof tilo-boot-order tilo-default-start tilo-image-policy-check tilo-board-successor tilo-firstboot-files tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential tilo-ntfs-mount tilo-device-vpn tilo-net-answers tilo-app-keeper tilo-audio tilo-messaging tilo-window-menu tilo-lock-screen tilo-quick-settings osk tilolang-process; do \
-         case "${TILO_PREBUILT_DESKTOP}:$b" in 1:tilo-session|1:tilo-launcher|1:tilo-unlock-helper|1:tilo-runtime-mcp) continue ;; esac; \
+    && for b in tilo-session tilo-runtime tilo-projector tilo-flight-recorder tilo-session-report tilo-pdf-helper fs tilo-server tilo-server-admin tilo-enroll tilo-home-peer-control tilo-linux-vm tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-model-http tilo-secret-service tilo-greeter tilo-installer tilo-firstboot-home-seeds tilo-installer-prepared-setup-extract tilo-prepared-setup tilo-runtime-bundle tilo-launcher tilo-package-service tilo-unlock-helper tilo-rollback tilo-authd tilo-auth tilo-boot-signin tilo-esp-write tilo-extension tilo-staging-reclaim tilo-install-handoff-copy tilo-install-dev-ssh tilo-installer-offline-target tilo-staging-handoff tilo-vm-install-proof tilo-boot-order tilo-default-start tilo-image-policy-check tilo-board-successor tilo-firstboot-files tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential tilo-ntfs-mount tilo-device-vpn tilo-net-answers tilo-app-keeper tilo-audio tilo-messaging tilo-window-menu tilo-lock-screen tilo-quick-settings osk tilolang-process; do \
+         case "${TILO_PREBUILT_DESKTOP}:$b" in 1:tilo-session|1:tilo-launcher|1:tilo-unlock-helper|1:tilo-runtime) continue ;; esac; \
          if [ ! -x "$target/release/$b" ]; then \
            printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; \
          fi; \
@@ -448,13 +448,13 @@ case "$TILO_RUST_LTO" in \
     && mkdir -p "$out" "$out"/thin-apps \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          cp os/desktop-artifacts/tilo-session \
-            os/desktop-artifacts/tilo-runtime-mcp \
+            os/desktop-artifacts/tilo-runtime \
             os/desktop-artifacts/tilo-launcher \
             os/desktop-artifacts/tilo-unlock-helper \
             "$out"/; \
        else \
          cp $target/release/tilo-session \
-            $target/release/tilo-runtime-mcp \
+            $target/release/tilo-runtime \
             $target/release/tilo-launcher \
             $target/release/tilo-unlock-helper \
             "$out"/; \

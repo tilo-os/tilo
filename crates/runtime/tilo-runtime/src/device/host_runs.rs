@@ -5,8 +5,10 @@
 //! A key's run is admitted as an MCP client of this runtime is: the profile's
 //! person on this device, handing the run to an agent named after the key.
 
-use super::{Arc, Caller, RuntimeActionProvider};
+use super::services::RuntimeActionProvider;
 use collab_types::WorkspaceId;
+use std::sync::Arc;
+use tilo_actions::remote::Caller;
 use tilo_user_identity::DeviceCert;
 
 /// The profile's workspace's actions, as the keys of its person reach them.

@@ -1572,9 +1572,9 @@ build_programs() {
     local oauth_programs=()
     [[ -z ${fake_oauth:-} ]] || oauth_programs=(-p fake-oauth --bin fake-oauth)
     (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-server/agents \
-      -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilolang-process \
+      -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilo-runtime -p tilolang-process \
       "${oauth_programs[@]}" \
-      --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo \
+      --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilo-runtime \
       --bin tilolang-process >&2 \
       && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" \
         "${oauth_programs[@]}" \
@@ -1643,7 +1643,7 @@ bundle_stage() {
 copy_programs() {
   local from=$1 file stand_in=$1/examples/mail_stand_in
   mkdir -p "$programs"
-  for file in tilo-server discord-worker tilo-api fake-discord fake-model-providers tilo tilolang-process; do
+  for file in tilo-server discord-worker tilo-api fake-discord fake-model-providers tilo tilo-runtime tilolang-process; do
     [[ -x $from/$file ]] || die "the build left no $from/$file; TILO_SH_CARGO names another cargo drop-in to build with"
     cmp -s "$from/$file" "$programs/$file" && continue
     cp --reflink=auto "$from/$file" "$programs/.$file.next" || die "could not copy $file"
@@ -2574,7 +2574,7 @@ down() {
   fi
 }
 
-# The holders (`tilo mcp --hold`) the stack's people started with a home under its state, as
+# The daemons (`tilo-runtime --hold`) the stack's people started with a home under its state, as
 # their tilo does once it logs in, stopped, and the workspace folders they mounted there let go:
 # they outlive the stack otherwise, and a wipe cannot remove a folder still mounted. A holder
 # that read its person's root hides its environment, so it is known by the lock it holds on

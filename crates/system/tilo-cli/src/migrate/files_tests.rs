@@ -212,8 +212,8 @@ fn a_chosen_folder_is_copied_once_resumes_and_its_undo_takes_back_only_what_it_w
         "a folder the undo emptied goes"
     );
     assert_eq!(files::undo_written(&place, "home", "first").unwrap(), None);
-    assert_eq!(crate::peer::size(0), "0 B");
-    assert_eq!(crate::peer::size(1_500_000), "1.5 MB");
+    assert_eq!(crate::folders::size(0), "0 B");
+    assert_eq!(crate::folders::size(1_500_000), "1.5 MB");
 }
 
 #[test]

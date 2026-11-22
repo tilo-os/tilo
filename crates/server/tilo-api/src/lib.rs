@@ -32,6 +32,7 @@
 pub mod account;
 pub mod client;
 pub mod content;
+pub mod daemon;
 pub mod direct;
 pub mod grant_key;
 pub mod hosts;

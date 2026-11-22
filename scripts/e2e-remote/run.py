@@ -704,7 +704,7 @@ class Run:
 
     def server(self, a: Box) -> list[str]:
         """The command `tilo agent connect claude` registers for this desktop's own server."""
-        return ["tilo-runtime-mcp", "--connect"]
+        return ["tilo-runtime", "--connect"]
 
     def reachable(self, a: Box, b: Box, res: Result) -> None:
         key = (b.identity.get("this_device") or {}).get("device")
@@ -2321,7 +2321,7 @@ class Run:
             raise Failed("C is the same person as B")
         key = (b.identity.get("this_device") or {}).get("device")
         self.put_agent(c)
-        t = self.agent(c, "refused", ["tilo-runtime-mcp", "--connect", "--device", key], E2E_WAIT_S="60")
+        t = self.agent(c, "refused", ["tilo-runtime", "--connect", "--device", key], E2E_WAIT_S="60")
         res.facts["transcript"] = t
         init = t.get("initialize")
         if isinstance(init, dict) and "result" in init:

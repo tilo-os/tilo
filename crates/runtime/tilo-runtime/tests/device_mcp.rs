@@ -343,7 +343,7 @@ async fn a(person: &Person, b: &B, others: &[&DeviceCert]) -> Arc<OtherDevices> 
 }
 
 /// A client of A's host asking to be carried to `device`, as
-/// `tilo-runtime-mcp --connect --device` does: A's host reads the line it
+/// `tilo-runtime --connect --device` does: A's host reads the line it
 /// opens with and carries it on, as its MCP server does.
 fn connect(
     servers: &Arc<OtherDevices>,

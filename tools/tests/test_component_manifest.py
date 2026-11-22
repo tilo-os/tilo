@@ -458,7 +458,7 @@ class InstallerTests(unittest.TestCase):
             packages, bins, features = installer.cargo_plan(dev, True)
             self.assertIn("tilo-runtime/dev-overrides", features)
             self.assertIn("tilo-session/dev-overrides", features)
-            self.assertEqual(set(bins), {"tilo-runtime-mcp", "tilo-vmd", "tilo-device-admin", "tilo-vm",
+            self.assertEqual(set(bins), {"tilo-runtime", "tilo-vmd", "tilo-device-admin", "tilo-vm",
                                          "tilo-test-registry", "tilo-session", "tilo-window-menu",
                                          "tilo-lock-screen", "osk", "tilo-quick-settings",
                                          "tilo-secret-service", "tilolang-process"})

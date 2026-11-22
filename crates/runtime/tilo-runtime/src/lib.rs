@@ -2,11 +2,11 @@
 //! identity, collaboration and content services independently launched apps
 //! attach to, and an MCP projection of its action host.
 //!
-//! The services are the host's: a desktop session and a standalone profile
-//! serve the same brokers. This crate owns the profile, the native endpoint
-//! and app attachment, and serves `tilo_mcp`'s projection; it reaches the services only through
-//! [`RuntimeServices`]. [`standalone::Standalone`] hosts them without the
-//! Tilo desktop, for the `tilo-runtime` executable.
+//! This crate owns the profile, the native endpoint and app attachment, and serves `tilo_mcp`'s
+//! projection; it reaches the services only through [`RuntimeServices`].
+//! [`device::services::Daemon`] hosts them without the Tilo desktop: this computer's one daemon,
+//! the `tilo-runtime` executable, which serves the person's login as its device too
+//! ([`device`]).
 
 use std::{
     io,
@@ -17,6 +17,7 @@ use std::{
 mod apps;
 pub mod cli;
 mod daemon;
+pub mod device;
 #[cfg(target_os = "macos")]
 mod i18n;
 pub mod key_sessions;
@@ -24,7 +25,6 @@ pub mod offload;
 mod os_search;
 pub mod personal_devices;
 pub mod profile;
-pub mod standalone;
 pub mod unix;
 
 // Workspace admission decodes peer bytes in automerge worker processes started

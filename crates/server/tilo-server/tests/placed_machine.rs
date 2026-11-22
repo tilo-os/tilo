@@ -20,7 +20,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_peer_state::actions::{ActionService, NoActions};
-use tilo_runtime::standalone::take_work;
+use tilo_runtime::device::take_work;
 use tilo_server::placed_machines::PlacedMachines;
 use tilo_server::placed_shells::{Member, Members, PlacedShells};
 use tilo_server::workspaces::WorkspaceMachines as _;

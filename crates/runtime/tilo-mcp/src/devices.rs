@@ -83,7 +83,7 @@ pub const DEVICES_TOOL: &str = "tilo_devices";
 pub fn tool_definition() -> serde_json::Value {
     serde_json::json!({
         "name": DEVICES_TOOL,
-        "description": "List your other devices and whether each answers now. An agent works on another device by connecting to it: `tilo agent connect claude --device NAME`, or `tilo-runtime-mcp --connect --device NAME`.",
+        "description": "List your other devices and whether each answers now. An agent works on another device by connecting to it: `tilo agent connect claude --device NAME`, or `tilo-runtime --connect --device NAME`.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
         "annotations": {"readOnlyHint": true, "openWorldHint": true}
     })

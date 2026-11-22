@@ -64,7 +64,7 @@ actions list and invoke) on its control socket, and the MCP server.
 
 No one answers a headless session's MCP server, so it is started with an
 agent key, STATE/agent.key: an MCP client presenting it (TILO_AGENT_KEY=FILE
-tilo-runtime-mcp --connect, or tilo mcp) is admitted as an agent of the
+tilo-runtime --connect, or tilo mcp) is admitted as an agent of the
 session's person without a click. The person's root certifies the key's
 grant, which is listed and revoked with their devices.
 
@@ -311,7 +311,7 @@ fn reach(options: &Options, ready: &str, took: Duration) -> String {
             Mode::Desktop => String::new(),
             Mode::Headless => format!(
                 "\n    an agent:   TILO_AGENT_SOCK={runtime}/tilo-session/agent.sock \\\n\
-                 \x20               TILO_AGENT_KEY={key} {bin}/tilo-runtime-mcp --connect\n\
+                 \x20               TILO_AGENT_KEY={key} {bin}/tilo-runtime --connect\n\
                  \x20               (an MCP server on stdio; the key admits it without a click, as an\n\
                  \x20               agent of the session's person, listed and revoked with their devices)",
                 key = options.state.join(AGENT_KEY_FILE).display(),

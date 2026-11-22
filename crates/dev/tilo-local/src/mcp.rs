@@ -1,5 +1,5 @@
 //! An MCP agent at a headless session's MCP server, as `cargo headless --check` proves one works:
-//! `tilo-runtime-mcp --connect`, the program an agent runs, presenting the session's agent key, is
+//! `tilo-runtime --connect`, the program an agent runs, presenting the session's agent key, is
 //! admitted without anyone answering it, lists what the workspace offers and runs an action.
 
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -77,7 +77,7 @@ impl Connection {
 impl Agent<'_> {
     /// Start the agent's program, connected to the session's socket.
     fn connect(&self) -> Result<Connection, String> {
-        let program = self.bin.join("tilo-runtime-mcp");
+        let program = self.bin.join("tilo-runtime");
         let mut command = match self.inside {
             Some(pid) => {
                 let mut command = Command::new("nsenter");
@@ -119,7 +119,7 @@ impl Agent<'_> {
         if let Some(stderr) = child.stderr.take() {
             std::thread::spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    eprintln!("  tilo-runtime-mcp: {line}");
+                    eprintln!("  tilo-runtime: {line}");
                 }
             });
         }

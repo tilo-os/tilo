@@ -493,7 +493,7 @@ pub fn review(place: &Place, named: &'static Source) -> Result<Review> {
             counts: format!(
                 "{}files, {}",
                 if partial { "or more " } else { "" },
-                crate::peer::size(bytes)
+                crate::folders::size(bytes)
             ),
             within: None,
             chosen: kept

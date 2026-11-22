@@ -45,8 +45,6 @@ mod mcp;
 mod migrate;
 mod nouns;
 mod os;
-mod own_device;
-mod peer;
 mod person;
 mod sdk;
 mod server;
@@ -389,12 +387,7 @@ enum Cmd {
     },
     /// Tilo's MCP server over stdio, for the agent on this computer
     /// (`tilo agent connect` adds it).
-    Mcp {
-        /// Hold this computer's session with the workspace for every
-        /// `tilo mcp` on it; a `tilo mcp` starts it when none runs.
-        #[arg(long, hide = true)]
-        hold: bool,
-    },
+    Mcp,
     /// Your workspaces' synced folders on this computer: each workspace's
     /// one folder, at ~/<workspace> unless moved (`tilo login` adds the first).
     #[command(
@@ -918,18 +911,13 @@ fn main() -> ExitCode {
     // largest frame the program has, and its strings and arguments are allocations
     // the process would keep holding for nothing. Anything else typed after `mcp`
     // (`--help`, a global flag) is parsed as every command is.
-    if noun_of(&args).is_none() {
-        let hold = match args.get(1..).unwrap_or_default() {
-            [mcp] if mcp == "mcp" => Some(false),
-            [mcp, hold] if mcp == "mcp" && hold == "--hold" => Some(true),
-            _ => None,
-        };
-        if let Some(hold) = hold {
-            return mcp::serve(hold).unwrap_or_else(|e| {
-                eprintln!("tilo: {e:#}");
-                ExitCode::FAILURE
-            });
-        }
+    if noun_of(&args).is_none()
+        && matches!(args.get(1..).unwrap_or_default(), [mcp] if mcp == "mcp")
+    {
+        return mcp::serve().unwrap_or_else(|e| {
+            eprintln!("tilo: {e:#}");
+            ExitCode::FAILURE
+        });
     }
     let invoked = args
         .first()
@@ -1395,7 +1383,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Login { ticket, agent, .. } => {
             login::login(ticket.as_deref().unwrap_or_default(), agent.as_deref())
         }
-        Cmd::Mcp { hold } => mcp::serve(hold),
+        Cmd::Mcp => mcp::serve(),
         Cmd::Folders { json, cmd } => folders::run(cmd.unwrap_or(folders::FoldersCmd::List), json),
         Cmd::Settings { cmd } => settings::run(cmd).map(|()| ExitCode::SUCCESS),
         Cmd::Package => bail!("package needs a verb; `tilo package --help` lists them"),
@@ -1725,7 +1713,7 @@ fn peer_status(json: bool) -> ExitCode {
         println!("{status}");
         return ExitCode::SUCCESS;
     }
-    print!("{}", peer::describe(&status));
+    print!("{}", folders::describe(&status));
     ExitCode::SUCCESS
 }
 

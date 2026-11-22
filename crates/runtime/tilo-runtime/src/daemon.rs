@@ -1,4 +1,5 @@
 //! Persistent native session shared by independently launched GUI apps and MCP.
+use crate::device::services::Daemon;
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, unix};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -25,7 +26,12 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Mode {
+    /// This computer's daemon over the profile `--profile` names, in an environment kept inside
+    /// it: a VM host's, a test's.
     Daemon,
+    /// This computer's daemon as the person's login runs it: in their own environment, over the
+    /// default profile.
+    Hold,
     Connect,
     RunApp {
         app_id: String,
@@ -39,7 +45,7 @@ pub enum Mode {
 pub struct Args {
     pub profile: PathBuf,
     pub mode: Mode,
-    /// `--dev`, for `--daemon` only: serve builds under development, which
+    /// `--dev`, for `--daemon` and `--hold` only: serve builds under development, which
     /// are not installed.
     pub dev: bool,
     /// The client chose a standalone profile itself (`--standalone`,
@@ -113,6 +119,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
                 ));
             }
             Some("--daemon") if mode.is_none() => mode = Some(Mode::Daemon),
+            Some("--hold") if mode.is_none() => mode = Some(Mode::Hold),
             Some("--connect") if mode.is_none() => mode = Some(Mode::Connect),
             Some("--run-app") if mode.is_none() => {
                 mode = Some(parse_run_app(&mut arguments)?);
@@ -134,9 +141,16 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
     if !profile.is_absolute() {
         return Err(invalid("runtime profile must be absolute"));
     }
-    let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect [--standalone] [--device NAME] [--workspace ID], or --run-app APP_ID [--workspace WORKSPACE] -- EXECUTABLE"))?;
-    if dev && mode != Mode::Daemon {
-        return Err(invalid("--dev starts a daemon: use it with --daemon"));
+    let mode = mode.ok_or_else(|| invalid("choose --hold, --daemon, --connect [--standalone] [--device NAME] [--workspace ID], or --run-app APP_ID [--workspace WORKSPACE] -- EXECUTABLE"))?;
+    if dev && !matches!(mode, Mode::Daemon | Mode::Hold) {
+        return Err(invalid(
+            "--dev starts a daemon: use it with --hold or --daemon",
+        ));
+    }
+    if mode == Mode::Hold && explicit_profile {
+        return Err(invalid(
+            "--hold runs in the login's own environment: use --daemon with --profile",
+        ));
     }
     if standalone && mode != Mode::Connect {
         return Err(invalid(
@@ -703,10 +717,14 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
     log.set_len(0)?;
     unix::private_file(&profile.join(STAGES_FILE))?.set_len(0)?;
     let mut command = Command::new(std::env::current_exe()?);
+    // The person's own daemon runs in their environment, as the user service runs it; one of a
+    // profile named apart keeps its environment inside that profile.
+    if std::env::var_os("TILO_RUNTIME_PROFILE").is_none() && default_profile()? == profile {
+        command.arg("--hold");
+    } else {
+        command.arg("--profile").arg(profile).arg("--daemon");
+    }
     command
-        .arg("--profile")
-        .arg(profile)
-        .arg("--daemon")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(log));
@@ -723,44 +741,27 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
     wait_until_ready(&mut DaemonStart::new(profile, command.spawn()?), STARTUP)
 }
 
-/// Start one production Session. The executable prepares its profile environment
-/// before entering this function; reusable serving code never mutates it.
-pub fn serve<S: RuntimeServices + Send + Sync + 'static>(
-    profile: &Path,
-    dev: bool,
-) -> io::Result<()> {
-    serve_profile::<S>(
-        profile,
-        if dev {
-            StartupPolicy::Development
-        } else {
-            StartupPolicy::Normal
-        },
-    )
-}
-
-#[derive(Clone, Copy)]
-enum StartupPolicy {
-    Normal,
-    Development,
-}
-
-fn serve_profile<S: RuntimeServices + Send + Sync + 'static>(
-    profile: &Path,
-    policy: StartupPolicy,
-) -> io::Result<()> {
+/// Start this computer's daemon over `profile` and serve it: the native endpoint the apps and
+/// `--connect` reach, and the device as [`crate::device::hold`] serves it. The executable
+/// prepares its profile environment before entering this function; reusable serving code never
+/// mutates it.
+pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
     validate_profile(profile)?;
     let mut stages = StartupStages::open(profile)?;
     let mut stage = |stage: &str| stages.enter(stage);
-    let session = Arc::new(match policy {
-        StartupPolicy::Development => S::start_in_dev_mode(profile, &mut stage)?,
-        StartupPolicy::Normal => S::start_reporting(profile, &mut stage)?,
+    let session = Arc::new(if dev {
+        Daemon::start_in_dev_mode(profile, &mut stage)?
+    } else {
+        Daemon::start_reporting(profile, &mut stage)?
     });
-    let host = session.action_provider()?;
-    let search = crate::os_search::start(host, session.workspace(), session.actor())?;
+    let search = crate::os_search::start(
+        session.action_provider()?,
+        session.workspace(),
+        session.actor(),
+    )?;
     let path = profile.join("native.sock");
-    // Session already owns runtime.lock. Only that owner may remove a stale
-    // endpoint, and a second --daemon cannot reach this point.
+    // The daemon already holds the device's lock. Only that owner may remove a stale
+    // endpoint, and a second daemon cannot reach this point.
     stages.enter("binding the native endpoint");
     let listener = tilo_files::native::private::bind_socket(&path)?;
     stages.enter("answering the status probe");
@@ -777,7 +778,22 @@ fn serve_profile<S: RuntimeServices + Send + Sync + 'static>(
         media: session.media(),
         other_devices: session.other_devices(),
     };
-    endpoint.accept(&listener)
+    std::thread::Builder::new()
+        .name("tilo-native".into())
+        .spawn(move || {
+            if let Err(error) = endpoint.accept(&listener) {
+                tracing::error!(%error, "the native endpoint stopped taking connections");
+            }
+        })?;
+    // The device is served until the daemon is told to stop, or another takes the device over:
+    // the process ends then, its apps' connections with it.
+    let held = crate::device::hold(&session);
+    // Removed while the daemon still holds the device's lock: a daemon starting after it binds
+    // its own endpoint there.
+    let _ = std::fs::remove_file(&path);
+    drop(session);
+    held.map_err(|error| io::Error::other(format!("{error:#}")))?;
+    Ok(())
 }
 
 /// What every native connection is served with.

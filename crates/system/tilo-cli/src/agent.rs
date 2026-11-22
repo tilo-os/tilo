@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 use crate::nouns;
 
 /// The MCP server an agent tool starts.
-pub const MCP_SERVER: &str = "tilo-runtime-mcp";
+pub const MCP_SERVER: &str = "tilo-runtime";
 /// The program that keeps the model list.
 pub const MODELS: &str = "tilo-model-manager";
 /// The site's MCP server over HTTP, for an agent whose own configuration
@@ -2833,7 +2833,7 @@ mod tests {
         // under the name `tilo` with `--connect`, so it reaches the login's
         // own desktop and never starts one.
         {
-            let server = std::path::Path::new("/usr/libexec/tilo/tilo-runtime-mcp");
+            let server = std::path::Path::new("/usr/libexec/tilo/tilo-runtime");
             let claude: Vec<String> = Tool::Claude
                 .registration(server, None)
                 .into_iter()
@@ -2848,7 +2848,7 @@ mod tests {
                     "user",
                     "tilo",
                     "--",
-                    "/usr/libexec/tilo/tilo-runtime-mcp",
+                    "/usr/libexec/tilo/tilo-runtime",
                     "--connect"
                 ]
             );
@@ -2864,7 +2864,7 @@ mod tests {
                     "add",
                     "tilo",
                     "--",
-                    "/usr/libexec/tilo/tilo-runtime-mcp",
+                    "/usr/libexec/tilo/tilo-runtime",
                     "--connect"
                 ]
             );
@@ -2874,7 +2874,7 @@ mod tests {
         // Connecting to another device registers its own server, named after
         // the device, carried to that device's server.
         {
-            let server = std::path::Path::new("/usr/libexec/tilo/tilo-runtime-mcp");
+            let server = std::path::Path::new("/usr/libexec/tilo/tilo-runtime");
             let remote = Remote {
                 device: "Build Box".into(),
                 workspace: Some("cccccccc-cccc-4ccc-8ccc-cccccccccccc".into()),
@@ -2893,7 +2893,7 @@ mod tests {
                     "user",
                     "tilo-build-box",
                     "--",
-                    "/usr/libexec/tilo/tilo-runtime-mcp",
+                    "/usr/libexec/tilo/tilo-runtime",
                     "--connect",
                     "--device",
                     "Build Box",

@@ -181,17 +181,9 @@ mod unix {
             .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
     }
 
-    /// Host executables to attach to, in preference order. Both names are the
-    /// same runtime host; a Tilo login installs it as `tilo-runtime-mcp` and
-    /// attaches to nothing else, so an app never reaches a second authority
-    /// beside the login's. Elsewhere the runtime's own executable comes first.
-    fn host_names() -> &'static [&'static str] {
-        if tilo_paths::login::is_tilo_login() {
-            &["tilo-runtime-mcp"]
-        } else {
-            &["tilo-runtime", "tilo-runtime-mcp"]
-        }
-    }
+    /// The runtime host an app attaches to: this computer's one daemon, the same program on a
+    /// Tilo desktop and anywhere else, so an app never reaches a second authority beside it.
+    const HOST: &str = "tilo-runtime";
 
     fn locate_host(app: &Path) -> io::Result<PathBuf> {
         if let Some(path) = env::var_os("TILO_RUNTIME_BINARY") {
@@ -203,48 +195,37 @@ mod unix {
             }
             return Ok(path);
         }
-        let names = host_names();
-        for name in names {
-            if let Some(parent) = app.parent() {
-                let sibling = parent.join(name);
-                if executable(&sibling) {
-                    return Ok(sibling);
-                }
+        if let Some(parent) = app.parent() {
+            let sibling = parent.join(HOST);
+            if executable(&sibling) {
+                return Ok(sibling);
             }
-            if let Some(paths) = env::var_os("PATH") {
-                for directory in env::split_paths(&paths) {
-                    let candidate = directory.join(name);
-                    if executable(&candidate) {
-                        return candidate.canonicalize();
-                    }
+        }
+        if let Some(paths) = env::var_os("PATH") {
+            for directory in env::split_paths(&paths) {
+                let candidate = directory.join(HOST);
+                if executable(&candidate) {
+                    return candidate.canonicalize();
                 }
             }
         }
         if let Some(target) = checkout_target(app) {
-            for name in names {
-                for profile in ["debug", "thin-app", "release"] {
-                    let candidate = target.join(profile).join(name);
-                    if executable(&candidate) {
-                        return candidate.canonicalize();
-                    }
+            for profile in ["debug", "thin-app", "release"] {
+                let candidate = target.join(profile).join(HOST);
+                if executable(&candidate) {
+                    return candidate.canonicalize();
                 }
             }
-            if let Some((preferred, _)) = names.split_first() {
-                let build = format!("cargo build --locked -p tilo-runtime --bin {preferred}");
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!(
-                        "no runtime host found; in this checkout run `{build}` once, then rerun the app"
-                    ),
-                ));
-            }
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "no runtime host found; in this checkout run `cargo build --locked -p tilo-runtime --bin {HOST}` once, then rerun the app"
+                ),
+            ));
         }
         Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!(
-                "no runtime host found; install {} beside the app or on PATH",
-                names.join(" or ")
-            ),
+            format!("no runtime host found; install {HOST} beside the app or on PATH"),
         ))
     }
 

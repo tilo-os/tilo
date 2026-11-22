@@ -12,7 +12,7 @@
 //!
 //! - ush's own commands run in process on the workspace's files: the folder
 //!   of the synced replica the member holds of them
-//!   ([`super::files::Replicas`]), or, for a member that holds no replicas, a
+//!   ([`files::Replicas`]), or, for a member that holds no replicas, a
 //!   directory of the profile per workspace;
 //! - a Linux program runs in the workspace's VM, which is the local hosted-VM
 //!   service the member's environment names (`TILO_HOSTED_VM_SOCKET`,
@@ -36,11 +36,12 @@
 //! the server's own runs: a device of another person is refused as every
 //! device outside a workspace is.
 //!
-//! A profile served by the standalone runtime takes work when
-//! [`SERVER_DEVICE_ENV`] names its server; [`Member`] is the
-//! same member for a host that serves nothing else.
+//! This computer's daemon takes work when [`SERVER_DEVICE_ENV`] names its
+//! server; [`Member`] is the same member for a host that serves nothing else.
 
-use super::service::ServiceWorkspaces;
+pub(crate) mod files;
+
+use super::workspaces::{ServiceWorkspaces, block_on_owned};
 use ed25519_dalek::SigningKey;
 use iroh::Endpoint;
 use std::path::{Path, PathBuf};
@@ -206,11 +207,11 @@ type TerminalsOf = Box<dyn FnOnce(ActionService) -> Box<dyn iroh::protocol::DynP
 /// # Errors
 ///
 /// This host cannot run a workspace's shell at all.
-pub(in crate::standalone) fn action_service(
+pub(crate) fn action_service(
     profile: &Path,
     workspaces: &Arc<ServiceWorkspaces>,
     server: Server,
-    replicas: Option<super::files::ReplicaSlot>,
+    replicas: Option<files::ReplicaSlot>,
     browsers: Option<PathBuf>,
 ) -> std::io::Result<TakesWork> {
     #[cfg(target_os = "linux")]
@@ -223,7 +224,7 @@ pub(in crate::standalone) fn action_service(
     })?;
     let (device, endpoint) = (server.device, server.endpoint);
     let entering = Arc::new(Entering::new(Arc::clone(workspaces), server));
-    let reads = Arc::new(super::service::Reads {
+    let reads = Arc::new(super::workspaces::Reads {
         service: Arc::clone(workspaces.service()),
         entering: Some(Arc::clone(&entering)),
     });
@@ -304,7 +305,7 @@ fn keep_vm_leases(holding: &Arc<ServiceWorkspaces>, vms: PathBuf) {
 fn shell_runs(
     profile: &Path,
     workspaces: &Arc<ServiceWorkspaces>,
-    replicas: Option<super::files::ReplicaSlot>,
+    replicas: Option<files::ReplicaSlot>,
     browsers: Option<PathBuf>,
 ) -> Option<Shells> {
     use ush::environment_commands::EnvironmentCommands;
@@ -324,7 +325,7 @@ fn shell_runs(
                     let name = workspaces
                         .workspace(id)
                         .map_or_else(|| "Workspace".to_owned(), |workspace| workspace.name);
-                    super::hold_files(replicas, &name, id)
+                    super::services::hold_files(replicas, &name, id)
                 })
                 .unwrap_or_else(|| files(&member, workspace))
         })
@@ -362,7 +363,7 @@ fn shell_runs(
 fn shell_runs(
     _profile: &Path,
     _workspaces: &Arc<ServiceWorkspaces>,
-    _replicas: Option<super::files::ReplicaSlot>,
+    _replicas: Option<files::ReplicaSlot>,
     _browsers: Option<PathBuf>,
 ) -> Option<Shells> {
     None
@@ -399,7 +400,7 @@ impl Member {
         browsers: Option<PathBuf>,
     ) -> std::io::Result<Self> {
         let identity = tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key);
-        let workspaces = super::open_member_service(profile, &cert, identity, endpoint.clone())?;
+        let workspaces = open_member_service(profile, &cert, identity, endpoint.clone())?;
         let takes_work = action_service(profile, &workspaces, server, None, browsers)?;
         let router = {
             let _entered = tilo_rt::app().handle().enter();
@@ -423,6 +424,51 @@ impl Member {
     }
 }
 
+/// Open a workspace service of `profile` alone, holding the member copies it
+/// keeps and entering the ones the server it serves places on it: the service
+/// a member that takes work answers on, when it runs no daemon.
+fn open_member_service(
+    profile: &Path,
+    cert: &DeviceCert,
+    identity: tilo_identity::identity_store::DeviceIdentity,
+    endpoint: Endpoint,
+) -> std::io::Result<Arc<ServiceWorkspaces>> {
+    // A member opens on whichever thread its embedder calls it from,
+    // a runtime's own included.
+    let (store, cert, signer, bound) = (
+        profile.join("workspace-host"),
+        cert.clone(),
+        Arc::clone(&identity.signer),
+        endpoint.clone(),
+    );
+    let groups = tilo_workspace_service::own_device::key_groups(
+        tilo_workspace_service::apps::workspace_keys::KeyProvider::default(),
+        None,
+        None,
+        None,
+    );
+    let service = block_on_owned(async move {
+        tilo_workspace_service::own_device::open(
+            store,
+            tilo_workspace_service::own_device::Device {
+                cert: &cert,
+                signer: &signer,
+            },
+            bound,
+            groups,
+            false,
+            |config| config,
+        )
+        .await
+    })
+    .map_err(std::io::Error::other)?;
+    Ok(ServiceWorkspaces::new(
+        Arc::new(service),
+        identity,
+        endpoint,
+    ))
+}
+
 /// How long the server is given to admit this member to a workspace it placed
 /// here: the membership proven and the workspace taken in.
 const ENTER_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
@@ -439,7 +485,7 @@ const KEPT_REFUSALS: usize = 64;
 /// address. What admits the member is the workspace's own decision, never the
 /// ask: the server admits a device its governance names, and a request another
 /// device makes is refused here.
-pub(in crate::standalone) struct Entering {
+pub(crate) struct Entering {
     workspaces: Arc<ServiceWorkspaces>,
     /// The server that places this member's work: the one host this member
     /// enters a workspace for.
@@ -453,7 +499,7 @@ pub(in crate::standalone) struct Entering {
 }
 
 impl Entering {
-    pub(in crate::standalone) fn new(workspaces: Arc<ServiceWorkspaces>, server: Server) -> Self {
+    pub(crate) fn new(workspaces: Arc<ServiceWorkspaces>, server: Server) -> Self {
         Self {
             workspaces,
             server,
@@ -464,13 +510,13 @@ impl Entering {
 
     /// The device of the server this member serves: the one asker whose
     /// request may make it enter a workspace.
-    pub(in crate::standalone) fn server(&self) -> [u8; 32] {
+    pub(crate) fn server(&self) -> [u8; 32] {
         self.server.device()
     }
 
     /// Enter `workspace`, which the server placed here from `placement`, its signed address for
     /// the workspace, unless the member holds it already or the server refused it a moment ago.
-    pub(in crate::standalone) async fn enter(
+    pub(crate) async fn enter(
         &self,
         workspace: &str,
         placement: Option<&tilo_peer_state::join::TransportHint>,

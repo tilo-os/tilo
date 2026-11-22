@@ -641,10 +641,10 @@ bots in `workspace_agents` (13,311) and `workspace_bots` (15,464)), with the
 `tilo-server-admin`, `tilo-enroll`, `tilo-approve` and
 `tilo-home-peer-control` binaries beside it. `tilo-api` (21,745) is the MCP
 and OAuth endpoint with its own grant and token store. A device without a
-desktop is a third copy of the same job: `tilo-runtime` (17,096) with
-`tilo-runtime-mcp`, and the CLI's held device (`tilo-cli` `mcp/held.rs` and
-`own_device`). All three open the same `tilo-workspace-service` through
-`own_device`, but each has its own wrapper around it.
+desktop runs one daemon, `tilo-runtime --hold`, which serves its apps, `tilo
+mcp` and the CLI's workspace commands over the device's one session. Both open
+the same `tilo-workspace-service` through `own_device`, but each has its own
+wrapper around it.
 
 What survives: **one daemon per device**, the workspace service opened
 through `own_device`. On a desktop the session is that daemon. Elsewhere it
@@ -659,10 +659,7 @@ runs it. A device's first run needs no server: it creates the person's
 identity and their first workspace, an ordinary workspace whose signed member
 list names them as owner.
 
-What goes: `tilo-runtime`'s `Standalone` with its self-governed profile
-workspace, `ProfileGrants`, its own device provisioning, `--join` and
-`tilo-runtime-mcp` (the CLI holder moves into `tilo-runtime` as the one
-daemon); `tilo-api`'s grant file; the separate binaries once their verbs are
+What goes: `tilo-api`'s grant file; the separate binaries once their verbs are
 actions of the daemon. Owner:
 **hosting** session.
 

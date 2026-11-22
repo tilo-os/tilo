@@ -1,14 +1,13 @@
-//! The broker's owner commits, through the profile's workspace service.
+//! The broker's owner commits, through the device's workspace service.
 //!
-//! Every workspace this runtime's apps write in is held by the device's
-//! workspace service: the profile's own workspace, which the service governs,
-//! and the member copies of the workspaces other devices serve. A document
+//! Every workspace this daemon's apps write in is held by the device's
+//! workspace service: the member copies of the workspaces other devices serve,
+//! or the workspace founded here, which the service governs. A document
 //! write is admitted here, in the writing device's name, and answered with the
 //! receipt that binds it; the service keeps it in the workspace's ordered
-//! persistence and carries it to the workspace's other devices. The
-//! workspaces the desktop session governs are refused, as they always were.
+//! persistence and carries it to the workspace's other devices.
 
-use std::{collections::BTreeSet, sync::Arc, time::SystemTime};
+use std::{sync::Arc, time::SystemTime};
 
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::owner_commit::{
@@ -18,19 +17,18 @@ use tilo_peer_state::owner_commit::{
 use tilo_workspace_service::service::WorkspaceService;
 use tilo_workspace_service::workspaces::Workspaces;
 
-use super::service::ServiceWorkspaces;
+use super::workspaces::ServiceWorkspaces;
 
 /// The resource kinds an installed app declares its records hold; `None`
 /// for an app this profile has not installed.
-pub(in crate::standalone) type DeclaredKinds =
-    Box<dyn Fn(&str) -> Option<Vec<String>> + Send + Sync>;
+pub(super) type DeclaredKinds = Box<dyn Fn(&str) -> Option<Vec<String>> + Send + Sync>;
 
 /// In which kinds an app may write a resource this device's own workspace does not hold yet.
-pub(in crate::standalone) struct RecordCreation {
-    pub(in crate::standalone) declared_kinds: DeclaredKinds,
+pub(super) struct RecordCreation {
+    pub(super) declared_kinds: DeclaredKinds,
     /// Started with `--dev`: an app that is not installed is a build under
     /// development, and may create records in the kinds it names.
-    pub(in crate::standalone) dev: bool,
+    pub(super) dev: bool,
 }
 
 impl RecordCreation {
@@ -47,9 +45,6 @@ pub(super) struct ServiceCommits {
     service: Arc<WorkspaceService>,
     device: [u8; 32],
     creation: Arc<RecordCreation>,
-    /// Workspaces whose writes are refused here: those the desktop session
-    /// governs.
-    refused: BTreeSet<WorkspaceId>,
 }
 
 impl ServiceCommits {
@@ -61,7 +56,6 @@ impl ServiceCommits {
             service: Arc::clone(workspaces.service()),
             device: workspaces.device_cert().device_public_key,
             creation,
-            refused: workspaces.refused_workspaces(),
         })
     }
 
@@ -74,12 +68,12 @@ impl OwnerCommitService for ServiceCommits {
     /// The service keeps each device's own effect receipts in its copy of the
     /// workspace: a member copy's are this device's.
     fn records_effects(&self, workspace: &str) -> bool {
-        if WorkspaceId::parse(workspace).is_none_or(|workspace| self.refused.contains(&workspace)) {
+        if WorkspaceId::parse(workspace).is_none() {
             return false;
         }
         let copies = self.copies().clone();
         let workspace = workspace.to_owned();
-        crate::standalone::service::block_on_owned(async move {
+        super::workspaces::block_on_owned(async move {
             copies.is_member(&workspace).await.unwrap_or(false)
         })
     }
@@ -103,7 +97,6 @@ impl OwnerCommitService for ServiceCommits {
             service: Arc::clone(&self.service),
             device: self.device,
             creation: Arc::clone(&self.creation),
-            refused: self.refused.clone(),
         };
         Box::pin(async move { parts.commit(request, resource_type).await })
     }
@@ -117,7 +110,6 @@ impl OwnerCommitService for ServiceCommits {
             service: Arc::clone(&self.service),
             device: self.device,
             creation: Arc::clone(&self.creation),
-            refused: self.refused.clone(),
         };
         Box::pin(async move {
             let receipt = parts.commit(request.clone(), resource_type).await?;
@@ -136,7 +128,6 @@ struct CommitParts {
     service: Arc<WorkspaceService>,
     device: [u8; 32],
     creation: Arc<RecordCreation>,
-    refused: BTreeSet<WorkspaceId>,
 }
 
 impl CommitParts {
@@ -148,9 +139,6 @@ impl CommitParts {
         let Some(workspace) = WorkspaceId::parse(&request.workspace) else {
             return Err("invalid exact workspace".to_owned());
         };
-        if self.refused.contains(&workspace) {
-            return Err("the desktop session's workspace is read only in the runtime".to_owned());
-        }
         let copies = self.service.workspaces();
         // What type a new resource may be is this device's rule only in the workspace it
         // governs, where the apps installed here say it; a member copy's writes are the

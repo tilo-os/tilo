@@ -50,12 +50,13 @@ class Install(unittest.TestCase):
     def tearDown(self):
         self.scratch.cleanup()
 
-    def publish(self, program, *, sums=None, task_program=None, task_program_link=None):
+    def publish(self, program, *, sums=None, task_program=None, task_program_link=None, daemon=None):
         """The release's archive for this machine: `tilo`, and beside it `tilolang-process` where a
-        task program is given (a Linux release's), or a link of that name."""
+        task program is given (a Linux release's), or a link of that name, and `tilo-runtime`
+        where a daemon is given."""
         data = io.BytesIO()
         with tarfile.open(fileobj=data, mode="w:gz") as tar:
-            for name, member in (("tilo", program), ("tilolang-process", task_program)):
+            for name, member in (("tilo", program), ("tilolang-process", task_program), ("tilo-runtime", daemon)):
                 if member is None:
                     continue
                 info = tarfile.TarInfo(name)
@@ -121,6 +122,16 @@ class Install(unittest.TestCase):
         self.assertEqual(self.install().returncode, 0)
         self.assertEqual(subprocess.check_output([self.installed]), b"tilo 0.0.3\n")
         self.assertEqual(subprocess.check_output([self.task_program]), b"task program 0.0.3\n")
+
+    def test_a_release_with_the_daemon_installs_it_beside_tilo(self):
+        # `tilo login` and `tilo mcp` start this computer's daemon from beside tilo.
+        self.publish(b"#!/bin/sh\necho tilo 0.0.4\n", daemon=b"#!/bin/sh\necho daemon 0.0.4\n")
+        done = self.install()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        daemon = self.installed.parent / "tilo-runtime"
+        self.assertEqual(subprocess.check_output([daemon]), b"daemon 0.0.4\n")
+        self.assertEqual(daemon.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(sorted(p.name for p in self.installed.parent.iterdir()), ["tilo", "tilo-runtime"], "no leftovers")
 
     def test_a_release_that_is_refused_installs_neither_program(self):
         self.publish(b"#!/bin/sh\n", task_program=b"#!/bin/sh\n")
@@ -266,17 +277,21 @@ class Release(unittest.TestCase):
             program = root / "tilo"
             program.write_bytes(b"#!/bin/sh\necho released tilo\n")
             program.chmod(0o755)
-            # A Linux archive carries the task program beside the command; a Mac's holds the
-            # command alone, since no task program starts there.
+            # A Linux archive carries the task program beside the command; a Mac's holds none,
+            # since no task program starts there.
             task_program = root / "tilolang-process"
             task_program.write_bytes(b"#!/bin/sh\necho released task program\n")
             task_program.chmod(0o755)
+            # Every archive carries the daemon `tilo` starts, packed from beside the command.
+            daemon = root / "tilo-runtime"
+            daemon.write_bytes(b"#!/bin/sh\necho released daemon\n")
+            daemon.chmod(0o755)
             builds = root / "builds"
             builds.mkdir()
             for system in ("linux-x86_64", "linux-aarch64", "macos-aarch64", "macos-x86_64"):
                 beside = [task_program] if system.startswith("linux") else []
                 run("bash", self.RELEASE, "pack", program, builds / f"tilo-{system}.tar.gz", *beside, env={**os.environ, "TMPDIR": scratch})
-            for system, members in (("linux-x86_64", ["tilo", "tilolang-process"]), ("macos-aarch64", ["tilo"])):
+            for system, members in (("linux-x86_64", ["tilo", "tilo-runtime", "tilolang-process"]), ("macos-aarch64", ["tilo", "tilo-runtime"])):
                 with tarfile.open(builds / f"tilo-{system}.tar.gz") as packed:
                     self.assertEqual(packed.getnames(), members)
             release = root / "releases/v1.2.3"
@@ -304,11 +319,12 @@ class Release(unittest.TestCase):
             )
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertEqual(run(home / ".local/bin/tilo").stdout, b"released tilo\n")
+            self.assertEqual(run(home / ".local/bin/tilo-runtime").stdout, b"released daemon\n")
             beside = home / ".local/bin/tilolang-process"
             if machine().startswith("tilo-linux"):
                 self.assertEqual(subprocess.check_output([beside]), b"released task program\n")
             else:
-                self.assertFalse(beside.exists(), "a Mac's archive holds the command alone")
+                self.assertFalse(beside.exists(), "a Mac's archive holds no task program")
             names = sorted(line.split()[1] for line in (release / "SHA256SUMS").read_text().splitlines())
             self.assertEqual(names, sorted(f"tilo-{s}.tar.gz" for s in ("linux-aarch64", "linux-x86_64", "macos-aarch64", "macos-x86_64")))
 
@@ -317,6 +333,7 @@ class Release(unittest.TestCase):
             root = pathlib.Path(scratch)
             program = root / "tilo"
             program.write_bytes(b"x")
+            (root / "tilo-runtime").write_bytes(b"x")
             run("bash", self.RELEASE, "pack", program, root / "tilo-linux-x86_64.tar.gz", env={**os.environ, "TMPDIR": scratch})
             done = subprocess.run(["bash", self.RELEASE, "sums", root / "out", root], capture_output=True, text=True, env={**os.environ, "TMPDIR": scratch})
             self.assertNotEqual(done.returncode, 0)

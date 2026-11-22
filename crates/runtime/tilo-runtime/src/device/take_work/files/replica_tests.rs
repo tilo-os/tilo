@@ -7,9 +7,9 @@
     reason = "the server, the runtimes and the person's device live for the whole scenario"
 )]
 
-use super::super::super::Standalone;
-use super::super::super::tests::{isolated_command, isolated_home, isolated_root};
 use crate::RuntimeServices as _;
+use crate::device::services::Daemon;
+use crate::device::services::tests::{isolated_command, isolated_home, isolated_root};
 use ed25519_dalek::SigningKey;
 use std::{
     path::{Path, PathBuf},
@@ -20,14 +20,16 @@ use tilo_server::workspaces::IssueInvitationRequest;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-const TEST: &str = "standalone::files::replica::tests::\
+const TEST: &str = "device::take_work::files::replica::tests::\
     a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_the_vm_host";
 /// The invitation the person's device redeems, in its own process.
 const PERSON_INVITATION: &str = "TILO_REPLICA_TEST_PERSON_INVITATION";
-const KEPT_TEST: &str = "standalone::files::replica::tests::\
+const KEPT_TEST: &str = "device::take_work::files::replica::tests::\
     a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left";
-const RETURN_TEST: &str = "standalone::files::replica::tests::\
+const RETURN_TEST: &str = "device::take_work::files::replica::tests::\
     content_the_server_let_go_of_comes_back_from_the_writer_that_was_away";
+const FOUNDED_TEST: &str = "device::take_work::files::replica::tests::\
+    a_computer_with_no_login_keeps_its_files_in_the_workspace_founded_on_it";
 /// The invitation the device that joins last redeems, in its own process.
 const JOINER_INVITATION: &str = "TILO_REPLICA_TEST_JOINER_INVITATION";
 const WORKSPACE_NAME: &str = "Project";
@@ -43,8 +45,8 @@ fn run<T>(future: impl std::future::Future<Output = T>) -> T {
 /// Join `device` to the workspace `invitation` names, holding its files from
 /// the join on as the runtime does for the workspaces a profile joined.
 /// Answers the joined workspace's id.
-fn join(device: &Standalone, invitation: &str) -> String {
-    let workspaces = std::sync::Arc::clone(&device.workspaces);
+fn join(device: &Daemon, invitation: &str) -> String {
+    let workspaces = std::sync::Arc::clone(device.serving());
     let (workspace, name) = run(async move {
         let workspace = workspaces.copies().join_member(invitation).await?;
         let name = workspaces
@@ -55,8 +57,8 @@ fn join(device: &Standalone, invitation: &str) -> String {
         Ok::<_, String>((workspace, name))
     })
     .unwrap();
-    if let Some(replicas) = &device.replicas {
-        let _ = super::super::super::hold_files(replicas, &name, workspace);
+    if let Some(replicas) = device.replicas() {
+        let _ = crate::device::services::hold_files(replicas, &name, workspace);
     }
     workspace.to_string()
 }
@@ -233,7 +235,7 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
         .try_init();
     if let Some(invitation) = std::env::var_os(PERSON_INVITATION) {
         let profile = isolated_root(TEST).unwrap();
-        let device = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+        let device = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
         join(&device, invitation.to_str().unwrap());
         loop {
             std::thread::sleep(Duration::from_secs(1));
@@ -245,7 +247,7 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
     let scenario = profile.parent().unwrap().to_path_buf();
 
     // The VM host's member: the runtime that takes the workspace's work.
-    let member = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+    let member = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
     let (_, member_device) =
         tilo_identity::broker::trusted_current_device(member.workspace()).unwrap();
 
@@ -297,7 +299,7 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
         )
         .env(
             tilo_test_env::hang::HANG_BOUND_ENV,
-            super::super::super::tests::helper_hang_bound(),
+            crate::device::services::tests::helper_hang_bound(),
         )
         .stdout(std::fs::File::create(&log).unwrap())
         .stderr(std::fs::File::create(person_root.join("device.err")).unwrap())
@@ -360,7 +362,7 @@ fn a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left() {
         .try_init();
     if let Some(invitation) = std::env::var_os(JOINER_INVITATION) {
         let profile = isolated_root(KEPT_TEST).unwrap();
-        let device = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+        let device = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
         join(&device, invitation.to_str().unwrap());
         loop {
             std::thread::sleep(Duration::from_secs(1));
@@ -373,7 +375,7 @@ fn a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left() {
 
     // The member that writes the files: the runtime that takes the
     // workspace's work.
-    let member = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+    let member = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
     let (_, member_device) =
         tilo_identity::broker::trusted_current_device(member.workspace()).unwrap();
 
@@ -445,7 +447,7 @@ fn a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left() {
         )
         .env(
             tilo_test_env::hang::HANG_BOUND_ENV,
-            super::super::super::tests::helper_hang_bound(),
+            crate::device::services::tests::helper_hang_bound(),
         )
         .stdout(std::fs::File::create(&log).unwrap())
         .stderr(std::fs::File::create(joiner_root.join("device.err")).unwrap())
@@ -488,7 +490,7 @@ fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
         return;
     };
     let scenario = profile.parent().unwrap().to_path_buf();
-    let member = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+    let member = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
     let (_, member_device) =
         tilo_identity::broker::trusted_current_device(member.workspace()).unwrap();
     let operator = SigningKey::from_bytes(&[61; 32]);
@@ -554,7 +556,7 @@ fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
     // and keeps it again. The member's folder says it is in sync only once
     // the server says it lacks none of the files: until then the draft is on
     // the member alone, and wiping it would lose it.
-    let member = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+    let member = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
     wait_for_kept(
         &kept,
         length,
@@ -579,7 +581,7 @@ fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
     run(server.shutdown());
 }
 
-const CLONE_TEST: &str = "standalone::files::replica::tests::\
+const CLONE_TEST: &str = "device::take_work::files::replica::tests::\
     a_repository_cloned_into_the_vm_hosts_folder_reaches_a_persons_device_whole";
 
 /// Writes a repository into `folder` as `git clone` does: the pack grows in a
@@ -683,7 +685,7 @@ fn wait_for_clone(
 fn a_repository_cloned_into_the_vm_hosts_folder_reaches_a_persons_device_whole() {
     if let Some(invitation) = std::env::var_os(PERSON_INVITATION) {
         let profile = isolated_root(CLONE_TEST).unwrap();
-        let device = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+        let device = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
         join(&device, invitation.to_str().unwrap());
         loop {
             std::thread::sleep(Duration::from_secs(1));
@@ -691,7 +693,7 @@ fn a_repository_cloned_into_the_vm_hosts_folder_reaches_a_persons_device_whole()
     }
     // The member, in the process `isolated_root` starts, says what it does
     // into a file the test reads.
-    if let Some(profile) = std::env::var_os(super::super::super::tests::PROCESS_ROOT) {
+    if let Some(profile) = std::env::var_os(crate::device::services::tests::PROCESS_ROOT) {
         let file = std::fs::File::create(PathBuf::from(profile).with_extension("log")).unwrap();
         let _ = tracing_subscriber::fmt()
             .with_env_filter("warn,tilo_fs=info,tilo_runtime=debug")
@@ -704,7 +706,7 @@ fn a_repository_cloned_into_the_vm_hosts_folder_reaches_a_persons_device_whole()
     };
     let scenario = profile.parent().unwrap().to_path_buf();
     let said = profile.with_extension("log");
-    let member = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+    let member = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
     let (_, member_device) =
         tilo_identity::broker::trusted_current_device(member.workspace()).unwrap();
     let operator = SigningKey::from_bytes(&[71; 32]);
@@ -747,7 +749,7 @@ fn a_repository_cloned_into_the_vm_hosts_folder_reaches_a_persons_device_whole()
         )
         .env(
             tilo_test_env::hang::HANG_BOUND_ENV,
-            super::super::super::tests::helper_hang_bound(),
+            crate::device::services::tests::helper_hang_bound(),
         )
         .stdout(std::fs::File::create(&log).unwrap())
         .stderr(std::fs::File::create(person_root.join("device.err")).unwrap())
@@ -770,7 +772,7 @@ fn a_repository_cloned_into_the_vm_hosts_folder_reaches_a_persons_device_whole()
     run(server.shutdown());
 }
 
-const WIPED_TEST: &str = "standalone::files::replica::tests::\
+const WIPED_TEST: &str = "device::take_work::files::replica::tests::\
     a_member_whose_disk_was_wiped_gets_the_workspaces_files_back";
 /// The invitation the member redeems, in its own process, each time it starts.
 const MEMBER_INVITATION: &str = "TILO_REPLICA_TEST_MEMBER_INVITATION";
@@ -844,7 +846,7 @@ fn serve_as_member(invitation: &std::ffi::OsStr) -> ! {
         .with_writer(std::io::stderr)
         .try_init();
     let profile = isolated_root(WIPED_TEST).unwrap();
-    let device = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+    let device = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
     join(&device, invitation.to_str().unwrap());
     loop {
         std::thread::sleep(Duration::from_secs(1));
@@ -985,7 +987,7 @@ fn a_member_whose_disk_was_wiped_gets_the_workspaces_files_back() {
             )
             .env(
                 tilo_test_env::hang::HANG_BOUND_ENV,
-                super::super::super::tests::helper_hang_bound(),
+                crate::device::services::tests::helper_hang_bound(),
             )
             .stdout(std::fs::File::create(member_root.join(format!("{run_name}.log"))).unwrap())
             .stderr(std::fs::File::create(member_root.join(format!("{run_name}.err"))).unwrap())
@@ -1033,4 +1035,86 @@ fn a_member_whose_disk_was_wiped_gets_the_workspaces_files_back() {
     let _ = second.kill();
     let _ = second.wait();
     run(server.shutdown());
+}
+
+/// The Files tree the workspace founded on `daemon` keeps, its own record and every chunk it
+/// lists: `None` until it keeps the tree's record.
+fn kept_tree(daemon: &Daemon) -> Option<fs_protocol::tree::Tree> {
+    let workspace = collab_types::WorkspaceId::parse(daemon.workspace())?;
+    let read = |record: &str| {
+        daemon
+            .serving()
+            .test_kept_document(workspace, tilo_fs::tree_sync::FILES_APP, record)
+            .ok()
+    };
+    let index = read(&fs_protocol::tree::document_id())?;
+    let listed = fs_protocol::tree::listed_chunks(&automerge::AutoCommit::load(&index).ok()?);
+    let chunks: Vec<Vec<u8>> = listed
+        .into_iter()
+        .filter(|chunk| *chunk != 0)
+        .filter_map(|chunk| read(&fs_protocol::tree::chunk_document_id(chunk)))
+        .collect();
+    fs_protocol::tree::Tree::of_records(Some(&index), chunks.iter().map(Vec::as_slice)).ok()
+}
+
+/// Wait until `daemon`'s workspace keeps, in its Files tree, a file of `size` bytes with its
+/// content named.
+fn wait_for_kept_file(daemon: &Daemon, size: usize, what: &str) {
+    let size = u64::try_from(size).unwrap();
+    let started = std::time::Instant::now();
+    let bound = tilo_test_env::hang_bound().saturating_sub(WAIT_LEAD);
+    loop {
+        let tree = kept_tree(daemon);
+        if tree.as_ref().is_some_and(|tree| {
+            tree.nodes
+                .values()
+                .any(|node| node.size == size && node.hash.is_some())
+        }) {
+            return;
+        }
+        assert!(
+            started.elapsed() <= bound,
+            "{what}: the tree holds {tree:?}; the folder's sync says {:?}",
+            daemon.joined_files_status(daemon.workspace())
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// A computer with no login keeps the person's files in the workspace founded on it, as Tilo
+/// with no server does: its folder shows them, and a file written there is the workspace's, so
+/// it comes back though the folder and everything the folder's sync kept are gone.
+#[test]
+fn a_computer_with_no_login_keeps_its_files_in_the_workspace_founded_on_it() {
+    let Some(profile) = isolated_root(FOUNDED_TEST) else {
+        return;
+    };
+    let folder = isolated_home(profile.parent().unwrap())
+        .join("Tilo")
+        .join("Home");
+    let written = content(77, 200_000);
+    {
+        let daemon = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
+        assert_eq!(
+            daemon.joined_files_folder(daemon.workspace()),
+            Some(folder.clone()),
+            "the founded workspace's files are shown at its folder"
+        );
+        std::fs::write(folder.join("notes.bin"), &written).unwrap();
+        wait_for_kept_file(
+            &daemon,
+            written.len(),
+            "the file reaches the workspace's tree",
+        );
+    }
+    std::fs::remove_dir_all(&folder).unwrap();
+    std::fs::remove_dir_all(profile.join("files")).unwrap();
+    let daemon = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
+    wait_for_file(
+        &folder.join("notes.bin"),
+        &written,
+        "the workspace's file is in its folder again",
+        &profile.join("none.log"),
+    );
+    drop(daemon);
 }

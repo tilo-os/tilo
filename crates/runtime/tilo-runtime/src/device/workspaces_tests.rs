@@ -10,7 +10,6 @@
     reason = "in a test these are the assertion, not a hazard; the server and the device stay up until it ends"
 )]
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use automerge::ReadDoc as _;
@@ -21,7 +20,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
 use tilo_workspace_service::workspaces::Workspaces;
 
-use super::OwnDevice;
+use super::ServiceWorkspaces;
 
 /// A device `root` certified, and its key.
 fn enrol(
@@ -135,7 +134,7 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
     found_front(&hosted, &workspace, "Main").await;
 
     // The computer's login, as `tilo login` left it, naming the server's address.
-    let login = crate::login::Device {
+    let login = tilo_device_identity::login::Device {
         site: "https://tilo.test/".into(),
         host_origin: "https://eu1.tilo.test".into(),
         workspace: workspace.clone(),
@@ -149,19 +148,17 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
             web: None,
         }),
     };
-    let own = Arc::new(
-        OwnDevice::open(
-            &state.path().join("laptop"),
-            &laptop_key,
-            &laptop_cert,
-            &crate::login::server_of(&login).await.unwrap(),
-        )
-        .await
-        .expect("the laptop's own service opens"),
-    );
+    let own = ServiceWorkspaces::open_for_test(
+        &state.path().join("laptop"),
+        &laptop_key,
+        &laptop_cert,
+        &tilo_api::daemon::enter::server_of(&login).await.unwrap(),
+    )
+    .await
+    .expect("the laptop's own service opens");
     let entered = tilo_test_env::within(
         "the login enters its workspace from the device's endpoint",
-        crate::login::connect(&laptop_key, &login, Some(own.lent())),
+        tilo_api::daemon::enter::connect(&laptop_key, &login, Some(own.lent())),
     )
     .await
     .expect("the login enters");
@@ -183,12 +180,12 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
     )
     .await;
     assert!(
-        own.workspaces().is_member(&workspace).await.unwrap(),
+        own.copies().is_member(&workspace).await.unwrap(),
         "the workspace the login entered is a member copy here"
     );
     tilo_test_env::within("the member copy opens the server's sealed layout", async {
         loop {
-            let (copies, named) = (own.workspaces().clone(), workspace.clone());
+            let (copies, named) = (own.copies().clone(), workspace.clone());
             let read = tokio::task::spawn_blocking(move || front(&copies, &named))
                 .await
                 .unwrap();

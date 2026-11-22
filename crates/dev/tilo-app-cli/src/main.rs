@@ -754,7 +754,7 @@ struct BundleMacosArgs {
     /// Previously compiled app executable. Architecture/signature validation is separate.
     #[arg(long)]
     binary: PathBuf,
-    /// Previously compiled tilo-runtime-mcp helper.
+    /// Previously compiled tilo-runtime helper.
     #[arg(long)]
     runtime_host: PathBuf,
     /// New output directory; an existing destination is never overwritten.

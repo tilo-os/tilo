@@ -58,30 +58,30 @@ use super::{Author, Files, INTERVAL, NamespaceFile};
 const CONTENT_WAIT: Duration = Duration::from_secs(10);
 
 /// What a replica of one joined workspace's files is made of.
-pub(in crate::standalone) struct ReplicaParts<'a> {
+pub(crate) struct ReplicaParts<'a> {
     /// The joined workspace.
-    pub(in crate::standalone) workspace: &'a str,
+    pub(crate) workspace: &'a str,
     /// Where the profile keeps this workspace's tree and folder baseline.
-    pub(in crate::standalone) state: &'a Path,
+    pub(crate) state: &'a Path,
     /// The folder that mirrors the workspace.
-    pub(in crate::standalone) folder: &'a Path,
+    pub(crate) folder: &'a Path,
     /// The profile's content store, the one its record content is kept in.
-    pub(in crate::standalone) store: Arc<tilo_fs::ContentStore>,
-    pub(in crate::standalone) endpoint: iroh::Endpoint,
-    pub(in crate::standalone) author: &'a Author,
+    pub(crate) store: Arc<tilo_fs::ContentStore>,
+    pub(crate) endpoint: iroh::Endpoint,
+    pub(crate) author: &'a Author,
     /// This device's key and its person's, as the workspace knows them.
-    pub(in crate::standalone) keys: ([u8; 32], [u8; 32]),
-    pub(in crate::standalone) admission: Arc<tilo_fs::admission::FileAdmission>,
+    pub(crate) keys: ([u8; 32], [u8; 32]),
+    pub(crate) admission: Arc<tilo_fs::admission::FileAdmission>,
     /// The service whose member copy holds the workspace's tree.
-    pub(in crate::standalone) workspaces: Workspaces,
+    pub(crate) workspaces: Workspaces,
     /// The profile's identity service, which hands over the record's keys.
-    pub(in crate::standalone) identity: PathBuf,
+    pub(crate) identity: PathBuf,
     /// The profile's record-content service.
-    pub(in crate::standalone) content: Arc<RouteContent>,
+    pub(crate) content: Arc<RouteContent>,
 }
 
 /// One joined workspace's files, synced while this value lives.
-pub(in crate::standalone) struct ReplicaFiles {
+pub(crate) struct ReplicaFiles {
     folder: PathBuf,
     _watch: Watch,
     tree: TreeSync,
@@ -101,7 +101,7 @@ impl ReplicaFiles {
     ///
     /// # Errors
     /// The state or the folder cannot be opened.
-    pub(in crate::standalone) fn start(parts: ReplicaParts<'_>) -> io::Result<Self> {
+    pub(crate) fn start(parts: ReplicaParts<'_>) -> io::Result<Self> {
         let route = CrdtRoute::app(FILES_APP, parts.workspace);
         let source = Arc::new(WorkspaceSource::new(
             Arc::clone(&parts.content),
@@ -112,7 +112,7 @@ impl ReplicaFiles {
             io::Error::new(io::ErrorKind::InvalidInput, "invalid Files workspace")
         })?;
         crate::unix::private_directory(parts.state)?;
-        let tree = super::super::service::block_on_owned({
+        let tree = crate::device::workspaces::block_on_owned({
             let (copies, kept_at) = (parts.workspaces, parts.state.join(super::NAMESPACE));
             let (store, content) = (Arc::clone(&parts.store), Arc::clone(&parts.content));
             async move {
@@ -150,50 +150,49 @@ impl ReplicaFiles {
     }
 
     /// The folder that mirrors the workspace.
-    pub(in crate::standalone) fn folder(&self) -> &Path {
+    pub(crate) fn folder(&self) -> &Path {
         &self.folder
     }
 
     /// Where the folder's sync stands.
-    pub(in crate::standalone) fn status(&self) -> tilo_fs::tree_sync::Status {
+    pub(in crate::device) fn status(&self) -> tilo_fs::tree_sync::Status {
         self.tree.status()
     }
 }
 
 /// This device as a joined workspace knows it.
-pub(in crate::standalone) type Credentials =
-    Box<dyn Fn(&str) -> io::Result<PeerCredentials> + Send + Sync>;
+pub(crate) type Credentials = Box<dyn Fn(&str) -> io::Result<PeerCredentials> + Send + Sync>;
 
 /// What every replica of this profile shares.
-pub(in crate::standalone) struct ReplicaHost {
+pub(crate) struct ReplicaHost {
     /// The profile, whose `files/workspaces/<workspace>` keeps each tree.
-    pub(in crate::standalone) profile: PathBuf,
+    pub(crate) profile: PathBuf,
     /// The home whose `Tilo` folder shows each workspace.
-    pub(in crate::standalone) home: PathBuf,
+    pub(crate) home: PathBuf,
     /// The folder of the profile's own workspace, which no joined workspace
     /// takes.
-    pub(in crate::standalone) own_folder: Option<PathBuf>,
-    pub(in crate::standalone) store: Arc<tilo_fs::ContentStore>,
-    pub(in crate::standalone) endpoint: iroh::Endpoint,
-    pub(in crate::standalone) author: Author,
-    pub(in crate::standalone) credentials: Credentials,
-    pub(in crate::standalone) identity: PathBuf,
-    pub(in crate::standalone) content: Arc<RouteContent>,
+    pub(crate) own_folder: Option<PathBuf>,
+    pub(crate) store: Arc<tilo_fs::ContentStore>,
+    pub(crate) endpoint: iroh::Endpoint,
+    pub(crate) author: Author,
+    pub(crate) credentials: Credentials,
+    pub(crate) identity: PathBuf,
+    pub(crate) content: Arc<RouteContent>,
     /// Attests this process as each workspace's Files endpoint.
-    pub(in crate::standalone) apps: Arc<crate::apps::Apps>,
+    pub(crate) apps: Arc<crate::apps::Apps>,
 }
 
 /// The files of every workspace this profile joined, by workspace.
-pub(in crate::standalone) struct Replicas {
+pub(crate) struct Replicas {
     host: ReplicaHost,
     held: Mutex<BTreeMap<String, ReplicaFiles>>,
-    workspaces: std::sync::Weak<super::super::service::ServiceWorkspaces>,
+    workspaces: std::sync::Weak<crate::device::workspaces::ServiceWorkspaces>,
 }
 
 impl Replicas {
-    pub(in crate::standalone) fn new(
+    pub(crate) fn new(
         host: ReplicaHost,
-        workspaces: std::sync::Weak<super::super::service::ServiceWorkspaces>,
+        workspaces: std::sync::Weak<crate::device::workspaces::ServiceWorkspaces>,
     ) -> Self {
         Self {
             host,
@@ -212,7 +211,7 @@ impl Replicas {
         clippy::significant_drop_tightening,
         reason = "the held replicas stay locked while one starts, so two holds of a workspace never start two"
     )]
-    pub(in crate::standalone) fn hold(&self, workspace: &str, name: &str) -> io::Result<PathBuf> {
+    pub(crate) fn hold(&self, workspace: &str, name: &str) -> io::Result<PathBuf> {
         let mut held = self.held.lock_recover();
         if let Some(replica) = held.get(workspace) {
             return Ok(replica.folder().to_path_buf());
@@ -284,7 +283,7 @@ impl Replicas {
     }
 
     /// The folder mirroring `workspace`'s files, while they are held.
-    pub(in crate::standalone) fn folder(&self, workspace: &str) -> Option<PathBuf> {
+    pub(crate) fn folder(&self, workspace: &str) -> Option<PathBuf> {
         self.held
             .lock_recover()
             .get(workspace)
@@ -292,10 +291,7 @@ impl Replicas {
     }
 
     /// Where the sync of `workspace`'s folder stands, while its files are held.
-    pub(in crate::standalone) fn status(
-        &self,
-        workspace: &str,
-    ) -> Option<tilo_fs::tree_sync::Status> {
+    pub(in crate::device) fn status(&self, workspace: &str) -> Option<tilo_fs::tree_sync::Status> {
         self.held
             .lock_recover()
             .get(workspace)

@@ -52,7 +52,7 @@ case $group in
     # measure nothing; the agent's own task pipeline is the `agent-native`
     # group's. tilo-runtime's dev-overrides carry the throwaway identity the
     # run's session mints for the shell it opens.
-    cargo build --locked --release -p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime-mcp \
+    cargo build --locked --release -p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime \
       --features dev-overrides
     test -r "$VK_DRIVER_FILES"
     env_json release lavapipe kvm > "$out/env.json"

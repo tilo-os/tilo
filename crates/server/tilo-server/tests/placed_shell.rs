@@ -27,7 +27,7 @@ use tilo_actions::remote::{
 };
 use tilo_agent_session::workspace_actions::{ShellRan, Watching};
 use tilo_peer_state::actions::{ActionService, NoActions};
-use tilo_runtime::standalone::take_work;
+use tilo_runtime::device::take_work;
 use tilo_server::placed_programs::{Machine, serve_placed};
 use tilo_server::placed_shells::{Member, Members, PlacedShells};
 use tilo_server_protocol::WorkSetting;

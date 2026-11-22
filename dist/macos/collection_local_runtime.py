@@ -26,7 +26,7 @@ HERE = Path(__file__).resolve().parent
 PLUGINS = {'libgstvpx.dylib', 'libgstaom.dylib', 'libgstrav1e.dylib',
            'libgstdav1d.dylib', 'libgstlibav.dylib'}
 SHIM = 'Contents/Frameworks/libtilo-local-intl.dylib'
-LAUNCHER = 'Contents/MacOS/tilo-runtime-mcp'
+LAUNCHER = 'Contents/MacOS/tilo-runtime'
 LIMIT = 1024**3
 
 
@@ -41,7 +41,7 @@ def checked_json(path, expected):
 
 def destination(path, roots):
     if path == roots[0]:
-        return 'Contents/MacOS/tilo-runtime-mcp.real'
+        return 'Contents/MacOS/tilo-runtime.real'
     if path == roots[1]:
         return 'Contents/Helpers/gst-plugin-scanner'
     folder = 'PlugIns' if path in roots[2:] else 'Frameworks'
@@ -55,7 +55,7 @@ def local_load(loader, target):
 def inspect_inputs(profile, deadline):
     roots = [Path(p).resolve(strict=True) for p in profile['roots']]
     images = profile['images']
-    if (len(images) != 41 or len(roots) != 7 or roots[0].name != 'tilo-runtime-mcp' or
+    if (len(images) != 41 or len(roots) != 7 or roots[0].name != 'tilo-runtime' or
             roots[1].name != 'gst-plugin-scanner' or
             {p.name for p in roots[2:]} != PLUGINS or set(profile['plugins']) != PLUGINS or
             profile['candidate_local_artifact_minimum_macos'] != '27.0' or profile['issues']):

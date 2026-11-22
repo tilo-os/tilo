@@ -301,7 +301,7 @@ fi
 # produced by the distro package job.
 payload_bin=$work/payload-bin
 mkdir -p "$payload_bin" "$work/payload-a" "$work/payload-b"
-for binary in tilo-session tilo-launcher tilo-runtime-mcp tilo-unlock-helper; do
+for binary in tilo-session tilo-launcher tilo-runtime tilo-unlock-helper; do
     install -m755 "$true_bin" "$payload_bin/$binary"
 done
 SOURCE_DATE_EPOCH=123 GITHUB_SHA="$(printf 'a%.0s' {1..40})" \

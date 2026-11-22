@@ -83,7 +83,7 @@ mod tests {
                 .env("TILO_SVC_IDENTITY_FD", "999")
                 .env("TILO_RUNTIME_RESUME_LIVE", "so.tilo.browser")
                 .env("TILO_RUNTIME_PROFILE", "/fixture/runtime")
-                .env("TILO_RUNTIME_BINARY", "/fixture/tilo-runtime-mcp")
+                .env("TILO_RUNTIME_BINARY", "/fixture/tilo-runtime")
                 .output_locked()
                 .unwrap();
             assert!(
@@ -117,7 +117,7 @@ mod tests {
         let lines = std::fs::read_to_string(capture).unwrap();
         assert_eq!(
             lines,
-            "2\n--private\nhttps://example.test/\n\n\n\n\n\n/fixture/runtime\n/fixture/tilo-runtime-mcp\n"
+            "2\n--private\nhttps://example.test/\n\n\n\n\n\n/fixture/runtime\n/fixture/tilo-runtime\n"
         );
     }
 }

@@ -124,7 +124,7 @@ Validation rejects missing apps/helpers, changed manifest/plist identity or vers
 missing declared icons, escaped/broken symlinks, unreviewed nested code, external
 Homebrew/build-host libraries and unresolved rpaths. Non-system dylib dependencies
 are refused because this adapter covers the statically linked SDK shape. The current SDK bundle shape
-is exactly the app executable plus `tilo-runtime-mcp`; custom frameworks, CEF and
+is exactly the app executable plus `tilo-runtime`; custom frameworks, CEF and
 extensions require a reviewed specialized adapter. `verify` checks hashes,
 architectures, signatures and `hdiutil verify`, without mounting or running apps.
 This does not prove GUI behavior, Gatekeeper's first-download UX, or Intel support.
@@ -166,7 +166,7 @@ Use this read-only command to gather evidence from existing inputs:
 
 ```sh
 python3 dist/macos/collection.py audit-runtime \
-  --runtime-binary /path/to/qualified-checkout/target/release/tilo-runtime-mcp \
+  --runtime-binary /path/to/qualified-checkout/target/release/tilo-runtime \
   --runtime-prefix /opt/homebrew/opt/gstreamer \
   --dependency-root /opt/homebrew --arch arm64 --minimum-macos 13.0 \
   > runtime-audit.json

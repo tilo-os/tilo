@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- The per-user runtime as a launchd agent, shipped at
+<!-- This computer's one daemon (`tilo-runtime --hold`) as a launchd agent, shipped at
      Tilo.app/Contents/Library/LaunchAgents/so.tilo.runtime.plist.
 
      SMAppService.agent(plistName: "so.tilo.runtime.plist") (macOS 13+) runs
@@ -10,7 +10,7 @@
      (dist/macos/README.md).
 
      KeepAlive restarts only a crashed daemon: a clean exit, or a second
-     daemon refused because an app already started one for this profile,
+     daemon refused because another already keeps this computer's device,
      must not be respawned every ThrottleInterval. -->
 <plist version="1.0"><dict>
   <key>Label</key><string>so.tilo.runtime</string>
@@ -18,8 +18,10 @@
   <key>ProgramArguments</key>
   <array>
     <string>/Applications/Tilo.app/Contents/MacOS/tilo-runtime</string>
-    <string>--daemon</string>
+    <string>--hold</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict><key>TILO_PEER_SERVICE</key><string>1</string></dict>
   <key>AssociatedBundleIdentifiers</key>
   <array><string>so.tilo.runtime</string></array>
   <key>RunAtLoad</key><true/>

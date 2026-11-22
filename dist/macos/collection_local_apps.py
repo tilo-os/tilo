@@ -146,7 +146,7 @@ def inspect_app(app, plan):
     for relative, asset in plan['runtime_plan']['assets'].items():
         if collection.digest(app / relative) != asset['sha256']:
             raise ValueError(f'integrated resource changed: {relative}')
-    macos_files = {main, helper, app / 'Contents/MacOS/tilo-runtime-mcp.real'}
+    macos_files = {main, helper, app / 'Contents/MacOS/tilo-runtime.real'}
     if extended:
         macos_files.add(app / extended['main_real'])
     if plan.get('font_catalog'):
@@ -177,9 +177,9 @@ def overlay(app, plan):
     payload = Path(plan['payload'])
     record = pinned_payload(plan)
     runtime_plan = plan['runtime_plan']
-    helper = app / 'Contents/MacOS/tilo-runtime-mcp'
+    helper = app / 'Contents/MacOS/tilo-runtime'
     originals = [item for item in runtime_plan['images'].values()
-                 if item['destination'] == 'Contents/MacOS/tilo-runtime-mcp.real']
+                 if item['destination'] == 'Contents/MacOS/tilo-runtime.real']
     if len(originals) != 1 or collection.digest(helper) != originals[0]['sha256']:
         raise ValueError('SDK helper does not match the qualified original')
     helper.unlink()  # Only the new SDK copy in this transaction.
@@ -240,7 +240,7 @@ def assemble(out, plan, resume=False, guard=None):
             return
         env, shim = sdk_environment(work)
         original_helper = next(source for source, item in plan['runtime_plan']['images'].items()
-                               if item['destination'] == 'Contents/MacOS/tilo-runtime-mcp.real')
+                               if item['destination'] == 'Contents/MacOS/tilo-runtime.real')
         if collection.digest(Path(plan['sdk'])) != plan['sdk_sha256']:
             raise ValueError('SDK tool changed')
         output = work / 'sdk-output'

@@ -19,7 +19,7 @@ A session binds its Wayland socket, its service sockets and its files under `$XD
 |---|---|---|
 | `wayland-display` | the compositor, when it binds its socket (`Compositor::listen`) | everything that starts a program beside the session: `tilo-app dev`, `scripts/agent-loop/session.py`, `real_apps.ScriptedSession` |
 | `workspace-id` | the session, on every workspace switch | `tilo-app dev`, which names it to the session's file chooser with the app; `scripts/agent-loop/session.py`, which waits for it |
-| `agent.sock` | the session's MCP server, for a session that owns the machine or was started with `--agent-key` | `tilo-runtime-mcp --connect` |
+| `agent.sock` | the session's MCP server, for a session that owns the machine or was started with `--agent-key` | `tilo-runtime --connect` |
 | `test-control.sock` | a development build, or `--test-control PATH` | `tilo-control`, every harness here |
 | `admin-control.sock` | a session that owns the machine, for the device's owner | `tilo-control --socket …` (semantic ops only) |
 | `headless-owner-control.sock` | a headless session started with `--headless-owner-control` | the same, for an owner's scripts |
@@ -361,7 +361,7 @@ scripts/agent-loop/session.py usage canvas --calls
 scripts/agent-loop/session.py stop canvas
 ```
 
-The agent's only way in is the ordinary one: `tilo-runtime-mcp` over the app's published actions, and the app's window as a person uses it. Everything lives under `target/agent-loop/APP` (state, logs) and a private directory in `$XDG_RUNTIME_DIR`; the real home, settings, identity and workspaces are never read or written.
+The agent's only way in is the ordinary one: `tilo-runtime` over the app's published actions, and the app's window as a person uses it. Everything lives under `target/agent-loop/APP` (state, logs) and a private directory in `$XDG_RUNTIME_DIR`; the real home, settings, identity and workspaces are never read or written.
 
 ## Per-app screenshots and drives
 

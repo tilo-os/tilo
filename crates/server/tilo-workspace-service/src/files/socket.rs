@@ -105,12 +105,13 @@ async fn serve_one(
             return Err(why);
         }
     };
+    let governed = workspaces.governed_copy(workspace).await.is_some();
     let Backend {
         copy,
         reads,
         writer,
         wakes,
-    } = Backend::of(&workspaces, workspace, content);
+    } = Backend::of(&workspaces, workspace, content, governed);
     Connection {
         copy,
         reads: Arc::new(reads),

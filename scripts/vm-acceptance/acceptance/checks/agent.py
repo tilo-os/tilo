@@ -1,6 +1,6 @@
 """Essential 7: the in-session MCP server, driven the way Claude Code drives it.
 
-Inside the booted session, `tilo-runtime-mcp --connect` (no profile) must relay to the
+Inside the booted session, `tilo-runtime --connect` (no profile) must relay to the
 desktop's own agent socket: the person is asked in trusted chrome, an admitted client is an
 agent member of the workspace, and `tilo_ls` lists the desktop's running apps, not the
 empty catalogue of a second, standalone runtime. The MCP server serves the path-addressed agent
@@ -42,7 +42,7 @@ MCP_TOOLS = ["tilo_do", "tilo_find", "tilo_ls", "tilo_read", "tilo_status"]
 AGENT = "acceptance-agent"
 
 NO_MCP_SERVER = ("the session serves no MCP server ($XDG_RUNTIME_DIR/tilo-session/agent.sock): this image "
-           "predates the in-session MCP server (fix/mcp-server, 2d43ddb51e), so `tilo-runtime-mcp "
+           "predates the in-session MCP server (fix/mcp-server, 2d43ddb51e), so `tilo-runtime "
            "--connect` in a Tilo login starts a second, empty standalone runtime instead of "
            "reaching the desktop")
 
@@ -93,10 +93,10 @@ def is_error(reply) -> bool | None:
 def _mcp_or_xfail(ctx) -> None:
     if "mcp_server" not in ctx.facts:
         out = ctx.vm.exec(f"test -S {MCP_SERVER} && echo mcp || echo no-mcp; "
-                          "command -v tilo-runtime-mcp >/dev/null && echo mcp || echo no-mcp; "
+                          "command -v tilo-runtime >/dev/null && echo mcp || echo no-mcp; "
                           "command -v python3 >/dev/null && echo python || echo no-python")
         words = set(out.split())
-        for need, what in (("mcp", "tilo-runtime-mcp"), ("python", "python3")):
+        for need, what in (("mcp", "tilo-runtime"), ("python", "python3")):
             if need not in words:
                 raise Unobservable(f"the guest has no {what} on PATH")
         ctx.facts["mcp_server"] = "mcp" in words
@@ -157,7 +157,7 @@ def _session(ctx) -> dict:
     return ctx.facts["agent_session"]
 
 
-@check("M01", AREA, "tilo-runtime-mcp --connect in a session: the person is asked, then initialize and "
+@check("M01", AREA, "tilo-runtime --connect in a session: the person is asked, then initialize and "
                     "tools/list answer, with no pixel tools on the MCP server")
 def handshake(ctx, res):
     t = _session(ctx)

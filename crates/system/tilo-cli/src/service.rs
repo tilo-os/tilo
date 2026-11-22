@@ -1,19 +1,19 @@
-//! The peer as a user service: what keeps the person's workspaces mounted at
+//! This computer's daemon as a user service: what keeps the person's workspaces mounted at
 //! `~/Tilo` while this account is logged in, started again at the next login.
 //!
-//! A systemd user unit on Linux, a launchd agent on macOS, each running the
-//! device's one holder ([`crate::mcp`], `tilo mcp --hold`). Where neither
-//! answers (a container, a session without a user manager) the holder runs as
-//! a process of its own instead, until the computer restarts.
+//! A systemd user unit on Linux, a launchd agent on macOS, each running the device's one daemon
+//! (`tilo-runtime --hold`). On macOS, Tilo.app's own agent (`so.tilo.runtime`) runs that daemon
+//! where it is installed, and no second agent is installed beside it. Where no service manager
+//! answers (a container, a session without a user manager) the daemon runs as a process of its
+//! own instead, until the computer restarts.
 //!
-//! A command here never replaces a holder that is there because it answered
-//! slowly or a connection failed: the peer may be inside a step over a
-//! workspace's folder, and stopping it there loses that step. Whether one is
-//! there is read from facts that need no answer — the holder's lock, and the
-//! unit's state — and a command waits for the holder that is. Only a holder
-//! that agreed to hand the device over (one of an older program, or one an
-//! agent started where the service's can keep it) is replaced, and it steps
-//! down by the holders' own hand-over protocol ([`crate::mcp::held`]).
+//! A command here never replaces a daemon that is there because it answered slowly or a
+//! connection failed: it may be inside a step over a workspace's folder, and stopping it there
+//! loses that step. Whether one is there is read from facts that need no answer — the device's
+//! lock, and the unit's state — and a command waits for the daemon that is. Only a daemon that
+//! agreed to hand the device over (one of an older program, or one an agent started where the
+//! service's can keep it) is replaced, and it steps down by the daemons' own hand-over protocol
+//! ([`tilo_api::daemon::Claim`]).
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -21,14 +21,14 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
+use tilo_api::daemon::{Claim, DaemonPlace, Program, SERVICE_ENV, STOP_TIMEOUT, runtime_program};
 
 /// The unit's name, and the launchd agent's label.
 const UNIT: &str = "tilo-peer.service";
 const LABEL: &str = "so.tilo.peer";
-
-/// How long a stop gives the holder to exit before it is killed. The holder's own waits add up
-/// to less than this (`mcp::held`), so a stop ends by itself rather than being killed.
-pub(crate) const STOP_TIMEOUT: Duration = Duration::from_secs(30);
+/// Tilo.app's own launchd agent, which runs this computer's daemon where the app is installed.
+#[cfg(target_os = "macos")]
+const APP_LABEL: &str = "so.tilo.runtime";
 
 /// The environment the service carries over from the login that installed
 /// it: where the device is kept, and what a test's HTTPS trusts.
@@ -39,34 +39,25 @@ const CARRIED: &[&str] = &[
     "XDG_STATE_HOME",
 ];
 
-/// Set in the service's environment: the holder it starts knows itself as the service's, the one
-/// that lasts for as long as the person is logged in ([`crate::mcp::held::Claim`]).
-const SERVICE_ENV: &str = "TILO_PEER_SERVICE";
-
-/// How long a command waits for the holder it started to listen.
+/// How long a command waits for the daemon it started to listen.
 const LISTENING: Duration = Duration::from_secs(10);
-/// How long a command waits for a holder that is there to answer: a holder inside a step over a
+/// How long a command waits for a daemon that is there to answer: a daemon inside a step over a
 /// workspace's folder answers when that step ends, and nothing replaces it for being slow.
 const ANSWERING: Duration = Duration::from_secs(30);
-/// How long a unit that is active without a holder for this login is waited for: its holder is either
+/// How long a unit that is active without a daemon for this login is waited for: its daemon is either
 /// starting, or serving a login that ended (a login made again makes another device, and its
-/// holder steps down by itself). Neither is stopped for it.
+/// daemon steps down by itself). Neither is stopped for it.
 const SETTLING: Duration = Duration::from_secs(20);
-/// How often it looks, or asks, whether that holder answers.
+/// How often it looks, or asks, whether that daemon answers.
 const POLL: Duration = Duration::from_millis(100);
-/// How long a holder asked to hand the device over is waited for: it unmounts the folders and
+/// How long a daemon asked to hand the device over is waited for: it unmounts the folders and
 /// closes the stores before its process ends, and the service starts once it is gone.
 const HANDING_OVER: Duration = Duration::from_secs(30);
 
-/// Whether this process is the holder the user service started.
-pub(crate) fn running_as_service() -> bool {
-    std::env::var_os(SERVICE_ENV).is_some_and(|value| value == "1")
-}
-
 /// Start the installed user service, when it is installed for this login: what an agent's or a
-/// command's `tilo` does when no holder listens, so the device's holder is the service's rather
+/// command's `tilo` does when no daemon listens, so the device's daemon is the service's rather
 /// than a process of theirs. `false` when there is no service for this login, or it did not
-/// start, and the caller starts a holder itself.
+/// start, and the caller starts a daemon itself.
 pub(crate) fn start_installed() -> bool {
     installed_for_this_login() && start_unit().is_ok()
 }
@@ -81,19 +72,19 @@ pub(crate) enum Running {
 }
 
 /// Start the peer from now on, and at every later login: install and start the
-/// user service, else start the holder as a process of its own. A holder that
+/// user service, else start the daemon as a process of its own. A daemon that
 /// is there already is waited for, not replaced: only one that agreed to hand
 /// the device over (one of an older program, or one an agent started where the
-/// service's can keep it) is asked to step down, and the service's holder takes
+/// service's can keep it) is asked to step down, and the service's daemon takes
 /// its place.
 ///
 /// # Errors
-/// Neither started, or the holder that is there did not answer in time.
+/// Neither started, or the daemon that is there did not answer in time.
 pub(crate) fn start() -> Result<Running> {
-    let exe = std::env::current_exe().context("this program's path")?;
+    let exe = runtime_program()?;
     let place = place()?;
     // The unit is written when it changed, so the next login starts this program. What it says
-    // never starts or replaces a holder by itself: the facts below decide that.
+    // never starts or replaces a daemon by itself: the facts below decide that.
     if let Err(why) = install(&exe) {
         tracing::debug!(%why, "no user service manager answers here");
         return start_process(&place);
@@ -119,11 +110,10 @@ pub(crate) fn stop() -> Result<()> {
     Ok(())
 }
 
-fn place() -> Result<crate::mcp::held::Place> {
+fn place() -> Result<DaemonPlace> {
     let place = crate::login::Place::here(crate::identity::paths())?;
     let (key, _) = crate::login::load(&place)?.context(crate::login::NOT_LOGGED_IN)?;
-    crate::mcp::held::Place::of(place.dir(), &key.verifying_key().to_bytes())
-        .map_err(anyhow::Error::msg)
+    DaemonPlace::of(place.dir(), &key.verifying_key().to_bytes()).map_err(anyhow::Error::msg)
 }
 
 /// What a command sees about the peer from outside, without waiting on an answer.
@@ -131,10 +121,10 @@ fn place() -> Result<crate::mcp::held::Place> {
 struct Facts {
     /// The user service's unit is active.
     unit_active: bool,
-    /// A live process holds the device's holder lock: the kernel drops it with the process, so a
-    /// holder that ended never reads as one that is there.
-    holder_alive: bool,
-    /// What the holder answered when asked to hand the device over to a holder of this program as
+    /// A live process holds the device's daemon lock: the kernel drops it with the process, so a
+    /// daemon that ended never reads as one that is there.
+    daemon_alive: bool,
+    /// What the daemon answered when asked to hand the device over to a daemon of this program as
     /// the service's: `Some(true)` when it steps down, `Some(false)` when it keeps the device, and
     /// `None` when it did not answer, as one inside a step over a workspace's folder does not.
     steps_down: Option<bool>,
@@ -145,44 +135,44 @@ struct Facts {
 enum Decision {
     /// Nothing is there: start the service.
     Start,
-    /// A holder is there: wait for it. A slow answer replaces nothing.
+    /// A daemon is there: wait for it. A slow answer replaces nothing.
     LeaveRunning,
-    /// The holder agreed to hand the device over: wait for it to let go, and start the service.
+    /// The daemon agreed to hand the device over: wait for it to let go, and start the service.
     HandOver,
 }
 
-/// [`Decision`] for `facts`: a holder that is there is never replaced because a connect failed or
+/// [`Decision`] for `facts`: a daemon that is there is never replaced because a connect failed or
 /// an ask timed out, only because it said it steps down for this program.
 fn decide(facts: Facts) -> Decision {
     if facts.steps_down == Some(true) {
         return Decision::HandOver;
     }
-    if facts.holder_alive || facts.unit_active {
+    if facts.daemon_alive || facts.unit_active {
         return Decision::LeaveRunning;
     }
     Decision::Start
 }
 
-/// Start the service's holder when nothing is there, wait for the one that is, and take the
-/// device only from a holder that agreed to hand it over. Its state is read again while a unit
-/// that is active has no holder for this login: that holder is starting, or serving a login that
+/// Start the service's daemon when nothing is there, wait for the one that is, and take the
+/// device only from a daemon that agreed to hand it over. Its state is read again while a unit
+/// that is active has no daemon for this login: that daemon is starting, or serving a login that
 /// ended and stepping down by itself, and neither is a reason to stop it.
-fn start_service(place: &crate::mcp::held::Place) -> Result<Running> {
+fn start_service(place: &DaemonPlace) -> Result<Running> {
     let mut settled = false;
     let mut settling_since: Option<Instant> = None;
     loop {
-        let holder_alive = crate::mcp::held::holder_alive(place);
-        if holder_alive {
+        let daemon_alive = place.alive();
+        if daemon_alive {
             settling_since = None;
         }
-        let steps_down = if holder_alive {
-            crate::mcp::held::ask_to_step_down(place, service_claim())
+        let steps_down = if daemon_alive {
+            place.ask_to_step_down(service_claim())
         } else {
             None
         };
         let facts = Facts {
             unit_active: unit_active(),
-            holder_alive,
+            daemon_alive,
             steps_down,
         };
         tracing::debug!(?facts, "what this command found of the peer");
@@ -191,20 +181,20 @@ fn start_service(place: &crate::mcp::held::Place) -> Result<Running> {
                 return match start_unit().and_then(|()| wait_listening(place)) {
                     Ok(()) => Ok(Running::Service),
                     Err(why) => {
-                        // A user manager that answers but starts no holder: one of this process's
+                        // A user manager that answers but starts no daemon: one of this process's
                         // own keeps the folders meanwhile, as where no manager answers at all.
-                        tracing::debug!(%why, "the user service's holder did not start");
+                        tracing::debug!(%why, "the user service's daemon did not start");
                         crate::mcp::held::ensure(place).map_err(anyhow::Error::msg)?;
                         Ok(Running::Process)
                     }
                 };
             }
-            Decision::LeaveRunning if facts.holder_alive => {
-                // A holder whose socket for this login is not there is starting, or serves a
-                // login that ended (a login made again makes another device, and its holder steps
+            Decision::LeaveRunning if facts.daemon_alive => {
+                // A daemon whose socket for this login is not there is starting, or serves a
+                // login that ended (a login made again makes another device, and its daemon steps
                 // down by itself). It is waited for, never stopped: once it listens it is asked,
                 // and once it lets the lock go what to do is read again.
-                if !crate::mcp::held::listening(place) && !settled {
+                if !place.listening() && !settled {
                     settled = true;
                     if !settle(place) {
                         continue;
@@ -222,7 +212,7 @@ fn start_service(place: &crate::mcp::held::Place) -> Result<Running> {
             Decision::LeaveRunning => {
                 if settling_since.get_or_insert_with(Instant::now).elapsed() >= SETTLING {
                     bail!(
-                        "the user service is active, but no holder of this computer's login \
+                        "the user service is active, but no daemon of this computer's login \
                          is. `tilo status` again in a minute says how it stands."
                     );
                 }
@@ -238,33 +228,34 @@ fn start_service(place: &crate::mcp::held::Place) -> Result<Running> {
     }
 }
 
-/// Start the holder as a process of its own, there being no user service manager to start it:
-/// one this login's commands reach is waited for, and where none listens a holder is started,
-/// which takes the lock once a holder that is leaving lets go ([`crate::mcp::held::take_lock`]).
-fn start_process(place: &crate::mcp::held::Place) -> Result<Running> {
-    if crate::mcp::held::connect(place).is_some() && wait_answering(place)? {
+/// Start the daemon as a process of its own, there being no user service manager to start it:
+/// one this login's commands reach is waited for, and where none listens a daemon is started,
+/// which takes the lock once a daemon that is leaving lets go (the daemon's own lock).
+fn start_process(place: &DaemonPlace) -> Result<Running> {
+    if place.connect().is_some() && wait_answering(place)? {
         return Ok(Running::Process);
     }
     crate::mcp::held::ensure(place).map_err(anyhow::Error::msg)?;
     Ok(Running::Process)
 }
 
-/// The claim this command's holder would make: the user service's, of this program.
-fn service_claim() -> crate::mcp::held::Claim {
-    crate::mcp::held::Claim {
-        program: crate::mcp::held::Program::running(),
+/// The claim the daemon this command starts would make: the user service's, of the
+/// `tilo-runtime` it runs.
+fn service_claim() -> Claim {
+    Claim {
+        program: runtime_program().map_or_else(|_| Program::running(), |path| Program::of(&path)),
         service: true,
     }
 }
 
-/// Wait until the holder listens at `place`: the service's holder enters the workspace before it
+/// Wait until the daemon listens at `place`: the service's daemon enters the workspace before it
 /// listens, so a start is waited for.
-fn wait_listening(place: &crate::mcp::held::Place) -> Result<()> {
+fn wait_listening(place: &DaemonPlace) -> Result<()> {
     let until = Instant::now()
         .checked_add(LISTENING)
         .unwrap_or_else(Instant::now);
     while Instant::now() < until {
-        if crate::mcp::held::connect(place).is_some() {
+        if place.connect().is_some() {
             return Ok(());
         }
         std::thread::sleep(POLL);
@@ -275,31 +266,31 @@ fn wait_listening(place: &crate::mcp::held::Place) -> Result<()> {
     )
 }
 
-/// Wait, for at most [`SETTLING`], for the holder that holds the device's lock to listen for this
+/// Wait, for at most [`SETTLING`], for the daemon that holds the device's lock to listen for this
 /// login: one that is starting does in a moment, and one that serves a login which ended never
 /// does and lets the lock go by itself. `true` when it listens now; `false` when the lock was let
 /// go, or the wait ran out.
-fn settle(place: &crate::mcp::held::Place) -> bool {
+fn settle(place: &DaemonPlace) -> bool {
     let until = Instant::now()
         .checked_add(SETTLING)
         .unwrap_or_else(Instant::now);
     while Instant::now() < until {
-        if crate::mcp::held::listening(place) {
+        if place.listening() {
             return true;
         }
-        if !crate::mcp::held::holder_alive(place) {
+        if !place.alive() {
             return false;
         }
         std::thread::sleep(POLL);
     }
-    crate::mcp::held::listening(place)
+    place.listening()
 }
 
-/// Wait for the holder that is there to answer, for at most [`ANSWERING`]: a command that could
+/// Wait for the daemon that is there to answer, for at most [`ANSWERING`]: a command that could
 /// not reach it quickly waits here, rather than replacing a peer that is busy with a large
 /// change. `false` when it did not answer but nothing is there any more either, and what to do is
 /// decided again.
-fn wait_answering(place: &crate::mcp::held::Place) -> Result<bool> {
+fn wait_answering(place: &DaemonPlace) -> Result<bool> {
     let until = Instant::now()
         .checked_add(ANSWERING)
         .unwrap_or_else(Instant::now);
@@ -308,7 +299,7 @@ fn wait_answering(place: &crate::mcp::held::Place) -> Result<bool> {
         if crate::mcp::ask_peer().is_some() {
             return Ok(true);
         }
-        if !crate::mcp::held::holder_alive(place) && !unit_active() {
+        if !place.alive() && !unit_active() {
             return Ok(false);
         }
         if Instant::now() >= until {
@@ -329,14 +320,14 @@ fn wait_answering(place: &crate::mcp::held::Place) -> Result<bool> {
     )
 }
 
-/// Wait for the holder that was asked to hand the device over to let it go: the service starts
+/// Wait for the daemon that was asked to hand the device over to let it go: the service starts
 /// once neither the lock nor the unit says it is there.
-fn wait_gone(place: &crate::mcp::held::Place) -> Result<()> {
+fn wait_gone(place: &DaemonPlace) -> Result<()> {
     let until = Instant::now()
         .checked_add(HANDING_OVER)
         .unwrap_or_else(Instant::now);
     while Instant::now() < until {
-        if !crate::mcp::held::holder_alive(place) && !unit_active() {
+        if !place.alive() && !unit_active() {
             return Ok(());
         }
         std::thread::sleep(POLL);
@@ -359,7 +350,7 @@ fn carried() -> Vec<(&'static str, String)> {
 fn unit(exe: &Path, environment: &[(&str, String)]) -> String {
     let mut unit = format!(
         "[Unit]\nDescription=Tilo: your workspaces' files at ~/Tilo, kept in sync\n\
-         After=network-online.target\n\n[Service]\nExecStart=\"{}\" mcp --hold\n\
+         After=network-online.target\n\n[Service]\nExecStart=\"{}\" --hold\n\
          Restart=on-failure\nRestartSec=5\nTimeoutStopSec={}\nEnvironment=\"{SERVICE_ENV}=1\"\n",
         exe.display(),
         STOP_TIMEOUT.as_secs()
@@ -397,7 +388,7 @@ fn agent(exe: &Path, environment: &[(&str, String)]) -> String {
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
          <plist version=\"1.0\"><dict>\n\
          <key>Label</key><string>{LABEL}</string>\n\
-         <key>ProgramArguments</key><array><string>{}</string><string>mcp</string><string>--hold</string></array>\n\
+         <key>ProgramArguments</key><array><string>{}</string><string>--hold</string></array>\n\
          <key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n\
          <key>EnvironmentVariables</key><dict>\n{variables}</dict>\n\
          </dict></plist>\n",
@@ -424,7 +415,7 @@ fn unit_path() -> Result<PathBuf> {
 }
 
 /// Write the unit for the next login when it changed, and see that it starts at every login.
-/// Nothing here starts, stops or restarts the holder that is there: a unit file's change is no
+/// Nothing here starts, stops or restarts the daemon that is there: a unit file's change is no
 /// reason to take the workspaces from a peer that is keeping them.
 #[cfg(target_os = "linux")]
 fn install(exe: &Path) -> Result<()> {
@@ -448,7 +439,7 @@ fn install(exe: &Path) -> Result<()> {
 }
 
 /// Whether this login's service is installed: its unit is there, carrying this command's own
-/// device directory, so the holder it starts is this device's.
+/// device directory, so the daemon it starts is this device's.
 #[cfg(target_os = "linux")]
 fn installed_for_this_login() -> bool {
     let Ok(text) = unit_path().and_then(|path| Ok(std::fs::read_to_string(path)?)) else {
@@ -485,11 +476,14 @@ fn start_unit() -> Result<()> {
     quiet(Command::new("systemctl").args(["--user", "start", UNIT]))
 }
 
-/// Start the holder once the one that ran handed the device over. On macOS the job is loaded
+/// Start the daemon once the one that ran handed the device over. On macOS the job is loaded
 /// again from the file on disk, which may name this program where the loaded job named an older
 /// one; systemd was reloaded already, when the unit's file changed ([`install`]).
 #[cfg(target_os = "macos")]
 fn start_after_handover() -> Result<()> {
+    if app_agent() {
+        return start_unit();
+    }
     let path = agent_path()?;
     let _ = quiet(Command::new("launchctl").args(["bootout", &format!("{}/{LABEL}", domain())]));
     quiet(
@@ -529,10 +523,26 @@ fn domain() -> String {
     format!("gui/{}", rustix::process::getuid().as_raw())
 }
 
+/// Whether Tilo.app's own agent is loaded: it runs this computer's daemon, and no second agent
+/// is installed beside it.
+#[cfg(target_os = "macos")]
+fn app_agent() -> bool {
+    quiet(Command::new("launchctl").args(["print", &format!("{}/{APP_LABEL}", domain())])).is_ok()
+}
+
+/// The agent that runs the daemon here: Tilo.app's where it is loaded, else this login's own.
+#[cfg(target_os = "macos")]
+fn label() -> &'static str {
+    if app_agent() { APP_LABEL } else { LABEL }
+}
+
 /// Write the agent for the next login when it changed. A loaded agent keeps the program it was
-/// loaded with, and loading it again here would stop the holder where it is, mid-change.
+/// loaded with, and loading it again here would stop the daemon where it is, mid-change.
 #[cfg(target_os = "macos")]
 fn install(exe: &Path) -> Result<()> {
+    if app_agent() {
+        return Ok(());
+    }
     let path = agent_path()?;
     let text = agent(exe, &carried());
     if std::fs::read_to_string(&path).is_ok_and(|kept| kept == text) {
@@ -545,15 +555,15 @@ fn install(exe: &Path) -> Result<()> {
 
 #[cfg(target_os = "macos")]
 fn installed_for_this_login() -> bool {
-    agent_path().is_ok_and(|path| path.exists())
+    app_agent() || agent_path().is_ok_and(|path| path.exists())
 }
 
-/// Whether the agent is there: a loaded agent whose holder ended answers nothing, and is started
+/// Whether the agent is there: a loaded agent whose daemon ended answers nothing, and is started
 /// again rather than waited for.
 #[cfg(target_os = "macos")]
 fn unit_active() -> bool {
     Command::new("launchctl")
-        .args(["list", LABEL])
+        .args(["list", label()])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -566,11 +576,11 @@ fn unit_active() -> bool {
         })
 }
 
-/// Start the agent: a loaded job's holder is started when none is there; else the job is loaded
+/// Start the agent: a loaded job's daemon is started when none is there; else the job is loaded
 /// from its file.
 #[cfg(target_os = "macos")]
 fn start_unit() -> Result<()> {
-    let target = format!("{}/{LABEL}", domain());
+    let target = format!("{}/{}", domain(), label());
     if quiet(Command::new("launchctl").args(["print", &target])).is_ok() {
         return quiet(Command::new("launchctl").args(["kickstart", &target]));
     }
@@ -622,11 +632,11 @@ mod tests {
     use super::*;
 
     /// What a command sees of the peer: whether the unit is active, whether a live process holds
-    /// the device's lock, and what the holder answered when asked to hand the device over.
-    const fn facts(unit_active: bool, holder_alive: bool, steps_down: Option<bool>) -> Facts {
+    /// the device's lock, and what the daemon answered when asked to hand the device over.
+    const fn facts(unit_active: bool, daemon_alive: bool, steps_down: Option<bool>) -> Facts {
         Facts {
             unit_active,
-            holder_alive,
+            daemon_alive,
             steps_down,
         }
     }
@@ -643,52 +653,52 @@ mod tests {
         assert_eq!(
             decide(facts(true, true, None)),
             Decision::LeaveRunning,
-            "a holder inside a step over a folder answers nothing, and is still there"
+            "a daemon inside a step over a folder answers nothing, and is still there"
         );
         assert_eq!(
             decide(facts(false, true, None)),
             Decision::LeaveRunning,
-            "a holder an agent started is there without the unit"
+            "a daemon an agent started is there without the unit"
         );
         assert_eq!(
             decide(facts(true, false, None)),
             Decision::LeaveRunning,
-            "the unit is active but its holder has not taken the lock yet: it is starting"
+            "the unit is active but its daemon has not taken the lock yet: it is starting"
         );
         assert_eq!(
             decide(facts(true, true, Some(false))),
             Decision::LeaveRunning,
-            "a holder of this program, or a newer one, keeps the device"
+            "a daemon of this program, or a newer one, keeps the device"
         );
     }
 
-    /// Only a holder that said it steps down for this program is replaced, and the device is
-    /// handed over rather than restarted: it leaves, then the service's holder starts.
+    /// Only a daemon that said it steps down for this program is replaced, and the device is
+    /// handed over rather than restarted: it leaves, then the service's daemon starts.
     #[test]
-    fn only_a_holder_that_handed_the_device_over_is_replaced() {
+    fn only_a_daemon_that_handed_the_device_over_is_replaced() {
         assert_eq!(
             decide(facts(true, true, Some(true))),
             Decision::HandOver,
-            "a holder of an older program steps down for this one"
+            "a daemon of an older program steps down for this one"
         );
         assert_eq!(
             decide(facts(false, true, Some(true))),
             Decision::HandOver,
-            "an agent's holder steps down for the service's, which keeps the device"
+            "an agent's daemon steps down for the service's, which keeps the device"
         );
     }
 
     #[test]
-    fn the_unit_runs_the_holder_with_the_logins_environment() {
+    fn the_unit_runs_the_daemon_with_the_logins_environment() {
         let unit = unit(
-            Path::new("/home/ada/.local/bin/tilo"),
+            Path::new("/home/ada/.local/bin/tilo-runtime"),
             &[(
                 "TILO_IDENTITY_ROOT",
                 "/home/ada/state/tilo/identity".to_owned(),
             )],
         );
         assert!(
-            unit.contains("ExecStart=\"/home/ada/.local/bin/tilo\" mcp --hold\n"),
+            unit.contains("ExecStart=\"/home/ada/.local/bin/tilo-runtime\" --hold\n"),
             "{unit}"
         );
         assert!(
@@ -696,31 +706,32 @@ mod tests {
         );
         assert!(
             unit.contains(&format!("TimeoutStopSec={}\n", STOP_TIMEOUT.as_secs())),
-            "a stop is given its whole budget before the holder is killed: {unit}"
+            "a stop is given its whole budget before the daemon is killed: {unit}"
         );
         assert!(unit.contains("WantedBy=default.target"));
         assert!(
             unit.contains("Environment=\"TILO_PEER_SERVICE=1\"\n"),
-            "the holder it starts knows itself as the service's: {unit}"
+            "the daemon it starts knows itself as the service's: {unit}"
         );
     }
 
     #[test]
-    fn the_launchd_agent_runs_the_holder_and_escapes_what_it_names() {
+    fn the_launchd_agent_runs_the_daemon_and_escapes_what_it_names() {
         let agent = agent(
-            Path::new("/Users/you&co/tilo"),
+            Path::new("/Users/you&co/tilo-runtime"),
             &[("XDG_STATE_HOME", "/s<t>".to_owned())],
         );
-        assert!(agent.contains(
-            "<string>/Users/you&amp;co/tilo</string><string>mcp</string><string>--hold</string>"
-        ));
+        assert!(
+            agent
+                .contains("<string>/Users/you&amp;co/tilo-runtime</string><string>--hold</string>")
+        );
         assert!(agent.contains("<key>XDG_STATE_HOME</key><string>/s&lt;t&gt;</string>"));
         assert!(agent.contains("<key>TILO_PEER_SERVICE</key><string>1</string>"));
     }
 
     /// Installing writes the unit when it changed, and asks systemd nothing else: no start, no
-    /// stop and above all no restart, so a holder that is there keeps the workspaces it keeps. What
-    /// happens to that holder is [`decide`]'s, never an install's.
+    /// stop and above all no restart, so a daemon that is there keeps the workspaces it keeps. What
+    /// happens to that daemon is [`decide`]'s, never an install's.
     #[cfg(target_os = "linux")]
     #[test]
     fn installing_never_starts_or_restarts_the_unit() {
@@ -744,16 +755,16 @@ mod tests {
             .set("HOME", home.path())
             .set("XDG_CONFIG_HOME", home.path());
 
-        install(Path::new("/opt/tilo")).unwrap();
+        install(Path::new("/opt/tilo-runtime")).unwrap();
         let written = std::fs::read_to_string(unit_path().unwrap()).unwrap();
         assert!(
-            written.contains("ExecStart=\"/opt/tilo\" mcp --hold\n"),
+            written.contains("ExecStart=\"/opt/tilo-runtime\" --hold\n"),
             "{written}"
         );
 
         // The same unit again: systemd is asked whether it is enabled, and nothing else.
         std::fs::remove_file(&asked).unwrap();
-        install(Path::new("/opt/tilo")).unwrap();
+        install(Path::new("/opt/tilo-runtime")).unwrap();
         let again = std::fs::read_to_string(&asked).unwrap();
         assert!(again.contains("is-enabled"), "{again}");
         assert!(
@@ -767,7 +778,7 @@ mod tests {
 
         // A changed unit is written and reloaded, and still nothing starts or stops.
         std::fs::remove_file(&asked).unwrap();
-        install(Path::new("/opt/tilo-next")).unwrap();
+        install(Path::new("/opt/tilo-next/tilo-runtime")).unwrap();
         let changed = std::fs::read_to_string(&asked).unwrap();
         assert!(changed.contains("daemon-reload"), "{changed}");
         assert!(changed.contains("enable"), "{changed}");

@@ -93,18 +93,18 @@ tilo_test_env::scenario! {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.remove(SERVER_DEVICE_ENV);
         assert!(
-            crate::standalone::taking_work()
+            crate::device::services::taking_work()
                 .unwrap()
                 .is_none()
         );
         env.set(SERVER_DEVICE_ENV, "127.0.0.1:7703");
         assert!(
-            crate::standalone::taking_work().is_err(),
+            crate::device::services::taking_work().is_err(),
             "a server is named by its device key, never by where it is"
         );
         env.set(SERVER_DEVICE_ENV, hex::encode([0x33; 32]));
         assert!(
-            crate::standalone::taking_work()
+            crate::device::services::taking_work()
                 .unwrap()
                 .is_some()
         );
@@ -115,7 +115,7 @@ tilo_test_env::scenario! {
     // key, listening on the port the server's members file names.
     {
         let key = ed25519_dalek::SigningKey::from_bytes(&[0x44; 32]);
-        let endpoint = crate::standalone::listen_endpoint(&key, Some(0)).unwrap();
+        let endpoint = crate::device::services::listen_endpoint(&key, Some(0)).unwrap();
         assert_eq!(
             endpoint.id().as_bytes(),
             &key.verifying_key().to_bytes(),

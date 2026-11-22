@@ -830,7 +830,7 @@ impl WorkspaceService {
     /// in memory. A start replays what the server retains, but it takes a
     /// write only into a record its governor already holds
     /// ([`crate::workspaces::Workspaces::keep_what_was_followed`]).
-    pub async fn shutdown(self) {
+    pub async fn shutdown(&self) {
         self.workspaces.keep_what_was_followed().await;
         self.sessions.shutdown().await;
     }

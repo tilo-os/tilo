@@ -27,7 +27,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
 
-use crate::peer::size;
+use crate::folders::size;
 
 use super::Lander;
 use super::state::{Item, Place, Review};
@@ -298,7 +298,7 @@ pub enum Sink {
 #[must_use]
 pub fn mounted_folder(id: &str) -> Option<PathBuf> {
     let login = crate::login::Place::here(crate::identity::paths()).ok()?;
-    let folders = crate::peer::folders::Folders::load(login.dir()).ok()?;
+    let folders = tilo_api::daemon::folders::Folders::load(login.dir()).ok()?;
     let folder = folders.workspaces.get(id)?;
     (!folder.removed && is_mounted(&folder.path)).then(|| folder.path.clone())
 }
@@ -307,7 +307,7 @@ pub fn mounted_folder(id: &str) -> Option<PathBuf> {
 fn mounted_folders() -> Vec<PathBuf> {
     crate::login::Place::here(crate::identity::paths())
         .ok()
-        .and_then(|login| crate::peer::folders::Folders::load(login.dir()).ok())
+        .and_then(|login| tilo_api::daemon::folders::Folders::load(login.dir()).ok())
         .map(|folders| {
             folders
                 .workspaces

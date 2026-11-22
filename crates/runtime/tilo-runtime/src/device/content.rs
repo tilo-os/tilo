@@ -18,7 +18,7 @@ use tilo_lock::MutexRecover as _;
 use neighbour_wire::content::PIECE_PATIENCE_MS;
 use tilo_workspace_service::content::{ContentScope, ContentShelf, RouteContent, routes_content};
 
-use super::service::ServiceWorkspaces;
+use super::workspaces::ServiceWorkspaces;
 
 /// The profile's content store, read and written as the desktop session
 /// reaches its own: through the scope a record's content lives under.
@@ -118,7 +118,7 @@ impl ContentShelf for ProfileShelf {
 
 /// The profile's record-content service: its content store, served on
 /// `blob_socket`, and the workspaces the workspace service holds.
-pub(in crate::standalone) fn document_content(
+pub(super) fn document_content(
     workspaces: &Arc<ServiceWorkspaces>,
     blob_socket: &Path,
 ) -> Arc<RouteContent> {

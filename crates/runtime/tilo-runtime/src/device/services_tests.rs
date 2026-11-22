@@ -1,7 +1,3 @@
-use super::workspace::{
-    DESKTOP_WORKSPACE, INVOCATION_JOURNAL, ProfileWorkspace, STANDALONE_WORKSPACE, bootstrap,
-    read_tree,
-};
 use super::*;
 use serde_json::json;
 use std::{
@@ -10,16 +6,14 @@ use std::{
 };
 use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity::broker::WorkspaceMembership;
 use tilo_test_env::SpawnUnderEnvLock as _;
-use tilo_workspace_service::apps::services::{WorkspaceAuthority, WorkspaceGrants};
+use tilo_workspace_service::apps::services::WorkspaceGrants;
 
 /// The test whose phase runs in a fresh process; libtest selects it by this
 /// exact path.
-const PROCESS_TEST: &str =
-    "standalone::tests::sdk_apps_join_a_standalone_session_and_publish_to_mcp";
-pub(super) const PROCESS_ROOT: &str = "TILO_STANDALONE_TEST_ROOT";
-const PUBLICATION_HELPER: &str = "TILO_STANDALONE_PUBLICATION_HELPER";
+const PROCESS_TEST: &str = "device::services::tests::sdk_apps_join_the_daemon_and_publish_to_mcp";
+pub(crate) const PROCESS_ROOT: &str = "TILO_DAEMON_TEST_ROOT";
+const APP_HELPER: &str = "TILO_DAEMON_APP_HELPER";
 
 /// A certificate authority over one held workspace and device, for the
 /// broker's own certificates: no identity store is read.
@@ -81,7 +75,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         test_support::{Workspace, WorkspaceId, WorkspaceTree},
     };
     if isolated_signing_identity(
-        "standalone::tests::runtime_invocation_ownership_survives_device_normalization",
+        "device::services::tests::runtime_invocation_ownership_survives_device_normalization",
     )
     .is_none()
     {
@@ -106,8 +100,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     let admission = {
         let workspaces = Arc::clone(&workspaces);
         let (workspace, actor) = (workspace_id.clone(), actor.clone());
-        service::block_on_owned(async move { workspaces.admit_execution(&workspace, &actor).await })
-            .unwrap()
+        block_on_owned(async move { workspaces.admit_execution(&workspace, &actor).await }).unwrap()
     };
     let mut services = membership.services();
     services.native_certificates = Some(Arc::new(FixtureAuthority {
@@ -251,7 +244,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
 /// In the parent, runs the test at path `test` again in a child process
 /// whose profile environment is private, and returns `None`; in that child,
 /// returns the profile to serve.
-pub(super) fn isolated_root(test: &str) -> Option<PathBuf> {
+pub(crate) fn isolated_root(test: &str) -> Option<PathBuf> {
     if let Some(root) = std::env::var_os(PROCESS_ROOT) {
         return Some(PathBuf::from(root));
     }
@@ -277,7 +270,7 @@ pub(super) fn isolated_root(test: &str) -> Option<PathBuf> {
 /// This test binary running only `test`, as a process of its own whose home,
 /// identity and profile are under `root`: the profile at `root/profile`,
 /// which [`isolated_root`] answers there.
-pub(super) fn isolated_command(test: &str, root: &Path) -> std::process::Command {
+pub(crate) fn isolated_command(test: &str, root: &Path) -> std::process::Command {
     let environment = root.join("environment");
     let (config, data) = (environment.join("config"), environment.join("data"));
     std::fs::create_dir_all(&config).unwrap();
@@ -302,21 +295,16 @@ pub(super) fn isolated_command(test: &str, root: &Path) -> std::process::Command
 }
 
 /// The home of the process [`isolated_command`] runs under `root`.
-pub(super) fn isolated_home(root: &Path) -> PathBuf {
+pub(crate) fn isolated_home(root: &Path) -> PathBuf {
     root.join("environment").join("home")
 }
 
 /// Provision only the receipt signer's host ownership in an isolated process.
 /// The synthetic caller still uses its independently certified admission.
-pub(super) fn isolated_signing_identity(test: &str) -> Option<PathBuf> {
+pub(crate) fn isolated_signing_identity(test: &str) -> Option<PathBuf> {
     let root = isolated_root(test)?;
-    let registry = tilo_identity::store::IdentityRegistryStore::from_env().unwrap();
-    tilo_identity::provisioning::ensure_collaboration_identity(
-        registry.identity_dir(),
-        &tilo_identity::provisioning::collaboration_identity_paths(),
-        tilo_identity::provisioning::IdentityStorage::Files,
-    )
-    .unwrap();
+    // The identity the daemon makes for a computer with no login on its first start.
+    super::provision_identity().unwrap();
     Some(root)
 }
 
@@ -339,10 +327,10 @@ fn connected_manager() -> ui::collaboration::CollaborationManager {
     clippy::significant_drop_tightening,
     reason = "the session holds the profile and brokers for the whole scenario on purpose"
 )]
-fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
+fn sdk_apps_join_the_daemon_and_publish_to_mcp() {
     // Helper role: an ordinary SDK app launched by the session publishes its
     // action directory and keeps its connection until it is killed.
-    if std::env::var_os(PUBLICATION_HELPER).is_some() {
+    if std::env::var_os(APP_HELPER).is_some() {
         let mut manager = connected_manager();
         manager.publish_action_directory(ui::collaboration::local_app_id());
         loop {
@@ -353,7 +341,7 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
     let Some(root) = isolated_root(PROCESS_TEST) else {
         return;
     };
-    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    let session = Daemon::start_reporting(&root, &mut |_| {}).unwrap();
     // Just started on a new profile, with nothing written yet: the host holds
     // the person's own documents store.
     holds_the_persons_own_documents_store(&session);
@@ -362,8 +350,8 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
     assert!(root.join(COLLABORATION_HISTORY).is_dir());
     assert!(root.join(INVOCATION_JOURNAL).exists());
     assert!(
-        Standalone::start_reporting(&root, &mut |_| {}).is_err(),
-        "a second provider must not serve a held profile"
+        Daemon::start_reporting(&root, &mut |_| {}).is_err(),
+        "a second daemon must not serve a device one holds"
     );
     let executable = std::env::current_exe().unwrap();
     let mut children = Vec::new();
@@ -372,7 +360,7 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
         let mut command = std::process::Command::new(&executable);
         command
             .args(["--exact", PROCESS_TEST, "--nocapture"])
-            .env(PUBLICATION_HELPER, "1")
+            .env(APP_HELPER, "1")
             .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone().unwrap()))
             .stderr(Stdio::from(log));
@@ -433,12 +421,12 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
     );
     drop(session);
     // The profile is released and served again with the same workspace.
-    let reopened = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
-    assert_eq!(reopened.workspace(), listed_workspace(&root));
+    let reopened = Daemon::start_reporting(&root, &mut |_| {}).unwrap();
+    assert_eq!(reopened.workspace(), listed_workspace());
 }
 
-const WRITER_TEST: &str = "standalone::tests::an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_restart";
-const WRITER_HELPER: &str = "TILO_STANDALONE_WRITER_HELPER";
+const WRITER_TEST: &str = "device::services::tests::an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_restart";
+const WRITER_HELPER: &str = "TILO_DAEMON_WRITER_HELPER";
 const WRITER_APP: &str = "dev.tilo.writer";
 const WRITER_KIND: &str = "dev.tilo.writer.note";
 const WRITER_RECORD: &str = "0b7d9a3e-5c1f-4a8e-9d2b-7f6e5a4c3b21";
@@ -447,7 +435,7 @@ const WRITTEN: &str = "written by an SDK app";
 /// What the workspace host this session runs keeps of the writer's record in the
 /// profile's own workspace, opened with the channel's keys. `Err` says where the
 /// write stops on the way there, so a write that never arrives is explained.
-fn written(session: &Standalone) -> Result<Option<String>, String> {
+fn written(session: &Daemon) -> Result<Option<String>, String> {
     use automerge::ReadDoc as _;
     let workspace = WorkspaceId::parse(session.workspace())
         .ok_or_else(|| "the session names no workspace".to_owned())?;
@@ -554,7 +542,7 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
     let Some(root) = isolated_root(WRITER_TEST) else {
         return;
     };
-    let session = Standalone::start_in_dev_mode(&root, &mut |_| {}).unwrap();
+    let session = Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap();
     let log = std::fs::File::create(root.join("writer.log")).unwrap();
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command
@@ -588,7 +576,7 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
     );
     drop(session);
     // Served again, the profile's workspace host still keeps the write.
-    let reopened = Standalone::start_in_dev_mode(&root, &mut |_| {}).unwrap();
+    let reopened = Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap();
     let again = written(&reopened);
     assert_eq!(
         again.as_ref().ok().and_then(|stored| stored.as_deref()),
@@ -598,7 +586,7 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
 }
 
 const OFFLOAD_TEST: &str =
-    "standalone::tests::the_session_hands_its_broker_the_round_its_workspaces_devices_answer";
+    "device::services::tests::the_session_hands_its_broker_the_round_its_workspaces_devices_answer";
 
 #[test]
 fn the_session_hands_its_broker_the_round_its_workspaces_devices_answer() {
@@ -648,7 +636,7 @@ fn the_session_hands_its_broker_the_round_its_workspaces_devices_answer() {
 
     // The broker holds the round: it asks the workspace's other devices and,
     // with none of them answering, runs the job here and says so.
-    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    let session = Daemon::start_reporting(&root, &mut |_| {}).unwrap();
     let state = Arc::clone(session.broker.app_action_broker().unwrap().state());
     let route = state
         .action_offload()
@@ -682,24 +670,30 @@ fn the_session_hands_its_broker_the_round_its_workspaces_devices_answer() {
     // Turned off, nothing is routed at all.
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set(crate::offload::OFFLOAD_ENV, "off");
-    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    let session = Daemon::start_reporting(&root, &mut |_| {}).unwrap();
     let state = Arc::clone(session.broker.app_action_broker().unwrap().state());
     assert!(state.action_offload().is_none(), "offload is off: no route");
     drop(state);
     drop(session);
 }
 
-fn listed_workspace(root: &Path) -> String {
-    let tree = read_tree(&root.join(STANDALONE_WORKSPACE)).unwrap();
-    tree.workspaces[0].id().to_string()
+/// The workspace founded on this computer, as its device's directory keeps it.
+fn listed_workspace() -> String {
+    let place = tilo_device_identity::login::Place::here(tilo_api::client::device_keys()).unwrap();
+    std::fs::read_to_string(place.dir().join(FOUNDED))
+        .unwrap()
+        .trim()
+        .to_owned()
 }
 
 /// A running host holds the person's own documents store: asserted on the
 /// host a test starts first on its new profile, before anything is written.
-fn holds_the_persons_own_documents_store(session: &Standalone) {
+fn holds_the_persons_own_documents_store(session: &Daemon) {
     let identity = tilo_identity::store::identity_for_workspace(session.workspace())
         .unwrap()
         .unwrap();
+    // The daemon acts as the person this computer holds, in the workspace it founded for them.
+    assert_eq!(session.actor(), identity.person_id());
     let personal = session.personal();
     // The store opens on the identity the profile acts as, so every device of
     // this person finds the same documents without naming a workspace.
@@ -715,150 +709,6 @@ fn holds_the_persons_own_documents_store(session: &Standalone) {
         collab_types::personal_cluster(&identity.user_public_key).to_string()
     );
     assert!(personal.rows().is_empty(), "nothing is written yet");
-}
-
-tilo_test_env::scenario! {
-    fn a_profile_keeps_its_own_workspace_and_serves_the_desktop_sessions_read_only;
-
-    phase a_new_profile_bootstraps_one_owned_workspace_and_keeps_it;
-    {
-        let temp = tempfile::tempdir().unwrap();
-        let workspace = ProfileWorkspace::open(temp.path()).unwrap();
-        let workspace_id = workspace.workspace();
-        assert!(!workspace_id.is_empty());
-        workspace.adopt("person-1").unwrap();
-        let path = temp.path().join(STANDALONE_WORKSPACE);
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600);
-        }
-        let reopened = ProfileWorkspace::open(temp.path()).unwrap();
-        assert_eq!(reopened.workspace(), workspace_id);
-        let tree = reopened.snapshot().unwrap();
-        assert_eq!(tree.workspaces.len(), 1);
-        assert_eq!(
-            tree.workspaces[0].owner().map(String::as_str),
-            Some("person-1")
-        );
-        assert_eq!(tree.workspaces[0].strips.len(), 1);
-        // An owner is kept, not replaced by the next actor.
-        reopened.adopt("person-2").unwrap();
-        let tree = ProfileWorkspace::open(temp.path())
-            .unwrap()
-            .snapshot()
-            .unwrap();
-        assert_eq!(
-            tree.workspaces[0].owner().map(String::as_str),
-            Some("person-1")
-        );
-        let mut seen = None;
-        WorkspaceMembership::with_workspace(&reopened, &tree.workspaces[0].id(), &mut |workspace| {
-            seen = Some(workspace.name.clone());
-        });
-        assert_eq!(
-            seen.as_deref(),
-            Some(""),
-            "a workspace nobody named keeps no name of its own"
-        );
-        WorkspaceMembership::with_workspace(&reopened, &WorkspaceId::new(), &mut |_| {
-            panic!("no such workspace");
-        });
-    }
-
-    phase the_first_shell_a_profile_starts_on_is_the_one_its_next_start_reads;
-    {
-        let temp = tempfile::tempdir().unwrap();
-        let first = ProfileWorkspace::open(temp.path()).unwrap();
-        let made = first.snapshot().unwrap();
-        assert!(!first.workspace().is_empty());
-        // The next start reads the shell this one made, rather than making another
-        // with fresh ids: what the person opened stays in the workspace it was
-        // opened in.
-        let second = ProfileWorkspace::open(temp.path()).unwrap();
-        let read = second.snapshot().unwrap();
-        assert_eq!(second.workspace(), first.workspace());
-        assert_eq!(read.workspaces.len(), 1, "one shell, not one per start");
-        assert_eq!(read.workspaces[0].id(), made.workspaces[0].id());
-        assert_eq!(
-            read.workspaces[0].strips[0].id,
-            made.workspaces[0].strips[0].id
-        );
-    }
-
-    phase the_desktop_sessions_workspace_is_served_read_only;
-    {
-        let temp = tempfile::tempdir().unwrap();
-        let mut tree = bootstrap();
-        tree.workspaces[0].set_owner("desktop-owner".to_owned());
-        let mut value = serde_json::to_value(&tree).unwrap();
-        // The desktop session's file carries its native layout and fields.
-        value["schema_version"] = json!(3);
-        value["native_authority"] = json!({"kept": true});
-        let bytes = serde_json::to_vec_pretty(&value).unwrap();
-        let desktop = temp.path().join(DESKTOP_WORKSPACE);
-        std::fs::write(&desktop, &bytes).unwrap();
-        let workspace = ProfileWorkspace::open(temp.path()).unwrap();
-        assert_eq!(workspace.workspace(), tree.workspaces[0].id().to_string());
-        workspace.adopt("someone-else").unwrap();
-        assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
-        assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
-        assert_eq!(
-            workspace.snapshot().unwrap().workspaces[0]
-                .owner()
-                .map(String::as_str),
-            Some("desktop-owner")
-        );
-
-        // Without an owner there is nobody this host could act as.
-        value["workspaces"][0]["policy"]["owner"] = serde_json::Value::Null;
-        std::fs::write(&desktop, serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(
-            ProfileWorkspace::open(temp.path())
-                .unwrap()
-                .adopt("someone-else")
-                .is_err()
-        );
-        // A file that is not a workspace tree fails closed.
-        std::fs::write(&desktop, b"not json").unwrap();
-        assert_eq!(
-            ProfileWorkspace::open(temp.path()).err().unwrap().kind(),
-            io::ErrorKind::InvalidData
-        );
-    }
-
-    phase the_desktop_sessions_workspace_takes_no_grants_here;
-    {
-        let temp = tempfile::tempdir().unwrap();
-        let mut tree = bootstrap();
-        tree.workspaces[0].set_owner("owner".to_owned());
-        let workspace_id = tree.workspaces[0].id().to_string();
-        let bytes = serde_json::to_vec_pretty(&tree).unwrap();
-        let desktop = temp.path().join(DESKTOP_WORKSPACE);
-        std::fs::write(&desktop, &bytes).unwrap();
-        let grants = grants(ProfileWorkspace::open(temp.path()).unwrap(), temp.path());
-
-        assert!(
-            tilo_rt::app()
-                .handle()
-                .block_on(grants.record(
-                    &consent(&workspace_id, "owner"),
-                    app_grant(&workspace_id),
-                ))
-                .is_err()
-        );
-        grants.revoke(&workspace_id, "owner-1");
-        assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
-        assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
-        assert!(
-            grants.workspace.snapshot().unwrap().workspaces[0]
-                .policy
-                .grants
-                .iter()
-                .all(|grant| grant.id.as_str() != "caller-opens-target"),
-            "nothing recorded here"
-        );
-    }
 }
 
 fn consent(
@@ -886,10 +736,10 @@ fn consent(
     }
 }
 
-fn app_grant(workspace: &str) -> tilo_action_policy::Grant {
+fn app_grant(workspace: &str, person: &str) -> tilo_action_policy::Grant {
     tilo_action_policy::Grant::new(
         "caller-opens-target",
-        tilo_action_policy::Grantee::person("owner"),
+        tilo_action_policy::Grantee::person(person),
         tilo_action_policy::TreePath::workspace(workspace)
             .app("so.tilo.target-app")
             .any(tilo_action_policy::Level::Kind)
@@ -897,84 +747,114 @@ fn app_grant(workspace: &str) -> tilo_action_policy::Grant {
             .action("open"),
         tilo_action_policy::KindSet::ALL,
         tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Grantee::person("owner"),
+        tilo_action_policy::Grantee::person(person),
     )
 }
 
-fn grants(workspace: ProfileWorkspace, root: &Path) -> ProfileGrants {
-    ProfileGrants {
-        workspace: Arc::new(workspace),
-        apps: Arc::new(apps::Apps::new(None, root, "", PathBuf::new(), Vec::new())),
-    }
-}
-
-#[test]
-fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_saved() {
-    let temp = tempfile::tempdir().unwrap();
-    let workspace = ProfileWorkspace::open(temp.path()).unwrap();
-    workspace.adopt("owner").unwrap();
-    let workspace_id = workspace.workspace();
-    let grants = grants(workspace, temp.path());
-
-    let recorded = |person: &str| {
-        tilo_rt::app()
-            .block_on(grants.record(&consent(&workspace_id, person), app_grant(&workspace_id)))
-            .unwrap()
-    };
-    assert!(recorded("stranger").is_err());
-
-    let id = recorded("owner").unwrap();
-    let saved = read_tree(&temp.path().join(STANDALONE_WORKSPACE)).unwrap();
-    let workspace = &saved.workspaces[0];
-    assert!(
-        workspace
-            .policy
+/// Whether `workspace`'s member list, as `workspaces` holds it, has the grant `id`.
+fn granted(workspaces: &ServiceWorkspaces, workspace: WorkspaceId, id: &str) -> bool {
+    workspaces.workspace(workspace).is_some_and(|held| {
+        held.policy
             .grants
             .iter()
             .any(|grant| grant.id.as_str() == id)
-    );
-    let receipt = workspace.effect_receipts.last().unwrap();
-    assert_eq!(receipt.actor, tilo_actions::MemberId::person("owner"));
-    let Some(tilo_actions::Did::Verb(verb)) = &receipt.context.what else {
-        panic!("the grant is recorded as a verb: {:?}", receipt.context);
-    };
-    assert_eq!(verb.args["app"].as_str(), Some("Caller"));
-    assert_eq!(verb.args["target"].as_str(), Some("Target App"));
-    assert_eq!(verb.args["lifetime"].as_str(), Some("always"));
+    })
+}
 
-    grants.revoke(&workspace_id, &id);
-    let saved = read_tree(&temp.path().join(STANDALONE_WORKSPACE)).unwrap();
+/// A grant a person gives an app is a change to the workspace's member list: recorded by the
+/// person the device acts for, who may grant there, in force once it is recorded, and taken
+/// back the same way. Nobody else records one here.
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the workspaces and their service stay up until the test ends"
+)]
+fn a_grant_is_a_change_to_the_member_list() {
+    let placed = WorkspaceId::new();
+    let (workspaces, directory) = tilo_rt::app()
+        .block_on(ServiceWorkspaces::test_hosting(placed))
+        .unwrap();
+    let person = hex::encode(workspaces.device_cert().user_public_key);
+    let grants = MemberListGrants {
+        workspaces: Arc::clone(&workspaces),
+        person: person.clone(),
+        apps: Arc::new(crate::apps::Apps::from_env(
+            directory.path(),
+            &placed.to_string(),
+        )),
+    };
+    let workspace = placed.to_string();
+    assert!(grants.may_record(&workspace, &person), "the owner grants");
+    assert!(!grants.may_record(&workspace, "stranger"));
+    assert!(!grants.may_record(&WorkspaceId::new().to_string(), &person));
+
+    let id = tilo_rt::app()
+        .block_on(grants.record(
+            &consent(&workspace, &person),
+            app_grant(&workspace, &person),
+        ))
+        .unwrap()
+        .expect("the owner's grant is recorded");
     assert!(
-        saved.workspaces[0]
-            .policy
-            .grants
-            .iter()
-            .all(|grant| grant.id.as_str() != id)
+        granted(&workspaces, placed, &id),
+        "the grant is in the member list once it is recorded"
     );
+    let receipts = workspaces
+        .workspace(placed)
+        .map(|held| held.effect_receipts)
+        .unwrap_or_default();
+    assert!(
+        receipts
+            .iter()
+            .any(|receipt| receipt.actor == tilo_actions::MemberId::person(person.clone())),
+        "the workspace's history says who gave the grant: {receipts:?}"
+    );
+
+    grants.revoke(&workspace, &id);
+    let deadline = tilo_test_env::hang_deadline();
+    while granted(&workspaces, placed, &id) {
+        assert!(Instant::now() < deadline, "the grant was never taken back");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 tilo_test_env::scenario! {
-    fn the_runtimes_certificates_govern_its_own_workspace_while_their_origin_lives;
+    fn the_daemons_certificates_hold_while_their_origin_lives;
 
-    phase the_runtime_governs_only_its_own_workspace_from_its_own_device;
+    phase a_certificate_holds_where_the_member_list_admits_its_device;
     {
         use tilo_workspace_service::apps::certificate_authority::CertificateAuthority as _;
-        let workspace = uuid::Uuid::from_u128(7);
-        let origin = Arc::new(
-            tilo_workspace_service::apps::policy_clock::OwnerPolicyClock::new()
-                .unwrap()
-                .new_origin(),
-        );
+        let placed = WorkspaceId::new();
+        #[allow(
+            clippy::significant_drop_tightening,
+            reason = "the certificates read the workspaces through a weak reference while they are up"
+        )]
+        let (workspaces, _directory) = tilo_rt::app()
+            .block_on(ServiceWorkspaces::test_hosting(placed))
+            .unwrap();
+        let origin = tilo_workspace_service::apps::policy_clock::OwnerPolicyClock::new()
+            .unwrap()
+            .new_origin();
         let certificates = Certificates {
-            workspace: workspace.to_string(),
-            device: [2; 32],
             policy_time: origin.capture().unwrap(),
-            workspaces: std::sync::Weak::new(),
+            workspaces: Arc::downgrade(&workspaces),
         };
-        assert!(certificates.governs(workspace, Some(&[2; 32])));
-        assert!(certificates.governs(workspace, None));
-        assert!(!certificates.governs(workspace, Some(&[3; 32])));
-        assert!(!certificates.governs(uuid::Uuid::from_u128(8), None));
+        let workspace = uuid::Uuid::parse_str(&placed.to_string()).unwrap();
+        let cert = workspaces.device_cert().clone();
+        assert_eq!(certificates.authorize(workspace, &cert), Ok(()));
+        assert!(
+            certificates
+                .authorize(uuid::Uuid::from_u128(8), &cert)
+                .is_err(),
+            "a workspace this device does not hold admits nobody here"
+        );
+        let mut stranger = cert;
+        stranger.device_public_key = [3; 32];
+        assert!(
+            certificates.authorize(workspace, &stranger).is_err(),
+            "a device the member list does not name is not admitted"
+        );
+        assert!(!certificates.governs(workspace, None), "no device governs by its certificate");
         drop(certificates);
     }
 
@@ -987,8 +867,6 @@ tilo_test_env::scenario! {
                 .new_origin(),
         );
         let certificates = Certificates {
-            workspace: uuid::Uuid::from_u128(7).to_string(),
-            device: [2; 32],
             policy_time: origin.capture().unwrap(),
             workspaces: std::sync::Weak::new(),
         };
@@ -1006,4 +884,60 @@ tilo_test_env::scenario! {
             "a new runtime clock cannot revive the original ownership"
         );
     }
+}
+
+/// A computer that logged in with a code holds no root: its login's device is what its apps sign
+/// as, enrolled as this computer's identity when the daemon starts.
+#[test]
+fn a_logins_device_is_what_this_computers_apps_sign_as() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir = std::fs::canonicalize(dir.path()).unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_STATE_HOME", dir.join("state"))
+        .set("XDG_CONFIG_HOME", dir.join("config"))
+        .set("XDG_DATA_HOME", dir.join("data"))
+        .set("TILO_IDENTITY_ROOT", dir.join("identity"))
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    let root = SigningKey::from_bytes(&[41; 32]);
+    let key = SigningKey::from_bytes(&[42; 32]);
+    let now = tilo_clock::unix_now_ns();
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "Ada's laptop".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: now.saturating_sub(60_000_000_000),
+        expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    let place = tilo_device_identity::login::Place::here(tilo_api::client::device_keys()).unwrap();
+    tilo_device_identity::persist::adopt_device_key(place.keys(), &key.to_bytes()).unwrap();
+    tilo_device_identity::login::store(
+        &place,
+        &Device {
+            site: "https://tilo.test/".into(),
+            host_origin: "https://eu1.tilo.test".into(),
+            workspace: "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b".into(),
+            workspace_name: Some("Studio".into()),
+            agent: "Claude Code".into(),
+            server_cert: cert.clone(),
+            cert: cert.clone(),
+            server_address: None,
+        },
+    )
+    .unwrap();
+    assert!(
+        tilo_identity::broker::trusted_current_device("").is_err(),
+        "nothing signs before the daemon starts"
+    );
+
+    let identity = Identity::here().unwrap();
+    assert_eq!(identity.cert, cert);
+    let (signer, signed_for) = tilo_identity::broker::trusted_current_device("").unwrap();
+    assert_eq!(signed_for, cert, "apps sign as the login's device");
+    assert_eq!(signer.verifying_key(), key.verifying_key());
+    // A second start finds it enrolled and changes nothing.
+    assert_eq!(Identity::here().unwrap().cert, cert);
 }
