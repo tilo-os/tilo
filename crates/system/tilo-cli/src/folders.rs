@@ -696,7 +696,7 @@ pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
         _ if !connected => "not connected to the workspace; changes made here wait to go out",
         "opening" => "waiting for the workspace's files",
         "stuck" => stuck.as_deref().unwrap_or("sending changes"),
-        "content-going-out" => "the workspace's server doesn't have all its files yet",
+        "content-going-out" => "some files aren't on the workspace's server yet",
         "in-sync" => "in sync",
         _ => "sending changes",
     };
@@ -763,7 +763,7 @@ mod tests {
             true,
         );
         assert!(
-            lacking.contains("(the workspace's server doesn't have all its files yet;"),
+            lacking.contains("(some files aren't on the workspace's server yet;"),
             "{lacking}"
         );
     }

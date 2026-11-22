@@ -1019,45 +1019,30 @@ impl Sync {
         {
             return None;
         }
-        let parts = |count: usize| if count == 1 { "part" } else { "parts" };
         let mut why = Vec::new();
         if unopened {
             why.push(
-                "the workspace has not said what its file list holds, so nothing written here \
-                 goes out yet"
-                    .to_owned(),
+                "the workspace hasn't said which files it holds yet, so nothing changed here goes \
+                 out"
+                .to_owned(),
             );
         }
         if unanswered > 0 {
-            why.push(format!(
-                "the workspace has not said whether it holds {unanswered} {} of the file list",
-                parts(unanswered),
-            ));
+            why.push("the workspace hasn't answered for some of its files yet".to_owned());
         }
         if waiting > 0 {
-            why.push(format!(
-                "{waiting} {} of the workspace's file list {} not arrived on this computer yet \
-                 and {} asked for again every few minutes",
-                parts(waiting),
-                if waiting == 1 { "has" } else { "have" },
-                if waiting == 1 { "is" } else { "are" },
-            ));
+            why.push(
+                "some of the workspace's file list hasn't arrived on this computer yet and is \
+                 asked for again every few minutes"
+                    .to_owned(),
+            );
         }
         if ordered > 0 {
-            let first = self.ordered_for.len();
-            why.push(format!(
-                "{ordered} {} of the file list {} for {first} other {} to reach the workspace first",
-                parts(ordered),
-                if ordered == 1 { "waits" } else { "wait" },
-                parts(first),
-            ));
+            why.push("some changes wait for others to reach the workspace first".to_owned());
         }
         if let Some(reason) = refused.first() {
             why.push(format!(
-                "the workspace refused changes to {} {} of the file list ({reason}), which go \
-                 again after a wait",
-                refused.len(),
-                parts(refused.len()),
+                "the workspace refused some changes ({reason}); they're sent again after a wait"
             ));
         }
         if unsent > 0 {
@@ -1066,11 +1051,11 @@ impl Sync {
             );
         }
         if lacking > 0 {
-            why.push(format!(
-                "the file list names {lacking} {} that neither this computer nor the workspace \
-                 holds",
-                parts(lacking),
-            ));
+            why.push(
+                "the folder names files whose details neither this computer nor the workspace \
+                 holds"
+                    .to_owned(),
+            );
         }
         Some(format!(
             "{}; changes made here are kept on this computer until then",
