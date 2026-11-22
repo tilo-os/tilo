@@ -6,7 +6,8 @@ use serde_json::{Map, Value};
 use tilo_actions::remote::{
     AWAITING_APPROVAL, ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery,
     ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest,
-    Pending, ReceiptStatus, RemoteActionTarget, WORKSPACE_MEMBER_ADMIT, WatchScope, pending,
+    Pending, ReceiptStatus, RemoteActionTarget, WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT,
+    WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED, WatchScope, pending,
     workspace_governance_operation, workspace_person,
 };
 use tilo_actions::{ActionOutput, InvocationId};
@@ -34,7 +35,8 @@ pub struct DeviceActions {
     host: SessionActions,
 }
 
-/// A change asked of who is in the workspace: its operation, its arguments, and the change.
+/// A change asked of who is in the workspace: the action the tree publishes it at, its
+/// arguments, and the change.
 type Asked = (&'static str, Map<String, Value>, Change);
 
 /// A change to who is in the workspace.
@@ -72,6 +74,14 @@ impl DeviceActions {
         if workspace != self.workspace_id.to_string() {
             return None;
         }
+        // The action the tree publishes it at: `add` and `role` are both `member.add`, and the
+        // host decides a role only for a member.
+        let published = match address.action.as_str() {
+            WORKSPACE_MEMBER_ADDED => WORKSPACE_MEMBER_ADDED,
+            WORKSPACE_MEMBER_PLACED => WORKSPACE_MEMBER_PLACED,
+            WORKSPACE_MEMBER_REMOVED => WORKSPACE_MEMBER_REMOVED,
+            _ => return None,
+        };
         let mut arguments = match &request.argument {
             InvokeArgument::Json(arguments) => arguments.clone(),
             _ => Map::new(),
@@ -79,7 +89,7 @@ impl DeviceActions {
         if let Some(person) = workspace_person(address) {
             arguments.insert("person".into(), person.into());
         }
-        Some(change(operation, &arguments).map(|change| (operation, arguments, change)))
+        Some(change(operation, &arguments).map(|change| (published, arguments, change)))
     }
 }
 
@@ -104,12 +114,12 @@ fn change(operation: &str, arguments: &Map<String, Value>) -> Result<Change, Act
     Ok(Change::Place(person, place, name.map(str::to_owned)))
 }
 
-/// Make `change` (`operation`, asked with `arguments`) in `workspace_id` as `device`'s own write,
-/// once the host admits it: the people as the workspace holds them then.
+/// Make `change` (`published`, the action asked with `arguments`) in `workspace_id` as `device`'s
+/// own write, once the host admits it: the people as the workspace holds them then.
 async fn make(
     device: Device,
     workspace_id: WorkspaceId,
-    operation: &str,
+    published: &str,
     mut arguments: Map<String, Value>,
     change: Change,
 ) -> Result<Value, ActionCallError> {
@@ -122,7 +132,7 @@ async fn make(
     // first where they say so. Asked of the host for now: the device will admit the call itself,
     // through `admit_invocation` over its synced grants, asking the person through the Confirm
     // frame, and that replaces this round trip.
-    arguments.insert("change".into(), operation.into());
+    arguments.insert("change".into(), published.into());
     let admission = RemoteActionTarget::workspace_governance(&workspace, WORKSPACE_MEMBER_ADMIT);
     // Its own invocation, not the change's: what the host answers it is the admission alone.
     let invocation = InvocationId::new();
@@ -197,7 +207,7 @@ impl ActionProvider for DeviceActions {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let (operation, arguments, change) = match self.change_of(&request) {
+        let (published, arguments, change) = match self.change_of(&request) {
             None => return self.host.invoke(caller, request),
             Some(Err(error)) => return Pending::ready(Err(error)),
             Some(Ok(asked)) => asked,
@@ -206,7 +216,7 @@ impl ActionProvider for DeviceActions {
         let (device, workspace_id) = (self.device.clone(), self.workspace_id);
         let invocation = request.invocation;
         n0_future::task::spawn(async move {
-            let made = make(device, workspace_id, operation, arguments, change).await;
+            let made = make(device, workspace_id, published, arguments, change).await;
             answer.complete(made.map(|value| InvocationReceipt {
                 invocation,
                 status: ReceiptStatus::Completed {

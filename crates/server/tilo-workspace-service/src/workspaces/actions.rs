@@ -60,7 +60,8 @@ use tilo_actions::remote::{
     CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_INVITATIONS,
-    WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBERS, WORKSPACE_SERVERS, WORKSPACE_WAITING, formats,
+    WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBER_PLACED,
+    WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, WORKSPACE_SERVERS, WORKSPACE_WAITING, formats,
     mcp_server, person_accounts, person_asking, person_connections, person_models, person_telling,
     person_vault, server_account, workspace_governance_address, workspace_governance_child,
     workspace_governance_operation, workspace_governance_resource, workspace_member,
@@ -932,6 +933,25 @@ fn governance_request(request: &InvokeRequest, workspace: &str, operation: &str)
     asked
 }
 
+/// The operation `change` is granted by, and the action the tree publishes it at, for a device
+/// asking whether it is its to make: `add` and `role` are the `member.add` operation, and a
+/// removal is `remove-member`.
+fn admitted_change(change: &str) -> Option<(&'static str, &'static str)> {
+    let published = [
+        WORKSPACE_MEMBER_ADDED,
+        WORKSPACE_MEMBER_PLACED,
+        WORKSPACE_MEMBER_REMOVED,
+    ]
+    .into_iter()
+    .find(|action| *action == change)?;
+    let action = if published == WORKSPACE_MEMBER_REMOVED {
+        governance::REMOVE_MEMBER
+    } else {
+        ADD_MEMBER
+    };
+    Some((action, published))
+}
+
 /// The governance action `action` depends on, for one this provider names.
 fn check_of(action: &str) -> Option<&'static str> {
     VERBS
@@ -1700,7 +1720,11 @@ impl Workspaces {
                     self.unattended_invoke(workspace_id, caller, certificate, &asked)
                         .await
                 } else {
-                    self.governance_invoke(workspace_id, caller, certificate, &asked)
+                    // The action the tree publishes the operation at, which says more than
+                    // the operation does where one publishes several (`role` and `add` are
+                    // both `member.add`).
+                    let published = request.target.address.action.clone();
+                    self.governance_invoke(workspace_id, caller, certificate, &asked, &published)
                         .await
                 }
             }
@@ -1829,6 +1853,7 @@ impl Workspaces {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
+        published: &str,
     ) -> Result<Value, ActionCallError> {
         let address = &request.target.address;
         if let Some(verb) = server::verb(&address.action) {
@@ -1843,14 +1868,12 @@ impl Workspaces {
         // `admit_invocation` over its synced grants, asking the person through the Confirm
         // frame, and that replaces this.
         let admitting = address.action == WORKSPACE_MEMBER_ADMIT;
-        let action = if admitting {
-            let change = args.required_text("change")?;
-            [ADD_MEMBER, governance::REMOVE_MEMBER]
-                .into_iter()
-                .find(|action| *action == change)
-                .ok_or(ActionCallError::UnknownAction)?
+        let (action, published) = if admitting {
+            let (action, published) = admitted_change(args.required_text("change")?)
+                .ok_or(ActionCallError::UnknownAction)?;
+            (action, published)
         } else {
-            address.action.as_str()
+            (address.action.as_str(), published)
         };
         let check = server::check_of(action).ok_or(ActionCallError::UnknownAction)?;
         // A key's own record is read by the key itself, whatever its grant may
@@ -1924,7 +1947,7 @@ impl Workspaces {
                 .chain(&OWNER_CONFIRMED)
                 .find(|verb| verb.id == action)
         {
-            self.check_governance(&device, &workspace, verb.id, &args, admitting)
+            self.check_governance(&device, &workspace, verb.id, &args, admitting, published)
                 .await?;
             self.admit_operation(
                 Some(workspace_id),
@@ -1958,10 +1981,20 @@ impl Workspaces {
         action: &str,
         args: &Args,
         signs: bool,
+        published: &str,
     ) -> Result<(), ActionCallError> {
         let change;
         let op = match action {
-            ADD_MEMBER => WorkspaceOp::Place(args.required_key("person")?, args.place_at("role")?),
+            ADD_MEMBER => {
+                let person = args.required_key("person")?;
+                let place = args.place_at("role")?;
+                // A role is changed on a member; `add` is what gives a person a place.
+                if published == WORKSPACE_MEMBER_PLACED {
+                    WorkspaceOp::Role(person, place)
+                } else {
+                    WorkspaceOp::Place(person, place)
+                }
+            }
             governance::INVITE => match args.place_at("role")? {
                 super::MemberPlace::Role(role) => WorkspaceOp::Invite(role),
                 super::MemberPlace::Administrator => WorkspaceOp::InviteAdministrator,
@@ -2299,9 +2332,9 @@ impl Workspaces {
                 row.parent_resource.clone_from(&members);
                 if let Some(action) = row.action.as_mut() {
                     let (name, said) = if verb.id == ADD_MEMBER {
-                        ("role", "Change role")
+                        (WORKSPACE_MEMBER_PLACED, "Change role")
                     } else {
-                        ("remove", verb.label)
+                        (WORKSPACE_MEMBER_REMOVED, verb.label)
                     };
                     action.address = ActionAddress::new(resource.as_str(), name);
                     action.action_label = said.into();

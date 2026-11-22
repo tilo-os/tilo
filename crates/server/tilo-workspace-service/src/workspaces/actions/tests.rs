@@ -14,7 +14,8 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, CatalogueRow, Confirmation,
     InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
-    WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_operation,
+    WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT,
+    WORKSPACE_MEMBER_PLACED, workspace_governance_operation,
 };
 use tilo_peer_state::join::Role;
 use tilo_server_protocol::workspaces::JoinReply;
@@ -841,6 +842,209 @@ async fn a_member_removes_someone_ranked_below_them_or_themselves() {
             .any(|member| member.root() == Some(ada.user_public_key) && member.removed),
         "{members:?}"
     );
+    server.shutdown().await;
+}
+
+/// The per-person `role` request that changes `cert`'s place in `workspace` to `place`: the
+/// person whose place it changes is the address's.
+fn place_request(workspace: &str, cert: &DeviceCert, place: &str) -> InvokeRequest {
+    let mut request = request(workspace, WORKSPACE_MEMBER_PLACED, json!({ "role": place }));
+    request.target = RemoteActionTarget {
+        provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+        address: tilo_actions::ActionAddress::new(
+            tilo_actions::remote::workspace_member(workspace, &hex::encode(cert.user_public_key)),
+            WORKSPACE_MEMBER_PLACED,
+        ),
+    };
+    request
+}
+
+/// The `member.admit` request a device of a person's asks before it signs a change to who is in
+/// `workspace`: `change` is the action the tree publishes it at, and `role` the place it would
+/// give `cert`.
+fn admission_request(
+    workspace: &str,
+    change: &str,
+    cert: &DeviceCert,
+    role: &str,
+) -> InvokeRequest {
+    request(
+        workspace,
+        WORKSPACE_MEMBER_ADMIT,
+        json!({ "change": change, "person": hex::encode(cert.user_public_key), "role": role }),
+    )
+}
+
+/// The people `member.list` answers, by person: their role, for each person still in the
+/// workspace.
+fn roles(listed: &Value) -> Vec<(String, String)> {
+    listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| {
+            Some((
+                row["member"]["person"].as_str()?.to_owned(),
+                row["role"].as_str()?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_role_is_changed_on_a_member_never_on_someone_the_workspace_does_not_hold() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let bo = admit(workspaces, &workspace, &owner, 2).await;
+    let (_, stranger) = guest_device();
+    let person = |cert: &DeviceCert| hex::encode(cert.user_public_key);
+    // Ada administers the workspace, and may move Bo, an Editor.
+    invoke(
+        &host,
+        workspace_id,
+        &caller(&owner),
+        request(
+            &workspace,
+            super::ADD_MEMBER,
+            json!({ "person": person(&ada), "role": "administrator" }),
+        ),
+    )
+    .await
+    .unwrap();
+    invoke(
+        &host,
+        workspace_id,
+        &caller(&ada),
+        place_request(&workspace, &bo, "moderator"),
+    )
+    .await
+    .unwrap();
+    let listed = invoke(
+        &host,
+        workspace_id,
+        &caller(&owner),
+        request(&workspace, MEMBERS, json!({})),
+    )
+    .await
+    .unwrap();
+    assert!(
+        roles(&listed).contains(&(person(&bo), "moderator".to_owned())),
+        "{listed}"
+    );
+
+    // Someone the workspace does not hold has no place to change: refused before anything is
+    // written.
+    assert!(matches!(
+        invoke(
+            &host,
+            workspace_id,
+            &caller(&ada),
+            place_request(&workspace, &stranger, "viewer")
+        )
+        .await,
+        Err(ActionCallError::Refused { reason }) if reason.contains("not a member")
+    ));
+    let listed = invoke(
+        &host,
+        workspace_id,
+        &caller(&owner),
+        request(&workspace, MEMBERS, json!({})),
+    )
+    .await
+    .unwrap();
+    assert!(
+        roles(&listed)
+            .iter()
+            .all(|(who, _)| *who != person(&stranger)),
+        "{listed}"
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_devices_role_change_is_admitted_for_a_member_and_refused_for_someone_else() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let (_, stranger) = guest_device();
+    let person = |cert: &DeviceCert| hex::encode(cert.user_public_key);
+    invoke(
+        &host,
+        workspace_id,
+        &caller(&owner),
+        request(
+            &workspace,
+            super::ADD_MEMBER,
+            json!({ "person": person(&ada), "role": "administrator" }),
+        ),
+    )
+    .await
+    .unwrap();
+
+    // A device's role change on a person the workspace does not hold is refused at once, and
+    // nothing is written.
+    assert!(matches!(
+        invoke(
+            &host,
+            workspace_id,
+            &caller(&ada),
+            admission_request(&workspace, WORKSPACE_MEMBER_PLACED, &stranger, "viewer")
+        )
+        .await,
+        Err(ActionCallError::Refused { reason }) if reason.contains("not a member")
+    ));
+    let listed = invoke(
+        &host,
+        workspace_id,
+        &caller(&owner),
+        request(&workspace, MEMBERS, json!({})),
+    )
+    .await
+    .unwrap();
+    assert!(
+        roles(&listed)
+            .iter()
+            .all(|(who, _)| *who != person(&stranger)),
+        "{listed}"
+    );
+
+    // Adding a person is still the device's to ask for, and once the workspace holds them a
+    // role is admitted.
+    invoke(
+        &host,
+        workspace_id,
+        &caller(&ada),
+        admission_request(&workspace, WORKSPACE_MEMBER_ADDED, &stranger, "viewer"),
+    )
+    .await
+    .unwrap();
+    invoke(
+        &host,
+        workspace_id,
+        &caller(&owner),
+        request(
+            &workspace,
+            super::ADD_MEMBER,
+            json!({ "person": person(&stranger), "role": "viewer" }),
+        ),
+    )
+    .await
+    .unwrap();
+    invoke(
+        &host,
+        workspace_id,
+        &caller(&ada),
+        admission_request(&workspace, WORKSPACE_MEMBER_PLACED, &stranger, "editor"),
+    )
+    .await
+    .unwrap();
     server.shutdown().await;
 }
 
