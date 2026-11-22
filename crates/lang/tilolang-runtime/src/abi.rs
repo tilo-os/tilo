@@ -107,6 +107,7 @@ imports! {
     (ResTextSet, "res_text_set", "iii", ""),
     (CollInsert, "coll_insert", "iii", "i"),
     (CollInsertAs, "coll_insert_as", "iiii", "i"),
+    (CollInsertKeyed, "coll_insert_keyed", "iiii", "i"),
     (CollRemove, "coll_remove", "iii", ""),
     (CollMove, "coll_move", "iiiii", ""),
     (CollPlace, "coll_place", "iiiiii", ""),
@@ -139,6 +140,7 @@ imports! {
     (ResourceRef, "resource_ref", "i", "i"),
 
     (Invoker, "invoker", "", "i"),
+    (MadeFrom, "made_from", "", "i"),
     (ActorEq, "actor_eq", "ii", "i"),
     (ActorName, "actor_name", "i", "i"),
     (Now, "now", "", "i"),

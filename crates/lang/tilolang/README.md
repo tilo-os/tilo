@@ -285,7 +285,11 @@ its label: `history(m).any(v -> v.is(edit))`. An offered `host.Action` answers t
 keeps its versions) and which `.fields` it changed. A resource can be made from another one:
 an invocation carries the resource it is made from when the host or the invoker names one, the
 change records it, and the resource it created says so, `created(r)?.from` — an
-`Option<host.Resource>`. `changes(of: run)` is every version a run
+`Option<host.Resource>`. An action reads its own invocation's as `made_from`. An action that
+calls another one made from what it just made says so on the call:
+`let sent = d.messages.insert(m)` then `agent.ask(agent.agents, d.person, body).made_from(sent)`.
+The call is a change of its own, after what came before it, so each change records what it was
+made from. `changes(of: run)` is every version a run
 made, of every resource, and `unseen(r)` the versions of `r` the person looking has not seen
 yet: another person's or an agent's, since their seen mark of `r` (a comment about
 `r` counts as a change to it). The UI host marks those where views show them, with no code
@@ -318,7 +322,11 @@ block is its component's, events included: `rich_input(bind: draft) { on submit:
 sends on Enter (Shift+Enter breaks the line).
 
 **Collections.** An item is its id: a reference to it names its document and id
-(`@board.Card:root-x/i3`), wherever the item is. `items.remove(x)` removes an item with
+(`@board.Card:root-x/i3`), wherever the item is. An insert gives the item a fresh id, or, with
+a key, the id the collection and the key name: `all.asks.insert(a, key: "{from.id()}|{mention}")`
+makes the same item on every device that inserts it under that key, so two devices that do it
+apart merge into one, and an insert where the item already stands is that item, unchanged.
+`items.remove(x)` removes an item with
 everything in it; `items.remove_where(pred)` removes what the predicate holds of and gives how
 many went. A move names a neighbour, `items.move(x, after: y)` or `before: y`, or a place,
 `items.move(x, to: i)` (what a drag gives): the place is resolved, when the action runs, to the

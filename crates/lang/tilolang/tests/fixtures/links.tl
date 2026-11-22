@@ -63,6 +63,23 @@ action drop_note(b: Board, n: Note) {
     b.notes.remove(n)
 }
 
+/// Answers the note the call is made from, once: the answer is the item that note names, so
+/// answering it again is the same answer.
+action answer(b: Board, title: Text = "answer") -> Note {
+    if let from = made_from {
+        b.notes.insert(Note(title: title, body: RichText("")), key: from.id())
+    } else {
+        b.notes.insert(Note(title: title, body: RichText("")))
+    }
+}
+
+/// Adds a note and answers it: the answer is a change of its own, made from the note.
+action add_answered(b: Board, title: Text) -> Note {
+    let n = b.notes.insert(Note(title: title, body: RichText("")))
+    answer(b).made_from(n)
+    n
+}
+
 /// The title of what a note was made from; empty for one made on its own.
 action made_from(n: Note) -> Text {
     if let c = created(n), f = c.from {

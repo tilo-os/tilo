@@ -878,14 +878,19 @@ impl Core {
 
     /// Insert the record under construction into the collection field of the resource the call
     /// names, under the id it gives (`coll_insert_as`: a migration keeping the id an earlier build
-    /// gave the item), else under a fresh one.
+    /// gave the item), the one its key names (`coll_insert_keyed`), else under a fresh one.
+    ///
+    /// A keyed item's id is the collection's and the key's: every device that inserts under that
+    /// key inserts the same item, so two that do it apart merge into one, and an insert where the
+    /// item already stands is that item, unchanged.
     fn coll_insert(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
-        let kept = match imp {
-            Imp::CollInsertAs => Some(self.text(a.h(3)?)?),
-            _ => None,
-        };
         let (rh, fh, init) = (a.h(0)?, a.h(1)?, a.h(2)?);
         let ctx = self.mut_ctx(rh, fh)?;
+        let kept = match imp {
+            Imp::CollInsertAs => Some(self.text(a.h(3)?)?),
+            Imp::CollInsertKeyed => Some(keyed_id(&ctx.target, &ctx.field.id, &self.text(a.h(3)?)?)),
+            _ => None,
+        };
         let item_tys = self.coll_field(&ctx)?;
         let Value::Rec(rec) = self.val(init)? else {
             return trap("expected a record under construction");
@@ -898,6 +903,23 @@ impl Core {
                 rec.ty
             ));
         };
+        if imp == Imp::CollInsertKeyed
+            && let Some(id) = &kept
+        {
+            let at = ctx.target.item(id, item_ty.id.clone());
+            // Whether it stands is a read like any other: a run that is run again after it
+            // waited finds what it found before.
+            let stands = self.journaled_read(|| {
+                Ok(Value::Bool(self.store.borrow().type_of(&at).is_ok()))
+            })?;
+            if matches!(stands, Value::Bool(true)) {
+                let author = Some(self.module_of_frame()?);
+                return self.ret_h(Value::Ref(RefValue {
+                    target: Rc::new(at),
+                    author,
+                }));
+            }
+        }
         let new = crate::store::NewResource {
             ty: item_ty.id.clone(),
             app: AppId::default(),
@@ -1099,7 +1121,7 @@ impl Core {
             }
             Imp::ResAddI => self.res_add(a.h(0)?, a.h(1)?, Ok(a.long(2)?)),
             Imp::ResAddF => self.res_add(a.h(0)?, a.h(1)?, Err(a.float(2)?)),
-            Imp::CollInsert | Imp::CollInsertAs => self.coll_insert(imp, a),
+            Imp::CollInsert | Imp::CollInsertAs | Imp::CollInsertKeyed => self.coll_insert(imp, a),
             Imp::Earlier => self.ret_h(self.earlier_import(a)?),
             Imp::CollRemove => {
                 let ctx = self.mut_ctx(a.h(0)?, a.h(1)?)?;
@@ -1904,4 +1926,16 @@ fn whole_map(kind: FieldKind, value: Value) -> Value {
         ),
         (_, value) => value,
     }
+}
+
+/// The id of the item the key `key` names in the collection `field` of `holder`: the same on
+/// every device, and another for every collection and key.
+fn keyed_id(holder: &ResourceRef, field: &str, key: &str) -> String {
+    let mut hash = blake3::Hasher::new();
+    for part in [holder.id_string().as_str(), field, key] {
+        hash.update(&(part.len() as u64).to_le_bytes());
+        hash.update(part.as_bytes());
+    }
+    let digest: String = hash.finalize().to_hex().chars().take(26).collect();
+    format!("k{digest}")
 }

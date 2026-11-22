@@ -648,7 +648,12 @@ impl Checker<'_> {
                 // its journaled result. `suggest act(args)` is the same call, recorded as a
                 // proposal instead of applied.
                 let bound = Self::applied_args(c, bound);
-                self.invoke(c, bound)
+                let from = self
+                    .st
+                    .made_from
+                    .take_if(|(at, _)| *at == span)
+                    .map(|(_, from)| from);
+                self.invoke(c, bound, from)
             }
             (CKind::Action, Ctx::View | Ctx::Block) => {
                 let bound = Self::applied_args(c, bound);
@@ -719,10 +724,13 @@ impl Checker<'_> {
         Ex::host(Imp::ActRef, vec![Ex::str(&c.id), list], Ty::Action)
     }
 
-    fn invoke(&mut self, c: &Callable, bound: Vec<Ex>) -> Ex {
+    fn invoke(&mut self, c: &Callable, bound: Vec<Ex>, from: Option<Ex>) -> Ex {
         self.st.facts.invokes.insert(Self::action_ref(c));
         let list = self.arg_list(bound);
-        let act = Ex::host(Imp::ActRef, vec![Ex::str(&c.id), list], Ty::Action);
+        let mut act = Ex::host(Imp::ActRef, vec![Ex::str(&c.id), list], Ty::Action);
+        if let Some(from) = from {
+            act = Ex::host(Imp::ActMadeFrom, vec![act, from], Ty::Action);
+        }
         if let Some(value) = self.st.suggest.take() {
             if value {
                 return act.typed(Ty::Action);
@@ -1612,6 +1620,14 @@ impl Checker<'_> {
         {
             return self.type_method(ty, name, args, span);
         }
+        // `act(args).made_from(r)` in an action: the call runs as a change of its own, made from
+        // `r`, which what it makes records (`created(x)?.from`).
+        if name.name == "made_from"
+            && matches!(self.st.ctx, Ctx::Action | Ctx::Program)
+            && matches!(recv.kind, ExprKind::Call { .. })
+        {
+            return self.invoke_made_from(recv, args, span);
+        }
         // `a.items.insert(x)` needs the record and the field, not the field's value.
         if let ExprKind::Field { base, name: fname } = &recv.kind
             && !self.names_import(base)
@@ -1626,6 +1642,37 @@ impl Checker<'_> {
         }
         let r = self.expr(recv, None);
         self.value_method(r, name, args, span)
+    }
+
+    /// `act(args).made_from(r)` in an action or a program: the call of `act`, made from `r`.
+    fn invoke_made_from(&mut self, call: &ast::Expr, args: &[ast::Arg], span: Span) -> Ex {
+        let [from] = args else {
+            self.err(
+                "E022",
+                span,
+                "`.made_from` takes the resource the action is made from: `agent.ask(all, who, said).made_from(m)`",
+            );
+            return Ex::error();
+        };
+        if let Some(name) = &from.name {
+            self.err(
+                "E022",
+                name.span,
+                "`.made_from` takes its resource by position: `agent.ask(all, who, said).made_from(m)`",
+            );
+        }
+        let from = self.expr_as(&from.value, &Ty::Record(super::resource_key()));
+        let outer = self.st.made_from.replace((call.span, from));
+        let made = self.expr(call, None);
+        if std::mem::replace(&mut self.st.made_from, outer).is_some() {
+            self.err(
+                "E022",
+                call.span,
+                "`.made_from` follows the call of an action: `agent.ask(all, who, said).made_from(m)`",
+            );
+            return Ex::error();
+        }
+        made
     }
 
     /// Whether `e` is `space` or `workspace`, read only through their fields, and not a variable of

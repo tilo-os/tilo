@@ -1856,6 +1856,27 @@ impl Core {
         Ok(())
     }
 
+    /// `made_from`: what the invocation is made from, the invocation a scenario pushed, else the
+    /// run's.
+    fn made_from(&self) -> HResult<Option<Wasm>> {
+        let frames = self.frames.borrow();
+        let FrameKind::Action(state) = &frames.top()?.kind else {
+            return trap("made_from is only available in actions");
+        };
+        let from = state
+            .invocations
+            .last()
+            .and_then(|inv| inv.from.clone())
+            .or_else(|| state.note.from.clone());
+        drop(frames);
+        self.ret_h(Value::Opt(from.map(|target| {
+            Box::new(Value::Ref(crate::value::RefValue {
+                target: Rc::new(target),
+                author: None,
+            }))
+        })))
+    }
+
     /// `invoke(aref)` and `try act(args)`: the action runs as a change of its own at its own
     /// action API. The journal answers a call the run already made; otherwise the run stops here, and
     /// the call runs and the code goes on from its result.
@@ -1873,8 +1894,10 @@ impl Core {
                 Ok(FrameKind::Action(state)) => {
                     let invocation = state.invocations.last();
                     (
-                        invocation
-                            .and_then(|inv| inv.from.clone())
+                        // A call made from a resource (`ask(a).made_from(m)`) is made from it.
+                        aref.from
+                            .clone()
+                            .or_else(|| invocation.and_then(|inv| inv.from.clone()))
                             .or_else(|| state.note.from.clone()),
                         invocation.map(|inv| inv.who.clone()),
                         invocation.and_then(|inv| inv.at.clone()),
@@ -2711,6 +2734,7 @@ impl Core {
                 drop(frames);
                 self.ret_h(who)
             }
+            Imp::MadeFrom => self.made_from(),
             Imp::PersonNamed | Imp::AgentNamed => {
                 let name = self.text(a.h(0)?)?;
                 self.scenario_state(|_| ())?;

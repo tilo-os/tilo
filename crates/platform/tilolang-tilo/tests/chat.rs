@@ -1504,8 +1504,8 @@ fn asks(r: &Replica) -> Vec<String> {
 const AGENT_APP: &str = "so.tilo.lang.agent";
 
 /// Writing to an agent asks it: each message sent in a direct conversation with one makes one
-/// ask of it, made from the conversation by whoever wrote it, and a conversation with a person
-/// asks nobody.
+/// ask of it, made from the message by whoever wrote it, whether a person presses Send or a
+/// script invokes `send`, and a conversation with a person asks nobody.
 #[test]
 fn each_message_to_an_agent_asks_it_once() {
     let (mut ada, _) = Replica::new(
@@ -1543,9 +1543,34 @@ fn each_message_to_an_agent_asks_it_once() {
 
     post(&mut ada, &tide_view, "And the tests?");
     assert_eq!(asks(&ada).len(), 2, "a second message asks again: {:?}", asks(&ada));
+    // Each ask is made from its message, which its row names.
+    for message in ["What changed in the build?", "And the tests?"] {
+        assert_eq!(
+            asks(&ada).iter().filter(|a| a.contains(message)).count(),
+            1,
+            "one ask made from {message:?}: {:?}",
+            asks(&ada)
+        );
+    }
+
+    // A script's send asks as a person's does, made from the message it sent.
+    let sent = call(&ada, "send", vec![tide, rich("Any news?"), Value::none()]);
+    call(&ada, "send", vec![ben, rich("Coffee?"), Value::none()]);
+    ada.commit();
+    assert_eq!(asks(&ada).len(), 3, "the script's message asks too: {:?}", asks(&ada));
+    let made: Vec<_> = ada
+        .host
+        .store()
+        .linked(&target(&sent))
+        .unwrap()
+        .into_iter()
+        .filter(|link| link.how == tilolang_runtime::store::LinkHow::CreatedFrom)
+        .collect();
+    assert_eq!(made.len(), 1, "one ask is made from the sent message: {made:?}");
+
     let mut tide_view = tide_view;
     assert_eq!(
         said(&mut tide_view),
-        ["What changed in the build?", "And the tests?"]
+        ["What changed in the build?", "And the tests?", "Any news?"]
     );
 }

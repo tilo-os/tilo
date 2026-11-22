@@ -332,6 +332,20 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
+        // `made_from`: the resource this invocation is made from, when it names one
+        // (`ask(a).made_from(m)`), which what it makes records.
+        if name == "made_from" {
+            if self.st.ctx == Ctx::Action {
+                let ty = Ty::Option(Box::new(Ty::Record(super::resource_key())));
+                return Ex::host(Imp::MadeFrom, vec![], ty);
+            }
+            self.err(
+                "E049",
+                span,
+                "`made_from` is the resource this invocation is made from; only an action can read it",
+            );
+            return Ex::error();
+        }
         if name == "now" {
             if matches!(self.st.ctx, Ctx::Action | Ctx::Program) || self.st.press {
                 self.reads(crate::effects::Effect::Time, span, "`now`");

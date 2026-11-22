@@ -340,7 +340,19 @@ action send(
     match to {
         c: TextChannel => c.messages.insert(m),
         t: Thread => t.messages.insert(m),
-        d: Direct => d.messages.insert(m),
+        d: Direct => {
+            let sent = d.messages.insert(m)
+            // Writing to an agent asks it, made from the message, whose replies stand under it.
+            // Nothing said goes to an agent that may not read it.
+            if d.person.kind() == .agent {
+                agent.ask(
+                    agent.agents,
+                    d.person,
+                    if std.may_read(d.person, sent) { body } else { RichText("") },
+                ).made_from(sent)
+            }
+            sent
+        },
     }
 }
 
@@ -580,7 +592,7 @@ view direct(d: Direct) {
         direct_message(d, m, d.messages, replying, editing, revised)
         composer: {
             direct_typing_here(d)
-            direct_composer(d, draft, replying)
+            composer(d, d.messages, draft, replying, "Message {d.name}")
         }
     }
 }
@@ -620,9 +632,6 @@ view direct_message(
     revised: State<RichText>,
 ) {
     message(m, shown, editing, revised)
-    for a in asked_by(d, m) {
-        agent.replies(a)
-    }
     ui.HoverToolbar {
         ui.Button("Reply", icon: .reply, icon_only: true) {
             on press: set(replying, m)
@@ -717,43 +726,6 @@ view composer(
         send(to, draft, replying).then(set(replying, .none)),
         speakers: speakers(said),
     )
-}
-
-/// A direct conversation's composer. Writing to an agent asks it: sending a message there also
-/// asks the agent what it says, made from the conversation, which is what the agent reads around
-/// it; a person's conversation only sends.
-view direct_composer(d: Direct, draft: State<RichText>, replying: State<Option<Message>>) {
-    if let r = replying {
-        std.reply_banner(r, cancel: set(replying, .none))
-    }
-    std.composer(
-        draft,
-        "Message {d.name}",
-        if d.person.kind() == .agent {
-            send(d, draft, replying)
-                .then(agent.ask(agent.agents, d.person, draft).made_from(d))
-                .then(set(replying, .none))
-        } else {
-            send(d, draft, replying).then(set(replying, .none))
-        },
-        speakers: speakers(d.messages),
-    )
-}
-
-/// What answers `m` in a direct conversation with an agent: the asks sending it made, which are
-/// made from the conversation after the message and before the one after it.
-fn asked_by(d: Direct, m: Message) -> List<agent.Ask> {
-    if let at = created(m)?.at {
-        let later = d.messages.filter(x -> if let t = created(x)?.at { t > at } else { false })
-        let until = if let n = later.first() { created(n)?.at } else { .none }
-        agent.asks_on(d).filter(a -> if let t = created(a)?.at {
-            t >= at and (if let u = until { t < u } else { true })
-        } else {
-            false
-        })
-    } else {
-        []
-    }
 }
 
 /// Who is typing here, from the system's presence: the lenses on `of` whose person is

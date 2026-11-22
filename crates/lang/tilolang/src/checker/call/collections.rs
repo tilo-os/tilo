@@ -99,17 +99,22 @@ impl Checker<'_> {
         match (&f.ty, m) {
             (Ty::Collection(t), "insert") => {
                 // A migration keeps the id an earlier build gave what it carries over:
-                // `.insert(item, id: e.id)`.
+                // `.insert(item, id: e.id)`. A key names the item by what it is, so every device
+                // that inserts it under that key inserts the same item:
+                // `.insert(item, key: "{from.id()}|{mention}")`.
                 let kept = match args {
                     [_, kept] if kept.name.as_ref().is_some_and(|n| n.name == "id") => {
                         if !self.migrating {
                             self.err(
                                 "E022",
                                 kept.value.span,
-                                "only a `migration action` gives an item the id it had: an item anything else inserts takes a fresh one",
+                                "only a `migration action` gives an item the id it had: an item anything else inserts takes a fresh one, or the one its `key` names",
                             );
                         }
-                        Some(self.expr_as(&kept.value, &Ty::Text))
+                        Some((Imp::CollInsertAs, self.expr_as(&kept.value, &Ty::Text)))
+                    }
+                    [_, key] if key.name.as_ref().is_some_and(|n| n.name == "key") => {
+                        Some((Imp::CollInsertKeyed, self.expr_as(&key.value, &Ty::Text)))
                     }
                     _ => None,
                 };
@@ -130,7 +135,7 @@ impl Checker<'_> {
                 let inserted = case.unwrap_or_else(|| (**t).clone());
                 self.inserted.extend(inserted.records());
                 match kept {
-                    Some(id) => Ex::host(Imp::CollInsertAs, vec![b, fid, v, id], inserted),
+                    Some((imp, id)) => Ex::host(imp, vec![b, fid, v, id], inserted),
                     None => Ex::host(Imp::CollInsert, vec![b, fid, v], inserted),
                 }
             }

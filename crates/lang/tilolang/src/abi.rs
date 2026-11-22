@@ -120,6 +120,7 @@ imports! {
 
     CollInsert = "coll_insert" ([H, H, H] -> [H]);
     CollInsertAs = "coll_insert_as" ([H, H, H, H] -> [H]);
+    CollInsertKeyed = "coll_insert_keyed" ([H, H, H, H] -> [H]);
     CollRemove = "coll_remove" ([H, H, H] -> []);
     CollMove = "coll_move" ([H, H, H, H, I32] -> []);
     // A tree's order: the item and everything under it, to a place named by the parent field
@@ -155,6 +156,7 @@ imports! {
     ResourceRef = "resource_ref" ([H] -> [H]);
 
     Invoker = "invoker" ([] -> [H]);
+    MadeFrom = "made_from" ([] -> [H]);
     ActorEq = "actor_eq" ([H, H] -> [I32]);
     ActorName = "actor_name" ([H] -> [H]);
     Now = "now" ([] -> [H]);

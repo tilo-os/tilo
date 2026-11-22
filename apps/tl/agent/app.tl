@@ -92,15 +92,23 @@ default view reply for Reply
 /// Asks `agent` about the resource the ask is made from (`.made_from(r)`). Whoever makes it
 /// decides first whether the agent may read that resource, and asks with nothing said when it
 /// may not: the ask then says so, and holds nothing of the resource.
+///
+/// An ask made from a resource is named by it and the mention: every device that asks it so
+/// makes the same ask, and asking again is that ask.
 action ask(all: Agents, agent: Actor, said: RichText, mention: Text = "") -> Ask (
     icon: .sparkles,
     label: "Ask",
     did: "asked",
 ) {
-    if said.is_empty() {
-        all.asks.insert(Ask(agent: agent, mention: mention, state: .cannot_read))
+    let a = if said.is_empty() {
+        Ask(agent: agent, mention: mention, state: .cannot_read)
     } else {
-        all.asks.insert(Ask(agent: agent, said: .some(said), mention: mention))
+        Ask(agent: agent, said: .some(said), mention: mention)
+    }
+    if let from = made_from {
+        all.asks.insert(a, key: if mention == "" { from.id() } else { "{from.id()}|{mention}" })
+    } else {
+        all.asks.insert(a)
     }
 }
 

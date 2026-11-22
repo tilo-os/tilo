@@ -186,6 +186,29 @@ mod cases {
             assert_eq!(l.made_from(&alone), "");
         }
 
+        phase a_call_an_action_makes_from_what_it_made_records_it;
+        // An action that makes a note and answers it calls the answer made from the note: the
+        // answer is a change of its own and records the note, while the note records nothing.
+        // The answer's key is the note, so answering it again is the same answer, unchanged.
+        {
+            let l = Links::new();
+            let note = returned_ref(l.call("add_answered", vec![l.board_arg(), Value::text("A")]));
+            let answer = l.titled("answer");
+            assert_eq!(l.made_from(&answer), "A");
+            assert_eq!(l.made_from(&note), "");
+            assert_eq!(l.links_of(&note), vec!["created_from answer".to_owned()]);
+            let again = returned_ref(l.call_from(
+                "answer",
+                vec![l.board_arg(), Value::text("again")],
+                &note,
+            ));
+            assert_eq!(again.id_string(), answer.id_string());
+            assert_eq!(l.links_of(&note), vec!["created_from answer".to_owned()]);
+            // One answered on its own is a note of its own.
+            let alone = returned_ref(l.call("answer", vec![l.board_arg(), Value::text("alone")]));
+            assert_ne!(alone.id_string(), answer.id_string());
+        }
+
         phase a_scenario_makes_a_resource_from_another;
         // A scenario makes a resource from another through the same path an invocation made from it
         // takes: the change it makes records what it made from, and what links to the source names

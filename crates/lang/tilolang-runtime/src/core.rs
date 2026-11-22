@@ -460,7 +460,7 @@ impl Core {
             Abort, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen,
             ActUndo, Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt,
             BytesLength, CallFn, ChangeView, CollCount, CollCounted, CollEmpty, CollInsert,
-            CollInsertAs, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace,
+            CollInsertAs, CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace,
             CollRelatives, CollRemove, CollWhere, CollWhereWith, CountBy, DateShow, DayParse,
             DayPart, DayShift, DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef,
             DurationText, Earlier, EditField, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs,
@@ -469,7 +469,7 @@ impl Core {
             Filters, Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor,
             FloatFloorTo, FloatMax, FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef,
             Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop,
-            InvocationPush, Invoke, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse,
+            InvocationPush, Invoke, Invoker, IsError, MadeFrom, IsSome, JsonDecode, JsonEncode, JsonParse,
             Keep, Lenses, Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf,
             ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse,
             ListSortByKey, ListSumF, ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew,
@@ -528,13 +528,13 @@ impl Core {
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
-            | ResTextSet | CollInsert | CollInsertAs | CollRemove | CollMove | CollMoveTo
+            | ResTextSet | CollInsert | CollInsertAs | CollInsertKeyed | CollRemove | CollMove | CollMoveTo
             | CollMoveAmong | CollPlace | SetAdd | SetRemove | MapPut | MapRemove | MapSetAdd
             | MapSetRemove | MapGetH | MapGetValue | MapKeys | MapKeysValue | MapNew
             | MapPutValue | MapRemoveValue | RecNew | RecSetI | RecSetF | RecSetH | RefLit
             | RefEq | RefIs | RefId | ResourceRef | Earlier => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
-            | OutsideAt | Withdraw | ModelCall | Notify | Invoker | ActorEq | ActorName
+            | OutsideAt | Withdraw | ModelCall | Notify | Invoker | MadeFrom | ActorEq | ActorName
             | QueueBlock | Now | TimeShift | PersonNamed | AgentNamed | InvocationPush
             | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
