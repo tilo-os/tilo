@@ -458,12 +458,6 @@ impl InstallerPreview {
         } else {
             self.belongings.browser.selected()
         };
-        let account_sources = if carried_by_package || !self.journey.categories[2] {
-            Vec::new()
-        } else {
-            self.accounts
-                .selected_source_accounts(&self.belongings.accounts)
-        };
         let plan = intent.source_plan();
         let prepared = imager_backend::setup::deferred_handoff::prepare(
             &imager_backend::setup::deferred_handoff::Prepare {
@@ -474,7 +468,6 @@ impl InstallerPreview {
                 browser: &browser,
                 applications: self.selected_applications(),
                 accounts: plan.categories.accounts,
-                account_sources: &account_sources,
                 accounts_in_package: carried_by_package && plan.categories.accounts,
                 browser_in_package: carried_by_package,
             },

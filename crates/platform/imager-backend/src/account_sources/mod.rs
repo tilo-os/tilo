@@ -1,8 +1,6 @@
 //! Bounded metadata discovery beneath explicitly consented source roots.
 
 #[cfg(target_os = "linux")]
-mod goa;
-#[cfg(target_os = "linux")]
 mod nextcloud;
 #[cfg(test)]
 mod tests;
@@ -11,8 +9,6 @@ mod thunderbird_tests;
 pub use migration_sources::thunderbird;
 mod tilo;
 
-#[cfg(target_os = "linux")]
-pub use goa::{Definition as GoaDefinition, definitions as goa_definitions};
 #[cfg(target_os = "linux")]
 pub use nextcloud::{
     NativeAccount as NextcloudAccount, accounts as nextcloud_accounts,
@@ -69,33 +65,6 @@ pub enum Service {
     Mail,
     Calendar,
     Contacts,
-}
-
-/// It keeps no source path, profile name or credential, and its opaque `source_id` is the fingerprint
-/// discovery gives the account, so a fresh source matches without trusting plan media.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SelectedAccount {
-    pub source_id: String,
-    pub provider: Provider,
-    pub identity: String,
-    pub label: String,
-    pub services: Vec<Service>,
-}
-
-impl SelectedAccount {
-    pub fn from_candidate(candidate: &Candidate) -> Option<Self> {
-        if candidate.origin != Origin::Gnome {
-            return None;
-        }
-        Some(Self {
-            source_id: candidate.id.clone(),
-            provider: candidate.provider,
-            identity: candidate.identity.clone()?,
-            label: candidate.label.clone(),
-            services: candidate.services.clone(),
-        })
-    }
 }
 
 /// Presence means a configured account or profile was found; it does not establish a valid login.
@@ -395,8 +364,6 @@ fn gnome(text: &str, path: &Path, inventory: &mut Inventory) {
             continue;
         }
         let provider = match config.get("Provider").map(String::as_str) {
-            Some("google") => Provider::Google,
-            Some("ms_graph" | "windows_live" | "microsoft") => Provider::Microsoft,
             Some("owncloud" | "nextcloud") => Provider::Nextcloud,
             Some("webdav") => Provider::WebDav,
             _ => continue,
@@ -416,8 +383,6 @@ fn gnome(text: &str, path: &Path, inventory: &mut Inventory) {
             path,
         );
     }
-    #[cfg(target_os = "linux")]
-    goa::discover(text, path, inventory);
 }
 
 #[cfg(target_os = "linux")]

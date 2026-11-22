@@ -292,14 +292,6 @@ pub(super) fn source_account_services(candidate: &Candidate) -> Vec<Service> {
 }
 
 impl SourceAccountSelection {
-    pub(super) fn services(&self, candidate: &Candidate) -> Vec<Service> {
-        let excluded = self.excluded.get(&candidate.id);
-        source_account_services(candidate)
-            .into_iter()
-            .filter(|service| !excluded.is_some_and(|excluded| excluded.contains(service)))
-            .collect()
-    }
-
     pub(super) fn includes_service(&self, candidate: &Candidate, service: Service) -> bool {
         source_account_services(candidate).contains(&service)
             && !self
@@ -539,45 +531,6 @@ impl Accounts {
     }
     pub fn has_prepared_connections(&self) -> bool {
         !self.prepared.is_empty()
-    }
-    pub(in crate::setup::journey) fn selected_source_accounts(
-        &self,
-        inventory: &Inventory,
-    ) -> Vec<imager_backend::setup::deferred_handoff::SelectedAccount> {
-        let prepared = self
-            .prepared
-            .iter()
-            .filter_map(|entry| entry.source_id.as_deref())
-            .collect::<BTreeSet<_>>();
-        let checkpoint = !self.selection.touched && !prepared.is_empty();
-        let mut selected = BTreeMap::new();
-        for candidate in inventory.candidates.iter().filter(|candidate| {
-            candidate.origin == imager_backend::account_transfer::Origin::Gnome
-                && (!checkpoint || prepared.contains(candidate.id.as_str()))
-        }) {
-            let services = self.selection.services(candidate);
-            let Some(identity) = candidate
-                .identity
-                .clone()
-                .filter(|identity| !identity.is_empty())
-            else {
-                continue;
-            };
-            if services.is_empty() {
-                continue;
-            }
-            selected.insert(
-                candidate.id.clone(),
-                imager_backend::setup::deferred_handoff::SelectedAccount {
-                    source_id: candidate.id.clone(),
-                    provider: candidate.provider,
-                    identity,
-                    label: candidate.label.clone(),
-                    services,
-                },
-            );
-        }
-        selected.into_values().collect()
     }
     pub fn prepared_handle(&self) -> Option<PreparedAccounts> {
         if (self.prepared.is_empty() && !self.reviewed_empty) || !self.can_continue() {

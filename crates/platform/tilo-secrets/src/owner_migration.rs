@@ -4,9 +4,7 @@
 use crate::{Secret, SecretError};
 
 mod chromium;
-mod goa;
 pub use chromium::{ChromiumBrand, ChromiumKey};
-pub use goa::{GoaCredential, GoaCredentials, GoaProvider, GoaRegistration};
 
 pub struct NextcloudCredential {
     key: String,

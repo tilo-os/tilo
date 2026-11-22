@@ -8,7 +8,7 @@ use super::super::{
 };
 use super::{Prepare, Prepared};
 use crate::{
-    account_sources::{self, ReviewedThunderbird, SelectedAccount, SourceRoots},
+    account_sources::{self, ReviewedThunderbird, SourceRoots},
     browser_profiles::{self, ReviewedProfile},
     browser_selection::SelectedSources,
 };
@@ -232,9 +232,6 @@ pub struct Journal {
     exclusions: Vec<NativePath>,
     mail: Vec<MailProfile>,
     browser: Vec<BrowserProfile>,
-    /// Private source metadata: only the journal digest in the reviewed plan leaves the Home.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    selected_accounts: Vec<SelectedAccount>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     reconnect: Vec<String>,
 }
@@ -276,7 +273,6 @@ impl Journal {
             exclusions: exclusions.to_vec(),
             mail: Vec::new(),
             browser: Vec::new(),
-            selected_accounts: Vec::new(),
             reconnect: Vec::new(),
         })
     }
@@ -313,11 +309,6 @@ impl Journal {
             || journal.exclusions != plan.home_exclusions
             || journal.applications != plan.categories.flatpak
             || journal.accounts != plan.categories.accounts
-            || (!journal.accounts && !journal.selected_accounts.is_empty())
-            || journal
-                .selected_accounts
-                .iter()
-                .any(|account| account.services.is_empty())
             || binding.journal_sha256 != <[u8; 32]>::from(Sha256::digest(&bytes))
         {
             return Err(invalid(
@@ -337,59 +328,9 @@ impl Journal {
     pub fn applications(&self) -> bool {
         self.applications
     }
-    pub fn selected_accounts(&self) -> &[SelectedAccount] {
-        &self.selected_accounts
-    }
     pub fn reconnect(&self) -> &[String] {
         &self.reconnect
     }
-}
-
-fn add_selected_accounts(
-    journal: &mut Journal,
-    accounts: bool,
-    selected: &[SelectedAccount],
-) -> io::Result<()> {
-    if !accounts && !selected.is_empty() {
-        return Err(invalid(
-            "Selected online accounts lack reviewed account consent",
-        ));
-    }
-    for selected in selected {
-        if selected.source_id.is_empty()
-            || selected.source_id.len() > 256
-            || selected.identity.is_empty()
-            || selected.identity.len() > 256
-            || selected.identity.chars().any(char::is_control)
-            || selected.label.len() > 256
-            || selected.label.chars().any(char::is_control)
-            || selected.services.is_empty()
-            || selected.services.len() > 4
-            || !matches!(
-                selected.provider,
-                account_sources::Provider::Google | account_sources::Provider::Microsoft
-            )
-        {
-            return Err(invalid("Selected online account metadata is invalid"));
-        }
-        match journal
-            .selected_accounts
-            .iter()
-            .find(|existing| existing.source_id == selected.source_id)
-        {
-            Some(existing) if existing != selected => {
-                return Err(invalid(
-                    "One selected online account was reviewed with two different services",
-                ));
-            }
-            Some(_) => {}
-            None => journal.selected_accounts.push(selected.clone()),
-        }
-    }
-    journal
-        .selected_accounts
-        .sort_by(|left, right| left.source_id.cmp(&right.source_id));
-    Ok(())
 }
 
 /// Writes the sealed choices into the source Home and returns the opaque locator the reviewed plan
@@ -424,17 +365,11 @@ pub fn prepare(input: &Prepare<'_>) -> io::Result<Prepared> {
                 .push(format!("mail:{}", reviewed.profile.source_id));
         }
     }
-    if input.accounts_in_package && !input.account_sources.is_empty() {
-        return Err(invalid(
-            "Selected accounts cannot be both in the package and in the journal",
-        ));
-    }
     if input.browser_in_package && !input.browser.profiles().is_empty() {
         return Err(invalid(
             "Selected browser profiles cannot be both in the package and in the journal",
         ));
     }
-    add_selected_accounts(&mut journal, input.accounts, input.account_sources)?;
     for (source, selected) in input.browser.profiles() {
         source.validate()?;
         if selected.id != source.profile.id {
@@ -688,8 +623,6 @@ pub struct BrowserReceipt {
 pub struct Receipt {
     pub operation_id: String,
     pub mail: Vec<account_transfer::ThunderbirdImportReceipt>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub accounts: Vec<account_transfer::AccountImportReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<BrowserReceipt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -717,9 +650,7 @@ pub fn import_selected_from_source(
     }
     let journal = Journal::open(source_home, plan)?;
     check_cancel(cancel)?;
-    let needs_source = !journal.mail.is_empty()
-        || !journal.browser.is_empty()
-        || !journal.selected_accounts.is_empty();
+    let needs_source = !journal.mail.is_empty() || !journal.browser.is_empty();
     let inventory = needs_source.then(|| {
         account_sources::discover(&SourceRoots {
             home: source_home.to_path_buf(),
@@ -732,7 +663,6 @@ pub fn import_selected_from_source(
         ..Receipt::default()
     };
     if let Some(inventory) = &inventory {
-        import_selected_accounts(&journal, inventory, target_home, &mut receipt)?;
         import_mail(&journal, inventory, plan, target_home, cancel, &mut receipt)?;
         receipt.browser = import_browser(
             &journal,
@@ -748,37 +678,6 @@ pub fn import_selected_from_source(
     receipt.reconnect.dedup();
     check_cancel(cancel)?;
     Ok(receipt)
-}
-
-fn import_selected_accounts(
-    journal: &Journal,
-    inventory: &account_sources::Inventory,
-    target_home: &Path,
-    receipt: &mut Receipt,
-) -> io::Result<()> {
-    if journal.selected_accounts.is_empty() {
-        return Ok(());
-    }
-    let target_config = target_home.join(".config/tilo");
-    let accounts = account_transfer::import_selected_goa(
-        &target_config,
-        inventory,
-        &journal.selected_accounts,
-    )
-    .map_err(|error| {
-        io::Error::other(format!(
-            "Selected online accounts could not be prepared: {error:?}"
-        ))
-    })?;
-    for account in &accounts {
-        if account.pending {
-            receipt
-                .reconnect
-                .push(format!("accounts:{}", account.source_id));
-        }
-    }
-    receipt.accounts = accounts;
-    Ok(())
 }
 
 fn import_mail(
@@ -1076,7 +975,6 @@ user_pref("mail.identity.id1.fullName", "Personal");
             browser: &browser,
             applications: false,
             accounts: false,
-            account_sources: &[],
             accounts_in_package: false,
             browser_in_package: false,
         })
@@ -1198,7 +1096,6 @@ user_pref("mail.identity.id1.fullName", "Personal");
                 browser: &SelectedSources::default(),
                 applications: false,
                 accounts: false,
-                account_sources: &[],
                 accounts_in_package: false,
                 browser_in_package: true,
             })
@@ -1224,97 +1121,11 @@ user_pref("mail.identity.id1.fullName", "Personal");
                 browser: &browser,
                 applications: false,
                 accounts: false,
-                account_sources: &[],
                 accounts_in_package: false,
                 browser_in_package: true,
             })
             .expect_err("a profile cannot be both in the package and the journal");
             assert!(duplicate.to_string().contains("both in the package"));
-        }
-
-        phase only_the_selected_goa_account_and_its_services_cross_the_private_journal;
-        {
-            let fixture = tempfile::tempdir().unwrap();
-            let home = fixture.path().join("source");
-            source_dir(&home);
-            write(
-                &home.join(".config/goa-1.0/accounts.conf"),
-                "[Account account_1]\nProvider=google\nIdentity=person@example.test\nPresentationIdentity=person@example.test\nFilesEnabled=true\nMailEnabled=true\nCalendarEnabled=false\nContactsEnabled=false\n[Account account_2]\nProvider=google\nIdentity=other@example.test\nPresentationIdentity=other@example.test\nFilesEnabled=true\nMailEnabled=true\nCalendarEnabled=false\nContactsEnabled=false\n",
-            );
-            let mut plan = migration_handoff::capture_fixture(
-                &home,
-                &uuid::Uuid::new_v4().to_string(),
-                Categories {
-                    home: true,
-                    flatpak: false,
-                    accounts: true,
-                },
-            )
-            .unwrap();
-            plan.home_policy = HomePolicy::Copy;
-            plan.home_exclusions = Vec::new();
-            plan.set_fixture_original_uid(ORIGINAL_UID);
-            plan.validate().unwrap();
-            let inventory = account_sources::discover(&SourceRoots {
-                home: home.clone(),
-                config: home.join(".config"),
-            });
-            let selected: Vec<_> = inventory
-                .candidates
-                .iter()
-                .filter(|candidate| candidate.identity.as_deref() == Some("person@example.test"))
-                .filter_map(SelectedAccount::from_candidate)
-                .collect();
-            assert_eq!(selected.len(), 1);
-            let prepared = prepare(&Prepare {
-                source_home: &home,
-                plan: &plan,
-                exclusions: &plan.home_exclusions,
-                mail: &[],
-                browser: &SelectedSources::default(),
-                applications: false,
-                accounts: true,
-                account_sources: &selected,
-                accounts_in_package: false,
-                browser_in_package: false,
-            })
-            .unwrap();
-            plan.attach_deferred_handoff(prepared.binding).unwrap();
-            let journal = Journal::open(&home, &plan).unwrap();
-            assert_eq!(journal.selected_accounts(), selected.as_slice());
-            let target = tempfile::tempdir().unwrap();
-            let workspace = tempfile::tempdir().unwrap();
-            let receipt = import_selected_from_source(
-                &plan,
-                &home,
-                target.path(),
-                workspace.path(),
-                [7; 32],
-                &AtomicBool::new(false),
-            )
-            .unwrap();
-            assert_eq!(receipt.accounts.len(), 1);
-            assert_eq!(
-                receipt.accounts[0].services,
-                vec![account_sources::Service::Mail]
-            );
-            assert!(receipt.accounts[0].pending);
-            let serialized = serde_json::to_string(&receipt).unwrap();
-            assert!(!serialized.contains("person@example.test"));
-            assert!(!serialized.contains("other@example.test"));
-            assert!(!serialized.contains(&home.to_string_lossy().to_string()));
-            let store = accounts::AccountStore::load_in(&target.path().join(".config/tilo"));
-            assert!(store.all().iter().any(|account| {
-                account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
-                    && account.config["email"] == "person@example.test"
-            }));
-            assert!(store.all().iter().all(|account| {
-                account
-                    .config
-                    .get("email")
-                    .and_then(serde_json::Value::as_str)
-                    != Some("other@example.test")
-            }));
         }
 
         phase changed_plan_journal_or_source_root_is_refused;

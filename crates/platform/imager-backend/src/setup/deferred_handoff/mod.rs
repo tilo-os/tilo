@@ -18,8 +18,8 @@ use super::{
     migration_handoff::{DeferredHandoff, Plan},
     migration_store::NativePath,
 };
-pub use crate::account_sources::SelectedAccount;
-use crate::{account_sources::ReviewedThunderbird, browser_selection::SelectedSources};
+use crate::account_sources::ReviewedThunderbird;
+use crate::browser_selection::SelectedSources;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,11 +37,8 @@ pub struct Prepare<'a> {
     pub browser: &'a SelectedSources,
     pub applications: bool,
     pub accounts: bool,
-    /// The exact GOA accounts selected on the account pages; their identities and enabled services
-    /// stay in the private source journal, and the public plan carries only its digest.
-    pub account_sources: &'a [SelectedAccount],
-    /// The TPM-protected package already carries the selected sign-ins, so the journal must not create
-    /// a second pending account row for them.
+    /// The TPM-protected package already carries the selected sign-ins, so the journal does not ask
+    /// for their credentials again.
     pub accounts_in_package: bool,
     /// The TPM-protected package already carries the selected browser profiles, so the journal must
     /// not import the same bookmarks or history again.

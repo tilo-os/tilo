@@ -11,8 +11,8 @@ Implemented Linux sources:
 
 - Existing local Tilo connections for supported cloud providers and Spotify.
   Discovery reads reviewed account metadata only; credentials stay private.
-- GNOME Online Accounts: configured Google, Microsoft, Nextcloud and WebDAV
-  accounts and presentation identities.
+- GNOME Online Accounts: configured Nextcloud and WebDAV accounts and
+  presentation identities.
 - Nextcloud desktop: multiple configured servers and login names.
 - rclone: Drive, OneDrive, Dropbox, Nextcloud and generic WebDAV remotes.
 - Native and Flatpak Slack, Discord, Spotify, Firefox, Chromium and Chrome
@@ -147,18 +147,13 @@ starts the private exchange worker. `status` yields only running/completed/faile
 receipts and account IDs. Uncompleted authorization handles may be cancelled;
 credential writes are not represented as cancellable once started.
 
-A same-computer handoff does not put GOA tokens or vault bytes on media. Its
-private source journal carries the exact selected GOA identities and the
-services the source enabled; after first boot discovery is repeated under the
-retained UID 1000 Home and only that selection is revalidated. The destination
-then creates canonical pending Files, Mail, Calendar and Contacts metadata for
-the selected services. A destination mailbox that already exists is reused
-without replacing its configuration or credential, so the same identity from
-GOA and Thunderbird does not create two mail accounts or overwrite a working
-sign-in. Offline means a pending row and an individual reconnect, never a
-failed import. Existing destination credentials that the destination already
-holds are left untouched; a source grant is never adopted as root or as proof
-that Mail or Calendar has the corresponding scope.
+A same-computer handoff keeps its private source journal and selections in the
+retained UID 1000 Home; after first boot discovery is repeated under that Home
+and only the saved selection is revalidated. Selected Thunderbird mail is
+streamed from the retained source, and a destination mailbox that already
+exists is reused without replacing its configuration or credential, so the
+same identity from two sources does not create two mail accounts or overwrite a
+working sign-in. Offline means an individual reconnect, never a failed import.
 
 Selected Thunderbird address books and calendars are retained byte for byte and
 also parsed into canonical vCard/iCalendar. Contacts and Calendar read that

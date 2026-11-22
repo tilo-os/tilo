@@ -7,8 +7,6 @@ mod connect;
 pub(crate) mod dav_readiness;
 mod discovery;
 #[cfg(target_os = "linux")]
-pub mod goa_pending;
-#[cfg(target_os = "linux")]
 mod nextcloud_source;
 mod portable;
 pub mod spotify_identity;
@@ -24,8 +22,6 @@ pub use actions::{
 pub use connect::{ConnectionError, Connector};
 pub use discovery::discover_home_profiles;
 pub use discovery::{Candidate, Inventory, Origin, Provider, SourceRoots, discover};
-#[cfg(target_os = "linux")]
-pub use goa_pending::{AccountImportReceipt, import_selected as import_selected_goa};
 pub use portable::{PasswordSealedAccounts, SealedAccounts, inspect_prepared_consumer};
 pub use thunderbird_source::{
     MAX_ARTIFACT_BYTES, PasswordSealedThunderbird, ThunderbirdAccountReceipt,

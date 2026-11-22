@@ -870,7 +870,6 @@ user_pref("mail.identity.id1.fullName", "Personal");
         browser: &SelectedSources::default(),
         applications: false,
         accounts: false,
-        account_sources: &[],
         accounts_in_package: false,
         browser_in_package: false,
     })

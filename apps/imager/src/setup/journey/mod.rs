@@ -3886,15 +3886,11 @@ impl InstallerPreview {
             return false;
         }
         if self.journey.categories[2]
-            && (!self
-                .accounts
-                .selected_source_accounts(&self.belongings.accounts)
-                .is_empty()
-                || self
-                    .belongings
-                    .sessions
-                    .selected_for_accounts(true)
-                    .is_some())
+            && self
+                .belongings
+                .sessions
+                .selected_for_accounts(true)
+                .is_some()
         {
             return true;
         }

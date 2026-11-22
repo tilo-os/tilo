@@ -226,7 +226,7 @@ tilo_test_env::scenario! {
         std::fs::create_dir_all(config.join("goa-1.0")).unwrap();
         std::fs::create_dir_all(config.join("Nextcloud")).unwrap();
         std::fs::create_dir_all(config.join("rclone")).unwrap();
-        std::fs::write(config.join("goa-1.0/accounts.conf"), "[Account first]\nProvider=google\nPresentationIdentity=ada@gmail.example\npassword=DO_NOT_LEAK\n[Account second]\nProvider=ms_graph\nPresentationIdentity=work@example.test\n").unwrap();
+        std::fs::write(config.join("goa-1.0/accounts.conf"), "[Account first]\nProvider=webdav\nPresentationIdentity=ada@gmail.example\nUri=https://files.example.test/dav/\npassword=DO_NOT_LEAK\n[Account second]\nProvider=webdav\nPresentationIdentity=work@example.test\nUri=https://work.example.test/dav/\n").unwrap();
         std::fs::write(config.join("Nextcloud/nextcloud.cfg"), "[Accounts]\n0\\url=https://cloud.example.test/base\n0\\webflow_user=ada\n0\\password=DO_NOT_LEAK\n1\\url=https://ada:DO_NOT_LEAK@bad.example\n1\\user=ada\n").unwrap();
         std::fs::write(config.join("rclone/rclone.conf"), "[Team files]\ntype=webdav\nvendor=nextcloud\nurl=https://team.example.test/\nuser=ada\npass=DO_NOT_LEAK\n").unwrap();
         std::fs::create_dir_all(config.join("Slack/Local Storage/leveldb")).unwrap();
