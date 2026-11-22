@@ -487,10 +487,12 @@ def started(entry: str) -> tuple[str, str, tuple[str, ...]]:
 
     tools/build-sibling-binaries.sh names one `package:bin`, or `package:bin=package/feature`;
     t.toml's `starts` names it as t reads it, `package:name`, `package:kind:name`, either with
-    `=feature,feature`. One artifact, whichever way a line spells it.
+    `@profile` (the cargo profile it is built with, in an invocation of its own) and either with
+    `=feature,feature`. One artifact, whichever way a line spells it: the profile says how it is
+    built, and the tests are handed it under the same name.
     """
     target, _, features = entry.partition("=")
-    fields = target.split(":")
+    fields = target.partition("@")[0].split(":")
     named = {feature.partition("/")[2] or feature for feature in features.split(",") if feature}
     return fields[0], fields[-1], tuple(sorted(named))
 
