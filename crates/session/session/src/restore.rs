@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use crate::platform::surfaces::ShellDesktop;
 use tilo_actions::ApiError;
 use tilo_app_launch::Launch;
-use tilo_desktop_model::{Layout, TabId, TileContent, WorkspaceId};
+use tilo_desktop_model::{Layout, TabId, TileContent, Workspace, WorkspaceId};
 
 use crate::apps::{self, Apps};
 use crate::i18n::t_args;
@@ -93,6 +93,12 @@ pub(crate) struct Restore {
     /// A saved tab waited since the last pass for the Windows compatibility service to read what
     /// it can open: another pass is due at once rather than on the next frame.
     service_pending: bool,
+    /// The saved tabs this restore asked a window for: a window that came into one of them is the
+    /// restore's own doing, not one the person opened beside a saved tab.
+    opened: Vec<TabId>,
+    /// The windows already standing for a saved tab this restore closed, because the person had
+    /// opened the app after the restart: the app's other saved windows are still asked for.
+    spoken_for: Vec<TabId>,
 }
 
 /// How a saved window's app starts again: a Tilo package or a machine application, or the
@@ -121,8 +127,11 @@ struct Saved {
 }
 
 /// The app asked for a saved tab, and when.
+#[derive(Clone)]
 struct Opening {
     tab: TabId,
+    /// The app the tab waits for, as its windows announce themselves.
+    app: String,
     name: String,
     asked: Instant,
 }
@@ -305,20 +314,8 @@ impl Restore {
             return;
         }
         loop {
-            if let Some(opening) = &self.opening {
-                let waiting = desktop.with_policy(|policy| policy.waits_for_window(opening.tab));
-                if waiting && opening.asked.elapsed() < OPEN_DEADLINE {
-                    return;
-                }
-                if waiting {
-                    tracing::warn!(
-                        app = %opening.name,
-                        "a window this device left open did not come"
-                    );
-                    let note = did_not_open(&opening.name);
-                    desktop.with_policy(|policy| policy.note_in_tab(opening.tab, &note));
-                }
-                self.opening = None;
+            if self.waits_for_opening(desktop) {
+                return;
             }
             let Some(saved) = self.waiting.pop_front() else {
                 return;
@@ -350,10 +347,46 @@ impl Restore {
             if self.take_over_launch(desktop, apps, &saved) {
                 return;
             }
+            // The person opened the app after the restart, and its window stands here already.
+            if self.close_beside_a_window(desktop, &saved) {
+                continue;
+            }
             if self.open(desktop, apps, saved) {
                 return;
             }
         }
+    }
+
+    /// Take up the window the restore asked for, once it is due. Whether the tab it was asked
+    /// into still waits for its window: until the deadline, or when the window came. Past the
+    /// deadline the tab takes the app's place, or goes when a window of the app the person opened
+    /// stands elsewhere in the workspace.
+    fn waits_for_opening(&mut self, desktop: &ShellDesktop) -> bool {
+        let Some(opening) = self.opening.clone() else {
+            return false;
+        };
+        let waiting = desktop.with_policy(|policy| policy.waits_for_window(opening.tab));
+        if waiting && opening.asked.elapsed() < OPEN_DEADLINE {
+            return true;
+        }
+        self.opening = None;
+        if waiting {
+            // The app opened a window of its own while this tab waited, as it raises the one it
+            // has instead of opening another: the tab is the old place of a window the person
+            // sees, not one whose app opened nothing.
+            if let Some(shown) = self.opened_by_person(desktop, opening.tab, &opening.app) {
+                self.spoken_for.push(shown);
+                desktop.with_policy(|policy| policy.release_tab(opening.tab));
+            } else {
+                tracing::warn!(
+                    app = %opening.name,
+                    "a window this device left open did not come"
+                );
+                let note = did_not_open(&opening.name);
+                desktop.with_policy(|policy| policy.note_in_tab(opening.tab, &note));
+            }
+        }
+        false
     }
 
     /// The window a launch of `saved`'s app started takes the tab its window was left in, rather
@@ -383,11 +416,59 @@ impl Restore {
         // The tab the person left the window in takes the window: the launch's own place, when it
         // had one, is given up before it, so the window lands here and nowhere else.
         desktop.with_policy(|policy| policy.adopt(&saved.app, saved.tab, None));
+        self.opened.push(saved.tab);
         self.opening = Some(Opening {
             tab: saved.tab,
+            app: saved.app.clone(),
             name: saved.name.clone(),
             asked: Instant::now(),
         });
+        true
+    }
+
+    /// A window of `app` the person opened stands in `tab`'s workspace already, and this restore
+    /// did not ask for it: the place the app took when it was opened after the restart, before
+    /// the restore asked for the window the person left. A saved tab beside it would never be
+    /// filled — the app shows a window, so a launch of it raises that one — and would end saying
+    /// the app opened nothing. `None` when every window of the app here is one this restore opened
+    /// (the other saved windows are still asked for) or one already standing for another saved tab,
+    /// and for a place another device minted: this device opens its own instance of that window
+    /// beside whatever it shows here.
+    fn opened_by_person(&self, desktop: &ShellDesktop, tab: TabId, app: &str) -> Option<TabId> {
+        let workspace = workspace_holding(desktop, tab, Workspace::id)?;
+        desktop.with_policy(|policy| {
+            policy.handle().read(|tree| {
+                if tilo_desktop_model::peer_salt_of(tab) != tree.salt {
+                    return None;
+                }
+                tree.workspaces
+                    .iter()
+                    .find(|held| held.id() == workspace)
+                    .into_iter()
+                    .flat_map(Workspace::tabs)
+                    .find(|shown| {
+                        shown.id != tab
+                            && !self.opened.contains(&shown.id)
+                            && !self.spoken_for.contains(&shown.id)
+                            && matches!(&shown.tile, TileContent::Foreign { app_id, .. }
+                                if tilo_desktop_model::apps::app_ids_match(app_id, app)
+                                    || tilo_desktop_model::apps::app_ids_match(app, app_id))
+                    })
+                    .map(|shown| shown.id)
+            })
+        })
+    }
+
+    /// Close `saved` when a window of its app the person opened after the restart stands in its
+    /// workspace: the saved tab is the old place of that window, and asking for the app again
+    /// would leave a second place the app never fills — it raises the window it has — which would
+    /// then say the app opened nothing. Whether the tab went.
+    fn close_beside_a_window(&mut self, desktop: &ShellDesktop, saved: &Saved) -> bool {
+        let Some(shown) = self.opened_by_person(desktop, saved.tab, &saved.app) else {
+            return false;
+        };
+        self.spoken_for.push(shown);
+        desktop.with_policy(|policy| policy.release_tab(saved.tab));
         true
     }
 
@@ -717,8 +798,10 @@ impl Restore {
         };
         match started {
             Ok(()) => {
+                self.opened.push(saved.tab);
                 self.opening = Some(Opening {
                     tab: saved.tab,
+                    app: saved.app,
                     name: saved.name,
                     asked: Instant::now(),
                 });
@@ -1181,6 +1264,13 @@ mod tests {
     fn each_kept_window_claims_its_own_saved_tab_and_a_closed_ones_tab_goes() {
         let mut tree = kept_layout();
         let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
+        desktop.with_widgets(|widgets| {
+            widgets.set_placement(tilo_session_core::surface::Placement {
+                origin: (0, 0),
+                size: (1200, 800),
+                scale: 1.0,
+            });
+        });
         let mut restore = Restore::default();
         restore.begin();
         assert!(restore.start(&Layout::default(), &mut tree));
@@ -1234,6 +1324,13 @@ mod tests {
         let mut tree = layout(vec![window(44, unnamed), window(43, notes())]);
         tree.active = tree.workspaces[0].id();
         let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
+        desktop.with_widgets(|widgets| {
+            widgets.set_placement(tilo_session_core::surface::Placement {
+                origin: (0, 0),
+                size: (1200, 800),
+                scale: 1.0,
+            });
+        });
         let mut restore = Restore::default();
         restore.begin();
         assert!(restore.start(&Layout::default(), &mut tree));
@@ -1273,6 +1370,13 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn kept_windows_that_answer_before_the_layout_wait_for_it_and_take_their_tabs() {
         let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
+        desktop.with_widgets(|widgets| {
+            widgets.set_placement(tilo_session_core::surface::Placement {
+                origin: (0, 0),
+                size: (1200, 800),
+                scale: 1.0,
+            });
+        });
         let mut restore = Restore::default();
         restore.begin();
         restore.kept = vec![kept(&[("w1", Some("41")), ("w2", Some("42"))])];
@@ -1408,6 +1512,125 @@ mod tests {
             tabs(&desktop),
             [42],
             "the setup's tab goes, the program's stays"
+        );
+    }
+
+    /// The Terminal app whose saved window the person opens again.
+    #[cfg(target_os = "linux")]
+    const TERMINAL: &str = "so.tilo.terminal";
+
+    /// `tree` with a saved Terminal window, the restore started on it with that window waiting,
+    /// and the desktop showing it.
+    #[cfg(target_os = "linux")]
+    fn saved_terminal() -> (crate::platform::surfaces::ShellDesktop, Restore) {
+        let tab = tilo_desktop_model::compose_id(7, 41);
+        let saved = window(tab, saved_terminal_tile());
+        let mut tree = layout(vec![saved]);
+        tree.active = tree.workspaces[0].id();
+        let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
+        desktop.with_widgets(|widgets| {
+            widgets.set_placement(tilo_session_core::surface::Placement {
+                origin: (0, 0),
+                size: (1200, 800),
+                scale: 1.0,
+            });
+        });
+        let mut restore = Restore::default();
+        restore.begin();
+        assert!(restore.start(&Layout::default(), &mut tree));
+        desktop.with_policy(|policy| policy.handle().replace_tree(tree));
+        assert_eq!(
+            restore
+                .waiting
+                .iter()
+                .map(|saved| saved.tab)
+                .collect::<Vec<_>>(),
+            [tab],
+            "the saved window waits for its app"
+        );
+        (desktop, restore)
+    }
+
+    /// The app's window as the person's own open mapped it: a tab of its own beside the saved
+    /// one, holding no note.
+    #[cfg(target_os = "linux")]
+    fn opened_terminal(desktop: &crate::platform::surfaces::ShellDesktop) -> u64 {
+        desktop.with_policy(|policy| {
+            policy
+                .map(tilo_desktop_policy::Window {
+                    id: 9,
+                    app_id: Some(TERMINAL.into()),
+                    pid: Some(900),
+                    ..tilo_desktop_policy::Window::default()
+                })
+                .expect("mapped");
+        });
+        desktop.with_widgets(crate::platform::surfaces::WidgetSurface::relayout);
+        desktop
+            .with_policy(|policy| policy.tab_of(9))
+            .expect("the window has a tab")
+    }
+
+    /// A Terminal tab saved when the desktop went away, its app not yet asked for.
+    #[cfg(target_os = "linux")]
+    fn saved_terminal_tile() -> TileContent {
+        TileContent::LocalApp {
+            app_id: TERMINAL.into(),
+            label: "Terminal".into(),
+            note: String::new(),
+        }
+    }
+
+    /// The person opened Terminal after the restart, and its window took a tab of its own: the
+    /// saved tab is the old place of that window, so the restore closes it instead of asking the
+    /// app for a second window that never comes.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_saved_tab_beside_the_window_the_person_opened_asks_for_nothing() {
+        let (desktop, mut restore) = saved_terminal();
+        let shown = opened_terminal(&desktop);
+        let apps = crate::apps::Apps::with_launcher(
+            tilo_app_launch::SessionEnvironment::default(),
+            None,
+            None,
+        );
+        restore.follow(&desktop, Some(&apps), &|_| None);
+        assert_eq!(
+            tabs(&desktop),
+            [shown],
+            "the app's window alone: no place waits beside it"
+        );
+        assert_eq!(restore.waiting.len(), 0, "the saved tab is settled");
+    }
+
+    /// The restore asked for the saved window, and the app answered by raising the window the
+    /// person opened: no window comes into the saved tab, which goes rather than telling the
+    /// person the app opened nothing while its window stands beside the tab.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_saved_tab_whose_app_opened_elsewhere_does_not_say_it_did_not_open() {
+        let (desktop, mut restore) = saved_terminal();
+        let shown = opened_terminal(&desktop);
+        let tab = tilo_desktop_model::compose_id(7, 41);
+        restore.opened = vec![tab];
+        restore.opening = Some(super::Opening {
+            tab,
+            app: TERMINAL.into(),
+            name: "Terminal".into(),
+            asked: std::time::Instant::now()
+                .checked_sub(super::OPEN_DEADLINE)
+                .expect("the clock reads past the deadline"),
+        });
+        let apps = crate::apps::Apps::with_launcher(
+            tilo_app_launch::SessionEnvironment::default(),
+            None,
+            None,
+        );
+        restore.follow(&desktop, Some(&apps), &|_| None);
+        assert_eq!(
+            tabs(&desktop),
+            [shown],
+            "no tab is left saying the app opened nothing"
         );
     }
 }
