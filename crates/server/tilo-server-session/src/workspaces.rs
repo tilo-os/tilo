@@ -102,31 +102,6 @@ pub async fn enter_invitation(
     Ok(tilo_workspace_join::encode_invitation_text(&signed))
 }
 
-/// Ask `client`'s host, a device that holds its person's workspace, to take
-/// this device in, as dialled at `endpoint`: [`TAKE_IN_PERSON`]'s ask. The
-/// device holds the workspace from then on.
-///
-/// # Errors
-///
-/// The host did not answer, holds no such workspace, or refused.
-pub async fn take_into_person_workspace(
-    client: &ServerClient,
-    endpoint: &iroh_base::EndpointAddr,
-) -> Result<(), String> {
-    let endpoint = serde_json::to_string(endpoint).map_err(|error| error.to_string())?;
-    let arguments = serde_json::Map::from_iter([("endpoint".to_owned(), endpoint.into())]);
-    match ask_host(client, host_invoke(TAKE_IN_PERSON, arguments)).await? {
-        ReceiptStatus::Completed { .. } => Ok(()),
-        ReceiptStatus::Rejected { error } => {
-            Err(format!("the device refused to take this in: {error}"))
-        }
-        ReceiptStatus::Failed { error } => Err(error.message),
-        ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
-            Err("the device did not answer".into())
-        }
-    }
-}
-
 /// The host operation `action` with `arguments`, under a new invocation.
 fn host_invoke(
     action: &str,
@@ -301,12 +276,6 @@ pub const PERSONAL_DEVICE_NAME: &str = "workspace.personal.name";
 /// ([`PersonalWorkspace::enter_at`]): where a device of the person's that
 /// does not hold it yet asks to be taken in.
 pub const LIST_PERSONAL: &str = "workspace.personal";
-/// The action that takes the asking device, another of the host's person's,
-/// into the person's workspace, which the host holds
-/// ([`tilo_server_protocol::servers::Introducer`] names such a host), with
-/// the device's own address (`{endpoint}`, its `EndpointAddr` as JSON).
-/// Answers `{"workspace": id}`; the device holds the workspace from then on.
-pub const TAKE_IN_PERSON: &str = "person.take-in";
 /// The most workspaces a kept list names.
 pub const MAX_PERSONAL_WORKSPACES: usize = 4096;
 /// The most devices a person's record keeps.

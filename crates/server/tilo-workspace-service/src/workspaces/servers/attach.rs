@@ -63,8 +63,7 @@ impl Attached {
 /// The document could not be read or written, or a workspace's keeping
 /// devices could not be changed.
 pub async fn attach_named(workspaces: &Workspaces) -> Result<Attached, String> {
-    // A device that holds no Servers workspace yet names nobody in it, and
-    // asks a holder to take it in rather than read it.
+    // A device that has no Servers workspace yet names nobody in it.
     if !super::holds_person_workspace(workspaces).await {
         return Ok(Attached::default());
     }

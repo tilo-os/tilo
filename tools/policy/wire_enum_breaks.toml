@@ -591,11 +591,6 @@ enum = "FsRequest"
 reason = "the app's half of the same file calls: runtime interface 34, same build at both ends, never stored"
 
 [[break]]
-file = "crates/server/tilo-server-protocol/src/transport.rs"
-enum = "HomePeerManagementRequest"
-reason = "a request a device sends a server of the same person's and the server answers at once, never kept; every device and server update together, so no build reads another's numbering"
-
-[[break]]
 file = "crates/session/core/src/layout/mod.rs"
 enum = "LayoutAction"
 reason = "tagged by name, not position: the remaining actions read as before, and an action written with the removed name was refused already and now fails to read"

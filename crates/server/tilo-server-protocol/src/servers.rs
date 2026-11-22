@@ -37,14 +37,9 @@ pub fn person_workspace_id(person: &[u8; 32]) -> String {
         .to_string()
 }
 
-/// The device a device of the person asks to take it into the person's
-/// workspace: one that holds the workspace, as the device that approved the
-/// asking one knew it. The person's first device has none, and founds the
-/// workspace itself.
-///
-/// The asking device calls the `person.take-in` action of the device named
-/// here with its own endpoint, holds the workspace from then on, and lets the
-/// introducer go once it does.
+/// The device of the person that approved another, as an enrollment's answer
+/// names it: its certificate and where it is dialled. The person's first
+/// device has none.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Introducer {
     /// The certificate of the device that holds the workspace, which the
@@ -59,32 +54,6 @@ pub struct Introducer {
 #[must_use]
 pub fn introducer_path(identity_root: &std::path::Path) -> std::path::PathBuf {
     identity_root.join("peers").join("introducer.json")
-}
-
-/// Largest introducer file read.
-const INTRODUCER_FILE_LIMIT: usize = 64 * 1024;
-
-/// The introducer this device keeps below `identity_root`, if it keeps one: a
-/// device of `person` whose certificate verifies.
-///
-/// # Errors
-/// The file cannot be read, is larger than 64 KiB, or names no device of
-/// `person`'s.
-pub fn read_introducer(
-    identity_root: &std::path::Path,
-    person: &[u8; 32],
-) -> std::io::Result<Option<Introducer>> {
-    let invalid = |message: String| std::io::Error::new(std::io::ErrorKind::InvalidData, message);
-    let bytes = match std::fs::read(introducer_path(identity_root)) {
-        Ok(bytes) if bytes.len() <= INTRODUCER_FILE_LIMIT => bytes,
-        Ok(_) => return Err(invalid("the introducer exceeds 64 KiB".into())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let introducer: Introducer = serde_json::from_slice(&bytes)
-        .map_err(|error| invalid(format!("the introducer is not one: {error}")))?;
-    introducer.checked(person).map_err(invalid)?;
-    Ok(Some(introducer))
 }
 
 /// Keep `introducer` below `identity_root`, or let the one kept there go

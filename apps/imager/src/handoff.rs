@@ -746,14 +746,6 @@ mod tests {
         assert_eq!(cert.device_label, "orange-pi");
         assert!(!installed.join("var/lib/tilo/enrollment-commits").exists());
         assert!(!installed.join("var/lib/tilo/enrollment-staging").exists());
-        // The image asks the setup machine into the person's workspace.
-        let introducer = tilo_server_protocol::servers::read_introducer(
-            &installed.join("var/lib/tilo"),
-            &local_cert.user_public_key,
-        )
-        .unwrap()
-        .expect("the image keeps the setup machine as its introducer");
-        assert_eq!(introducer.device, local_cert);
         let direct: Vec<String> = serde_json::from_slice(
             &fs::read(tilo_server_protocol::personal_device_peer_path(
                 &installed.join("var/lib/tilo"),

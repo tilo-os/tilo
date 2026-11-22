@@ -34,21 +34,6 @@ pub const SIBLING_ALPN: &[u8] = b"tilo-server-sibling/1";
 /// Authenticated one-shot discovery of direct filesystem endpoints.
 pub const DISCOVERY_ALPN: &[u8] = b"tilo-server-discovery/2";
 
-/// The protocol a person's device asks one of their servers to take it in
-/// on: into their Servers workspace, or among their servers.
-pub const MANAGEMENT_ALPN: &[u8] = b"tilo-home-peer-management/1";
-
-/// Bounded owner operation for an enrolled home peer.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum HomePeerManagementRequest {
-    /// Take the asking server, a later server of the same person, in among
-    /// their servers: it is entered in their admin workspace and handed it.
-    AdmitServer {
-        /// Where the asking server is dialled.
-        endpoint: iroh_base::EndpointAddr,
-    },
-}
-
 /// One thing the person who owns a server asks it to do from another of their
 /// devices. Each is an action on their Servers workspace, which the server the
 /// entry names carries out and answers in that entry.
@@ -292,13 +277,6 @@ pub struct OperationEntry {
     pub summary: String,
     /// Whether it was carried out.
     pub done: bool,
-}
-
-/// A server's answer on [`MANAGEMENT_ALPN`]: it did what was asked.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HomePeerManagementResponse {
-    /// The server's device key.
-    pub device_public_key: [u8; 32],
 }
 
 /// A client must name the server workspace it is resolving. The host never exposes
@@ -1183,7 +1161,6 @@ mod tests {
         {
             assert_eq!(ALPN, b"tilo-server/1");
             assert_eq!(DISCOVERY_ALPN, b"tilo-server-discovery/2");
-            assert_eq!(MANAGEMENT_ALPN, b"tilo-home-peer-management/1");
         }
     }
 }

@@ -13,9 +13,10 @@
 //! reached it starts from the same genesis ([`genesis`]), so two first writes
 //! merge into one resource rather than competing for its root.
 //!
-//! The device that makes a person's root founds the workspace ([`found`]); any
-//! later device of theirs is taken in by one that holds it (the `person.take-in`
-//! host action).
+//! The device that makes a person's root founds the workspace ([`found`]). Its
+//! one member is the person, so it admits every later device their root
+//! certified as every workspace admits a member's devices: the device proves
+//! it is the person's where the workspace is kept, and keeps it from then on.
 
 use tilo_resource::{Invoke, Replica, Resource};
 use tilo_server_protocol::servers::person_workspace_id;
@@ -46,8 +47,8 @@ pub async fn holds_person_workspace(workspaces: &Workspaces) -> bool {
 
 /// Found this device's person's workspace here, unless this device holds it
 /// already, and answer its id. Only one device founds it: one whose person's
-/// list says another device of theirs keeps it is taken in by a device that
-/// holds it instead.
+/// list says another device of theirs keeps it opens it there as a member
+/// instead.
 ///
 /// # Errors
 /// Another device of the person keeps the workspace, or it could not be made.
@@ -63,7 +64,7 @@ pub async fn found(workspaces: &Workspaces) -> Result<String, String> {
 }
 
 /// Whether this device may found `person`'s workspace: not when their list
-/// says another of their devices keeps it, which takes this one in.
+/// says another of their devices keeps it, where this one opens it.
 ///
 /// # Errors
 /// Another device of the person keeps the workspace.

@@ -27,12 +27,12 @@
 //! ([`person_workspace_id`]), so each of their devices finds the same one
 //! without being told. One device founds it, as any workspace is founded, when
 //! it is first needed ([`founded`]): the first machine planned, or the first
-//! server taken in. That device is its founder, and every other device joins
-//! it: a later server asks an earlier one to take it in ([`admit`]), which
-//! enters it in the document, and the holders then hand it the workspace as
-//! they hand it every server the document names. A device that does not
-//! hold it asks a holder to take it in ([`take_in`]) and holds it like any
-//! other workspace of the person's from then on. A device that founds it again
+//! server entered. That device is its founder. Its one member is the person,
+//! so it admits every device their root certified, as every workspace admits a
+//! member's devices, with no server asked to let it in. A server is entered in
+//! the document when the ticket it came in with is approved ([`admit`]), and
+//! the devices that have the workspace then hand it the workspace as they hand
+//! it every server the document names. A device that founds it again
 //! anyway (one restored from the recovery words, say, before it heard of the
 //! first) founds another history under the same id, which every host of the
 //! first refuses: it replaces none of the person's servers. Once it holds the
@@ -1229,11 +1229,10 @@ pub async fn enroll(
     enter(workspaces, &cert, endpoint).await
 }
 
-/// Take the server `server`, dialled at `endpoint`, in among this device's
-/// person's servers, as it asks when it starts without the Servers workspace:
-/// it is entered in the document, and the workspace's holders then hand it the
-/// workspace as they hand it every server the document names.
-/// A retired server stays retired.
+/// Enter the server `server`, dialled at `endpoint`, among this device's
+/// person's servers: the devices that have the Servers workspace then hand it
+/// the workspace as they hand it every server the document names. A retired
+/// server stays retired.
 ///
 /// # Errors
 /// `server` is not a device of this device's person that may hold workspaces,
@@ -1255,10 +1254,9 @@ pub async fn admit(
 }
 
 /// Hand the device `device`, another of this device's person's devices, the
-/// Servers workspace: it holds that workspace from then on as the servers do,
-/// as it asks when it starts without it ([`take_in`]'s caller, the device
-/// itself). A device that holds it already is handed it afresh, which is how
-/// its address is brought up to date.
+/// Servers workspace to keep as the servers do, dialled at `endpoint`. A device
+/// that keeps it already is handed it afresh, which is how its address is
+/// brought up to date.
 ///
 /// # Errors
 /// `device` is not a device of this device's person, this device holds no Servers

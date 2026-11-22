@@ -24,15 +24,9 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::auth::AuthenticatedPeer;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::auth::{self, Hello, HelloAck};
+use crate::transport::ALPN;
 use crate::transport::Envelope;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::transport::{
-    ALPN, HomePeerManagementRequest, HomePeerManagementResponse, MANAGEMENT_ALPN, MAX_FRAME_BYTES,
-};
 use collab_types::WorkspaceId;
-#[cfg(not(target_arch = "wasm32"))]
-use tilo_server_client::frame::{read_frame, write_frame};
 
 mod handshake;
 
@@ -454,68 +448,6 @@ async fn dial(
 }
 
 impl ServerClient {
-    /// Execute an owner-authorized lifecycle operation against a pinned home
-    /// peer. The mutual handshake proves both enrolled device certificates.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn manage_home_peer(
-        endpoint: &Endpoint,
-        server_addr: EndpointAddr,
-        expected_server_user: [u8; 32],
-        expected_server_device: [u8; 32],
-        own_cert: DeviceCert,
-        own_sk: impl DeviceSigner,
-        revocations: RevocationList,
-        request: HomePeerManagementRequest,
-    ) -> Result<HomePeerManagementResponse, ClientError> {
-        let conn = endpoint
-            .connect(server_addr, MANAGEMENT_ALPN)
-            .await
-            .map_err(|error| classify_connect_error(&error))?;
-        let (mut send, mut recv) = conn
-            .open_bi()
-            .await
-            .map_err(|error| ClientError::Transport(error.to_string()))?;
-        let mut nonce = [0; 32];
-        {
-            use rand::Rng;
-            rand::rng().fill_bytes(&mut nonce);
-        }
-        write_frame(
-            &mut send,
-            &postcard::to_allocvec(&Hello::new(own_cert, nonce))
-                .map_err(|error| ClientError::Codec(error.to_string()))?,
-        )
-        .await?;
-        let ack: HelloAck = handshake_frame(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)?;
-        auth::verify_hello_ack(
-            &ack,
-            &expected_server_user,
-            &revocations,
-            tilo_clock::unix_now_ns(),
-            &nonce,
-        )?;
-        if ack.cert.device_public_key != expected_server_device {
-            return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
-        }
-        let ack2 = tilo_server_client::signer::signed_ack2(&own_sk, &ack.server_nonce)
-            .await
-            .map_err(ClientError::Sign)?;
-        write_frame(
-            &mut send,
-            &postcard::to_allocvec(&ack2).map_err(|error| ClientError::Codec(error.to_string()))?,
-        )
-        .await?;
-        write_frame(
-            &mut send,
-            &postcard::to_allocvec(&request)
-                .map_err(|error| ClientError::Codec(error.to_string()))?,
-        )
-        .await?;
-        let response = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
-            .map_err(|error| ClientError::Codec(error.to_string()))?;
-        conn.close(0u32.into(), b"");
-        Ok(response)
-    }
     /// Dial `server_addr` on the server ALPN, run the auth
     /// handshake with `own_cert` + `own_sk`, and return a
     /// bidirectional session.
