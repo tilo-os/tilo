@@ -69,7 +69,6 @@ impl OnTheirServer {
                 revocations: tilo_user_identity::RevocationList::new(),
             },
             Some(Arc::new(crate::common::catalogue)),
-            None,
             Some(tilo_server::agents::host_shells(shells.path().join("shells")).unwrap()),
             None,
         )

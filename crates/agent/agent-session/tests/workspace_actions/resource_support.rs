@@ -170,4 +170,3 @@ pub(super) fn part_route(
         document: record.as_str().to_owned(),
     }
 }
-

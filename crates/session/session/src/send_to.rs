@@ -12,7 +12,7 @@
 //! The person's own send from a box opens where it landed: the message Chat answers with, through
 //! the layout's `open`, which brings the conversation forward where it stands.
 //! A box opened with the one place a report goes on it is the same send with that place on it: it
-//! is filed there as the channel's report ([`crate::feedback`]), one action of the person's own,
+//! is filed there as Chat's report ([`crate::feedback`]), one action of the person's own,
 //! and nothing opens over the window it is about.
 
 use std::cell::{Cell, RefCell};
@@ -324,7 +324,6 @@ impl Shared {
             let started = match refused {
                 Some(reason) => Err(reason),
                 None => self.send_to(
-                    sending.by.as_ref(),
                     (&workspace, number),
                     &sending.to,
                     &attached,
@@ -518,7 +517,6 @@ impl Shared {
     /// not).
     fn send_to(
         &self,
-        by: Option<&tilo_actions::ActionInvoker>,
         (workspace, number): (&str, u64),
         to: &[Recipient],
         attached: &[tilo_reference::Attached],
@@ -529,7 +527,8 @@ impl Shared {
         if text.is_empty() && attached.is_empty() {
             return Err("a message needs words or something to carry".into());
         }
-        let (workspace, targets, message) = match addressed(self.feedback.as_ref(), workspace, to)? {
+        let (workspace, targets, message) = match addressed(self.feedback.as_ref(), workspace, to)?
+        {
             Addressed::Message { workspace, to } => {
                 let resolved = self.recipients_of(&workspace, &to, &agent_name(attached))?;
                 let targets = send_targets(&workspace, &resolved, attached, text)?;
@@ -537,24 +536,11 @@ impl Shared {
             }
             // A report is read where it lands, not floated over the window it was written over: it
             // is filed in the channel and nothing opens.
-            Addressed::Report(destination) => {
-                // The app the report was sent from: what its picked things came from.
-                let from = by
-                    .and_then(|invoker: &tilo_actions::ActionInvoker| {
-                        invoker
-                            .acting
-                            .app
-                            .as_ref()
-                            .or_else(|| invoker.acting.by.app())
-                    })
-                    .map_or(CHAT, |app| app.as_str());
-                let report = destination.report(from, attached, text)?;
-                (
-                    destination.workspace.clone(),
-                    vec![report_target(&destination, &report)?],
-                    false,
-                )
-            }
+            Addressed::Report(destination) => (
+                destination.workspace.clone(),
+                vec![report_target(&destination, attached, text)?],
+                false,
+            ),
         };
         let sent = targets.len();
         for target in targets {
@@ -779,22 +765,25 @@ fn addressed(
     Ok(Addressed::Report(destination.clone()))
 }
 
-/// The one action a report is: the channel's `submit-feedback` in the workspace that keeps it,
-/// carrying the report as its review filed it — nothing else, and no window opening over the one
-/// reported.
+/// The one action a report is: Chat's `report` in the workspace that keeps reports, saying what
+/// the person wrote and referring to what the window picked, as any message does
+/// ([`message_body`]) — nothing else, and no window opening over the one reported.
+///
+/// # Errors
+/// It carries an image, a video or a file.
 fn report_target(
     destination: &crate::feedback::Destination,
-    report: &tilo_feedback::Submission,
+    attached: &[tilo_reference::Attached],
+    text: &str,
 ) -> Result<Target, String> {
-    let report = serde_json::to_value(report).map_err(|error| error.to_string())?;
     Ok(Target::Invoke(Box::new(
         InvokeTarget::action(
             CHAT,
             &destination.workspace,
-            destination.item(),
-            tilo_feedback::destination::SUBMIT,
+            tilo_app_id::chat::CONVERSATIONS,
+            tilo_app_id::chat::REPORT,
         )
-        .with_argument("submission", report),
+        .with_argument("body", message_body(text, attached)?),
     )))
 }
 
@@ -1050,15 +1039,14 @@ mod tests {
             assert_eq!(agent_name(&[chip("  ")]), "Agent");
         }
 
-        phase a_report_is_one_signed_report_filed_where_the_destination_names;
+        phase a_report_is_one_report_filed_in_the_workspace_the_destination_names;
         // A report's chip is the one place this computer sends reports: one send
-        // is one report, filed in the channel the destination names in the
-        // workspace that keeps it, carrying what the window picked and the words,
-        // and nothing opens over the window it is about.
+        // is one report, Chat's `report` in the workspace that keeps them, saying
+        // the words and what the window picked, and nothing opens over the window
+        // it is about.
         {
             let destination = crate::feedback::Destination {
                 workspace: "w_tilo".to_owned(),
-                channel: "c_feedback".to_owned(),
             };
             let report = destination.recipient();
             let Addressed::Report(place) =
@@ -1068,46 +1056,26 @@ mod tests {
                 panic!("a report is not a message");
             };
             assert_eq!(place.workspace, "w_tilo", "in the workspace that keeps it");
-            assert_eq!(place.channel, "c_feedback");
             let carried = Attached::Text {
                 text: "issue 42".into(),
                 from: None,
             };
-            let filed = place
-                .report(
-                    "so.tilo.notes",
-                    std::slice::from_ref(&carried),
-                    "the button does nothing",
-                )
-                .expect("a report builds");
-            let Target::Invoke(target) = report_target(&place, &filed).expect("a report targets")
-            else {
-                panic!("a report invokes the channel");
+            let Target::Invoke(target) = report_target(
+                &place,
+                std::slice::from_ref(&carried),
+                "the button does nothing",
+            )
+            .expect("a report targets") else {
+                panic!("a report invokes Chat");
             };
             assert_eq!(target.app, CHAT);
             assert_eq!(target.workspace, "w_tilo");
-            assert_eq!(
-                target.address.resource, "chat.workspace/channels/c_feedback",
-                "the channel's own item files reports"
-            );
-            assert_eq!(target.address.action, "submit-feedback");
-            let submission: tilo_feedback::Submission =
-                serde_json::from_value(target.arguments["submission"].clone())
-                    .expect("the reviewed report");
-            assert_eq!(
-                submission.destination.workspace, "w_tilo",
-                "the report says where it is filed"
-            );
-            assert_eq!(submission.destination.channel, "c_feedback");
-            assert_eq!(submission.feedback.text, "the button does nothing");
-            let picked = &submission.feedback.selections[0];
-            assert_eq!(
-                picked.app, "so.tilo.notes",
-                "what the window picked came from the window reported"
-            );
-            assert_eq!(
-                picked.texts[0].parts[0].text, "issue 42",
-                "and its words go with the report"
+            assert_eq!(target.address.resource, tilo_app_id::chat::CONVERSATIONS);
+            assert_eq!(target.address.action, tilo_app_id::chat::REPORT);
+            let body = target.arguments["body"].to_string();
+            assert!(
+                body.contains("the button does nothing") && body.contains("issue 42"),
+                "the words and what the window picked go with the report: {body}"
             );
 
             // A report goes to the one place it goes, and a computer told nowhere sends none.

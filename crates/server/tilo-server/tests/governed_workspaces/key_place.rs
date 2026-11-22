@@ -65,7 +65,6 @@ async fn start_serving_with(
         Some(catalogue),
         None,
         None,
-        None,
     )
     .await
     .unwrap()

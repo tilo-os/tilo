@@ -85,9 +85,6 @@ mod api_v1;
 #[path = "workspace_actions/branch_files.rs"]
 mod branch_files;
 #[cfg(test)]
-#[path = "workspace_actions/key.rs"]
-mod key;
-#[cfg(test)]
 #[path = "workspace_actions/computer_agent.rs"]
 mod computer_agent;
 #[cfg(test)]
@@ -96,6 +93,9 @@ mod computer_restart;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_machine_agents.rs"]
 mod hosted_machine_agents;
+#[cfg(test)]
+#[path = "workspace_actions/key.rs"]
+mod key;
 #[cfg(test)]
 #[path = "workspace_actions/owner_signs_governance.rs"]
 mod owner_signs_governance;
@@ -127,9 +127,6 @@ mod device_writes;
 #[cfg(test)]
 #[path = "workspace_actions/encrypted_resource.rs"]
 mod encrypted_resource;
-#[cfg(test)]
-#[path = "workspace_actions/feedback_journey.rs"]
-mod feedback_journey;
 #[cfg(test)]
 #[path = "workspace_actions/files_founded_page.rs"]
 mod files_founded_page;
@@ -218,6 +215,9 @@ mod own_agent;
 #[path = "workspace_actions/packaged_model.rs"]
 mod packaged_model;
 #[cfg(test)]
+#[path = "workspace_actions/person_before_agent.rs"]
+mod person_before_agent;
+#[cfg(test)]
 #[path = "workspace_actions/put_files.rs"]
 mod put_files;
 #[cfg(test)]
@@ -240,12 +240,6 @@ mod tracker_listing;
 #[cfg(test)]
 #[path = "workspace_actions/update_reads_older_writes.rs"]
 mod update_reads_older_writes;
-#[cfg(test)]
-#[path = "workspace_actions/person_before_agent.rs"]
-mod person_before_agent;
-#[cfg(test)]
-#[path = "workspace_actions/slow_read.rs"]
-mod slow_read;
 #[cfg(test)]
 #[path = "workspace_actions/workspace_per_customer.rs"]
 mod workspace_per_customer;
@@ -737,21 +731,7 @@ async fn start_browser(
     state: &Path,
     page: Option<&str>,
 ) -> Hosted {
-    start_lending(root, host, state, page, None).await
-}
-
-/// A host lending its workspaces' reporters `feedback_reviewer`.
-async fn start_lending(
-    root: &SigningKey,
-    host: &Device,
-    state: &Path,
-    page: Option<&str>,
-    feedback_reviewer: Option<Arc<dyn tilo_agent_session::FeedbackReviewer>>,
-) -> Hosted {
-    let options = Options {
-        feedback_reviewer,
-        ..Options::offering(crate::common::catalogue)
-    };
+    let options = Options::offering(crate::common::catalogue);
     let options = match page {
         Some(origin) => options.serving(origin),
         None => options,

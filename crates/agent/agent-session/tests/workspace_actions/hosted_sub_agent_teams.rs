@@ -1014,7 +1014,10 @@ async fn a_team_is_answered_to_any_members_turn_of_the_agent() {
         said[1].0.replace("sub-agentz", "sub-agents"),
         "his start is refused in the list's words, not as what does not exist"
     );
-    assert!(said[1].1 && said[3].1, "what does not exist is nothing: {said:?}");
+    assert!(
+        said[1].1 && said[3].1,
+        "what does not exist is nothing: {said:?}"
+    );
     assert!(!said[2].1, "his turn reads the agent's team: {said:?}");
     assert!(
         sub_agents(&workspaces, &workspace, &person)

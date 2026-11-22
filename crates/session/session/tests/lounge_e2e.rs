@@ -138,7 +138,6 @@ impl WorkspaceService {
                 "https://tilo.sh,https://tilo.so",
             )
             .env("TILO_WORKSPACES_ROOT_FILE", &root_file)
-            .env("TILO_WORKSPACES_FEEDBACK_CHANNEL", "feedback")
             // The listeners, on loopback, each on a port the kernel picks as it binds: two workspaces on
             // one machine take the ports they are given, and the service announces the ones it bound.
             .env(

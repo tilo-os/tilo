@@ -238,7 +238,6 @@
   "tilo-face": {"libraries": 372464, "tests": 2955688},
   "tilo-feedback": {"libraries": 11247059, "tests": 32773136},
   "tilo-feedback-review": {"libraries": 4620436, "tests": 5853496},
-  "tilo-feedback-transport": {"libraries": 1394678, "tests": 359380680},
   "tilo-file-provider": {"libraries": 0, "tests": 28924672},
   "tilo-files": {"libraries": 9970436, "tests": 59449632},
   "tilo-firstboot-files": {"libraries": 1135750, "tests": 27169664},

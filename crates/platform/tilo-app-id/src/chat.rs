@@ -35,6 +35,10 @@ pub const MESSAGE_PERSON: &str = "message_person";
 /// Sends `body` in the channel, thread or direct conversation it is invoked on.
 pub const SEND: &str = "send";
 
+/// Files `body` as a problem report in the workspace's `#feedback` channel, on
+/// [`CONVERSATIONS`], which the first report opens. It answers the message it filed.
+pub const REPORT: &str = "report";
+
 #[cfg(test)]
 mod tests {
     #[test]

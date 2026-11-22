@@ -77,7 +77,6 @@ run_lounge() {
     TILO_WORKSPACES_ROOT_FILE="$lounge_volume/secrets/workspace-root" \
     TILO_WORKSPACES_FETCH_PROXY=0 \
     TILO_WORKSPACES_CHAT_CHANNELS=general \
-    TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
     TILO_WORKSPACES_PERSON_STORAGE_GB=10 \
     sh "$lounge_here/entrypoint.sh" >> "$log" 2>&1 &
   lounge_pid=$!
@@ -146,7 +145,7 @@ start_lounge() {
     || lounge_fail 'the server did not say who it is (tilo-server page-host)'
   node "$lounge_here/integration/site.mjs" "$work/site" "$work/site.crt" "$work/site.key" \
     "$server_origin" "http://127.0.0.1:$lounge_plain_port" Lounge \
-    "$server_origin/peer/v1/directory/$workspace/" "$site_port" "$info" c_feedback >> "$site_log" 2>&1 &
+    "$server_origin/peer/v1/directory/$workspace/" "$site_port" "$info" >> "$site_log" 2>&1 &
   local site_pid=$!
   lounge_pids+=("$site_pid")
   for _ in $(seq 300); do

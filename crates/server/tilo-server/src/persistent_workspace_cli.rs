@@ -30,7 +30,7 @@ use tilo_server_protocol::operator::{self, OperatorCommand, OperatorEvent, hex32
 use tilo_server_protocol::workspaces::Role;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_server_lending, web_config};
+use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_server, web_config};
 use tilo_server::entry;
 
 mod bots;
@@ -64,16 +64,6 @@ pub struct PersistentArgs {
         value_parser = crate::workspace_chat::channel_name
     )]
     pub chat_channels: Vec<String>,
-    /// The channel, by name, the workspace's members report problems to: kept
-    /// in the workspace's Chat on every start, after its other channels, since
-    /// the site's pages send reports to it by its id (`c_<name>`).
-    #[arg(
-        long = "feedback-channel",
-        value_name = "NAME",
-        requires = "persistent",
-        value_parser = crate::workspace_chat::channel_name
-    )]
-    pub feedback_channel: Option<String>,
     /// A strip, by name, the workspace's shared desktop has in its first
     /// workspace; repeatable, in order. Added at start where missing; the
     /// strips people made are kept.
@@ -267,9 +257,7 @@ pub struct PersistentArgs {
     /// The model API key the workspace's moderation agent asks with, mounted
     /// from the operator's encrypted secrets; kept in this host's secret
     /// store. Without it the workspace has no moderation agent and reports wait
-    /// for its human Moderators. The same model looks over the reports its
-    /// members write in the feedback channel before they send them, asked
-    /// through the workspace, so their pages never hold the key.
+    /// for its human Moderators.
     #[arg(long = "moderation-key-file", value_name = "PATH")]
     pub moderation_key_file: Option<PathBuf>,
     /// The model the moderation agent asks.
@@ -1026,7 +1014,6 @@ pub(crate) async fn settle_chat(
     cert: &DeviceCert,
     apps: &[String],
     channels: &[String],
-    feedback: Option<&str>,
     files: chat::chat::WorkspaceFiles,
     discussions: &[crate::workspace_discussions::Published],
 ) -> anyhow::Result<()> {
@@ -1050,9 +1037,6 @@ pub(crate) async fn settle_chat(
             &record,
             |doc| {
                 crate::workspace_chat::settle_chat(doc, channels)?;
-                if let Some(name) = feedback {
-                    crate::workspace_chat::settle_feedback_channel(doc, name)?;
-                }
                 crate::workspace_chat::settle_files(doc, files)?;
                 crate::workspace_discussions::settle_threads(doc, discussions).map(drop)
             },
@@ -1392,21 +1376,6 @@ pub(crate) async fn run(
     if let Some(agent) = &moderation {
         tracing::info!(model = agent.model(), "moderation agent loaded");
     }
-    // The same model looks over the reports the workspace's members write
-    // before they send them, asked through the workspace on their behalf.
-    let feedback_reviewer = moderation
-        .is_some()
-        .then(|| {
-            crate::persistent_moderation::WorkspaceReviewer::from_store(
-                &store,
-                persistent.moderation_model.as_deref(),
-            )
-        })
-        .transpose()?
-        .map(|reviewer| {
-            std::sync::Arc::new(reviewer)
-                as std::sync::Arc<dyn tilo_agent_session::FeedbackReviewer>
-        });
     let host = host_key(&state)?;
     let server_cert = enrol(
         &root,
@@ -1444,14 +1413,7 @@ pub(crate) async fn run(
         tilo_server::hosted_browser::keep_stand_in(&config.state_root, &root)
             .map_err(anyhow::Error::msg)?;
     }
-    let hosted = start_server_lending(
-        config,
-        identity,
-        &args.web,
-        &state,
-        crate::web_cli::Lent { feedback_reviewer },
-    )
-    .await?;
+    let hosted = start_server(config, identity, &args.web, &state).await?;
     // Everything a start settles and begins, in one place: a step that fails
     // stops the server it was started on before the error goes up (the `match`
     // below).
@@ -1542,7 +1504,6 @@ pub(crate) async fn run(
                 &server_cert,
                 &persistent.seed_apps,
                 &persistent.chat_channels,
-                persistent.feedback_channel.as_deref(),
                 workspace_files(&persistent),
                 &persistent.discussions,
             )

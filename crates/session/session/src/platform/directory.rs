@@ -233,7 +233,7 @@ mod tests {
         }
 
         phase a_report_goes_where_the_config_names_or_nowhere;
-        // A computer told where reports go names the workspace and the conversation, and one told
+        // A computer told where reports go names the workspace that keeps them, and one told
         // nothing offers no report: a report with nowhere to go is not a report.
         {
             let dir = tempfile::tempdir().expect("a directory for the configurations");
@@ -244,18 +244,17 @@ mod tests {
             };
             let told = write(
                 "told.toml",
-                "site = \"tilo.sh\"\n[feedback]\nworkspace = \"w_tilo\"\nchannel = \"c_feedback\"\n",
+                "site = \"tilo.sh\"\n[feedback]\nworkspace = \"w_tilo\"\n",
             );
             let untold = write("untold.toml", "site = \"tilo.sh\"\n");
-            let only_a_channel = write("half.toml", "[feedback]\nchannel = \"c_feedback\"\n");
+            let no_workspace = write("half.toml", "[feedback]\n");
             let configured = configured_from([told.as_path()]);
             assert_eq!(
                 configured.feedback,
                 Some(crate::feedback::Destination {
                     workspace: "w_tilo".to_owned(),
-                    channel: "c_feedback".to_owned(),
                 }),
-                "the report goes to the workspace's conversation the config names"
+                "the report goes to the workspace the config names"
             );
             assert!(configured.site.is_some(), "and the site stands beside it");
             assert_eq!(
@@ -264,7 +263,7 @@ mod tests {
                 "a computer told nothing offers no report"
             );
             assert_eq!(
-                configured_from([only_a_channel.as_path()]).feedback,
+                configured_from([no_workspace.as_path()]).feedback,
                 None,
                 "a destination with no workspace to keep it is no destination"
             );

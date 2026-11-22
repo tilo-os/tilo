@@ -321,7 +321,11 @@ impl Worker {
             return self.open_home(workspace_id);
         }
         if address.app == SEARCH_APP {
-            return self.open_search(workspace_id, caller, address.show.as_deref().unwrap_or_default());
+            return self.open_search(
+                workspace_id,
+                caller,
+                address.show.as_deref().unwrap_or_default(),
+            );
         }
         let app = self.page_app(&address.app).ok_or(PageRefusal::NoSuchApp)?;
         // A page shows an app's own document of the workspace; an app that
@@ -582,7 +586,12 @@ impl Worker {
                     || app.title().to_lowercase().contains(&query)
                     || app.app_id().to_lowercase().contains(&query)
             })
-            .map(|app| (app.title().to_owned(), page_app_name(app.app_id()).to_owned()))
+            .map(|app| {
+                (
+                    app.title().to_owned(),
+                    page_app_name(app.app_id()).to_owned(),
+                )
+            })
             .collect();
         apps.sort_by(|(a, _), (b, _)| a.cmp(b));
         for (title, name) in apps {
@@ -619,10 +628,14 @@ impl Worker {
                         page_app_name(app.app_id()),
                         sub = encode_part(&found.resource),
                     );
-                    if rows.iter().any(|row| row.href.as_deref() == Some(href.as_str())) {
+                    if rows
+                        .iter()
+                        .any(|row| row.href.as_deref() == Some(href.as_str()))
+                    {
                         continue;
                     }
-                    let id = SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default());
+                    let id = SEARCH_FIRST_ROW
+                        .saturating_add(u32::try_from(rows.len()).unwrap_or_default());
                     rows.push(SearchRow {
                         id,
                         label: found.label,
@@ -647,7 +660,8 @@ impl Worker {
             Ok(page) => {
                 for row in page.rows {
                     let Some(action) = row.action else { continue };
-                    let id = SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default());
+                    let id = SEARCH_FIRST_ROW
+                        .saturating_add(u32::try_from(rows.len()).unwrap_or_default());
                     rows.push(SearchRow {
                         id,
                         label: action.action_label,
@@ -736,15 +750,13 @@ impl Worker {
         id: u32,
     ) -> Result<Vec<PagePatch>, PageRefusal> {
         let running = match self.pages.held.get(&page) {
-            Some(HeldPage::Search {
-                rows, pending, ..
-            }) => {
+            Some(HeldPage::Search { rows, pending, .. }) => {
                 if pending.is_some() {
                     return self.patch_search(page);
                 }
-                rows.iter().find(|row| row.id == id).and_then(|row| {
-                    row.run.as_ref().map(|run| (row.label.clone(), run))
-                })
+                rows.iter()
+                    .find(|row| row.id == id)
+                    .and_then(|row| row.run.as_ref().map(|run| (row.label.clone(), run)))
             }
             _ => return Err(unavailable("the page was closed")),
         };
@@ -773,7 +785,10 @@ impl Worker {
             // for a part of what it changes ends on a later pass
             // (`settled_search`).
             let _ = self.invoke(workspace_id, invocation);
-            (format!("Running {label}…"), Some(PendingRun { invocation, label }))
+            (
+                format!("Running {label}…"),
+                Some(PendingRun { invocation, label }),
+            )
         } else {
             (
                 "The workspace is running as many actions as it keeps track of: ask again in a moment."
@@ -781,8 +796,11 @@ impl Worker {
                 None,
             )
         };
-        if let Some(HeldPage::Search { notice: held, pending: held_pending, .. }) =
-            self.pages.held.get_mut(&page)
+        if let Some(HeldPage::Search {
+            notice: held,
+            pending: held_pending,
+            ..
+        }) = self.pages.held.get_mut(&page)
         {
             *held = Some(notice);
             *held_pending = pending;
@@ -807,9 +825,7 @@ impl Worker {
             .get(&invocation)
             .map(|entry| entry.update.clone());
         let notice = match settled {
-            Some(InvocationUpdate::Succeeded { output, .. }) => {
-                Some(said_of(&label, &output))
-            }
+            Some(InvocationUpdate::Succeeded { output, .. }) => Some(said_of(&label, &output)),
             Some(InvocationUpdate::Failed { error, .. }) => {
                 Some(format!("{label}: {}", error.message))
             }
@@ -817,7 +833,11 @@ impl Worker {
                 Some(message) => format!("{label}: {message}"),
                 None => format!("{label}: stopped."),
             }),
-            Some(InvocationUpdate::Accepted { .. } | InvocationUpdate::Progress { .. } | InvocationUpdate::Item { .. })
+            Some(
+                InvocationUpdate::Accepted { .. }
+                | InvocationUpdate::Progress { .. }
+                | InvocationUpdate::Item { .. },
+            )
             | None => None,
         };
         let Some(notice) = notice else {
@@ -1036,9 +1056,7 @@ const SEARCH_FIRST_ROW: u32 = 10;
 
 /// An app's page name: the last part of its id (`notes` for `so.tilo.notes`).
 fn page_app_name(app_id: &str) -> &str {
-    app_id
-        .rsplit_once('.')
-        .map_or(app_id, |(_, last)| last)
+    app_id.rsplit_once('.').map_or(app_id, |(_, last)| last)
 }
 
 /// The rows of the search page as HTML, grouped: the apps, then what the

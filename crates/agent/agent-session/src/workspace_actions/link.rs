@@ -2,9 +2,8 @@
 //! hands it: the holder's own device in its workspaces
 //! ([`HostDevice`]), the access and read policy it decides a view by
 //! ([`ViewReadPolicy`]), the verified snapshot a view is discovered from
-//! ([`ViewDocument`]), and the two APIs back into the host
-//! ([`WorkspaceDocumentsLink`] for everything the service asks, and
-//! [`FeedbackReviewer`] for the model a review is looked over with).
+//! ([`ViewDocument`]), and the API back into the host
+//! ([`WorkspaceDocumentsLink`], for everything the service asks).
 
 use std::sync::Arc;
 
@@ -284,12 +283,6 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     ) -> Option<tilo_actions::remote::ContentLink> {
         None
     }
-    /// The model the host looks over its reporters' reviews with, when it
-    /// lends one ([`FeedbackReviewer`]). Absence leaves reviews to the
-    /// reporters' own devices.
-    fn feedback_reviewer(&self) -> Option<Arc<dyn FeedbackReviewer>> {
-        None
-    }
     /// Put `question` about one invocation the host runs in `workspace` to
     /// the person `caller` is or acts for, on their own devices, and answer
     /// what they said. `None` when this host has nobody to ask, which leaves
@@ -390,25 +383,4 @@ pub struct AskedInTurn {
     /// The action and the thing it is on, in the system's own words. The
     /// workspace's name is the server's to add.
     pub words: Words,
-}
-
-/// A model the host lends its admitted reporters to look over a report's
-/// review: it is asked only the feedback review contract
-/// (`ui::feedback::model_review`) over the report's model view, which shows
-/// personal values only as placeholders, and only quotes from the texts
-/// asked about go back.
-pub trait FeedbackReviewer: Send + Sync {
-    /// What a review calls the model: the provider and model.
-    fn name(&self) -> String;
-    /// Ask the model `prompt` for `caller`, its answer held to the JSON
-    /// `schema` where the provider can, then call `done` with its
-    /// answer, from any thread. A host may refuse a caller who asks too
-    /// often.
-    fn review(
-        &self,
-        caller: &Caller,
-        prompt: String,
-        schema: serde_json::Value,
-        done: Box<dyn FnOnce(Result<String, String>) + Send>,
-    );
 }

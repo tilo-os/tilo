@@ -12,8 +12,7 @@ impl Job {
     /// The workspace whose thread serves the job: every job is about one.
     const fn served_in(&self) -> WorkspaceId {
         match self {
-            Self::Feedback { workspace_id, .. }
-            | Self::Catalogue { workspace_id, .. }
+            Self::Catalogue { workspace_id, .. }
             | Self::Invoke { workspace_id, .. }
             | Self::Content { workspace_id, .. }
             | Self::ContentGet { workspace_id, .. }

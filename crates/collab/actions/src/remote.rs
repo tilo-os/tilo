@@ -58,7 +58,6 @@ pub mod environment_commands;
 pub mod environment_machines;
 pub mod environment_programs;
 pub mod environment_terminals;
-pub mod feedback;
 mod nodes;
 pub mod own_device;
 mod pending;
@@ -1189,16 +1188,12 @@ fn updated(
 )]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RemoteActionMessage {
-    /// Inspect existing feedback admission or read an existing canonical ack.
-    /// This never invokes a document mutation or grants workspace access.
-    FeedbackRequest {
-        correlation: u64,
-        query: feedback::FeedbackQuery,
-    },
-    FeedbackResponse {
-        correlation: u64,
-        result: Result<feedback::FeedbackAnswer, ActionCallError>,
-    },
+    /// A retired ask for a feedback report's receipt: nothing answers it but
+    /// [`Self::RetiredFeedbackResponse`]. A report is filed as Chat's
+    /// `report`, answered as any action is.
+    RetiredFeedbackRequest { correlation: u64 },
+    /// The answer to a [`Self::RetiredFeedbackRequest`], refusing it.
+    RetiredFeedbackResponse { correlation: u64 },
     /// Ask for one page of the actions offered to the caller.
     CatalogueRequest {
         correlation: u64,
@@ -1444,7 +1439,7 @@ impl RemoteActionMessage {
                 | Self::Observe { .. }
                 | Self::Cancel { .. }
                 | Self::ResourceRead { .. }
-                | Self::FeedbackRequest { .. }
+                | Self::RetiredFeedbackRequest { .. }
                 | Self::ConfirmationRequest { .. }
                 | Self::ContentPutRequest { .. }
                 | Self::ContentGetRequest { .. }
@@ -1474,13 +1469,13 @@ fn confirmed<H: ActionProvider>(
         })
 }
 
-/// The refusal of a request [`serve`] keeps nothing for: canonical feedback,
-/// which only its own service answers; uploads over a session, kept by a
+/// The refusal of a request [`serve`] keeps nothing for: a retired feedback
+/// ask; uploads over a session, kept by a
 /// provider that keeps them open between steps ([`HostedContentPuts`]); and
 /// content, read from a store a device keeps. `None` for any other message.
 fn not_kept(message: &RemoteActionMessage) -> Option<RemoteActionMessage> {
     let reason = match message {
-        RemoteActionMessage::FeedbackRequest { .. } => "canonical feedback service unavailable",
+        RemoteActionMessage::RetiredFeedbackRequest { .. } => "feedback receipts are retired",
         RemoteActionMessage::ContentPutRequest { .. } => CONTENT_PUTS_UNAVAILABLE,
         RemoteActionMessage::ContentGetRequest { .. } => CONTENT_GETS_UNAVAILABLE,
         RemoteActionMessage::ContentLinkRequest { .. } => CONTENT_LINKS_UNAVAILABLE,
@@ -1607,7 +1602,7 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
     )?;
     let answer = match message {
         // What a stateless provider keeps none of, it refuses.
-        RemoteActionMessage::FeedbackRequest { .. }
+        RemoteActionMessage::RetiredFeedbackRequest { .. }
         | RemoteActionMessage::ContentPutRequest { .. }
         | RemoteActionMessage::ContentGetRequest { .. }
         | RemoteActionMessage::ContentLinkRequest { .. } => Pending::ready(not_kept(&message)?),
@@ -1687,7 +1682,7 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
         | RemoteActionMessage::ResourceReading { .. }
-        | RemoteActionMessage::FeedbackResponse { .. }
+        | RemoteActionMessage::RetiredFeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
         | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::ContentGetResponse { .. }
@@ -1714,10 +1709,9 @@ pub fn refuse(
     error: ActionCallError,
 ) -> Option<RemoteActionMessage> {
     Some(match message {
-        RemoteActionMessage::FeedbackRequest { correlation, .. } => {
-            RemoteActionMessage::FeedbackResponse {
+        RemoteActionMessage::RetiredFeedbackRequest { correlation } => {
+            RemoteActionMessage::RetiredFeedbackResponse {
                 correlation: *correlation,
-                result: Err(error),
             }
         }
         RemoteActionMessage::CatalogueRequest { correlation, .. } => {

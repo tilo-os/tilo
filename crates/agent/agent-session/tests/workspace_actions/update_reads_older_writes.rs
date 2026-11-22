@@ -5,7 +5,6 @@
 //! `surface.toml` itself there, and the changes it wrote name the hash of those bytes. The update
 //! reads them as they are.
 
-
 use super::api_on_server::{api_on_server, approved_key, headers, json_of};
 use super::*;
 use collab_types::surface::{KindSurface, SurfaceFile};

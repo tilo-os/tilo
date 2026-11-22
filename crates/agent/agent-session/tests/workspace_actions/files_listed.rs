@@ -66,7 +66,6 @@ async fn an_agent_lists_the_workspace_and_reads_a_document_file_by_the_row_it_wa
         Some(std::sync::Arc::new(crate::common::catalogue)),
         None,
         None,
-        None,
     )
     .await
     .unwrap();

@@ -17617,7 +17617,6 @@ dependencies = [
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-environment",
- "tilo-feedback-transport",
  "tilo-files",
  "tilo-fs",
  "tilo-live",
@@ -18997,7 +18996,6 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-failure",
- "tilo-feedback-transport",
  "tilo-resource",
  "tilo-session-core",
  "tilo-shell-surface",
@@ -19565,7 +19563,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
- "tilo-app-id",
  "tilo-automerge-fork",
  "tilo-feedback-review",
  "tilo-resource",
@@ -19581,31 +19578,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tilo-sort",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-feedback-transport"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "collab-types",
- "collaboration",
- "durable-store",
- "ed25519-dalek 3.0.0",
- "hex",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-actions",
- "tilo-app-state",
- "tilo-automerge-fork",
- "tilo-clock",
- "tilo-content",
- "tilo-feedback",
- "tilo-resource",
- "tilo-test-env",
- "tilo-ui",
  "workspace-hack",
 ]
 
@@ -22279,7 +22251,6 @@ dependencies = [
  "tilo-endpoint-reachability",
  "tilo-enrollment",
  "tilo-failure",
- "tilo-feedback",
  "tilo-files",
  "tilo-frame-metrics",
  "tilo-fs",
@@ -29445,7 +29416,6 @@ dependencies = [
  "tilo-failure",
  "tilo-feedback",
  "tilo-feedback-review",
- "tilo-feedback-transport",
  "tilo-file-provider",
  "tilo-files",
  "tilo-firstboot-files",

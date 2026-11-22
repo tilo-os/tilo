@@ -6,27 +6,23 @@
 // server's shelf for the page's own request for the invitation (the web entry
 // image's `TILO_WEB_SHELF`).
 //
-// usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN SHELF_ORIGIN NAME ADMISSION PORT HOST_INFO [FEEDBACK]
+// usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN SHELF_ORIGIN NAME ADMISSION PORT HOST_INFO
 // SHELF_ORIGIN is the server's plain listener, which is where a deployment's
 // ingress hands what it terminates TLS for: the shelf needs no certificate of
 // its own there.
 // HOST_INFO is the line `tilo-server page-host` prints for the workspace's
 // host, which the web entry image hands its page from TILO_WEB_HOME_HOST_INFO
 // so the page dials that host as named; an empty HOST_INFO is only for a site
-// whose host is not there to ask. FEEDBACK is the id of the Chat channel the
-// workspace keeps for problem reports (`c_feedback` for a workspace started
-// with TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback), as the web entry image names it
-// from TILO_WEB_HOME_FEEDBACK: a page whose entry names none offers no Report
-// a problem.
+// whose host is not there to ask.
 // Prints {"url": "https://127.0.0.1:<port>"} once it listens.
 import {readFileSync, statSync, existsSync} from 'node:fs';
 import {createServer} from 'node:https';
 import {request as plainRequest} from 'node:http';
 import {extname, join, normalize} from 'node:path';
 
-const [site, cert, key, origin, shelfOrigin, name, admission, port, info, feedback = ''] = process.argv.slice(2);
+const [site, cert, key, origin, shelfOrigin, name, admission, port, info] = process.argv.slice(2);
 if (!site || !cert || !key || !origin || !shelfOrigin || !name || !admission || !port || info === undefined) {
-  console.error('usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN SHELF_ORIGIN NAME ADMISSION PORT HOST_INFO [FEEDBACK]');
+  console.error('usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN SHELF_ORIGIN NAME ADMISSION PORT HOST_INFO');
   process.exit(2);
 }
 
@@ -44,10 +40,9 @@ const TYPES = {
 };
 
 // What the web entry image writes as its entry configuration from
-// TILO_WEB_HOME_HOST, TILO_WEB_HOME_HOST_INFO, TILO_WEB_HOME_FEEDBACK and
-// TILO_WEB_HOME_ENTRY, for a site whose home workspace is hosted at `origin`.
+// TILO_WEB_HOME_HOST, TILO_WEB_HOME_HOST_INFO and TILO_WEB_HOME_ENTRY, for a site whose home workspace is hosted at `origin`.
 const entry = JSON.stringify({
-  home: {name, host: info ? {origin, info} : {origin}, ...(feedback ? {feedback: {channel: feedback}} : {}), admission},
+  home: {name, host: info ? {origin, info} : {origin}, admission},
   directory: `${origin}/peer/v1/directory`,
 });
 

@@ -224,7 +224,6 @@ impl Lounge {
                 "https://tilo.sh,https://tilo.so",
             )
             .env("TILO_WORKSPACES_ROOT_FILE", root_file)
-            .env("TILO_WORKSPACES_FEEDBACK_CHANNEL", "feedback")
             // The deployment starts without seeding Chat: the volume's record
             // cannot be served to new members until it is founded again.
             .env("TILO_WORKSPACES_SEED_APPS", "")

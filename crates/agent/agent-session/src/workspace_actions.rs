@@ -60,7 +60,6 @@ mod catch_up;
 mod change;
 mod content;
 mod direct;
-mod feedback;
 mod files_index;
 mod files_listing;
 mod follow;
@@ -108,8 +107,8 @@ pub use crate::worker::PersonRegion;
 pub(super) use arguments::invoke_arguments;
 pub use content::MAX_PUT_BYTES;
 pub use link::{
-    AskedInTurn, AsksInConversation, FeedbackReviewer, HostDevice, PackagedCall, ViewDocument,
-    ViewReadPolicy, WorkspaceDocumentsLink,
+    AskedInTurn, AsksInConversation, HostDevice, PackagedCall, ViewDocument, ViewReadPolicy,
+    WorkspaceDocumentsLink,
 };
 pub use terminal::{
     Opened, Opening, Recorder, ShellRan, TERMINAL_APP, Watching, WorkspaceShell, person_of,
@@ -487,8 +486,8 @@ impl WorkspaceActions {
             reason: "the host's workspace actions are not running".into(),
         };
         Some(match message {
-            RemoteActionMessage::FeedbackRequest { correlation, query } => {
-                self.feedback_request(workspace_id, caller, correlation, query)
+            RemoteActionMessage::RetiredFeedbackRequest { correlation } => {
+                Pending::ready(RemoteActionMessage::RetiredFeedbackResponse { correlation })
             }
             RemoteActionMessage::CatalogueRequest { correlation, query } => {
                 let respond = move |result| RemoteActionMessage::CatalogueResponse {
@@ -620,7 +619,7 @@ impl WorkspaceActions {
                 let reads: Arc<dyn tilo_actions::remote::ResourceReads> = Arc::new(self.clone());
                 reads.answer_read(caller, correlation, read)
             }
-            RemoteActionMessage::FeedbackResponse { .. }
+            RemoteActionMessage::RetiredFeedbackResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
@@ -721,31 +720,6 @@ impl WorkspaceActions {
             });
         }
         answer.map(RemoteActionMessage::Receipt)
-    }
-
-    fn feedback_request(
-        &self,
-        workspace_id: WorkspaceId,
-        caller: &Caller,
-        correlation: u64,
-        query: tilo_actions::remote::feedback::FeedbackQuery,
-    ) -> Pending<RemoteActionMessage> {
-        let (done, answer) = pending();
-        let job = Job::Feedback {
-            workspace_id,
-            query: Box::new(query),
-            caller: caller.clone(),
-            done,
-        };
-        if let Err(Job::Feedback { done, .. }) = self.submit(job) {
-            done.complete(Err(ActionCallError::Unavailable {
-                reason: "the host's workspace actions are not running".into(),
-            }));
-        }
-        answer.map(move |result| RemoteActionMessage::FeedbackResponse {
-            correlation,
-            result,
-        })
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionCallError> {
@@ -1856,41 +1830,6 @@ impl Worker {
         let _region = crate::worker::region::scope(self.region_for(&job));
         {
             match job {
-                Job::Feedback {
-                    workspace_id,
-                    query,
-                    caller,
-                    done,
-                } => match self.shared.link.get().cloned() {
-                    Some(link) => {
-                        // It proves the destination through the resource's registered read, and
-                        // projects its report from the committed source in a worker: that goes
-                        // on off this thread once it outlasts a call, and answers the caller
-                        // from there.
-                        let catalogue = self.catalogue.clone();
-                        let holder = DocumentRoute {
-                            app_id: "so.tilo.chat".into(),
-                            cluster_id: workspace_id.to_string(),
-                            document: String::new(),
-                        };
-                        let asked = self.hand(workspace_id, &holder, move || {
-                            feedback::answer_and_review(
-                                &link,
-                                catalogue,
-                                workspace_id,
-                                caller,
-                                *query,
-                                done,
-                            );
-                        });
-                        if asked.is_none() {
-                            self.await_completed(workspace_id);
-                        }
-                    }
-                    None => done.complete(Err(ActionCallError::Unavailable {
-                        reason: "feedback host unavailable".into(),
-                    })),
-                },
                 Job::Catalogue {
                     workspace_id,
                     query,

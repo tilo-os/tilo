@@ -37,7 +37,7 @@ use tilo_agent_session::workspace_actions::{
 };
 use tilo_agent_session::{
     AgentHostLink, AgentService, AgentSupervisor, AppCatalogue, ApprovalDone, CatalogueFactory,
-    FeedbackReviewer, ServerEndpoint, WorkspaceActions, WorkspaceDocumentsLink,
+    ServerEndpoint, WorkspaceActions, WorkspaceDocumentsLink,
 };
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 
@@ -211,9 +211,6 @@ pub struct AgentOptions {
     /// The apps agents may open, and whose records pages may act on through
     /// the host; this machine's registry when `None`.
     pub catalogue: Option<CatalogueFactory>,
-    /// The model the host lends its workspaces' reporters to look over their
-    /// reports' reviews, if any.
-    pub feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     /// Where the workspaces' Terminal sessions run their commands on this
     /// host ([`host_shells`]); `None` leaves them to the devices running
     /// them.
@@ -251,11 +248,9 @@ pub fn host_shells(state: PathBuf) -> Result<Arc<HostShells>, String> {
     Ok(Arc::new(HostShells::at(ShellsAt::Here(terminals, agents))))
 }
 
-/// What a host lends its workspaces' records service: a model that looks
-/// over feedback reviews, where Terminal sessions run their commands, and the
-/// Browser it places.
+/// What a host lends its workspaces' records service: where Terminal sessions
+/// run their commands, and the Browser it places.
 type Lent = (
-    Option<Arc<dyn FeedbackReviewer>>,
     Option<Arc<HostShells>>,
     Option<Arc<crate::hosted_browser::HostedBrowsers>>,
 );
@@ -818,7 +813,6 @@ struct ServerRecordsLink {
     workspaces: Option<crate::workspaces::Workspaces>,
     browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     web_entry: Option<String>,
-    feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     shell: Option<Arc<dyn WorkspaceShell>>,
     stores: Arc<WorkspaceStores>,
     /// The links to the workspaces' files the host's web origin serves.
@@ -1002,10 +996,6 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         link: &tilo_actions::remote::ContentLinkAsk,
     ) -> Option<tilo_actions::remote::ContentLink> {
         Some(self.content_links.mint(store, link.clone()))
-    }
-
-    fn feedback_reviewer(&self) -> Option<Arc<dyn FeedbackReviewer>> {
-        self.feedback_reviewer.clone()
     }
 
     fn shell(&self) -> Option<Arc<dyn WorkspaceShell>> {
@@ -1326,8 +1316,7 @@ fn app_catalogue(
 /// Start `cfg`'s server serving its workspaces' records to pages, without the agent supervisor:
 /// the host mounts a record of an app in `catalogue` (this machine's
 /// registry when `None`) and runs an action on it for whoever the workspace's
-/// policy lets ask, as it does beside agents in [`start`]. Its workspaces'
-/// reporters may have `feedback_reviewer` look over their reports. Answers the server and the
+/// policy lets ask, as it does beside agents in [`start`]. Answers the server and the
 /// action service it serves the records with, which the agents the host runs for its workspaces
 /// ([`crate::workspace_agents`]) act through.
 ///
@@ -1337,7 +1326,6 @@ pub async fn start_serving_documents(
     cfg: crate::ServerConfig,
     identity: ServerIdentity,
     catalogue: Option<CatalogueFactory>,
-    feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     shell: Option<Arc<HostShells>>,
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
 ) -> Result<(Server, WorkspaceActions), ServerError> {
@@ -1351,7 +1339,6 @@ pub async fn start_serving_documents(
         AgentOptions {
             state_dir,
             catalogue,
-            feedback_reviewer,
             shell,
             browsers,
         },
@@ -1437,7 +1424,7 @@ fn attach_resources(
     server: &Server,
     server_cert: &DeviceCert,
     web_entry: Option<String>,
-    (feedback_reviewer, shell, browsers): Lent,
+    (shell, browsers): Lent,
     sessions: Option<tilo_agent_session::AgentSessions>,
 ) -> Result<(), ServerError> {
     if let Some(sessions) = &sessions {
@@ -1489,7 +1476,6 @@ fn attach_resources(
             workspaces: server.workspaces().cloned(),
             browser_origin: Arc::clone(&server.browser_origin),
             web_entry,
-            feedback_reviewer,
             stores: server.content(),
             content_links: server.content_links(),
             certification: server.web_context().certification.clone(),
@@ -1574,7 +1560,7 @@ async fn start_app_server(
         &server,
         &server_cert,
         web_entry,
-        (options.feedback_reviewer, options.shell, options.browsers),
+        (options.shell, options.browsers),
         sessions,
     )?;
     if let Some(agents) = agents {

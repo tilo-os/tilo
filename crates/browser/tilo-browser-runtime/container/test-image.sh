@@ -131,8 +131,6 @@ for bad in 'ab12' '{"a":"b\c"}' "{\"a\":\"b'c\"}" '{"a":"$b"}'; do
 done
 entry TILO_WEB_HOME_ENTRY=https://workspaces.example/peer/v1/directory/ws/ \
   && fail "a home entry without a host must refuse to start"
-entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$info" TILO_WEB_HOME_FEEDBACK='c"x' \
-  && fail "a feedback channel that is not an id must refuse to start"
 entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$info" TILO_WEB_HOME_ENTRY=https://workspaces.example/join \
   && fail "a home entry without a trailing / must refuse to start"
 entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$info" TILO_WEB_HOME_ENTRY=http://workspaces.example/ \

@@ -111,7 +111,6 @@ lounge \
   TILO_WORKSPACES_SITE_ORIGINS='https://tilo.sh, https://tilo.so' \
   TILO_WORKSPACES_SERVER_ORIGINS_ALSO='https://eu1.wifi.example:9780, https://lounge.example/' \
   TILO_WORKSPACES_CHAT_CHANNELS='general,feedback' \
-  TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
   TILO_WORKSPACES_SEED_APPS='so.tilo.chat,so.tilo.board' \
   TILO_WORKSPACES_REFOUND='so.tilo.browser-desktop:desktop, so.tilo.chat:' \
   TILO_WORKSPACES_BOTS='/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes;/opt/echo.json a=b' \
@@ -156,7 +155,6 @@ pair --chat-channel feedback || fail "a chat channel did not reach the host"
 pair --seed-app so.tilo.board || fail "a seeded app did not reach the host"
 pair --refound so.tilo.browser-desktop/desktop || fail "a refounded record did not reach the host"
 pair --refound so.tilo.chat/ || fail "a refounded record of the app's primary did not reach the host"
-pair --feedback-channel feedback || fail "the feedback channel did not reach the host"
 pair --bot '/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes' \
   || fail "the bridge's bot spec did not reach the host"
 pair --bot '/opt/echo.json a=b' || fail "a bot spec did not reach the host"
@@ -206,7 +204,6 @@ eu1() {
     TILO_WORKSPACES_LIVE_ORIGIN=https://live.eu1.tilo.sh \
     TILO_WORKSPACES_WEB_ENTRY=https://tilo.sh/ \
     TILO_WORKSPACES_SITE_ORIGINS=https://tilo.sh,https://tilo.so \
-    TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
     TILO_WORKSPACES_STATE="$work/state" \
     sh "$here/entrypoint.sh"
 }
@@ -286,7 +283,6 @@ if [[ -n $server ]] && "$server" --version >/dev/null 2>&1; then
     TILO_WORKSPACES_NAME=Lounge \
     TILO_WORKSPACES_SITE_ORIGINS='https://tilo.sh,https://tilo.so' \
     TILO_WORKSPACES_CHAT_CHANNELS='general,feedback' \
-    TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
     TILO_WORKSPACES_SEED_APPS='so.tilo.chat' \
     TILO_WORKSPACES_REFOUND='so.tilo.browser-desktop:desktop' \
     TILO_WORKSPACES_LAYOUT=shared \

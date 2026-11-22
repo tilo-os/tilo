@@ -82,7 +82,6 @@ members = [
     "apps/canvas",
     "crates/collab/broker-core",
     "crates/collab/workspace-keys",
-    "crates/collab/feedback-transport",
     "crates/session/identity-authority",
     "crates/collab/tilo-identity-ceremony",
     "crates/session/desktop",

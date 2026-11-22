@@ -324,8 +324,7 @@ fn asker(job: &Job, log: &std::sync::Mutex<InvocationLog>) -> Asker {
                         })
             }))
         }
-        Job::Feedback { caller, .. }
-        | Job::Catalogue { caller, .. }
+        Job::Catalogue { caller, .. }
         | Job::Content { caller, .. }
         | Job::ContentGet { caller, .. }
         | Job::ContentLink { caller, .. }

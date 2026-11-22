@@ -4,10 +4,8 @@
 //! A member's device keeps what it posts and answers whoever asks the workspace
 //! for it, as long as it is online. The host asks too: each time a member's
 //! write reaches a part of the Chat's messages, it reads the attachments
-//! there, and each time one reaches the Chat's own record, the pictures and
-//! recordings of the feedback reports filed there ([`reported`]); it asks the
-//! workspace for every one it does not keep yet, on its own presence, as any
-//! member asks. A report's receipt waits for the host to keep them. The pieces members answer it with are
+//! there; it asks the workspace for every one it does not keep yet, on its own
+//! presence, as any member asks. The pieces members answer it with are
 //! assembled and verified as a page assembles them
 //! ([`neighbour_wire::content::ContentWants`]) and kept in the workspace's
 //! content store on this host, beside what its bots fetched ([`crate::content`]),
@@ -192,37 +190,6 @@ fn address(reference: &str) -> String {
     tilo_content::content_address(reference).unwrap_or_else(|| reference.to_ascii_lowercase())
 }
 
-/// The pictures and recordings of the feedback reports filed in `record`,
-/// the saved Chat record, each by whoever filed it.
-#[must_use]
-pub fn reported(record: &[u8]) -> Vec<Referenced> {
-    let Ok(doc) = AutoCommit::load(record) else {
-        return Vec::new();
-    };
-    chat::projection::read(&doc)
-        .feedback
-        .iter()
-        .filter_map(|(_, report)| Some((report.submission.as_ref()?, &report.author)))
-        .flat_map(|(submission, author)| {
-            let feedback = &submission.feedback;
-            let picture = feedback.screenshot.as_ref().map(|picture| Referenced {
-                hash: address(&picture.hash),
-                member: author.clone(),
-                size: None,
-            });
-            let recording = feedback.recording.as_ref().map(|recording| Referenced {
-                hash: address(&recording.hash),
-                member: author.clone(),
-                size: Some(u64::from(recording.bytes)),
-            });
-            picture.into_iter().chain(recording)
-        })
-        .collect()
-}
-
-/// The Chat's own record on the wire: its package primary.
-const CHAT_RECORD: &str = "";
-
 fn now_ms() -> u64 {
     tilo_clock::unix_now_ns() / 1_000_000
 }
@@ -324,14 +291,10 @@ impl WorkspaceAttachments {
     }
 
     /// The record of this workspace's Chat `write` went to, if it went to one
-    /// that references files: a part of its messages or its own record,
-    /// where feedback reports are filed.
+    /// that references files: a part of its messages.
     fn part_of(&self, write: &ResourceWrite) -> Option<String> {
         if write.workspace != self.workspace || write.app != CHAT {
             return None;
-        }
-        if write.record == CHAT_RECORD {
-            return Some(write.record.clone());
         }
         let id = collab_types::document::DocumentId::parse(&write.record)?;
         chat::parts::part_index(&id)
@@ -372,11 +335,7 @@ impl WorkspaceAttachments {
                 return;
             }
         };
-        let files = if part == CHAT_RECORD {
-            reported(&bytes)
-        } else {
-            referenced(&bytes)
-        };
+        let files = referenced(&bytes);
         let asks = self.asks(&files, now_ms());
         {
             let mut state = self.state.lock_recover();
@@ -558,85 +517,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn the_host_keeps_reported_files_for_their_reporters_within_a_quota;
-
-        phase a_filed_reports_picture_and_recording_are_kept_for_its_reporter;
-        // The pictures and recordings of the reports filed in the Chat's
-        // record are the files the host keeps for them, each for whoever filed
-        // it; a report without either references nothing.
-        {
-            let mut doc = AutoCommit::new();
-            chat::demo::seed(&mut doc).unwrap();
-            let picture = "ab".repeat(32);
-            let recording = "cd".repeat(32);
-            let file = |id: &str, screenshot: Option<serde_json::Value>| {
-                let mut feedback = serde_json::json!({
-                    "text": "The picker misses a row",
-                    "context": [],
-                });
-                if let Some(screenshot) = screenshot {
-                    feedback["screenshot"] = screenshot;
-                }
-                if id == "c" {
-                    feedback["recording"] = serde_json::json!({
-                        "hash": recording,
-                        "app": "so.tilo.notes",
-                        "app_name": "Notes",
-                        "kind": "notes.note",
-                        "from_ms": 1_000,
-                        "to_ms": 2_000,
-                        "steps": 3,
-                        "bytes": 4_096,
-                    });
-                }
-                serde_json::json!({
-                    "id": id.repeat(32),
-                    "destination": {
-                        "workspace": "workspace",
-                        "provider": "record:so.tilo.chat:",
-                        "channel": "c_general",
-                    },
-                    "feedback": feedback,
-                })
-            };
-            let with_picture = serde_json::json!({
-                "hash": picture.to_ascii_uppercase(),
-                "width": 4,
-                "height": 3,
-            });
-            for (author, submission) in [
-                ("visitor-one", file("a", Some(with_picture))),
-                ("visitor-two", file("b", None)),
-                ("visitor-three", file("c", None)),
-            ] {
-                chat::demo::apply_as(
-                    &mut doc,
-                    author,
-                    chat::Chat::SUBMIT_FEEDBACK.with(chat::chat::chat::SubmitFeedback {
-                        channel: tilo_resource::Id::from_raw("c_general"),
-                        submission,
-                    }),
-                )
-                .unwrap();
-            }
-            let mut kept = reported(&doc.save());
-            kept.sort_by(|a, b| a.member.cmp(&b.member));
-            assert_eq!(
-                kept,
-                [
-                    Referenced {
-                        hash: picture,
-                        member: MemberId::person("visitor-one"),
-                        size: None,
-                    },
-                    Referenced {
-                        hash: recording,
-                        member: MemberId::person("visitor-three"),
-                        size: Some(4_096),
-                    },
-                ]
-            );
-            assert!(reported(b"not a record").is_empty());
-        }
 
         phase the_oldest_files_go_first_past_a_quota;
         {

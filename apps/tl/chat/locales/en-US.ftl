@@ -144,6 +144,13 @@ d-abono4ra-name = Name
 d-aod7dups = Carry native chat
     .doc = The conversations the native Chat kept before this app took its id over, carried into these once: its categories and channels in the sidebar's order, each with its name and topic, and every message of a channel with what it said, whether it was pinned and the id it had there.
 
+d-uhenzjex = Report a problem
+    .doc = Files a problem report, what someone ran into while using Tilo, in the workspace's #feedback channel, which the first report opens.
+    .did = reported a problem
+    .w-say-what-went-wrong-first = Say what went wrong first
+
+d-uhenzjex-body = Body
+
 d-3cetzzm3 = Message
     .doc = Opens the direct message with `who`, in the sidebar, or the one already open with them: a person has one conversation, not a new empty one each time.
 
@@ -214,6 +221,8 @@ d-6uysx57s-c = C
 d-6uysx57s-m = M
 
 d-6uysx57s-name = Name
+
+d-v6wnfixl = Report~present
 
 d-dgrvpxre = Send view~present
 

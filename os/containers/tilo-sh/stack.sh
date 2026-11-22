@@ -707,7 +707,6 @@ server_env() {
     # its entry mails links to such a page (production's is https).
     TILO_WORKSPACES_LOCAL=1
     "TILO_WORKSPACES_ROOT_FILE=$secrets_path/workspace-root-lounge"
-    TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback
     # Its mail goes to this stack's mail sink (stack.sh mail reads it) where
     # production's goes to Resend.
     TILO_WORKSPACES_CONTACT=hello@tilo.localhost
@@ -870,7 +869,6 @@ web_env() {
     TILO_WEB_HOME_NAME=Lounge \
     "TILO_WEB_HOME_APP=${TILO_SH_HOME_APP-so.tilo.chat}" \
     "TILO_WEB_HOME_ENTRY=$server_origin/peer/v1/directory/$workspace/" \
-    TILO_WEB_HOME_FEEDBACK=c_feedback \
     "TILO_WEB_DIRECTORY=$server_origin/peer/v1/directory" \
     "TILO_WEB_API=$api_origin" \
     "TILO_WEB_SHELF=http://127.0.0.1:$plain_port" \

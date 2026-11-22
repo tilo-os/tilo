@@ -1,110 +1,13 @@
-//! Device-private feedback ownership shared by native and browser desktops.
-//! A host supplies an already-admitted destination and its existing adapter;
-//! neither a window, a URL nor a draft chooses transport authority.
-
-use std::{cell::RefCell, rc::Rc};
+//! The feedback composer as a desktop registers it, and what the window in front is for a report
+//! about it.
 
 use tilo_desktop_model::{AppKind, GroupId, Layout, StripId, TabId, TileContent, WorkspaceId};
 
-use tilo_app::feedback::{Composer, DurableStore, Error, Outbox, StorageKey};
 pub use tilo_app::feedback::{Control, Destination, FeedbackHost, ShownResource, Subject};
-use tilo_app::feedback_composer::{self, FeedbackServices};
+use tilo_app::feedback_composer;
 use ui::{application::AppComponent, launch::LaunchError};
 
-pub mod recorder;
-
 pub const PACKAGE: &str = "so.tilo.feedback-composer";
-
-/// Install `startup` into the profile's feedback slot, the ownership every
-/// composer window of the profile borrows. A profile holds one: a second
-/// startup is refused rather than replacing the authority reports go under.
-///
-/// # Errors
-///
-/// Refuses a second ownership, changed authority and storage that cannot keep
-/// the approved outbox.
-pub fn install(
-    startup: tilo_feedback_transport::Startup,
-    store: Rc<dyn DurableStore>,
-    slot: &mut Option<PrivateFeedback>,
-) -> Result<(), Error> {
-    if slot.is_some() {
-        return Err(Error::Conflict);
-    }
-    let destination = startup.destination().clone();
-    let host = startup.host(store.clone())?;
-    *slot = Some(PrivateFeedback::new(store, destination, host)?);
-    Ok(())
-}
-
-/// One profile's pinned destination and durable approved outbox. The draft component uses its own
-/// ephemeral store and is never a workspace record.
-pub struct PrivateFeedback {
-    services: FeedbackServices,
-}
-
-impl PrivateFeedback {
-    /// Wake for private persistence even when its presentation is closed.
-    #[must_use]
-    pub fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        self.services.next_wake_deadline()
-    }
-
-    /// Bind existing host authority without joining a workspace or creating a grant.
-    ///
-    /// # Errors
-    /// Refuses invalid destinations, concurrent outbox ownership and storage
-    /// that cannot recover its existing approved submissions.
-    pub fn new(
-        store: Rc<dyn DurableStore>,
-        destination: Destination,
-        host: Box<dyn FeedbackHost>,
-    ) -> Result<Self, Error> {
-        destination.validate()?;
-        let namespace = blake3::hash(&serde_json::to_vec(&destination)?);
-        let key = StorageKey::app(format!("so.tilo.feedback-outbox.{}", namespace.to_hex()));
-        let outbox = Outbox::open(store, key)?;
-        let controller = Composer::new(destination, outbox, host)?;
-        Ok(Self {
-            services: FeedbackServices::new(Rc::new(RefCell::new(controller))),
-        })
-    }
-
-    /// Mount the actual private review controls over an isolated draft store.
-    ///
-    /// # Errors
-    /// Refuses invalid component identity or a second concurrent presentation.
-    pub fn prepare(
-        &self,
-        device: &str,
-        author: &str,
-        instance: u64,
-    ) -> Result<AppComponent, LaunchError> {
-        feedback_composer::prepare(Some(self.services.clone()), device, author, instance)
-    }
-
-    /// The services a composer's preparation borrows, for a host that has the composer's code from
-    /// elsewhere than [`Self::prepare`] (the browser desktop fetches it the first time Feedback
-    /// opens).
-    #[must_use]
-    pub fn services(&self) -> FeedbackServices {
-        self.services.clone()
-    }
-
-    /// Name the window the next report is about. The desktop chooses it from where the person asked
-    /// for Feedback; nothing about it is read until the person includes context in a review.
-    pub fn about(&self, subject: Option<Subject>) -> Result<(), Error> {
-        self.services.about(subject)
-    }
-
-    /// Service storage/transport wakes even after the person closes the window.
-    ///
-    /// # Errors
-    /// Preserves and presents the existing controller's actual failure.
-    pub fn pump(&self) -> Result<(), Error> {
-        self.services.pump()
-    }
-}
 
 /// The desktop catalogue's internal component, not an installed application.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
@@ -241,78 +144,6 @@ fn subject(tile: &TileContent, name: impl Fn(&str) -> Option<String>) -> Option<
         control: None,
         record: None,
     })
-}
-
-#[cfg(test)]
-mod install_tests {
-    use super::*;
-    use ed25519_dalek::SigningKey;
-    use std::cell::RefCell;
-    use tilo_actions::remote::Caller;
-    use tilo_app::feedback::MemoryStore;
-    use tilo_feedback_transport::{Enrollment, NoCapture, SessionTransport, Startup};
-    use ui::permissions::{PermissionContext, Role};
-
-    const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
-    const REPORTER: [u8; 32] = [12; 32];
-
-    fn startup() -> Startup {
-        let enrollment = Enrollment {
-            destination: Destination {
-                workspace: WORKSPACE.into(),
-                provider: "record:so.tilo.chat:".into(),
-                channel: "feedback".into(),
-            },
-            owner: Caller::authenticated(
-                [11; 32],
-                SigningKey::from_bytes(&[41; 32]).verifying_key().to_bytes(),
-            )
-            .in_workspace(WORKSPACE),
-            reporter: Caller::authenticated(
-                REPORTER,
-                SigningKey::from_bytes(&[42; 32]).verifying_key().to_bytes(),
-            )
-            .in_workspace(WORKSPACE),
-            permissions: PermissionContext::member_of(
-                WORKSPACE,
-                &ui::permissions::MemberId::person(hex::encode(REPORTER)),
-                Role::Owner,
-            )
-            .at_unix_time(0),
-        };
-        let held = Rc::new(RefCell::new(enrollment.clone()));
-        let session = SessionTransport::new(
-            Box::new(move || Ok(held.borrow().clone())),
-            Box::new(|_, _| Ok(())),
-            Box::new(|_| Ok(None)),
-        );
-        Startup::new(enrollment, Box::new(session), Box::new(NoCapture)).unwrap()
-    }
-
-    /// The profile holds one ownership: its composer mounts with the private report controls, and a
-    /// second startup cannot replace the authority reports already go under.
-    #[test]
-    fn a_profile_keeps_one_ownership_and_its_composer_mounts_protected() {
-        let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
-        let mut slot = None;
-        install(startup(), store.clone(), &mut slot).unwrap();
-        let component = slot
-            .as_ref()
-            .unwrap()
-            .prepare("device", &hex::encode(REPORTER), 42)
-            .unwrap();
-        let frame = ui::headless::FrameHarness::from_component(
-            component,
-            (1000, 700),
-            ui::application::ComponentRunnerInputs::from_native_process(),
-        )
-        .unwrap();
-        assert!(frame.capture_protected());
-        assert!(matches!(
-            install(startup(), store, &mut slot),
-            Err(Error::Conflict)
-        ));
-    }
 }
 
 #[cfg(test)]

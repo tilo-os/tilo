@@ -139,25 +139,34 @@ action add_channel(c: Category, name: Text = std.say("new-channel")) -> TextChan
 /// once: its categories and channels in the sidebar's order, each with its name and topic, and
 /// every message of a channel with what it said, whether it was pinned and the id it had there.
 /// The replies in a message's thread are the messages of that message's thread, a reply quoting
-/// it answers it, and who wrote each message, when, and its reactions are kept with it. What this
-/// app has no place for is set aside in a category of its own instead of dropped: an archived
-/// channel, a voice channel, and each direct conversation, as a channel holding its messages.
-/// The native app's own documents are left as they are.
+/// it answers it, and who wrote each message, when, and its reactions are kept with it. A problem
+/// report filed there is a message of the channel it was filed in, among the others by when it
+/// was filed, and that channel is the one [`report`] files in now. What this app has no place for
+/// is set aside in a category of its own instead of dropped: an archived channel, a voice channel,
+/// and each direct conversation, as a channel holding its messages. The native app's own
+/// documents are left as they are.
 migration action carry_native_chat(all: Conversations) {
     let earlier = earlier(all)
     // Oldest first: when each was written, the same time by id.
     let messages = earlier
-        .filter(e -> e.of == "messages")
+        .filter(e -> e.of == "messages" or e.of == "feedback")
         .sort_by(e -> e.id)
         .sort_by(e -> e.texts.get("ts") ?? "")
+    let reported_in = earlier.filter(e -> e.of == "feedback").map(e -> channel_of(e))
     let categories = earlier.filter(e -> e.of == "categories")
     let known = categories.map(c -> c.id)
     let channels = earlier.filter(e -> e.of == "channels")
     let shown = channels.filter(e -> not set_aside(e))
-    // Each conversation carried, by the id it had in the native app.
+    // Each conversation carried, by the id it had in the native app; the one reports went to
+    // under the key reports go to now.
     let carried: Map<TextChannel> = Map<TextChannel>()
     for ch in shown.filter(e -> not known.contains(e.texts.get("category") ?? "")) {
-        carried.put(ch.id, all.channels.insert(native_channel(ch), id: ch.id))
+        let made = if reported_in.contains(ch.id) or (ch.texts.get("name") ?? "") == "feedback" {
+            all.channels.insert(native_channel(ch), key: "feedback")
+        } else {
+            all.channels.insert(native_channel(ch), id: ch.id)
+        }
+        carried.put(ch.id, made)
     }
     for cat in categories {
         let c = all.channels.insert(Category(name: cat.texts.get("name") ?? ""), id: cat.id)
@@ -170,7 +179,7 @@ migration action carry_native_chat(all: Conversations) {
     // of its messages' conversation.
     let directs: Map<Text> = Map<Text>()
     for m in messages {
-        let to = m.texts.get("channel") ?? ""
+        let to = channel_of(m)
         if to.starts_with("direct:") { directs.put(to, members_of(to)) }
     }
     if not aside.is_empty() or not directs.keys().is_empty() {
@@ -205,14 +214,19 @@ migration action carry_native_chat(all: Conversations) {
     }
     for to in carried.keys() {
         if let ch = carried.get(to) {
-            let here = messages.filter(e -> (e.texts.get("channel") ?? "") == to)
+            let here = messages.filter(e -> channel_of(e) == to)
             let tops = here.filter(e -> (e.texts.get("parent") ?? "") == "")
             let ids = tops.map(e -> e.id)
             // A reply whose message is gone stands in the conversation where it was written.
             let stays = here.filter(e -> not ids.contains(e.texts.get("parent") ?? ""))
             let posted: Map<Message> = Map<Message>()
             for e in stays {
-                posted.put(e.id, ch.messages.insert(native_message(e), id: e.id))
+                let m = if e.of == "feedback" {
+                    ch.messages.insert(native_report(e), id: "m_feedback_{e.id}")
+                } else {
+                    ch.messages.insert(native_message(e), id: e.id)
+                }
+                posted.put(e.id, m)
             }
             for e in tops {
                 let replies = here.filter(r -> (r.texts.get("parent") ?? "") == e.id)
@@ -249,6 +263,26 @@ fn native_message(e: host.Earlier) -> Message {
         body: RichText(e.texts.get("text") ?? ""),
         pinned: (e.texts.get("pinned") ?? "") == "true",
         by: e.texts.get("author_name") ?? member_named(e.texts.get("author") ?? ""),
+        written: (e.texts.get("ts") ?? "").to_int() ?? 0,
+        reacted: reactions_said(e.lists.get("reactions") ?? []),
+    )
+}
+
+/// The native conversation the message or report `e` was written in.
+fn channel_of(e: host.Earlier) -> Text {
+    if e.of == "feedback" {
+        e.texts.get("submission.destination.channel") ?? ""
+    } else { e.texts.get("channel") ?? "" }
+}
+
+/// A problem report filed in the native Chat as a message of this app: what the person wrote and
+/// the apps they picked things in, and who filed it there, when, and its reactions.
+fn native_report(e: host.Earlier) -> Message {
+    let words = e.texts.get("submission.feedback.text") ?? ""
+    let apps = (e.lists.get("submission.feedback.selections.app_name") ?? []).filter(a -> a != "")
+    Message(
+        body: RichText(if apps.is_empty() { words } else { "{words} (in {apps.join(", ")})" }),
+        by: member_named(e.texts.get("author") ?? ""),
         written: (e.texts.get("ts") ?? "").to_int() ?? 0,
         reacted: reactions_said(e.lists.get("reactions") ?? []),
     )
@@ -302,6 +336,20 @@ fn without_hex(key: Text) -> Text {
     } else { key }
 }
 
+/// Files a problem report, what someone ran into while using Tilo, in the workspace's #feedback
+/// channel, which the first report opens.
+///
+/// The people who read the reports there answer, react and start a thread under one as under any
+/// message. The channel is made under one key on every device, so reports filed apart open one.
+action report(all: Conversations, body: RichText) -> Message (
+    icon: .flag,
+    label: "Report a problem",
+    did: "reported a problem",
+) {
+    require not body.is_empty() "Say what went wrong first"
+    send(all.channels.insert(TextChannel(name: "feedback"), key: "feedback"), body)
+}
+
 /// Opens the direct message with `who`, in the sidebar, or the one already open with them: a
 /// person has one conversation, not a new empty one each time.
 action message_person(all: Conversations, who: Actor) -> Direct (
@@ -346,14 +394,16 @@ action send(
             // Writing to an agent asks it, made from the message, whose replies stand under it.
             // Nothing said goes to an agent that may not read it.
             if d.person.kind() == .agent {
-                agent.ask(
-                    agent.agents,
-                    d.person,
-                    if std.may_read(d.person, sent) { body } else { RichText("") },
-                ).made_from(sent)
+                agent
+                    .ask(
+                        agent.agents,
+                        d.person,
+                        if std.may_read(d.person, sent) { body } else { RichText("") },
+                    )
+                    .made_from(sent)
             }
             sent
-        },
+        }
     }
 }
 

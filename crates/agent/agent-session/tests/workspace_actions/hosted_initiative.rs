@@ -19,11 +19,7 @@ use tilo_agent_session::bot::host_steps::{
 use tilo_agent_session::workspace_actions::WorkspaceActions;
 use tilo_server::{
     workspace_agents::{Ask, WorkspaceActionProvider, invoke_named},
-    workspace_bots::{
-        events::Authority,
-        initiative::Initiative,
-        workspace_resource,
-    },
+    workspace_bots::{events::Authority, initiative::Initiative, workspace_resource},
     workspaces::{
         Workspaces,
         person_model::{
