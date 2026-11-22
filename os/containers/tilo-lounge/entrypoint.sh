@@ -96,6 +96,10 @@ TILO_WORKSPACES_DISCORD_CLIENT_ID TILO_WORKSPACES_DISCORD_CLIENT_SECRET_FILE
 TILO_WORKSPACES_DISCORD_REDIRECT_URL TILO_WORKSPACES_DISCORD_AUTHORIZE_URL
 TILO_WORKSPACES_DISCORD_API_BASE TILO_WORKSPACES_DISCORD_TOKEN_FILE'
 known=$(printf '%s' "$known" | tr '\n' ' ')
+# The setting that once seeded apps by name: each app is a package now.
+if [ -n "${TILO_WORKSPACES_SEED_APPS+set}" ]; then
+  fail 'TILO_WORKSPACES_SEED_APPS is gone: Chat is seeded with TILO_WORKSPACES_CHAT_CHANNELS, and every other app is a signed package in TILO_WORKSPACES_PACKAGES (the image sets it); remove TILO_WORKSPACES_SEED_APPS from the deployment'
+fi
 for variable in $(env | sed -n 's/^\(TILO_WORKSPACES_[A-Za-z0-9_]*\)=.*/\1/p'); do
   case " $known " in
     *" $variable "*) ;;

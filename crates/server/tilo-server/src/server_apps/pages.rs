@@ -163,10 +163,16 @@ impl Pages {
             .into_iter()
             .find(|(id, _)| id == app)
             .ok_or(PageRefusal::NoSuchApp)?;
-        self.apps
+        let access = self
+            .apps
             .server_workspaces()
             .allowed(workspace, &reader)
             .map_err(|_| PageRefusal::NotMember)?;
+        // Someone the workspace does not let read the app is shown none of it, and is not told
+        // it is there.
+        if !may_read(&access, workspace, &app) {
+            return Err(PageRefusal::NoSuchApp);
+        }
         let launcher = self
             .apps
             .launcher(workspace)
@@ -203,6 +209,15 @@ impl Pages {
             Answer::Patched(_) => Err(unavailable("the page answered out of turn".to_owned())),
         }
     }
+}
+
+/// Whether `access` lets its holder read what `app` keeps in `workspace`.
+fn may_read(access: &tilo_action_policy::MemberAccess, workspace: WorkspaceId, app: &str) -> bool {
+    access.allows(
+        &tilo_action_policy::TreePath::workspace(&workspace.to_string()).app(app),
+        tilo_actions::ActionKind::Read,
+        std::time::SystemTime::now(),
+    )
 }
 
 /// `ask` asked on `connection`, and its answer: one ask at a time, each answered in turn.
