@@ -209,12 +209,7 @@ fn turn_of(
         let carried = asked.refers.iter().filter_map(super::carried::Carried::of);
         request.push_str(&super::carried::told(said.clone(), carried));
     }
-    let attempt = asked
-        .replies
-        .len()
-        .try_into()
-        .unwrap_or(u32::MAX)
-        .saturating_add(1);
+    let attempt = asked.attempt();
     let conversation = conversation_of(asked, around);
     Some(Turn {
         agent: agent.clone(),

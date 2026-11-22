@@ -126,6 +126,21 @@ impl Asked {
     pub fn latest(&self) -> Option<&Replied> {
         self.replies.iter().max_by_key(|reply| reply.attempt)
     }
+
+    /// Which time it is being asked, its first reply being 1: the newest reply's while that one
+    /// is still working, else the one after it. A turn keeps the same attempt from before its
+    /// reply is written to its end, so every look names it the same.
+    #[must_use]
+    pub fn attempt(&self) -> u32 {
+        let latest = self.latest();
+        let newest = latest.map_or(0, |reply| reply.attempt);
+        let attempt = if latest.is_some_and(|reply| reply.state == AskState::Working) {
+            newest
+        } else {
+            newest.saturating_add(1)
+        };
+        u32::try_from(attempt).unwrap_or(u32::MAX)
+    }
 }
 
 /// One reply, as the record holds it now.

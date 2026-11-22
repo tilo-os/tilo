@@ -189,12 +189,7 @@ pub(super) fn team_turn(
             .sub
             .as_ref()
             .is_some_and(|sub| sub.stands == Stands::Stopped && asked_ms(asked) <= sub.since);
-    let attempt = asked
-        .replies
-        .len()
-        .try_into()
-        .unwrap_or(u32::MAX)
-        .saturating_add(1);
+    let attempt = asked.attempt();
     Some((
         Turn {
             agent: agent.clone(),
