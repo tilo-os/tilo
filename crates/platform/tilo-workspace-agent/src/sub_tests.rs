@@ -1,4 +1,4 @@
-use super::sub::{DEFAULT_AT_ONCE, MAX_DEPTH, MAX_LINE, MAX_NOTES, MAX_SUB_AGENTS, RUNS_ON_HOST};
+use super::sub::{DEFAULT_AT_ONCE, MAX_DEPTH, MAX_LINE, MAX_NOTES, MAX_SUB_AGENTS};
 use super::{
     Agent, AgentState, Bound, NewSubAgent, OWNER, Stands, Sub, WorkspaceAgents, workspace_agents,
 };
@@ -130,7 +130,6 @@ fn an_agent_starts_a_sub_agent_with_its_job_its_role_and_its_kind_of_work() {
         sub.kind, "subtask",
         "a part of a task, unless its starter says otherwise"
     );
-    assert_eq!(sub.runs, RUNS_ON_HOST);
     assert_eq!(sub.depth, 1);
     assert_eq!(sub.task.as_deref(), Some("tasks.issues/issues/i_7"));
     assert_eq!(
@@ -956,7 +955,6 @@ pub(super) fn kept(name: &str, started_by: &str, at: i64, stands: Stands) -> Age
             started_by: started_by.to_owned(),
             job: "Research one company".to_owned(),
             kind: "subtask".to_owned(),
-            runs: RUNS_ON_HOST.to_owned(),
             depth: 1,
             conversation: MemberId::direct_conversation([
                 MemberId::person(ADA),
@@ -1088,7 +1086,6 @@ fn a_sub_agent_is_kept_as_the_fields_a_client_reads() {
                 "job": "Find the Q3 board deck.",
                 "role": "Researcher",
                 "kind": "subtask",
-                "runs": "host",
                 "depth": 1,
                 "task": null,
                 "conversation": conversation,

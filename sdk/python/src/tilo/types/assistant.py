@@ -111,7 +111,6 @@ class Sub(TypedDict):
     job: str
     role: str
     kind: str
-    runs: str
     depth: int
     task: str | None
     conversation: str
@@ -219,11 +218,11 @@ SetSubAgentLimitsArgs = TypedDict("SetSubAgentLimitsArgs", {
 
 class Window(Resource):
     """Assistant window — `assistant.window`."""
-    __surface__ = "so.tilo.assistant@8141836cb464d498"
+    __surface__ = "so.tilo.assistant@1cab97d1a1d68b48"
 
 class WorkspaceAgent(Resource):
     """Agents — `tilo.workspace.agent`."""
-    __surface__ = "so.tilo.assistant@8141836cb464d498"
+    __surface__ = "so.tilo.assistant@1cab97d1a1d68b48"
     agents: list[Entry[Agent]]
 
     def create_agent(self,

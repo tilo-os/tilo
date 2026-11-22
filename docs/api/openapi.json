@@ -26243,49 +26243,6 @@
         "required": [],
         "description": "Keep reviewed runs"
       },
-      "tl.so.tilo.agent.Claim.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.agent.Claim.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "device"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.agent.Claim.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
       "tl.so.tilo.agent.Ask.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -26346,22 +26303,6 @@
         "properties": {},
         "required": [],
         "description": "Stops a turn that is working; what the agent did until then stays."
-      },
-      "tl.so.tilo.agent.Ask.claim.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "at": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "device",
-          "at"
-        ],
-        "description": "The agent takes the turn of `a` on `device` at `at`. When several devices took it, the\nearliest claim wins and a tie goes to the lowest device key; the others leave it."
       },
       "tl.so.tilo.agent.Ask.answer.Arguments": {
         "type": "object",
@@ -39809,24 +39750,6 @@
     },
     {
       "app": "so.tilo.agent",
-      "resource": "tl.so.tilo.agent.Claim",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.agent.Claim.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.agent",
-      "resource": "tl.so.tilo.agent.Claim",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.agent.Claim.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.agent",
-      "resource": "tl.so.tilo.agent.Claim",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.agent.Claim.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.agent",
       "resource": "tl.so.tilo.agent.Ask",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.$create.Arguments"
@@ -39860,12 +39783,6 @@
       "resource": "tl.so.tilo.agent.Ask",
       "action": "stop",
       "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.stop.Arguments"
-    },
-    {
-      "app": "so.tilo.agent",
-      "resource": "tl.so.tilo.agent.Ask",
-      "action": "claim",
-      "arguments": "#/components/schemas/tl.so.tilo.agent.Ask.claim.Arguments"
     },
     {
       "app": "so.tilo.agent",

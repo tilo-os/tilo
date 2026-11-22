@@ -3,21 +3,6 @@
 
 d-so-tilo-agent = Agents
 
-d-vxjq7y2k = Claim
-    .doc = A device that took an ask's turn, and when.
-    .noun = { $count ->
-        [one] claim
-       *[other] claims
-    }
-
-d-6qikspks = Device
-    .doc = The device, by its key.
-
-d-7yz7w4tm = At
-    .doc = When it took the turn, in milliseconds since 1970.
-
-d-vxjq7y2k-filter-at = At
-
 d-zbfroywd = Ask
     .doc = Someone asked an agent something about a resource: by mentioning it in a chat message, a note or a task, by writing to it directly, or from the canvas.
     .noun = { $count ->
@@ -35,9 +20,6 @@ d-hw6dxbyx = Mention
     .doc = The mention that asked: the agent's reference as the text marks it; empty for an ask made outright.
 
 d-wtm364ne = State
-
-d-gqvm2gqf = Claims
-    .doc = The devices that took its turn.
 
 d-zbfroywd-filter-agent = Agent
 
@@ -151,15 +133,6 @@ d-5zilxes5 = Stop
     .doc = Stops a turn that is working; what the agent did until then stays.
     .w-nothing-is-working-on-it = Nothing is working on it
 
-d-nht76nfq = Take the turn
-    .doc = The agent takes the turn of `a` on `device` at `at`.
-    .w-only-the-agent-asked-takes-its = Only the agent asked takes its turn
-    .w-nobody-waits-for-an-answer = Nobody waits for an answer
-
-d-nht76nfq-device = Device
-
-d-nht76nfq-at = At
-
 d-zl7upzy7 = Answer
     .doc = The agent starts its reply to `a`, the ask's next attempt.
     .did = answered
@@ -200,8 +173,6 @@ d-koyxjtxv = Withdraw~present
 d-rxmz2d33 = Reopen~present
 
 d-mzbpkahz = Stop~present
-
-d-4c64ciji = Claim~present
 
 d-o6oeh6vp = Answer~present
 

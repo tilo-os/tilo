@@ -2052,6 +2052,10 @@ impl Workspaces {
 #[path = "member_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "agent_turn_tests.rs"]
+mod agent_turn_tests;
+
 /// The workspaces at `paths` opened, a few at a time: each reads its own files, and one at
 /// a time made a start wait for every workspace's history in turn.
 ///

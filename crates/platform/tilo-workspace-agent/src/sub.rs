@@ -76,9 +76,6 @@ pub const KINDS: [&str; 5] = ["subtask", "task", "request", "classifier", "one_s
 /// The kind of work of a sub-agent that was given none: a part of a task.
 pub const DEFAULT_KIND: &str = "subtask";
 
-/// Where a sub-agent works that the workspace's host works itself, with its own loop.
-pub const RUNS_ON_HOST: &str = "host";
-
 /// The kind of Chat's messages, as its actions are decided under it.
 const MESSAGES: &str = "chat.messages";
 
@@ -229,8 +226,6 @@ pub struct Sub {
     pub role: String,
     /// The kind of work that picks its model ([`KINDS`]).
     pub kind: String,
-    /// Where it works: [`RUNS_ON_HOST`], or the word of another runner.
-    pub runs: String,
     /// How far below the person's own agent it stands: 1 when that agent started it.
     pub depth: u8,
     /// The issue in Tasks it works for, by its address; `None` when it works for none.
@@ -383,7 +378,6 @@ pub(crate) fn check(agent: &Agent) -> Result<(), Refusal> {
     check_plain(&sub.job, MAX_JOB, "a sub-agent's job")?;
     check_words(&sub.role, MAX_ROLE, "a role")?;
     check_words(&sub.line, MAX_LINE, "how a sub-agent stands")?;
-    check_words(&sub.runs, MAX_ROLE, "where a sub-agent works")?;
     if let Some(task) = &sub.task {
         check_words(task, MAX_TASK, "the issue a sub-agent works for")?;
     }
@@ -679,7 +673,6 @@ impl WorkspaceAgents {
                 job,
                 role,
                 kind,
-                runs: RUNS_ON_HOST.to_owned(),
                 depth,
                 task,
                 conversation,

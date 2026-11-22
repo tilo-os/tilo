@@ -173,21 +173,11 @@ fn cut(text: &str, most: usize) -> &str {
     text.get(..end).unwrap_or_default()
 }
 
-/// Whether this server's own loop works `agent`: every agent a person made, and a sub-agent
-/// that works on it. One that works elsewhere is its own runner's.
-pub(super) fn worked_here(agent: &Agent) -> bool {
-    agent
-        .sub
-        .as_ref()
-        .is_none_or(|sub| sub.runs == sub::RUNS_ON_HOST)
-}
-
 /// The turn of a lead's that `delivery` is written on, as `roster` holds the two agents now.
 ///
 /// Only a job or a note a sub-agent gave a sub-agent of its own team has one: both are listed
-/// and work for the person the message is for, this server works the lead, and the other was
-/// started under it. Then this server worked the lead's turns itself, in the lead's own
-/// conversation. The list keeps who gave
+/// and work for the person the message is for, and the other was started under it. The
+/// lead's turns were worked in its own conversation. The list keeps who gave
 /// a job or a note and not which message the lead's turn answered then, so the turn named is
 /// the one the lead's own job began: every later turn of a sub-agent is work on that job.
 ///
@@ -205,11 +195,9 @@ fn lead_turn(
             .as_ref()
             .is_some_and(|sub| sub.conversation == delivery.conversation)
     })?;
-    let one_team = lead.is_active()
-        && under.is_active()
-        && worked_here(lead)
-        && lead.keeper == delivery.person
-        && under.keeper == delivery.person
+    let one_team = [lead, under]
+        .iter()
+        .all(|agent| agent.is_active() && agent.keeper == delivery.person)
         && roster.started_under(under, &lead.id.0);
     if !one_team {
         return None;
@@ -1414,16 +1402,6 @@ mod tests {
         assert!(
             lead_turn(&retired, &to_worker).is_none(),
             "a lead that was retired gives nothing on a turn"
-        );
-        // A lead another runner works: where it works is as the list's item says it.
-        let elsewhere = with_lead(&list, |lead| {
-            if let Some(sub) = lead.sub.as_mut() {
-                sub.runs = "elsewhere".to_owned();
-            }
-        });
-        assert!(
-            lead_turn(&elsewhere, &to_worker).is_none(),
-            "a lead this server does not work has no turn of this server's"
         );
     }
 }

@@ -81,7 +81,7 @@ fn json_encodings_are_pinned() {
         concat!(
             r#"{"kinds":{"actions":true,"indexing":true,"model_calls":true,"builds":true},"#,
             r#""from":"own_devices","#,
-            r#""when":{"charging_only":false,"free_cpu_percent":0,"free_memory_percent":0},"agents":false}"#,
+            r#""when":{"charging_only":false,"free_cpu_percent":0,"free_memory_percent":0}}"#,
         ),
     );
 
@@ -273,7 +273,6 @@ users = ["abababababababababababababababababababababababababababababababab"]
 
 [work]
 from = "own_devices"
-agents = false
 
 [work.kinds]
 actions = true

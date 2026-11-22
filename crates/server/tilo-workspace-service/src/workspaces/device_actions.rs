@@ -55,6 +55,8 @@ pub(crate) struct DeviceWork {
     /// Moves on every change of a turn taken here, so a device following one
     /// looks again then.
     moved: tokio::sync::watch::Sender<u64>,
+    /// The agent engine this device runs, once it runs one.
+    agents: std::sync::RwLock<Option<Arc<dyn crate::work::AgentEngine>>>,
     /// The workspaces this device holds, as the action service decides them:
     /// who may ask is what each workspace's members say.
     workspaces: Arc<WorkspacesMap>,
@@ -167,6 +169,7 @@ impl DeviceWork {
             linux: std::sync::RwLock::default(),
             linux_running: std::sync::Mutex::default(),
             moved: tokio::sync::watch::Sender::new(0),
+            agents: std::sync::RwLock::new(None),
             workspaces,
             turns: std::sync::OnceLock::new(),
             log: std::sync::Mutex::default(),
@@ -234,6 +237,12 @@ impl DeviceWork {
                 Turn::Invocation { job, .. } => job,
                 Turn::Linux { run, .. } => {
                     work.run_linux(claim, &caller, *run, completer).await;
+                    return;
+                }
+                // The take action asks for no agent's turn: the agent engine takes those.
+                Turn::Agent { .. } => {
+                    work.log.lock_recover().abandon(&invocation);
+                    completer.complete(Err(ActionCallError::UnknownAction));
                     return;
                 }
             };
@@ -613,17 +622,34 @@ impl super::Workspaces {
         .await
     }
 
-    /// Whether `device` may open the record `job` is about in `workspace` now.
-    pub(crate) async fn opens_job_record(
+    /// Whether `device` may open `app`'s record `resource` in `workspace` now.
+    pub(crate) async fn opens_record(
         &self,
         device: [u8; 32],
         workspace: &str,
-        job: &Job,
+        app: &str,
+        resource: &str,
     ) -> bool {
         self.reads_peer(workspace, |peer| {
-            peer.opens_app_record(device, &job.app, &job.resource, tilo_clock::wall())
+            peer.opens_app_record(device, app, resource, tilo_clock::wall())
         })
         .await
+    }
+
+    /// The agent engine this device runs, which takes the turns of agents'
+    /// turns ([`crate::work::Turn::Agent`]); `None` where it runs none.
+    pub(crate) fn agent_keys(&self) -> Option<Arc<dyn crate::work::AgentEngine>> {
+        self.inner.jobs.agents.read_recover().clone()
+    }
+
+    /// Whether this device runs an agent engine.
+    pub(crate) fn runs_agents(&self) -> bool {
+        self.agent_keys().is_some()
+    }
+
+    /// This device runs `engine` from now on.
+    pub(crate) fn run_agents(&self, engine: Arc<dyn crate::work::AgentEngine>) {
+        *self.inner.jobs.agents.write_recover() = Some(engine);
     }
 
     /// What `read` answers of `workspace` as this device holds it; `false`

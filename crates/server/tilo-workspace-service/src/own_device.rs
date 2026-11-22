@@ -62,11 +62,10 @@ pub async fn open(
     configure: impl FnOnce(ServiceConfig) -> ServiceConfig,
 ) -> Result<WorkspaceService, ServiceError> {
     let identity = ServiceIdentity::beside_device(&store, device.cert, &**device.signer).await?;
-    // A person's own device takes nobody else's work, and runs the agents of the workspaces it
-    // holds, where it builds them (`agents::on_device`).
+    // A person's own device takes nobody else's work.
     let mut config = configure(ServiceConfig::new(
         store,
-        tilo_server_protocol::WorkSetting::own_device(),
+        tilo_server_protocol::WorkSetting::none(),
     ));
     config.member = Some(Arc::new(MemberDevice {
         cert: device.cert.clone(),

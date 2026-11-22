@@ -24,29 +24,44 @@ async fn shared(
     name: &str,
     seed: u8,
 ) -> (TestHost, (SigningKey, DeviceCert), WorkspaceSummary, String) {
-    let (serving_key, serving_cert) = governor();
-    let serving = test_host(serving_state, &serving_key, &serving_cert).await;
-    invited(serving, &serving_cert, name, seed).await
+    shared_with(serving_state, name, seed, laptop(seed)).await
 }
 
-/// `serving` creates the workspace `name` and invites a device of `seed` into it: the serving
-/// device, the device it invites, the workspace and the invitation's text.
+/// The laptop of the person of `seed`.
+fn laptop(seed: u8) -> (SigningKey, DeviceCert) {
+    device_cert(
+        &SigningKey::from_bytes(&[seed; 32]),
+        "laptop",
+        DeviceCapabilities::member(),
+    )
+}
+
+/// [`shared`], inviting `device`.
+pub(super) async fn shared_with(
+    serving_state: &std::path::Path,
+    name: &str,
+    seed: u8,
+    device: (SigningKey, DeviceCert),
+) -> (TestHost, (SigningKey, DeviceCert), WorkspaceSummary, String) {
+    let (serving_key, serving_cert) = governor();
+    let serving = test_host(serving_state, &serving_key, &serving_cert).await;
+    invited(serving, &serving_cert, name, seed, device).await
+}
+
+/// `serving` creates the workspace `name` and invites `device` into it: the serving device, the
+/// device it invites, the workspace and the invitation's text.
 async fn invited(
     serving: TestHost,
     serving_cert: &DeviceCert,
     name: &str,
     seed: u8,
+    device: (SigningKey, DeviceCert),
 ) -> (TestHost, (SigningKey, DeviceCert), WorkspaceSummary, String) {
     let created = serving
         .workspaces()
         .create(name)
         .await
         .expect("a workspace is created");
-    let device = device_cert(
-        &SigningKey::from_bytes(&[seed; 32]),
-        "laptop",
-        DeviceCapabilities::member(),
-    );
     let issued = serving
         .workspaces()
         .pre_admit(
@@ -65,7 +80,7 @@ async fn invited(
 }
 
 /// A service on `state`, serving the member copies of `(key, cert)`.
-async fn member_service(
+pub(super) async fn member_service(
     state: &std::path::Path,
     (key, cert): (SigningKey, DeviceCert),
 ) -> TestHost {
@@ -997,7 +1012,8 @@ async fn a_copy_taking_in_its_kept_writes_lets_the_devices_other_work_run_meanwh
     let (serving_key, serving_cert) = governor();
     let serving =
         super::super::fixtures::test_host(serving_state.path(), &serving_key, &serving_cert).await;
-    let (serving, device, created, invitation) = invited(serving, &serving_cert, "Kept", 46).await;
+    let (serving, device, created, invitation) =
+        invited(serving, &serving_cert, "Kept", 46, laptop(46)).await;
     let workspace = created.workspace.clone();
     let member = member_service(member_state.path(), device).await;
     let copies = member.workspaces().clone();

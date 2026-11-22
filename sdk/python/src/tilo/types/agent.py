@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Claim` is the app's `tl.so.tilo.agent.Claim` at `agent/<resource>`, read with
+`Ask` is the app's `tl.so.tilo.agent.Ask` at `agent/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -21,7 +21,6 @@ from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "AskState",
-    "Claim",
     "Ask",
     "Step",
     "Reply",
@@ -30,7 +29,6 @@ __all__ = [
     "WithdrawArgs",
     "ReopenArgs",
     "StopArgs",
-    "ClaimArgs",
     "SayArgs",
     "StepArgs",
     "FinishArgs",
@@ -51,12 +49,6 @@ ReopenArgs = TypedDict("ReopenArgs", {
 StopArgs = TypedDict("StopArgs", {
 })
 """The arguments of `stop`."""
-
-ClaimArgs = TypedDict("ClaimArgs", {
-    "device": "str",
-    "at": "int",
-})
-"""The arguments of `claim`."""
 
 SayArgs = TypedDict("SayArgs", {
     "more": "str",
@@ -79,30 +71,9 @@ SupersedeArgs = TypedDict("SupersedeArgs", {
 })
 """The arguments of `supersede`."""
 
-class Claim(Resource):
-    """Claim — `tl.so.tilo.agent.Claim`."""
-    __surface__ = "so.tilo.agent@7ba37ee232798246"
-    @property
-    def _6qikspks(self) -> str:
-        """device (`6qikspks` on the wire)."""
-        return self.fields["6qikspks"]
-
-    @_6qikspks.setter
-    def _6qikspks(self, value: str) -> None:
-        self.edit("6qikspks", value=value)
-    @property
-    def _7yz7w4tm(self) -> int:
-        """at (`7yz7w4tm` on the wire)."""
-        return self.fields["7yz7w4tm"]
-
-    @_7yz7w4tm.setter
-    def _7yz7w4tm(self, value: int) -> None:
-        self.edit("7yz7w4tm", value=value)
-
-
 class Ask(Resource):
     """Ask — `tl.so.tilo.agent.Ask`."""
-    __surface__ = "so.tilo.agent@7ba37ee232798246"
+    __surface__ = "so.tilo.agent@0b5206c1145c7036"
     mcsi6vp5: str  # agent
     @property
     def _7j5pok54(self) -> str | None:
@@ -114,7 +85,6 @@ class Ask(Resource):
         self.edit("7j5pok54", value=value)
     hw6dxbyx: str  # mention
     wtm364ne: AskState  # state
-    gqvm2gqf: list[Entry[Claim]]  # claims
 
     def withdraw(self) -> None:
         """Takes an ask back before a device took its turn. Only its asker may."""
@@ -140,30 +110,18 @@ class Ask(Resource):
         """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("stop", items)
 
-    def claim(self,
-        *,
-        device: str,
-        at: int,
-    ) -> None:
-        """The agent takes the turn of `a` on `device` at `at`. When several devices took it, the earliest claim wins and a tie goes to the lowest device key; the others leave it."""
-        return self.action("claim", device=device, at=at)
-
-    def claim_many(self, items: list[ClaimArgs]) -> list[dict[str, Any]]:
-        """Runs `claim` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("claim", items)
-
     def answer(self) -> Reply:
         """The agent starts its reply to `a`, the ask's next attempt."""
         return self.action("answer")
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"withdraw", "withdraw_many", "reopen", "reopen_many", "stop", "stop_many", "claim", "claim_many", "answer"})
+    __actions__ = frozenset({"withdraw", "withdraw_many", "reopen", "reopen_many", "stop", "stop_many", "answer"})
 
 
 class Step(Resource):
     """Step — `tl.so.tilo.agent.Step`."""
-    __surface__ = "so.tilo.agent@7ba37ee232798246"
+    __surface__ = "so.tilo.agent@0b5206c1145c7036"
     ippal7k2: str  # called
     cyu3le2j: str  # answered
     cma7vgpx: bool  # failed
@@ -171,7 +129,7 @@ class Step(Resource):
 
 class Reply(Resource):
     """Reply — `tl.so.tilo.agent.Reply`."""
-    __surface__ = "so.tilo.agent@7ba37ee232798246"
+    __surface__ = "so.tilo.agent@0b5206c1145c7036"
     gjd462ep: Ask  # ask
     oka345cb: str  # body
     hzlmnzzw: AskState  # state
@@ -228,7 +186,7 @@ class Reply(Resource):
 
 class Agents(Resource):
     """Agents — `tl.so.tilo.agent.Agents`."""
-    __surface__ = "so.tilo.agent@7ba37ee232798246"
+    __surface__ = "so.tilo.agent@0b5206c1145c7036"
     mzzoxssv: list[Entry[Ask]]  # asks
     @property
     def _353i7jsi(self) -> list[Entry[Reply]]:
@@ -260,5 +218,5 @@ class Agents(Resource):
 
 class Agent(Resource):
     """Agents — `tl.so.tilo.agent`."""
-    __surface__ = "so.tilo.agent@7ba37ee232798246"
+    __surface__ = "so.tilo.agent@0b5206c1145c7036"
 

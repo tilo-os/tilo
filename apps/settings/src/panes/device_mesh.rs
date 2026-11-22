@@ -98,7 +98,6 @@ fn work_from(from: WorkFrom, when: WorkWhen) -> WorkSetting {
         },
         from,
         when,
-        agents: false,
     }
 }
 

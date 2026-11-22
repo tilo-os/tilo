@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Claim` is a `Resource` of the app's `tl.so.tilo.agent.Claim`, made by its factory with the
+ * `Ask` is a `Resource` of the app's `tl.so.tilo.agent.Ask`, made by its factory with the
  * resource's path (`agent/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.agent@7ba37ee232798246";
+export const SURFACE = "so.tilo.agent@0b5206c1145c7036";
 
 /** Where an ask stands. The workspace's agent engine moves it on, except that its asker withdraws it and a person stops a turn that is working. One of "waiting", "working", "done", "failed", "stopped", "withdrawn", "cannot_read". */
 export type AskState = "waiting" | "working" | "done" | "failed" | "stopped" | "withdrawn" | "cannot_read";
@@ -37,12 +37,6 @@ export interface ReopenArgs {
 
 /** The arguments of `stop`. */
 export interface StopArgs {
-}
-
-/** The arguments of `claim`. */
-export interface ClaimArgs {
-  device: string;
-  at: number;
 }
 
 /** The arguments of `say`. */
@@ -66,28 +60,12 @@ export interface FinishArgs {
 export interface SupersedeArgs {
 }
 
-/** Claim — `tl.so.tilo.agent.Claim`. */
-export interface Claim extends tilo.Resource {
-  "6qikspks": string;  // device
-  "7yz7w4tm": number;  // at
-}
-
-/** The actions `Claim` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const CLAIM_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.agent.Claim` kind at `path`. */
-export function claim(ws: tilo.Workspace, path: string): Claim {
-  return resourceProxy(ws, path, SURFACE, CLAIM_ACTIONS) as unknown as Claim;
-}
-
 /** Ask — `tl.so.tilo.agent.Ask`. */
 export interface Ask extends tilo.Resource {
   mcsi6vp5: string;  // agent
   "7j5pok54": string | null;  // said
   hw6dxbyx: string;  // mention
   wtm364ne: AskState;  // state
-  gqvm2gqf: Array<tilo.Entry<Claim>>;  // claims
   /** Takes an ask back before a device took its turn. Only its asker may. */
   withdraw(): Promise<void>;
   /** Runs `withdraw` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -100,20 +78,13 @@ export interface Ask extends tilo.Resource {
   stop(): Promise<void>;
   /** Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   stopMany(items: StopArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** The agent takes the turn of `a` on `device` at `at`. When several devices took it, the earliest claim wins and a tie goes to the lowest device key; the others leave it. */
-  claim(args: {
-    device: string;
-    at: number;
-  }): Promise<void>;
-  /** Runs `claim` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  claimMany(items: ClaimArgs[]): Promise<tilo.ActionAnswer[]>;
   /** The agent starts its reply to `a`, the ask's next attempt. */
   answer(): Promise<Reply>;
 }
 
 /** The actions `Ask` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ASK_ACTIONS = ["withdraw", "withdrawMany", "reopen", "reopenMany", "stop", "stopMany", "claim", "claimMany", "answer"] as const;
+export const ASK_ACTIONS = ["withdraw", "withdrawMany", "reopen", "reopenMany", "stop", "stopMany", "answer"] as const;
 
 /** The `tl.so.tilo.agent.Ask` kind at `path`. */
 export function ask(ws: tilo.Workspace, path: string): Ask {

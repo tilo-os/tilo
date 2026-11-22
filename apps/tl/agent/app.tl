@@ -19,15 +19,6 @@ enum AskState {
     cannot_read (icon: .lock, tone: .warning)
 }
 
-/// A device that took an ask's turn, and when. When several took it, the earliest wins and a
-/// tie goes to the lowest device key; the others leave it before asking their model.
-type Claim {
-    /// The device, by its key.
-    device: Text
-    /// When it took the turn, in milliseconds since 1970.
-    at: Int
-}
-
 /// Someone asked an agent something about a resource: by mentioning it in a chat message, a note
 /// or a task, by writing to it directly, or from the canvas. An ask is made from the resource it
 /// is about (`created(a)?.from`), and who asked is who made it (`created(a)?.who`). What the agent
@@ -44,8 +35,6 @@ type Ask {
     /// text makes one ask however often the text is edited, undone or redone.
     mention: Text = ""
     state: AskState = .waiting
-    /// The devices that took its turn.
-    claims: Collection<Claim>
 }
 
 /// One step of a turn: an action the agent called, with what it answered.
@@ -129,14 +118,6 @@ action reopen(a: Ask) (icon: .rotate_ccw, label: "Ask again") {
 action stop(a: Ask) (icon: .square, label: "Stop") {
     require a.state == .working "Nothing is working on it"
     a.state = .stopped
-}
-
-/// The agent takes the turn of `a` on `device` at `at`. When several devices took it, the
-/// earliest claim wins and a tie goes to the lowest device key; the others leave it.
-action claim(a: Ask, device: Text, at: Int) (icon: .refresh, label: "Take the turn") {
-    require invoker == a.agent "Only the agent asked takes its turn"
-    require a.state == .waiting or a.state == .working "Nobody waits for an answer"
-    a.claims.insert(Claim(device: device, at: at))
 }
 
 /// The agent starts its reply to `a`, the ask's next attempt.
