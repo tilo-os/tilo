@@ -148,7 +148,7 @@ def launches_mail(one: Person) -> bool:
     """Open Mail from the launcher, and wait for its window. Mail reads mail from the account's
     server, so the first time it opens in a workspace the shell asks whether it may use the
     internet; the person allows it, as anyone who wants their mail does. Whether it asked."""
-    one.session.invoke("applications", MAIL)
+    one.session.open(MAIL)
     asked = False
 
     def up() -> dict | None:

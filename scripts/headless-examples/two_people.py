@@ -80,7 +80,7 @@ def invitation(host: Session) -> str:
     """The link the host makes into the workspace in front, through its own shell action."""
     answer = host.invoke(SHELL, INVITATIONS, "issue-invitation",
                          {"role": "editor", "expires_in_seconds": 3600})
-    issued = (answer.get("receipt") or {}).get("update", {}).get("output", {}).get("value") or {}
+    issued = (answer.get("Completed") or {}).get("output", {}).get("value") or {}
     link = issued.get("link")
     if not link:
         raise Failed(f"the shell made no invitation: {json.dumps(answer)[:1500]}")
