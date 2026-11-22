@@ -529,7 +529,30 @@ mark_step 06-staged ok
 
 # --- reboot through BootNext; the installer installs with nobody there -------
 phase=installer
-server 'sudo systemctl reboot' >/dev/null 2>&1 || true
+# The reboot is asked of the machine's own systemd a moment from now, so the
+# request answers before the machine goes down; it is asked again until it is
+# taken, since the SSH that carries it may time out on a loaded machine. The
+# firmware then loads the installer's entry through BootNext, which the
+# serial shows.
+rebooting=""
+for attempt in $(seq 1 10); do
+  if server 'sudo systemd-run --quiet --on-active=3 --unit=tilo-cycle-reboot systemctl reboot' \
+      >> "$evidence/07-reboot.txt" 2>&1; then
+    rebooting=1
+    break
+  fi
+  sleep 3
+done
+[ -n "$rebooting" ] || { cat "$evidence/07-reboot.txt" >&2; die 'the machine did not take the reboot into its installer'; }
+for i in $(seq 1 300); do
+  tr -d '\000' < "$server_dir/serial.log" 2>/dev/null | grep -q 'Boot0100 "Tilo installer"' && break
+  [ "$i" -lt 300 ] || {
+    tr -d '\000' < "$server_dir/serial.log" | tail -n 40 >&2 || true
+    die 'the firmware did not load the Tilo installer through BootNext'
+  }
+  sleep 1
+done
+note 'the machine boots its installer'
 # The machine's enrolment ask reaches the owner's session over the peer
 # network. The install, its enrolment and the sibling keyslot are one pass;
 # each ask is answered where the person's devices answer questions.
@@ -542,8 +565,6 @@ await_owner_question() {
     resource="$(jq -r --arg kind "$kind" \
       'map(select(.kind == $kind))[0].resource // empty' "$listed" 2>/dev/null || true)"
     [ -z "$resource" ] || { printf '%s\n' "$resource"; return 0; }
-    server_vm status | grep -q '^running' \
-      || note "the machine is between boots while waiting for $kind"
     sleep 1
   done
   [ ! -f "$server_dir/serial.log" ] \
