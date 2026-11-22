@@ -1,9 +1,8 @@
 //! A person asks the workspace's host for the link to a resource in a record the
-//! host runs headless: the link names the resource and its range under the
-//! web entry the host announces.
-use super::resource_support::{
-    admit_person, on_messages, open_admitted_peer, part_route, published_message,
-};
+//! host runs headless: the link names the resource under the web entry the host
+//! announces, and an item a part keeps opens with the record the part is held
+//! beside.
+use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
     ActionAddress, DeviceCapabilities, DocumentRoute, InvokeArgument, Seed, enrol, request,
     resource_provider, start_browser,
@@ -13,8 +12,13 @@ use tilo_agent_session::ReplicaActor;
 use tilo_peer_state::join::Role;
 use tilo_session_client::Outbox;
 
+/// The tracker, which keeps its issues in parts beside its own record.
+const TASKS: &str = "so.tilo.tasks";
+/// The kind of an issue its tracker's parts publish.
+const ISSUE: &str = "tasks.issues.issues";
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_server_mints_a_message_link_with_its_range() {
+async fn the_server_mints_a_link_to_an_item_a_part_keeps() {
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Host fixture", 1);
     let (author, _) = tilo_user_identity::UserIdentity::generate("Writer", 1);
     let host = enrol(
@@ -45,28 +49,31 @@ async fn the_server_mints_a_message_link_with_its_range() {
     let writer = hex::encode(writer_device.cert.user_public_key);
     let mut source = crate::common::open_in(
         &workspace.workspace,
-        "so.tilo.chat",
+        TASKS,
         &tilo_actions::MemberId::person(writer.as_str()),
         ReplicaActor::Owner,
         Seed::New,
     )
     .unwrap();
-    let mut doc = source.read(Clone::clone).unwrap();
-    crate::common::add_channel(&mut doc, &writer, "general", None);
-    let general = crate::common::channel(&doc, chat::model::ChannelKind::Text);
-    source
-        .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
-        .unwrap();
-    // The message is kept in the first part of the chat's messages, the
-    // record it is linked in.
-    let message = on_messages(
-        &mut source,
-        "post",
-        &serde_json::json!({"channel": general.id, "text": "Hello é, linked"}),
-    );
-    let (id, kind) = published_message(&source, &message);
+    // The issue is kept in the first part of the tracker's issues, the record
+    // it is linked in.
+    let chain = tasks::issue_list::chain();
+    let made = source
+        .invoke(
+            &ActionAddress::new(ui::resource::chain_resource_id(&chain), "create"),
+            serde_json::json!({"title": "Hello é, linked"})
+                .as_object()
+                .unwrap(),
+            false,
+        )
+        .expect("the issue is filed");
+    let id = made
+        .resources
+        .first()
+        .expect("the create names the issue")
+        .clone();
     let route = DocumentRoute {
-        app_id: "so.tilo.chat".into(),
+        app_id: TASKS.into(),
         cluster_id: workspace.workspace.clone(),
         document: source.wire_document().into(),
     };
@@ -74,7 +81,11 @@ async fn the_server_mints_a_message_link_with_its_range() {
         .peer
         .write(route.clone(), &source.take_mutation().unwrap().unwrap())
         .unwrap();
-    let route = part_route(&workspace.workspace, &chat::parts::part(0));
+    let route = DocumentRoute {
+        app_id: TASKS.into(),
+        cluster_id: workspace.workspace.clone(),
+        document: chain.part(0).as_str().to_owned(),
+    };
     for (_, mutation) in source.take_document_mutations().unwrap() {
         publisher.peer.write(route.clone(), &mutation).unwrap();
     }
@@ -83,12 +94,7 @@ async fn the_server_mints_a_message_link_with_its_range() {
         .invoke(request(
             &resource_provider(&route),
             ActionAddress::new(id.clone(), "share-link"),
-            InvokeArgument::Json(
-                serde_json::json!({"start": 6, "end": 7, "unit": "chars"})
-                    .as_object()
-                    .cloned()
-                    .unwrap(),
-            ),
+            InvokeArgument::Json(serde_json::Map::new()),
         ))
         .await;
     let ReceiptStatus::Completed { output } = &receipt.status else {
@@ -103,11 +109,9 @@ async fn the_server_mints_a_message_link_with_its_range() {
     let link = tilo_reference::link::Link::parse(url, &entries).unwrap();
     let resource = link.target.resource.unwrap();
     assert_eq!(resource.id, id, "{url}");
-    assert_eq!(resource.kind, kind);
-    assert_eq!(kind, "chat.messages.messages");
-    assert!(url.ends_with("?chars=6-7"), "{url}");
+    assert_eq!(resource.kind, ISSUE);
     assert!(
-        url.contains("/so.tilo.chat/-/chat.messages.messages/"),
+        url.contains(&format!("/{TASKS}/-/{ISSUE}/")),
         "a part's item opens with the record the part is held beside: {url}"
     );
     publisher.peer.close();

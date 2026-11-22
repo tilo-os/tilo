@@ -144,7 +144,8 @@ fn turn_of(app: &str, agent: &Agent, asked: &Asked, around: Option<&asks::Around
              read it, and nothing else.",
         );
     } else {
-        request.push_str(&said);
+        let carried = asked.refers.iter().filter_map(super::carried::Carried::of);
+        request.push_str(&super::carried::told(said.clone(), carried));
     }
     let attempt = asked
         .replies
@@ -293,6 +294,18 @@ impl Replying {
         {
             tracing::warn!(workspace = %self.workspace, %error, "a reply did not take its step");
         }
+    }
+
+    /// Show `to` under `label` on the reply, as a card of its own ([`asks::show`]).
+    ///
+    /// # Errors
+    /// The reply did not take it.
+    pub(super) async fn show(&self, label: &str, to: asks::Reference) -> Result<(), String> {
+        let reply = self.reply().await?;
+        let agent = self.agent.clone();
+        let label = label.to_owned();
+        self.on_record(move |opened| asks::show(opened, &agent, &reply, (&label, &to)))
+            .await
     }
 
     /// End the turn as `outcome`: what it says goes onto the reply, then how it ended.

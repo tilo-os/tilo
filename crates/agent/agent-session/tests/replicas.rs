@@ -2,14 +2,27 @@
 //! the changes each takes and the other applies, with no transport between
 //! them.
 
-
 use crate::common::catalogue;
-use chat::projection::ChatProjection as _;
 use collab_types::DocumentMutation;
 use tilo_actions::MemberId;
 use tilo_agent_session::{Replica, ReplicaActor, Seed};
 
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+
+/// The tracker, which keeps its issues in a chain of parts beside its record.
+const TASKS: &str = "so.tilo.tasks";
+/// The kind of an issue its tracker's parts publish.
+const ISSUE: &str = "tasks.issues.issues";
+
+/// The address the tracker publishes its issues under.
+fn issues() -> String {
+    ui::resource::chain_resource_id(&tasks::issue_list::chain())
+}
+
+/// The first part of the tracker's issues.
+fn first_part() -> ui::resource::DocumentId {
+    tasks::issue_list::chain().part(0)
+}
 
 #[test]
 fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
@@ -68,58 +81,47 @@ fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
 #[test]
 fn read_only_resource_views_filter_roles_and_never_join_the_document_api() {
     use ui::permissions::{PermissionContext, Role};
-    let app = "so.tilo.chat";
     let mut page = crate::common::open(
-        app,
+        TASKS,
         &MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::New,
     )
     .unwrap();
-    let mut doc = page.read(Clone::clone).unwrap();
-    chat::demo::apply_as(
-        &mut doc,
-        "ada",
-        chat::Chat::CREATE_CATEGORY.with(chat::chat::chat::CreateCategory {
-            name: "Resource view fixture".parse().unwrap(),
-        }),
-    )
-    .unwrap();
-    let category = chat::projection::read(&doc)
-        .category_rows()
-        .into_iter()
-        .find(|category| category.name == "Resource view fixture")
-        .unwrap()
-        .id;
-    page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
-    let resource = chat::projection::item_id("categories", &category);
+    let resource = page
+        .invoke(
+            &tilo_actions::api::ActionAddress::new(issues(), "create"),
+            serde_json::json!({"title": "Resource view fixture"})
+                .as_object()
+                .unwrap(),
+            false,
+        )
+        .expect("the issue is filed")
+        .resources
+        .first()
+        .expect("the create names the issue")
+        .clone();
     let before = body(&page);
     let viewer = PermissionContext::member_of(WORKSPACE, &MemberId::person("ada"), Role::Viewer);
     let denied = PermissionContext::stranger(&MemberId::person("ada"));
-    let views = page.resource_views(&resource, "chat.workspace.categories", &viewer);
+    let views = page.resource_views(&resource, ISSUE, &viewer);
     assert!(
         !views.is_empty(),
-        "the actual Chat resource declares a viewer navigation API"
+        "the actual issue declares a viewer navigation API"
     );
     assert!(
         views
             .iter()
             .all(|view| view.kind == tilo_actions::OperationKind::View)
     );
-    assert!(
-        page.resource_views(&resource, "chat.workspace.categories", &denied)
-            .is_empty()
-    );
-    assert!(
-        page.resource_views("missing", "chat.workspace.categories", &viewer)
-            .is_empty()
-    );
+    assert!(page.resource_views(&resource, ISSUE, &denied).is_empty());
+    assert!(page.resource_views("missing", ISSUE, &viewer).is_empty());
     assert!(
         page.resource_views(&resource, "wrong.kind", &viewer)
             .is_empty()
     );
     // The action API offers changes, never views: the record's document actions
-    // and those its chat's chain routes to the part they change.
+    // and those its tracker's chain routes to the part they change.
     assert!(
         page.survey()
             .iter()
@@ -542,19 +544,15 @@ fn a_bot_without_a_write_grant_is_offered_only_reads() {
 }
 
 #[test]
-fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_api() {
+fn a_bot_reads_an_item_made_after_it_opened_the_record_through_the_record_api() {
     let mut page = crate::common::open(
-        "so.tilo.chat",
+        TASKS,
         &MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::New,
     )
     .unwrap();
     let mut doc = page.read(Clone::clone).unwrap();
-    crate::common::add_channel(&mut doc, "ada", "general", None);
-    let projection = chat::projection::read(&doc);
-    let channel = projection.channel_rows()[0].id.clone();
-    page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
     let mut bot = crate::common::open(
         page.app_id(),
         &MemberId::bot("b1"),
@@ -573,7 +571,7 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_api() {
                     TreePath::root()
                         .any(Level::Workspace)
                         .any(Level::App)
-                        .kind("chat.workspace".to_owned()),
+                        .kind("tasks.tracker".to_owned()),
                     KindSet::READ,
                     Answer::Allow,
                     Grantee::person("ada"),
@@ -588,20 +586,17 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_api() {
         },
     )
     .unwrap();
-    // Ada's page posts through the chain of the chat's messages, which
-    // starts its first part; the bot holds that part beside the chat
-    // record.
-    let post = serde_json::json!({ "channel": channel, "text": "hello" });
+    // Ada's page files an issue through the chain of the tracker's issues,
+    // which starts its first part; the bot holds that part beside the
+    // tracker's record.
+    let filed = serde_json::json!({ "title": "hello" });
     page.invoke(
-        &tilo_actions::api::ActionAddress::new(
-            ui::resource::chain_resource_id(&chat::parts::chain()),
-            "post",
-        ),
-        post.as_object().unwrap(),
+        &tilo_actions::api::ActionAddress::new(issues(), "create"),
+        filed.as_object().unwrap(),
         false,
     )
     .unwrap();
-    let part = chat::parts::part(0);
+    let part = first_part();
     assert!(bot.keeps_beside(&part));
     let started = page.take_document_mutations().unwrap();
     assert!(
@@ -622,14 +617,14 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_api() {
             })
             .collect(),
     );
-    let chain = chat::parts::chain().route().to_owned();
+    let chain = tasks::issue_list::chain().route().to_owned();
     for (record, joined) in [
         (chain.clone(), true),
         (tilo_actions::document_sync::chain_head(&chain), false),
     ] {
         let ask = tilo_actions::remote::ResourceAsk {
             address: tilo_actions::remote::ResourceAddress {
-                app: "so.tilo.chat".into(),
+                app: TASKS.into(),
                 record,
             },
             joined,
@@ -640,30 +635,24 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_api() {
         let records = read["records"].as_array().unwrap();
         assert_eq!(records.len(), 1, "{read:#}");
         assert_eq!(records[0]["record"], part.route(), "{read:#}");
-        let messages = records[0]["value"]["messages"].as_object().unwrap();
         assert!(
-            messages
-                .values()
-                .any(|message| message["v"]["text"] == "hello"),
+            records[0]["value"].to_string().contains("hello"),
             "{read:#}"
         );
     }
 }
 
 #[test]
-fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
+fn a_bot_granted_filing_is_offered_the_chains_create_and_starts_a_part() {
     let mut page = crate::common::open(
-        "so.tilo.chat",
+        TASKS,
         &MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::New,
     )
     .unwrap();
     let mut doc = page.read(Clone::clone).unwrap();
-    crate::common::add_channel(&mut doc, "ada", "general", None);
-    let channel = chat::projection::read(&doc).channel_rows()[0].id.clone();
-    page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
-    // What a program that posts derives: posting on the chat's messages.
+    // What a program that files issues derives: filing on the tracker's issues.
     let access = {
         use ui::permissions::policy::{
             Actor, Answer, Grant, Grantee, KindSet, Level, MemberAccess, MemberId, TreePath,
@@ -675,11 +664,11 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
             bot,
             TreePath::root()
                 .any(Level::Workspace)
-                .app("so.tilo.chat".to_owned())
-                .kind("chat.messages".to_owned())
+                .app(TASKS.to_owned())
+                .kind("tasks.issues".to_owned())
                 .any(Level::Resource)
                 .rest()
-                .action("post".to_owned()),
+                .action("create".to_owned()),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
             Grantee::person("ada"),
@@ -704,10 +693,10 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
     let offered = bot.survey();
     let post = offered
         .iter()
-        .find(|action| action.address.action == "post" && action.resource_kind == "chat.messages")
+        .find(|action| action.address.action == "create" && action.resource_kind == "tasks.issues")
         .unwrap_or_else(|| {
             panic!(
-                "the chain's post is offered: {:?}",
+                "the chain's create is offered: {:?}",
                 offered
                     .iter()
                     .map(|action| (&action.address, &action.resource_kind))
@@ -716,31 +705,23 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
         })
         .address
         .clone();
-    let arguments = serde_json::json!({ "channel": channel, "text": "welcome!" });
+    let arguments = serde_json::json!({ "title": "welcome!" });
     bot.invoke(&post, arguments.as_object().unwrap(), false)
         .unwrap();
     let started = bot.take_document_mutations().unwrap();
     assert!(
-        matches!(&started[..], [(record, DocumentMutation::Snapshot(_))] if *record == chat::parts::part(0)),
+        matches!(&started[..], [(record, DocumentMutation::Snapshot(_))] if *record == first_part()),
         "the bot started the first part"
     );
     for (record, mutation) in &started {
         page.apply_document(record, mutation).unwrap();
     }
-    let posted: Vec<(ui::tilo_resource::MemberId, String)> = page
-        .read_resource(&chat::parts::part(0), chat::messages::read_part)
-        .unwrap()
-        .messages
-        .iter()
-        .map(|(_, message)| (message.author.clone(), message.text.clone()))
-        .collect();
-    assert_eq!(
-        posted,
-        [(
-            ui::tilo_resource::MemberId::bot("b1"),
-            "welcome!".to_owned()
-        )]
-    );
+    let filed = page
+        .read_resource(&first_part(), |doc| {
+            serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap()
+        })
+        .expect("the page holds the part the bot started");
+    assert!(filed.contains("welcome!"), "{filed}");
 }
 
 /// An agent acting for a person writes as the agent (its own actor is

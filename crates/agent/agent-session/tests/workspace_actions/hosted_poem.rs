@@ -1,9 +1,8 @@
 //! A person's case from its first word to its last, through the server's own interfaces. They
 //! tell their agent to write a poem into a document. In a later message they ask to see the
-//! poem it wrote, and the reply carries the document itself, live in their conversation. The
-//! agent changes the document afterwards, and their page, never opened again, holds the
-//! change. At the end they end the share themselves, and the document stays theirs.
-use super::*;
+//! poem it wrote, and the reply carries the document itself, live, as a card. The agent changes
+//! the document afterwards, and their page, never opened again, holds the change.
+use super::{asked as asked_all, *};
 
 /// The poem, a line a paragraph.
 const POEM: [&str; 3] = [
@@ -11,8 +10,8 @@ const POEM: [&str; 3] = [
     "Two hands write where one began.",
     "What either changes, both can read.",
 ];
-/// The line the agent adds once the document stands in the conversation.
-const ADDED: &str = "The share may end; the poem stays.";
+/// The line the agent adds once the document stands in its reply.
+const ADDED: &str = "The card stays; the poem grows.";
 
 /// A model that opens the word processor and writes the poem, as it is told to.
 fn writes_the_poem(asked: &Arc<Mutex<Vec<ModelRequest>>>) -> Model {
@@ -97,72 +96,22 @@ async fn once_on_the_page(page: &mut Browser, route: &DocumentRoute, line: &str)
     }
 }
 
-/// The person invokes Chat's `stop-sharing` on `message`, through the server's action service,
-/// as their page does.
-async fn ends_the_share(
-    actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
-    workspace: &str,
-    (root, browser): (&SigningKey, &crate::support::Device),
-    message: &Id,
-) -> Result<serde_json::Value, String> {
-    let id = WorkspaceId::parse(workspace).unwrap();
-    let service = tilo_server::workspace_agents::WorkspaceActionProvider::new(actions.clone(), id);
-    let caller = tilo_actions::remote::Caller::authenticated(
-        root.verifying_key().to_bytes(),
-        browser.cert.device_public_key,
-    )
-    .in_workspace(workspace);
-    let route = DocumentRoute {
-        app_id: CHAT.into(),
-        cluster_id: workspace.into(),
-        document: chat::parts::part(0).as_str().into(),
-    };
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("message".into(), serde_json::json!(message.as_str()));
-    tilo_server::workspace_agents::invoke_named(
-        &service,
-        &caller,
-        &route,
-        &format!("{}/messages/{message}", chat::parts::ChatMessages::KIND),
-        "stop-sharing",
-        arguments,
-    )
-    .await
-}
-
-/// The message that shares a window, with how its conversation keeps it.
-fn the_share(part: &chat::parts::ChatMessages) -> (Id, Shared) {
-    let shared = shares(part);
-    assert_eq!(shared.len(), 1, "one share: {shared:?}");
-    let id = part
-        .messages
-        .iter()
-        .find(|(_, held)| held.share.is_some())
-        .map(|(id, _)| id.clone())
-        .expect("the share's message");
-    (id, shared.into_iter().next().expect("the one share"))
-}
-
 /// Told to write a poem into a document, the agent writes it and shows nothing. Asked a
-/// message later to show the poem it wrote, it answers with that document, live in the
-/// conversation the person asked in: what the share names reads as the poem to them. A line
-/// the agent adds after that goes into the document the conversation shows, and the person's
-/// page, opened before anything was written and never again, holds it. The person ends the
-/// share themselves; the message stays and says what was shared, and the document stays
-/// theirs to read.
+/// message later to show the poem it wrote, it answers with that document, live in its reply:
+/// what the card names reads as the poem to them. A line the agent adds after that goes into
+/// the document the card shows, and the person's page, opened before anything was written and
+/// never again, holds it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_poem_is_written_then_shown_live_then_changed_and_its_share_ended_by_its_person() {
+async fn a_poem_is_written_then_shown_live_then_changed() {
     team!(root, browser, actions, workspaces, workspace, page);
     let mut page = page;
-    let person = hex::encode(root.verifying_key().to_bytes());
-    let conversation = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(SCOUT)]);
+    let person = caller_of(&root, &browser, &workspace);
 
     // 1. The poem is written into a document.
-    write_to_agent(
-        &actions,
+    asks_scout(
         &workspaces,
         &workspace,
-        (&root, &browser),
+        &root,
         "Write a poem into a document.",
     )
     .await;
@@ -175,19 +124,17 @@ async fn a_poem_is_written_then_shown_live_then_changed_and_its_share_ended_by_i
         wrote.len() == 4 && wrote.iter().all(|(_, failed)| !failed),
         "it opened the word processor and wrote each line: {wrote:?}"
     );
-    let part = conversation_part(&workspaces, &workspace).await;
+    let first = reply(&workspaces, &workspace, &root).await;
     assert!(
-        shares(&part).is_empty(),
-        "writing a document shows nothing: {:?}",
-        shares(&part)
+        first.shown.is_empty(),
+        "writing a document shows nothing: {first:?}"
     );
 
     // 2. A message later: show me the poem you wrote.
-    let question = write_to_agent(
-        &actions,
+    asks_scout(
         &workspaces,
         &workspace,
-        (&root, &browser),
+        &root,
         "Show me the poem you wrote.",
     )
     .await;
@@ -201,37 +148,19 @@ async fn a_poem_is_written_then_shown_live_then_changed_and_its_share_ended_by_i
             .is_some_and(|(answer, failed)| !failed && answer.contains("shown live")),
         "a later turn shows the document an earlier one wrote: {showed:?}"
     );
-    let part = conversation_part(&workspaces, &workspace).await;
-    let (message, shown) = the_share(&part);
-    assert_eq!(
-        shown.author,
-        MemberId::agent(SCOUT),
-        "the agent's own share"
-    );
-    assert!(shown.for_someone, "it says what shared it for whom");
-    assert_eq!(
-        shown.conversation,
-        conversation.as_str(),
-        "in the conversation the person asked in"
-    );
-    assert!(shown.share.open && !shown.share.ended, "live: {shown:?}");
-    assert_eq!(shown.at["app"], WRITER);
-    assert_eq!(shown.at["label"], "The poem");
-    let reply = part
-        .messages
-        .iter()
-        .find(|(_, held)| {
-            held.author == MemberId::agent(SCOUT) && held.parent.as_ref() == Some(&question)
-        })
-        .map(|(_, held)| held.clone())
-        .expect("the reply");
-    assert_eq!(reply.text, "The poem is above.");
-    let document = shown.at[DOCUMENT].as_str().unwrap_or_default().to_owned();
-    let reads = reads_to_the_person(&actions, &workspace, (&root, &browser), &document).await;
+    let shown = reply(&workspaces, &workspace, &root).await;
+    let cards = cards(&shown);
+    assert_eq!(cards.len(), 1, "one card: {shown:?}");
+    assert_eq!(cards[0].0, WRITER);
+    assert_eq!(shown.body, "The poem\nThe poem is above.");
+    let document = cards[0].1.clone().unwrap_or_default();
+    let reads = read_by(&actions, &workspace, &person, &document)
+        .await
+        .expect("the person reads the document shown");
     for line in POEM {
         assert!(
             reads.contains(line),
-            "the document {document:?} the share names is the poem of the turn before: {reads}"
+            "the document {document:?} the card names is the poem of the turn before: {reads}"
         );
     }
     let here: &str = &workspace;
@@ -248,11 +177,10 @@ async fn a_poem_is_written_then_shown_live_then_changed_and_its_share_ended_by_i
 
     // 3. The agent changes the document afterwards.
     let heard = page.heard(&route);
-    write_to_agent(
-        &actions,
+    asks_scout(
         &workspaces,
         &workspace,
-        (&root, &browser),
+        &root,
         "Add a last line to the poem.",
     )
     .await;
@@ -264,47 +192,23 @@ async fn a_poem_is_written_then_shown_live_then_changed_and_its_share_ended_by_i
         added.last().is_some_and(|(_, failed)| !failed),
         "the line was added: {added:?}"
     );
-    let part = conversation_part(&workspaces, &workspace).await;
-    let (still, live) = the_share(&part);
-    assert_eq!(still, message, "the same message shows it");
-    assert!(live.share.open && !live.share.ended, "still live: {live:?}");
+    let asks = asked_all(&workspaces, &workspace, &root).await;
+    let still = asks
+        .iter()
+        .filter_map(asks::Asked::latest)
+        .find(|reply| !reply.shown.is_empty())
+        .expect("the reply that shows the poem");
     assert_eq!(
-        live.at[DOCUMENT].as_str(),
-        Some(document.as_str()),
-        "and names the same document"
+        still.shown, shown.shown,
+        "the reply that showed it still names the same document"
     );
     page.until_heard(&route, heard).await;
     let on_the_page = once_on_the_page(&mut page, &route, ADDED).await;
     for line in POEM {
         assert!(
             on_the_page.contains(line),
-            "the line was added to the poem the conversation shows: {on_the_page}"
+            "the line was added to the poem the card shows: {on_the_page}"
         );
     }
-
-    // 4. The person ends the share.
-    ends_the_share(&actions, &workspace, (&root, &browser), &message)
-        .await
-        .expect("the person ends the share their agent made for them");
-    let deadline = tilo_test_env::hang_deadline();
-    let ended = loop {
-        let part = conversation_part(&workspaces, &workspace).await;
-        let (_, ended) = the_share(&part);
-        if ended.share.ended {
-            break ended;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the share never ended: {ended:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    };
-    assert!(!ended.share.open, "ended, and no longer open: {ended:?}");
-    assert_eq!(ended.at, shown.at, "the message still says what was shared");
-    let reads = reads_to_the_person(&actions, &workspace, (&root, &browser), &document).await;
-    assert!(
-        reads.contains(ADDED),
-        "the document stays the person's to read: {reads}"
-    );
     page.peer.close();
 }

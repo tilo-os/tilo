@@ -13,7 +13,8 @@
 //! action it called and what it answered, [`finish`] ends the turn, [`claim`] takes the turn
 //! for a device ([`crate::work::takes_turn`] decides who holds it) and [`supersede`] marks a
 //! reply another device's answer stands in place of. [`ask`] makes an ask outright, keyed by its
-//! cause: what a reminder, an event or a sub-agent asks.
+//! cause: what a reminder, an event or a sub-agent asks. [`show`] puts the thing the agent worked
+//! on into the reply's body as a card of it, live.
 
 use tilo_actions::MemberId;
 use tilolang_tilo::runtime::rich::RichValue;
@@ -26,6 +27,10 @@ use crate::work::Claim;
 
 /// Who made a resource, and a resource of a record, as the agent package names them.
 pub use tilolang_tilo::runtime::{Actor, ResourceRef};
+
+/// What a rich text refers to: a member, or a resource of the workspace by the catalogue's
+/// reference to it.
+pub use tilolang_tilo::runtime::rich::Reference;
 
 /// The agent package.
 pub const AGENT_APP: &str = "so.tilo.lang.agent";
@@ -104,6 +109,9 @@ pub struct Asked {
     pub agent: MemberId,
     /// What was asked, as it read when asked; `None` where the agent may not read it.
     pub said: Option<String>,
+    /// The resources what was asked refers to, in the order it says them: what it carries.
+    /// Members it mentions are not among them.
+    pub refers: Vec<Reference>,
     /// The mention, or the cause, that names the ask with what it is made from.
     pub mention: String,
     pub state: AskState,
@@ -134,6 +142,8 @@ pub struct Replied {
     pub state: AskState,
     /// Its body, as written text.
     pub body: String,
+    /// What its body shows as cards of their own ([`show`]), in order.
+    pub shown: Vec<Reference>,
     pub superseded: bool,
 }
 
@@ -245,9 +255,19 @@ pub fn asks(opened: &Opened) -> Result<Vec<Asked>, String> {
         let Some(Value::Actor(Actor::Member(agent))) = read(opened, &at, "agent") else {
             continue;
         };
-        let said = match read(opened, &at, "said") {
-            Some(Value::Opt(Some(said))) => Some(text(Some(*said))),
-            _ => None,
+        let (said, refers) = match read(opened, &at, "said") {
+            Some(Value::Opt(Some(said))) => {
+                let refers = match said.as_ref() {
+                    Value::Rich(rich) => rich
+                        .references()
+                        .into_iter()
+                        .filter(|reference| reference.as_member().is_none())
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                (Some(text(Some(*said))), refers)
+            }
+            _ => (None, Vec::new()),
         };
         let claims = items(opened, &at, "claims")
             .iter()
@@ -265,11 +285,20 @@ pub fn asks(opened: &Opened) -> Result<Vec<Asked>, String> {
         let mut answers: Vec<Replied> = replies
             .iter()
             .filter(|(_, ask)| ask.as_ref().is_some_and(|ask| ask.same(&at)))
-            .map(|(reply, _)| Replied {
+            .map(|(reply, _)| {
+                let body = read(opened, reply, "body");
+                let shown = match &body {
+                    Some(Value::Rich(rich)) => rich.projections(),
+                    _ => Vec::new(),
+                };
+                (reply, body, shown)
+            })
+            .map(|(reply, body, shown)| Replied {
                 at: reply.clone(),
                 attempt: int(read(opened, reply, "attempt").as_ref()),
                 state: state_of(&meta, read(opened, reply, "state")),
-                body: text(read(opened, reply, "body")),
+                body: text(body),
+                shown,
                 superseded: matches!(read(opened, reply, "superseded"), Some(Value::Bool(true))),
             })
             .collect();
@@ -277,6 +306,7 @@ pub fn asks(opened: &Opened) -> Result<Vec<Asked>, String> {
         out.push(Asked {
             agent,
             said,
+            refers,
             mention: text(read(opened, &at, "mention")),
             state: state_of(&meta, read(opened, &at, "state")),
             claims,
@@ -444,6 +474,31 @@ pub fn say(opened: &mut Opened, agent: &MemberId, reply: &ResourceRef, more: &st
             &self::agent(agent),
             (AGENT_APP, "say"),
             vec![Value::resource(reply), Value::Rich(RichValue::from_text(more))],
+            None,
+        )
+        .map(drop)
+}
+
+/// Append to the body of `reply`, as `agent`, a paragraph of its own that shows `to` under
+/// `label`: a card of the thing the agent worked on, live where the reply is drawn, which opens
+/// it. It grants nothing: each reader reads it with what they hold, and one who may not read it
+/// reads only that something is there, never its label.
+///
+/// # Errors
+/// The reply is no longer working, or the package refused it.
+pub fn show(
+    opened: &mut Opened,
+    agent: &MemberId,
+    reply: &ResourceRef,
+    (label, to): (&str, &Reference),
+) -> Result<(), String> {
+    let mut shown = RichValue::default();
+    shown.push_projection(label, to);
+    opened
+        .invoke(
+            &self::agent(agent),
+            (AGENT_APP, "say"),
+            vec![Value::resource(reply), Value::Rich(shown)],
             None,
         )
         .map(drop)

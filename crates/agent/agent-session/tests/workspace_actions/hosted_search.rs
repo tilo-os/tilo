@@ -34,9 +34,6 @@ struct Served {
 
 /// The app that keeps the tracker the issues are in.
 const TASKS: &str = "so.tilo.tasks";
-/// A search with many hits in one conversation.
-#[path = "hosted_search_many.rs"]
-mod many_hits;
 
 /// A rule about reading what is at `node`.
 pub(super) fn reading(node: String, answer: &str) -> Bound {

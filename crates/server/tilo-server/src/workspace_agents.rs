@@ -454,9 +454,6 @@ impl ActionProvider for WorkspaceActionProvider {
         {
             return Pending::ready(Err(ActionCallError::NotPermitted));
         }
-        if let Some(reason) = shares::refuses(caller, &request) {
-            return Pending::ready(Err(ActionCallError::InvalidRequest { reason }));
-        }
         if let Some(events) = &self.events
             && request.target.provider == workspace_events::PROVIDER
         {
@@ -1257,7 +1254,7 @@ impl ServerAgents {
                 let Some(message) = part.messages.get(&summons.message) else {
                     continue;
                 };
-                let request = carried::request(message);
+                let request = summoned(message);
                 // What came before it in the conversation, as every turn is told it: the
                 // same on a host as on the device that would answer it.
                 // What was learned about the person on their devices is their own record,
@@ -2097,7 +2094,6 @@ impl TurnScope {
             workspace: self.workspace.clone(),
             ask: turn.ask.clone(),
             written: written::Written::of(turn, followed),
-            shows_in: shares::shows_in(turn),
             replying: self.replying.clone(),
         }
     }
@@ -2112,8 +2108,6 @@ struct Reply {
     ask: Ask,
     /// How far the reply has grown while its model wrote it.
     written: written::Written,
-    /// The conversation the turn may show a document in, where it has one ([`shares::shows_in`]).
-    shows_in: Option<String>,
     /// Where the reply of a turn made from an ask is written.
     replying: Option<asked::Replying>,
 }
@@ -2932,6 +2926,21 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
 fn later(wait: Duration) -> Instant {
     let now = Instant::now();
     now.checked_add(wait).unwrap_or(now)
+}
+
+/// What `message` asks of the agents it summons, in words, with the first resource it carries
+/// said in them ([`carried`]).
+fn summoned(message: &chat::chat::Message) -> String {
+    let (instruction, carried) = chat::summons::request(message);
+    carried::told(
+        instruction,
+        carried.iter().map(|carried| carried::Carried {
+            label: &carried.resource.label,
+            kind: &carried.resource.kind,
+            id: &carried.resource.id,
+            app: &carried.app_id,
+        }),
+    )
 }
 
 /// The tool a turn in a conversation answers with a view through, as the model is told it: when

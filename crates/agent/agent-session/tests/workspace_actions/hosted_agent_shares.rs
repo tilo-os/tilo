@@ -1,17 +1,16 @@
 //! A turn of an agent on a workspace's server answers with the thing it worked on, shown live:
-//! Chat's own `share-window` of that document, posted for the model's `answer_with_document` in
-//! the turn's own conversation, as the agent acting for its person. Where it is shown and whose
-//! share it is are never the model's to say, and a thing the turn cannot read is not shown.
+//! a card of that document in its reply to the ask, written for the model's
+//! `answer_with_document` as the agent. Where it is shown and whose card it is are never the
+//! model's to say, and a thing the turn cannot read is not shown.
 use super::*;
+use tilo_workspace_service::asks::{self, AskState, Reference};
+use tilo_workspace_service::tl_records::runtime::Value;
 
 /// The word processor, by its id.
 const WRITER: &str = "so.tilo.word-processor";
-/// What Chat's share verbs call the conversation they post in, and an address its document.
-const IN: &str = "channel";
-const DOCUMENT: &str = "record";
 
-/// A workspace on a server with one person in its chat and their agent kept there. The person's
-/// page joins: its device is the one their agent's turns are admitted on.
+/// A workspace on a server with one person in it and their agent kept there. The person's page
+/// joins: its device is the one their agent's turns are admitted on.
 macro_rules! team {
     ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident) => {
         let ($root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -30,12 +29,6 @@ macro_rules! team {
         let $page = Browser::open_at(&serving, &$browser, &server, &$workspace).await;
         let person = hex::encode($root.verifying_key().to_bytes());
         make_agent(&$page, &$workspaces, &$workspace, &person, None).await;
-        let catalogue = crate::common::catalogue();
-        let governor = $workspaces.governor().clone();
-        $workspaces
-            .prepare_application(&$workspace, &governor, &catalogue, CHAT, "")
-            .await
-            .unwrap();
     };
 }
 
@@ -44,7 +37,7 @@ macro_rules! answer_the_turn {
     ($workspaces:ident, $actions:ident, $workspace:ident, $model:expr) => {
         let agents = ServerAgents::for_test($workspaces.clone(), $actions.clone(), Some($model));
         let turns = agents.turns(&$workspace).await.unwrap();
-        assert_eq!(turns.len(), 1, "the message is the agent's turn: {turns:?}");
+        assert_eq!(turns.len(), 1, "the ask is the agent's turn: {turns:?}");
         tokio::time::timeout(
             Duration::from_secs(90),
             agents.answer(&$workspace, &turns[0]),
@@ -55,9 +48,95 @@ macro_rules! answer_the_turn {
     };
 }
 
+/// The person `root` mentions the agent in a channel of tilolang Chat, `@Scout` then `words`:
+/// the mention asks it, as theirs.
+pub(super) async fn asks_scout(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+    root: &SigningKey,
+    words: &str,
+) {
+    let packages = asks::chat_packages().unwrap();
+    let person = hex::encode(root.verifying_key().to_bytes());
+    let ada = asks::Actor::Member(MemberId::person(person));
+    let chat = packages.app().to_owned();
+    let then = format!(" {words}");
+    workspaces
+        .with_tl_record(workspace, &packages, ada.clone(), move |opened| {
+            let all = opened
+                .host()
+                .root_of(&chat)
+                .map_err(|error| error.to_string())?;
+            let channel = opened.invoke(
+                &ada,
+                (&chat, "new_channel"),
+                vec![Value::resource(&all), Value::Text("plans".into())],
+                None,
+            )?;
+            opened
+                .invoke(
+                    &ada,
+                    (&chat, "send"),
+                    vec![
+                        channel,
+                        asks::mentioning(&MemberId::agent(SCOUT), "Scout", &then),
+                        Value::Opt(None),
+                    ],
+                    None,
+                )
+                .map(drop)
+        })
+        .await
+        .unwrap();
+}
+
+/// The asks the record holds now, as the person `root` reads them.
+pub(super) async fn asked(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+    root: &SigningKey,
+) -> Vec<asks::Asked> {
+    let packages = asks::chat_packages().unwrap();
+    let person = hex::encode(root.verifying_key().to_bytes());
+    workspaces
+        .with_tl_record(
+            workspace,
+            &packages,
+            asks::Actor::Member(MemberId::person(person)),
+            |opened| asks::asks(opened),
+        )
+        .await
+        .unwrap()
+}
+
+/// The newest ask's newest reply, once it ended.
+pub(super) async fn reply(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+    root: &SigningKey,
+) -> asks::Replied {
+    let asked = asked(workspaces, workspace, root).await;
+    let ask = asked.last().expect("the person asked");
+    let reply = ask.latest().expect("the ask has a reply").clone();
+    assert_ne!(reply.state, AskState::Working, "the turn ended: {reply:?}");
+    reply
+}
+
+/// The documents a reply shows as cards: each app and record.
+pub(super) fn cards(reply: &asks::Replied) -> Vec<(String, Option<String>)> {
+    reply
+        .shown
+        .iter()
+        .map(|shown| match shown {
+            Reference::Resource(at) => (at.app.clone(), at.record.clone()),
+            Reference::Member(member) => panic!("a reply shows things, not {member:?}"),
+        })
+        .collect()
+}
+
 /// A model that makes each of `calls` (a tool and what it is given), one a turn, then answers
 /// `words`.
-fn calls_then_answers(
+pub(super) fn calls_then_answers(
     calls: Vec<(&'static str, serde_json::Value)>,
     words: &'static str,
     asked: Arc<Mutex<Vec<ModelRequest>>>,
@@ -93,7 +172,7 @@ fn calls_then_answers(
 
 /// What the last request tells the model its tools answered, in order, each with whether it
 /// failed.
-fn told(asked: &[ModelRequest]) -> Vec<(String, bool)> {
+pub(super) fn told(asked: &[ModelRequest]) -> Vec<(String, bool)> {
     asked
         .last()
         .expect("the model was asked")
@@ -107,58 +186,16 @@ fn told(asked: &[ModelRequest]) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// A message that shares a window, as its conversation keeps it.
-#[derive(Debug)]
-struct Shared {
-    author: MemberId,
-    conversation: String,
-    share: chat::chat::WindowShare,
-    /// Whether it says an agent wrote it for someone.
-    for_someone: bool,
-    /// What it shares: the app, its document and the resource's kind, id and label.
-    at: serde_json::Value,
-}
-
-/// The messages of the conversation that share a window.
-fn shares(part: &chat::parts::ChatMessages) -> Vec<Shared> {
-    part.messages
-        .iter()
-        .filter_map(|(_, held)| {
-            let share = held.share.clone()?;
-            let at = held
-                .attachments
-                .iter()
-                .find_map(tilo_reference::Attached::at)
-                .expect("a share names what it shares");
-            Some(Shared {
-                author: held.author.clone(),
-                conversation: held.channel.as_str().to_owned(),
-                share,
-                for_someone: held
-                    .acting
-                    .as_ref()
-                    .is_some_and(|acting| !acting.is_person()),
-                at: serde_json::to_value(at).expect("an address is JSON"),
-            })
-        })
-        .collect()
-}
-
-/// What the word processor's document `document` reads as to the person, through the server's
-/// action service as their page reads it.
-async fn reads_to_the_person(
+/// What the word processor's document `document` answers `caller` who reads it, through the
+/// server's action service as their page reads it: its text, or the words it is refused with.
+pub(super) async fn read_by(
     actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
     workspace: &str,
-    (root, browser): (&SigningKey, &crate::support::Device),
+    caller: &tilo_actions::remote::Caller,
     document: &str,
-) -> String {
+) -> Result<String, String> {
     let id = WorkspaceId::parse(workspace).unwrap();
     let service = tilo_server::workspace_agents::WorkspaceActionProvider::new(actions.clone(), id);
-    let caller = tilo_actions::remote::Caller::authenticated(
-        root.verifying_key().to_bytes(),
-        browser.cert.device_public_key,
-    )
-    .in_workspace(workspace);
     let route = DocumentRoute {
         app_id: WRITER.into(),
         cluster_id: workspace.into(),
@@ -166,15 +203,27 @@ async fn reads_to_the_person(
     };
     tilo_server::workspace_agents::invoke_named(
         &service,
-        &caller,
+        caller,
         &route,
         "word-processor.document",
         "read-text",
         serde_json::Map::new(),
     )
     .await
-    .expect("the person reads the shared document")
-    .to_string()
+    .map(|read| read.to_string())
+}
+
+/// The caller the person `root` is on their device `device`, in `workspace`.
+pub(super) fn caller_of(
+    root: &SigningKey,
+    device: &crate::support::Device,
+    workspace: &str,
+) -> tilo_actions::remote::Caller {
+    tilo_actions::remote::Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        device.cert.device_public_key,
+    )
+    .in_workspace(workspace)
 }
 
 /// The owner's turn as a model takes it: it opens the word processor, writes a line, and
@@ -201,28 +250,27 @@ fn writes_then_shows(asked: &Arc<Mutex<Vec<ModelRequest>>>) -> Model {
     )
 }
 
-/// Where a document is shown and whose share it is are never arguments, a path names a thing
+/// Where a document is shown and whose card it is are never arguments, a path names a thing
 /// and not an action, and no path is no thing: each call is refused and told to the model as a
-/// failure, and nothing is shared anywhere.
+/// failure, and the reply shows nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn where_a_document_is_shown_and_whose_share_it_is_are_never_the_models_to_say() {
+async fn where_a_document_is_shown_and_whose_card_it_is_are_never_the_models_to_say() {
     team!(root, browser, actions, workspaces, workspace, page);
-    write_to_agent(
-        &actions,
+    asks_scout(
         &workspaces,
         &workspace,
-        (&root, &browser),
+        &root,
         "Write a poem in the word processor and show me the document.",
     )
     .await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let refused: Vec<(serde_json::Value, &str)> = vec![
         (
-            serde_json::json!({"path": "word-processor", IN: "c_chat"}),
+            serde_json::json!({"path": "word-processor", "channel": "plans"}),
             "never arguments",
         ),
         (
-            serde_json::json!({"path": "word-processor", "conversation": "c_chat"}),
+            serde_json::json!({"path": "word-processor", "conversation": "plans"}),
             "never arguments",
         ),
         (
@@ -255,13 +303,16 @@ async fn where_a_document_is_shown_and_whose_share_it_is_are_never_the_models_to
         )
     );
 
-    let part = conversation_part(&workspaces, &workspace).await;
+    let reply = reply(&workspaces, &workspace, &root).await;
     assert!(
-        shares(&part).is_empty(),
-        "nothing refused was shared: {:?}",
-        shares(&part)
+        reply.shown.is_empty(),
+        "nothing refused was shown: {reply:?}"
     );
-    assert_eq!(part.messages.len(), 2, "the question and one reply");
+    assert!(
+        reply.body.contains("I could not show it."),
+        "{}",
+        reply.body
+    );
     // Taken out whole: no lock is held while the test asks the server anything more.
     let asked = asked.lock().unwrap().clone();
     let told = told(&asked);
@@ -276,23 +327,12 @@ async fn where_a_document_is_shown_and_whose_share_it_is_are_never_the_models_to
     page.peer.close();
 }
 
-/// What a document says changes nothing about a turn's shares.
-#[path = "hosted_planted_words.rs"]
-mod planted_words;
-
 /// A path that names nothing the turn can read is not shown: the reading the turn itself has
 /// decides, and what it answered is told to the model as a failure.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_thing_the_turn_cannot_read_is_not_shown() {
     team!(root, browser, actions, workspaces, workspace, page);
-    write_to_agent(
-        &actions,
-        &workspaces,
-        &workspace,
-        (&root, &browser),
-        "Show me the budget.",
-    )
-    .await;
+    asks_scout(&workspaces, &workspace, &root, "Show me the budget.").await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     answer_the_turn!(
         workspaces,
@@ -314,11 +354,10 @@ async fn a_thing_the_turn_cannot_read_is_not_shown() {
         )
     );
 
-    let part = conversation_part(&workspaces, &workspace).await;
+    let reply = reply(&workspaces, &workspace, &root).await;
     assert!(
-        shares(&part).is_empty(),
-        "nothing unread was shared: {:?}",
-        shares(&part)
+        reply.shown.is_empty(),
+        "nothing unread was shown: {reply:?}"
     );
     // Taken out whole: no lock is held while the test asks the server anything more.
     let asked = asked.lock().unwrap().clone();
@@ -333,27 +372,23 @@ async fn a_thing_the_turn_cannot_read_is_not_shown() {
     page.peer.close();
 }
 
-/// A share gives a reader nothing the workspace denies them.
+/// A card gives a reader nothing the workspace denies them.
 #[path = "hosted_share_denied.rs"]
 mod denied;
 
 /// The owner's case: asked to write a document and show it, the agent writes in the word
-/// processor and answers with that document shown live. The share is one message of the agent's
-/// in the conversation the person asked in, of the document the turn wrote in, and the reply
-/// carries the model's words.
+/// processor and answers with that document shown live. The card stands in the agent's reply
+/// to the ask, before the model's words, and names the document the turn wrote in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_on_a_server_answers_with_the_document_it_wrote_shown_live() {
     team!(root, browser, actions, workspaces, workspace, page);
-    let question = write_to_agent(
-        &actions,
+    asks_scout(
         &workspaces,
         &workspace,
-        (&root, &browser),
+        &root,
         "Write a poem in the word processor and show me the word processor we are working in.",
     )
     .await;
-    let person = hex::encode(root.verifying_key().to_bytes());
-    let conversation = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(SCOUT)]);
     let asked = Arc::new(Mutex::new(Vec::new()));
     answer_the_turn!(workspaces, actions, workspace, writes_then_shows(&asked));
 
@@ -375,7 +410,7 @@ async fn an_agent_on_a_server_answers_with_the_document_it_wrote_shown_live() {
         .tools
         .iter()
         .find(|tool| tool.name == "answer_with_document")
-        .expect("a turn in a conversation is offered the tool");
+        .expect("a turn that answers an ask is offered the tool");
     assert!(
         tool.description.contains("answer_with_view")
             && tool.description.contains("never an argument"),
@@ -387,160 +422,40 @@ async fn an_agent_on_a_server_answers_with_the_document_it_wrote_shown_live() {
         "its instructions say when the thing itself is the answer"
     );
 
-    let part = conversation_part(&workspaces, &workspace).await;
-    let shared = shares(&part);
-    assert_eq!(shared.len(), 1, "one share: {shared:?}");
-    let shown = &shared[0];
-    assert_eq!(
-        shown.author,
-        MemberId::agent(SCOUT),
-        "the agent's own share"
+    let reply = reply(&workspaces, &workspace, &root).await;
+    assert_eq!(reply.state, AskState::Done, "{reply:?}");
+    let cards = cards(&reply);
+    assert_eq!(cards.len(), 1, "one card: {reply:?}");
+    let (app, document) = &cards[0];
+    assert_eq!(app, WRITER);
+    assert!(
+        reply.body.starts_with("A poem\n"),
+        "the card is called by the first line of its title, before the words: {:?}",
+        reply.body
     );
-    assert!(shown.for_someone, "it says what shared it for whom");
-    assert_eq!(
-        shown.conversation,
-        conversation.as_str(),
-        "in the conversation the person asked in"
+    assert!(
+        reply.body.ends_with("The poem is in the document above."),
+        "{:?}",
+        reply.body
     );
-    assert!(shown.share.open && !shown.share.ended, "live: {shown:?}");
-    assert_eq!(
-        format!("{:?}", shown.share.access),
-        "Edit",
-        "its card offers to work in it"
-    );
-    assert_eq!(shown.at["app"], WRITER);
-    assert_eq!(shown.at["label"], "A poem", "the first line of its title");
     // The document is the one the turn wrote in, and its person reads it: what they read
     // there holds the line the agent wrote.
-    let document = shown.at[DOCUMENT].as_str().unwrap_or_default();
-    let reads = reads_to_the_person(&actions, &workspace, (&root, &browser), document).await;
+    let document = document.clone().unwrap_or_default();
+    let reads = read_by(
+        &actions,
+        &workspace,
+        &caller_of(&root, &browser, &workspace),
+        &document,
+    )
+    .await
+    .expect("the person reads the document shown");
     assert!(
         reads.contains("The page is shared, the cursor waits."),
-        "the shared document {document:?} is the one the turn wrote: {reads}"
-    );
-    let reply = part
-        .messages
-        .iter()
-        .find(|(_, held)| {
-            held.author == MemberId::agent(SCOUT) && held.parent.as_ref() == Some(&question)
-        })
-        .map(|(_, held)| held.clone())
-        .expect("the reply");
-    assert_eq!(reply.text, "The poem is in the document above.");
-    assert!(
-        reply.share.is_none(),
-        "the reply is the words; the share is its own message"
+        "the document {document:?} shown is the one the turn wrote: {reads}"
     );
     page.peer.close();
 }
 
-/// A poem written, shown live a message later, changed, and its share ended.
+/// A poem written, then shown live a message later and changed.
 #[path = "hosted_poem.rs"]
 mod poem;
-
-/// Through its other tools the conversation of a share is an argument the model gives. A turn's
-/// call of Chat's own sharing verbs for any conversation but the one it answers in is refused
-/// in words and shares nothing: not where everyone reads, and not in its person's
-/// conversation with another agent.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_turn_shares_only_into_the_conversation_it_answers_in() {
-    team!(root, browser, actions, workspaces, workspace, page);
-    write_to_agent(
-        &actions,
-        &workspaces,
-        &workspace,
-        (&root, &browser),
-        "Post the document for everyone.",
-    )
-    .await;
-    let person = hex::encode(root.verifying_key().to_bytes());
-    let elsewhere = chat::Chat::direct_id([MemberId::person(person), MemberId::agent("other")]);
-    let attached = serde_json::json!({"app": WRITER, DOCUMENT: "letter", "kind": "tilo.window",
-        "id": "letter", "label": "A letter"});
-    let sharing = |verb: &str, to: &str| {
-        serde_json::json!({"path": format!("chat/Messages#{verb}"),
-            "args": {IN: to, "attached": attached.clone()}})
-    };
-    let asked = Arc::new(Mutex::new(Vec::new()));
-    answer_the_turn!(
-        workspaces,
-        actions,
-        workspace,
-        calls_then_answers(
-            vec![
-                ("tilo_do", sharing("share-window", "c_general")),
-                ("tilo_do", sharing("share-resource", "c_general")),
-                ("tilo_do", sharing("share-window", elsewhere.as_str())),
-            ],
-            "I did not post it.",
-            Arc::clone(&asked),
-        )
-    );
-    // Taken out whole: no lock is held while the test asks the server anything more.
-    let asked = asked.lock().unwrap().clone();
-    let told = told(&asked);
-    assert_eq!(told.len(), 3, "{told:?}");
-    for (answer, failed) in &told {
-        assert!(
-            *failed && answer.contains("only into the conversation it is answering in"),
-            "refused in words, as a failure: {answer}"
-        );
-    }
-    let part = conversation_part(&workspaces, &workspace).await;
-    assert!(
-        part.messages
-            .iter()
-            .all(|(_, held)| held.attachments.is_empty()),
-        "nothing was shared anywhere"
-    );
-    page.peer.close();
-}
-
-/// A turn's own call of Chat's `share-window` for the conversation it answers in is taken, as
-/// before: the rule above holds only the conversation.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_turn_shares_a_window_into_its_conversation_through_the_action_tool() {
-    team!(root, browser, actions, workspaces, workspace, page);
-    write_to_agent(
-        &actions,
-        &workspaces,
-        &workspace,
-        (&root, &browser),
-        "Show me the document.",
-    )
-    .await;
-    let person = hex::encode(root.verifying_key().to_bytes());
-    let conversation = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(SCOUT)]);
-    let asked = Arc::new(Mutex::new(Vec::new()));
-    answer_the_turn!(
-        workspaces,
-        actions,
-        workspace,
-        calls_then_answers(
-            vec![(
-                "tilo_do",
-                serde_json::json!({"path": "chat/Messages#share-window", "args": {
-                    IN: conversation.as_str(),
-                    "attached": {"app": WRITER, DOCUMENT: "letter", "kind": "tilo.window",
-                        "id": "letter", "label": "A letter"},
-                    "access": "edit",
-                }}),
-            )],
-            "It is above.",
-            Arc::clone(&asked),
-        )
-    );
-    // Taken out whole: no lock is held while the test asks the server anything more.
-    let asked = asked.lock().unwrap().clone();
-    let told = told(&asked);
-    assert_eq!(told.len(), 1, "{told:?}");
-    let part = conversation_part(&workspaces, &workspace).await;
-    let shared = shares(&part);
-    assert!(
-        !told[0].1 && shared.len() == 1,
-        "what the action tool answered a share into the turn's own conversation: {told:?}; \
-         shares: {shared:?}"
-    );
-    assert_eq!(shared[0].author, MemberId::agent(SCOUT));
-    page.peer.close();
-}
