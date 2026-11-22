@@ -1,16 +1,22 @@
-use super::resource_support::{
-    admit_person, on_messages, open_admitted_peer, part_route, published_message,
-};
+//! A record a remote member wrote, sealed, is read cold after its host restarts: its own
+//! document and an item of a part beside it.
+use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
-    CatalogueQuery, DeviceCapabilities, DocumentRoute, Seed, enrol, resource_provider, start,
+    ActionAddress, CatalogueQuery, DeviceCapabilities, DocumentRoute, Seed, enrol,
+    resource_provider, start,
 };
 use tilo_actions::remote::ViewResourceQuery;
 use tilo_agent_session::ReplicaActor;
 use tilo_peer_state::join::Role;
 use tilo_session_client::Outbox;
 
+/// The tracker, which keeps its issues in parts beside its own record.
+const TASKS: &str = "so.tilo.tasks";
+/// The kind of an issue its tracker's parts publish.
+const ISSUE: &str = "tasks.issues.issues";
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
+async fn a_remote_encrypted_record_and_its_part_are_read_cold_after_a_host_restart() {
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Host fixture", 1);
     let (author, _) = tilo_user_identity::UserIdentity::generate("Remote writer", 1);
     let (viewer, _) = tilo_user_identity::UserIdentity::generate("Remote reader", 1);
@@ -49,29 +55,31 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     let publisher = open_admitted_peer(&hosted, &writer_device, &host, &workspace.workspace).await;
     let mut source = crate::common::open_in(
         &workspace.workspace,
-        "so.tilo.chat",
+        TASKS,
         &tilo_actions::MemberId::person(hex::encode(writer_device.cert.user_public_key)),
         ReplicaActor::Owner,
         Seed::New,
     )
     .unwrap();
-    let mut doc = source.read(Clone::clone).unwrap();
-    let writer = hex::encode(writer_device.cert.user_public_key);
-    crate::common::add_channel(&mut doc, &writer, "general", None);
-    let channel = crate::common::channel(&doc, chat::model::ChannelKind::Text);
-    source
-        .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
-        .unwrap();
-    // The message is kept in the first part of the chat's messages.
-    let message = on_messages(
-        &mut source,
-        "post",
-        &serde_json::json!({"channel": channel.id, "text": "Retained encrypted é"}),
-    );
-    let (id, kind) = published_message(&source, &message);
-    let part = chat::parts::part(0);
+    // The issue is kept in the first part of the tracker's issues.
+    let chain = tasks::issue_list::chain();
+    let made = source
+        .invoke(
+            &ActionAddress::new(ui::resource::chain_resource_id(&chain), "create"),
+            serde_json::json!({"title": "Retained encrypted é"})
+                .as_object()
+                .unwrap(),
+            false,
+        )
+        .expect("the issue is filed");
+    let id = made
+        .resources
+        .first()
+        .expect("the create names the issue")
+        .clone();
+    let kind = ISSUE.to_owned();
     let route = DocumentRoute {
-        app_id: "so.tilo.chat".into(),
+        app_id: TASKS.into(),
         cluster_id: workspace.workspace.clone(),
         document: source.wire_document().into(),
     };
@@ -83,7 +91,11 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
         .peer
         .write(route.clone(), &source.take_mutation().unwrap().unwrap())
         .unwrap();
-    let part_route = part_route(&workspace.workspace, &part);
+    let part_route = DocumentRoute {
+        app_id: TASKS.into(),
+        cluster_id: workspace.workspace.clone(),
+        document: chain.part(0).as_str().to_owned(),
+    };
     for (_, mutation) in source.take_document_mutations().unwrap() {
         publisher.peer.write(part_route.clone(), &mutation).unwrap();
     }
@@ -104,7 +116,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
         }),
         "the real remote writer's retained primary must be encrypted on its exact channel"
     );
-    // The message's own record, the part, is read cold the same way.
+    // The issue's own record, the part, is read cold the same way.
     let query = CatalogueQuery {
         provider: Some(resource_provider(&part_route)),
         view_resource: Some(ViewResourceQuery {
@@ -134,7 +146,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     let page = reader
         .catalogue(query)
         .await
-        .expect("cold exact encrypted Chat source must materialize");
+        .expect("cold exact encrypted source must materialize");
     assert!(
         !page.rows.is_empty(),
         "retained remote content must produce actual resource views"

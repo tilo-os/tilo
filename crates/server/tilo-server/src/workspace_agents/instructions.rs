@@ -3,7 +3,7 @@
 use chat::recall::Recalled;
 use tilo_model_gateway::host_backend::protocol::{Message, Role};
 
-use super::{Ask, Turn, learned, shares, sub_agents};
+use super::{Turn, learned, shares, sub_agents};
 
 pub(super) fn history(entries: &[Recalled]) -> Vec<Message> {
     entries
@@ -42,14 +42,6 @@ pub(super) fn for_turn(turn: &Turn) -> String {
         name = turn.agent.name,
         conversation = turn.conversation,
     );
-    // Where the answer is a reply in a conversation, it may carry a view.
-    let view = if matches!(turn.ask, Ask::Message { .. }) {
-        " When what is asked for keeps changing or is easier seen than read (a count, a list, \
-         a status), answer with a view through `answer_with_view`, then say in a sentence \
-         what it shows."
-    } else {
-        ""
-    };
     let skills = if turn.agent.is_sub() {
         ""
     } else {
@@ -58,7 +50,7 @@ pub(super) fn for_turn(turn: &Turn) -> String {
          person asks you to share that guidance with the workspace."
     };
     format!(
-        "{every}{view}{skills}{}{}{}{told}",
+        "{every}{skills}{}{}{}{told}",
         shares::told(turn),
         learned::told_how(turn),
         sub_agents::told(turn)

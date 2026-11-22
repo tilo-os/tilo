@@ -14,10 +14,6 @@ use ui::tilo_workspace_agent::{Agent, NewSubAgent, Stands, workspace_agents};
 #[path = "hosted_coding_agents.rs"]
 mod hosted_coding_agents;
 
-/// Who ends a share an agent made for its person.
-#[path = "hosted_share_ends.rs"]
-mod share_ends;
-
 /// A model whose answer to each call is `play`'s. Every call is kept, in the order asked.
 struct Plays {
     play: Arc<dyn Fn(&ModelRequest) -> ModelResponse + Send + Sync>,
@@ -367,7 +363,11 @@ async fn mentions(
 }
 
 /// Answer `turn` and wait until it ended.
-async fn answers(agents: &ServerAgents, workspace: &str, turn: &tilo_server::workspace_agents::Turn) {
+async fn answers(
+    agents: &ServerAgents,
+    workspace: &str,
+    turn: &tilo_server::workspace_agents::Turn,
+) {
     tokio::time::timeout(Duration::from_secs(60), agents.answer(workspace, turn))
         .await
         .expect("the turn ends")
@@ -459,7 +459,10 @@ async fn a_sub_agent_answers_its_job_as_its_reply_and_its_starter_reads_it_there
     assert_eq!(turn.agent.id.0, researcher);
     assert_eq!(turn.person, person, "it works for its starter's person");
     assert_eq!(turn.request, "Find the deck for Monday.");
-    let line = turn.line.as_ref().expect("a sub-agent's turn knows its line");
+    let line = turn
+        .line
+        .as_ref()
+        .expect("a sub-agent's turn knows its line");
     assert!(line.job && line.from_starter, "{line:?}");
     assert_eq!(line.root.id.0, SCOUT, "it spends on its starter's day");
 
@@ -488,12 +491,19 @@ async fn a_sub_agent_answers_its_job_as_its_reply_and_its_starter_reads_it_there
     assert_eq!(news.len(), 1, "{news:?}");
     assert_eq!(news[0].agent, MemberId::agent(SCOUT));
     assert!(
-        news[0].from.as_ref().is_some_and(|from| from.same(&reply.at)),
+        news[0]
+            .from
+            .as_ref()
+            .is_some_and(|from| from.same(&reply.at)),
         "the news is made from the sub-agent's reply: {:?}",
         news[0].from
     );
     let turns = agents.turns(&workspace).await.unwrap();
-    assert_eq!(turns.len(), 1, "the news is its starter's one turn: {turns:?}");
+    assert_eq!(
+        turns.len(),
+        1,
+        "the news is its starter's one turn: {turns:?}"
+    );
     let told = &turns[0];
     assert_eq!(told.agent.id.0, SCOUT);
     assert!(
@@ -542,9 +552,19 @@ async fn a_note_asks_it_again_and_a_stop_takes_back_what_waits() {
     let person = hex::encode(root.verifying_key().to_bytes());
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = worked(&workspaces, &actions, looks_then_answers(1_000, Arc::clone(&asked)));
+    let agents = worked(
+        &workspaces,
+        &actions,
+        looks_then_answers(1_000, Arc::clone(&asked)),
+    );
 
-    starts(&workspaces, &workspace, &person, ("Sorter", "Sort the notes.")).await;
+    starts(
+        &workspaces,
+        &workspace,
+        &person,
+        ("Sorter", "Sort the notes."),
+    )
+    .await;
     let sorter = roster(&workspaces, &workspace)
         .await
         .agents
@@ -573,14 +593,22 @@ async fn a_note_asks_it_again_and_a_stop_takes_back_what_waits() {
     let held = asks_of(&workspaces, &workspace, &person, &sorter).await;
     assert_eq!(held.len(), 2, "{held:?}");
     assert!(
-        held[1].from.as_ref().is_some_and(|from| from.same(&held[0].at)),
+        held[1]
+            .from
+            .as_ref()
+            .is_some_and(|from| from.same(&held[0].at)),
         "the note is made from its job's ask: {held:?}"
     );
 
     // A stop takes back both, as nobody took them yet.
-    on_roster(&workspaces, &workspace, (Some(SCOUT), &person), stop(&sorter))
-        .await
-        .unwrap();
+    on_roster(
+        &workspaces,
+        &workspace,
+        (Some(SCOUT), &person),
+        stop(&sorter),
+    )
+    .await
+    .unwrap();
     assert!(
         agents.turns(&workspace).await.unwrap().is_empty(),
         "what it was asked before the stop is owed nothing"
@@ -603,7 +631,10 @@ async fn a_note_asks_it_again_and_a_stop_takes_back_what_waits() {
     .unwrap();
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "the new note alone: {turns:?}");
-    assert_eq!(turns[0].request, "A note from Scout: Sort only this week's.");
+    assert_eq!(
+        turns[0].request,
+        "A note from Scout: Sort only this week's."
+    );
     answers(&agents, &workspace, &turns[0]).await;
     stands_as(&workspaces, &workspace, &sorter, Stands::Done).await;
 
@@ -630,7 +661,10 @@ async fn a_note_asks_it_again_and_a_stop_takes_back_what_waits() {
         turns[0].request
     );
     assert!(
-        turns[0].line.as_ref().is_some_and(|line| !line.from_starter),
+        turns[0]
+            .line
+            .as_ref()
+            .is_some_and(|line| !line.from_starter),
         "its person's ask tells its starter nothing when it ends"
     );
     let _ = asked;
@@ -649,7 +683,6 @@ mod skills;
 /// What a look read before a turn ended, once that turn has ended.
 #[path = "hosted_turn_ends.rs"]
 mod turn_ends;
-
 
 /// A model call its provider refuses for a moment is asked again, with the turn's work kept.
 #[path = "hosted_turn_asks_again.rs"]

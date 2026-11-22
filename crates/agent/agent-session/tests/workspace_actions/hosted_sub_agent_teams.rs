@@ -108,7 +108,11 @@ async fn the_main_agents_own_turn_starts_notes_and_stops_its_sub_agents() {
         .cloned()
         .unwrap();
     let said = tool_answers(&last);
-    assert_eq!(said.len(), 4, "every call of the turn was answered: {said:?}");
+    assert_eq!(
+        said.len(),
+        4,
+        "every call of the turn was answered: {said:?}"
+    );
     assert!(
         said.iter().all(|(_, failed)| !failed),
         "the list took every verb: {}",
@@ -129,7 +133,10 @@ async fn the_main_agents_own_turn_starts_notes_and_stops_its_sub_agents() {
     let deck = asks_of(&workspaces, &workspace, &person, "find-the-deck").await;
     assert_eq!(deck.len(), 2, "its job and the note: {deck:?}");
     assert!(
-        deck[0].from.as_ref().is_some_and(|from| from.same(&reply.at)),
+        deck[0]
+            .from
+            .as_ref()
+            .is_some_and(|from| from.same(&reply.at)),
         "its job is made from the reply of the turn that started it: {:?}",
         deck[0].from
     );

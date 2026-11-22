@@ -77,6 +77,7 @@ pub(crate) mod asked;
 mod asking;
 mod asks;
 mod calendar_connect;
+mod carried;
 mod calendars;
 mod coding;
 mod going;
@@ -136,10 +137,6 @@ const ANSWER_TOKENS: u32 = 4096;
 const MOST_RESULT_BYTES: usize = 24 * 1024;
 /// How long the host waits for one of its own record writes (the reply, the comment) to be taken.
 const WRITE_WAIT: Duration = Duration::from_secs(30);
-/// The tool a turn in a conversation answers with a view through: Chat's own
-/// `answer-with-view`, on the reply to the turn's ask.
-const ANSWER_WITH_VIEW: &str = "answer_with_view";
-
 /// Chat's action that keeps on a reply what its agent says of its work.
 const KEEP_WORK: &str = "record-work";
 
@@ -477,9 +474,6 @@ impl ActionProvider for WorkspaceActionProvider {
             if context.purpose.is_none() {
                 context.purpose = Some(purpose.clone());
             }
-        }
-        if let Some(reason) = shares::refuses(caller, &request) {
-            return Pending::ready(Err(ActionCallError::InvalidRequest { reason }));
         }
         if let Some(events) = &self.events
             && request.target.provider == workspace_events::PROVIDER
@@ -2012,7 +2006,6 @@ impl TurnScope {
             workspace: self.workspace.clone(),
             ask: turn.ask.clone(),
             written: written::Written::of(turn),
-            shows_in: shares::shows_in(turn),
             replying: self.replying.clone(),
         }
     }
@@ -2027,8 +2020,6 @@ struct Reply {
     ask: Ask,
     /// How far the reply has grown while its model wrote it.
     written: written::Written,
-    /// The conversation the turn may show a document in, where it has one ([`shares::shows_in`]).
-    shows_in: Option<String>,
     /// Where the reply of a turn made from an ask is written.
     replying: Option<asked::Replying>,
 }
@@ -2222,72 +2213,6 @@ impl Reply {
                 .await
                 .map(drop)
             }
-        }
-    }
-
-    /// Put the view the model wrote on the reply to the message, through Chat's own
-    /// `answer-with-view`, as the agent acting for the person inside this turn: what the model
-    /// reads back, and whether it failed. The message is the turn's own ask, and the view's
-    /// author is whoever Chat pins from this caller: nothing the model says names either.
-    async fn view(&self, input: &Value) -> (String, bool) {
-        let Ask::Message { part, message, .. } = &self.ask else {
-            return (
-                "only an answer in a conversation carries a view".to_owned(),
-                true,
-            );
-        };
-        let given = input.as_object().cloned().unwrap_or_default();
-        if let Some(other) = given
-            .keys()
-            .find(|key| !matches!(key.as_str(), "source" | "reads"))
-        {
-            return (
-                format!(
-                    "{ANSWER_WITH_VIEW} takes `source` and `reads` and nothing else, not \
-                     `{other}`: whose view it is and which message it answers are never arguments"
-                ),
-                true,
-            );
-        }
-        let (Some(source), Some(reads)) = (
-            given.get("source").filter(|source| source.is_string()),
-            given.get("reads").filter(|reads| reads.is_array()),
-        ) else {
-            return (
-                format!(
-                    "{ANSWER_WITH_VIEW} takes `source`, the view as text, and `reads`, the list \
-                     of the apps it reads"
-                ),
-                true,
-            );
-        };
-        let route = DocumentRoute {
-            app_id: CHAT.to_owned(),
-            cluster_id: self.workspace.clone(),
-            document: part.clone(),
-        };
-        let mut arguments = Map::new();
-        arguments.insert("message".into(), json!(message));
-        arguments.insert("source".into(), source.clone());
-        arguments.insert("reads".into(), reads.clone());
-        let resource = format!("{}/messages/{message}", chat::parts::ChatMessages::KIND);
-        match invoke_named(
-            &self.provider,
-            &self.caller,
-            &route,
-            &resource,
-            "answer-with-view",
-            arguments,
-        )
-        .await
-        {
-            Ok(_) => (
-                "The view is on your reply, shown live to everyone who reads it. Now say in a \
-                 sentence or two what it shows."
-                    .to_owned(),
-                false,
-            ),
-            Err(why) => (format!("The view was not posted: {why}"), true),
         }
     }
 
@@ -2590,10 +2515,10 @@ async fn work(
         Ok(server) => server,
         Err(error) => return (Outcome::Failed(error.to_string()), 0, TurnUsage::default()),
     };
-    // What the turn keeps about its keeper, and in a conversation the view it may answer with,
-    // are its own tools beside the agent tools.
+    // What the turn keeps about its keeper, and in an answer to an ask the view or the document
+    // it may answer with, are its own tools beside the agent tools.
     let mut own_tools = learned::with_tools(Vec::new(), keeping);
-    own_tools.extend([view_tool(turn), shares::tool(turn)].into_iter().flatten());
+    own_tools.extend(shares::tools(turn));
     let asked = tilo_agent_turn::Asked {
         history: instructions::history(&turn.history),
         own_tools,
@@ -2773,7 +2698,7 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
     /// answers with;
     /// every other tool is the agent tools'.
     async fn own(&self, call: &ToolCall) -> Option<tilo_agent_turn::Answer> {
-        let (text, is_error) = if call.name == ANSWER_WITH_VIEW {
+        let (text, is_error) = if call.name == shares::ANSWER_WITH_VIEW {
             let at = self.at.lock().await;
             Box::pin(at.1.view(&call.input)).await
         } else if call.name == shares::ANSWER_WITH_DOCUMENT {
@@ -2868,25 +2793,6 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
 fn later(wait: Duration) -> Instant {
     let now = Instant::now();
     now.checked_add(wait).unwrap_or(now)
-}
-
-/// The tool a turn in a conversation answers with a view through, as the model is told it: when
-/// a view is the right answer and how one is written ([`chat::message_view::GUIDE`]). None for
-/// an issue's turn, whose answer is a comment.
-fn view_tool(turn: &Turn) -> Option<ToolDefinition> {
-    matches!(turn.ask, Ask::Message { .. }).then(|| ToolDefinition {
-        name: ANSWER_WITH_VIEW.to_owned(),
-        description: chat::message_view::GUIDE.to_owned(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "source": {"type": "string"},
-                "reads": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["source", "reads"],
-            "additionalProperties": false,
-        }),
-    })
 }
 
 /// Today, `YYYY-MM-DD`, as an agent's keeper counts the days its spending is charged to.

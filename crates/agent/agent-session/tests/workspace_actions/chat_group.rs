@@ -8,7 +8,6 @@
 //! and reading it as the batch's hid both from every member the role keeps
 //! from moderating, so a chat could only be posted to one call at a time.
 
-
 use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_agent_session::{Replica, ReplicaActor, Seed};
 use ui::permissions::Role;

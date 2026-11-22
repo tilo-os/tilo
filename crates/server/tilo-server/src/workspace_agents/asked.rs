@@ -191,7 +191,8 @@ fn turn_of(
              read it, and nothing else.",
         );
     } else {
-        request.push_str(&said);
+        let carried = asked.refers.iter().filter_map(super::carried::Carried::of);
+        request.push_str(&super::carried::told(said.clone(), carried));
     }
     let attempt = asked
         .replies
@@ -371,6 +372,31 @@ impl Replying {
         let agent = self.agent.clone();
         let more = more.to_owned();
         self.on_record(move |opened| asks::think(opened, &agent, &reply, &more))
+            .await
+    }
+
+    /// Show `to` under `label` on the reply, as a card of its own ([`asks::show`]).
+    ///
+    /// # Errors
+    /// The reply did not take it.
+    pub(super) async fn show(&self, label: &str, to: asks::Reference) -> Result<(), String> {
+        let reply = self.reply().await?;
+        let agent = self.agent.clone();
+        let label = label.to_owned();
+        self.on_record(move |opened| asks::show(opened, &agent, &reply, (&label, &to)))
+            .await
+    }
+
+    /// Answer with the view `definition` called `title` on the turn's reply: each reader draws
+    /// it live with what they may read.
+    ///
+    /// # Errors
+    /// The reply did not take it.
+    pub(super) async fn show_view(&self, title: &str, definition: &str) -> Result<(), String> {
+        let reply = self.reply().await?;
+        let agent = self.agent.clone();
+        let (title, definition) = (title.to_owned(), definition.to_owned());
+        self.on_record(move |opened| asks::show_view(opened, &agent, &reply, (&title, &definition)))
             .await
     }
 

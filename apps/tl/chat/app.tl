@@ -846,7 +846,7 @@ view said(m: Message) {
         text(p.body)
     }
     if m.sent_view != "" {
-        ui.Text("A view, to add to your own views", role: .caption, secondary: true)
+        agent.sent_view()
     }
     if history(m).any(v -> v.is(edit)) {
         ui.Text("edited", role: .caption, secondary: true)
