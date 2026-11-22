@@ -205,9 +205,14 @@ impl LanguagePackInstalls {
                         });
                     waking.notify_waiters();
                 });
-                installing.lock_recover().done = Some(outcome);
+                // The install leaves the ones under way as its outcome is set, under one lock:
+                // whoever asks once it is known starts a new one, never follows this one.
+                {
+                    let mut jobs = jobs.lock_recover();
+                    installing.lock_recover().done = Some(outcome);
+                    jobs.remove(&key);
+                }
                 waking.notify_waiters();
-                jobs.lock_recover().remove(&key);
             })
             .map_or_else(
                 |error| {
