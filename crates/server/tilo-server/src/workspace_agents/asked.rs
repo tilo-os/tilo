@@ -334,6 +334,19 @@ impl Replying {
             .await
     }
 
+    /// Put `more` at the end of the reply's thinking: what its model thought, as its provider
+    /// shows it ([`super::written`]).
+    ///
+    /// # Errors
+    /// The reply did not take it: it ended, or the record could not be written.
+    pub(super) async fn think(&self, more: &str) -> Result<(), String> {
+        let reply = self.reply().await?;
+        let agent = self.agent.clone();
+        let more = more.to_owned();
+        self.on_record(move |opened| asks::think(opened, &agent, &reply, &more))
+            .await
+    }
+
     /// End the turn as `state`: `words` go onto the end of the reply first, where there are
     /// any ([`super::written::Written::ending`]).
     ///

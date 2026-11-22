@@ -332,7 +332,12 @@ pub(super) fn told(learned: &Learned) -> String {
     let mut shown = 0_usize;
     for (_, fact) in &facts {
         let line = format!("\n- {} (from: {})", fact.text.trim(), fact.source.trim());
-        if OPENS.len().saturating_add(told.len()).saturating_add(line.len()) > TOLD_BYTES {
+        if OPENS
+            .len()
+            .saturating_add(told.len())
+            .saturating_add(line.len())
+            > TOLD_BYTES
+        {
             break;
         }
         told.push_str(&line);

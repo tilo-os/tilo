@@ -7,6 +7,9 @@
 //! clock holds a word back. What a model writes while a piece is on its way goes with the next
 //! one, so a reply takes no more changes than its server can write.
 //!
+//! What a model thinks before it writes, where its provider shows that, goes into the reply's
+//! thinking the same way, through the package's `think`, and never among its words.
+//!
 //! What a model writes before it uses a tool stays where its person read it, and what it
 //! writes afterwards stands a paragraph below. A reply whose turn ends before its answer keeps
 //! the words that came and says below them why ([`Written::ending`]). The reply of a model
@@ -29,6 +32,8 @@ const BELOW: &str = "\n\n";
 #[derive(Default)]
 pub(super) struct Writes {
     words: Mutex<String>,
+    /// What the model thought, as its provider shows it, that the reply does not hold yet.
+    thoughts: Mutex<String>,
     more: tokio::sync::Notify,
 }
 
@@ -37,6 +42,17 @@ impl Writes {
     pub(super) fn push(&self, text: &str) {
         self.words.lock_recover().push_str(text);
         self.more.notify_one();
+    }
+
+    /// The model thought `text`, and its provider shows it.
+    pub(super) fn thought(&self, text: &str) {
+        self.thoughts.lock_recover().push_str(text);
+        self.more.notify_one();
+    }
+
+    /// What it thought since that was last taken.
+    fn take_thoughts(&self) -> String {
+        std::mem::take(&mut *self.thoughts.lock_recover())
     }
 
     /// The model's call broke off. Where it is asked again, what it writes then stands
@@ -68,6 +84,20 @@ struct Grown {
     below: bool,
     /// Whether the reply refused a piece: no more goes on, and the turn's end says the rest.
     lost: bool,
+    /// What thinking the reply holds.
+    thought: Thought,
+}
+
+/// What thinking a reply holds.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Thought {
+    /// None yet.
+    #[default]
+    None,
+    /// An earlier call's: what is thought now stands a paragraph below it.
+    Earlier,
+    /// The call under way's.
+    Now,
 }
 
 impl Written {
@@ -90,6 +120,31 @@ impl Written {
         let mut grown = self.grown.lock_recover();
         grown.call.clear();
         grown.below = grown.said;
+        if grown.thought == Thought::Now {
+            grown.thought = Thought::Earlier;
+        }
+    }
+
+    /// What goes into the reply's thinking for `more`, which the model thought just now: a
+    /// later call's thinking stands a paragraph below an earlier one's.
+    fn next_thought(&self, more: &str) -> Option<String> {
+        let (lost, below) = {
+            let grown = self.grown.lock_recover();
+            (grown.lost, grown.thought == Thought::Earlier)
+        };
+        if !self.grows || lost || more.is_empty() {
+            return None;
+        }
+        Some(if below {
+            format!("{BELOW}{more}")
+        } else {
+            more.to_owned()
+        })
+    }
+
+    /// The reply took thinking.
+    fn thought_taken(&self) {
+        self.grown.lock_recover().thought = Thought::Now;
     }
 
     /// What goes onto the reply for `more`, which the model wrote just now: none where the
@@ -167,6 +222,21 @@ impl Written {
 }
 
 impl Reply {
+    /// Put `more`, which the turn's model thought just now and its provider showed, at the end
+    /// of the reply's thinking: beside its words, never among them.
+    pub(super) async fn thought(&self, more: &str) {
+        let (Some(replying), Some(text)) = (&self.replying, self.written.next_thought(more)) else {
+            return;
+        };
+        match replying.think(&text).await {
+            Ok(()) => self.written.thought_taken(),
+            Err(error) => {
+                tracing::warn!(workspace = %self.workspace, %error, "a reply did not take what its model thought");
+                self.written.lost();
+            }
+        }
+    }
+
     /// Put `more`, which the turn's model wrote just now, at the end of the answer.
     pub(super) async fn wrote(&self, more: &str) {
         let (Some(replying), Some(text)) = (&self.replying, self.written.next(more)) else {
@@ -190,6 +260,9 @@ pub(super) trait Takes {
     /// Put `more`, which the model wrote just now, at the end.
     fn take(&self, more: &str) -> impl std::future::Future<Output = ()> + Send;
 
+    /// Put `more`, which the model thought just now, at the end of its thinking.
+    fn think(&self, more: &str) -> impl std::future::Future<Output = ()> + Send;
+
     /// What of `whole`, the words of the answer to the call that just ended, it lacks.
     fn lacks(&self, whole: &str) -> Option<String>;
 }
@@ -201,6 +274,10 @@ impl Takes for Reply {
 
     async fn take(&self, more: &str) {
         self.wrote(more).await;
+    }
+
+    async fn think(&self, more: &str) {
+        self.thought(more).await;
     }
 
     fn lacks(&self, whole: &str) -> Option<String> {
@@ -235,10 +312,19 @@ pub(super) async fn follow<R>(
     let mut answer = std::pin::pin!(answer);
     reply.asked_anew();
     let mut words = String::new();
+    let mut thoughts = String::new();
     let answer = loop {
         tokio::select! {
             answer = &mut answer => break answer,
             () = writes.more.notified() => {
+                // What the model thought stands in the reply before what it then wrote, and
+                // goes the moment it comes, as its words do.
+                thoughts.push_str(&writes.take_thoughts());
+                if !thoughts.trim_end().is_empty() {
+                    let rest = thoughts.split_off(thoughts.trim_end().len());
+                    reply.think(&thoughts).await;
+                    thoughts = rest;
+                }
                 words.push_str(&writes.take());
                 words = settled(&words);
                 // No clock holds a word back: it goes now. What the model writes while it
@@ -251,6 +337,8 @@ pub(super) async fn follow<R>(
             }
         }
     };
+    thoughts.push_str(&writes.take_thoughts());
+    reply.think(thoughts.trim_end()).await;
     words.push_str(&writes.take());
     reply.take(settled(&words).trim_end()).await;
     answer
@@ -298,6 +386,8 @@ mod tests {
                 .push((self.began.elapsed().as_millis(), more.to_owned()));
             tokio::time::sleep(self.costs).await;
         }
+
+        async fn think(&self, _: &str) {}
 
         fn lacks(&self, _: &str) -> Option<String> {
             None
@@ -388,7 +478,10 @@ mod tests {
         written.asked_anew();
         let next = written.next("The plan").unwrap();
         written.took(&next);
-        assert_eq!(written.lacks("The plan is ready."), Some(" is ready.".to_owned()));
+        assert_eq!(
+            written.lacks("The plan is ready."),
+            Some(" is ready.".to_owned())
+        );
         assert_eq!(
             written.ending(&Outcome::Answered("The plan".to_owned())),
             (String::new(), AskState::Done)
@@ -400,9 +493,15 @@ mod tests {
             ("\n\nThe model stopped.".to_owned(), AskState::Failed)
         );
         written.lost();
-        assert_eq!(written.next("more"), None, "a reply that lost a piece takes no more");
         assert_eq!(
-            written.ending(&Outcome::Answered("The plan is ready.".to_owned())).0,
+            written.next("more"),
+            None,
+            "a reply that lost a piece takes no more"
+        );
+        assert_eq!(
+            written
+                .ending(&Outcome::Answered("The plan is ready.".to_owned()))
+                .0,
             "\n\nThe plan is ready.",
             "it is given the whole answer below what it holds"
         );

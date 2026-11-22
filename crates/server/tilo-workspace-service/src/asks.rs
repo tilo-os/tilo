@@ -16,9 +16,9 @@
 //! cause: what a reminder, an event or a sub-agent asks.
 
 use tilo_actions::MemberId;
+use tilolang_tilo::runtime::Value;
 use tilolang_tilo::runtime::rich::RichValue;
 use tilolang_tilo::runtime::store::Store as _;
-use tilolang_tilo::runtime::Value;
 use tilolang_tilo::runtime::value::EnumValue;
 
 use crate::tl_records::{Opened, Packages};
@@ -134,6 +134,8 @@ pub struct Replied {
     pub state: AskState,
     /// Its body, as written text.
     pub body: String,
+    /// What its model thought on the way, as its provider showed it.
+    pub thinking: String,
     pub superseded: bool,
 }
 
@@ -270,6 +272,7 @@ pub fn asks(opened: &Opened) -> Result<Vec<Asked>, String> {
                 attempt: int(read(opened, reply, "attempt").as_ref()),
                 state: state_of(&meta, read(opened, reply, "state")),
                 body: text(read(opened, reply, "body")),
+                thinking: text(read(opened, reply, "thinking")),
                 superseded: matches!(read(opened, reply, "superseded"), Some(Value::Bool(true))),
             })
             .collect();
@@ -356,9 +359,9 @@ pub fn private_to(opened: &Opened, asked: &Asked, keeper: &MemberId, agent: &Mem
     };
     let readers = opened.readers(from);
     !readers.is_empty()
-        && readers.iter().all(|reader| {
-            matches!(reader, Actor::Member(member) if member == keeper || member == agent)
-        })
+        && readers.iter().all(
+            |reader| matches!(reader, Actor::Member(member) if member == keeper || member == agent),
+        )
 }
 
 /// Rich text that mentions `member` as `@name`, then says `then`: what a composer writes when
@@ -436,7 +439,11 @@ pub fn ask(
 ///
 /// # Errors
 /// The package refused it (the ask is no longer owed), or it failed.
-pub fn answer(opened: &mut Opened, agent: &MemberId, ask: &ResourceRef) -> Result<ResourceRef, String> {
+pub fn answer(
+    opened: &mut Opened,
+    agent: &MemberId,
+    ask: &ResourceRef,
+) -> Result<ResourceRef, String> {
     let made = opened.invoke(
         &self::agent(agent),
         (AGENT_APP, "answer"),
@@ -451,12 +458,41 @@ pub fn answer(opened: &mut Opened, agent: &MemberId, ask: &ResourceRef) -> Resul
 ///
 /// # Errors
 /// The reply is no longer working, or the package refused it.
-pub fn say(opened: &mut Opened, agent: &MemberId, reply: &ResourceRef, more: &str) -> Result<(), String> {
+pub fn say(
+    opened: &mut Opened,
+    agent: &MemberId,
+    reply: &ResourceRef,
+    more: &str,
+) -> Result<(), String> {
     opened
         .invoke(
             &self::agent(agent),
             (AGENT_APP, "say"),
-            vec![Value::resource(reply), Value::Rich(RichValue::from_text(more))],
+            vec![
+                Value::resource(reply),
+                Value::Rich(RichValue::from_text(more)),
+            ],
+            None,
+        )
+        .map(drop)
+}
+
+/// Append `more` to the thinking of `reply`, as `agent`: what its model thought, as its provider
+/// shows it, each new piece and never the whole again.
+///
+/// # Errors
+/// The reply is no longer working, or the package refused it.
+pub fn think(
+    opened: &mut Opened,
+    agent: &MemberId,
+    reply: &ResourceRef,
+    more: &str,
+) -> Result<(), String> {
+    opened
+        .invoke(
+            &self::agent(agent),
+            (AGENT_APP, "think"),
+            vec![Value::resource(reply), Value::Text(more.into())],
             None,
         )
         .map(drop)
@@ -523,7 +559,11 @@ pub fn claim(
         .invoke(
             &self::agent(agent),
             (AGENT_APP, "claim"),
-            vec![Value::resource(ask), Value::Text(device.into()), Value::Int(at)],
+            vec![
+                Value::resource(ask),
+                Value::Text(device.into()),
+                Value::Int(at),
+            ],
             None,
         )
         .map(drop)

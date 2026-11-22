@@ -63,6 +63,9 @@ type Reply {
     ask: Ask
     /// The answer, growing while the agent writes.
     body: RichText
+    /// What the agent's model thought on the way, where its provider shows it: growing while
+    /// it thinks, and never part of the answer.
+    thinking: Text = ""
     state: AskState = .working
     /// Which time it was asked: the first reply is 1.
     attempt: Int = 1
@@ -107,9 +110,7 @@ action ask(all: Agents, agent: Actor, said: RichText, mention: Text = "") -> Ask
     }
     if let from = made_from {
         all.asks.insert(a, key: if mention == "" { from.id() } else { "{from.id()}|{mention}" })
-    } else {
-        all.asks.insert(a)
-    }
+    } else { all.asks.insert(a) }
 }
 
 /// Takes an ask back before a device took its turn. Only its asker may.
@@ -157,6 +158,14 @@ action say(r: Reply, more: RichText) {
     r.body = RichText(r.body, more)
 }
 
+/// The agent's model thought `more` on the way, as its provider shows it: at the end of the
+/// reply's thinking, beside its answer.
+action think(r: Reply, more: Text) {
+    require invoker == r.ask.agent "Only the agent asked may answer"
+    require r.state == .working "The answer is finished"
+    r.thinking = "{r.thinking}{more}"
+}
+
 /// The agent called `called` on the way, and it answered `answered`.
 action step(r: Reply, called: Text, answered: RichText, failed: Bool = false) {
     require invoker == r.ask.agent "Only the agent asked may answer"
@@ -202,11 +211,23 @@ view ask_row(a: Ask) {
 /// An agent's answer as it writes it, and what it called on the way. Another device's answer to
 /// the same ask stands instead of a superseded one, which shows nothing.
 view reply(r: Reply) {
+    state open: Bool
     if not r.superseded {
         stack(gap: .tight) {
             row(gap: .tight) {
                 avatar(r.ask.agent)
                 text(r.ask.agent.name(), role: .label)
+            }
+            if r.thinking != "" {
+                ui.DisclosureRow(
+                    if r.state == .working { "Thinking" } else { "Thought" },
+                    icon: .lightbulb,
+                ) {
+                    on toggle: set(open, not open)
+                    if open {
+                        ui.Text(r.thinking, role: .body, secondary: true)
+                    }
+                }
             }
             rich_text(r.body)
             for step in r.steps {
