@@ -813,14 +813,14 @@ waits on, if anything.
 
 | Piece | Left on main | On a branch now | Session |
 |---|---|---|---|
-| Devices, identity | ceremony crate, onboarding's `DiskIdentityStore`, `BootKeyCert` copies, `tilo-device-admin`, `threshold-identity`, the old-login key reader, the browser root and `device-key.mjs` | person store (2 person stores left) | One identity |
+| Devices, identity | `BootKeyCert` copies, `tilo-device-admin`, `threshold-identity`, `https::server_info`, the browser root and `device-key.mjs` (2 person stores left: `tilo_identity::store` and the browser's) | `server_info` deletion | One identity |
 | Sync | host retained store (`store/`, `persistence.rs`, `compaction.rs`, `tilo-server-store`), delta and co-edit envelopes, second file path, broker overlap, `settings-store` document layer, `app-state` `FsStore`, `content-device` | one store −33k, one file path −15k, broker step 2 | One engine |
 | tilolang store | `index/` (10.6k), `TiloStore` and its mirror, chunks; then the redb pager into resource-store | store move −50.5k | tilolang onto the resource store |
 | App framework | Rust Chat (71k), Rust Tasks (13.5k), `apps/tilolang` (21k), 65 `*-model` crates, `tilo-view`, `tilo-app` `framework/` (64k) after the ports, the Rust shell, the toolkit's second action path | Chat −80k (three agent branches, one deletion), Tasks with Notes on the web −11.7k, shell context menu | Delete Rust Chat; Rust apps to tilolang; cleanup; legacy readers |
 | Agents | `coding_agents` (4k) and every Claude-specific path, the other agent engines | C −6k | Agent engines |
 | Workspace | `PersonalStore`, `AccountStore` and the `accounts` crate, the second workspace list, the person document of `settings-store`, governor role, `Membership`/`WorkspaceRuntime` | `one-workspace-stores` −11.8k | one workspace |
 | Hosting | `Standalone`, `tilo-runtime-mcp`, the CLI holder, `tilo-api`'s grant file, the separate binaries | one daemon | hosting |
-| Actions | device-mcp and `OnDevice`, the REST-to-MCP bridge and intercepts, tilo-control's row dialect, the hand-typed vocabularies, the hand-written REST clients | none since invocations landed (54797d6eb39) | actions everywhere |
+| Actions | device-mcp and `OnDevice`, the REST-to-MCP bridge and intercepts, tilo-control's row dialect, the hand-typed vocabularies, the hand-written REST clients | device-mcp and `OnDevice` out (waits on hosting's and per-person's pushes), then the tool builders and the bridge | actions everywhere |
 
 Progress is measured as net lines removed on `origin/main` in each piece's
 crates since `d81cc1750ff`, and as copies of each concept left.
