@@ -7,11 +7,12 @@ cargo build --release --locked --manifest-path tools/imager-profile/Cargo.toml
 ```
 
 The independent Cargo workspace resolves only serde, JSON, SHA-256 and platform
-file-opening dependencies. It compiles the actual Imager model, profile codec,
-verified writer and CLI modules through source paths; it does not compile the
-GUI or maintain a second profile format. Its checked-in lockfile makes the tool
-independently reproducible. Cross compilation uses the normal Cargo `--target`
-and linker setup; otherwise the output matches the build host architecture.
+file-opening dependencies. It takes the production profile model, codec and
+verified writer from `install-profile-model`, without that crate's `model`
+feature, so it compiles no document or GUI stack and maintains no second
+profile format. Its checked-in lockfile makes the tool independently
+reproducible. Cross compilation uses the normal Cargo `--target` and linker
+setup; otherwise the output matches the build host architecture.
 
 Copy the resulting `tilo-imager-profile` executable into the acceptance tools
 image. The test host needs its normal C runtime, not Cargo or the repository's

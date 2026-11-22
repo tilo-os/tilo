@@ -163,7 +163,10 @@ dependencies = [
 name = "install-profile-model"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -343,12 +346,9 @@ dependencies = [
 name = "tilo-imager-profile"
 version = "0.1.0"
 dependencies = [
- "hex",
  "install-profile-model",
  "libc",
- "serde",
  "serde_json",
- "sha2",
  "tempfile",
 ]
 

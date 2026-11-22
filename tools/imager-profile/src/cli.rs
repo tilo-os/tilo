@@ -5,7 +5,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use crate::model::{Filesystem, InstallProfile};
+use install_profile_model::media::{Filesystem, InstallProfile, UserAccount};
 
 fn value(args: &[String], name: &str) -> io::Result<String> {
     let position = args
@@ -36,7 +36,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             install_profile_model::default_purpose()
         },
         hostname: value(args, "--hostname")?,
-        user: crate::model::UserAccount {
+        user: UserAccount {
             full_name: value(args, "--full-name")?,
             username: value(args, "--username")?,
             password: String::new(),
@@ -72,7 +72,12 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
         return Err("profile target must be a non-symlink regular file".into());
     }
-    crate::profile::write_profile_block_to_file(&mut file, metadata.len(), &profile, &|| false)?;
+    install_profile_model::profile::write_profile_block_to_file(
+        &mut file,
+        metadata.len(),
+        &profile,
+        &|| false,
+    )?;
     println!("embedded and verified profile in {}", target.display());
     Ok(())
 }

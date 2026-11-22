@@ -86,7 +86,6 @@ pub mod model;
 mod page;
 pub mod probe;
 pub mod profile;
-pub mod profile_cli;
 pub mod release;
 pub mod resource;
 pub mod setup;
