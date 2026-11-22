@@ -96,14 +96,14 @@ fn settle(app: &mut TestApp<TlApp>) {
 /// Run the frame due at `at`: whether the window wanted one.
 fn draw(app: &mut TestApp<TlApp>, at: ui::time::Instant) -> bool {
     set_at(at);
-    with_monotonic_time(at, || app.frame())
+    with_monotonic_time(at, || app.frame_if_owed())
 }
 
 /// Run the frame due at `at` and draw it: whether the window wanted a frame, and what it drew.
 fn frame_at(app: &mut TestApp<TlApp>, at: ui::time::Instant) -> (bool, Vec<u8>) {
     set_at(at);
     with_monotonic_time(at, || {
-        let drew = app.frame();
+        let drew = app.frame_if_owed();
         let pixels = app.harness().render_rgba();
         (drew, pixels)
     })

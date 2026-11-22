@@ -294,7 +294,7 @@ tilo_test_env::scenario! {
             .unwrap();
 
         assert!(
-            app.frame(),
+            app.frame_if_owed(),
             "the window asks for a frame when the record changes under it"
         );
         assert!(

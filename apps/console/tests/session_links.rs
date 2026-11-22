@@ -38,11 +38,9 @@ fn shows(app: &mut TestApp<App>, target: &str) -> bool {
 }
 
 /// Whether the window's bar carries the shell's way back: a run's page or an agent's card
-/// takes the place of its list. A frame runs here whether or not one is owed: the bar the
-/// window declares follows the shell's own parts by a pass, so one frame could still read
-/// the list's bar.
+/// takes the place of its list.
 fn shows_back(app: &mut TestApp<App>) -> bool {
-    app.settle();
+    app.frame();
     ui::window_toolbar::declared().is_some_and(|bar| {
         bar.leading
             .iter()

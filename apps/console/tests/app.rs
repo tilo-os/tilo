@@ -40,7 +40,6 @@ fn back(app: &mut TestApp<App>) {
         .press_window_part(ui::window_toolbar::ToolbarEvent::Action {
             id: ui::widget::WINDOW_BACK.to_owned(),
         });
-    app.frame();
 }
 
 #[test]
@@ -226,9 +225,7 @@ fn answer(app: &mut TestApp<App>, invocation: InvocationId, value: serde_json::V
                 correlation: None,
             },
         });
-    // What the answer changes is drawn by the components it wakes: settle them,
-    // as the window does once input stops, so the next look sees the row.
-    app.settle();
+    app.frame();
 }
 
 fn agent() -> wire::Author {

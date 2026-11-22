@@ -3,7 +3,7 @@
 
 use super::{build_test_widget, send_cursor_move, send_left_press, shell_command};
 use crate::TerminalWidget;
-use automerge::{AutoCommit, ROOT};
+use automerge::AutoCommit;
 use ui::widget::DrawChild;
 use vello::kurbo::Rect;
 
@@ -12,7 +12,6 @@ tilo_test_env::scenario! {
 
     phase ended_session_banner_reserves_its_own_band_above_the_grid;
     {
-        use ui::widget::Widget;
         use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
         use vello::{Scene, kurbo::Affine};
 
@@ -20,8 +19,7 @@ tilo_test_env::scenario! {
             .expect("spawn short-lived pty command");
         let doc = AutoCommit::new();
         tilo_test_env::wait_until("the short-lived command to end", || {
-            widget.update(&doc, &ROOT);
-            widget.sync(&doc, &ROOT);
+            ui::headless::frame_widget(&mut widget, &doc);
             widget.is_disconnected()
         });
 
@@ -63,8 +61,7 @@ tilo_test_env::scenario! {
                       what: &str,
                       done: &dyn Fn(&TerminalWidget) -> bool| {
             tilo_test_env::wait_until(what, || {
-                widget.update(doc, &ROOT);
-                widget.sync(doc, &ROOT);
+                ui::headless::frame_widget(widget, doc);
                 done(widget)
             });
         };

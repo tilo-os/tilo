@@ -308,6 +308,12 @@ mod inspection;
 mod owner_models;
 mod scene_paint;
 
+/// What a live frame runs for a widget a test drives on its own: its update, then its sync.
+pub fn frame_widget(widget: &mut dyn Widget, doc: &crate::widget::AppModel) {
+    widget.update(doc, &automerge::ROOT);
+    widget.sync(doc, &automerge::ROOT);
+}
+
 /// What `widget` shows, as the frame harness's inspection reads it: a skipped pass is checked against
 /// it ([`crate::component_inputs`]).
 #[cfg(debug_assertions)]
@@ -2866,7 +2872,7 @@ impl FrameHarness {
             })
     }
 
-    /// Pump component wakes and animate using the production update/layout/draw passes.
+    /// Pump component wakes and animate through production passes, only when a frame is owed.
     pub fn poll_frame(&mut self) -> Result<bool, crate::widget::WidgetLayoutError> {
         let frame = self.frame_schedule();
         if !frame.needs_redraw && !frame.needs_animation_frame {
