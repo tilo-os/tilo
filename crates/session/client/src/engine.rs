@@ -206,7 +206,7 @@ pub struct Engine {
     /// The workspace transport of this session's peer network, once it runs: a record the
     /// workspace's hosts send only once asked is asked for here, and the peer network is gone while this
     /// is `None` .
-    link: std::sync::Mutex<Option<Arc<workspace_keys::KeyLink>>>,
+    link: Arc<std::sync::Mutex<Option<Arc<workspace_keys::KeyLink>>>>,
     /// The layout's workspaces being founded now: a pass that comes while one is signed founds it
     /// no second time.
     founding: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
@@ -367,6 +367,9 @@ impl std::fmt::Debug for Engine {
 pub struct HistoryKeys {
     keys: KeyProvider,
     handed: Arc<std::sync::Mutex<RouteKeys>>,
+    /// Where this device asks its other devices for a group's frames when a write is sealed
+    /// under an epoch whose key it does not hold ([`workspace_keys::KeyLink::want_frames`]).
+    link: Arc<std::sync::Mutex<Option<Arc<workspace_keys::KeyLink>>>>,
 }
 
 impl HistoryKeys {
@@ -376,6 +379,7 @@ impl HistoryKeys {
         Self {
             keys,
             handed: Arc::default(),
+            link: Arc::default(),
         }
     }
 
@@ -403,10 +407,18 @@ impl tilo_peer_state::owner::SealedHistoryKeys for HistoryKeys {
         let group = write
             .encryption
             .map_or(workspace, |metadata| metadata.key_group(workspace));
-        match self.handed(group) {
+        let opened = match self.handed(group) {
             Some(handed) => handed.open(write),
             None => self.service()?.open_history_write(workspace, write),
+        };
+        if opened.is_err()
+            && let Some(link) = self.link.lock_recover().clone()
+        {
+            // A write sealed under an epoch whose key is not here yet: the person's other devices
+            // are asked for the group's frames, as they are for any record's keys.
+            link.want_frames(workspace, 0);
         }
+        opened
     }
 
     fn named_readers(&self, workspace: WorkspaceId, document: &str) -> Option<String> {
@@ -481,9 +493,11 @@ impl Engine {
     ) -> Self {
         let keys = KeyProvider::default();
         let handed = Arc::<std::sync::Mutex<RouteKeys>>::default();
+        let link = Arc::<std::sync::Mutex<Option<Arc<workspace_keys::KeyLink>>>>::default();
         owner.keep_sealed_histories(Arc::new(HistoryKeys {
             keys: keys.clone(),
             handed: Arc::clone(&handed),
+            link: Arc::clone(&link),
         }));
         Self {
             owner,
@@ -491,7 +505,7 @@ impl Engine {
             identity,
             keys,
             ownership,
-            link: std::sync::Mutex::new(None),
+            link,
             founding: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             failed_at: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             founded: tokio::sync::watch::Sender::new(0),
@@ -1308,7 +1322,6 @@ impl Engine {
     pub fn attach_link(&self, link: Arc<workspace_keys::KeyLink>) {
         *self.link.lock_recover() = Some(link);
     }
-
     /// Where this device's channels hear its workspaces' governance and tell which devices each
     /// admits: the peer network's side of them, `None` when this session runs no channel service.
     pub fn link(&self) -> Option<Arc<workspace_keys::KeyLink>> {
@@ -1319,6 +1332,9 @@ impl Engine {
     /// device, which takes no part in the workspace's group.
     pub fn hand_keys(&self, workspace: WorkspaceId, keys: key_group::ContentKeys) {
         self.handed.lock_recover().insert(workspace, keys);
+        // A compaction this device kept for a key it did not hold is decided again now: the
+        // same admission takes it once the key here opens it.
+        self.owner.retry_kept_compactions(workspace);
     }
 
     /// The keys `workspace`'s host handed this device, when it handed any.

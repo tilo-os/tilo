@@ -143,6 +143,7 @@ impl NativeWorkspaceOwner {
             shortcut_change: None,
             effect_history_root: None,
             join_admissions: std::collections::BTreeMap::new(),
+            kept_compactions: Vec::new(),
         };
         self.publish_workspace(workspace, NativeCommittedView::new(peer, record), None)?;
         Ok(true)
@@ -236,6 +237,7 @@ impl NativeWorkspaceOwner {
             shortcut_change: None,
             effect_history_root: None,
             join_admissions: std::collections::BTreeMap::new(),
+            kept_compactions: Vec::new(),
         };
         self.publish_workspace(workspace, NativeCommittedView::new(peer, record), None)?;
         Ok(true)

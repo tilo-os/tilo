@@ -392,6 +392,7 @@ impl NativeWorkspaceOwner {
             shortcut_change: None,
             effect_history_root: None,
             join_admissions: std::collections::BTreeMap::new(),
+            kept_compactions: Vec::new(),
         };
         Ok(self.publish_workspace(
             workspace,

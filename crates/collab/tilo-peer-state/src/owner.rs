@@ -242,6 +242,10 @@ struct SharedOwner {
     /// The outgoing entries of each workspace this device's replica was checked to hold: a
     /// write's bytes never change, so a pass checks the entries it has not seen and no others.
     verified: Mutex<BTreeMap<WorkspaceId, BTreeSet<[u8; 32]>>>,
+    /// Sealed compactions each workspace's replica refused for an epoch's content key this
+    /// device does not hold yet, by the encoded message: kept in the workspace's record
+    /// ([`NativeWorkspaceOwner::retry_kept_compactions`]) until the key arrives.
+    kept_compactions: Mutex<BTreeMap<WorkspaceId, Vec<stored::StoredKeptCompaction>>>,
 }
 #[derive(Default)]
 struct Current {
@@ -487,6 +491,47 @@ pub struct NativeFenceSubscription {
 }
 
 impl SharedOwner {
+    /// The compactions `workspace` keeps for a content key this device does not hold yet.
+    fn kept(&self, workspace: WorkspaceId) -> Vec<stored::StoredKeptCompaction> {
+        self.kept_compactions
+            .lock()
+            .get(&workspace)
+            .cloned()
+            .unwrap_or_default()
+    }
+    /// Keep `message`, a compaction refused for an epoch's key this device lacks, in
+    /// `workspace`'s record. Answers whether it was not kept already.
+    fn keep_compaction(&self, workspace: WorkspaceId, message: &NeighbourMsg) -> bool {
+        let Ok(encoded) = postcard::to_allocvec(message) else {
+            return false;
+        };
+        let kept = stored::StoredKeptCompaction { message: encoded };
+        let mut all = self.kept_compactions.lock();
+        let held = all.entry(workspace).or_default();
+        if held.contains(&kept) {
+            return false;
+        }
+        held.push(kept);
+        drop(all);
+        true
+    }
+    /// Forget `message`, a compaction `workspace` kept, once it was taken or refused for good.
+    fn forget_compaction(&self, workspace: WorkspaceId, message: &NeighbourMsg) -> bool {
+        let Ok(encoded) = postcard::to_allocvec(message) else {
+            return false;
+        };
+        let mut all = self.kept_compactions.lock();
+        let Some(held) = all.get_mut(&workspace) else {
+            return false;
+        };
+        let before = held.len();
+        held.retain(|kept| kept.message != encoded);
+        let removed = held.len() != before;
+        if held.is_empty() {
+            all.remove(&workspace);
+        }
+        removed
+    }
     fn notify(&self, workspace: WorkspaceId, continuity: u64) {
         let observers: Vec<_> = {
             let mut listeners = self.listeners.lock();
@@ -571,6 +616,7 @@ impl NativeWorkspaceOwner {
             resting: publication::Resting::default(),
             backlogs: backlog::Backlog::default(),
             verified: Mutex::default(),
+            kept_compactions: Mutex::default(),
         }))
     }
     /// Restore every enrolled workspace of `authority`, the record `store` last
@@ -596,6 +642,12 @@ impl NativeWorkspaceOwner {
             effect_receipt::validate_history(&view, store.as_ref())?;
             current.workspaces.insert(*workspace, Arc::new(view));
         }
+        let kept_compactions = authority
+            .workspaces
+            .iter()
+            .filter(|(_, record)| !record.kept_compactions.is_empty())
+            .map(|(workspace, record)| (*workspace, record.kept_compactions.clone()))
+            .collect::<BTreeMap<_, _>>();
         Ok(Self(Arc::new(SharedOwner {
             store,
             authority: RwLock::new(authority),
@@ -606,6 +658,7 @@ impl NativeWorkspaceOwner {
             resting: publication::Resting::default(),
             backlogs: backlog::Backlog::default(),
             verified: Mutex::default(),
+            kept_compactions: Mutex::new(kept_compactions),
         })))
     }
     #[must_use]
@@ -837,6 +890,7 @@ impl NativeWorkspaceOwner {
         let candidate = self.view(workspace)?;
         let replica = candidate.replica.clone();
         let previous_publication = candidate.record.publication.clone();
+        let previous_kept = candidate.record.kept_compactions.clone();
         let mut reports = Vec::with_capacity(inputs.len());
         // The workspace changes admitted from its other devices, as they came:
         // their hashes are read only to retire changes of this device's own
@@ -868,6 +922,9 @@ impl NativeWorkspaceOwner {
         }
         let mut record = candidate.record.clone();
         record.publication = publication;
+        // The compactions this turn kept for keys it does not hold yet: the record carries them
+        // so a restart keeps them too.
+        record.kept_compactions = self.0.kept(workspace);
         // One snapshot under the replica's lock, as [`Self::publish`] takes
         // it: the durable bytes that show whether anything changed are the
         // ones published, encoded once.
@@ -883,7 +940,10 @@ impl NativeWorkspaceOwner {
             // state and outgoing ownership are byte-for-byte unchanged. In
             // particular, newly settled prerequisites or retired obligations
             // still require publication before they can be observed.
-            if durable == record.peer && record.publication == previous_publication {
+            if durable == record.peer
+                && record.publication == previous_publication
+                && record.kept_compactions == previous_kept
+            {
                 return Ok(reports);
             }
             record.peer = durable;

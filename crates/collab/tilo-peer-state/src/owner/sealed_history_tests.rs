@@ -1661,3 +1661,186 @@ async fn a_write_the_holder_signed_and_admitted_is_published_once() {
         "still one publication"
     );
 }
+
+/// A device holding its record's current epoch, and not the earlier epoch a compaction is
+/// sealed under: `here` says the earlier key has arrived.
+struct OlderEpoch {
+    before: ContentKeys,
+    after: ContentKeys,
+    here: std::sync::atomic::AtomicBool,
+}
+
+impl OlderEpoch {
+    fn open(&self, write: &SignedOp) -> Result<Vec<u8>, String> {
+        if self.here.load(std::sync::atomic::Ordering::Relaxed)
+            && let Ok(plaintext) = open(&self.before, write)
+        {
+            return Ok(plaintext);
+        }
+        open(&self.after, write)
+    }
+}
+
+impl SealedHistoryKeys for OlderEpoch {
+    fn open(&self, _: WorkspaceId, write: &SignedOp) -> Result<Vec<u8>, String> {
+        OlderEpoch::open(self, write)
+    }
+
+    fn seal_checkpoint(
+        &self,
+        _: WorkspaceId,
+        app: &str,
+        record: &str,
+        _named: Option<&str>,
+        snapshot: &[u8],
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        self.after
+            .seal_content(
+                collab_types::document_artifact_id(app, WORKSPACE, record),
+                ContentRetention::of_frame(snapshot),
+                snapshot,
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    fn renew(
+        &self,
+        _: WorkspaceId,
+        write: &SignedOp,
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        let plaintext = OlderEpoch::open(self, write)?;
+        self.after
+            .seal_content(write.artifact, ContentRetention::Delta, &plaintext)
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// A compaction sealed under an epoch the device holds no key for is no refusal: it is kept in
+/// the record, survives a restart, and is taken when that epoch's key arrives.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one story: the older epoch, the kept compaction, its restart and the key's arrival"
+)]
+async fn a_compaction_sealed_under_an_epoch_the_device_lacks_is_kept_and_taken_when_it_arrives() {
+    let (fixture, mut host, governor_key) = governed_fixture_at(tilo_clock::wall());
+    let copy = enrolled_with(fixture);
+    let (owner, workspace, now) = (&copy.owner, copy.workspace, copy.now);
+    let channel = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
+    let mut group = key_group::KeyGroup::create(
+        channel,
+        key_group::MemberKey::generate("governor").unwrap(),
+    )
+    .unwrap();
+    let before = group.content_keys().unwrap();
+    // A device let into the channel after it moved on: it holds the epoch it joined at, and no
+    // older one.
+    let joiner = key_group::MemberKey::generate("joiner").unwrap();
+    let welcome = group
+        .add_member(joiner.fresh_key_package().unwrap())
+        .unwrap();
+    let after = key_group::KeyGroup::process_welcome(channel, &welcome, joiner)
+        .unwrap()
+        .content_keys()
+        .unwrap();
+    assert_ne!(before.epoch(), after.epoch(), "the channel moved on");
+    let governor_pub = governor_key.verifying_key().to_bytes();
+
+    // The host's own device writes sealed under the older epoch, and compacts what it wrote.
+    let older = written_at(&mut host, &base(owner, workspace), &before, &governor_key, now);
+    let artifact = collab_types::document_artifact_id(APP, WORKSPACE, "");
+    let mut ops = host
+        .publication()
+        .draft_sealed_compaction(
+            (APP, ""),
+            None,
+            None,
+            &mut |write: &SignedOp| open(&before, write),
+            &mut |frame: &[u8]| {
+                before
+                    .seal_content(artifact, ContentRetention::of_frame(frame), frame)
+                    .map_err(|error| error.to_string())
+            },
+            governor_pub,
+            now,
+        )
+        .unwrap();
+    for op in &mut ops {
+        collab_types::sign_op(op, &governor_key).unwrap();
+    }
+    let compaction = host
+        .publication_mut()
+        .admit_sealed_compaction(APP, "", None, ops, now)
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("a compaction message");
+    assert!(
+        older.iter().all(|message| matches!(message, NeighbourMsg::AppDocument { .. })),
+        "the writes it folds are document writes"
+    );
+
+    // The copy holds its record's current epoch and a write of its own, and not the older
+    // epoch the compaction is sealed under.
+    owner.keep_sealed_histories(Arc::new(OlderEpoch {
+        before: before.clone(),
+        after: after.clone(),
+        here: std::sync::atomic::AtomicBool::new(false),
+    }));
+    let mut typist = Typist::over(&base(owner, workspace), 1);
+    let current = typist.change("k0");
+    assert_eq!(write(owner, workspace, &after, current, now).await, Ok(1));
+    let report = owner
+        .receive(
+            workspace,
+            TransportOrigin::RetainedServerDelta(governor_pub),
+            compaction,
+            now,
+        )
+        .expect("the compaction is kept, not refused");
+    assert_eq!(
+        report.primary(),
+        &crate::InputDisposition::RetryLater(crate::MissingPrerequisite::PersistedMls),
+        "the device holds it until the epoch's key is here"
+    );
+
+    // The copy restarts, and the kept compaction is still its record's.
+    let path = copy.path.clone();
+    drop(copy.owner);
+    let reopened = open_file(&path).unwrap();
+    // The earlier epoch's key arrives.
+    reopened.keep_sealed_histories(Arc::new(OlderEpoch {
+        before: before.clone(),
+        after: after.clone(),
+        here: std::sync::atomic::AtomicBool::new(true),
+    }));
+    reopened.retry_kept_compactions(workspace);
+    let history = reopened
+        .with_current(workspace, |view| Ok(view.peer().publication().sealed_history(APP, "")))
+        .unwrap();
+    assert_eq!(
+        history.first().map(|op| op.kind),
+        Some(OpKind::Compaction),
+        "the compaction the record kept leads its history after the restart"
+    );
+    let document = reopened
+        .with_current(workspace, |view| {
+            let opened = view
+                .peer()
+                .publication()
+                .opened_document(APP, "", &mut |write| {
+                    open(&before, write).or_else(|_| open(&after, write))
+                })?
+                .expect("the chat is held");
+            assert!(opened.unmerged.is_empty(), "every write merges");
+            Ok(AutoCommit::load(&opened.document).unwrap())
+        })
+        .unwrap();
+    let read: BTreeSet<String> = document
+        .keys(ROOT)
+        .filter(|key| key.starts_with('k') || key.starts_with('b'))
+        .collect();
+    let mut expected: BTreeSet<String> = keys_typed('b', 5).collect();
+    expected.insert("k0".to_owned());
+    assert_eq!(read, expected, "every covered write reads");
+}

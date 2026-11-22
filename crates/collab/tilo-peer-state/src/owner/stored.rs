@@ -114,6 +114,19 @@ pub(crate) struct StoredWorkspace {
     /// the workspace delta that carried each one is published under its receipt.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub join_admissions: BTreeMap<String, StoredJoinReceipt>,
+    /// Sealed compactions this device refused because they are sealed under an epoch it holds no
+    /// content key for: kept until the key arrives
+    /// ([`crate::NativeWorkspaceOwner::retry_kept_compactions`]), so a restart loses none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept_compactions: Vec<StoredKeptCompaction>,
+}
+
+/// A compaction kept for a key this device does not hold yet: the message as it reached the
+/// device, so the same admission takes it once the key is here.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct StoredKeptCompaction {
+    /// The message, postcard-encoded: a document write of the record's history.
+    pub message: Vec<u8>,
 }
 
 impl StoredWorkspace {
