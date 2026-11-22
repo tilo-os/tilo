@@ -800,6 +800,19 @@ impl Server {
                 Arc::clone(&content),
             );
             push_background_task(&background_tasks, tokio::spawn(kept.keep_content()));
+            // The apps the workspaces kept here installed run here too, for whoever calls them.
+            #[cfg(feature = "agents")]
+            push_background_task(
+                &background_tasks,
+                tokio::spawn(crate::server_apps::serve(
+                    governed.clone(),
+                    crate::server_apps::Device {
+                        identity_root: cfg.identity_root.clone(),
+                        cert: identity.device_cert.clone(),
+                    },
+                    cfg.state_root.clone(),
+                )),
+            );
             push_background_task(
                 &background_tasks,
                 tokio::spawn(crate::content::collection::run(

@@ -236,9 +236,9 @@ pub struct Instance {
 /// How a process is started: the command for one on `runtime` and `app_runtime`, keeping `storage`
 /// and reading what an earlier version of its app kept (the directory, and where the process sees
 /// it beneath its mount).
-type Starts = dyn Fn(&str, &str, &Path, Option<(&Path, &Path)>) -> Command + Send + Sync;
+pub type Starts = dyn Fn(&str, &str, &Path, Option<(&Path, &Path)>) -> Command + Send + Sync;
 /// How an installed app is verified for a process: the workspace it is installed in, and the app.
-type Verifies = dyn Fn(&str, &str) -> Result<VerifiedInstance, String> + Send + Sync;
+pub type Verifies = dyn Fn(&str, &str) -> Result<VerifiedInstance, String> + Send + Sync;
 
 /// The tilolang processes this session runs, by workspace, app and runtimes.
 pub struct Processes {
@@ -261,27 +261,34 @@ impl Processes {
             tilo_paths::xdg::data_home().unwrap_or_else(|| PathBuf::from("/nonexistent"));
         Self::with(
             data_home,
-            Box::new(move |runtime, app_runtime, storage, earlier| {
-                let mut command = Command::new(&launcher);
-                command
-                    .arg(launcher::run::tilolang_process::SUBCOMMAND)
-                    .arg("--runtime")
-                    .arg(runtime)
-                    .arg("--app-runtime")
-                    .arg(app_runtime)
-                    .arg("--storage")
-                    .arg(storage);
-                if let Some((dir, under)) = earlier {
-                    command
-                        .arg("--earlier")
-                        .arg(dir)
-                        .arg("--earlier-under")
-                        .arg(under);
-                }
-                command
-            }),
+            Self::started_through(launcher),
             Box::new(verified_installed),
         )
+    }
+
+    /// How a process is started through `launcher`: as `tilolang-process`, which confines it, on
+    /// the runtimes it runs and with the storage it keeps.
+    #[must_use]
+    pub fn started_through(launcher: PathBuf) -> Box<Starts> {
+        Box::new(move |runtime, app_runtime, storage, earlier| {
+            let mut command = Command::new(&launcher);
+            command
+                .arg(launcher::run::tilolang_process::SUBCOMMAND)
+                .arg("--runtime")
+                .arg(runtime)
+                .arg("--app-runtime")
+                .arg(app_runtime)
+                .arg("--storage")
+                .arg(storage);
+            if let Some((dir, under)) = earlier {
+                command
+                    .arg("--earlier")
+                    .arg(dir)
+                    .arg("--earlier-under")
+                    .arg(under);
+            }
+            command
+        })
     }
 
     /// Processes over `data_home`, started by `starts` and running what `verifies` verified.

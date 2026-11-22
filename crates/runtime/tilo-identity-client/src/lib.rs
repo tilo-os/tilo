@@ -187,6 +187,13 @@ pub mod wire {
             document_id: String,
             known_generation: u64,
         },
+        /// `request`, made while the app serves the invocation `invocation`: decided as the one
+        /// who made that call, where a device runs apps for the people who call them. Appended,
+        /// so earlier requests keep their encoding.
+        ForCall {
+            invocation: [u8; 16],
+            request: Box<Self>,
+        },
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

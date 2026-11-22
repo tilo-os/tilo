@@ -139,77 +139,6 @@ tilo_test_env::scenario! {
     }
 }
 
-/// The broker's socket in a fresh directory, listened on, and the server's launcher for it.
-fn serving() -> (
-    tempfile::TempDir,
-    std::os::unix::net::UnixListener,
-    ServerLauncher,
-) {
-    let root = tempfile::tempdir().unwrap();
-    let socket = root.path().join("collab.sock");
-    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-    (root, listener, ServerLauncher::new(socket))
-}
-
-tilo_test_env::scenario! {
-    fn the_server_attests_only_the_windows_it_serves;
-
-    phase a_launch_or_a_call_with_no_page_is_refused_legibly;
-    {
-        let (_root, _listener, apps) = serving();
-        let workspace = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(7), "On the server");
-        let refused = apps
-            .launch(APP, &workspace, None, &LaunchPlace::Focus)
-            .expect_err("no page is open for the launch");
-        assert!(refused.contains(NO_WINDOW), "{refused}");
-        let refused = apps
-            .windowless(APP, WORKSPACE)
-            .expect_err("no app runs here without a page yet");
-        assert!(refused.contains(NO_PAGE_FOR_CALL), "{refused}");
-    }
-
-    phase a_windows_connection_is_attested_as_that_window_once;
-    {
-        let (_root, listener, apps) = serving();
-        let me = std::process::id();
-        let _connection = apps.connect_window(APP, WORKSPACE, 41).unwrap();
-        let (mut accepted, _) = listener.accept().unwrap();
-        // The broker reads the window's app, workspace and tab from the connection's
-        // handoff.
-        use std::io::Read as _;
-        let mut magic = [0; 4];
-        accepted.read_exact(&mut magic).unwrap();
-        assert_eq!(magic, launcher::services::COLLAB_LAUNCH_MAGIC);
-        assert!(apps.attest_process(me, APP, WORKSPACE));
-        assert!(!apps.attest_process(me, "so.tilo.lang.other", WORKSPACE));
-        assert!(
-            apps.authenticated_launch(me + 1, APP, WORKSPACE, Some(41))
-                .unwrap()
-                .is_none(),
-            "another process is no window of this server's"
-        );
-        assert!(
-            apps.authenticated_launch(me, APP, WORKSPACE, Some(42))
-                .unwrap()
-                .is_none(),
-            "a window it made no connection for"
-        );
-        let attested = apps
-            .authenticated_launch(me, APP, WORKSPACE, Some(41))
-            .unwrap()
-            .expect("the window's own connection");
-        assert_eq!(attested.continuation_instance, Some(41));
-        assert!(!attested.windowless);
-        assert!(
-            apps.authenticated_launch(me, APP, WORKSPACE, Some(41))
-                .unwrap()
-                .is_none(),
-            "a window is believed once"
-        );
-        assert!(!apps.attest_process(me, APP, WORKSPACE));
-    }
-}
-
 tilo_test_env::scenario! {
     fn the_servers_apps_keep_content_in_its_one_store;
 
@@ -245,4 +174,108 @@ tilo_test_env::scenario! {
             }
         );
     }
+}
+
+#[cfg(feature = "agents")]
+tilo_test_env::scenario! {
+    fn a_servers_launcher_starts_only_what_it_may;
+
+    phase a_launch_with_no_page_to_show_it_starts_nothing;
+    {
+        use tilo_broker_core::services::{LaunchPlace, LauncherServices};
+        let launcher = ServerLauncher::new(
+            WORKSPACE.to_owned(),
+            PathBuf::from("/nonexistent/collab.sock"),
+            "server".to_owned(),
+            Err("no launcher".to_owned()),
+        );
+        let workspace = tilo_desktop_model::Workspace::new(
+            tilo_desktop_model::WorkspaceId::parse(WORKSPACE).unwrap(),
+            "Team".to_owned(),
+        );
+        let refused = launcher
+            .launch(APP, &workspace, None, &LaunchPlace::Focus)
+            .unwrap_err();
+        assert!(refused.contains(app_launcher::NO_WINDOW), "{refused}");
+    }
+
+    phase a_call_runs_only_in_its_own_workspace_and_only_through_the_launcher;
+    {
+        use tilo_broker_core::services::LauncherServices;
+        let launcher = ServerLauncher::new(
+            WORKSPACE.to_owned(),
+            PathBuf::from("/nonexistent/collab.sock"),
+            "server".to_owned(),
+            Err("no tilo-launcher is installed on this server".to_owned()),
+        );
+        let other = "0b1c2a52-8a2b-4c39-9d6b-1f3b0e0c7a10";
+        let elsewhere = launcher.windowless(APP, other).unwrap_err();
+        assert!(elsewhere.contains("runs here only in workspace"), "{elsewhere}");
+        let unconfined = launcher.windowless(APP, WORKSPACE).unwrap_err();
+        assert_eq!(unconfined, "no tilo-launcher is installed on this server");
+    }
+
+    phase a_connection_this_process_did_not_make_is_no_app;
+    {
+        use tilo_broker_core::services::LauncherServices;
+        let launcher = ServerLauncher::new(
+            WORKSPACE.to_owned(),
+            PathBuf::from("/nonexistent/collab.sock"),
+            "server".to_owned(),
+            Err("no launcher".to_owned()),
+        );
+        assert!(!launcher.attest_process(std::process::id(), APP, WORKSPACE));
+        assert!(!launcher.attest_process(1, APP, WORKSPACE));
+        assert!(
+            launcher
+                .authenticated_launch(std::process::id(), APP, WORKSPACE, Some(1))
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+/// A server runs one broker for each workspace it keeps, from when it finds the workspace until
+/// the workspace goes, each on its own socket.
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the host serves its workspaces until the test ends"
+)]
+async fn a_server_runs_one_broker_for_each_workspace_while_it_keeps_it() {
+    use std::collections::{BTreeMap, BTreeSet};
+    use tilo_desktop_model::WorkspaceId;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = crate::workspaces::fixtures::governor();
+    let host =
+        crate::workspaces::fixtures::test_host(&dir.path().join("server"), &key, &cert).await;
+    let workspaces = host.workspaces().clone();
+    let id = |summary: &crate::workspaces::WorkspaceSummary| {
+        WorkspaceId::parse(&summary.workspace).unwrap()
+    };
+    let team = id(&workspaces.create("Team").await.unwrap());
+    let other = id(&workspaces.create("Other").await.unwrap());
+    let apps = ServerApps::new(
+        ServerWorkspaces::new(workspaces.clone(), tokio::runtime::Handle::current()),
+        dir.path().join("sockets"),
+        dir.path().join("journals"),
+        cert.device_public_key,
+        Err("no tilo-launcher is installed on this server".to_owned()),
+    );
+    assert_eq!(apps.reconcile().await, BTreeMap::new());
+    assert_eq!(apps.workspaces(), BTreeSet::from([team, other]));
+    for workspace in [team, other] {
+        assert!(
+            apps.socket(workspace).exists(),
+            "{workspace} has its broker"
+        );
+    }
+    // Finding the same workspaces again starts nothing twice.
+    assert_eq!(apps.reconcile().await, BTreeMap::new());
+    assert_eq!(apps.workspaces(), BTreeSet::from([team, other]));
+
+    workspaces.delete(&team.to_string()).await.unwrap();
+    assert_eq!(apps.reconcile().await, BTreeMap::new());
+    assert_eq!(apps.workspaces(), BTreeSet::from([other]));
 }

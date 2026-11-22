@@ -15,30 +15,14 @@
 //! socket ([`ContentService`]): each app's connection to it is scoped to that app in the
 //! workspace of the call, exactly as a device's launcher scopes it.
 //!
-//! The only window a server serves is a page open on it. The collaboration connection of each
-//! window is made by this process, and the broker attests the connection as that window only,
-//! once ([`ServerLauncher::connect_window`]); nothing else that reaches the broker's socket is
-//! believed to be one of its apps. How the window is drawn is the page's to say: the connection
-//! names a window, not how it shows.
+//! A workspace's process of an app serves every page open on the app and every call of its
+//! actions that shows nothing. The collaboration connection of each window and each call is made
+//! by this process, and the broker believes it as that window or call only, once
+//! ([`ServerLauncher`]); nothing else that reaches the broker's socket is believed to be one of
+//! its apps. How a window is drawn is the page's to say: the connection names a window, not how
+//! it shows.
 
-use std::collections::BTreeSet;
-use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-
-use tilo_broker_core::services::{
-    AuthenticatedApplicationLaunch, LaunchPlace, LaunchableApplication, LauncherServices,
-    WindowlessStart,
-};
-use tilo_desktop_model::Workspace;
-
-/// Why a launch with no page to show it in starts nothing.
-pub const NO_WINDOW: &str =
-    "this server shows an app only in a page open on it, and no page is open for this launch";
-
-/// Why a server runs no app's code for a call without a page open on it yet.
-pub const NO_PAGE_FOR_CALL: &str =
-    "this server runs no app without a page open on it yet, so the action has nowhere to run";
 
 /// The packages of the workspaces this server hosts, each installed into a store of its
 /// workspace's own under `root` and verified there as a launch verifies it.
@@ -136,9 +120,9 @@ impl ContentService {
                 .await
                 .map_err(std::io::Error::other)?,
         );
-        let media = tilo_fs::document_media::DocumentMedia::new(store);
+        let media = fs::document_media::DocumentMedia::new(store);
         let server =
-            tilo_fs::document_media::serve_socket(socket, media).map_err(std::io::Error::other)?;
+            fs::document_media::serve_socket(socket, media).map_err(std::io::Error::other)?;
         Ok(Self { _server: server })
     }
 }
@@ -183,128 +167,149 @@ pub fn tilo_launcher(candidates: &[PathBuf]) -> Result<PathBuf, String> {
         })
 }
 
-/// One window this server serves an app in: what the collaboration connection made for it is
-/// attested as.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Window {
-    app: String,
-    workspace: String,
-    tab: u64,
+#[cfg(feature = "agents")]
+mod app_launcher;
+#[cfg(feature = "agents")]
+mod brokers;
+#[cfg(feature = "agents")]
+pub use app_launcher::{ProcessStart, ServerLauncher};
+#[cfg(feature = "agents")]
+pub use brokers::{ServerApps, ServerWorkspaces};
+
+/// The processes this server runs its workspaces' apps in: started through its launcher, each
+/// running the package its workspace installed, as `packages` verifies it, and keeping what it
+/// keeps under `data_home`.
+#[cfg(feature = "agents")]
+pub fn server_processes(
+    workspaces: ServerWorkspaces,
+    packages: WorkspacePackages,
+    data_home: PathBuf,
+) -> ProcessStart {
+    use tilo_app_launch::tilolang_processes::Processes;
+    let launcher = tilo_launcher(&launcher_candidates())?;
+    Ok(Processes::with(
+        data_home,
+        Processes::started_through(launcher),
+        Box::new(move |workspace, app| {
+            let tapp = workspaces
+                .installed_package(workspace, app)
+                .ok_or_else(|| format!("this workspace has not installed {app}"))?;
+            packages.verified(workspace, app, &tapp)
+        }),
+    ))
 }
 
-/// The app broker's launcher on a server: the windows it serves, whose connections it made.
-pub struct ServerLauncher {
-    /// The broker's socket, which a window's connection is made on.
-    collab_socket: PathBuf,
-    /// The windows whose connection was made and not yet attested: each is believed once.
-    windows: Mutex<BTreeSet<Window>>,
+/// This server's device, as its apps' requests are signed by it.
+#[cfg(feature = "agents")]
+pub struct Device {
+    /// Where its key and certificate are kept.
+    pub identity_root: PathBuf,
+    /// Its certificate.
+    pub cert: tilo_user_identity::DeviceCert,
 }
 
-impl ServerLauncher {
-    /// The launcher of the broker listening on `collab_socket`.
-    #[must_use]
-    pub const fn new(collab_socket: PathBuf) -> Self {
-        Self {
-            collab_socket,
-            windows: Mutex::new(BTreeSet::new()),
+/// Run the apps of the workspaces `workspaces` keeps on this server, whose device is `device`,
+/// until the server stops: the content store they keep their files in, under `state_root`, the
+/// identity service that signs their changes as this device for the callers they serve, and
+/// one broker for each workspace, each running the workspace's packages in this server's
+/// processes. A server that cannot run apps says why once, and keeps serving its workspaces.
+#[cfg(feature = "agents")]
+pub async fn serve(workspaces: crate::workspaces::Workspaces, device: Device, state_root: PathBuf) {
+    let apps = state_root.join("apps");
+    let content = match ContentService::start(
+        &apps.join("content"),
+        &launcher::services::blob_socket(),
+    )
+    .await
+    {
+        Ok(content) => content,
+        Err(error) => {
+            tracing::warn!(%error, "this server's apps have no content store, so none runs");
+            return;
         }
+    };
+    let Some(data_home) = launcher::appdir::host_data_home() else {
+        tracing::warn!("this server has no data home to keep its apps' storage in, so none runs");
+        return;
+    };
+    let runtime = tokio::runtime::Handle::current();
+    let server = ServerWorkspaces::new(workspaces.clone(), runtime.clone());
+    let identity_socket = launcher::services::identity_socket();
+    if let Some(parent) = identity_socket.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!(%error, "this server's apps have no identity service, so none runs");
+        return;
     }
-
-    fn windows(&self) -> std::sync::MutexGuard<'_, BTreeSet<Window>> {
-        self.windows
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// The collaboration connection of the window `tab` of `app` in `workspace`, which this
-    /// server serves: named for that window, and attested by the broker as that window only, once.
-    ///
-    /// # Errors
-    /// The broker's socket cannot be reached, or the connection could not be named.
-    pub fn connect_window(&self, app: &str, workspace: &str, tab: u64) -> std::io::Result<OwnedFd> {
-        if tab == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "a window's tab is never 0",
-            ));
+    let signer = tilo_workspace_service::apps::caller_signer::CallerSigner::new(
+        workspaces,
+        runtime,
+        tilo_device_identity::persist::IdentityPaths::under(&device.identity_root),
+        device.cert.user_public_key,
+        // Who made each call is the broker's to say; until it does, every write is refused.
+        std::sync::Arc::new(tilo_workspace_service::apps::caller_signer::NoCalls),
+    );
+    let identity = match tilo_identity::broker::spawn_signing(
+        identity_socket,
+        std::sync::Arc::new(server.clone()),
+        std::sync::Arc::new(()),
+        std::sync::Arc::new(()),
+        std::sync::Arc::new(signer),
+    ) {
+        Ok(identity) => identity,
+        Err(error) => {
+            tracing::warn!(%error, "this server's apps have no identity service, so none runs");
+            return;
         }
-        let window = Window {
-            app: app.to_owned(),
-            workspace: workspace.to_owned(),
-            tab,
-        };
-        let mut stream = tilo_socket::connect(&self.collab_socket)?;
-        self.windows().insert(window.clone());
-        if let Err(error) =
-            launcher::services::write_collab_window_handoff(&mut stream, app, workspace, tab)
-        {
-            self.windows().remove(&window);
-            return Err(error);
-        }
-        Ok(OwnedFd::from(stream))
+    };
+    let processes = server_processes(
+        server.clone(),
+        WorkspacePackages::new(data_home.join("tilo").join("workspace-packages")),
+        data_home,
+    );
+    if let Err(error) = &processes {
+        tracing::warn!(%error, "this server runs no app");
     }
-
-    /// Take the note of the window this process made a connection for, once.
-    fn take_window(&self, pid: u32, app: &str, workspace: &str, tab: Option<u64>) -> bool {
-        if pid != std::process::id() {
-            return false;
-        }
-        let Some(tab) = tab.filter(|tab| *tab != 0) else {
-            return false;
-        };
-        self.windows().remove(&Window {
-            app: app.to_owned(),
-            workspace: workspace.to_owned(),
-            tab,
-        })
-    }
+    let apps = ServerApps::new(
+        server,
+        tilo_paths::xdg::services_dir().join("apps"),
+        apps.join("journals"),
+        device.cert.device_public_key,
+        processes,
+    );
+    apps.run().await;
+    drop((identity, content));
 }
 
-impl LauncherServices for ServerLauncher {
-    /// The apps a workspace offers are the packages it installed, which the workspace publishes
-    /// itself; this launcher lists none of its own.
-    fn applications(&self) -> Vec<LaunchableApplication> {
-        Vec::new()
-    }
+/// What a workspace's broker is made of.
+#[cfg(feature = "agents")]
+struct BrokerParts {
+    socket: PathBuf,
+    authority: std::sync::Arc<dyn tilo_workspace_service::apps::services::WorkspaceAuthority>,
+    commits: std::sync::Arc<tilo_workspace_service::apps::service_workspaces::ServiceCommits>,
+    services: tilo_workspace_service::apps::services::ProcessServices,
+    channels:
+        std::sync::Arc<std::sync::Mutex<tilo_workspace_service::apps::collab_core::BrokerChannels>>,
+    fanout: std::sync::Arc<tilo_workspace_service::apps::collab_broker::FanoutState>,
+}
 
-    fn launch(
-        &self,
-        app: &str,
-        _: &Workspace,
-        _: Option<&str>,
-        _: &LaunchPlace,
-    ) -> Result<(), String> {
-        Err(format!("{app} did not open: {NO_WINDOW}"))
-    }
-
-    fn windowless(&self, app: &str, _: &str) -> Result<Option<WindowlessStart>, String> {
-        Err(format!("{app} did not run: {NO_PAGE_FOR_CALL}"))
-    }
-
-    /// Only a connection this process made for a window it serves is one of its apps.
-    fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {
-        pid == std::process::id()
-            && self
-                .windows()
-                .iter()
-                .any(|window| window.app == app && window.workspace == workspace)
-    }
-
-    fn authenticated_launch(
-        &self,
-        pid: u32,
-        app: &str,
-        workspace: &str,
-        tab: Option<u64>,
-    ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
-        Ok(self
-            .take_window(pid, app, workspace, tab)
-            .then_some(AuthenticatedApplicationLaunch {
-                continuation_instance: tab,
-                launch_ticket: None,
-                windowless: false,
-            }))
-    }
+/// The one place a workspace's broker is made, as every host that serves apps makes its own.
+#[cfg(feature = "agents")]
+fn spawn_broker(
+    parts: BrokerParts,
+) -> std::io::Result<tilo_workspace_service::apps::collab_broker::BrokerHandle> {
+    tilo_workspace_service::apps::collab_broker::spawn_with_services(
+        parts.socket,
+        Some(parts.authority),
+        tilo_workspace_service::apps::collab_outbound::PeerPublisher::with_optional_owner_commit(
+            None,
+            parts.commits,
+        ),
+        None,
+        parts.services,
+        parts.channels,
+        parts.fanout,
+    )
 }
 
 #[cfg(test)]
