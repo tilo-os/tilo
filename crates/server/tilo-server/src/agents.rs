@@ -34,7 +34,7 @@ use tilo_actions::{
     OperationKind, RiskLevel,
 };
 use tilo_server_protocol::page::{
-    COPY_INVITE_LINK, NEW_WORKSPACE, PAGE_ACTIONS_PROVIDER, WAITING_TO_JOIN,
+    COPY_INVITE_LINK, DEVICES_AND_ACCESS, PAGE_ACTIONS_PROVIDER, WAITING_TO_JOIN,
 };
 
 mod roster;
@@ -1008,13 +1008,13 @@ impl ServerRecordsLink {
                 "Invite people who left their address at the door",
             ));
         }
-        if workspaces.keeps_workspaces_for_people() {
+        if self.web_entry.is_some() {
             offered.push((
-                NEW_WORKSPACE,
-                ActionKind::Outside,
-                "New workspace",
-                "Workspace",
-                "Make a workspace of your own",
+                DEVICES_AND_ACCESS,
+                ActionKind::Read,
+                "Devices and access",
+                "Devices",
+                "Set an agent or another computer up with this workspace",
             ));
         }
         offered
@@ -1058,6 +1058,14 @@ impl ServerRecordsLink {
                 .host_device
                 .runtime
                 .block_on(workspaces.page_wait_list(workspace, caller)),
+            // Setting another device up is the site's setup screen: it needs
+            // the person's identity, which the site's page holds and this one
+            // does not.
+            DEVICES_AND_ACCESS => self
+                .web_entry
+                .as_ref()
+                .map(|site| serde_json::json!({"devices": {"setup": site}}))
+                .ok_or(ActionCallError::UnknownAction),
             _ => Err(ActionCallError::UnknownAction),
         }
     }

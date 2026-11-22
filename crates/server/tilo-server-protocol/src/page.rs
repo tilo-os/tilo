@@ -35,9 +35,6 @@ pub const COPY_INVITE_LINK: &str = "invite-link";
 /// invite reads them here and invites one by the address it left.
 pub const WAITING_TO_JOIN: &str = "waiting";
 
-/// A workspace of the person's own, made beside the one they are in.
-pub const NEW_WORKSPACE: &str = "new-workspace";
-
 /// The person's own devices, and what sets another one up (an agent on a
 /// computer, or a computer of theirs).
 pub const DEVICES_AND_ACCESS: &str = "devices-and-access";
@@ -56,6 +53,9 @@ pub enum PageActionAnswer {
     /// A link the row hands over: on the clipboard from the press, and the
     /// row carries it for the next one.
     Link { link: String },
+    /// The person's own devices, and where one more is set up: the site's
+    /// setup screen, which makes the code an agent on another computer runs.
+    Devices { setup: String },
 }
 
 /// An address waiting at a workspace's entry, as the host knows it: what it

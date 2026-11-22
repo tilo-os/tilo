@@ -610,6 +610,20 @@ function start() {
 
   // What the person does.
   page.addEventListener('click', event => {
+    // A press that sets another device up hands the tab to the site's own
+    // setup screen: it needs the person's identity, which the site's page
+    // holds, not this one. The screen is the entry's and shows when this
+    // browser's setup asks for it (`first-screen.mjs`'s `SETUP`), so the
+    // press says the person is starting it now, and goes where it is served.
+    const setup = event.target.closest('[data-setup]');
+    if (setup && page.contains(setup)) {
+      event.preventDefault();
+      try {
+        localStorage.setItem('tilo-setup', JSON.stringify({step: 'start', at: Date.now()}));
+      } catch { /* No storage: the site's screen starts from its own state. */ }
+      location.assign(setup.dataset.setup);
+      return;
+    }
     const element = event.target.closest('[data-a]');
     if (!element || !page.contains(element)) return;
     const action = element.dataset.a;

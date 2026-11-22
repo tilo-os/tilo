@@ -17,8 +17,8 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_server_protocol::page::{
-    COPY_INVITE_LINK, OpenedPage, PAGE_ACTIONS_PROVIDER, PageAction, PageAddress, PagePatch,
-    PageRefusal, WAITING_TO_JOIN, WaitingAddress, encode_part,
+    COPY_INVITE_LINK, DEVICES_AND_ACCESS, OpenedPage, PAGE_ACTIONS_PROVIDER, PageAction,
+    PageAddress, PagePatch, PageRefusal, WAITING_TO_JOIN, WaitingAddress, encode_part,
 };
 
 /// The app name a page address carries for the workspace's search
@@ -112,17 +112,26 @@ pub(super) enum HeldPage {
     },
 }
 
-/// What a host action opened on the search page, under the rows: the
-/// addresses waiting at the workspace's entry, each one an Invite button.
-pub(super) struct Card {
-    label: String,
-    /// Whether the workspace's entry mails an invitation to an address.
-    mails: bool,
-    addresses: Vec<WaitingAddress>,
-    /// The address whose invitation was mailed, as the page says it.
-    sent: Option<String>,
-    /// Why an invitation was not mailed, when the host said why.
-    refused: Option<String>,
+/// What one of the host's own actions opened on the search page, under the
+/// rows: what the person does there, one press each.
+pub(super) enum Card {
+    /// The addresses waiting at the workspace's entry, each one an Invite
+    /// button that mails it an invitation.
+    Waiting {
+        /// Whether the workspace's entry mails an invitation to an address.
+        mails: bool,
+        addresses: Vec<WaitingAddress>,
+        /// The address whose invitation was mailed, as the page says it.
+        sent: Option<String>,
+        /// Why an invitation was not mailed, when the host said why.
+        refused: Option<String>,
+    },
+    /// The person's own devices, and where one more is set up: the site's
+    /// setup screen, which makes the code an agent on another computer runs.
+    Devices {
+        /// The page that sets one up.
+        setup: String,
+    },
 }
 
 /// A row's action that takes what the person types: its fields, shown under
@@ -1039,7 +1048,8 @@ impl Worker {
         argument: tilo_actions::remote::InvokeArgument,
     ) -> Result<Vec<PagePatch>, PageRefusal> {
         let host = run.host;
-        let opens_waiting = run.runs_page_action(WAITING_TO_JOIN);
+        let opens_a_card =
+            run.runs_page_action(WAITING_TO_JOIN) || run.runs_page_action(DEVICES_AND_ACCESS);
         let hands_a_link_over = run.runs_page_action(COPY_INVITE_LINK);
         let named = run.clone();
         let request = InvokeRequest {
@@ -1063,11 +1073,11 @@ impl Worker {
                 return Err(unavailable("the host is not here"));
             };
             let answered = link.run_own_action(workspace_id, caller, &request);
-            // One of the host's own actions may open something on the page
+            // One of the host's own actions may open a card on the page
             // rather than saying a line: the addresses waiting at the entry,
-            // or the next link a row hands over.
-            if opens_waiting {
-                self.answered_waiting(page, answered);
+            // or the person's own devices.
+            if opens_a_card {
+                self.answered_card(page, &label, answered);
                 return self.patch_search(page);
             }
             let notice = match answered {
@@ -1137,12 +1147,12 @@ impl Worker {
         self.patch_search(page)
     }
 
-    /// What the host answered a press on the row that opens the workspace's
-    /// wait list: the addresses waiting at its entry, in a card under the
-    /// rows; or why it could not list them.
-    fn answered_waiting(
+    /// What the host answered one of its own actions that opens a card on the
+    /// page: what it opened, under the rows; or why it could not.
+    fn answered_card(
         &mut self,
         page: u64,
+        label: &str,
         answered: Result<serde_json::Value, ActionCallError>,
     ) {
         let Some(HeldPage::Search {
@@ -1155,31 +1165,27 @@ impl Worker {
             return;
         };
         *asking = None;
+        let answered = answered.map(|value| {
+            serde_json::from_value::<tilo_server_protocol::page::PageActionAnswer>(value)
+        });
         match answered {
-            Ok(value) => {
-                match serde_json::from_value::<tilo_server_protocol::page::PageActionAnswer>(value)
-                {
-                    Ok(tilo_server_protocol::page::PageActionAnswer::WaitList {
-                        mails,
-                        entries,
-                    }) => {
-                        *notice = None;
-                        *card = Some(Card {
-                            label: "Waiting to join".to_owned(),
-                            mails,
-                            addresses: entries,
-                            sent: None,
-                            refused: None,
-                        });
-                    }
-                    Ok(tilo_server_protocol::page::PageActionAnswer::Link { .. }) => {}
-                    Err(_) => {
-                        *notice =
-                            Some("Waiting to join: the host answered unexpectedly.".to_owned());
-                    }
-                }
+            Ok(Ok(tilo_server_protocol::page::PageActionAnswer::WaitList { mails, entries })) => {
+                *notice = None;
+                *card = Some(Card::Waiting {
+                    mails,
+                    addresses: entries,
+                    sent: None,
+                    refused: None,
+                });
             }
-            Err(error) => *notice = Some(format!("Waiting to join: {error}")),
+            Ok(Ok(tilo_server_protocol::page::PageActionAnswer::Devices { setup })) => {
+                *notice = None;
+                *card = Some(Card::Devices { setup });
+            }
+            Ok(Ok(tilo_server_protocol::page::PageActionAnswer::Link { .. }) | Err(_)) => {
+                *notice = Some(format!("{label}: the host answered unexpectedly."));
+            }
+            Err(error) => *notice = Some(format!("{label}: {error}")),
         }
     }
 
@@ -1204,8 +1210,9 @@ impl Worker {
             .and_then(|at| usize::try_from(at).ok())
             .and_then(|at| match self.pages.held.get(&page) {
                 Some(HeldPage::Search {
-                    card: Some(card), ..
-                }) => card.addresses.get(at).cloned(),
+                    card: Some(Card::Waiting { addresses, .. }),
+                    ..
+                }) => addresses.get(at).cloned(),
                 _ => None,
             })
         else {
@@ -1243,40 +1250,52 @@ impl Worker {
         };
         let answered = link.run_own_action(workspace_id, caller, &request);
         if let Some(HeldPage::Search {
-            card: Some(card), ..
+            card:
+                Some(Card::Waiting {
+                    addresses,
+                    sent: card_sent,
+                    refused: card_refused,
+                    ..
+                }),
+            ..
         }) = self.pages.held.get_mut(&page)
         {
-            if let Ok(value) = answered {
-                let sent = value
-                    .get("sent")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                if sent {
-                    card.sent = Some(format!(
-                        "The invitation was emailed to {}.",
-                        address.contact
-                    ));
-                    card.refused = None;
-                } else {
-                    let next = value
-                        .get("next")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("The entry sends no mail: hand the invitation over yourself.");
-                    card.refused = Some(format!(
-                        "The invitation for {} was not mailed: {next}",
-                        address.contact
-                    ));
-                }
-                for waiting in &mut card.addresses {
-                    if waiting.entry == address.entry {
-                        waiting.invited = true;
+            match answered {
+                Ok(value) => {
+                    let mailed = value
+                        .get("sent")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    if mailed {
+                        *card_sent = Some(format!(
+                            "The invitation was emailed to {}.",
+                            address.contact
+                        ));
+                        *card_refused = None;
+                    } else {
+                        let next = value
+                            .get("next")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or(
+                                "The entry sends no mail: hand the invitation over yourself.",
+                            );
+                        *card_refused = Some(format!(
+                            "The invitation for {} was not mailed: {next}",
+                            address.contact
+                        ));
+                    }
+                    for waiting in addresses.iter_mut() {
+                        if waiting.entry == address.entry {
+                            waiting.invited = true;
+                        }
                     }
                 }
-            } else if let Err(error) = answered {
-                card.refused = Some(format!(
-                    "The invitation for {} was not made: {error}",
-                    address.contact
-                ));
+                Err(error) => {
+                    *card_refused = Some(format!(
+                        "The invitation for {} was not made: {error}",
+                        address.contact
+                    ));
+                }
             }
         }
         self.patch_search(page)
@@ -1684,68 +1703,98 @@ fn results_div(contents: &str) -> String {
 
 /// The card one of the host's own actions opened, as the page shows it: the
 /// addresses waiting at the workspace's entry, each one an Invite button, and
-/// what the page says once one went out.
+/// what the page says once one went out; or the person's own devices, and the
+/// press that sets one more up.
 fn card_html(card: &Card) -> String {
-    let mut out = format!(
-        "<section class=\"tilo-waiting\" aria-label=\"{label}\"><h2>{label}</h2>",
-        label = escape(&card.label)
-    );
-    if card.addresses.is_empty() {
-        out.push_str("<p class=\"tilo-waiting-none\">No one is waiting.</p>");
-    } else {
-        out.push_str("<ul>");
-        for (at, address) in card.addresses.iter().enumerate() {
-            let id = SEARCH_CARD_FIRST.saturating_add(u32::try_from(at).unwrap_or_default());
-            let _ = write!(
-                out,
-                "<li><span class=\"tilo-waiting-contact\">{contact}</span>",
-                contact = escape(&address.contact)
+    match card {
+        Card::Waiting {
+            mails,
+            addresses,
+            sent,
+            refused,
+        } => {
+            let mut out = String::from(
+                "<section class=\"tilo-waiting\" aria-label=\"Waiting to join\">\
+                 <h2>Waiting to join</h2>",
             );
-            if address.invited {
-                let _ = write!(
-                    out,
-                    "<span class=\"tilo-waiting-invited\">Invited</span>\
-                     <button type=\"button\" data-a=\"activate\" data-p=\"{id}\">Invite again</button>"
-                );
+            if addresses.is_empty() {
+                out.push_str("<p class=\"tilo-waiting-none\">No one is waiting.</p>");
             } else {
-                let _ = write!(
-                    out,
-                    "<button type=\"button\" data-a=\"activate\" data-p=\"{id}\">Invite</button>"
+                out.push_str("<ul>");
+                for (at, address) in addresses.iter().enumerate() {
+                    let id =
+                        SEARCH_CARD_FIRST.saturating_add(u32::try_from(at).unwrap_or_default());
+                    let _ = write!(
+                        out,
+                        "<li><span class=\"tilo-waiting-contact\">{contact}</span>",
+                        contact = escape(&address.contact)
+                    );
+                    if address.invited {
+                        let _ = write!(
+                            out,
+                            "<span class=\"tilo-waiting-invited\">Invited</span>\
+                             <button type=\"button\" data-a=\"activate\" data-p=\"{id}\">\
+                             Invite again</button>"
+                        );
+                    } else {
+                        let _ = write!(
+                            out,
+                            "<button type=\"button\" data-a=\"activate\" data-p=\"{id}\">\
+                             Invite</button>"
+                        );
+                    }
+                    out.push_str("</li>");
+                }
+                out.push_str("</ul>");
+            }
+            if !mails {
+                out.push_str(
+                    "<p class=\"tilo-waiting-note\">This entry sends no mail: an invitation \
+                     made here is handed over by you.</p>",
                 );
             }
-            out.push_str("</li>");
+            let _ = write!(
+                out,
+                "<p class=\"tilo-waiting-sent\" role=\"status\"{hidden}>{said}</p>",
+                hidden = if sent.is_some() { "" } else { " hidden" },
+                said = escape(sent.as_deref().unwrap_or_default()),
+            );
+            let _ = write!(
+                out,
+                "<p class=\"tilo-entry-error\" role=\"alert\"{hidden}>{said}</p>",
+                hidden = if refused.is_some() { "" } else { " hidden" },
+                said = escape(refused.as_deref().unwrap_or_default()),
+            );
+            close_button(&mut out);
+            out
         }
-        out.push_str("</ul>");
+        Card::Devices { setup } => {
+            let mut out = String::from(
+                "<section class=\"tilo-devices\" aria-label=\"Devices and access\">\
+                 <h2>Devices and access</h2>\
+                 <p>This workspace is on every device you sign in on, and your agent reaches \
+                 it from the computer you set up.</p>",
+            );
+            let _ = write!(
+                out,
+                "<button class=\"tilo-devices-connect\" type=\"button\" data-setup=\"{setup}\">\
+                 Connect an agent or computer</button>",
+                setup = escape(setup),
+            );
+            close_button(&mut out);
+            out
+        }
     }
-    if !card.mails {
-        out.push_str(
-            "<p class=\"tilo-waiting-note\">This entry sends no mail: an invitation made here \
-             is handed over by you.</p>",
-        );
-    }
+}
+
+/// The Close button every card ends with: what puts it away.
+fn close_button(out: &mut String) {
     let _ = write!(
         out,
-        "<p class=\"tilo-waiting-sent\" role=\"status\"{hidden}>{said}</p>",
-        hidden = if card.sent.is_some() { "" } else { " hidden" },
-        said = escape(card.sent.as_deref().unwrap_or_default()),
-    );
-    let _ = write!(
-        out,
-        "<p class=\"tilo-entry-error\" role=\"alert\"{hidden}>{said}</p>",
-        hidden = if card.refused.is_some() {
-            ""
-        } else {
-            " hidden"
-        },
-        said = escape(card.refused.as_deref().unwrap_or_default()),
-    );
-    let _ = write!(
-        out,
-        "<div class=\"tilo-waiting-actions\">\
+        "<div class=\"tilo-card-actions\">\
          <button type=\"button\" data-a=\"activate\" data-p=\"{SEARCH_CARD_CLOSE}\">Close</button>\
          </div></section>"
     );
-    out
 }
 
 /// What the action `label` answered, as a person reads it: the value it
@@ -1889,9 +1938,18 @@ font-size:13px;background:var(--tilo-accent);color:var(--tilo-on-accent);cursor:
 .tilo-waiting li button:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:2px;}\
 .tilo-waiting p{margin:0;font-size:13px;color:var(--tilo-text-dim);}\
 .tilo-waiting-sent,.tilo-entry-error{color:var(--tilo-text);}\
-.tilo-waiting-actions{display:flex;justify-content:flex-end;}\
-.tilo-waiting-actions button{padding:7px 14px;border:0;border-radius:8px;font:inherit;\
-font-size:14px;background:var(--tilo-hover);color:var(--tilo-text);cursor:pointer;}";
+.tilo-card-actions{display:flex;justify-content:flex-end;}\
+.tilo-card-actions button{padding:7px 14px;border:0;border-radius:8px;font:inherit;\
+font-size:14px;background:var(--tilo-hover);color:var(--tilo-text);cursor:pointer;}\
+.tilo-devices{display:flex;flex-direction:column;gap:10px;padding:16px;border-radius:12px;\
+background:var(--tilo-raised);}\
+.tilo-devices h2{margin:0;font-size:15px;font-weight:600;}\
+.tilo-devices p{margin:0;font-size:13px;color:var(--tilo-text-dim);}\
+.tilo-devices-connect{align-self:flex-start;padding:8px 14px;border:0;border-radius:8px;\
+font:inherit;font-size:14px;font-weight:500;background:var(--tilo-accent);\
+color:var(--tilo-on-accent);cursor:pointer;}\
+.tilo-devices-connect:hover{filter:brightness(1.08);}\
+.tilo-devices-connect:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:2px;}";
 /// `text` as HTML shows it.
 fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
