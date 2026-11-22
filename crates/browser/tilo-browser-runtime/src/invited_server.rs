@@ -1,7 +1,9 @@
 //! The server an invitation names, read from the invitation alone: how a page reaches a server
 //! that has no web origin it could ask.
 
+#[cfg(not(feature = "deferred-invited-server"))]
 use tilo_server_protocol::web::PageHost;
+#[cfg(not(feature = "deferred-invited-server"))]
 use tilo_user_identity::RevocationList;
 use wasm_bindgen::prelude::*;
 
@@ -17,7 +19,8 @@ ui::lazy_code! {
         feature = "deferred-invited-server";
 }
 
-/// The only path to [`INVITED_SERVER`]'s code.
+/// The only path to [`INVITED_SERVER`]'s code, in the build that links it.
+#[cfg(not(feature = "deferred-invited-server"))]
 #[must_use]
 pub fn builtin_invited_server() -> InvitedServer {
     read_invited_server
@@ -50,6 +53,7 @@ pub async fn invited_server(invitation: Vec<u8>) -> Result<String, JsError> {
 /// # Errors
 ///
 /// The invitation is not a valid one now, or names no server to dial.
+#[cfg(not(feature = "deferred-invited-server"))]
 fn read_invited_server(invitation: &[u8]) -> Result<String, JsError> {
     use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
     let verified = tilo_workspace_join::decode_and_verify_invitation(
