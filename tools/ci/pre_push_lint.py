@@ -33,6 +33,14 @@ the `cargo` on PATH, else t's (`t cargo metadata`). Formatting is checked by the
 `rustfmt` on PATH, which must be the version the toolchain pins, or by t's `fmt`
 check where there is none.
 
+A lint that passed stands for the same change after a rebase that leaves it alone: a pass is
+remembered by the push's own patch (`git patch-id`) and the trees of the linted packages' own
+directories at its head. A push retried after main moved, whose rebase resolved nothing and whose
+packages' directories main's new commits did not touch, has both the same and is sent without
+linting again, however long the lint took and however much main changed elsewhere, dependencies
+of those packages included. What only the combination breaks is t's clippy families' to find on
+main, and the next commit's to fix. The passes are kept in the repository's git directory.
+
 The lint reads the files on disk, so a push is refused when what it sends is not
 the tree checked out here: a lint that spoke for another commit would say
 nothing about this one. A push whose changed packages the check cannot name is
@@ -47,6 +55,7 @@ escape, and CONTRIBUTING.md asks contributors never to use it.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -94,6 +103,10 @@ CARGO_REMARKS = (
 PROGRESS = re.compile(r"^\s*(?:Checking|Compiling|Fresh|Building|Blocking|Downloading|Downloaded"
                       r"|Locking|Updating|Adding|Documenting)\s")
 ZERO_OID = {"0"}
+# Where the passes a later push may stand on are kept, in the repository's common git directory
+# (shared by its worktrees), and how many of the newest are: one line each.
+PASSES = "tilo-pre-push-passes"
+PASSES_KEPT = 256
 # The branch everyone lands on, and the only one a push is linted for. A push to main that is
 # not a fast-forward is a race already lost: nobody force-pushes main, so the remote refuses it
 # after any lint.
@@ -680,6 +693,69 @@ def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str) -
     return 1
 
 
+def own_key(root: Path, push: Push, selection: Selection, runs: list[Lint]) -> str | None:
+    """What a pass of this push's lint is remembered by, or None when it cannot be named.
+
+    The push's own patch, the tree of each linted package's own directory at its head, and the
+    runs it makes. A rebase that resolved no conflict leaves the patch the same, and one onto
+    commits that touch none of those directories leaves their trees the same.
+    """
+    directories = {name: directory.as_posix()
+                   for directory, name in package_maps(selection.metadata, root)[1].items()}
+    # The format check names the commits it compares, which a rebase changes; the change it reads
+    # is the patch below.
+    commits = {commit for comparison in push.comparisons for commit in comparison}
+    parts = [shlex.join(part for part in run.command if part not in commits) for run in runs]
+    for base, head in push.comparisons:
+        patch = subprocess.run(["git", "diff", "--no-renames", "--binary", f"{base}..{head}", "--"],
+                               cwd=root, capture_output=True, check=False)
+        identity = subprocess.run(["git", "patch-id", "--stable"], cwd=root, input=patch.stdout,
+                                  capture_output=True, check=False).stdout.split()
+        if patch.returncode != 0 or not identity:
+            return None
+        parts.append(identity[0].decode())
+    for name in selection.native:
+        directory = directories.get(name)
+        if directory is None or not push.tips:
+            return None
+        tree = rev(root, f"{push.tips[0]}^{{tree}}" if directory in ("", ".")
+                   else f"{push.tips[0]}:{directory}")
+        if tree is None:
+            return None
+        parts.append(f"{name} {tree}")
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+
+def passes_path(root: Path) -> Path:
+    common = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+    return Path(common) / PASSES
+
+
+def passed_before(root: Path, key: str) -> str | None:
+    """The head a lint of this key passed on, if one did."""
+    try:
+        lines = passes_path(root).read_text().splitlines()
+    except FileNotFoundError:
+        return None
+    for line in reversed(lines):
+        stored, _, head = line.partition(" ")
+        if stored == key:
+            return head
+    return None
+
+
+def remember_pass(root: Path, key: str, head: str) -> None:
+    path = passes_path(root)
+    try:
+        lines = path.read_text().splitlines()
+    except FileNotFoundError:
+        lines = []
+    lines = [line for line in lines if not line.startswith(f"{key} ")] + [f"{key} {head}"]
+    temporary = path.with_name(f"{PASSES}.{os.getpid()}")
+    temporary.write_text("".join(f"{line}\n" for line in lines[-PASSES_KEPT:]))
+    temporary.replace(path)
+
+
 def formatting_run(root: Path, push: Push) -> list[str]:
     """The repository's own format check over the changed files (tools/ci/check-changed-rustfmt.sh).
 
@@ -768,19 +844,30 @@ def main(argv: list[str]) -> int:
     elif shutil.which(cargo_command()[0]) is None:
         say(f"pre-push: there is no cargo to lint with ({cargo_command()[0]}); the lint cannot run")
         return 1
-    if git(root, "status", "--porcelain").stdout.strip():
+    dirty = bool(git(root, "status", "--porcelain").stdout.strip())
+    if dirty:
         say("pre-push: the worktree has uncommitted changes; the lint covers the files on disk, which "
             "is not quite the pushed commit")
     # A machine without rustfmt of its own formats through t, whose `fmt` check runs the
     # pinned toolchain; one with a rustfmt must hold the pinned version (the run below).
     formatting = formatting_run(root, push) if rustfmt_available() else ["t", "test", "fmt"]
+    runs = lint_runs(root, selection, formatting, checks)
+    # A lint of files that are not the pushed commit's speaks for no change to stand on later.
+    key = None if options.range or dirty else own_key(root, push, selection, runs)
+    if key is not None and (before := passed_before(root, key)):
+        say(f"pre-push: the lint of this change passed at {before[:12]}, and main's commits since "
+            f"touch none of its packages' own files ({', '.join(selection.native)}): it is not "
+            "linted again. t's clippy families lint it with main's changes on main")
+        return 0
     say(f"pre-push: linting {packages(len(selection.native))}"
         + (f" through t ({' '.join(checks)})" if checks else ""))
-    runs = lint_runs(root, selection, formatting, checks)
     checked = (f"{'clippy and rustfmt' if formatting else 'clippy (no rustfmt on PATH)'} "
                f"for {packages(len(selection.native))}")
     results, elapsed = run_together(root, runs, options.keep_logs)
-    return report(results, elapsed, checked)
+    status = report(results, elapsed, checked)
+    if status == 0 and key is not None:
+        remember_pass(root, key, push.tips[0])
+    return status
 
 
 if __name__ == "__main__":

@@ -594,11 +594,56 @@ class PrePushLintTests(unittest.TestCase):
         self.git("cherry-pick", mine)
         return main
 
-    def test_with_a_cargo_every_push_lints_again(self):
-        # A cargo of one's own keeps its build warm; what passed is not remembered beside it.
+    def stands_after_a_rebase(self):
+        """Main moved while the lint ran: the push is replayed onto it unchanged, and main's new
+        commits touch another package and the docs, not the pushed package's own directory. The
+        retry is sent without linting again."""
         self.write("native/src/lib.rs", LIB.format(answer=50))
         self.commit("feat: answer 50")
+        first = self.push()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertNotEqual(self.calls(), [], "the first push is linted")
+        passed_at = self.head()
+        main = self.rebase({"docs/notes.md": "words\n", "web/src/lib.rs": LIB.format(answer=8)})
+        retry = self.push(remote_oid=main)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.calls(), [], retry.stderr)
+        self.assertIn(f"the lint of this change passed at {passed_at[:12]}", retry.stderr)
+
+    def test_a_passed_lint_stands_after_a_rebase_onto_commits_that_leave_its_packages_alone(self):
+        self.stands_after_a_rebase()
+
+    def test_a_pass_of_ts_checks_stands_after_such_a_rebase_too(self):
+        self.with_t()
+        self.stands_after_a_rebase()
+
+    def test_a_rebase_onto_a_change_to_the_pushed_package_lints_again(self):
+        self.write("native/src/lib.rs", LIB.format(answer=51))
+        self.commit("feat: answer 51")
         self.assertEqual(self.push().returncode, 0)
+        main = self.rebase({"native/src/extra.rs": "pub fn extra() {}\n"})
+        retry = self.push(remote_oid=main)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+
+    def test_a_rebase_that_changes_the_pushed_patch_lints_again(self):
+        # A conflict resolved in the rebase makes the push another change than the one linted.
+        self.write("native/src/lib.rs", LIB.format(answer=52))
+        self.commit("feat: answer 52")
+        self.assertEqual(self.push().returncode, 0)
+        main = self.rebase({"docs/notes.md": "words\n"})
+        self.write("native/src/lib.rs", LIB.format(answer=53))
+        self.git("commit", "-qam", "feat: answer 53 instead")
+        self.git("reset", "-q", "--soft", main)
+        self.git("commit", "-qm", "feat: answer 53")
+        retry = self.push(remote_oid=main)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+
+    def test_a_failed_lint_is_not_stood_on(self):
+        self.write("native/src/lib.rs", LIB.format(answer=54))
+        self.commit("feat: answer 54")
+        self.assertEqual(self.push(status=1).returncode, 1)
         main = self.rebase({"docs/notes.md": "words\n"})
         retry = self.push(remote_oid=main)
         self.assertEqual(retry.returncode, 0, retry.stderr)
