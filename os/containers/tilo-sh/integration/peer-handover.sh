@@ -13,13 +13,13 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
-stack=$here/../stack.sh
 tilo=${TILO:?name the tilo program to test: TILO=target/debug/tilo}
 tilo=$(realpath "$tilo")
 : "${TILO_SH_STATE:?name the stack: TILO_SH_STATE and TILO_SH_PORT_BASE}"
 : "${TILO_SH_PORT_BASE:?name the stack: TILO_SH_STATE and TILO_SH_PORT_BASE}"
 
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/tilo-peer-handover.XXXXXX")
+logs=$scratch
 pids=()
 finish() {
   local status=$?
@@ -27,51 +27,24 @@ finish() {
   for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
   for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
   # A folder a holder left mounted is let go before its directory goes.
-  grep -F " $scratch/home/" /proc/self/mountinfo | awk '{print $5}' | while read -r at; do
-    fusermount3 -u -z "$at" 2>/dev/null || true
-  done
+  unmount_scratch
   if [[ $status != 0 ]]; then
-    for log in "$scratch"/*.log; do echo "== $log" >&2; tail -n 40 "$log" >&2 || true; done
+    for log in "$logs"/*.log; do echo "== $log" >&2; tail -n 40 "$log" >&2 || true; done
   fi
   rm -rf "$scratch"
   exit "$status"
 }
 trap finish EXIT
 
-eval "$(bash "$stack" env | grep '^export TILO_SITE=\|^export TILO_API_URL=')"
-mkdir -p "$scratch/home" "$scratch/state" "$scratch/config" "$scratch/runtime"
-chmod 700 "$scratch/runtime"
-# Started in the background as an array, not a function, so `$!` is the tilo process itself.
-computer=(env -u DBUS_SESSION_BUS_ADDRESS -u TILO_API_KEY
-  HOME="$scratch/home" XDG_STATE_HOME="$scratch/state" XDG_CONFIG_HOME="$scratch/config"
-  TILO_IDENTITY_ROOT="$scratch/identity"
-  XDG_RUNTIME_DIR="$scratch/runtime" TILO_SITE="$TILO_SITE" TILO_API_URL="$TILO_API_URL")
-as_computer() { "${computer[@]}" "$@"; }
-say() { printf '%s\n' "$*" >&2; }
-wait_for() { # SECONDS WHAT COMMAND...
-  local until=$((SECONDS + $1)) what=$2
-  shift 2
-  until "$@"; do
-    ((SECONDS < until)) || { say "timed out: $what"; return 1; }
-    sleep 0.5
-  done
-}
+source "$here/peer-computer.sh"
 
-say "a person whose identity this computer holds, an owner of the stack"
-key=$(as_computer "$tilo" login --new-identity --name Ada --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["user_public_key"])')
-bash "$stack" owner "$key" --name Ada >/dev/null
-logged_in() { as_computer "$tilo" login >>"$scratch/login.log" 2>&1; }
-wait_for 300 "this computer logged in" logged_in
-device_dir=$scratch/state/tilo/device
-[[ -s $device_dir/key ]] || { say "no device login under $device_dir"; exit 1; }
+log_in_and_show
+[[ -s $scratch/state/tilo/device/login.json ]] \
+  || { say "no device login under $scratch/state/tilo/device"; exit 1; }
 
 # The holder `tilo login` left running is stopped: an agent starts the first one below.
-peer_pid() {
-  as_computer "$tilo" folders --json 2>/dev/null \
-    | python3 -c 'import json,sys; print((json.load(sys.stdin).get("peer") or {}).get("pid", ""))'
-}
-login_holder=$(peer_pid)
-[[ -n $login_holder ]] && kill "$login_holder"
+login_holder=$(holder_pid)
+[[ -z $login_holder ]] || kill "$login_holder"
 wait_for 30 "the login's holder ended" bash -c "! kill -0 '$login_holder' 2>/dev/null"
 
 say "an agent's tilo starts the device's holder"

@@ -30,6 +30,10 @@ use crate::login::{self, Device};
 /// How long the issuer keeps serving once the computer is certified, for it to read its answer.
 const TELL_WAIT: Duration = Duration::from_secs(30);
 
+/// How long the issuer keeps serving after it told the computer how its call ended: an answer
+/// that ended with its connection is asked for again, and answered where the call is.
+const TELL_GRACE: Duration = Duration::from_secs(5);
+
 /// How long a revocation is waited for to show in the person's list.
 const REVOKED_WAIT: Duration = Duration::from_secs(20);
 
@@ -144,6 +148,7 @@ pub(crate) async fn certified(issued: &Issued) -> Result<DeviceCert> {
     };
     let mut told = issued.served.told();
     let _ = tokio::time::timeout(TELL_WAIT, told.wait_for(|told| *told)).await;
+    tokio::time::sleep(TELL_GRACE).await;
     cert.context("the certificate given is there")
 }
 

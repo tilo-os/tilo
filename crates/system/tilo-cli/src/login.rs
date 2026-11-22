@@ -729,6 +729,19 @@ pub(crate) fn reached_of(addr: &iroh::EndpointAddr) -> Reached {
     }
 }
 
+/// How many times the call asking the device to certify this computer is sent: a connection that
+/// ends under its answer is asked again, which the device that took the call answers where it is.
+const CERTIFY_TRIES: u32 = 3;
+
+/// Whether `error` is a call lost on its way rather than answered: it is asked again, and a
+/// refusal or a wrong ticket is not.
+fn is_a_lost_call(error: &tilo_actions::remote::ActionCallError) -> bool {
+    matches!(
+        error,
+        tilo_actions::remote::ActionCallError::Unavailable { .. }
+    )
+}
+
 /// Ask the device that issued `ticket` to have the person's root certify `key`, for `agent`,
 /// listed as `label`: its answer, once the person approved.
 ///
@@ -776,9 +789,28 @@ pub(crate) async fn certified_with(
         appearance: None,
         signed: None,
     };
-    let settled = device
-        .invoke_until_settled(request, std::time::Duration::from_nanos(TICKET_LIFETIME_NS))
-        .await;
+    let settled = {
+        // The ticket lives once: a connection that ends under its answer is asked again, which the
+        // device that took the call answers where it is rather than spending the secret twice.
+        let now = std::time::Instant::now();
+        let deadline = now
+            .checked_add(std::time::Duration::from_nanos(TICKET_LIFETIME_NS))
+            .unwrap_or(now);
+        let mut sent = 1;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let answer = Arc::clone(&device)
+                .invoke_until_settled(request.clone(), left)
+                .await;
+            match answer {
+                Some(Err(error)) if sent < CERTIFY_TRIES && is_a_lost_call(&error) => {
+                    debug_why("asking the device to certify this computer", &error);
+                    sent = sent.saturating_add(1);
+                }
+                answer => break answer,
+            }
+        }
+    };
     endpoint.close().await;
     match settled {
         Some(Ok(tilo_actions::InvocationUpdate::Succeeded { output, .. })) => output
