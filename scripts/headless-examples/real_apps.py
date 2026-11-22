@@ -195,7 +195,7 @@ def catalogue(ask, needle: str = "") -> list:
         answer = ask(frame({"CatalogueRequest": {"correlation": 1, "query": query}}))
         result = answer["message"]["CatalogueResponse"]["result"]
         if "Ok" not in result:
-            raise Refused("listing", {"code": "refused", "message": json.dumps(result)})
+            raise Refused("listing", refusal(result.get("Err", result)))
         page = result["Ok"]
         rows += page.get("rows", [])
         if page.get("exhausted") or not page.get("next_cursor"):
@@ -210,9 +210,9 @@ def address(row: dict) -> tuple[str, str] | None:
 
 
 def invocation(provider: str, resource: str, action: str, args: dict | None = None,
-               wait_ms: int | None = None) -> dict:
+               wait_ms: int | None = None, confirmed: bool = False) -> dict:
     """The frame that invokes `resource`'s `action` of `provider` with `args`, its answer held
-    up to `wait_ms` while it runs."""
+    up to `wait_ms` while it runs; `confirmed` when the person confirms it as it asks."""
     request = {
         "invocation": str(uuid.uuid4()),
         "target": {"provider": provider, "address": {"resource": resource, "action": action}},
@@ -220,16 +220,35 @@ def invocation(provider: str, resource: str, action: str, args: dict | None = No
     }
     if wait_ms:
         request["wait_ms"] = wait_ms
+    if confirmed:
+        request["confirmation"] = "Confirmed"
     return frame({"Invoke": request})
+
+
+# The code each refusal of the action model goes by, as `ActionCallError::code` names it.
+ERROR_CODES = {
+    "Unavailable": "remote_actions_unavailable", "UnknownAction": "unknown_action",
+    "NotPermitted": "not_permitted", "ConfirmationRequired": "action_confirmation_required",
+    "InvalidRequest": "invalid_arguments", "StaleRevision": "stale_revision",
+    "UnknownInvocation": "unknown_invocation", "InvocationConflict": "invocation_conflict",
+    "NotCancellable": "not_cancellable", "Refused": "refused", "NotReady": "not_ready",
+    "Unanswered": "unanswered",
+}
+
+
+def refusal(error) -> dict:
+    """A refusal of the action model (`ActionCallError` as a frame carries it): its code and
+    what it says."""
+    variant = error if isinstance(error, str) else next(iter(error), "")
+    return {"code": ERROR_CODES.get(variant, variant), "message": json.dumps(error)}
 
 
 def receipt(answer: dict) -> dict | str:
     """Where an invocation frame's answer says it stands (`"Accepted"`, `{"Completed": ...}`,
-    `{"Failed": ...}`); a refusal raises, with its reason."""
+    `{"Failed": ...}`); a refusal raises, with its code and reason."""
     status = answer["message"]["Receipt"]["status"]
     if isinstance(status, dict) and "Rejected" in status:
-        error = status["Rejected"]["error"]
-        raise Refused("invoke", {"code": json.dumps(error)[:200], "message": json.dumps(error)})
+        raise Refused("invoke", refusal(status["Rejected"]["error"]))
     return status
 
 
@@ -737,7 +756,7 @@ class Session:
             try:
                 return catalogue(self.control, query)
             except Refused as error:
-                if "StaleRevision" not in str(error):
+                if error.code != "stale_revision":
                     raise
         raise Failed(f"the actions for {query!r} kept moving on")
 

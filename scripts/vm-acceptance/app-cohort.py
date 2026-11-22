@@ -26,10 +26,7 @@ def binding(row):
 
 
 def catalog(vm, app):
-    result = vm.control_json("actions", "list", app, "--programmatic", "--json")
-    require(result.get("query") == app and isinstance(result.get("actions"), list),
-            "matched programmatic action discovery unavailable")
-    return [r for r in result["actions"] if r.get("application") == app]
+    return [r for r in vm.actions(app) if r.get("application") == app]
 
 
 def choose(rows, app, kind, operation, args, bound=None):

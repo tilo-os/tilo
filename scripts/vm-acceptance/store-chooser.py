@@ -37,10 +37,7 @@ def workspace(vm, expected_workspace_id):
 
 
 def picker_rows(vm):
-    reply = vm.control_json("actions", "list", "file-picker", "--programmatic", "--json")
-    require(reply.get("query") == "file-picker" and isinstance(reply.get("actions"), list),
-            "canonical chooser discovery unavailable")
-    return [row for row in reply["actions"] if row.get("provider") == "file-picker"]
+    return [row for row in vm.actions("file-picker") if row.get("provider") == "file-picker"]
 
 
 def request(rows):

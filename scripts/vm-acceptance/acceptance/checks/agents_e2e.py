@@ -61,23 +61,19 @@ SWITCH_WORKSPACE = "desktop:chrome\x1fswitch-workspace"
 
 def invoke(ctx, provider: str, action_id: str, args: dict | None = None, *, confirmed: bool = False,
            name: str = "invoke", timeout: float = 60):
-    """Invoke an action as the person does, `confirmed` when they confirm it as they ask (the
-    request's own `confirmed`, which `tilo-control actions invoke` does not say), and follow it
-    to its end: its output's value."""
+    """Invoke an action as the person does, `confirmed` when they confirm it as they ask, and
+    follow it to its end: its output's value."""
     (ctx.out / "data").mkdir(parents=True, exist_ok=True)
-    request = {"op": "actions_invoke", "provider": provider, "id": action_id, "args": args or {}}
-    if confirmed:
-        request["confirmed"] = True
-    reply = ctx.vm.raw(request)
-    if isinstance(reply, dict) and reply.get("err"):
-        raise CheckFailed(f"{name}: {action_id.split(chr(31))[-1]} was refused: {reply['err']}")
-    answer = reply.get("answer", reply) if isinstance(reply, dict) else {}
-    receipt = answer.get("receipt") or {}
-    update = receipt.get("update") or {}
-    if receipt.get("broker_invocation_id") is None:
-        if update.get("state") == "succeeded":
-            return (update.get("output") or {}).get("value")
-        raise CheckFailed(f"{name}: no job for {action_id.split(chr(31))[-1]}: {str(reply)[:300]}")
+    try:
+        answer = ctx.vm.invoke(provider, action_id, args or {}, confirmed=confirmed)
+    except VmError as exc:
+        raise CheckFailed(f"{name}: {action_id.split(chr(31))[-1]} was refused: {exc}") from exc
+    update = answer["receipt"]["update"]
+    if update["state"] == "succeeded":
+        return (update.get("output") or {}).get("value")
+    if update["state"] != "accepted":
+        raise CheckFailed(f"{name}: {action_id.split(chr(31))[-1]} ended {update['state']}: "
+                          f"{str(update)[:300]}")
     return PendingJob(ctx.vm, answer, ctx.out / "data", name).finish(timeout)
 
 
@@ -641,7 +637,7 @@ def person_note(ctx, env: dict, title: str) -> None:
     try:
         invoke(ctx, rows[0]["provider"], rows[0]["id"], {"title": title}, name=f"{env['name']}-person-note")
     except CheckFailed as exc:
-        if "needs_confirmation" not in str(exc):
+        if "action_confirmation_required" not in str(exc):
             raise
         invoke(ctx, rows[0]["provider"], rows[0]["id"], {"title": title}, confirmed=True,
                name=f"{env['name']}-person-note")
