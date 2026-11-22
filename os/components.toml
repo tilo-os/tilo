@@ -623,9 +623,10 @@ files = [
 ]
 
 # The server image's own server: the daemon and its admin program, built
-# without the browser listener a node serves (`web`) and linked from /usr/bin
-# straight to their programs. tools/ci/publish/server-binaries.sh builds it and host-build.sh lays it
-# out from this entry, as a swap into a server does.
+# without the browser listener a node serves (`web`). Their old names in /usr/bin
+# resolve through the image's own tilo (host-tilo-cli), as a desktop's do.
+# tools/ci/publish/server-binaries.sh builds it and host-build.sh lays it out
+# from this entry, as a swap into a server does.
 [[component]]
 name = "host-server"
 kind = "userspace"
@@ -637,9 +638,9 @@ units = ["tilo-server.service"]
 layer = "host-binaries"
 files = [
   { from = "tilo-server", to = "/usr/libexec/tilo/tilo-server", mode = "0755" },
-  { link = "../libexec/tilo/tilo-server", to = "/usr/bin/tilo-server" },
+  { link = "tilo", to = "/usr/bin/tilo-server" },
   { from = "tilo-server-admin", to = "/usr/libexec/tilo/tilo-server-admin", mode = "0755" },
-  { link = "../libexec/tilo/tilo-server-admin", to = "/usr/bin/tilo-server-admin" },
+  { link = "tilo", to = "/usr/bin/tilo-server-admin" },
 ]
 
 # The command line a server logs in with at first boot, spending the ticket left on its

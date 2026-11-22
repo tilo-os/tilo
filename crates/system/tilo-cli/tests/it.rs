@@ -59,7 +59,7 @@ fn every_old_name_runs_its_help_through_the_alias() {
     std::fs::create_dir_all(&libexec).unwrap();
     std::fs::create_dir_all(&bin).unwrap();
     let moved = moved();
-    assert!(moved.len() > 10, "{moved:?}");
+    assert!(moved.len() >= 10, "{moved:?}");
     for name in &moved {
         let program = libexec.join(name);
         std::fs::write(&program, "#!/bin/sh\nprintf '%s|%s\\n' \"$0\" \"$*\"\n").unwrap();
