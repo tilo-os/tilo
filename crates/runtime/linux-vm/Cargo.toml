@@ -75,6 +75,10 @@ workspace = true
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs", "process"] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# A share's guest side, mounted over the host side it talks to.
+linux-vm-agent = { path = "../linux-vm-agent" }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # The VM's window forwarder runs behind an app keeper, written into the keepers' registry.
 tilo-app-keeper = { path = "../../session/app-keeper", optional = true }

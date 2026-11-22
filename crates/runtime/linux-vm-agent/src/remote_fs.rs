@@ -2,30 +2,39 @@
 //! share is a FUSE filesystem at the host's path whose every operation is one
 //! request on the share's own connection ([`linux_vm_protocol::files`]).
 //!
-//! The host owns the files and decides what is allowed; this side translates,
-//! shows every file as the guest user's, and caches nothing beyond what the
-//! kernel keeps for an open file.
+//! The host owns the files and decides what is allowed; this side translates
+//! and shows every file as the guest user's. The kernel keeps names,
+//! attributes and listings for as long as the host says nothing changed: a
+//! thread asks the host what did ([`FsRequest::Changes`]) and drops exactly
+//! that, so a walk over a tree nothing touched (`git status`) asks the host
+//! nothing, while a member's edit shows within [`CHANGES_EVERY`].
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fuser::{
     Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, LockOwner,
-    OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
-    ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, Request, TimeOrNow, WriteFlags,
+    Notifier, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, Request, TimeOrNow, WriteFlags,
 };
 use linux_vm_protocol::files::{
-    Attr, FileKind, FileShare, FsReply, FsRequest, MAX_IO_BYTES, SetTime, Time,
+    Attr, Change, FileKind, FileShare, FsReply, FsRequest, MAX_IO_BYTES, SetTime, Time,
 };
 use linux_vm_protocol::{recv, send};
 use tilo_lock::MutexRecover as _;
 
-const TTL: Duration = Duration::ZERO;
+/// How long the kernel keeps what it was told when the host reports changes:
+/// until the host says otherwise, within reason.
+const CACHED: Duration = Duration::from_secs(60 * 60);
+
+/// How often the host is asked what changed: the longest a member's edit
+/// takes to show here.
+pub const CHANGES_EVERY: Duration = Duration::from_millis(100);
 
 pub struct Remote<S> {
     stream: Mutex<S>,
@@ -63,15 +72,62 @@ impl<S: Read + Write> Remote<S> {
 }
 
 pub struct RemoteFs<S> {
-    remote: Remote<S>,
+    remote: Arc<Remote<S>>,
     uid: u32,
     gid: u32,
+    /// How long the kernel keeps names and attributes: [`CACHED`] once the
+    /// host reports what changes, else nothing.
+    ttl: Duration,
 }
 
 impl<S: Read + Write> RemoteFs<S> {
+    /// The share `remote` serves; its kernel caches once the host has
+    /// started reporting what changes ([`Self::follow_with`]).
+    pub fn new(remote: Remote<S>, uid: u32, gid: u32) -> Self {
+        let ttl = match remote.ask(&FsRequest::Changes) {
+            Ok(FsReply::Changes { .. }) => CACHED,
+            _ => Duration::ZERO,
+        };
+        Self {
+            remote: Arc::new(remote),
+            uid,
+            gid,
+            ttl,
+        }
+    }
+
+    /// Whether the kernel keeps what it is told.
     #[must_use]
-    pub const fn new(remote: Remote<S>, uid: u32, gid: u32) -> Self {
-        Self { remote, uid, gid }
+    pub fn cached(&self) -> bool {
+        !self.ttl.is_zero()
+    }
+
+    /// What an opened file or directory keeps of what was read before.
+    fn keep(&self) -> FopenFlags {
+        if self.cached() {
+            FopenFlags::FOPEN_KEEP_CACHE
+        } else {
+            FopenFlags::empty()
+        }
+    }
+
+    /// What, given the mounted filesystem's notifier, asks the host what
+    /// changed every [`CHANGES_EVERY`] and drops exactly that from the
+    /// kernel, until the filesystem is gone.
+    pub fn follow_with(&self) -> impl FnOnce(Notifier) -> io::Result<()> + use<S>
+    where
+        S: Send + 'static,
+    {
+        let remote = self.cached().then(|| Arc::downgrade(&self.remote));
+        move |notifier| {
+            let Some(remote) = remote else {
+                return Ok(());
+            };
+            std::thread::Builder::new()
+                .name("share-changes".into())
+                .spawn(move || follow_changes(&remote, &notifier))
+                .map(drop)
+        }
     }
 
     fn file_attr(&self, attr: &Attr) -> FileAttr {
@@ -117,6 +173,37 @@ impl<S: Read + Write> RemoteFs<S> {
     }
 }
 
+fn follow_changes<S: Read + Write>(remote: &Weak<Remote<S>>, notifier: &Notifier) {
+    let mut more = false;
+    loop {
+        if !more {
+            std::thread::sleep(CHANGES_EVERY);
+        }
+        let Some(held) = remote.upgrade() else {
+            return;
+        };
+        let Ok(FsReply::Changes {
+            changes,
+            more: rest,
+        }) = held.ask(&FsRequest::Changes)
+        else {
+            // The share's connection is gone, and the mount with it.
+            return;
+        };
+        drop(held);
+        more = rest;
+        for change in changes {
+            // The kernel may no longer hold what changed: nothing to drop.
+            let _ = match change {
+                Change::Entry { parent, name } => {
+                    notifier.inval_entry(INodeNo(parent), OsStr::from_bytes(&name))
+                }
+                Change::Node(node) => notifier.inval_inode(INodeNo(node), 0, 0),
+            };
+        }
+    }
+}
+
 const fn file_type(kind: FileKind) -> FileType {
     match kind {
         FileKind::File => FileType::RegularFile,
@@ -153,7 +240,24 @@ impl<S: Read + Write + Send + 'static> Filesystem for RemoteFs<S> {
             parent: parent.0,
             name: name(entry),
         }) {
-            Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+            Ok(attr) => reply.entry(&self.ttl, &attr, Generation(0)),
+            // A name that is not there is kept as such too (node 0), until
+            // the host says it came: git asks after many files no checkout
+            // has.
+            Err(error) if error == Errno::ENOENT && self.cached() => {
+                let none = self.file_attr(&Attr {
+                    node: 0,
+                    kind: FileKind::File,
+                    perm: 0,
+                    size: 0,
+                    blocks: 0,
+                    nlink: 0,
+                    atime: Time::default(),
+                    mtime: Time::default(),
+                    ctime: Time::default(),
+                });
+                reply.entry(&self.ttl, &none, Generation(0));
+            }
             Err(error) => reply.error(error),
         }
     }
@@ -164,7 +268,7 @@ impl<S: Read + Write + Send + 'static> Filesystem for RemoteFs<S> {
 
     fn getattr(&self, _: &Request, ino: INodeNo, _: Option<FileHandle>, reply: ReplyAttr) {
         match self.attr(&FsRequest::GetAttr { node: ino.0 }) {
-            Ok(attr) => reply.attr(&TTL, &attr),
+            Ok(attr) => reply.attr(&self.ttl, &attr),
             Err(error) => reply.error(error),
         }
     }
@@ -194,7 +298,7 @@ impl<S: Read + Write + Send + 'static> Filesystem for RemoteFs<S> {
             atime: set_time(atime),
             mtime: set_time(mtime),
         }) {
-            Ok(attr) => reply.attr(&TTL, &attr),
+            Ok(attr) => reply.attr(&self.ttl, &attr),
             Err(error) => reply.error(error),
         }
     }
@@ -221,7 +325,7 @@ impl<S: Read + Write + Send + 'static> Filesystem for RemoteFs<S> {
             name: name(entry),
             mode: mode & !umask,
         }) {
-            Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+            Ok(attr) => reply.entry(&self.ttl, &attr, Generation(0)),
             Err(error) => reply.error(error),
         }
     }
@@ -259,7 +363,7 @@ impl<S: Read + Write + Send + 'static> Filesystem for RemoteFs<S> {
             name: name(link),
             target: target.as_os_str().as_bytes().to_vec(),
         }) {
-            Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+            Ok(attr) => reply.entry(&self.ttl, &attr, Generation(0)),
             Err(error) => reply.error(error),
         }
     }
@@ -303,7 +407,7 @@ impl<S: Read + Write + Send + 'static> Filesystem for RemoteFs<S> {
             new_parent: new_parent.0,
             new_name: name(new_name),
         }) {
-            Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+            Ok(attr) => reply.entry(&self.ttl, &attr, Generation(0)),
             Err(error) => reply.error(error),
         }
     }
@@ -315,7 +419,9 @@ impl<S: Read + Write + Send + 'static> Filesystem for RemoteFs<S> {
             write,
             truncate: flags.0 & libc::O_TRUNC != 0,
         }) {
-            Ok(FsReply::Opened { handle }) => reply.opened(FileHandle(handle), FopenFlags::empty()),
+            // What was read stays in the kernel until the host says the
+            // file changed.
+            Ok(FsReply::Opened { handle }) => reply.opened(FileHandle(handle), self.keep()),
             Ok(_) => reply.error(Errno::EIO),
             Err(error) => reply.error(error),
         }
@@ -396,6 +502,17 @@ impl<S: Read + Write + Send + 'static> Filesystem for RemoteFs<S> {
         }
     }
 
+    fn opendir(&self, _: &Request, _: INodeNo, _: OpenFlags, reply: ReplyOpen) {
+        // A listing stays in the kernel until the host says the directory
+        // changed.
+        let flags = if self.cached() {
+            FopenFlags::FOPEN_CACHE_DIR | self.keep()
+        } else {
+            FopenFlags::empty()
+        };
+        reply.opened(FileHandle(0), flags);
+    }
+
     fn readdir(
         &self,
         _: &Request,
@@ -467,7 +584,7 @@ impl<S: Read + Write + Send + 'static> Filesystem for RemoteFs<S> {
             truncate: flags & libc::O_TRUNC != 0,
         }) {
             Ok(FsReply::Created { attr, handle }) => reply.created(
-                &TTL,
+                &self.ttl,
                 &self.file_attr(&attr),
                 Generation(0),
                 FileHandle(handle),
@@ -540,16 +657,32 @@ where
     let remote = Remote::open(connect(share.port)?, &share.path)?;
     let path = Path::new(&share.path);
     std::fs::create_dir_all(path)?;
+    mount_at(remote, path, share.read_only, uid, gid)
+}
+
+/// Mount the share `remote` serves at `path`, its files the guest user's
+/// (`uid`, `gid`), following what changes on the host.
+pub fn mount_at<S: Read + Write + Send + 'static>(
+    remote: Remote<S>,
+    path: &Path,
+    read_only: bool,
+    uid: u32,
+    gid: u32,
+) -> io::Result<fuser::BackgroundSession> {
     let mut config = fuser::Config::default();
     config.mount_options = vec![
         fuser::MountOption::FSName("tilo-host".into()),
         fuser::MountOption::DefaultPermissions,
     ];
-    if share.read_only {
+    if read_only {
         config.mount_options.push(fuser::MountOption::RO);
     }
     config.acl = fuser::SessionACL::All;
-    fuser::spawn_mount(RemoteFs::new(remote, uid, gid), path, &config)
+    let fs = RemoteFs::new(remote, uid, gid);
+    let follow = fs.follow_with();
+    let session = fuser::spawn_mount(fs, path, &config)?;
+    follow(session.notifier())?;
+    Ok(session)
 }
 
 /// Unmount now, even while a process still has a file open there: the

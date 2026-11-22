@@ -7,7 +7,16 @@
 //! guest connects to the share's host port, once per mounted share:
 //! guest → FsRequest::Hello { path }      host  → FsReply::Ok | Error
 //! guest → FsRequest::…                   host  → one FsReply each, in order
+//! guest → FsRequest::Changes             host  → FsReply::Changes(what changed since)
 //! ```
+//!
+//! The guest's kernel keeps what it was told about a file until the host says
+//! it changed: the first [`FsRequest::Changes`] makes the host watch every
+//! directory it hands the guest, and each one after it returns what changed
+//! there since the one before, whoever changed it (another member's edit
+//! arriving, a program on the host). A file's node is its inode on the host
+//! wherever that names one file, so it stays the same across lookups and
+//! mounts, as a local disk's does.
 //!
 //! Each share has a port of its own, served by a host process confined to that
 //! share. The host serves only the directories it named, resolves every path
@@ -24,6 +33,11 @@ pub const ROOT_NODE: u64 = 1;
 pub const MAX_IO_BYTES: u32 = 128 * 1024;
 
 pub const MAX_ENTRIES: usize = 256;
+
+/// The most one [`FsReply::Changes`] carries: a change costs its name and
+/// this much more, well inside a frame.
+pub const MAX_CHANGE_BYTES: usize = 128 * 1024;
+pub const CHANGE_OVERHEAD: usize = 32;
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct FileShare {
@@ -176,20 +190,46 @@ pub enum FsRequest {
         new_name: Vec<u8>,
     },
     StatFs,
+    /// What changed since the last of these; the first one starts the
+    /// host's watch and changes nothing.
+    Changes,
+}
+
+/// Something the guest's kernel may hold that is no longer so.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+pub enum Change {
+    /// `name` in the directory `parent` may name another file now, or none.
+    Entry { parent: u64, name: Vec<u8> },
+    /// The attributes or content of `node` changed.
+    Node(u64),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum FsReply {
     Ok,
     Attr(Attr),
-    Entries { entries: Vec<DirEntry>, done: bool },
-    Opened { handle: u64 },
-    Created { attr: Attr, handle: u64 },
+    Entries {
+        entries: Vec<DirEntry>,
+        done: bool,
+    },
+    Opened {
+        handle: u64,
+    },
+    Created {
+        attr: Attr,
+        handle: u64,
+    },
     Data(Vec<u8>),
     Written(u32),
     Target(Vec<u8>),
     StatFs(StatFs),
     Error(i32),
+    /// What changed, as much as one frame holds; `more` when the rest waits
+    /// for the next ask.
+    Changes {
+        changes: Vec<Change>,
+        more: bool,
+    },
 }
 
 /// Whether `name` is one path component the host may act on: not empty,
