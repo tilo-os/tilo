@@ -17,28 +17,30 @@ pub(super) fn discord_bridge() -> installed::InstalledBot {
 
 /// The workspace's Chat categories by name, each with its conversations' names.
 async fn chat_layout(workspaces: &Workspaces, workspace: &str) -> Vec<(String, Vec<String>)> {
-    let record = workspace_resource(&AppCatalogue::native(), CHAT);
-    let saved = workspaces
-        .resource_document(workspace, CHAT, &record)
+    let packages = crate::tl_chat::packages().unwrap();
+    workspaces
+        .with_tl_record(workspace, &packages, crate::tl_chat::viewer(), |chat| {
+            let sidebar = crate::tl_chat::sidebar(chat)?;
+            let named =
+                |category: Option<&tilo_workspace_service::tl_records::runtime::ResourceRef>| {
+                    sidebar
+                        .channels
+                        .iter()
+                        .filter(|channel| channel.category.as_ref() == category)
+                        .map(|channel| channel.name.clone())
+                        .collect::<Vec<_>>()
+                };
+            Ok(std::iter::once((String::new(), named(None)))
+                .chain(
+                    sidebar
+                        .categories
+                        .iter()
+                        .map(|category| (category.name.clone(), named(Some(&category.at)))),
+                )
+                .collect())
+        })
         .await
         .unwrap()
-        .unwrap();
-    let chat = chat_of(&saved);
-    let named = |category: Option<&tilo_resource::Id>| {
-        chat.channels
-            .values()
-            .filter(|channel| channel.is_channel())
-            .filter(|channel| channel.category.as_ref() == category)
-            .map(|channel| channel.name.clone())
-            .collect::<Vec<_>>()
-    };
-    std::iter::once((String::new(), named(None)))
-        .chain(
-            chat.categories
-                .iter()
-                .map(|(id, category)| (category.name.clone(), named(Some(id)))),
-        )
-        .collect()
 }
 
 /// Connect `workspace` to the Discord server the bridge last saw as `goal`, and
@@ -108,7 +110,6 @@ async fn a_bridge_run_the_workspace_refuses_part_of_finishes_the_import_when_it_
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
     bridged_lounge(&workspaces, &workspace, &cert).await;
-    let catalogue = AppCatalogue::native();
     let mut runner = member_runner(
         &workspaces,
         &workspace,
@@ -122,26 +123,14 @@ async fn a_bridge_run_the_workspace_refuses_part_of_finishes_the_import_when_it_
     // A change to the workspace's Chat has the bridge reconcile; the workspace
     // refuses the run's second change, mapping the category it just made.
     let owner = hex::encode(cert.user_public_key);
+    let who = crate::tl_chat::member(MemberId::person(owner));
+    let packages = crate::tl_chat::packages().unwrap();
     workspaces
-        .author_application(
+        .with_tl_record(
             &workspace,
-            &cert,
-            &catalogue,
-            CHAT,
-            &workspace_resource(&catalogue, CHAT),
-            |doc| {
-                chat::demo::apply_as(
-                    doc,
-                    &owner,
-                    chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
-                        name: "welcome".parse().unwrap(),
-                        category: None,
-                        kind: None,
-                        topic: None,
-                    }),
-                )
-                .map_err(|error| error.to_string())
-            },
+            &packages,
+            crate::tl_chat::viewer(),
+            move |chat| crate::tl_chat::new_channel(chat, &who, ("welcome", ""), None).map(drop),
         )
         .await
         .unwrap();
