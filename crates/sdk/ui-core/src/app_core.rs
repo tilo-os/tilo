@@ -25,7 +25,7 @@ pub(crate) struct AppTree<'a> {
     pub(crate) state: &'a crate::State,
     pub(crate) root: &'a dyn Widget,
     /// The app's registered framework History, when it has one.
-    pub(crate) history: Option<&'a dyn crate::history_mode::host::HistoryChromeApi>,
+    pub(crate) history: Option<&'a crate::history_mode::host::HistoryHost>,
     pub(crate) bindings: &'a crate::bound_dispatch::BoundNodeMap,
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
     pub(crate) taffy: &'a TaffyTree<()>,

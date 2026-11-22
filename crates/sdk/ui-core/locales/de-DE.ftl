@@ -71,7 +71,6 @@ window-toolbar-show-inspector = Inspektor einblenden
 window-toolbar-hide-inspector = Inspektor ausblenden
 window-share-to-channel = In Kanal teilen…
 window-stop-sharing-in = Teilen in { $place } beenden
-lazy-loading = Wird geladen…
 history-genesis = Erstellt
 history-moved = Zwischen Arbeitsbereichen verschoben
 history-review-title = { $resource } wiederherstellen

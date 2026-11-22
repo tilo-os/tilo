@@ -64,7 +64,7 @@ fn the_palettes_host_stands_above_the_windows_and_paints_nothing_once_closed() {
     let card = {
         let search = handle.search_palette();
         let search = search.borrow();
-        search.palette().expect("the palette is up").get_rect()
+        ui::Widget::get_rect(search.palette())
     };
     let centre = card.center();
     assert!(

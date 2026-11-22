@@ -84,7 +84,7 @@ fn assert_palette_shows(scale: f64, size: (u32, u32)) {
     let card = {
         let search = handle.search_palette();
         let search = search.borrow();
-        search.palette().unwrap().get_rect()
+        ui::Widget::get_rect(search.palette())
     };
     compositor.add_surface(Rc::new(RefCell::new(host)));
     let mut shot = None;

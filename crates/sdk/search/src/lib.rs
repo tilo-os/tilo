@@ -49,10 +49,7 @@ mod words;
 
 #[cfg(feature = "disk")]
 pub use disk::{DiskHit, DiskIndex, DiskWriter};
-pub use engine::{
-    ENGINE, Engine, IndexError, MakeEngine, Records, ScoreFn, builtin_engine, engine_generation,
-    engine_ready, prepare_engine, tantivy_engine,
-};
+pub use engine::{Engine, IndexError, MakeEngine, Records, ScoreFn, tantivy_engine};
 pub use fold::{fold, fold_char};
 pub use highlight::{excerpt, excerpt_around, locate};
 pub use index::{BodyPiece, BodySource, Document, Hit, Hits, Page, SearchIndex, Signals};

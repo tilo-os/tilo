@@ -73,7 +73,7 @@ impl Shared {
     pub(super) fn new(
         tree: Layout,
         minter: IdMinter,
-        search: &Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,
+        search: &Rc<RefCell<tilo_desktop_search::DesktopSearch>>,
     ) -> Self {
         Self {
             tree,

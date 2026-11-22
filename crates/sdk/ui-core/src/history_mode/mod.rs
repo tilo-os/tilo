@@ -602,5 +602,5 @@ pub(crate) mod routes;
 /// Opaque retained framework surface used only by owning runner traversal.
 #[doc(hidden)]
 /// A window's History as the windows that own one hand it to a visitor.
-pub(crate) type FrameworkHistorySurface = dyn host::HistoryChromeApi;
+pub(crate) type FrameworkHistorySurface = host::HistoryHost;
 pub(crate) mod embedded;

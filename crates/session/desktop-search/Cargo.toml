@@ -12,9 +12,6 @@ homepage.workspace = true
 # shell rank, group and present search results with one implementation.
 
 [features]
-# Leave the search's code out of what the program starts with: it fetches
-# it on first use (`DESKTOP_SEARCH`).
-lazy-search = []
 # The session's on-disk indexes: what apps publish of their content, and
 # the bodies of the person's files. Native only.
 indexes = ["dep:tilo-action-policy", "dep:tilo-files", "dep:tilo-lock", "dep:tilo-paths", "dep:tilo-reference", "dep:tempfile", "dep:tilo-search", "dep:tracing", "dep:walkdir"]

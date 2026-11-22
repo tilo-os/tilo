@@ -18,17 +18,11 @@ use ui::widget::Widget;
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::notifications::{
-    BannerFeed, CenterLayout, CenterMetrics, CenterOutcome, CentreApi, ContinuityNotificationId,
-    HistoryActivation, NOTIFICATION_CENTRE, Notification, NotificationHost, NotificationLog,
+    BannerFeed, CenterLayout, CenterMetrics, CenterOutcome, ContinuityNotificationId,
+    HistoryActivation, Notification, NotificationCenter, NotificationHost, NotificationLog,
     NotificationSeverity, NotificationStack,
 };
 use tilo_lock::MutexRecover as _;
-
-/// How tall the centre's panel stands while its code is on its way.
-const LOADING_HEIGHT: f64 = 96.0;
-
-/// The open centre, or its panel waiting on the centre's code.
-type Centre = ui::lazy_code::LazySurface<Box<dyn CentreApi>, ()>;
 
 /// What the person did with a notification that its sender should hear.
 #[derive(Clone, Debug)]
@@ -848,7 +842,7 @@ impl AppInbox {
 pub struct NotificationLayer {
     notifications: DesktopNotifications,
     stack: NotificationStack,
-    center: Option<Centre>,
+    center: Option<Box<NotificationCenter>>,
     /// The person asked for the centre: it takes input and its arrivals join it. A centre that
     /// closes stays here until its leaving is drawn.
     centre_open: bool,
@@ -944,9 +938,8 @@ impl NotificationLayer {
         self.notifications.mark_read();
         self.notifications.set_centre_open(open);
         if open {
-            self.center.get_or_insert_with(|| {
-                Centre::new(&NOTIFICATION_CENTRE, (), |make, ()| make.make())
-            });
+            self.center
+                .get_or_insert_with(|| Box::new(NotificationCenter::new()));
         }
         // Closed, it is drawn until its leaving is over and dropped then.
         self.appear.show(open);
@@ -954,23 +947,14 @@ impl NotificationLayer {
         self.feed_stack();
     }
 
-    /// Open the centre waiting on its code once the code is in. Whether it opened just now.
-    fn adopt_centre(&mut self) -> bool {
-        let opened = Centre::poll(&mut self.center, &NOTIFICATION_CENTRE, |make, ()| {
-            make.make()
-        });
-        self.dirty |= opened;
-        opened
+    /// The open centre.
+    fn centre(&self) -> Option<&NotificationCenter> {
+        self.center.as_deref()
     }
 
-    /// The open centre, once its code is in.
-    fn centre(&self) -> Option<&dyn CentreApi> {
-        Some(&**self.center.as_ref()?.ready()?)
-    }
-
-    /// The open centre, once its code is in.
-    fn centre_mut(&mut self) -> Option<&mut (dyn CentreApi + 'static)> {
-        Some(&mut **self.center.as_mut()?.ready_mut()?)
+    /// The open centre.
+    fn centre_mut(&mut self) -> Option<&mut NotificationCenter> {
+        self.center.as_deref_mut()
     }
 
     /// Whether the centre is open, as opposed to leaving: it takes input and what arrives joins it.
@@ -985,12 +969,11 @@ impl NotificationLayer {
         let width = place.width().max(0.0);
         let max = place.height().max(0.0);
         let height = center
-            .ready()
-            .map_or_else(
-                || LOADING_HEIGHT.min(max),
-                |center| {
-                    center.fitted_height(self.notifications.host(), &self.type_lines, width, max)
-                },
+            .fitted_height(
+                self.notifications.host(),
+                self.type_lines.clone(),
+                width,
+                max,
             )
             .max(0.0);
         Some(CenterLayout::new(
@@ -1068,10 +1051,8 @@ impl NotificationLayer {
                 };
                 if let (Some(center), Some(layout)) = (self.center.as_mut(), layout) {
                     if layout.panel().contains(p) {
-                        if let Some(center) = center.ready_mut() {
-                            let outcome = center.click(host, &layout, p);
-                            self.apply(outcome);
-                        }
+                        let outcome = center.click(host, &layout, p);
+                        self.apply(outcome);
                         return true;
                     }
                     // A press outside the open panel closes it and goes no further, as a popover's
@@ -1099,12 +1080,9 @@ impl NotificationLayer {
                     return false;
                 };
                 let Some(center) = self.centre_mut() else {
-                    // Escape closes the centre whose code is still coming.
-                    let escape = event.logical_key
-                        == ui::winit::keyboard::Key::Named(ui::winit::keyboard::NamedKey::Escape);
-                    return escape && self.apply(CenterOutcome::Back);
+                    return false;
                 };
-                let outcome = center.key(host, &layout, &event.logical_key, backwards);
+                let outcome = center.key_with_shift(host, &layout, &event.logical_key, backwards);
                 self.apply(outcome)
             }
             _ => false,
@@ -1172,13 +1150,14 @@ impl Widget for NotificationLayer {
     fn needs_animation_frame(&self) -> bool {
         self.stack.needs_animation_frame()
             || self.appear.is_moving()
-            || self.centre().is_some_and(CentreApi::reading_needs_frame)
+            || self
+                .centre()
+                .is_some_and(NotificationCenter::reading_needs_frame)
     }
     /// The reading page glides on after a flick, repainted as a wheel's scroll is; that changes no
     /// model.
     fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
         self.feed_stack();
-        self.adopt_centre();
         if let Some(center) = self.centre_mut() {
             self.dirty |= center.advance_reading();
         }
@@ -1211,7 +1190,6 @@ impl Widget for NotificationLayer {
         _presence: &ui::presence::PresenceCtx,
     ) {
         self.type_lines = CenterLayout::metrics(theme, text);
-        self.adopt_centre();
         let notifications = self.notifications.clone();
         let host = notifications.host();
         self.stack.set_viewport(self.rect);
@@ -1250,21 +1228,7 @@ impl Widget for NotificationLayer {
                         f64::from(theme.tokens.radii.control),
                         theme,
                     );
-                    match center.ready_mut() {
-                        Some(center) => {
-                            center.draw(host, &layout, scene, at, text, theme, cursor);
-                        }
-                        None => {
-                            ui::lazy_code::draw_loading(
-                                scene,
-                                at,
-                                text,
-                                theme,
-                                panel,
-                                "lazy-loading",
-                            );
-                        }
-                    }
+                    center.draw(host, &layout, scene, at, text, theme, cursor);
                 },
             );
         }

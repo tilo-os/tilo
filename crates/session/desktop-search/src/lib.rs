@@ -10,7 +10,6 @@
 //!   choices, host commands).
 //! - [`palette`]: the toolkit's command palette over those sources.
 //! - [`window`]: one window's own search, over what it publishes.
-//! - [`lazy`]: search whose code a program may fetch on first use.
 //! - [`answers`]: what a query that is not a name answers: a sum, a unit
 //!   conversion, an address, the web searches it can be.
 //! - `content_index` and `files_index` (feature `indexes`): the session's
@@ -35,7 +34,6 @@ pub mod files_index;
 pub mod i18n;
 #[cfg(feature = "indexes")]
 pub mod indexed;
-pub mod lazy;
 pub mod model;
 pub mod names;
 pub mod palette;
@@ -66,9 +64,6 @@ pub fn file_uri(path: &Path) -> String {
     uri
 }
 
-pub use lazy::{
-    DESKTOP_SEARCH, DesktopSearchApi, LazyDesktopSearch, MakeDesktopSearch, builtin_desktop_search,
-};
 pub use model::{
     ALL_APPS_COMMAND, ActionTarget, CHROME_RESOURCE, DESKTOP_APP, Held, Hit, InvokeTarget,
     LaunchPlace, OPEN_ACTION, OPEN_ANCHOR, RECORD_LAUNCH, SHOW_PEOPLE, SearchStream, Source,

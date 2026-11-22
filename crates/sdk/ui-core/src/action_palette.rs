@@ -44,7 +44,6 @@ const SCOPE_PREFIX: &str = "\u{1}scope\u{1f}";
 
 const SCOPES_KIND: &str = "Search in";
 
-pub(crate) mod api;
 mod empty_state;
 mod facet_chips;
 mod history;
@@ -52,9 +51,16 @@ mod host;
 mod inspect;
 mod rows;
 mod window_place;
-pub(crate) use api::{ActionPaletteBox, make_action_palette};
 pub use rows::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome, RowFace};
 pub use window_place::{list_cap, placement};
+
+/// An action palette, as a window has it.
+pub(crate) type ActionPaletteBox = Box<ActionPalette>;
+
+/// A palette for the host text's `locale`.
+pub(crate) fn make_action_palette(locale: String) -> ActionPaletteBox {
+    Box::new(ActionPalette::with_host_text(locale))
+}
 
 /// The window a palette was asked for from, when a host lays several app tiles out in one tree (the
 /// shell's strip of windows): the innermost tile under `pressed_at` when a press asked (a control
@@ -378,9 +384,6 @@ pub struct ActionPalette {
     search_generation: u64,
     /// The exported actions' titles and descriptions, indexed while they stay the same.
     action_index: ListIndex,
-    /// [`crate::search::engine_generation`] the rows were ranked with: where the index's code loads on
-    /// first use, an open palette ranks again once it is in.
-    engine_generation: u64,
     search_announcement: Option<String>,
     open: bool,
     /// Whether a palette over its host's rows closes when the keyboard's focus leaves it. A host
@@ -436,8 +439,6 @@ pub struct ActionPalette {
     bypass_fuzzy: bool,
     /// More results are still coming ([`Self::set_searching`]).
     searching: bool,
-    /// [`crate::search::engine_generation`] the host rows were ranked with.
-    ranked_generation: u64,
     /// What the field says while nothing is typed; a host names the source it searches ("Search
     /// files…").
     query_placeholder: String,
@@ -660,7 +661,6 @@ impl ActionPalette {
             missing_selection: None,
             search_generation: 0,
             action_index: ListIndex::default(),
-            engine_generation: crate::search::engine_generation(),
             search_announcement: None,
             open: false,
             closes_on_blur: true,
@@ -691,7 +691,6 @@ impl ActionPalette {
             host_index: ListIndex::default(),
             bypass_fuzzy: false,
             searching: false,
-            ranked_generation: crate::search::engine_generation(),
             query_placeholder: widget_text("palette-placeholder"),
             host_step: None,
             saved_host_query: String::new(),
@@ -1303,14 +1302,6 @@ impl ActionPalette {
                 generation: self.search_generation,
                 ..SearchAdvance::default()
             };
-        }
-        let engine_generation = crate::search::engine_generation();
-        if self.engine_generation != engine_generation {
-            self.engine_generation = engine_generation;
-            if self.open {
-                let typed = self.field.value().to_owned();
-                self.rebuild(&typed);
-            }
         }
         if self.validation_queue.is_empty() && self.provider_complete.iter().all(|done| *done) {
             for (key, validation) in &mut self.provider_validation {
@@ -2340,11 +2331,7 @@ impl ActionPalette {
         self.results.set_loading(false);
         self.next_provider = 0;
         self.refresh_progressive_results();
-        if !query.trim().is_empty() && !crate::search::engine_ready() {
-            self.search_announcement = Some(String::from("Searching"));
-            self.sync_plain_empty_state(query, true);
-            let _ = self.advance_search_page();
-        } else if self.providers.is_empty() {
+        if self.providers.is_empty() {
             self.sync_plain_empty_state(query, false);
             self.search_announcement = Some(format!("{} results", self.results.len()));
         } else {

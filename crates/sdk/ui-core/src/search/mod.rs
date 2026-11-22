@@ -51,9 +51,9 @@ pub use button_component::{SearchButton, SearchButtonProps};
 pub use preview::{PREVIEW_BODY_LINES, PREVIEW_LINES, SearchPreview};
 pub use provider::{
     CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT,
-    MAX_SEARCH_QUERY_SCALARS, OpenResourceSearch, PagePoll,
-    PendingToken, SearchCatalog, SearchCatalogError, SearchCatalogStats, SearchCursor, SearchItem,
-    SearchPage, SearchProvider, SearchResult, normalize_search_text,
+    MAX_SEARCH_QUERY_SCALARS, OpenResourceSearch, PagePoll, PendingToken, SearchCatalog,
+    SearchCatalogError, SearchCatalogStats, SearchCursor, SearchItem, SearchPage, SearchProvider,
+    SearchResult, normalize_search_text,
 };
 pub use query::{Facet, FacetFilter, FacetValue, SearchQuery};
 pub use rank::{FieldWeight, MatchTier, result_relevance};
@@ -66,9 +66,7 @@ pub(crate) use request::{search_address, search_resource};
 pub use row::{ActivationModifier, Alternate, CommandRow, RowFace, SearchRow};
 pub use scope::{AppScope, Scope, WindowGroupId};
 pub use tilo_search::fold as fold_search_text;
-pub use tilo_search::prepare_engine;
 pub use tilo_search::{Frecency, ListIndex, MAX_FIELD_RANK, Matching, fold_char, initials, locate};
-pub use tilo_search::{engine_generation, engine_ready};
 
 /// The rows of a short list that answer `query`, best first, ranked by `index` the way
 /// every list search ranks; rows that rank alike keep the list's order, so a list does

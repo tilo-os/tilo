@@ -497,7 +497,8 @@ impl Session {
                     tree.active_workspace()
                         .map(|held| (held.id().to_string(), held.policy.clone()))
                 })?;
-                let to = crate::agents::agent_recipient(agents.assistant(&workspace, &policy, &person));
+                let to =
+                    crate::agents::agent_recipient(agents.assistant(&workspace, &policy, &person));
                 let arguments = serde_json::json!({
                     "to": [to],
                     "text": text,
@@ -941,10 +942,6 @@ impl Session {
             &switcher,
         )));
         compositor.add_surface(crate::shell::under(options.shell, Rc::clone(&chrome)));
-        // Search's code is asked for as the session starts, so it is in by the
-        // time someone searches; a search asked for before then opens now,
-        // and the shell publishes it on its next pass.
-        handle.search_palette().borrow_mut().adopt();
         // The shell as the session publishes it, which the shell reads through the API.
         let chrome_surface = crate::shell::chrome_surface(options.shell, &chrome, surfaces.clone());
         published.add(Rc::clone(&chrome_surface));

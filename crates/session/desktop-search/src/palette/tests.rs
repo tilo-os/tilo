@@ -109,7 +109,7 @@ tilo_test_env::scenario! {
             .cloned()
             .expect("the app is listed");
         Arc::make_mut(&mut search.recents).record(&sheets);
-        search.restart("", ui::search::engine_generation());
+        search.restart("");
         settled(&mut search);
 
         let entries = search.palette().visible_entries();
@@ -161,7 +161,7 @@ tilo_test_env::scenario! {
         // A card too small for everything it has makes way with what is
         // least likely wanted then, never with where the person was.
         search.set_room(400.0, 200.0);
-        search.restart("", ui::search::engine_generation());
+        search.restart("");
         settled(&mut search);
         let entries = search.palette().visible_entries();
         assert!(

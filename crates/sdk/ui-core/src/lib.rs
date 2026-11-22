@@ -283,8 +283,7 @@ pub mod widgets {
     };
 }
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
-pub use tilo_lock::{deferred, lazy_code};
-pub mod lazy_code;
+pub use tilo_lock::deferred;
 pub mod personal_dictionary;
 pub mod text_assistance;
 pub mod text_break;

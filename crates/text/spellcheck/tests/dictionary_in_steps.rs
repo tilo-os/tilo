@@ -1,7 +1,6 @@
 //! A program without threads (a browser page) builds the English dictionary
 //! in steps in its idle time: no check waits for it, and the fields check
 //! again once it is built.
-#![cfg(not(feature = "lazy-dictionaries"))]
 
 use spellcheck::{
     build_dictionaries_in_steps, dictionaries_generation, prepare_dictionaries, spans_for_language,
@@ -25,8 +24,7 @@ fn the_english_dictionary_builds_in_idle_steps_and_no_check_waits_for_it() {
         let done = prepare_dictionaries(&mut || {
             asks += 1;
             asks < 2
-        })
-        .expect("the dictionaries' code is linked in");
+        });
         if done {
             break;
         }
@@ -49,9 +47,5 @@ fn the_english_dictionary_builds_in_idle_steps_and_no_check_waits_for_it() {
             .iter()
             .any(|word| word == "the")
     );
-    assert_eq!(
-        prepare_dictionaries(&mut || false),
-        Some(true),
-        "built once"
-    );
+    assert!(prepare_dictionaries(&mut || false), "built once");
 }

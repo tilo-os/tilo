@@ -1333,31 +1333,6 @@ impl Activity {
 /// carries.
 const MAX_DOING_BYTES: usize = collab_types::presence::MAX_ACTIVITY_BYTES;
 
-/// What a person did lately, said on their presence: the line, or `None` while they took no step.
-pub type SayDoing = fn(&Activity, &Layout, WorkspaceId, &str, u64) -> Option<String>;
-
-ui::lazy_code! {
-    /// The code that reads a person's own steps for what they are doing: linked, or with
-    /// `lazy-say-doing` fetched the first time the page says.
-    pub static SAY_DOING: SayDoing = builtin_say_doing, feature = "lazy-say-doing";
-}
-
-/// The only path to [`SAY_DOING`]'s code.
-#[must_use]
-pub fn builtin_say_doing() -> SayDoing {
-    say_doing
-}
-
-fn say_doing(
-    activity: &Activity,
-    tree: &Layout,
-    workspace: WorkspaceId,
-    author: &str,
-    since_ms: u64,
-) -> Option<String> {
-    doing_now(&activity.own_actions(tree, workspace, author, since_ms))
-}
-
 /// What someone is doing now, read off the newest of their own steps (`actions`, oldest first, as
 /// [`Activity::own_actions`] gives them): "Writing in Launch plan", "Schreibt in Launch plan". The
 /// line is the catalogue's words for the kind of step it was, on the record it acted in — never a

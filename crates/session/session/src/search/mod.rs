@@ -1466,18 +1466,7 @@ impl SearchHost for SessionSearch {
     }
 
     fn feed(&self, workspace: &str, scope: &Scope) -> SearchHostFeed {
-        match SEARCH_FEED.get() {
-            Some(code) => (code.feed)(self, workspace, scope),
-            // The sources load with the desktop's search engine, which a search waits for: until
-            // then the host lists its apps and what the person chose before.
-            None => SearchHostFeed {
-                applications: Self::installed_applications(self.current_reading().as_ref()),
-                preferences: self.preferences.borrow().clone(),
-                now: ui::time::unix_now(),
-                usage: self.usage.borrow().clone(),
-                ..SearchHostFeed::default()
-            },
-        }
+        feed(self, workspace, scope)
     }
 
     fn chose(&self, usage: &Usage) {
@@ -1504,26 +1493,6 @@ impl SearchHost for SessionSearch {
             | Target::Copy { .. } => false,
         }
     }
-}
-
-/// The session's search sources: the providers over what the session keeps and publishes, and the
-/// code reading them. A desktop that fetches its search engine on first use (`lazy-search-feed`)
-/// fetches these with it, so they never stand in its start.
-#[derive(Clone, Copy)]
-pub struct SearchFeedCode {
-    feed: fn(&SessionSearch, &str, &Scope) -> SearchHostFeed,
-}
-
-/// The search sources this build links.
-#[must_use]
-pub fn builtin_search_feed() -> SearchFeedCode {
-    SearchFeedCode { feed }
-}
-
-ui::lazy_code! {
-    /// The session's search sources: linked, or with `lazy-search-feed` handed over with the
-    /// desktop's search engine.
-    pub static SEARCH_FEED: SearchFeedCode = builtin_search_feed, feature = "lazy-search-feed";
 }
 
 /// What a search over `workspace` finds beyond the desktop's own: the session's sources over what
@@ -2321,7 +2290,6 @@ mod tests {
             })
         }
     }
-
 
     fn places_listed(
         search: &SessionSearch,

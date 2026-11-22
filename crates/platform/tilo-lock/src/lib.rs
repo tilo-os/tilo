@@ -8,7 +8,6 @@
 //! later lock of the same state.
 
 pub mod deferred;
-pub mod lazy;
 
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 

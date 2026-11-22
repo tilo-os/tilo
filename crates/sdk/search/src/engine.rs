@@ -2,13 +2,7 @@
 //! its postings in a RAM directory.
 //!
 //! A [`SearchIndex`](crate::SearchIndex) keeps its records itself and asks
-//! an [`Engine`] to index and search them. The engine is reached only
-//! through [`MakeEngine`], so a program that should not carry tantivy until
-//! someone searches (the browser desktop's start module) can leave it out:
-//! with the `lazy-engine` feature, the program fetches the engine's code and
-//! installs it ([`ENGINE`]). Until then commits wait and
-//! searches find nothing; [`engine_ready`] tells a surface to say so, and
-//! [`engine_generation`] to search again once the engine is in.
+//! an [`Engine`] to index and search them.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
@@ -118,50 +112,6 @@ pub type MakeEngine = fn() -> Box<dyn Engine>;
 #[must_use]
 pub fn tantivy_engine() -> Box<dyn Engine> {
     Box::new(TantivyEngine::new())
-}
-
-/// The engine where it is linked.
-#[must_use]
-pub fn builtin_engine() -> MakeEngine {
-    tantivy_engine
-}
-
-tilo_lock::lazy_code! {
-    /// The engine. A program built with `lazy-engine` fetches its code the
-    /// first time something searches (or [`prepare_engine`] asks); until
-    /// then searches of indexes too large to answer from their records find
-    /// nothing and their commits wait, and a surface that searched searches
-    /// again once [`engine_generation`] moved.
-    pub static ENGINE: MakeEngine = builtin_engine, feature = "lazy-engine";
-}
-
-/// The engine, or `None` while its code is still to come (and then fetched).
-pub(crate) fn make() -> Option<MakeEngine> {
-    ENGINE.get()
-}
-
-/// The engine if its code is in, without fetching it.
-pub(crate) fn installed() -> Option<MakeEngine> {
-    if ENGINE.is_in() { ENGINE.get() } else { None }
-}
-
-/// Whether no search waits for the engine: its code is in, or nothing asked
-/// for it.
-#[must_use]
-pub fn engine_ready() -> bool {
-    !ENGINE.fetching()
-}
-
-/// Fetch the engine now, ahead of a search: a surface about to search (the
-/// palette opening) calls it so that results come with the first keystroke.
-pub fn prepare_engine() {
-    let _ = ENGINE.get();
-}
-
-/// Bumped when the engine arrives.
-#[must_use]
-pub fn engine_generation() -> u64 {
-    ENGINE.generation()
 }
 
 #[derive(Clone, Copy, Debug)]

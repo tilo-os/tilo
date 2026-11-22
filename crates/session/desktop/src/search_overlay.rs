@@ -79,7 +79,7 @@ impl SearchOverlay {
     pub fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         let search = self.handle.search_palette();
         let search = search.borrow();
-        search.palette()?.accessibility()
+        search.palette().accessibility()
     }
 
     /// Close the palette: the shell takes the search down on its next pass.
@@ -122,18 +122,14 @@ impl Widget for SearchOverlay {
         // through here.
         let search = self.handle.search_palette();
         let mut search = search.borrow_mut();
-        let palette_changed = search
-            .palette_mut()
-            .is_some_and(|palette| palette.update(state, path));
+        let palette_changed = search.palette_mut().update(state, path);
         changed || palette_changed
     }
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
         let search = self.handle.search_palette();
         let mut search = search.borrow_mut();
-        if let Some(palette) = search.palette_mut() {
-            palette.settle(edits, path);
-        }
+        search.palette_mut().settle(edits, path);
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -154,12 +150,9 @@ impl Widget for SearchOverlay {
     fn take_structure_change(&mut self) -> ui::widget::StructureChange {
         // Open or closed, or over another area: the composition. The
         // revision alone (the rows, the query, the scope) is the card's paint
-        // and its size, never the tree's shape. A card that is up with no node
-        // yet — its code arrived after it was opened, and the palette had
-        // nothing to build then — is built now, once.
-        let missing = self.is_open() && self.palette_node.is_none();
+        // and its size, never the tree's shape.
         let structural =
-            (self.is_open(), self.handle.search_area()) != (self.built.0, self.built.1) || missing;
+            (self.is_open(), self.handle.search_area()) != (self.built.0, self.built.1);
         ui::widget::StructureChange::of(structural)
     }
 
@@ -191,7 +184,7 @@ impl Widget for SearchOverlay {
         let search = self.handle.search_palette();
         let mut search = search.borrow_mut();
         search.set_room(width, ui::action_palette::list_cap(area, &theme));
-        let size = search.desired_size();
+        let size = search.palette().desired_size();
         let Ok(current) = taffy.style(palette) else {
             return false;
         };
@@ -227,26 +220,20 @@ impl Widget for SearchOverlay {
             // three fifths of what it stands over and never wider than it.
             let (origin, width) = ui::action_palette::placement(area, theme);
             search.set_room(width, ui::action_palette::list_cap(area, theme));
-            let node = search
-                .palette_mut()
-                .map(|palette| palette.build_layout(taffy, theme, map));
-            if let Some(node) = node {
-                let width = f64::from(search.desired_size().0);
-                let mut style = taffy.style(node).cloned().unwrap_or_default();
-                style.position = taffy::Position::Absolute;
-                let x0 = self.card_left(origin.x, width);
-                style.inset = taffy::Rect {
-                    left: place(x0 - self.rect.x0),
-                    right: taffy::LengthPercentageAuto::auto(),
-                    top: place(origin.y - self.rect.y0),
-                    bottom: taffy::LengthPercentageAuto::auto(),
-                };
-                let _ = taffy.set_style(node, style);
-                kids.push(node);
-                self.palette_node = Some(node);
-            } else {
-                self.palette_node = None;
-            }
+            let node = search.palette_mut().build_layout(taffy, theme, map);
+            let width = f64::from(search.palette().desired_size().0);
+            let mut style = taffy.style(node).cloned().unwrap_or_default();
+            style.position = taffy::Position::Absolute;
+            let x0 = self.card_left(origin.x, width);
+            style.inset = taffy::Rect {
+                left: place(x0 - self.rect.x0),
+                right: taffy::LengthPercentageAuto::auto(),
+                top: place(origin.y - self.rect.y0),
+                bottom: taffy::LengthPercentageAuto::auto(),
+            };
+            let _ = taffy.set_style(node, style);
+            kids.push(node);
+            self.palette_node = Some(node);
         } else {
             self.palette_node = None;
         }
@@ -275,9 +262,7 @@ impl Widget for SearchOverlay {
         if let [palette] = taffy.children(node).unwrap_or_default()[..] {
             let search = self.handle.search_palette();
             let mut search = search.borrow_mut();
-            if let Some(palette_widget) = search.palette_mut() {
-                palette_widget.apply_layout(taffy, palette, inner);
-            }
+            search.palette_mut().apply_layout(taffy, palette, inner);
         }
     }
 
@@ -307,10 +292,7 @@ impl Widget for SearchOverlay {
         let card = {
             let search = self.handle.search_palette();
             let search = search.borrow();
-            search
-                .palette()
-                .map(ui::widget::Widget::get_rect)
-                .filter(|card| !card.is_zero_area())
+            Some(search.palette().get_rect()).filter(|card| !card.is_zero_area())
         };
         let Some(card) = card else {
             // No card laid out yet: nothing of the palette draws this frame.
@@ -321,9 +303,9 @@ impl Widget for SearchOverlay {
         ui::scene_parts::part_drawn(scene, key, |scene| {
             let search = self.handle.search_palette();
             let mut search = search.borrow_mut();
-            if let Some(palette) = search.palette_mut() {
-                palette.draw_child(scene, transform, text, theme, presence);
-            }
+            search
+                .palette_mut()
+                .draw_child(scene, transform, text, theme, presence);
             vec![
                 transform
                     .transform_rect_bbox(ui::widget::floating_surface::painted_bounds(card, theme)),
@@ -376,9 +358,7 @@ impl Widget for SearchOverlay {
         let on_card = self.cursor.is_some_and(|cursor| {
             let search = self.handle.search_palette();
             let search = search.borrow();
-            search
-                .palette()
-                .is_some_and(|palette| palette.get_rect().contains(cursor))
+            search.palette().get_rect().contains(cursor)
         });
         if (pressed && !on_card) || is_search_chord(event, *ctx.modifiers, self.platform) {
             // A press off the card, or the chord again, leaves search: the shell closes it on its
@@ -418,7 +398,7 @@ impl Widget for SearchOverlay {
             let mut search = search.borrow_mut();
             search
                 .palette_mut()
-                .is_some_and(|palette| palette.perform_semantic_action(target, action, state, path))
+                .perform_semantic_action(target, action, state, path)
         };
         if answered {
             // The shell takes up what the card was asked on its next pass, as it does what the
@@ -437,9 +417,7 @@ impl Widget for SearchOverlay {
         }
         let search = self.handle.search_palette();
         let search = search.borrow();
-        if let Some(palette) = search.palette() {
-            visitor(palette);
-        }
+        visitor(search.palette());
         true
     }
 
@@ -458,9 +436,7 @@ impl Widget for SearchOverlay {
         }
         let search = self.handle.search_palette();
         let search = search.borrow();
-        if let Some(palette) = search.palette() {
-            visitor(palette);
-        }
+        visitor(search.palette());
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -470,7 +446,10 @@ impl Widget for SearchOverlay {
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
         let search = self.handle.search_palette();
-        search.borrow_mut().set_platform_conventions(conventions);
+        search
+            .borrow_mut()
+            .palette_mut()
+            .set_platform_conventions(conventions);
     }
 
     fn traps_focus(&self) -> bool {
@@ -494,9 +473,7 @@ impl Widget for SearchOverlay {
     fn needs_animation_frame(&self) -> bool {
         let search = self.handle.search_palette();
         let search = search.borrow();
-        search
-            .palette()
-            .is_some_and(ui::Widget::needs_animation_frame)
+        search.palette().needs_animation_frame()
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
@@ -513,7 +490,7 @@ impl Widget for SearchOverlay {
             .flatten();
         search
             .palette()
-            .and_then(ui::Widget::next_wake_deadline)
+            .next_wake_deadline()
             .into_iter()
             .chain(owed)
             .min()
@@ -544,8 +521,8 @@ impl SearchOverlay {
         let path = ctx.path.clone();
         let search = self.handle.search_palette();
         let mut search = search.borrow_mut();
-        if let Some(palette) = search.palette_mut() {
-            palette.handle_event(event, &mut ctx.reborrow(&path, node));
-        }
+        search
+            .palette_mut()
+            .handle_event(event, &mut ctx.reborrow(&path, node));
     }
 }

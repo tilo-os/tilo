@@ -7,7 +7,6 @@ use std::cell::Ref;
 
 mod center;
 mod history;
-mod lazy;
 mod log;
 mod model;
 mod persistence;
@@ -20,9 +19,6 @@ pub use center::{
 pub use history::{
     HistoryActivation, HistoryRow, RowIdentity, accessible_description, group_key, group_label,
     history_rows, relative_time,
-};
-pub use lazy::{
-    CentreApi, MakeNotificationCentre, NOTIFICATION_CENTRE, builtin_notification_centre,
 };
 pub use log::{CLEAR_UNDO_WINDOW, NotificationLog, RELEASE_GRACE};
 pub use model::INLINE_REPLY;

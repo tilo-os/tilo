@@ -6,6 +6,7 @@
 
 use super::FrameHarness;
 use crate::app_core::{AppCore as _, KeyCore as _};
+use crate::widget::Widget as _;
 use taffy::NodeId;
 
 impl FrameHarness {

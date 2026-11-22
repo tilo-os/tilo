@@ -479,13 +479,6 @@ impl ActionPalette {
         self.results.resolve_metrics(theme);
         self.results
             .set_group_gap(f64::from(theme.tokens.spacing.rhythm.section));
-        let generation = crate::search::engine_generation();
-        if self.ranked_generation != generation {
-            self.ranked_generation = generation;
-            if !self.bypass_fuzzy {
-                self.planned_host_rows();
-            }
-        }
         self.sync_list();
     }
 
@@ -649,11 +642,10 @@ impl ActionPalette {
     }
 
     /// Whether the card says it is still searching: the host set [`Self::set_searching`] and a query is
-    /// typed, or the rows it ranks itself still wait for the index's code.
+    /// typed.
     #[must_use]
     pub fn is_searching(&self) -> bool {
-        (self.searching || (!self.bypass_fuzzy && !crate::search::engine_ready()))
-            && !self.query().is_empty()
+        self.searching && !self.query().is_empty()
     }
 
     fn empty_results_title(&self) -> String {

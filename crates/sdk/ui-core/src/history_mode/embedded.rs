@@ -362,7 +362,7 @@ pub(crate) fn invoke_api(
 /// Run one History API control on `history` exactly as its own History control does: resolved against
 /// the API this History serves now.
 pub(crate) fn run_api_control(
-    history: &mut dyn host::HistoryChromeApi,
+    history: &mut host::HistoryHost,
     intent: &tilo_actions::ControlInvocation,
 ) -> Result<(), tilo_actions::ApiError> {
     let resources = [history.api_resource()];

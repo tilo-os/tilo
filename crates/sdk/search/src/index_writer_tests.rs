@@ -355,23 +355,6 @@ tilo_test_env::scenario! {
         assert_eq!(index.search("needle", Page::first(10)).hits.len(), 2);
     }
 
-    phase a_commit_waiting_for_the_engine_is_made_by_the_first_search;
-    {
-        let mut index = SearchIndex::default();
-        index.replace_all((0..10).map(|key| Document::new(key).field("row", FieldWeight::TITLE)));
-        // What `commit` leaves while the engine's code is still to come.
-        index.state_mut().deferred = true;
-        assert!(index.is_dirty(), "the mutations wait");
-        assert_eq!(index.search("row", Page::first(20)).hits.len(), 10);
-        assert!(!index.is_dirty(), "the search made the commit");
-        index.upsert(Document::new(10).field("row", FieldWeight::TITLE));
-        assert_eq!(
-            index.search("row", Page::first(20)).hits.len(),
-            10,
-            "later searches read the last commit again"
-        );
-    }
-
     phase an_index_with_a_kept_writer_is_shared_across_threads;
     {
         fn shared<T: Send + Sync>() {}

@@ -9,24 +9,8 @@
 use super::{Rect, TextRole, Theme, TopBarChrome, TopBarPresence};
 use ui::composition::{HtmlCx, Own, TextLook};
 
-/// The code that composes the bar for a page.
-pub type TopBarHtml = fn(&TopBarChrome, &mut HtmlCx<'_>);
-
-/// The bar's HTML rendering this build links; only the HTML presenter's code names it.
-#[must_use]
-pub fn builtin_topbar_html() -> TopBarHtml {
-    TopBarChrome::compose_html
-}
-
-ui::lazy_code! {
-    /// The bar's HTML rendering: linked, or with `lazy-topbar-html` handed over with the HTML
-    /// presenter, the only code that composes. Every widget's `html` stands in its vtable and so
-    /// in the start module of a page that never composes.
-    pub static TOPBAR_HTML: TopBarHtml = builtin_topbar_html, feature = "lazy-topbar-html";
-}
-
 impl TopBarChrome {
-    fn compose_html(&self, cx: &mut HtmlCx<'_>) {
+    pub(super) fn compose_html(&self, cx: &mut HtmlCx<'_>) {
         cx.element("header");
         if self.presence() == TopBarPresence::Hidden
             || self.rect.width() <= 0.0

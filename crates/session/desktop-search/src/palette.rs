@@ -277,9 +277,6 @@ pub struct DesktopSearch {
     /// The query an Enter was pressed on before its rows were in: its top row is chosen once the
     /// search has answered it.
     enter_waiting: Option<String>,
-    /// [`ui::search::engine_generation`] when the rows were built: the
-    /// content rows come again once the index's code arrived.
-    shown_generation: u64,
     /// The kind chips picked when the rows were built: another picked or
     /// unpicked narrows them again.
     shown_kinds: Vec<ui::search::FacetFilter>,
@@ -359,7 +356,6 @@ impl DesktopSearch {
             auto_selected: None,
             shown_query: None,
             enter_waiting: None,
-            shown_generation: 0,
             shown_kinds: Vec::new(),
             catalogue: false,
             choice: None,
@@ -396,12 +392,6 @@ impl DesktopSearch {
 
     /// Open over `data` with an empty query.
     pub fn open(&mut self, mut data: SearchData) {
-        // The search's engine is fetched now, as the palette opens, so its code is in by the first
-        // keystroke rather than being fetched on the query that needed it: on a page the engine is
-        // a module of its own, and a search that fetches it has no rows to show until it lands,
-        // and says it is still searching that whole time. Linked in, this is nothing. The rows
-        // built meanwhile are rebuilt when it arrives, which a palette's refresh already asks for.
-        ui::search::prepare_engine();
         self.scope = data.scope.clone();
         let placeholder = data.placeholder.take().unwrap_or_else(placeholder);
         self.palette.set_query_placeholder(placeholder.as_str());
@@ -588,13 +578,13 @@ impl DesktopSearch {
     }
 
     /// Whether the card says it is searching for what is typed: an empty list says so while an
-    /// answer it waits for is still coming, and the engine's code alone can hold text back.
+    /// answer it waits for is still coming.
     fn searching_for(&self, rows_empty: bool) -> bool {
-        !ui::search::engine_ready() || (rows_empty && (self.answering() || self.waiting()))
+        rows_empty && (self.answering() || self.waiting())
     }
 
     /// Run the query again when the palette's text changed since the rows
-    /// were built, the index's code arrived since, or an application's
+    /// were built, or an application's
     /// answer that was still coming arrived; and take the answers the
     /// sources sent and ask the source that holds the frame's state next.
     /// Returns whether the rows changed.
@@ -620,7 +610,6 @@ impl DesktopSearch {
         if self.shown_query.as_deref() != Some(query.as_str())
             || (self.rows.is_empty() && (self.waiting() || self.answering()))
             || self.own_sources_owe()
-            || !ui::search::engine_ready()
         {
             return;
         }
@@ -646,34 +635,30 @@ impl DesktopSearch {
         };
         let answered = sources.poll();
         let query = self.palette.query().to_owned();
-        let generation = ui::search::engine_generation();
-        if answered
-            || self.shown_query.as_deref() != Some(query.as_str())
-            || self.shown_generation != generation
-        {
+        if answered || self.shown_query.as_deref() != Some(query.as_str()) {
             if self.shown_query.is_some() && self.shown_query.as_deref() != Some(query.as_str()) {
                 // "Show all" belongs to the search it was asked in.
                 self.expanded.clear();
                 self.everything = false;
             }
-            self.restart(&query, generation);
+            self.restart(&query);
             return true;
         }
         // The sources that still owe an answer: the rest of this search's
         // rows, as far as this frame's share of time reaches.
         if self.resume() {
-            self.render(&query, generation);
+            self.render(&query);
             return true;
         }
         // The card grew or shrank: the groups share what it shows now.
         if self.palette.entry_row_capacity_for(0, self.shown_two_lines) != self.rows_room.cut() {
-            self.render(&query, generation);
+            self.render(&query);
             return true;
         }
         // A kind chip picked or unpicked since the rows were built: the
         // same search, the rows of the kinds left.
         if self.palette.picked_filters() != self.shown_kinds.as_slice() {
-            self.render(&query, generation);
+            self.render(&query);
             return true;
         }
         // The card says it is searching while an answer it waits for is still coming. When none
@@ -689,12 +674,12 @@ impl DesktopSearch {
 
     /// Ask the sources of a new search, as far as this frame's share of
     /// time reaches, and show what came in.
-    fn restart(&mut self, query: &str, generation: u64) {
+    fn restart(&mut self, query: &str) {
         let Some(stream) = self.begin(query) else {
             return;
         };
         self.stream = Some(stream);
-        self.render(query, generation);
+        self.render(query);
     }
 
     /// Open a stream for `query` and let it ask the sources that fit this
@@ -788,7 +773,7 @@ impl DesktopSearch {
         groups
     }
 
-    fn render(&mut self, query: &str, generation: u64) {
+    fn render(&mut self, query: &str) {
         let Some(stream) = &self.stream else {
             return;
         };
@@ -882,15 +867,13 @@ impl DesktopSearch {
         } else {
             self.palette.selected_id().map(str::to_owned)
         };
-        // A large index answers typed text only once the engine's code is
-        // in, and the slower sources answer in later frames: while either
-        // is still coming, an empty list says it is searching rather than
-        // that nothing matched.
+        // The slower sources answer in later frames: while one is still
+        // coming, an empty list says it is searching rather than that
+        // nothing matched.
         self.palette
             .set_searching(self.searching_for(rows.is_empty()));
         self.rows = rows;
         self.shown_query = Some(query.to_owned());
-        self.shown_generation = generation;
         self.rows_room = match self.rows_room {
             RowRoom::Guess(_) => RowRoom::Guess(capacity),
             RowRoom::Room(_) => RowRoom::Room(capacity),
@@ -1004,7 +987,7 @@ impl DesktopSearch {
         let cursor = self.palette.cursor();
         let query = self.palette.query().to_owned();
         self.kept_choice = None;
-        self.render(&query, ui::search::engine_generation());
+        self.render(&query);
         self.palette.set_cursor(cursor);
         // Choosing a row closes a command palette; this one only grew.
         ui::widget::Widget::set_focus(&mut self.palette, true);
@@ -1018,7 +1001,7 @@ impl DesktopSearch {
         let cursor = self.palette.cursor();
         let query = self.palette.query().to_owned();
         self.kept_choice = None;
-        self.render(&query, ui::search::engine_generation());
+        self.render(&query);
         self.palette.set_cursor(cursor);
         ui::widget::Widget::set_focus(&mut self.palette, true);
     }
@@ -1096,7 +1079,7 @@ impl DesktopSearch {
             }
             self.choice = Some(hit.target);
             let query = self.palette.query().to_owned();
-            self.restart(&query, ui::search::engine_generation());
+            self.restart(&query);
             return;
         }
         self.remember(&hit);
@@ -1239,4 +1222,3 @@ fn switches(sources: &Sources, all: &[&dyn Source]) -> Option<Switches> {
 
 #[cfg(test)]
 mod tests;
-

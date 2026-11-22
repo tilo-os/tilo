@@ -48,14 +48,6 @@ dev-session = []
 # throwaway identity, so the feature carries the identity crate's minting too: a
 # session built on its own (a component swap) mints as a dev image's does.
 dev-overrides = ["tilo-identity/throwaway-test-identity"]
-# The session's search sources (`search::SEARCH_FEED`) are handed over by the
-# bundling crate, with the desktop's search engine, rather than linked: the
-# browser desktop fetches them as their own module.
-lazy-search-feed = []
-# The code that reads a person's own steps for what they are doing
-# (`activity::SAY_DOING`) is handed over by the bundling crate rather than
-# linked: the browser desktop fetches it as its own module.
-lazy-say-doing = []
 
 [dependencies]
 anyhow.workspace = true

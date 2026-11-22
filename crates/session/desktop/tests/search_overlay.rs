@@ -123,10 +123,11 @@ impl Session {
     }
 
     /// The card the palette stands in, as the chrome drew it, when the palette is up.
-    fn card(&self) -> Option<ui::kurbo::Rect> {
+    fn card(&self) -> ui::kurbo::Rect {
         let search = self.handle.search_palette();
         let search = search.borrow();
-        search.palette().map(ui::Widget::get_rect)
+        assert!(search.is_open(), "the palette is up");
+        ui::Widget::get_rect(search.palette())
     }
 }
 
@@ -279,7 +280,7 @@ fn the_card_follows_the_display() {
         // that draws it.
         session.frame();
         session.frame();
-        let card = session.card().expect("the palette is up");
+        let card = session.card();
         let (width, height) = (f64::from(width), f64::from(height));
         let expected = (width * 0.6).clamp(360.0, 640.0);
         assert!(
@@ -547,7 +548,7 @@ fn typing_in_the_palette_repaints_the_card_not_the_display() {
     session.handle.open_search(Scope::Workspace, None);
     session.frame();
     session.frame();
-    let card = session.card().expect("the palette is up");
+    let card = session.card();
     let painted = ui::widget::floating_surface::painted_bounds(card, &ui::Theme::dark());
     let mut shown = Presented::new(&session, (1280, 800));
     // The frame that opens search draws the scrim and the card: everything changes.

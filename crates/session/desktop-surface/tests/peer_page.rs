@@ -131,16 +131,12 @@ fn published(stream: &Rc<RefCell<PageStream>>) -> Vec<u8> {
     renderer.render(&scene, ui::Theme::dark().tokens.colors.surfaces.content)
 }
 
-/// One page, published once and drawn three ways. The objects its publisher sent rebuild the
-/// frame the publisher holds, and the tile draws that frame. And what the reading side asks for
-/// instead of a stream of its own, the page view's code, hands over a tile that draws what a
-/// viewer's stream of the same objects does. The three pictures are drawn in one process: the
-/// first frame a process renders pays for its renderer, and each of these was a test of its own
-/// that paid it again over the same page.
+/// One page, published once and drawn two ways: the objects its publisher sent rebuild the
+/// frame the publisher holds, and the tile draws that frame. Both pictures are drawn in one
+/// process: the first frame a process renders pays for its renderer, and each was a test of its
+/// own that paid it again over the same page.
 #[test]
-fn a_viewer_and_the_page_view_code_draw_the_frame_the_publisher_holds() {
-    use tilo_desktop_surface::page_code::PAGE;
-
+fn a_viewer_draws_the_frame_the_publisher_holds() {
     let engine = engine();
     let objects = payloads(&engine);
     let mut stream = PageStream::new();
@@ -158,24 +154,6 @@ fn a_viewer_and_the_page_view_code_draw_the_frame_the_publisher_holds() {
         OffscreenRenderer::pixels_differing_beyond_aa(&direct, &published(&stream)),
         0,
         "the tile draws the page the publisher holds"
-    );
-
-    // What the reading side asks for, instead of a stream of its own: the code
-    // this build links, or with `lazy-page-view` the module a shell fetches the
-    // first time a page travels to it.
-    let page = PAGE.get().expect("the page view this build links").open();
-    for object in &objects {
-        page.apply(object);
-    }
-    let harness = FrameHarness::new(
-        ui::state::State::new(),
-        page.tile("Browser".into()),
-        (WIDTH, HEIGHT),
-    );
-    assert_eq!(
-        OffscreenRenderer::pixels_differing_beyond_aa(&harness.render_rgba(), &direct),
-        0,
-        "the code's tile draws the page a viewer holds"
     );
 }
 

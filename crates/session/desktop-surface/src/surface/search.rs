@@ -149,10 +149,8 @@ const TYPING_KEY: &[u8; 32] = b"desktop typing field revision 1!";
 
 /// The open search's query field, as committed text may write into it. The palette draws it in the
 /// desktop itself, so no text-input boundary of the windows the shell shows ever sees it.
-fn typed_field(
-    search: &tilo_desktop_search::LazyDesktopSearch,
-) -> Result<TypedField, TypedRefusal> {
-    let Some(field) = search.query_field(TYPING_KEY) else {
+fn typed_field(search: &tilo_desktop_search::DesktopSearch) -> Result<TypedField, TypedRefusal> {
+    let Some(field) = search.palette().query_field(TYPING_KEY) else {
         return Err(TypedRefusal::NoField);
     };
     if field.secret {
@@ -431,15 +429,14 @@ impl DesktopHandle {
     }
 
     /// Whether the person asked for search and it is not up yet: its request waits for the next
-    /// update pass, or its code is on its way. What they type meanwhile is the search's
-    /// ([`Self::type_ahead`]).
+    /// update pass. What they type meanwhile is the search's ([`Self::type_ahead`]).
     fn search_opening(&self) -> bool {
         let shared = self.shared.borrow();
         !shared.search_open
-            && (matches!(
+            && matches!(
                 shared.search_request,
                 Some(SearchRequest::Open { .. } | SearchRequest::Toggle)
-            ) || shared.search.borrow().awaits_code())
+            )
     }
 
     /// Take `event` for the search the person asked for while it is not up yet
@@ -536,20 +533,6 @@ impl DesktopHandle {
         self.shared.borrow().search_open
     }
 
-    /// Where a search asked for stands before it shows: `"asked"` while the request waits for the
-    /// next update pass, `"code"` while it waits for search's code to arrive. `None` when nothing
-    /// is asked of it.
-    pub fn search_pending(&self) -> Option<&'static str> {
-        let shared = self.shared.borrow();
-        if shared.search_request.is_some() {
-            Some("asked")
-        } else if shared.search.borrow().awaits_code() {
-            Some("code")
-        } else {
-            None
-        }
-    }
-
     /// Who holds the keyboard: `"system-search"` while the search palette is up (it takes the
     /// keyboard, the pointer and Escape), else the application of the active workspace's focused
     /// window. `None` while no window does — an empty shell, or one whose windows are all gone.
@@ -573,7 +556,7 @@ impl DesktopHandle {
     /// tells the shell what that host changed.
     pub fn search_palette(
         &self,
-    ) -> std::rc::Rc<std::cell::RefCell<tilo_desktop_search::LazyDesktopSearch>> {
+    ) -> std::rc::Rc<std::cell::RefCell<tilo_desktop_search::DesktopSearch>> {
         std::rc::Rc::clone(&self.shared.borrow().search)
     }
 
@@ -996,7 +979,7 @@ impl DesktopSurface {
         if let Some(usage) = usage {
             search.set_usage(usage);
         }
-        search.set_platform_conventions(self.platform);
+        search.palette_mut().set_platform_conventions(self.platform);
         drop(search);
         // What a chosen application opens in: a tab of the window group the new-tab control belongs
         // to, else a window of its own.
@@ -1205,12 +1188,6 @@ impl DesktopSurface {
     /// Take a host's search request, follow the palette, and perform what was chosen. Runs every
     /// update pass, before queued commands apply.
     pub(super) fn step_search(&mut self, doc: &AutoCommit) {
-        // Search's code may have arrived since the last pass (the browser
-        // fetches it on first use): what asked for it meanwhile opens now,
-        // rather than the person having to ask again.
-        if self.search.borrow_mut().adopt() {
-            self.structure_dirty = true;
-        }
         let opened = self.search.borrow().is_open();
         let request = self.shared.borrow_mut().search_request.take();
         match (request, opened) {
@@ -1267,13 +1244,13 @@ impl DesktopSurface {
         if self.search.borrow().is_open() {
             let ahead = std::mem::take(&mut self.shared.borrow_mut().typed_ahead);
             let mut search = self.search.borrow_mut();
-            if !ahead.text.is_empty() && search.commit_query_text(&ahead.text) {
+            if !ahead.text.is_empty() && search.palette_mut().commit_query_text(&ahead.text) {
                 self.structure_dirty = true;
             }
             if ahead.enter {
                 search.choose_top_when_answered();
             }
-        } else if !self.search.borrow().awaits_code() {
+        } else {
             self.shared.borrow_mut().typed_ahead = TypedAhead::default();
         }
     }
@@ -1290,7 +1267,12 @@ impl DesktopSurface {
         if typed_field(&self.search.borrow()) != Ok(ask.field) {
             return;
         }
-        if self.search.borrow_mut().commit_query_text(&ask.text) {
+        if self
+            .search
+            .borrow_mut()
+            .palette_mut()
+            .commit_query_text(&ask.text)
+        {
             self.structure_dirty = true;
         }
     }
@@ -1387,7 +1369,7 @@ impl DesktopSurface {
         }
         let choice = search.take_choice();
         let usage = if choice.is_some() {
-            search.usage().cloned()
+            Some(search.usage().clone())
         } else {
             None
         };

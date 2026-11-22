@@ -170,9 +170,6 @@ pub(crate) struct State {
     /// some of its records: every pending key then gets its delete.
     pub(crate) fresh: BTreeSet<u64>,
     pub(crate) rebuild: bool,
-    /// A commit was asked for before the engine's code was in: the first
-    /// search after it arrives makes it.
-    pub(crate) deferred: bool,
     /// Made by the first commit.
     pub(crate) engine: Option<Box<dyn Engine>>,
 }
@@ -198,11 +195,6 @@ impl State {
 ///
 /// A small index without body text is answered by reading its records
 /// (`Direct`), ranked and ordered as the engine would.
-///
-/// Where the engine's code is fetched on demand (the `lazy-engine`
-/// feature), such an index never needs it. A larger index's commit before
-/// the engine is in waits, and the first search once it is in makes that
-/// commit; searches before then find nothing.
 pub struct SearchIndex {
     matching: Matching,
     ranks: Ranks,
@@ -386,9 +378,6 @@ impl SearchIndex {
     /// A few changes commit incrementally through one writer the index
     /// keeps from its first incremental commit on; much change rebuilds.
     /// A small index without body text is then answered from its records.
-    /// Where the engine's code is still to come (the `lazy-engine`
-    /// feature), such an index does not ask for it; a larger one's commit
-    /// waits for the first search after the engine arrived.
     ///
     /// # Errors
     ///
@@ -400,37 +389,15 @@ impl SearchIndex {
         }
         let direct = !self.used.body && self.documents.len() <= self.direct_limit;
         let state = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
-        // A small index is answered from its records: it indexes into an
-        // engine only where one is linked or already made, and never asks
-        // for one.
-        let make = if direct && state.engine.is_none() {
-            engine::installed()
-        } else {
-            engine::make()
-        };
-        match make {
-            Some(make) => commit(
-                state,
-                make,
-                &self.documents,
-                self.used,
-                self.matching,
-                self.ranks,
-                &self.typos,
-            )?,
-            None if direct => {
-                // The engine made later indexes every record anyway.
-                state.pending.clear();
-                state.fresh.clear();
-                state.rebuild = false;
-                state.deferred = false;
-            }
-            None => {
-                state.deferred = true;
-                self.direct = None;
-                return Ok(());
-            }
-        }
+        commit(
+            state,
+            engine::tantivy_engine,
+            &self.documents,
+            self.used,
+            self.matching,
+            self.ranks,
+            &self.typos,
+        )?;
         self.direct = direct.then(|| Direct::new(&self.documents, self.matching.typos));
         Ok(())
     }
@@ -486,33 +453,7 @@ impl SearchIndex {
             return direct.search(self.matching, self.ranks, query, page, &score);
         }
         let score: ScoreFn = Arc::new(score);
-        {
-            let state = self.read();
-            if !state.deferred {
-                return self.search_in(&state, query, page, &score);
-            }
-        }
-        // A commit waits for the engine's code.
-        let Some(make) = engine::make() else {
-            return Hits::default();
-        };
-        let mut state = self.state.write_recover();
-        if state.deferred
-            && let Err(error) = commit(
-                &mut state,
-                make,
-                &self.documents,
-                self.used,
-                self.matching,
-                self.ranks,
-                &self.typos,
-            )
-        {
-            tracing::error!(%error, "could not index search records");
-        }
-        let hits = self.search_in(&state, query, page, &score);
-        drop(state);
-        hits
+        self.search_in(&self.read(), query, page, &score)
     }
 
     fn search_in(&self, state: &State, query: &str, page: Page, score: &ScoreFn) -> Hits {
@@ -560,7 +501,6 @@ fn commit(
         pending,
         fresh,
         rebuild,
-        deferred,
         engine,
     } = state;
     if engine.is_none() {
@@ -579,7 +519,6 @@ fn commit(
         typos,
     });
     fresh.clear();
-    *deferred = false;
     committed?;
     pending.clear();
     *rebuild = false;

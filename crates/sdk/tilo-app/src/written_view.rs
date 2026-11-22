@@ -21,7 +21,7 @@
 use std::rc::Rc;
 
 use tilo_actions::{Actor, PersonId};
-use ui_core::lazy_code::LazyCode;
+use ui_core::deferred::Deferred;
 use ui_core::remote_actions::RemoteActions;
 use ui_core::widget::Element;
 
@@ -95,7 +95,7 @@ pub struct MakeWrittenView(pub fn(&WrittenView, &RemoteActions) -> Shown);
 /// The code that runs written views. No program links it: one that can run a view says how the
 /// code is fetched (`defer`) and installs it once it is in, and every view placed before then is
 /// [`Placed::Arriving`].
-pub static WRITTEN_VIEWS: LazyCode<MakeWrittenView> = LazyCode::fetched();
+pub static WRITTEN_VIEWS: Deferred<MakeWrittenView> = Deferred::new();
 
 /// A written view where an app placed it.
 pub enum Placed {

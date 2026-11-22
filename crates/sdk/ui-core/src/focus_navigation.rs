@@ -284,7 +284,7 @@ pub(crate) fn layout_map_order(
     root: NodeId,
     taffy: &TaffyTree<()>,
     restrictions: &crate::history_mode::embedded::FocusRestrictions,
-    history: Option<&dyn crate::history_mode::host::HistoryChromeApi>,
+    history: Option<&crate::history_mode::host::HistoryHost>,
     inspect: impl Fn(NodeId) -> Option<(bool, bool, bool)>,
 ) -> (Vec<NodeId>, bool) {
     use tilo_sort::CompactSort as _;

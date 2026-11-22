@@ -16,9 +16,9 @@ use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::edges::{self, DockEdge, EdgeDrag, Item};
 use tilo_desktop::here::Screen;
 use tilo_desktop::launchpad::LaunchpadAppAction;
-use tilo_desktop::people::{LazyPeopleOverlay, PeopleHit, PeopleModel, RosterRow, roster_rows};
+use tilo_desktop::people::{PeopleHit, PeopleModel, PeopleOverlay, RosterRow, roster_rows};
 use tilo_desktop::profile_card::{
-    LazyProfileCard, OtherPerson, ProfileAction, ProfileChoice, ProfileGroup, ProfileModel,
+    OtherPerson, ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
 };
 use tilo_desktop_model::Layout;
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, LayoutEffect};
@@ -212,7 +212,7 @@ impl Pinned {
 /// What the panel shows and where it stands, kept at rest between frames.
 #[derive(Default)]
 struct Shown {
-    overlay: LazyPeopleOverlay,
+    overlay: PeopleOverlay,
     rows: Vec<RosterRow>,
     /// Each person's screen as their presence says it, by roster id, `None` for someone who keeps
     /// where they are to themselves.
@@ -612,7 +612,7 @@ pub fn mount(
         invitable: given.invitable,
         invite_withheld: Rc::clone(&invite_withheld),
         asks: Rc::clone(&asks),
-        profile: LazyProfileCard::default(),
+        profile: ProfileCard::new(),
         card_node: None,
         live_card: Cell::new(false),
         chats: RefCell::default(),
@@ -687,7 +687,7 @@ struct Panel {
     /// What the card asked of the session.
     asks: Rc<RefCell<Vec<PeopleAsk>>>,
     /// The one card of a person, as any host of it shows them.
-    profile: LazyProfileCard,
+    profile: ProfileCard,
     /// Where the card stands among this panel's children, while it is open.
     card_node: Option<NodeId>,
     /// Someone else's card no longer says what the rows say of them: the next layout builds it
@@ -814,7 +814,6 @@ impl Panel {
         presence: &ui::presence::PresenceCtx,
     ) -> bool {
         if self.profile.is_open() {
-            self.profile.draw_waiting(scene, transform, text, theme);
             self.profile
                 .draw_overlay(scene, transform, text, theme, presence);
         }

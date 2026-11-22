@@ -546,12 +546,7 @@ macro_rules! draw_child_of_dyn {
     )*};
 }
 
-draw_child_of_dyn!(
-    Widget,
-    AppWidget,
-    crate::history_mode::host::HistoryChromeApi,
-    crate::action_palette::api::ActionPaletteApi,
-);
+draw_child_of_dyn!(Widget, AppWidget,);
 
 /// What a guarded, presence-publishing widget draws over itself once drawn:
 /// the denied-permission scrim, then the focus ring of the first peer on it.

@@ -151,12 +151,6 @@ fn english_dictionary_name(language: &str) -> &str {
 /// the embedded dictionary, so it works in hermetic builds; another language uses the
 /// system's Hunspell dictionary when one is installed.
 pub fn spans_for_language(language: &str, text: &str) -> Vec<(usize, usize)> {
-    DICTIONARIES.get().map_or_else(Vec::new, |dictionaries| {
-        (dictionaries.spans)(language, text)
-    })
-}
-
-fn dictionary_spans(language: &str, text: &str) -> Vec<(usize, usize)> {
     let tokens = checkable_words(text);
     if tokens.is_empty() {
         return Vec::new();
@@ -197,12 +191,6 @@ pub fn suggestions_for_language(language: &str, word: &str, max: usize) -> Vec<S
     if word.is_empty() || max == 0 {
         return Vec::new();
     }
-    DICTIONARIES.get().map_or_else(Vec::new, |dictionaries| {
-        (dictionaries.suggestions)(language, word, max)
-    })
-}
-
-fn dictionary_suggestions(language: &str, word: &str, max: usize) -> Vec<String> {
     if is_english(language) {
         return shared_english().map_or_else(Vec::new, |english| suggest(english, word, max));
     }
@@ -285,7 +273,7 @@ pub fn probable_correction(language: &str, word: &str) -> Option<String> {
     if let Some(candidate) = known {
         return Some(match_word_case(word, candidate));
     }
-    (DICTIONARIES.get()?.correction)(language, word, &lower)
+    dictionary_correction(language, word, &lower)
 }
 
 #[must_use]
@@ -309,7 +297,7 @@ pub fn sure_correction(language: &str, word: &str) -> Option<String> {
 }
 
 fn dictionary_correction(language: &str, word: &str, lower: &str) -> Option<String> {
-    if dictionary_spans(language, word).is_empty() {
+    if spans_for_language(language, word).is_empty() {
         return None;
     }
     if is_english(language) {
@@ -322,7 +310,7 @@ fn dictionary_correction(language: &str, word: &str, lower: &str) -> Option<Stri
         let candidate = unique_adjacent_transposition(shared_english()?, lower)?;
         return Some(match_word_case(word, &candidate));
     }
-    let candidate = dictionary_suggestions(language, word, 1)
+    let candidate = suggestions_for_language(language, word, 1)
         .into_iter()
         .next()
         .filter(|candidate| is_adjacent_transposition(lower, &candidate.to_lowercase()))?;
@@ -446,35 +434,9 @@ fn match_word_case(original: &str, correction: &str) -> String {
     correction.to_string()
 }
 
-#[derive(Clone, Copy)]
-pub struct Dictionaries {
-    spans: fn(&str, &str) -> Vec<(usize, usize)>,
-    suggestions: fn(&str, &str, usize) -> Vec<String>,
-    correction: fn(&str, &str, &str) -> Option<String>,
-    prepare: fn(&mut dyn FnMut() -> bool) -> bool,
-}
-
-#[must_use]
-pub fn builtin_dictionaries() -> Dictionaries {
-    Dictionaries {
-        spans: dictionary_spans,
-        suggestions: dictionary_suggestions,
-        correction: dictionary_correction,
-        prepare: prepare_english,
-    }
-}
-
-tilo_lock::lazy_code! {
-    // The dictionaries. A program built with `lazy-dictionaries` fetches their code the
-    // first time something checks spelling; until then nothing is flagged.
-    pub static DICTIONARIES: Dictionaries = builtin_dictionaries, feature = "lazy-dictionaries";
-}
-
 #[must_use]
 pub fn dictionaries_generation() -> u64 {
-    DICTIONARIES
-        .generation()
-        .wrapping_add(ENGLISH_GENERATION.load(Ordering::Acquire))
+    ENGLISH_GENERATION.load(Ordering::Acquire)
 }
 
 static ENGLISH: OnceLock<Dictionary> = OnceLock::new();
@@ -488,15 +450,8 @@ pub fn build_dictionaries_in_steps() {
     BUILT_IN_STEPS.store(true, Ordering::Release);
 }
 
-/// Build the English dictionary while `more` answers true, fetching the dictionaries'
-/// code first when it is still to come.
-pub fn prepare_dictionaries(more: &mut dyn FnMut() -> bool) -> Option<bool> {
-    DICTIONARIES
-        .get()
-        .map(|dictionaries| (dictionaries.prepare)(more))
-}
-
-fn prepare_english(more: &mut dyn FnMut() -> bool) -> bool {
+/// Build the English dictionary while `more` answers true. Whether it is built.
+pub fn prepare_dictionaries(more: &mut dyn FnMut() -> bool) -> bool {
     static BUILDER: Mutex<Option<dictionary::BuiltinBuilder>> = Mutex::new(None);
     if ENGLISH.get().is_some() {
         return true;

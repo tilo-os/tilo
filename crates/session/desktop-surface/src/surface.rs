@@ -301,7 +301,7 @@ struct Shared {
     /// (`DesktopHandle::search_palette`): the shell feeds it what its windows hold and carries out
     /// what is chosen there, while the host above the windows draws it and routes the person's
     /// input to it.
-    search: Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,
+    search: Rc<RefCell<tilo_desktop_search::DesktopSearch>>,
     /// Bumped whenever what the palette shows or what opening it asks of the shell changes, so the
     /// shell takes up what the host above it did and the host above it draws what the shell
     /// published.
@@ -1038,7 +1038,7 @@ pub struct DesktopSurface {
     /// without panning it into view: the strip stays where the person left
     /// it, however little a lone wheel notch moved it.
     settle: Option<GroupId>,
-    search: Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,
+    search: Rc<RefCell<tilo_desktop_search::DesktopSearch>>,
     /// The `Shared::search_revision` this surface last took up: what the host above the windows
     /// changed since then is work for the next pass.
     seen_search: u64,
@@ -1131,8 +1131,8 @@ impl DesktopSurface {
     pub fn new(tree: Layout, salt: u16, tiles: Box<dyn TileSource>) -> (Self, DesktopHandle) {
         let mut minter = IdMinter::new(salt);
         observe_ids(&mut minter, &tree);
-        let search: Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>> =
-            Rc::new(RefCell::new(tilo_desktop_search::LazyDesktopSearch::new()));
+        let search: Rc<RefCell<tilo_desktop_search::DesktopSearch>> =
+            Rc::new(RefCell::new(tilo_desktop_search::DesktopSearch::new()));
         let shared = Rc::new(RefCell::new(Shared::new(tree, minter, &search)));
         #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
         let tiles = Box::new(peer_view::PeerTiles::new(
@@ -1149,7 +1149,7 @@ impl DesktopSurface {
     fn on_shared(
         shared: Rc<RefCell<Shared>>,
         tiles: Box<dyn TileSource>,
-        search: &Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,
+        search: &Rc<RefCell<tilo_desktop_search::DesktopSearch>>,
     ) -> Self {
         Self {
             shared,

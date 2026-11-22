@@ -44,7 +44,6 @@ mod avatar_ask;
 mod clock;
 mod controls;
 mod html;
-pub use html::{TOPBAR_HTML, TopBarHtml, builtin_topbar_html};
 mod people;
 mod placed;
 pub mod reveal;
@@ -1531,10 +1530,7 @@ impl Widget for TopBarChrome {
     }
 
     fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        match html::TOPBAR_HTML.get() {
-            Some(compose) => compose(self, cx),
-            None => cx.picture(),
-        }
+        self.compose_html(cx);
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
