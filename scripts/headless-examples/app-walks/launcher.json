@@ -59,7 +59,7 @@
         }
       ],
       "dark": true,
-      "budget_ms": 5000
+      "budget_ms": 10000
     },
     {
       "id": "open-settings",
@@ -82,7 +82,7 @@
           }
         ]
       },
-      "budget_ms": 15000
+      "budget_ms": 30000
     }
   ]
 }

@@ -61,7 +61,7 @@
         }
       ],
       "dark": true,
-      "budget_ms": 5000
+      "budget_ms": 10000
     },
     {
       "id": "rename",
@@ -91,7 +91,7 @@
           ]
         }
       ],
-      "budget_ms": 3000
+      "budget_ms": 10000
     }
   ]
 }

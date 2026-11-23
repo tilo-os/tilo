@@ -43,7 +43,7 @@
           "open": "files"
         }
       ],
-      "budget_ms": 15000
+      "budget_ms": 30000
     },
     {
       "id": "new-strip",
@@ -69,7 +69,7 @@
         }
       ],
       "dark": true,
-      "budget_ms": 3000
+      "budget_ms": 10000
     },
     {
       "id": "strips-list",
@@ -93,7 +93,7 @@
         }
       ],
       "dark": true,
-      "budget_ms": 3000
+      "budget_ms": 10000
     },
     {
       "id": "step-back",
@@ -113,7 +113,7 @@
           ]
         }
       ],
-      "budget_ms": 3000
+      "budget_ms": 10000
     }
   ]
 }

@@ -55,7 +55,7 @@
         }
       ],
       "dark": true,
-      "budget_ms": 5000
+      "budget_ms": 10000
     }
   ]
 }

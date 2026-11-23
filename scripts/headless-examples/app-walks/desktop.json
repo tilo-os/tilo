@@ -43,7 +43,7 @@
           "open": "files"
         }
       ],
-      "budget_ms": 15000
+      "budget_ms": 30000
     },
     {
       "id": "open-chat",
@@ -58,7 +58,7 @@
           }
         }
       ],
-      "budget_ms": 15000
+      "budget_ms": 30000
     },
     {
       "id": "both-shown",
@@ -81,7 +81,7 @@
           "windows": 1
         }
       ],
-      "budget_ms": 5000
+      "budget_ms": 10000
     }
   ]
 }

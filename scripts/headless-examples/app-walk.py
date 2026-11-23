@@ -991,9 +991,12 @@ class Walk:
         """Open another app of the session build by its directory name (`files`,
         `chat`) as the workspace offers it, and wait for its window: a shell walk
         needs windows to switch between."""
+        deadline = 120.0
+        if isinstance(value, dict):
+            value, deadline = value["app"], float(value.get("deadline", deadline))
         ident = value if "." in value else real_apps.app_id(value)
         began = time.monotonic()
-        self.session.launch(ident, 120)
+        self.session.launch(ident, deadline)
         return {"opened": ident, "waited_ms": round((time.monotonic() - began) * 1000)}
 
     def op_do(self, value) -> dict:
@@ -1450,6 +1453,23 @@ class Walk:
                 self.session.key("Escape")
             except Failed:
                 pass
+        # Whatever stands over the desktop is put away by the action that closes a
+        # surface, in either shell: a palette a key did not reach, a panel left open.
+        try:
+            overlays = (self.session.state_dump().get("chrome") or {}).get("overlays") or {}
+        except Failed:
+            overlays = {}
+        for part, shown in overlays.items():
+            if shown:
+                try:
+                    self.session.invoke(SHELL, "desktop:overlays", "close-surface", {"part": part})
+                except Failed:
+                    pass
+        try:
+            until_value("nothing to stand over the desktop", lambda: not any(
+                ((self.session.state_dump().get("chrome") or {}).get("overlays") or {}).values()), 10)
+        except Failed as error:
+            print(f"  reset: {error}", file=sys.stderr)
         for window in self.session.windows():
             try:
                 self.session.invoke(SHELL, SHELL_RESOURCE, "close-tab", {"tab": str(window["tab"])})

@@ -39,7 +39,10 @@
       "said": "Open code-editor",
       "ops": [
         {
-          "open": "code-editor"
+          "open": {
+            "app": "code-editor",
+            "deadline": 30
+          }
         }
       ],
       "shot": true
@@ -49,7 +52,10 @@
       "said": "Open word-processor",
       "ops": [
         {
-          "open": "word-processor"
+          "open": {
+            "app": "word-processor",
+            "deadline": 30
+          }
         }
       ],
       "shot": true
@@ -59,7 +65,10 @@
       "said": "Open chat",
       "ops": [
         {
-          "open": "chat"
+          "open": {
+            "app": "chat",
+            "deadline": 30
+          }
         }
       ],
       "shot": true
@@ -69,7 +78,10 @@
       "said": "Open settings",
       "ops": [
         {
-          "open": "settings"
+          "open": {
+            "app": "settings",
+            "deadline": 30
+          }
         }
       ],
       "shot": true
@@ -79,7 +91,10 @@
       "said": "Open sheets",
       "ops": [
         {
-          "open": "sheets"
+          "open": {
+            "app": "sheets",
+            "deadline": 30
+          }
         }
       ],
       "shot": true
@@ -89,7 +104,10 @@
       "said": "Open tasks",
       "ops": [
         {
-          "open": "tasks"
+          "open": {
+            "app": "tasks",
+            "deadline": 30
+          }
         }
       ],
       "shot": true
@@ -99,7 +117,10 @@
       "said": "Open file-explorer",
       "ops": [
         {
-          "open": "file-explorer"
+          "open": {
+            "app": "file-explorer",
+            "deadline": 30
+          }
         }
       ],
       "shot": true
@@ -109,7 +130,10 @@
       "said": "Open browser",
       "ops": [
         {
-          "open": "browser"
+          "open": {
+            "app": "browser",
+            "deadline": 30
+          }
         }
       ],
       "shot": true
@@ -119,7 +143,10 @@
       "said": "Open terminal",
       "ops": [
         {
-          "open": "terminal"
+          "open": {
+            "app": "terminal",
+            "deadline": 30
+          }
         }
       ],
       "shot": true
@@ -129,7 +156,10 @@
       "said": "Open pdf-viewer",
       "ops": [
         {
-          "open": "pdf-viewer"
+          "open": {
+            "app": "pdf-viewer",
+            "deadline": 30
+          }
         }
       ],
       "shot": true
@@ -139,7 +169,10 @@
       "said": "Open activity",
       "ops": [
         {
-          "open": "activity"
+          "open": {
+            "app": "activity",
+            "deadline": 30
+          }
         }
       ],
       "shot": true
@@ -149,7 +182,10 @@
       "said": "Open photos",
       "ops": [
         {
-          "open": "photos"
+          "open": {
+            "app": "photos",
+            "deadline": 30
+          }
         }
       ],
       "shot": true
@@ -159,7 +195,10 @@
       "said": "Open calendar",
       "ops": [
         {
-          "open": "calendar"
+          "open": {
+            "app": "calendar",
+            "deadline": 30
+          }
         }
       ],
       "shot": true
@@ -169,7 +208,10 @@
       "said": "Open the tilolang notes",
       "ops": [
         {
-          "open": "so.tilo.notes"
+          "open": {
+            "app": "so.tilo.notes",
+            "deadline": 30
+          }
         }
       ]
     },
@@ -178,7 +220,10 @@
       "said": "Open the tilolang tasks",
       "ops": [
         {
-          "open": "so.tilo.lang.tasks"
+          "open": {
+            "app": "so.tilo.lang.tasks",
+            "deadline": 30
+          }
         }
       ]
     },
@@ -187,7 +232,10 @@
       "said": "Open the tilolang chat",
       "ops": [
         {
-          "open": "so.tilo.lang.chat"
+          "open": {
+            "app": "so.tilo.lang.chat",
+            "deadline": 30
+          }
         }
       ]
     },
@@ -196,7 +244,10 @@
       "said": "Open the tilolang mail",
       "ops": [
         {
-          "open": "so.tilo.mail"
+          "open": {
+            "app": "so.tilo.mail",
+            "deadline": 30
+          }
         }
       ]
     },
@@ -205,7 +256,10 @@
       "said": "Open the tilolang tube",
       "ops": [
         {
-          "open": "so.tilo.tube"
+          "open": {
+            "app": "so.tilo.tube",
+            "deadline": 30
+          }
         }
       ]
     },
@@ -214,7 +268,10 @@
       "said": "Open the tilolang agent",
       "ops": [
         {
-          "open": "so.tilo.agent"
+          "open": {
+            "app": "so.tilo.agent",
+            "deadline": 30
+          }
         }
       ]
     },
@@ -223,7 +280,10 @@
       "said": "Open the tilolang today",
       "ops": [
         {
-          "open": "so.tilo.lang.today"
+          "open": {
+            "app": "so.tilo.lang.today",
+            "deadline": 30
+          }
         }
       ]
     },
@@ -232,7 +292,10 @@
       "said": "Open the tilolang board",
       "ops": [
         {
-          "open": "so.tilo.lang.board"
+          "open": {
+            "app": "so.tilo.lang.board",
+            "deadline": 30
+          }
         }
       ]
     },

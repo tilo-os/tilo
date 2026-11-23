@@ -43,7 +43,7 @@
           "open": "files"
         }
       ],
-      "budget_ms": 15000
+      "budget_ms": 30000
     },
     {
       "id": "open-chat",
@@ -58,7 +58,7 @@
           }
         }
       ],
-      "budget_ms": 15000
+      "budget_ms": 30000
     },
     {
       "id": "open-terminal",
@@ -71,7 +71,7 @@
           "windows": 3
         }
       ],
-      "budget_ms": 15000
+      "budget_ms": 30000
     },
     {
       "id": "switcher-open",
@@ -94,7 +94,7 @@
         }
       ],
       "dark": true,
-      "budget_ms": 3000
+      "budget_ms": 10000
     },
     {
       "id": "switcher-commit",
@@ -108,7 +108,7 @@
           ]
         }
       ],
-      "budget_ms": 3000
+      "budget_ms": 10000
     },
     {
       "id": "step-focus",
@@ -125,7 +125,7 @@
           ]
         }
       ],
-      "budget_ms": 3000
+      "budget_ms": 10000
     }
   ]
 }

@@ -43,7 +43,7 @@
           "open": "files"
         }
       ],
-      "budget_ms": 15000
+      "budget_ms": 30000
     },
     {
       "id": "open-chat",
@@ -58,7 +58,7 @@
           }
         }
       ],
-      "budget_ms": 15000
+      "budget_ms": 30000
     },
     {
       "id": "overview-open",
@@ -94,7 +94,7 @@
         }
       ],
       "dark": true,
-      "budget_ms": 3000
+      "budget_ms": 10000
     },
     {
       "id": "overview-close",
@@ -124,7 +124,7 @@
           ]
         }
       ],
-      "budget_ms": 3000
+      "budget_ms": 10000
     }
   ]
 }

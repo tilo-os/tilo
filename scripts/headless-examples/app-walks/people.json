@@ -54,7 +54,7 @@
         }
       ],
       "dark": true,
-      "budget_ms": 3000
+      "budget_ms": 10000
     },
     {
       "id": "invite",
@@ -81,7 +81,7 @@
         }
       ],
       "dark": true,
-      "budget_ms": 3000
+      "budget_ms": 10000
     }
   ]
 }

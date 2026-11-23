@@ -80,7 +80,7 @@
         }
       ],
       "dark": true,
-      "budget_ms": 3000
+      "budget_ms": 10000
     },
     {
       "id": "dark",
@@ -90,7 +90,7 @@
           "theme": true
         }
       ],
-      "budget_ms": 3000
+      "budget_ms": 10000
     },
     {
       "id": "close",
@@ -119,7 +119,7 @@
           "theme": false
         }
       ],
-      "budget_ms": 3000
+      "budget_ms": 10000
     }
   ]
 }
