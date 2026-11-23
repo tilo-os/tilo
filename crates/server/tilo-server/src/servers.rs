@@ -13,7 +13,8 @@ pub use tilo_server_protocol::servers::person_workspace_id;
 pub use tilo_workspace_service::workspaces::person_workspace::{found, holds_person_workspace};
 pub use tilo_workspace_service::workspaces::servers::{
     Asked, HISTORY_KEPT, MINUTES_PER_DAY, SERVERS, Server, Servers, UNLOCK_POLICIES, UPDATES,
-    admit, apply, apply_on, device, device_id, enroll, name, plan, read, read_on, refuse_retired,
+    WEB_SERVED, admit, apply, apply_on, device, device_id, enroll, name, plan, read, read_on,
+    refuse_retired,
 };
 
 pub use tilo_workspace_service::workspaces::servers::attach;

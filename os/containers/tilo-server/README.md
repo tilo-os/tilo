@@ -49,6 +49,18 @@ properties, so restore rather than recreate them after a failure.
 
 The health check reports ready once the server is live and writing its metrics.
 
+## The web UI
+
+The server serves its own web UI: its members open its address in a browser and work
+there, without the Tilo app. It is on by default and answers HTTPS on the port
+`web_listen` names (8443 in the template), with a development certificate kept on the
+identity volume until the configuration names a PEM chain and key (`web_tls`).
+
+Its person turns the web UI off from any of their devices, through the `web.serve` action
+on the server's entry in their Servers workspace; it stops serving at once, and turns back
+on the same way. Nothing in `server.toml` switches it: the setting is the person's, kept
+in their workspace, so every device of theirs reads and changes it.
+
 ## Trust and members
 
 The generated configuration uses `allow_matching_user`, so the owner's other

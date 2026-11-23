@@ -98,6 +98,15 @@ pub struct ServerConfig {
     /// This is a navigation destination, not an admission or content-access grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_entry: Option<String>,
+    /// Where this server serves its own web UI over HTTPS: on by default. Its person turns
+    /// it off with the `web.serve` action on its entry among their servers, and `None`
+    /// serves none in this process, as a deployment that publishes another's pages does.
+    #[serde(default = "default_web_listen", skip_serializing_if = "Option::is_none")]
+    pub web_listen: Option<SocketAddr>,
+    /// The certificate its web UI is served with: a development one kept below its state
+    /// ([`WebTls::Dev`], the default), or a PEM chain and key ([`WebTls::Files`]).
+    #[serde(default)]
+    pub web_tls: WebTls,
     /// Pre-admissions a governed workspace keeps, spent ones included. A
     /// public workspace that pre-admits every visitor raises it. `None` keeps
     /// 1024. It keeps the key `max_workspace_grants` in `server.toml`.
@@ -123,6 +132,10 @@ fn default_work() -> WorkSetting {
 
 fn default_services() -> ServiceCapabilities {
     ServiceCapabilities::relay_only()
+}
+
+fn default_web_listen() -> Option<SocketAddr> {
+    Some(SocketAddr::from(([0, 0, 0, 0], 8443)))
 }
 
 fn default_identity_root() -> PathBuf {
@@ -152,10 +165,30 @@ impl Default for ServerConfig {
             rented: false,
             services: default_services(),
             web_entry: None,
+            web_listen: default_web_listen(),
+            web_tls: WebTls::default(),
             max_workspace_grants: None,
             relay: None,
         }
     }
+}
+
+/// The certificate a server serves its own web UI with.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WebTls {
+    /// A self-signed certificate kept below the server's state, which browsers accept
+    /// with an exception: what a server on a home network serves until it is given one.
+    #[default]
+    Dev,
+    /// The PEM certificate chain and private key a deployment serves, and the name
+    /// browsers reach it by.
+    Files {
+        chain: PathBuf,
+        key: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host: Option<String>,
+    },
 }
 
 /// Failure modes for config load/store.

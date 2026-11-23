@@ -131,6 +131,12 @@ fn host_invoke(
 pub const HOST_ACTIONS_PROVIDER: &str = tilo_actions::policy::agent_answers::ACCOUNT_APP;
 /// The one resource the host operations are published on.
 pub const HOST_WORKSPACES_RESOURCE: &str = "host.workspaces";
+/// Serve this server's own web UI (`serving`), the pages its members and their guests
+/// open in a browser, or stop serving it: `false` stops it at once, without a restart,
+/// and `true` serves it again where this process can. On by default. The choice is the
+/// server's own, kept in its entry among its person's servers, and any device of that
+/// person may change it. Answers `{"serving": serving}`.
+pub const WEB_SERVE: &str = "web.serve";
 /// Create a governed workspace. Arguments: `name`, and the terms of its first
 /// invitation when one is wanted (`invite_role`, `invite_recipient`,
 /// `invitee_name`, `invite_expires_in_seconds`). Answers a [`CreatedWorkspace`].

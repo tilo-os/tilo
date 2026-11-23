@@ -115,6 +115,10 @@ pub enum ServiceOperation {
     /// The host's person's servers, as the document of their workspace
     /// names them: each one's device key, name and address.
     ListServers,
+    /// Serve this server's own web UI, or stop serving it, as the device's
+    /// setting says: only a device of the host's person's, never an agent's
+    /// grant or a stand-in. Its entry among their servers keeps the choice.
+    ServeWeb,
     /// Take a machine that enrolled with a plan's token into its entry, under
     /// its device key: the person's device that approved it does this, and the
     /// machine's own report follows when it holds the workspace.
@@ -162,6 +166,7 @@ impl ServiceOperation {
             Self::ListServers => "machine.servers",
             Self::AdmitMachine => "machine.admit",
             Self::AdmitServer => "server.admit",
+            Self::ServeWeb => "web.serve",
             Self::KeepRecoveryKey => "machine.keep-recovery-key",
             Self::ListRecoveryKeys => "machine.recovery-keys",
         }
@@ -253,6 +258,7 @@ impl ServiceOperation {
             | Self::ListServers
             | Self::AdmitMachine
             | Self::AdmitServer
+            | Self::ServeWeb
             | Self::KeepRecoveryKey
             | Self::ListRecoveryKeys => false,
         }
@@ -264,7 +270,7 @@ mod tests {
     use super::ServiceOperation;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
-    const ALL: [ServiceOperation; 26] = [
+    const ALL: [ServiceOperation; 27] = [
         ServiceOperation::CreateWorkspace,
         ServiceOperation::ListWorkspaces,
         ServiceOperation::EnterWorkspace,
@@ -289,6 +295,7 @@ mod tests {
         ServiceOperation::ListServers,
         ServiceOperation::AdmitMachine,
         ServiceOperation::AdmitServer,
+        ServiceOperation::ServeWeb,
         ServiceOperation::KeepRecoveryKey,
         ServiceOperation::ListRecoveryKeys,
     ];

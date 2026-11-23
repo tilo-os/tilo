@@ -330,6 +330,26 @@ impl RelayAuthority for Authority {
     }
 }
 
+/// The live origin as a listener serves it: who is admitted, and the relay the admitted
+/// copy into. Cloning shares the one origin.
+#[derive(Clone)]
+pub(crate) struct Served {
+    authority: Arc<Authority>,
+    relay: Relay,
+}
+
+impl Served {
+    /// Who the live origin carries: the one account of who is here.
+    pub(crate) fn authority(&self) -> Arc<Authority> {
+        Arc::clone(&self.authority)
+    }
+
+    /// The relay an admitted session copies into.
+    pub(crate) fn relay(&self) -> Relay {
+        self.relay.clone()
+    }
+}
+
 /// The relay's live origin: the origin every carrier of its workspaces'
 /// tracks reaches, and the authority that admits them.
 pub(crate) struct LiveOrigin {
@@ -375,6 +395,15 @@ impl LiveOrigin {
     /// The live origin's origin, which every carrier's sessions are served into.
     pub(crate) fn origin(&self) -> Relay {
         self.relay.clone()
+    }
+
+    /// This live origin as a browser listener serves it, and as the listener is served
+    /// again after it stopped: cloning shares the one origin.
+    pub(crate) fn served(&self) -> Served {
+        Served {
+            authority: Arc::clone(&self.authority),
+            relay: self.relay.clone(),
+        }
     }
 
     /// Who the live origin carries: the one account of who is here.

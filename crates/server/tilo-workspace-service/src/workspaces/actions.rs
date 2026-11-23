@@ -1105,6 +1105,14 @@ impl Args {
         }
     }
 
+    fn boolean(&self, name: &str) -> Result<Option<bool>, ActionCallError> {
+        match self.0.get(name) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Bool(value)) => Ok(Some(*value)),
+            Some(_) => Err(invalid(format!("`{name}` must be true or false"))),
+        }
+    }
+
     fn texts(&self, name: &str) -> Result<std::collections::BTreeSet<String>, ActionCallError> {
         match self.0.get(name) {
             None | Some(Value::Null) => Ok(std::collections::BTreeSet::new()),

@@ -40,10 +40,16 @@ import tomllib
 cfg = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 assert cfg["iroh_listen"] == "0.0.0.0:4433"
 assert cfg["trust_policy"] == {"kind": "allow_matching_user"}
+assert cfg["web_listen"] == "0.0.0.0:8443"
+assert cfg["web_tls"] == "dev"
 PY
 
 need "$readme" "tilo device add --server"
 need "$readme" "TILO_TICKET"
+need "$readme" "web UI"
+# The server's web UI is served by the daemon from what is linked into it; the image
+# publishes its port.
+need "$containerfile" "EXPOSE 8443/tcp"
 
 # The image packages programs t built: the device's daemon, which is the server, and the command
 # beside it, from the staged context; nothing in the image compiles.

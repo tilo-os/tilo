@@ -78,6 +78,9 @@ VOLUME ["/var/lib/tilo-server", "/var/lib/tilo", "/etc/tilo"]
 # a stable UDP port is nice to have. iroh's default bind is
 # ephemeral; the config file lets an operator pin a fixed port.
 EXPOSE 4433/udp
+# The server's own web UI: its pages, their script and the page protocol are linked into
+# the daemon, so no asset tree is copied in. HTTPS on the port its configuration names.
+EXPOSE 8443/tcp
 
 # Default command: the daemon.
 ENTRYPOINT ["/usr/bin/tilo-home-peer"]

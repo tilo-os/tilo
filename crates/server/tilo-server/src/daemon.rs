@@ -140,6 +140,10 @@ pub struct Server {
     /// The server's live session, which its browsers serve and its devices dial.
     #[cfg(feature = "web")]
     pub(crate) live_origin: Option<crate::web::live::LiveOrigin>,
+    /// Whether this device serves its own web UI, and how to serve it again: the
+    /// setting `web.serve` switches, on by default.
+    #[cfg(feature = "web")]
+    pub(crate) web_ui: Arc<crate::web::control::Control>,
     /// Background tasks (revocation refresh, metrics persistence). Aborted
     /// (per-handle) when the `Server` drops.
     background_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
@@ -691,7 +695,15 @@ impl Server {
             // One that has it not yet is handed it by a device that has it,
             // once the ticket it came in with entered it in the document.
             if crate::servers::holds_person_workspace(&governed).await {
-                crate::servers::enroll(&governed, &endpoint.addr())
+                // Its entry names the packet relay it is reached through, beside the address
+                // it is dialled at, as its endpoint advertises it: a page has no UDP socket
+                // and reaches it only through one.
+                let relay = endpoint
+                    .addr()
+                    .relay_urls()
+                    .next()
+                    .map(ToString::to_string);
+                crate::servers::enroll(&governed, &endpoint.addr(), relay.as_deref())
                     .await
                     .map_err(|error| {
                         ServerError::Identity(format!("Servers workspace: {error}"))
@@ -769,6 +781,16 @@ impl Server {
                 .await
                 .admit_device(identity.device_cert.device_public_key)?;
         }
+        // This device's own web UI, on until its person turns it off: the host operation
+        // `web.serve` reaches it through the workspaces it governs.
+        #[cfg(feature = "web")]
+        let web_ui = {
+            let control = Arc::new(crate::web::control::Control::default());
+            governed.serve_web_with(Arc::new(crate::web::control::Serving(Arc::clone(
+                &control,
+            ))));
+            control
+        };
         Ok((
             Self {
                 endpoint,
@@ -779,6 +801,8 @@ impl Server {
                 browser_origin: Arc::new(std::sync::RwLock::new(None)),
                 #[cfg(feature = "web")]
                 live_origin,
+                #[cfg(feature = "web")]
+                web_ui,
                 background_tasks,
                 mesh_profile,
                 web,
@@ -1197,10 +1221,29 @@ async fn spawn_packet_relay(
     let serving = server
         .http_addr()
         .ok_or_else(|| ServerError::Iroh("the packet relay serves no address".into()))?;
-    let url: iroh_base::RelayUrl = format!("http://{serving}")
+    let url: iroh_base::RelayUrl = format!("http://{}", dialled_at(serving))
         .parse()
         .map_err(|error| ServerError::Iroh(format!("packet relay URL: {error}")))?;
     Ok((server, url))
+}
+
+/// `serving` as a device elsewhere dials it: an address bound on every interface is this
+/// machine's own address on the network it routes to, learned without a packet being sent,
+/// and loopback when it routes nowhere.
+fn dialled_at(serving: std::net::SocketAddr) -> std::net::SocketAddr {
+    if !serving.ip().is_unspecified() {
+        return serving;
+    }
+    let ip = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
+        .and_then(|socket| {
+            // Connecting a UDP socket picks the route and sends nothing.
+            socket.connect((std::net::Ipv4Addr::new(192, 0, 2, 1), 9))?;
+            socket.local_addr()
+        })
+        .map_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), |local| {
+            local.ip()
+        });
+    std::net::SocketAddr::new(ip, serving.port())
 }
 
 /// Whether an endpoint bound with `relay_mode` names where it is reached: one
@@ -1742,6 +1785,150 @@ mod tests {
             );
             server.shutdown().await;
         }
+    }
+
+    /// A server runs the packet relay its pages are reached through, and its entry among
+    /// its person's servers names that relay beside the address it is dialled at, so every
+    /// device of theirs knows where to reach it through one. A server that starts holding
+    /// the Servers workspace writes it on that start; one handed it later writes it the
+    /// next time it starts.
+    #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the whole hand-over, from the admitting device to the restarted server's entry"
+    )]
+    async fn a_server_serves_its_packet_relay_and_its_entry_names_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let (root, user) = UserIdentity::generate("owner", 1);
+        let (host_key, host) = DeviceIdentity::generate("home", 2);
+        let (admin_key, admin) = DeviceIdentity::generate("primary", 5);
+        let mut server_cert = DeviceCert {
+            user_public_key: user.public_key,
+            device_public_key: host.public_key,
+            device_label: host.label.clone(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 4,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        let mut admin_cert = DeviceCert {
+            user_public_key: user.public_key,
+            device_public_key: admin.public_key,
+            device_label: admin.label,
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 4,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut server_cert, &root).unwrap();
+        sign_device_cert(&mut admin_cert, &root).unwrap();
+        let primary_state = tempfile::tempdir().unwrap();
+        let primary = Server::start(
+            ServerConfig {
+                state_root: primary_state.path().to_path_buf(),
+                services: crate::mesh::ServiceCapabilities::personal_server(),
+                ..ServerConfig::default()
+            }
+            .on_loopback(),
+            ServerIdentity {
+                user_public_key: user.public_key,
+                device_signing_key: admin_key,
+                device_cert: admin_cert,
+                revocations: RevocationList::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let primary_workspaces = primary.workspaces().expect("the device holds workspaces");
+        crate::servers::found(primary_workspaces).await.unwrap();
+        // The server runs the packet relay this machine's loopback is reached through:
+        // nothing here asks number 0 for one.
+        let config = ServerConfig {
+            state_root: temp.path().join("server"),
+            trust_policy: TrustPolicy::AllowMatchingUser,
+            services: crate::mesh::ServiceCapabilities::relay_only(),
+            packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
+            ..ServerConfig::default()
+        }
+        .on_loopback();
+        let identity = ServerIdentity {
+            user_public_key: user.public_key,
+            device_signing_key: host_key,
+            device_cert: server_cert.clone(),
+            revocations: RevocationList::new(),
+        };
+        let server = Server::start(config.clone(), identity.clone())
+            .await
+            .unwrap();
+        let relay = server
+            .node_addr()
+            .relay_urls()
+            .next()
+            .expect("the server names its packet relay")
+            .to_string();
+        // It serves it: something answers on the address the URL names.
+        let listening = relay.strip_prefix("http://").expect("a plain URL");
+        let front = tokio::net::TcpStream::connect(
+            listening
+                .parse::<std::net::SocketAddr>()
+                .expect("a relay URL's address"),
+        )
+        .await
+        .expect("the packet relay answers");
+        drop(front);
+        let person_workspace = crate::servers::person_workspace_id(&user.public_key);
+        crate::servers::admit(primary_workspaces, &server_cert, &server.node_addr())
+            .await
+            .unwrap();
+        primary_workspaces
+            .attach_server(
+                &person_workspace,
+                server_cert.device_public_key,
+                server.node_addr(),
+                tilo_peer_state::CopyRole::KeyHolder,
+            )
+            .await
+            .unwrap();
+        let governed = server.workspaces().expect("the server holds workspaces");
+        tilo_test_env::within("the server to hold the Servers workspace", async {
+            while !crate::servers::holds_person_workspace(governed).await {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        // Started again, it keeps the workspace from its own state and writes its entry
+        // from where it is reached: its address, and the relay beside it.
+        server.shutdown().await;
+        let restarted = Server::start(config, identity).await.unwrap();
+        let governed = restarted.workspaces().expect("the server holds workspaces");
+        let endpoint = serde_json::to_string(&restarted.node_addr()).unwrap();
+        let named = tilo_test_env::within("the entry to name the relay", async {
+            loop {
+                if let Ok(servers) = crate::servers::read(governed).await
+                    && let Some(entry) = servers.active(&host.public_key)
+                    && entry.endpoint == endpoint
+                    && !entry.relay.is_empty()
+                {
+                    break entry.relay.clone();
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        let served = restarted
+            .node_addr()
+            .relay_urls()
+            .next()
+            .expect("the restarted server names its packet relay")
+            .to_string();
+        assert_eq!(
+            named, served,
+            "the entry names the packet relay the server is reached through"
+        );
+        restarted.shutdown().await;
+        primary.shutdown().await;
     }
 
     #[test]

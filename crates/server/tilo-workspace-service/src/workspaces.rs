@@ -47,6 +47,8 @@ mod mcp_server;
 pub use machines::WorkspaceMachines;
 mod names;
 pub use names::PersonNames;
+mod web_ui;
+pub use web_ui::WebUi;
 mod surfaces;
 pub use content::{ContentKeeper, WholeDocuments, WorkspaceContent};
 mod device_actions;
@@ -1058,6 +1060,9 @@ struct WorkspacesInner {
     machines: std::sync::RwLock<Option<Arc<dyn WorkspaceMachines>>>,
     /// Where the name each person gave themselves is kept ([`Workspaces::person_names`]).
     person_names: std::sync::RwLock<Option<Arc<dyn PersonNames>>>,
+    /// What starts and stops this device's own web UI
+    /// ([`Workspaces::serve_web_with`]).
+    web_ui: std::sync::RwLock<Option<Arc<dyn WebUi>>>,
     /// Each record write of a member the governor's copy took in.
     document_writes: tokio::sync::broadcast::Sender<ResourceWrite>,
     /// The records sessions opened, and where a write of one goes
@@ -1405,6 +1410,7 @@ impl Workspaces {
                 asks_people: std::sync::RwLock::default(),
                 machines: std::sync::RwLock::default(),
                 person_names: std::sync::RwLock::default(),
+                web_ui: std::sync::RwLock::default(),
                 document_writes: tokio::sync::broadcast::channel(256).0,
                 opened_records: opened_records::OpenedRecords::default(),
                 person_settings_moved: tokio::sync::watch::channel(0).0,

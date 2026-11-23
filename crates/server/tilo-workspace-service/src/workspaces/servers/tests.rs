@@ -86,6 +86,52 @@ fn a_servers_configuration_is_typed_actions_with_history() {
     );
 }
 
+/// A server's entry says where its packet relay is reached and whether it serves its own
+/// web UI: empty for the default, on, and `off` once its person turns it off.
+#[test]
+fn an_entry_names_its_relay_and_whether_it_serves_web() {
+    let mut replica = enrolled();
+    let relay = "http://10.0.0.5:9782";
+    replica
+        .apply(Servers::SET_RELAY_URL.with((
+            device().as_str().to_owned(),
+            relay.into(),
+        )))
+        .unwrap();
+    replica
+        .apply(Servers::SET_WEB.with((
+            device().as_str().to_owned(),
+            WEB_SERVED[1].into(),
+        )))
+        .unwrap();
+    let state = replica.state().unwrap();
+    let server = state.active(&[7; 32]).unwrap();
+    assert_eq!(server.relay, relay);
+    assert_eq!(server.web, WEB_SERVED[1]);
+    drop(state);
+    replica
+        .apply(Servers::SET_WEB.with((
+            device().as_str().to_owned(),
+            WEB_SERVED[0].into(),
+        )))
+        .unwrap();
+    let state = replica.state().unwrap();
+    assert_eq!(
+        state.active(&[7; 32]).unwrap().web,
+        "",
+        "serving again is the default, which the entry does not spell out"
+    );
+    assert!(
+        replica
+            .apply(Servers::SET_RELAY_URL.with((
+                device().as_str().to_owned(),
+                "not a url".into(),
+            )))
+            .is_err(),
+        "a relay is a URL"
+    );
+}
+
 /// Every device founds the document with the same change, so two of the
 /// person's devices that each write a server into it before they see one
 /// another write one document holding both, not two competing roots.

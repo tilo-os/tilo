@@ -79,6 +79,9 @@ pub const UNLOCK_POLICIES: [&str; 3] = ["owner-device", "tpm", "passphrase"];
 /// The updates a server follows: the releases (`stable`), or the images built
 /// from the development branch (`dev`).
 pub const UPDATES: [&str; 2] = ["stable", "dev"];
+/// The states a server's web UI setting has: `on` as its image comes, and `off`
+/// until its person says otherwise. Empty stands for `on`.
+pub const WEB_SERVED: [&str; 2] = ["on", "off"];
 /// How many answers to operations one server keeps.
 pub const HISTORY_KEPT: usize = 20;
 pub const MINUTES_PER_DAY: u32 = 24 * 60;
@@ -101,6 +104,13 @@ pub struct Server {
     /// a device of its person can hand it a workspace. Empty until it
     /// enrolled one.
     pub endpoint: String,
+    /// Where its packet relay is reached, as the URL its pages and the devices
+    /// that reach it through a relay dial: the one it runs, or the one in front
+    /// of it. Empty until it said.
+    pub relay: String,
+    /// Whether it serves its own web UI ([`WEB_SERVED`]); empty for the default,
+    /// on.
+    pub web: String,
     /// Gigabytes of storage it offers its workspaces.
     pub storage_gb: u64,
     /// Whether it does its workspaces' actions and jobs.
@@ -628,6 +638,31 @@ impl Servers {
         Ok(())
     }
 
+    /// Say where a server's packet relay is reached: the URL its pages and the
+    /// devices that reach it through a relay dial, beside the address it is
+    /// dialled at. Empty while it names none.
+    #[action(external)]
+    pub fn set_relay_url(&mut self, device: Id, relay: String) -> Result<(), Refusal> {
+        let relay = validate_relay(&relay)?;
+        self.server(&device)?.relay = relay;
+        Ok(())
+    }
+
+    /// Set whether a server serves its own web UI: empty for the default, on,
+    /// and `off` for a server whose person turned it off.
+    #[action(external)]
+    pub fn set_web(&mut self, device: Id, served: String) -> Result<(), Refusal> {
+        let served = if served.is_empty() || served == WEB_SERVED[0] {
+            String::new()
+        } else if served == WEB_SERVED[1] {
+            WEB_SERVED[1].to_owned()
+        } else {
+            return Err(Refusal::new("a server's web UI is on or off"));
+        };
+        self.server(&device)?.web = served;
+        Ok(())
+    }
+
     /// Set a server's daily maintenance window: `minutes` from `start`
     /// minutes after midnight UTC; 0 minutes for none.
     #[action(external)]
@@ -1110,6 +1145,22 @@ fn validate_endpoint(endpoint: &str) -> Result<String, Refusal> {
     serde_json::to_string(&address).map_err(|_| wrong())
 }
 
+fn validate_relay(relay: &str) -> Result<String, Refusal> {
+    let relay = relay.trim();
+    if relay.is_empty() {
+        return Ok(String::new());
+    }
+    let url = relay
+        .parse::<iroh_base::RelayUrl>()
+        .map_err(|_| Refusal::new("a server's packet relay is a URL it is reached at"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
+        return Err(Refusal::new(
+            "a server's packet relay is an http:// or https:// URL",
+        ));
+    }
+    Ok(url.to_string())
+}
+
 fn validate_label(label: &str) -> Result<String, Refusal> {
     if !tilo_server_protocol::valid_device_label(label) {
         return Err(Refusal::new("a server's name is one line of 1 to 80 bytes"));
@@ -1222,21 +1273,23 @@ pub async fn refuse_retired(workspaces: &Workspaces, servers: &Servers) -> Resul
     workspaces.take_revocations(entries).await
 }
 
-/// Keep this device's own entry among its person's servers current: its name
-/// and `endpoint`, what a server that holds the Servers workspace does on each
-/// start, as the address it is reached at may have changed.
+/// Keep this device's own entry among its person's servers current: its name,
+/// `endpoint` and the packet relay `relay` it is reached through, what a server
+/// that holds the Servers workspace does on each start, as the address it is
+/// reached at may have changed.
 ///
 /// # Errors
 /// This device holds no Servers workspace, or the entry could not be written.
 pub async fn enroll(
     workspaces: &Workspaces,
     endpoint: &iroh_base::EndpointAddr,
+    relay: Option<&str>,
 ) -> Result<(), String> {
     if !holds_person_workspace(workspaces).await {
         return Err("this server holds no Servers workspace yet".into());
     }
     let cert = workspaces.serving_certificate().clone();
-    enter(workspaces, &cert, endpoint).await
+    enter(workspaces, &cert, endpoint, relay).await
 }
 
 /// Enter the server `server`, dialled at `endpoint`, among this device's
@@ -1260,31 +1313,43 @@ pub async fn admit(
     if !holds_person_workspace(workspaces).await {
         return Err("this server holds no Servers workspace yet".into());
     }
-    enter(workspaces, server, endpoint).await
+    enter(workspaces, server, endpoint, None).await
 }
 
-/// Enter the device `cert` among the person's servers at `endpoint`; an entry
-/// that says so already writes no history.
+/// Enter the device `cert` among the person's servers at `endpoint`, and at `relay`
+/// when it names where its packet relay is reached; an entry that says so already
+/// writes no history.
 async fn enter(
     workspaces: &Workspaces,
     cert: &DeviceCert,
     endpoint: &iroh_base::EndpointAddr,
+    relay: Option<&str>,
 ) -> Result<(), String> {
     let endpoint = serde_json::to_string(endpoint).map_err(|error| error.to_string())?;
-    if read(workspaces)
+    let current = read(workspaces)
         .await?
         .servers
         .get(&device_id(&cert.device_public_key))
-        .is_some_and(|server| server.endpoint == endpoint)
-    {
-        return Ok(());
+        .cloned();
+    let endpoint_current = current.as_ref().is_some_and(|server| server.endpoint == endpoint);
+    if !endpoint_current {
+        let action = Servers::ENROLL_SERVER.with((
+            hex::encode(cert.device_public_key),
+            cert.device_label.clone(),
+            endpoint,
+        ));
+        apply(workspaces, action).await?;
     }
-    let action = Servers::ENROLL_SERVER.with((
-        hex::encode(cert.device_public_key),
-        cert.device_label.clone(),
-        endpoint,
-    ));
-    apply(workspaces, action).await
+    if let Some(relay) = relay
+        && current.is_none_or(|server| server.relay != relay)
+    {
+        let action = Servers::SET_RELAY_URL.with((
+            hex::encode(cert.device_public_key),
+            relay.to_owned(),
+        ));
+        apply(workspaces, action).await?;
+    }
+    Ok(())
 }
 
 impl super::Workspaces {

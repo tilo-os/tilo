@@ -394,4 +394,22 @@ async fn apply_now(
             tracing::warn!(%error, "the servers' document was not applied");
         }
     }
+    apply_web(workspaces).await;
+}
+
+/// Apply this server's own entry's web UI setting: a server whose person turned it off
+/// stops serving its browsers at once, and one they turned back on serves them again.
+/// An entry that says nothing serves one, as its image comes.
+async fn apply_web(workspaces: &Workspaces) {
+    let cert = workspaces.serving_certificate().clone();
+    let Ok(servers) = read(workspaces).await else {
+        return;
+    };
+    let Some(entry) = servers.servers.get(&device_id(&cert.device_public_key)) else {
+        return;
+    };
+    let serving = entry.web != super::WEB_SERVED[1];
+    if let Err(error) = workspaces.serve_web(serving) {
+        tracing::debug!(%error, "this server's web UI did not follow its entry");
+    }
 }
