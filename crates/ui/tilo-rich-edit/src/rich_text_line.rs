@@ -28,6 +28,10 @@ use ui::widget::markdown_input;
 use ui::widget::marks::{self, Mark, MarkSegment, MarkSpan, PageId};
 use ui::widget::{TextInput, Widget};
 
+/// A stored run size is in points, the unit every document codec writes; the
+/// toolkit draws in logical pixels at 96 dpi.
+const POINTS_TO_PIXELS: f32 = 96.0 / 72.0;
+
 /// A presentation-only syntax colour over a byte range of the line, painted
 /// from the theme's [`SyntaxPalette`](ui::tokens::SyntaxPalette) and never
 /// written to the document.
@@ -809,6 +813,37 @@ impl RichTextLine {
         }
     }
 
+    /// Set the run's own look — its colour, size, face or baseline shift — over the
+    /// selection, replacing whatever that kind was there; at a caret, it is the look the
+    /// text typed next takes. A raised or lowered stretch toggles back to plain text when
+    /// it is asked for again.
+    pub fn set_look_mark(&mut self, mark: Mark) {
+        self.paint_dirty = true;
+        if !self.inline_formatting {
+            return;
+        }
+        if let Some((s, e)) = self.inner.selection_range_public() {
+            let range = s..e;
+            let mut spans = self.marks.clone();
+            let already = marks::range_covered_by(&spans, &range, &mark);
+            marks::remove_mark_from_range(&mut spans, range.clone(), &mark);
+            let raised = matches!(mark, Mark::Superscript | Mark::Subscript);
+            if !(already && raised) {
+                marks::add_mark_to_range(&mut spans, range, mark);
+            }
+            self.set_marks(spans);
+            self.dirty.marks = true;
+            self.dirty.styled_layout = true;
+        } else {
+            let already = self.pending_marks.iter().any(|pending| *pending == mark);
+            self.pending_marks.retain(|pending| !pending.same_kind(&mark));
+            let raised = matches!(mark, Mark::Superscript | Mark::Subscript);
+            if !(already && raised) {
+                self.pending_marks.push(mark);
+            }
+        }
+    }
+
     /// Set the line's text flush with its rect's edge: a read-only body that lines up with
     /// what stands beside it. Given before the line is laid out.
     pub(crate) fn set_flush(&mut self) {
@@ -1089,6 +1124,23 @@ impl RichTextLine {
                     let color = theme.tokens.colors.text_primary;
                     span.color = Some([color.r(), color.g(), color.b()]);
                 }
+                // The run's own look is what the person asked for it, so it wins
+                // over the meanings above: a coloured word in a quote keeps its
+                // colour, and a highlighted link keeps its band.
+                if let Some(points) = segment.size {
+                    span.size = Some(f32::from(points) * POINTS_TO_PIXELS);
+                }
+                if let Some(family) = segment.family {
+                    span.family = Some(family);
+                }
+                if let Some(rgb) = segment.color {
+                    span.color = Some(rgb);
+                }
+                if let Some(rgb) = segment.highlight {
+                    span.background = Some(rgb);
+                    span.pill = false;
+                }
+                span.baseline = segment.baseline;
                 Some(span)
             })
             .collect();

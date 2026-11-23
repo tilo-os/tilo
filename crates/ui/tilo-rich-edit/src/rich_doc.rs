@@ -92,6 +92,22 @@ pub fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
         ("em", _) => Some(Mark::Italic),
         ("underline", _) => Some(Mark::Underline),
         ("strike", _) => Some(Mark::Strikethrough),
+        ("super", _) => Some(Mark::Superscript),
+        ("sub", _) => Some(Mark::Subscript),
+        ("size", MarkValue::Int(points)) if *points > 0 => {
+            Some(Mark::Size(u16::try_from(*points).unwrap_or(u16::MAX).max(1)))
+        }
+        ("size", MarkValue::Str(size)) => size
+            .trim()
+            .trim_end_matches("pt")
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|points| *points > 0.0)
+            .map(|points| Mark::Size(points.round().max(1.0) as u16)),
+        ("font", MarkValue::Str(family)) => family_of(family).map(Mark::Font),
+        ("color", MarkValue::Str(rgb)) => rgb_of(rgb).map(Mark::Color),
+        ("highlight", MarkValue::Str(rgb)) => rgb_of(rgb).map(Mark::Highlight),
         ("fontFamily", MarkValue::Str(family)) if family == "mono" => Some(Mark::Code),
         ("link", MarkValue::Str(target)) => Some(
             target
@@ -125,6 +141,49 @@ pub fn is_resource_link(target: &str) -> bool {
     target
         .strip_prefix(RESOURCE_LINK_SCHEME)
         .is_some_and(|route| !route.is_empty())
+}
+
+/// The face a stored `font` mark names: the three the toolkit sets, or a CSS
+/// stack a codec brought in, read as the family it names first.
+pub fn family_of(family: &str) -> Option<ui::richtext::FontFamily> {
+    let name = family.trim().to_lowercase();
+    if name == "mono" || name.contains("mono") || name.contains("courier") {
+        Some(ui::richtext::FontFamily::Mono)
+    } else if name == "serif"
+        || name.contains("serif") && !name.contains("sans")
+        || name.contains("times")
+        || name.contains("georgia")
+    {
+        Some(ui::richtext::FontFamily::Serif)
+    } else if name.is_empty() {
+        None
+    } else {
+        Some(ui::richtext::FontFamily::Sans)
+    }
+}
+
+/// The face's stored name: the one a `font` mark holds.
+pub fn family_name(family: ui::richtext::FontFamily) -> &'static str {
+    match family {
+        ui::richtext::FontFamily::Sans => "sans",
+        ui::richtext::FontFamily::Serif => "serif",
+        ui::richtext::FontFamily::Mono => "mono",
+    }
+}
+
+/// The colour `#rrggbb` (or `rrggbb`) names.
+pub fn rgb_of(value: &str) -> Option<[u8; 3]> {
+    let hex = value.trim().trim_start_matches('#');
+    if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let at = |range: std::ops::Range<usize>| u8::from_str_radix(hex.get(range)?, 16).ok();
+    Some([at(0..2)?, at(2..4)?, at(4..6)?])
+}
+
+/// The colour a mark stores: `#rrggbb`, the form every codec writes.
+pub fn hex_of(rgb: [u8; 3]) -> String {
+    format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
 }
 
 pub fn content_of(view: &BlockView) -> BlockContent {
@@ -234,6 +293,12 @@ fn stored_mark(mark: &Mark) -> Option<(&'static str, MarkValue)> {
             "mention",
             MarkValue::Str(mark.reference().filter(|value| !value.is_empty())?),
         ),
+        Mark::Superscript => ("super", MarkValue::Bool(true)),
+        Mark::Subscript => ("sub", MarkValue::Bool(true)),
+        Mark::Size(points) => ("size", MarkValue::Int(i64::from(*points))),
+        Mark::Font(family) => ("font", MarkValue::Str(family_name(*family).to_owned())),
+        Mark::Color(rgb) => ("color", MarkValue::Str(hex_of(*rgb))),
+        Mark::Highlight(rgb) => ("highlight", MarkValue::Str(hex_of(*rgb))),
     })
 }
 
@@ -961,5 +1026,46 @@ mod tests {
         assert_eq!(plain_text(&holder), "Notes in Merger timeline");
         let other = plain_text(&read_as(InlineView::Unreadable));
         assert_eq!(other, "Notes in Not shared with you");
+    }
+    /// The run's own look goes to the document in the names its codecs read, and comes back as
+    /// the marks the editor draws: raised and lowered text, size in points, face, ink and band.
+    #[test]
+    fn a_runs_own_look_round_trips_through_its_stored_marks() {
+        let content = BlockContent {
+            marks: vec![
+                MarkSpan::new(0..1, Mark::Superscript),
+                MarkSpan::new(1..2, Mark::Subscript),
+                MarkSpan::new(2..3, Mark::Size(14)),
+                MarkSpan::new(3..4, Mark::Font(ui::richtext::FontFamily::Serif)),
+                MarkSpan::new(4..5, Mark::Color([0xcf, 0x22, 0x2e])),
+                MarkSpan::new(5..6, Mark::Highlight([0xff, 0xf8, 0xc5])),
+            ],
+            ..BlockContent::paragraph("", "abcdef")
+        };
+        let view = view_of_content(&content);
+        let stored: Vec<(String, String)> = view
+            .marks
+            .iter()
+            .map(|span| {
+                let value = match &span.value {
+                    MarkValue::Bool(flag) => flag.to_string(),
+                    MarkValue::Int(number) => number.to_string(),
+                    MarkValue::Str(text) => text.clone(),
+                };
+                (span.name.clone(), value)
+            })
+            .collect();
+        assert_eq!(
+            stored,
+            [
+                ("super".to_owned(), "true".to_owned()),
+                ("sub".to_owned(), "true".to_owned()),
+                ("size".to_owned(), "14".to_owned()),
+                ("font".to_owned(), "serif".to_owned()),
+                ("color".to_owned(), "#cf222e".to_owned()),
+                ("highlight".to_owned(), "#fff8c5".to_owned()),
+            ]
+        );
+        assert_eq!(content_of(&view).marks, content.marks);
     }
 }

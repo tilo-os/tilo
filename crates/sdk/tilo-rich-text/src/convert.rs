@@ -50,13 +50,27 @@ pub fn document_mark(mark: &Mark) -> (&'static str, MarkVal) {
             "mention",
             MarkVal::Str(mark.reference().unwrap_or_default()),
         ),
+        Mark::Superscript => ("super", MarkVal::Bool(true)),
+        Mark::Subscript => ("sub", MarkVal::Bool(true)),
+        Mark::Size(points) => ("size", MarkVal::Int(i64::from(*points))),
+        Mark::Font(family) => (
+            "font",
+            MarkVal::Str(
+                ui::rich_edit::rich_doc::family_name(*family).to_owned(),
+            ),
+        ),
+        Mark::Color(rgb) => ("color", MarkVal::Str(ui::rich_edit::rich_doc::hex_of(*rgb))),
+        Mark::Highlight(rgb) => (
+            "highlight",
+            MarkVal::Str(ui::rich_edit::rich_doc::hex_of(*rgb)),
+        ),
     }
 }
 
 /// The marks the editor can show, by name. A document mark the editor has no
 /// form for (a colour, a comment anchor, a serif family) is neither shown nor
 /// ever written by the editor.
-pub(crate) const EDITOR_MARKS: [&str; 8] = [
+pub(crate) const EDITOR_MARKS: [&str; 14] = [
     "strong",
     "em",
     "underline",
@@ -65,6 +79,12 @@ pub(crate) const EDITOR_MARKS: [&str; 8] = [
     "link",
     "transclusion",
     "mention",
+    "super",
+    "sub",
+    "size",
+    "font",
+    "color",
+    "highlight",
 ];
 
 /// A paragraph as the paste vocabulary carries it: kind, text, marks and

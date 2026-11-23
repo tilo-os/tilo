@@ -33,7 +33,7 @@ view writer(d: Document) {
         }
         inspector: {
             if panel != "" {
-                side_panel(d, panel)
+                side_panel(d, format_ask, asked, panel)
             }
         }
         content: {
@@ -110,6 +110,12 @@ template view toolbar(
         ui.ToolbarButton("Strikethrough", icon: .strikethrough, priority: 4) {
             on press: set(asked, asked + 1).then(set(format_ask, "strike:{asked + 1}"))
         }
+        ui.ToolbarButton("Superscript", icon: .superscript, priority: 5) {
+            on press: set(asked, asked + 1).then(set(format_ask, "super:{asked + 1}"))
+        }
+        ui.ToolbarButton("Subscript", icon: .subscript, priority: 6) {
+            on press: set(asked, asked + 1).then(set(format_ask, "sub:{asked + 1}"))
+        }
         ui.ToolbarSeparator()
         ui.ToolbarButton("Bulleted list", icon: .list, priority: 7) {
             on press: set(asked, asked + 1).then(set(format_ask, "bullets:{asked + 1}"))
@@ -128,6 +134,9 @@ template view toolbar(
         }
         ui.ToolbarButton("Body text", icon: .text_cursor, priority: 12) {
             on press: set(asked, asked + 1).then(set(format_ask, "heading:0:{asked + 1}"))
+        }
+        ui.ToolbarButton("Text", icon: .palette, toggled: panel == "format", priority: 13) {
+            on press: set(panel, if panel == "format" { "" } else { "format" })
         }
         ui.ToolbarSeparator()
         ui.ToolbarButton("Insert table", icon: .table, priority: 14) {
@@ -265,8 +274,14 @@ template view ruler_band(d: Document, format_ask: State<Option<Text>>, asked: St
     }
 }
 
-/// The panel beside the page: the page's setup, or the review of what others proposed.
-template view side_panel(d: Document, panel: State<Text>) {
+/// The panel beside the page: the page's setup, the words' own look, or the review of what
+/// others proposed.
+template view side_panel(
+    d: Document,
+    format_ask: State<Option<Text>>,
+    asked: State<Int>,
+    panel: State<Text>,
+) {
     ui.Scroll {
         stack(gap: .group, padding: .related) {
             row(gap: .tight, align: .center) {
@@ -278,6 +293,8 @@ template view side_panel(d: Document, panel: State<Text>) {
             }
             if panel == "styles" {
                 page_setup(d)
+            } else if panel == "format" {
+                text_format(format_ask, asked)
             } else {
                 review_panel(d)
             }
@@ -287,7 +304,88 @@ template view side_panel(d: Document, panel: State<Text>) {
 
 /// What the panel beside the page is called.
 fn panel_name(panel: Text) -> Text {
-    if panel == "styles" { "Page setup" } else { "Review" }
+    if panel == "styles" { "Page setup" } else if panel == "format" { "Text" } else { "Review" }
+}
+
+/// The words' own look, as the toolbar's commands set it: the face, the size, the ink and the
+/// band behind it. A person selects words and presses one; with nothing selected it is the look
+/// the words they type next take.
+view text_format(format_ask: State<Option<Text>>, asked: State<Int>) {
+    stack(gap: .group) {
+        section("Face") {
+            row(gap: .tight, wrap: true) {
+                ui.Chip("Sans") {
+                    on press: set(asked, asked + 1).then(set(format_ask, "font:sans:{asked + 1}"))
+                }
+                ui.Chip("Serif") {
+                    on press: set(asked, asked + 1).then(set(format_ask, "font:serif:{asked + 1}"))
+                }
+                ui.Chip("Mono") {
+                    on press: set(asked, asked + 1).then(set(format_ask, "font:mono:{asked + 1}"))
+                }
+            }
+        }
+        section("Size") {
+            row(gap: .tight, wrap: true) {
+                for size in sizes() {
+                    ui.Chip("{size}") {
+                        on press: set(asked, asked + 1).then(
+                            set(format_ask, "size:{size}:{asked + 1}"),
+                        )
+                    }
+                }
+            }
+        }
+        section("Text colour") {
+            ui.ColorSwatchPicker(
+                swatches: text_colors(),
+                columns: 6,
+                label: "Text colour",
+            ) {
+                on change(index): set(asked, asked + 1).then(
+                    set(
+                        format_ask,
+                        "color:{color_at(text_colors(), index)}:{asked + 1}",
+                    ),
+                )
+            }
+        }
+        section("Highlight") {
+            ui.ColorSwatchPicker(
+                swatches: highlight_colors(),
+                columns: 6,
+                label: "Highlight",
+            ) {
+                on change(index): set(asked, asked + 1).then(
+                    set(
+                        format_ask,
+                        "highlight:{color_at(highlight_colors(), index)}:{asked + 1}",
+                    ),
+                )
+            }
+        }
+    }
+}
+
+/// The sizes a person sets a run to, in points.
+fn sizes() -> List<Int> {
+    [8, 9, 10, 11, 12, 14, 16, 18, 24, 36, 48]
+}
+
+/// The inks a person sets words to: the page's own black and greys, then the colours that read
+/// as a note, a link, a correction and a mark.
+fn text_colors() -> List<Text> {
+    ["#1f2328", "#57606a", "#0969da", "#1a7f37", "#9a6700", "#cf222e", "#8250df", "#bf3989"]
+}
+
+/// The bands a person marks words with, pale enough that the words still read.
+fn highlight_colors() -> List<Text> {
+    ["#fff8c5", "#ddf4ff", "#dafbe1", "#ffebe9", "#fbefff", "#ffe0c2", "#e6e6e6", "#ffffff"]
+}
+
+/// The colour at `index` of `colors`, and the page's ink when there is none.
+fn color_at(colors: List<Text>, index: Int) -> Text {
+    colors.at(index) ?? "#1f2328"
 }
 
 /// How the page is set up: its paper, its margins, the paragraph styles a person may give a

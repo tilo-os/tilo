@@ -89,6 +89,94 @@ impl BlockEditor {
         true
     }
 
+    /// [`Self::set_look_mark`] over a selection that spans paragraphs: the kind is taken off
+    /// every selected character and the new look put on it, so a colour, size, face or baseline
+    /// applies to the whole selection whatever it held before.
+    fn set_look_across(
+        &mut self,
+        start: DocumentPosition,
+        end: DocumentPosition,
+        mark: &Mark,
+    ) -> bool {
+        let ranges: Vec<(usize, std::ops::Range<usize>)> = (start.block..=end.block)
+            .filter_map(|index| {
+                let block = self.blocks.get(index)?;
+                if !block.kind.is_editable()
+                    || matches!(
+                        block.kind,
+                        BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
+                    )
+                {
+                    return None;
+                }
+                let len = block.line.value().len();
+                let from = if index == start.block {
+                    start.byte.min(len)
+                } else {
+                    0
+                };
+                let to = if index == end.block {
+                    end.byte.min(len)
+                } else {
+                    len
+                };
+                (from < to).then_some((index, from..to))
+            })
+            .collect();
+        let (Some((first, _)), Some((last, _))) = (ranges.first(), ranges.last()) else {
+            return false;
+        };
+        let touched = *first..last.saturating_add(1);
+        let raised = matches!(mark, Mark::Superscript | Mark::Subscript);
+        let already = raised
+            && ranges.iter().all(|(index, range)| {
+                self.blocks.get(*index).is_some_and(|block| {
+                    ui::widget::marks::range_covered_by(block.line.marks(), range, mark)
+                })
+            });
+        for (index, range) in ranges {
+            let Some(block) = self.blocks.get_mut(index) else {
+                continue;
+            };
+            let mut spans = block.line.marks().to_vec();
+            ui::widget::marks::remove_mark_from_range(&mut spans, range.clone(), mark);
+            if !already {
+                ui::widget::marks::add_mark_to_range(&mut spans, range, mark.clone());
+            }
+            block.line.set_marks(spans);
+        }
+        self.edit_scope.widen(EditScope::Blocks(touched));
+        self.dirty = true;
+        true
+    }
+
+    /// Set the run's own look — colour, size, face or baseline shift — over the selection, or
+    /// at the caret for the text typed next, replacing what that kind held there. A raised or
+    /// lowered stretch asked for again becomes plain text. `false` when nothing changed.
+    pub fn set_look_mark(&mut self, mark: Mark) -> bool {
+        self.note_edit_anywhere();
+        if self.read_only {
+            return false;
+        }
+        if let Some(selection) = self.document_selection {
+            let (start, end) = selection.ordered();
+            if start.block != end.block {
+                return self.set_look_across(start, end, &mark);
+            }
+        }
+        let Some(index) = self.focused.filter(|index| *index < self.blocks.len()) else {
+            return false;
+        };
+        let Some(block) = self.blocks.get_mut(index) else {
+            return false;
+        };
+        block.line.set_look_mark(mark);
+        self.edit_scope
+            .widen(EditScope::Blocks(index..index.saturating_add(1)));
+        self.dirty = true;
+        true
+    }
+
     /// Toggle a list as a toolbar button does: the selected paragraphs, or
     /// the focused one, become a bulleted list (a numbered one when
     /// `ordered`), each keeping its depth; when every one of them already is
@@ -223,10 +311,12 @@ impl BlockEditor {
     }
 
     /// A view asking for a formatting command, as a toolbar beside the document does: `bold`,
-    /// `italic`, `underline`, `strike`, `bullets`, `numbers`, `heading:<level>` or
-    /// `link:<address>`, then a count the view changes every time it asks (`bold:1`,
-    /// `bold:2`), so the same command asked twice is two commands. The ask is answered once:
-    /// the same ask again changes nothing. Answers whether it changed the document.
+    /// `italic`, `underline`, `strike`, `super`, `sub`, `size:<points>`,
+    /// `font:<sans|serif|mono>`, `color:<#rrggbb>`, `highlight:<#rrggbb>`, `bullets`,
+    /// `numbers`, `heading:<level>` or `link:<address>`, then a count the view changes every
+    /// time it asks (`bold:1`, `bold:2`), so the same command asked twice is two commands. The
+    /// ask is answered once: the same ask again changes nothing. Answers whether it changed the
+    /// document.
     pub fn format_asked(&mut self, asked: Option<String>) -> bool {
         if asked == self.asked_format {
             return false;
@@ -245,6 +335,18 @@ impl BlockEditor {
             "italic" => self.toggle_mark(Mark::Italic),
             "underline" => self.toggle_mark(Mark::Underline),
             "strike" => self.toggle_mark(Mark::Strikethrough),
+            "super" => self.set_look_mark(Mark::Superscript),
+            "sub" => self.set_look_mark(Mark::Subscript),
+            "size" => match argument.trim().parse::<u16>() {
+                Ok(points) if points > 0 => self.set_look_mark(Mark::Size(points)),
+                _ => false,
+            },
+            "font" => crate::rich_doc::family_of(argument)
+                .is_some_and(|family| self.set_look_mark(Mark::Font(family))),
+            "color" => crate::rich_doc::rgb_of(argument)
+                .is_some_and(|rgb| self.set_look_mark(Mark::Color(rgb))),
+            "highlight" => crate::rich_doc::rgb_of(argument)
+                .is_some_and(|rgb| self.set_look_mark(Mark::Highlight(rgb))),
             "bullets" => self.toggle_list(false),
             "numbers" => self.toggle_list(true),
             "heading" => match argument.trim().parse::<u8>() {
@@ -287,5 +389,85 @@ mod tests {
             "a command the editor has not is no command"
         );
         assert!(!editor.format_asked(None));
+    }
+    /// A raised stretch asked for twice is plain text again, and raising one that is lowered
+    /// replaces it: a run is one or the other, never both.
+    #[test]
+    fn raised_and_lowered_text_toggle_as_one_kind() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("x2 and H2O")]);
+        editor.focus_block(0, CursorPlacement::End);
+        editor.blocks[0].line.inner_mut().set_selection(1, 2);
+
+        assert!(editor.set_look_mark(Mark::Superscript));
+        assert_eq!(
+            editor.blocks[0].line.marks(),
+            [MarkSpan::new(1..2, Mark::Superscript)]
+        );
+        assert!(editor.set_look_mark(Mark::Subscript));
+        assert_eq!(
+            editor.blocks[0].line.marks(),
+            [MarkSpan::new(1..2, Mark::Subscript)],
+            "raising it again lowers it instead of carrying both"
+        );
+        assert!(editor.set_look_mark(Mark::Subscript));
+        assert!(
+            editor.blocks[0].line.marks().is_empty(),
+            "asking for the same baseline again is plain text"
+        );
+    }
+
+    /// A colour, a size or a face replaces what that kind held over the selection rather than
+    /// taking it off: asking for another colour re-colours the words.
+    #[test]
+    fn a_runs_look_replaces_what_that_kind_held() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("hello world")]);
+        editor.focus_block(0, CursorPlacement::End);
+        editor.blocks[0].line.inner_mut().set_selection(0, 5);
+
+        assert!(editor.set_look_mark(Mark::Color([0xcf, 0x22, 0x2e])));
+        assert!(editor.set_look_mark(Mark::Color([0x09, 0x69, 0xda])));
+        assert!(editor.set_look_mark(Mark::Size(14)));
+        assert!(editor.set_look_mark(Mark::Highlight([0xff, 0xf8, 0xc5])));
+        assert!(editor.set_look_mark(Mark::Font(ui::richtext::FontFamily::Serif)));
+        assert_eq!(
+            editor.blocks[0].line.marks(),
+            [
+                MarkSpan::new(0..5, Mark::Color([0x09, 0x69, 0xda])),
+                MarkSpan::new(0..5, Mark::Size(14)),
+                MarkSpan::new(0..5, Mark::Highlight([0xff, 0xf8, 0xc5])),
+                MarkSpan::new(0..5, Mark::Font(ui::richtext::FontFamily::Serif)),
+            ]
+        );
+    }
+
+    /// The commands a toolbar asks reach the same marks: a size, a face, an ink, a band and a
+    /// baseline, each naming what it sets.
+    #[test]
+    fn a_toolbars_look_commands_format_the_selection() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("hello world")]);
+        editor.focus_block(0, CursorPlacement::End);
+        editor.blocks[0].line.inner_mut().set_selection(0, 5);
+
+        assert!(editor.format_asked(Some("color:#0969da:1".into())));
+        assert!(editor.format_asked(Some("size:14:2".into())));
+        assert!(editor.format_asked(Some("font:serif:3".into())));
+        assert!(editor.format_asked(Some("highlight:#fff8c5:4".into())));
+        assert!(editor.format_asked(Some("super:5".into())));
+        assert!(editor.active_marks().contains(&Mark::Color([0x09, 0x69, 0xda])));
+        assert!(editor.active_marks().contains(&Mark::Size(14)));
+        assert!(
+            editor
+                .active_marks()
+                .contains(&Mark::Font(ui::richtext::FontFamily::Serif))
+        );
+        assert!(
+            editor
+                .active_marks()
+                .contains(&Mark::Highlight([0xff, 0xf8, 0xc5]))
+        );
+        assert!(editor.active_marks().contains(&Mark::Superscript));
     }
 }

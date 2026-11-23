@@ -10,6 +10,8 @@ use tilo_sort::CompactSort as _;
 
 use uuid::Uuid;
 
+use crate::richtext::{BaselineShift, FontFamily};
+
 /// Stable identifier for a page link target. `RichTextLine` doesn't own page
 /// identity — that's the notes app's concern — so a UUID is used here; the
 /// notes app's `PageId` is itself a `uuid::Uuid`, so `Mark::Link(PageId)`
@@ -35,6 +37,18 @@ pub enum Mark {
     /// A record named in the text, by the value its reference is stored as
     /// ([`tilo_reference::Embed::mark_value`]).
     Reference(String),
+    /// Raised text, as `x²` writes its exponent.
+    Superscript,
+    /// Lowered text, as `H₂O` writes its subscript.
+    Subscript,
+    /// The run's own size in points, overriding the block's.
+    Size(u16),
+    /// The run's own face, overriding the block's.
+    Font(FontFamily),
+    /// The run's own ink, as RGB.
+    Color([u8; 3]),
+    /// A band behind the run, as RGB: a highlighter's mark.
+    Highlight([u8; 3]),
 }
 
 /// How a mention of one member is painted.
@@ -68,6 +82,26 @@ impl Mark {
                     Mark::Mention(_) | Mark::Reference(_),
                     Mark::Mention(_) | Mark::Reference(_)
                 )
+                // Raised and lowered text are one kind: a stretch is one or the
+                // other, never both.
+                | (
+                    Mark::Superscript | Mark::Subscript,
+                    Mark::Superscript | Mark::Subscript
+                )
+                | (Mark::Size(_), Mark::Size(_))
+                | (Mark::Font(_), Mark::Font(_))
+                | (Mark::Color(_), Mark::Color(_))
+                | (Mark::Highlight(_), Mark::Highlight(_))
+        )
+    }
+
+    /// Whether the mark is one of a stretch's own look, which a toolbar sets to
+    /// a value rather than toggles: setting it again replaces what was there.
+    #[must_use]
+    pub fn replaces_its_kind(&self) -> bool {
+        matches!(
+            self,
+            Mark::Size(_) | Mark::Font(_) | Mark::Color(_) | Mark::Highlight(_)
         )
     }
 
@@ -131,6 +165,35 @@ pub fn range_fully_covered(spans: &[MarkSpan], range: &Range<usize>, mark: &Mark
     let mut sorted: Vec<&Range<usize>> = spans
         .iter()
         .filter(|s| s.mark.same_kind(mark))
+        .map(|s| &s.range)
+        .collect();
+    sorted.compact_sort_by_key(|r| r.start);
+    for r in sorted {
+        if r.start > covered {
+            return false;
+        }
+        if r.end > covered {
+            covered = r.end;
+        }
+        if covered >= range.end {
+            return true;
+        }
+    }
+    covered >= range.end
+}
+
+/// True iff every byte in `range` (a non-empty sub-range of the line)
+/// is covered by a span whose mark is exactly `mark`: not merely one of its
+/// kind, but the same value — the same colour, the same size, the same
+/// baseline.
+pub fn range_covered_by(spans: &[MarkSpan], range: &Range<usize>, mark: &Mark) -> bool {
+    if range.start >= range.end {
+        return false;
+    }
+    let mut covered = range.start;
+    let mut sorted: Vec<&Range<usize>> = spans
+        .iter()
+        .filter(|s| &s.mark == mark)
         .map(|s| &s.range)
         .collect();
     sorted.compact_sort_by_key(|r| r.start);
@@ -337,6 +400,16 @@ pub struct MarkSegment {
     pub resource_link: Option<String>,
     pub embed: Option<String>,
     pub mention: Option<String>,
+    /// Raised or lowered, as the run's own baseline shift.
+    pub baseline: BaselineShift,
+    /// The run's own size in points.
+    pub size: Option<u16>,
+    /// The run's own face.
+    pub family: Option<FontFamily>,
+    /// The run's own ink.
+    pub color: Option<[u8; 3]>,
+    /// The band behind the run.
+    pub highlight: Option<[u8; 3]>,
 }
 
 impl MarkSegment {
@@ -353,6 +426,11 @@ impl MarkSegment {
             resource_link: None,
             embed: None,
             mention: None,
+            baseline: BaselineShift::None,
+            size: None,
+            family: None,
+            color: None,
+            highlight: None,
         }
     }
 }
@@ -402,6 +480,16 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
                     Mark::ExternalLink(_) => seg.external_link = true,
                     Mark::ResourceLink(href) => seg.resource_link = Some(href.clone()),
                     Mark::Mention(_) | Mark::Reference(_) => seg.mention = s.mark.reference(),
+                    Mark::Superscript => {
+                        if seg.baseline == BaselineShift::None {
+                            seg.baseline = BaselineShift::Super;
+                        }
+                    }
+                    Mark::Subscript => seg.baseline = BaselineShift::Sub,
+                    Mark::Size(points) => seg.size = Some(*points),
+                    Mark::Font(family) => seg.family = Some(*family),
+                    Mark::Color(rgb) => seg.color = Some(*rgb),
+                    Mark::Highlight(rgb) => seg.highlight = Some(*rgb),
                 }
             }
         }
@@ -632,5 +720,35 @@ mod tests {
             segments_for_no_spans_is_one_plain_segment();
             underline_and_strikethrough_segments_carry_their_flags();
         }
+    }
+    /// The run's own look reaches the segment a renderer draws: raised or lowered, a size in
+    /// points, a face, an ink and a band. Raised and lowered are one kind, and a range is
+    /// covered by the value it holds rather than by any mark of that kind.
+    #[test]
+    fn a_runs_own_look_reaches_its_segment() {
+        let spans = vec![
+            MarkSpan::new(0..1, Mark::Superscript),
+            MarkSpan::new(1..2, Mark::Subscript),
+            MarkSpan::new(2..3, Mark::Size(14)),
+            MarkSpan::new(3..4, Mark::Font(FontFamily::Serif)),
+            MarkSpan::new(4..5, Mark::Color([0xcf, 0x22, 0x2e])),
+            MarkSpan::new(5..6, Mark::Highlight([0xff, 0xf8, 0xc5])),
+        ];
+        let segments = segments_for(6, &spans);
+        assert_eq!(segments.len(), 6);
+        assert_eq!(segments[0].baseline, BaselineShift::Super);
+        assert_eq!(segments[1].baseline, BaselineShift::Sub);
+        assert_eq!(segments[2].size, Some(14));
+        assert_eq!(segments[3].family, Some(FontFamily::Serif));
+        assert_eq!(segments[4].color, Some([0xcf, 0x22, 0x2e]));
+        assert_eq!(segments[5].highlight, Some([0xff, 0xf8, 0xc5]));
+
+        assert!(Mark::Superscript.same_kind(&Mark::Subscript));
+        assert!(!Mark::Color([1, 2, 3]).same_kind(&Mark::Highlight([1, 2, 3])));
+        assert!(range_covered_by(&spans, &(4..5), &Mark::Color([0xcf, 0x22, 0x2e])));
+        assert!(
+            !range_covered_by(&spans, &(4..5), &Mark::Color([0x09, 0x69, 0xda])),
+            "another colour of the same kind is not the value held"
+        );
     }
 }

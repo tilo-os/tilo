@@ -166,6 +166,33 @@ fn mark_tags(mark: &Mark) -> Option<(String, &'static str)> {
             ),
             "</span>",
         ),
+        Mark::Superscript => ("<sup>".into(), "</sup>"),
+        Mark::Subscript => ("<sub>".into(), "</sub>"),
+        Mark::Size(points) => (
+            format!("<span style=\"font-size: {points}pt\">"),
+            "</span>",
+        ),
+        Mark::Font(family) => (
+            format!(
+                "<span style=\"font-family: {}\">",
+                crate::rich_doc::family_name(*family)
+            ),
+            "</span>",
+        ),
+        Mark::Color(rgb) => (
+            format!(
+                "<span style=\"color: {}\">",
+                crate::rich_doc::hex_of(*rgb)
+            ),
+            "</span>",
+        ),
+        Mark::Highlight(rgb) => (
+            format!(
+                "<span style=\"background-color: {}\">",
+                crate::rich_doc::hex_of(*rgb)
+            ),
+            "</span>",
+        ),
         Mark::Transclusion(_) | Mark::Embed(_) => return None,
     })
 }
