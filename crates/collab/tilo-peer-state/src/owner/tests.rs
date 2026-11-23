@@ -9,7 +9,7 @@ use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
-use std::{collections::BTreeMap, path::PathBuf, time::SystemTime};
+use std::{path::PathBuf, time::SystemTime};
 
 #[path = "busy_workspace_tests.rs"]
 mod busy_workspace;

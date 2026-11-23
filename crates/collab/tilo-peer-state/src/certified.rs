@@ -19,7 +19,7 @@ const MAX_INTENT_BYTES: usize = MAX_WORKSPACE_JOIN_REQUEST_BYTES + 8192;
 /// challenge version names.
 const INTENT_VERSION: u8 = 2;
 #[derive(Clone, Serialize, Deserialize)]
-struct IntentRecord {
+pub(crate) struct IntentRecord {
     version: u8,
     prepared_at_ns: u64,
     local_device: DeviceCert,
@@ -195,7 +195,7 @@ fn validate_historical_iroh(
         .map_err(|e| e.to_string())?;
     Ok(())
 }
-fn now_ns(now: SystemTime) -> Result<u64, String> {
+pub(crate) fn now_ns(now: SystemTime) -> Result<u64, String> {
     u64::try_from(
         now.duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|e| e.to_string())?
