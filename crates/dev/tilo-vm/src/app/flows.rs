@@ -1,4 +1,4 @@
-//! `tilo-vm scenario four-devices` and `home-server`: boot a fleet of devices
+//! `tilo-vm scenario four-devices` and `laptop-phone-server`: boot a fleet of devices
 //! on tilo-vm's private network with `os/dev/vm.sh` (the same cycle machinery
 //! the install scenario uses) and drive the flow's steps through the guests'
 //! own logins.
@@ -340,11 +340,11 @@ impl App {
         self.scenario_flow(Flow::FourDevices, args)
     }
 
-    pub(super) fn scenario_home_server(
+    pub(super) fn scenario_laptop_phone_server(
         &mut self,
         args: &FlowScenarioArgs,
     ) -> Result<Outcome, CliError> {
-        self.scenario_flow(Flow::HomeServer, args)
+        self.scenario_flow(Flow::LaptopPhoneServer, args)
     }
 
     fn scenario_flow(&mut self, flow: Flow, args: &FlowScenarioArgs) -> Result<Outcome, CliError> {
@@ -428,7 +428,7 @@ impl App {
                 });
             }
             self.wait_ssh(plan, vm)?;
-            if plan.flow == Flow::HomeServer && vm.guest == Guest::DesktopX86 {
+            if plan.flow == Flow::LaptopPhoneServer && vm.guest == Guest::DesktopX86 {
                 // The flow is a home with no tilo.sh and no internet: keep the
                 // host forward for this scenario's own login and drop the
                 // guest's route out. The offline step proves it.
@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn the_plan_names_each_step_and_its_requirement() {
-        let steps = Flow::HomeServer.steps();
+        let steps = Flow::LaptopPhoneServer.steps();
         let text = steps
             .iter()
             .map(|step| format!("{} {}", step.id, need(step.requires)))

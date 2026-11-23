@@ -17,7 +17,7 @@ pub enum Guest {
     DesktopX86,
     /// The aarch64 laptop.
     LaptopArm,
-    /// The always-on server (`four-devices`) or home server (`home-server`).
+    /// The always-on server (`four-devices`) or the person's server beside a laptop (`laptop-phone-server`).
     Server,
 }
 
@@ -63,15 +63,15 @@ pub struct Step {
 pub enum Flow {
     /// One person, four devices used as one computer.
     FourDevices,
-    /// Laptop and home server with no tilo.sh.
-    HomeServer,
+    /// Laptop and server with no tilo.sh.
+    LaptopPhoneServer,
 }
 
 impl Flow {
     pub const fn name(self) -> &'static str {
         match self {
             Self::FourDevices => "four-devices",
-            Self::HomeServer => "home-server",
+            Self::LaptopPhoneServer => "laptop-phone-server",
         }
     }
 
@@ -79,7 +79,7 @@ impl Flow {
     pub fn steps(self) -> Vec<Step> {
         match self {
             Self::FourDevices => four_devices_steps(),
-            Self::HomeServer => home_server_steps(),
+            Self::LaptopPhoneServer => laptop_phone_server_steps(),
         }
     }
 }
@@ -156,7 +156,7 @@ pub fn four_devices_steps() -> Vec<Step> {
 }
 
 #[must_use]
-pub fn home_server_steps() -> Vec<Step> {
+pub fn laptop_phone_server_steps() -> Vec<Step> {
     vec![
         Step {
             id: "web-default",
@@ -220,9 +220,9 @@ fn prerequisites(flow: Flow, id: &str) -> &'static [&'static str] {
         (Flow::FourDevices, "arrangement") => &["outputs"],
         (Flow::FourDevices, "window") => &["arrangement"],
         (Flow::FourDevices, "server-turn") => &["window"],
-        (Flow::HomeServer, "web-off" | "sign-in") => &["web-default"],
-        (Flow::HomeServer, "update-lease") => &["sign-in"],
-        (Flow::HomeServer, "reboot") => &["update-lease"],
+        (Flow::LaptopPhoneServer, "web-off" | "sign-in") => &["web-default"],
+        (Flow::LaptopPhoneServer, "update-lease") => &["sign-in"],
+        (Flow::LaptopPhoneServer, "reboot") => &["update-lease"],
         _ => &[],
     }
 }
@@ -720,12 +720,12 @@ mod tests {
     }
 
     #[test]
-    fn home_server_web_off_names_the_setting_it_needs() {
+    fn laptop_phone_server_web_off_names_the_setting_it_needs() {
         let mut fleet = Fake {
             web: true,
             ..Fake::default()
         };
-        let reports = run(Flow::HomeServer, &mut fleet);
+        let reports = run(Flow::LaptopPhoneServer, &mut fleet);
         assert_eq!(reports[0].status, Status::Passed);
         assert!(
             matches!(&reports[1].status, Status::Missing(what) if what.contains("turns the server's web UI off")),
@@ -742,7 +742,7 @@ mod tests {
         };
         fleet.offline.insert(Guest::DesktopX86);
         all_actions(&mut fleet);
-        let reports = run(Flow::HomeServer, &mut fleet);
+        let reports = run(Flow::LaptopPhoneServer, &mut fleet);
         let offline = reports
             .iter()
             .find(|report| report.id == "offline")

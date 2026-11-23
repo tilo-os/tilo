@@ -175,13 +175,13 @@ the run reports every step and exits non-zero rather than waiting on a boot or
 an invocation that never answers. `--dry-run` prints the same plan without
 booting anything.
 
-## `tilo-vm scenario home-server`
+## `tilo-vm scenario laptop-phone-server`
 
-Laptop and home server with no tilo.sh and no internet:
+Laptop and server with no tilo.sh and no internet:
 
 ```sh
-tilo-vm scenario home-server --server-disk /path/to/server-disk.qcow2
-tilo-vm scenario home-server --dry-run
+tilo-vm scenario laptop-phone-server --server-disk /path/to/server-disk.qcow2
+tilo-vm scenario laptop-phone-server --dry-run
 ```
 
 The desktop boots beside the server on the same private network, and the

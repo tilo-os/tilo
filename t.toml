@@ -5002,20 +5002,20 @@ heavy = true
 default = false
 on = ["dispatch"]
 
-# Laptop and home server with no tilo.sh: the desktop boots with no route to the internet and
+# Laptop and server with no tilo.sh: the desktop boots with no route to the internet and
 # its steps go through published actions and `tilo device`; the server's own web UI and the
 # desktop's management of it end naming the capability they need until it exists
 # (os/tests/flow_scenario.sh). Add --server-disk when a bootable server image disk is at hand.
 [[check]]
-name = "flow-scenario-home-server"
+name = "flow-scenario-laptop-phone-server"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt\nbash os/tests/flow_scenario.sh home-server\n"
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt\nbash os/tests/flow_scenario.sh laptop-phone-server\n"
 needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
-outputs = ["/target/flow-scenarios/home-server/**"]
+outputs = ["/target/flow-scenarios/laptop-phone-server/**"]
 cache = false
 git = true
 timeout_secs = 5400

@@ -1050,8 +1050,8 @@ impl App {
             Some(Command::Scenario(ScenarioCommand::FourDevices(args))) => {
                 self.scenario_four_devices(&args)
             }
-            Some(Command::Scenario(ScenarioCommand::HomeServer(args))) => {
-                self.scenario_home_server(&args)
+            Some(Command::Scenario(ScenarioCommand::LaptopPhoneServer(args))) => {
+                self.scenario_laptop_phone_server(&args)
             }
             Some(command @ (Command::LayerPack { .. } | Command::AppPack { .. })) => {
                 Self::pack_command(command)

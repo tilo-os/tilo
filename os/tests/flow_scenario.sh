@@ -4,19 +4,19 @@
 # nobody has built yet. A genuine failure, a hang or an internal error is red.
 #
 #   flow_scenario.sh four-devices --arm-disk DISK [--server-disk DISK]
-#   flow_scenario.sh home-server [--server-disk DISK]
+#   flow_scenario.sh laptop-phone-server [--server-disk DISK]
 #
 # The x86-64 desktop disk is os-dev-disk's disk.qcow2; TILO_FLOW_DESKTOP_DISK
 # names it. Scenario steps whose capability is not built yet are the reason
 # this check exists today: it proves they are named, not hung on.
 set -euo pipefail
 
-flow=${1:?usage: flow_scenario.sh four-devices|home-server [disk flags]}
+flow=${1:?usage: flow_scenario.sh four-devices|laptop-phone-server [disk flags]}
 shift
 case "$flow" in
-four-devices | home-server) ;;
+four-devices | laptop-phone-server) ;;
 *)
-  echo "flow_scenario: unknown flow $flow (four-devices or home-server)" >&2
+  echo "flow_scenario: unknown flow $flow (four-devices or laptop-phone-server)" >&2
   exit 2
   ;;
 esac
