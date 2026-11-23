@@ -196,33 +196,29 @@ tilo_test_env::scenario! {
                 .expect("the review shows the computer's name row")
                 .accessibility()
                 .expect("the name row is readable");
+            let spoken = format!(
+                "{}, {}",
+                t("installer-preview-device-name-label"),
+                t("installer-preview-name-open-title")
+            );
             assert_eq!(
                 name.name.as_deref(),
-                Some(t("installer-preview-device-name-label").as_str()),
-                "the name row says what it is"
-            );
-            assert!(
-                name.value
-                    .as_deref()
-                    .unwrap_or_default()
-                    .contains(&t("installer-preview-name-open-title")),
-                "the name row says the computer answers its name: {name:?}"
+                Some(spoken.as_str()),
+                "the name row says what it is and what it takes: {name:?}"
             );
             let model = visual_tests::control(preview, "installer.review.target")
                 .expect("the review shows the model row")
                 .accessibility()
                 .expect("the model row is readable");
+            let spoken = format!(
+                "{}, {}",
+                t("installer-preview-target-model-label"),
+                t("installer-preview-target-review-nameless")
+            );
             assert_eq!(
                 model.name.as_deref(),
-                Some(t("installer-preview-target-model-label").as_str())
-            );
-            assert!(
-                model
-                    .value
-                    .as_deref()
-                    .unwrap_or_default()
-                    .contains(&t("installer-preview-target-review-nameless")),
-                "the model row says its hardware is checked when it installs: {model:?}"
+                Some(spoken.as_str()),
+                "the model row says what it is and that its hardware is checked when it installs: {model:?}"
             );
             assert_eq!(
                 preview.journey.categories,
@@ -237,9 +233,11 @@ tilo_test_env::scenario! {
                 .expect("the review shows the data choice")
                 .accessibility()
                 .expect("the data row is readable");
-            assert_eq!(
-                migration.name.as_deref(),
-                Some(t("installer-preview-migrate-server-title").as_str())
+            let name = migration.name.as_deref().unwrap_or_default();
+            let title = format!("{}, ", t("installer-preview-migrate-server-title"));
+            assert!(
+                name.starts_with(&title),
+                "the data row is titled with its choice: {migration:?}"
             );
         })
         .unwrap();

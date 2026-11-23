@@ -84,7 +84,7 @@ tilo_test_env::scenario! {
         assert!(accessible.state.disabled);
         assert!(
             accessible
-                .value
+                .name
                 .unwrap()
                 .contains(&t("installer-accounts-unavailable"))
         );
@@ -228,7 +228,7 @@ music_streaming = ["streaming", "user-read-private"]
             assert!(!accessible.state.disabled);
             assert!(
                 accessible
-                    .value
+                    .name
                     .unwrap()
                     .contains(&t("installer-accounts-spotify-source-sign-in"))
             );
@@ -1712,10 +1712,8 @@ tilo_test_env::scenario! {
             &format!("installer.account.detected.{}", fixture.nextcloud_id),
         )
         .unwrap();
-        assert_eq!(
-            nextcloud.accessibility().unwrap().value,
-            Some(t("installer-accounts-left-out"))
-        );
+        let name = nextcloud.accessibility().unwrap().name.unwrap();
+        assert!(name.ends_with(&format!(", {}", t("installer-accounts-left-out"))));
         fixture.assert_sources_unchanged();
     }
 }
