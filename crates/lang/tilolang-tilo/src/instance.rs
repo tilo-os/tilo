@@ -184,8 +184,8 @@ pub trait Publication {
 mod platform;
 
 pub use platform::{
-    GlobalLocale, Locale, Platform, PlatformBlobs, PlatformClipboard, PlatformFonts, PlatformWeb,
-    PlatformWords, SharedPdf, Zoned, sentence_at, shown_at, wall_moment, wall_now,
+    GlobalLocale, Locale, Platform, PlatformBlobs, PlatformClipboard, PlatformFiles, PlatformFonts,
+    PlatformWeb, PlatformWords, SharedPdf, Zoned, sentence_at, shown_at, wall_moment, wall_now,
 };
 #[cfg(all(not(target_family = "wasm"), feature = "test-support"))]
 pub mod testing;
@@ -1042,6 +1042,8 @@ impl Instance {
         }
         host.runtime()
             .set_fonts(PlatformFonts(Rc::clone(&self.platform)));
+        host.runtime()
+            .set_device_files(PlatformFiles(Rc::clone(&self.platform)));
         let platform = Rc::clone(&self.platform);
         host.set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);

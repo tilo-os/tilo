@@ -1193,6 +1193,13 @@ impl Runtime {
         *self.core.pdf.borrow_mut() = Box::new(host);
     }
 
+    /// The device's own folders ([`crate::files`]): what `File.list`, `File.stat`, `File.read`
+    /// and `File.watch` reach, within the paths the app was granted. Until it is set, an app
+    /// holds no device files and each call says so.
+    pub fn set_device_files(&self, host: impl crate::files::FilesHost + 'static) {
+        *self.core.files.borrow_mut() = Some(Box::new(host));
+    }
+
     /// Where `model_call` goes.
     pub fn set_model_host(&self, host: impl ModelHost + 'static) {
         *self.core.models.borrow_mut() = Some(Box::new(host));

@@ -28,7 +28,8 @@ use Imp::{
     CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday,
     Describe, DescribeRef, DurationText, Earlier, EditField, EntryParts, EnumGetF, EnumGetH,
     EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged,
-    FileAt, FileBook, FileBookCover, FileBookInfo, FileFiles, FileOfBytes, FileOfText, FilePart, FileSize, FileText, FileZip, FilterLit,
+    FileAt, FileBook, FileBookCover, FileBookInfo, FileFiles, FileList, FileOfBytes, FileReadPath,
+    FileStat, FileWatch, FileOfText, FilePart, FileSize, FileText, FileZip, FilterLit,
     Filters, Find, FirstUnseen, FloatAbs, FloatAcos, FloatAsin, FloatAtan, FloatCbrt, FloatCeil,
     FloatCeilTo, FloatClamp, FloatCos, FloatCosh, FloatExp, FloatFloor, FloatFloorTo, FloatFract,
     FloatGamma, FloatIsFinite, FloatIsNan, FloatLn, FloatLog2, FloatLog10, FloatMax, FontFamilies, FloatMin,
@@ -55,6 +56,29 @@ use Imp::{
     TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiChild,
     UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
     VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost,
+    FileAt, FileBook, FileBookInfo, FileFiles, FileList, FileOfBytes, FileOfText, FilePart,
+    FileReadPath, FileSize, FileStat, FileText, FileWatch, FileZip, FilterLit, Filters, Find,
+    FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo, FloatMax,
+    FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef, Grep, GroupBy, IdentPart, IntAbs,
+    IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke, Invoker, IsError,
+    IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, Links, ListAvg, ListEnd, ListGetF,
+    ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH,
+    ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom, MapGetH, MapGetValue,
+    MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove, MapRemoveValue, MapSetAdd,
+    MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV,
+    Notify, Now, OfType, Outside, OutsideAt, PersonNamed, Phrase, Print, PrintRows, ProposalNote,
+    Query, QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText,
+    ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI,
+    ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmbed,
+    RichEmpty, RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichRelinked, RichTime, RowOpen,
+    RunChanges, SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI,
+    Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith,
+    StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit,
+    StrStartsWith, StrToInt, StrTrim, StrUpper, StrWords, Suggest, Take, TimeClock, TimeDay,
+    TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
+    TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindState,
+    UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI,
+    ValueEq, VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost,
     WebStatus, WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
 };
 
@@ -158,6 +182,9 @@ pub struct Core {
     /// The families text is set in on this device (`Runtime::set_fonts`): what a reading face's
     /// picker offers. Until the host sets one, it offers none.
     pub fonts: RefCell<Option<Box<dyn crate::fonts::FontHost>>>,
+    /// The device's own folders, within the paths the app was granted
+    /// (`Runtime::set_device_files`). Until the host sets one, it reads none.
+    pub files: RefCell<Option<Box<dyn crate::files::FilesHost>>>,
     /// The person's clipboard (`Runtime::set_clipboard`): what a copy offers and what a paste
     /// reads. Until the host sets one, nothing copies and nothing pastes.
     pub clipboard: RefCell<Option<Box<dyn crate::clipboard::ClipboardHost>>>,
@@ -354,6 +381,7 @@ impl Core {
             web: RefCell::new(None),
             blobs: RefCell::new(None),
             fonts: RefCell::new(None),
+            files: RefCell::new(None),
             clipboard: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),
@@ -573,6 +601,7 @@ impl Core {
             SheetNumbers => self.sheet_numbers(a),
             SheetRecords => self.sheet_records(a),
             SheetEntry => self.sheet_entry(a),
+            FileList | FileStat | FileReadPath | FileWatch => self.file_device_import(imp, a),
             ClipboardCopyText | ClipboardCopyImage | ClipboardPasteText | ClipboardPasteImage => {
                 self.clipboard_import(imp, a)
             }

@@ -2638,6 +2638,12 @@ impl Checker<'_> {
             let format = self.expr_as(&format.value, &Ty::Text);
             return Ex::host(Imp::SheetOfFile, vec![named, workbook, format], Ty::File);
         }
+        // A folder on this device, within what the app was granted: its entries, one entry, the
+        // bytes a path holds, and a watch that runs an action when the folder changes. They
+        // read the disk, so an action declares `uses files` and a view calls none of them.
+        if matches!(name.name.as_str(), "list" | "stat" | "read" | "watch") {
+            return self.file_device_method(name, args, span);
+        }
         let (held, imp, what, of) = match name.name.as_str() {
             "of_text" => (Ty::Text, Imp::FileOfText, "the text it holds", "text"),
             "of_bytes" => (Ty::Bytes, Imp::FileOfBytes, "the bytes it holds", "bytes"),
@@ -2704,6 +2710,70 @@ impl Checker<'_> {
         let named = self.expr_as(&named.value, &Ty::Text);
         let content = self.expr_as(&content.value, &held);
         Ex::host(imp, vec![named, content], Ty::File)
+    }
+
+    /// The `File` calls over a device folder: `File.list(path)`, `File.stat(path)`,
+    /// `File.read(path)` and `File.watch(path, on: action)`. Each reads the disk, so the action
+    /// declaring it says `uses files`; a view calls none.
+    fn file_device_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        let method = name.name.as_str();
+        let form = match method {
+            "list" => "`File.list(path)`: a folder's entries, within what the app was granted",
+            "stat" => "`File.stat(path)`: one entry, or none when nothing is there",
+            "read" => "`File.read(path)`: the bytes a path holds",
+            _ => {
+                "`File.watch(path, run)`: one of this package's actions, run when the folder changes"
+            }
+        };
+        let wanted = if method == "watch" { 2 } else { 1 };
+        if args.len() != wanted {
+            self.err("E022", span, form.to_owned());
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        for arg in args {
+            if let Some(named) = &arg.name {
+                self.err(
+                    "E022",
+                    named.span,
+                    format!("{form}; its arguments stand by position"),
+                );
+            }
+        }
+        self.reads(
+            crate::effects::Effect::Files,
+            span,
+            &format!("`File.{method}`"),
+        );
+        let path = self.expr_as(&args[0].value, &Ty::Text);
+        let entry = || super::platform::host_ty("FileEntry");
+        match method {
+            "list" => Ex::host(
+                Imp::FileList,
+                vec![path],
+                Ty::Result(Box::new(Ty::List(Box::new(entry()))), Box::new(Ty::Text)),
+            ),
+            "stat" => Ex::host(
+                Imp::FileStat,
+                vec![path],
+                Ty::Result(Box::new(Ty::Option(Box::new(entry()))), Box::new(Ty::Text)),
+            ),
+            "read" => Ex::host(
+                Imp::FileReadPath,
+                vec![path],
+                Ty::Result(Box::new(Ty::Bytes), Box::new(Ty::Text)),
+            ),
+            _ => {
+                let run = self.expr_as(&args[1].value, &Ty::Text);
+                Ex::host(
+                    Imp::FileWatch,
+                    vec![path, run],
+                    Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
+                )
+            }
+        }
     }
 
     pub(super) fn value_method(

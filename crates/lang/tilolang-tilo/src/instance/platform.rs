@@ -387,6 +387,55 @@ pub trait Platform {
         None
     }
 
+    /// The entries of the device's folder `path`, within the paths this app was granted: what
+    /// `File.list` reads. A platform that holds no device files answers the same refusal for
+    /// each call below.
+    ///
+    /// # Errors
+    ///
+    /// Why the folder cannot be read (not a folder, not granted, gone).
+    fn list_files(&self, path: &str) -> Result<Vec<tilolang_runtime::files::Entry>, String> {
+        let _ = path;
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// The entry at `path`, or none when nothing is there: what `File.stat` reads.
+    ///
+    /// # Errors
+    ///
+    /// Why the disk could not be asked.
+    fn stat_file(&self, path: &str) -> Result<Option<tilolang_runtime::files::Entry>, String> {
+        let _ = path;
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// The bytes `path` holds: what `File.read` reads.
+    ///
+    /// # Errors
+    ///
+    /// Why they cannot be read.
+    fn read_file_bytes(&self, path: &str) -> Result<Vec<u8>, String> {
+        let _ = path;
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// Keep the folder `path` watched, running the package's action `run` when it changes: what
+    /// `File.watch` registers, within the paths this app was granted. The action is invoked on
+    /// the app's root, as the person the app runs for.
+    ///
+    /// # Errors
+    ///
+    /// Why the folder cannot be watched.
+    fn watch_folder(&self, path: &str, run: &str) -> Result<String, String> {
+        let _ = (path, run);
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// Stop the watch `token` names.
+    fn unwatch_folder(&self, token: &str) {
+        let _ = token;
+    }
+
     /// What wakes the instance when work it waits for is ready (an index read off the frame).
     fn waker(&self) -> Waker;
 
@@ -460,6 +509,33 @@ impl tilolang_runtime::clipboard::ClipboardHost for PlatformClipboard {
 
     fn paste(&self, types: &[&str]) -> Option<(String, Vec<u8>)> {
         self.0.paste_clipboard(types)
+    }
+}
+
+/// The device's own folders, as the platform running the instance answers them: the paths the
+/// app was granted, and nothing else. What `File.list`, `File.stat`, `File.read` and
+/// `File.watch` reach.
+pub struct PlatformFiles(pub(super) Rc<dyn Platform>);
+
+impl tilolang_runtime::files::FilesHost for PlatformFiles {
+    fn list(&self, path: &str) -> Result<Vec<tilolang_runtime::files::Entry>, String> {
+        self.0.list_files(path)
+    }
+
+    fn stat(&self, path: &str) -> Result<Option<tilolang_runtime::files::Entry>, String> {
+        self.0.stat_file(path)
+    }
+
+    fn read(&self, path: &str) -> Result<Vec<u8>, String> {
+        self.0.read_file_bytes(path)
+    }
+
+    fn watch(&self, path: &str, run: &str) -> Result<String, String> {
+        self.0.watch_folder(path, run)
+    }
+
+    fn unwatch(&self, token: &str) {
+        self.0.unwatch_folder(token);
     }
 }
 

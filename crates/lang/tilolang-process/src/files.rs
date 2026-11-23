@@ -233,6 +233,234 @@ fn wait<T>(answers: &std::sync::mpsc::Receiver<T>) -> Result<T, String> {
         .map_err(|_| "the chooser did not answer".to_owned())
 }
 
+/// One entry of a folder, as `host.FileEntry` reads it.
+pub use tilolang_tilo::runtime::files::Entry;
+
+/// The entry `path` is, as `host.FileEntry` reads it: what its folder shows, its size, when its
+/// content last changed, and whether its name is hidden.
+fn entry(path: &std::path::Path) -> Result<Entry, String> {
+    let meta = std::fs::metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        });
+    Ok(Entry {
+        hidden: name.starts_with('.'),
+        name,
+        path: path.to_string_lossy().into_owned(),
+        folder: meta.is_dir(),
+        size: if meta.is_dir() {
+            0
+        } else {
+            i64::try_from(meta.len()).unwrap_or(i64::MAX)
+        },
+        modified,
+    })
+}
+
+/// The entries of the folder `path`: what `File.list` reads, in the order the disk answers.
+///
+/// # Errors
+///
+/// Why it cannot be read (it is not a folder, the sandbox refuses it, it is gone).
+pub fn list(path: &std::path::Path) -> Result<Vec<Entry>, String> {
+    let reading =
+        std::fs::read_dir(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut entries = Vec::new();
+    for item in reading {
+        // A name the reader cannot take is one entry's loss, never the folder's.
+        let Ok(item) = item else {
+            continue;
+        };
+        if let Ok(entry) = entry(&item.path()) {
+            entries.push(entry);
+        }
+    }
+    Ok(entries)
+}
+
+/// The entry `path` is, or none when nothing is there.
+///
+/// # Errors
+///
+/// Why the disk could not be asked (the sandbox refuses it, it is unreadable).
+pub fn stat(path: &std::path::Path) -> Result<Option<Entry>, String> {
+    match std::fs::metadata(path) {
+        Ok(_) => entry(path).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("{}: {error}", path.display())),
+    }
+}
+
+/// The bytes `path` holds: what `File.read` reads.
+///
+/// # Errors
+///
+/// Why they cannot be read (it is a folder, the sandbox refuses it, it is gone).
+pub fn read_bytes(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// The folders this instance watches, and the action each runs when one changes.
+///
+/// A watch is the platform's own: `inotify` on Linux, `FSEvents` on macOS and
+/// `ReadDirectoryChangesW` on Windows, through `notify`; a mount whose entries change without
+/// passing through this kernel (FUSE, NFS, SMB) is polled, and so is a folder whose watcher cannot
+/// be made. The handler runs on the watcher's thread: it records that the folder changed and wakes
+/// the host, and the frame that follows runs the action. Nothing is polled or woken while nothing
+/// changes.
+pub struct Watches {
+    inner: std::sync::Mutex<Inner>,
+    /// What wakes the host when a watched folder changes.
+    wake: tilolang_tilo::background::Waker,
+}
+
+#[derive(Default)]
+struct Inner {
+    next: u64,
+    watches: std::collections::BTreeMap<String, Watched>,
+}
+
+/// The registry's state, read even if a thread panicked while holding it: a watch that failed
+/// somewhere else must not make every later read fail.
+fn locked<T>(inner: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    inner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+struct Watched {
+    /// The action run when it changes, by its name in the package.
+    run: String,
+    /// The member it runs for.
+    actor: String,
+    /// Set from the watcher's thread when the folder changed, and taken by the frame that runs
+    /// the action.
+    changed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// What watches the folder; dropping it stops the watch.
+    _watcher: Box<dyn notify::Watcher + Send>,
+}
+
+impl Watches {
+    /// Watches waking `wake` when a folder they watch changes.
+    #[must_use]
+    pub fn new(wake: tilolang_tilo::background::Waker) -> Self {
+        Self {
+            inner: std::sync::Mutex::new(Inner::default()),
+            wake,
+        }
+    }
+
+    /// Watch `path` for the action `run`, run as `actor`, and answer the token that names the
+    /// watch.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be watched (it is not a folder, the sandbox refuses it, no watcher can be
+    /// made for it).
+    pub fn watch(&self, path: &str, run: &str, actor: &str) -> Result<String, String> {
+        let folder = std::path::Path::new(path);
+        let meta = std::fs::metadata(folder).map_err(|error| format!("{path}: {error}"))?;
+        if !meta.is_dir() {
+            return Err(format!("{path} is not a folder"));
+        }
+        let changed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watcher = watcher_for(
+            folder,
+            std::sync::Arc::clone(&changed),
+            std::sync::Arc::clone(&self.wake),
+        )?;
+        let mut inner = locked(&self.inner);
+        inner.next = inner.next.saturating_add(1);
+        let token = format!("watch-{}", inner.next);
+        inner.watches.insert(
+            token.clone(),
+            Watched {
+                run: run.to_owned(),
+                actor: actor.to_owned(),
+                changed,
+                _watcher: watcher,
+            },
+        );
+        drop(inner);
+        Ok(token)
+    }
+
+    /// Stop the watch `token` names.
+    pub fn unwatch(&self, token: &str) {
+        let mut inner = locked(&self.inner);
+        inner.watches.remove(token);
+    }
+
+    /// Whether anything is watched.
+    #[must_use]
+    pub fn watching(&self) -> bool {
+        let inner = locked(&self.inner);
+        !inner.watches.is_empty()
+    }
+
+    /// The watches whose folder changed since they last ran, each with the action to run and the
+    /// member it runs for, their changes taken up to now.
+    #[must_use]
+    pub fn take_changed(&self) -> Vec<(String, String)> {
+        let inner = locked(&self.inner);
+        let mut due = Vec::new();
+        for watched in inner.watches.values() {
+            if watched
+                .changed
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                due.push((watched.run.clone(), watched.actor.clone()));
+            }
+        }
+        drop(inner);
+        due
+    }
+}
+
+/// The watcher for `folder`: the platform's own, or a poll for a mount whose entries change
+/// without passing through this kernel, or where the platform's watcher cannot be made.
+fn watcher_for(
+    folder: &std::path::Path,
+    changed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    wake: tilolang_tilo::background::Waker,
+) -> Result<Box<dyn notify::Watcher + Send>, String> {
+    // A read of an entry's metadata is not a change of the folder's listing.
+    let handler = move |event: notify::Result<notify::Event>| {
+        let Ok(event) = event else {
+            return;
+        };
+        if matches!(event.kind, notify::EventKind::Access(_)) {
+            return;
+        }
+        changed.store(true, std::sync::atomic::Ordering::SeqCst);
+        wake();
+    };
+    let mut watcher: Box<dyn notify::Watcher + Send> =
+        if tilo_files::native::watch_sees_every_change(folder) {
+            Box::new(notify::recommended_watcher(handler).map_err(|error| error.to_string())?)
+        } else {
+            Box::new(
+                notify::PollWatcher::new(
+                    handler,
+                    notify::Config::default().with_poll_interval(std::time::Duration::from_secs(2)),
+                )
+                .map_err(|error| error.to_string())?,
+            )
+        };
+    watcher
+        .watch(folder, notify::RecursiveMode::NonRecursive)
+        .map_err(|error| error.to_string())?;
+    Ok(watcher)
+}
+
 #[cfg(test)]
 mod tests {
     use tilo_dialogs::portal::{
@@ -453,6 +681,64 @@ mod tests {
                 .expect("no preview is no error")
                 .is_none()
         );
+    fn a_folder_lists_its_entries_and_reads_their_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("books")).unwrap();
+        std::fs::write(dir.path().join("a.epub"), b"EPUB").unwrap();
+        let mut listed: Vec<(String, bool)> = list(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|entry| (entry.name, entry.folder))
+            .collect();
+        listed.sort();
+        assert_eq!(
+            listed,
+            vec![("a.epub".to_owned(), false), ("books".to_owned(), true)]
+        );
+        let found = stat(&dir.path().join("a.epub")).unwrap().unwrap();
+        assert_eq!(found.size, 4, "its bytes' length");
+        assert_eq!(
+            read_bytes(&dir.path().join("a.epub")).unwrap(),
+            b"EPUB",
+            "what File.read reads"
+        );
+        assert!(stat(&dir.path().join("gone")).unwrap().is_none());
+        assert!(read_bytes(dir.path()).is_err(), "a folder is not a file");
+    }
+
+    #[test]
+    fn a_watched_folder_that_gains_an_entry_wakes_and_runs_its_action() {
+        let dir = tempfile::tempdir().unwrap();
+        let (woken, woke) = std::sync::mpsc::channel::<()>();
+        let woken = std::sync::Mutex::new(woken);
+        let watches = Watches::new(std::sync::Arc::new(move || {
+            let _ = woken.lock().unwrap().send(());
+        }));
+        let token = watches
+            .watch(dir.path().to_str().unwrap(), "scan", "person")
+            .expect("the folder is watched");
+        assert!(watches.watching());
+        // Nothing changed: nothing wakes the app, and no action is due.
+        assert!(
+            woke.recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "an idle watch does not wake the app"
+        );
+        assert!(watches.take_changed().is_empty(), "nothing changed yet");
+        std::fs::write(dir.path().join("new.epub"), b"EPUB").unwrap();
+        woke.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the new entry wakes the app");
+        assert_eq!(
+            watches.take_changed(),
+            vec![("scan".to_owned(), "person".to_owned())],
+            "the action runs for the member"
+        );
+        assert!(
+            watches.take_changed().is_empty(),
+            "a change runs its action once"
+        );
+        watches.unwatch(&token);
+        assert!(!watches.watching());
     }
 
     #[test]

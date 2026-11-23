@@ -30,6 +30,9 @@ pub enum Effect {
     /// The page the window shows: what it reads and what was done in it, which a replay cannot
     /// compute again.
     Page,
+    /// The device's own files, read or changed through `File`'s folder calls: what a disk holds
+    /// now, which no replay can compute again.
+    Files,
 }
 
 impl Effect {
@@ -41,6 +44,7 @@ impl Effect {
         Self::Clipboard,
         Self::Image,
         Self::Page,
+        Self::Files,
     ];
 
     pub const fn word(self) -> &'static str {
@@ -52,6 +56,7 @@ impl Effect {
             Self::Clipboard => "clipboard",
             Self::Image => "image",
             Self::Page => "page",
+            Self::Files => "files",
         }
     }
 
@@ -64,6 +69,7 @@ impl Effect {
             Self::Clipboard => "the person's clipboard",
             Self::Image => "the device's image decoders and its preview cache",
             Self::Page => "the page this window shows",
+            Self::Files => "the files on this device",
         }
     }
 

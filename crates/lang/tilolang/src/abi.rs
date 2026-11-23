@@ -422,6 +422,12 @@ imports! {
     SheetRecords = "sheet_records" ([H, H] -> [H]);
     // The input to store for a typed entry, and the format it shows in.
     SheetEntry = "sheet_entry" ([H, H] -> [H]);
+    // The device's own files, within what the app was granted: a folder's entries, one entry,
+    // the bytes a path holds, and the watch that runs an action when a folder changes.
+    FileList = "file_list" ([H] -> [H]);
+    FileStat = "file_stat" ([H] -> [H]);
+    FileReadPath = "file_read_path" ([H] -> [H]);
+    FileWatch = "file_watch" ([H, H] -> [H]);
     ActChoose = "act_choose" ([H, H] -> [H]);
     ActChooseFolder = "act_choose_folder" ([H, H] -> [H]);
     ActSave = "act_save" ([H, H] -> [H]);

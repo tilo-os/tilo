@@ -610,6 +610,23 @@ pub const VALUE_TYPES: &[ValueType] = &[
             ("longitude", "Option<Float>", "The longitude of that place."),
         ],
     },
+    ValueType {
+        name: "FileEntry",
+        id: "host-file-entry",
+        doc: "One entry of a folder on this device, as `File.list` and `File.stat` answer it.",
+        fields: &[
+            ("name", "Text", "What it is called, as its folder shows it."),
+            ("path", "Text", "The path that reaches it."),
+            ("folder", "Bool", "Whether it is a folder."),
+            ("size", "Int", "Its size in bytes; 0 for a folder."),
+            (
+                "modified",
+                "Time",
+                "When its content last changed; 0 when the disk does not say.",
+            ),
+            ("hidden", "Bool", "Whether its name starts with a dot."),
+        ],
+    },
 ];
 
 /// The type that stands for any resource, of whatever app: what `find` and `grep` answer when they read
