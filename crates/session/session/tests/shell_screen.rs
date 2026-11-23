@@ -1319,7 +1319,7 @@ fn press_key(session: &mut Session, keycode: u32, pressed: bool) {
         .compositor()
         .input(InputEvent::Key { keycode, pressed })
         .expect("the key");
-    session.step(Duration::from_millis(1)).expect("a turn");
+    session.step(Duration::from_millis(16)).expect("a turn");
 }
 
 /// The emoji chord shows the toolkit's one picker over the windows, with its search and groups, and
@@ -1405,7 +1405,7 @@ fn the_about_sheet_opens_from_the_chromes_verb() {
         .invoke(CHROME, "about", &Map::new())
         .expect("the About sheet opens");
     until(&mut session, "the About sheet", |session| {
-        here(session) == "about" && session.shell_says("About Tilo")
+        here(session) == "about" && session.shell_says("About this computer")
     });
 
     session
@@ -1416,7 +1416,7 @@ fn the_about_sheet_opens_from_the_chromes_verb() {
         )
         .expect("the About sheet closes");
     until(&mut session, "the sheet gone", |session| {
-        here(session) == "none" && !session.shell_says("About Tilo")
+        here(session) == "none" && !session.shell_says("About this computer")
     });
 }
 

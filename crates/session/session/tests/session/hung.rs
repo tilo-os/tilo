@@ -192,7 +192,7 @@ fn the_shell_draws_the_hung_card_in_the_windows_own_place() {
         crate::common::on_screen(session, "Notifications").is_some()
     });
     let mut other = mapped(&mut session, OTHER);
-    let stuck = mapped(&mut session, STUCK);
+    let mut stuck = mapped(&mut session, STUCK);
     let (_, stuck_rect) = window(session.compositor(), STUCK).expect("its window");
 
     // The person presses the app: it is asked to answer and does not.
@@ -215,16 +215,11 @@ fn the_shell_draws_the_hung_card_in_the_windows_own_place() {
         session.accessible_labels()
     );
 
-    // Wait gives the app another period and takes the card away, as the Rust shell's card did.
-    crate::common::press_control(&mut session, "Wait");
-    until_answered(
-        &mut session,
-        &mut other,
-        "waiting clears the card",
-        |session| session.handle().unresponsive_tabs().is_empty(),
-    );
+    // Force quit, the card's other way out, ends the app and takes the card away with it.
+    crate::common::press_control(&mut session, "Force quit");
     crate::common::until(&mut session, "the card gone", |session| {
-        crate::common::on_screen(session, "Wait").is_none()
+        session.handle().unresponsive_tabs().is_empty()
+            && crate::common::on_screen(session, "Wait").is_none()
     });
-    let _ = stuck;
+    stuck.exchange();
 }
