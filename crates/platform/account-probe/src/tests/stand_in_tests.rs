@@ -25,6 +25,8 @@ fn stand_in(wrapped: bool) -> Started {
         smtp: "127.0.0.1:0".to_owned(),
         imap_wrapped: wrapped,
         smtp_wrapped: wrapped,
+        layout: crate::stand_in::Layout::Plain,
+        seeded: true,
     })
     .expect("the stand-in starts")
 }
@@ -108,6 +110,8 @@ fn a_stack_signs_in_with_imap_on_tls_and_smtp_by_upgrade_at_once() {
         smtp: "127.0.0.1:0".to_owned(),
         imap_wrapped: true,
         smtp_wrapped: false,
+        layout: crate::stand_in::Layout::Plain,
+        seeded: true,
     })
     .expect("the stand-in starts");
     let account = super::email_account(up.imap.port(), up.smtp.port());
@@ -184,6 +188,8 @@ fn the_sign_in_proof_takes_a_bearer_token_by_xoauth2() {
         smtp: "127.0.0.1:0".to_owned(),
         imap_wrapped: true,
         smtp_wrapped: false,
+        layout: crate::stand_in::Layout::Plain,
+        seeded: true,
     })
     .expect("the stand-in starts");
     let mut account = accounts::Account::new(LOGIN, accounts::email::TYPE_ID);
@@ -312,7 +318,7 @@ fn the_inbox_holds_made_up_mail_a_person_reads_and_searches() {
 }
 
 #[test]
-fn a_message_handed_to_smtp_arrives_in_the_inbox() {
+fn a_message_handed_to_smtp_for_its_login_arrives_in_the_inbox() {
     let up = stand_in(true);
     let tls = trusting(&up);
     let name = rustls::pki_types::ServerName::try_from("localhost").expect("a name");
@@ -323,13 +329,14 @@ fn a_message_handed_to_smtp_arrives_in_the_inbox() {
     assert!(replied(&mut server, "").starts_with("220 "));
     assert!(replied(&mut server, "EHLO [127.0.0.1]").starts_with("250 "));
     assert!(replied(&mut server, &format!("AUTH PLAIN {token}")).starts_with("235 "));
-    assert!(replied(&mut server, "MAIL FROM:<ada@example.test>").starts_with("250 "));
-    assert!(replied(&mut server, "RCPT TO:<grace@example.test>").starts_with("250 "));
+    assert!(replied(&mut server, "MAIL FROM:<grace@example.test>").starts_with("250 "));
+    // To the stand-in's own login, whose inbox it holds.
+    assert!(replied(&mut server, "RCPT TO:<ada@example.test>").starts_with("250 "));
     assert!(replied(&mut server, "DATA").starts_with("354 "));
     assert!(
         replied(
             &mut server,
-            "From: Ada <ada@example.test>\r\nSubject: Re: Welcome to the lab\r\n\r\nThank you.\r\n."
+            "From: Grace <grace@example.test>\r\nSubject: Re: Welcome to the lab\r\n\r\nThank you.\r\n."
         )
         .starts_with("250 ")
     );

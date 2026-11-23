@@ -1,12 +1,19 @@
-//! The session the host carries for an account it keeps, against the real
-//! IMAP and SMTP servers this app's own tests use: a folder is read whole, a
-//! message is sent, and a server is told what changed about one.
+//! The session the host carries for an account it keeps, against the stand-in mail
+//! server: a folder is read whole, a message is sent, and a server is told what
+//! changed about one.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use tilo_actions::remote::person_accounts::{FetchMail, MarkMail, ReadMail, SearchMail, SendMail};
 use tilo_mail_session::{Attachment, Leaving, LiveMailSession, MailSession};
 
-use mail_engine::fake_imap::{FakeImap, Layout};
-use mail_engine::fake_servers::{FakeSmtp, server_identity};
+use tilo_account_probe::stand_in::{Layout, Serving, Started, started};
 
 use std::sync::{Arc, Mutex, PoisonError};
 use tilo_actions::remote::person_accounts::FetchedMessage;
@@ -84,11 +91,8 @@ fn quick() -> WatchPace {
 /// between.
 #[test]
 fn a_watched_inbox_tells_each_arrival_once_and_nothing_that_was_there() {
-    let runtime = ui::rt::app();
-    let (tls, certificate) = server_identity();
-    let imap = runtime
-        .block_on(FakeImap::start(Layout::Plain, tls))
-        .expect("the test server starts");
+    let imap = served(Layout::Plain, true);
+    let certificate = imap.certificate.clone();
     let arrives = |subject: &str| {
         imap.append(
             "INBOX",
@@ -97,7 +101,7 @@ fn a_watched_inbox_tells_each_arrival_once_and_nothing_that_was_there() {
         );
     };
     arrives("Was there");
-    let account = account(imap.port, 465);
+    let account = account(imap.imap.port(), 465);
     let secret = accounts::Secret::password("fixture-password");
     let session = LiveMailSession::also_trusting(vec![certificate]).pacing(quick());
     let told = Arc::new(Told::default());
@@ -105,7 +109,7 @@ fn a_watched_inbox_tells_each_arrival_once_and_nothing_that_was_there() {
     let watching = session
         .watch(&account, &secret, None, told.clone())
         .expect("the watch starts");
-    ui::testing::wait_until("the inbox to be watched", || imap.idling() > 0);
+    tilo_test_env::wait_until("the inbox to be watched", || imap.idling() > 0);
     assert!(
         told.subjects().is_empty(),
         "what was there before is no arrival"
@@ -113,17 +117,17 @@ fn a_watched_inbox_tells_each_arrival_once_and_nothing_that_was_there() {
     assert_eq!(told.seen().map(|seen| seen.uid), Some(1));
 
     arrives("First");
-    ui::testing::wait_until("the arrival to be told", || told.subjects().len() == 1);
+    tilo_test_env::wait_until("the arrival to be told", || told.subjects().len() == 1);
     arrives("Second");
     arrives("Third");
-    ui::testing::wait_until("the next two to be told", || told.subjects().len() == 3);
+    tilo_test_env::wait_until("the next two to be told", || told.subjects().len() == 3);
     assert_eq!(told.subjects(), ["First", "Second", "Third"]);
     let seen = told.seen().expect("the watch looked");
     assert_eq!(seen.uid, 4);
     assert_eq!(imap.logins(), 1, "one connection watches");
 
     drop(watching);
-    ui::testing::wait_until("the watch to stop", || imap.idling() == 0);
+    tilo_test_env::wait_until("the watch to stop", || imap.idling() == 0);
     arrives("While nobody watched");
 
     // A watch started where the last one stopped tells what arrived since.
@@ -131,7 +135,7 @@ fn a_watched_inbox_tells_each_arrival_once_and_nothing_that_was_there() {
     let _watching = session
         .watch(&account, &secret, Some(seen), again.clone())
         .expect("the watch starts");
-    ui::testing::wait_until("what arrived in between to be told", || {
+    tilo_test_env::wait_until("what arrived in between to be told", || {
         again.subjects() == ["While nobody watched"]
     });
 
@@ -149,7 +153,7 @@ fn a_watched_inbox_tells_each_arrival_once_and_nothing_that_was_there() {
             renumbered.clone(),
         )
         .expect("the watch starts");
-    ui::testing::wait_until("the renumbered folder to be looked at", || {
+    tilo_test_env::wait_until("the renumbered folder to be looked at", || {
         renumbered.seen().is_some()
     });
     assert!(renumbered.subjects().is_empty());
@@ -160,11 +164,8 @@ fn a_watched_inbox_tells_each_arrival_once_and_nothing_that_was_there() {
 /// while it was away once, and keeps watching.
 #[test]
 fn a_watch_comes_back_after_its_server_drops_it_and_misses_nothing() {
-    let runtime = ui::rt::app();
-    let (tls, certificate) = server_identity();
-    let imap = runtime
-        .block_on(FakeImap::start(Layout::Plain, tls))
-        .expect("the test server starts");
+    let imap = served(Layout::Plain, true);
+    let certificate = imap.certificate.clone();
     let arrives = |subject: &str| {
         imap.append(
             "INBOX",
@@ -172,26 +173,26 @@ fn a_watch_comes_back_after_its_server_drops_it_and_misses_nothing() {
             &[],
         );
     };
-    let account = account(imap.port, 465);
+    let account = account(imap.imap.port(), 465);
     let secret = accounts::Secret::password("fixture-password");
     let session = LiveMailSession::also_trusting(vec![certificate]).pacing(quick());
     let told = Arc::new(Told::default());
     let _watching = session
         .watch(&account, &secret, None, told.clone())
         .expect("the watch starts");
-    ui::testing::wait_until("the inbox to be watched", || imap.idling() > 0);
+    tilo_test_env::wait_until("the inbox to be watched", || imap.idling() > 0);
 
     imap.drop_connections();
     arrives("While away");
-    ui::testing::wait_until("the watch to come back and tell it", || {
+    tilo_test_env::wait_until("the watch to come back and tell it", || {
         told.subjects() == ["While away"]
     });
     assert!(told.losses() >= 1, "the loss was told");
     assert!(imap.logins() >= 2, "the watch signed in again");
 
-    ui::testing::wait_until("the inbox to be watched again", || imap.idling() > 0);
+    tilo_test_env::wait_until("the inbox to be watched again", || imap.idling() > 0);
     arrives("After");
-    ui::testing::wait_until("the watch to tell what arrives next", || {
+    tilo_test_env::wait_until("the watch to tell what arrives next", || {
         told.subjects() == ["While away", "After"]
     });
 }
@@ -199,27 +200,24 @@ fn a_watch_comes_back_after_its_server_drops_it_and_misses_nothing() {
 /// A server that cannot tell of a change is asked again and again instead.
 #[test]
 fn a_server_that_cannot_tell_of_a_change_is_asked_again_and_again() {
-    let runtime = ui::rt::app();
-    let (tls, certificate) = server_identity();
-    let imap = runtime
-        .block_on(FakeImap::start(Layout::Plain, tls))
-        .expect("the test server starts");
+    let imap = served(Layout::Plain, true);
+    let certificate = imap.certificate.clone();
     imap.without_idle();
-    let account = account(imap.port, 465);
+    let account = account(imap.imap.port(), 465);
     let secret = accounts::Secret::password("fixture-password");
     let session = LiveMailSession::also_trusting(vec![certificate]).pacing(quick());
     let told = Arc::new(Told::default());
     let _watching = session
         .watch(&account, &secret, None, told.clone())
         .expect("the watch starts");
-    ui::testing::wait_until("the inbox to be looked at", || told.seen().is_some());
+    tilo_test_env::wait_until("the inbox to be looked at", || told.seen().is_some());
 
     imap.append(
         "INBOX",
         &note("Ana <ana@veeza.example>", "Asked for", "asked", "Hello."),
         &[],
     );
-    ui::testing::wait_until("the arrival to be found by asking", || {
+    tilo_test_env::wait_until("the arrival to be found by asking", || {
         told.subjects() == ["Asked for"]
     });
     assert_eq!(
@@ -228,6 +226,17 @@ fn a_server_that_cannot_tell_of_a_change_is_asked_again_and_again() {
         "nothing idles on a server that cannot tell"
     );
     assert_eq!(imap.logins(), 1, "the one connection is asked again");
+}
+
+/// A stand-in mail server laid out as `layout` that takes Ada's sign-in: its IMAP port is TLS
+/// from the first byte when `wrapped`, and upgrades otherwise.
+fn served(layout: Layout, wrapped: bool) -> Started {
+    started(Serving {
+        layout,
+        imap_wrapped: wrapped,
+        ..Serving::local("ada@example.test", "fixture-password")
+    })
+    .expect("the test servers start")
 }
 
 /// The account that reaches `imap` and `smtp`.
@@ -247,16 +256,9 @@ fn account(imap_port: u16, smtp_port: u16) -> accounts::Account {
 
 #[test]
 fn a_host_reads_sends_and_marks_through_real_mail_servers() {
-    let runtime = ui::rt::app();
-    let (tls, certificate) = server_identity();
-    let (imap, smtp) = runtime
-        .block_on(async {
-            (
-                FakeImap::start(Layout::Gmail, tls.clone()).await,
-                FakeSmtp::start(tls).await,
-            )
-        })
-        .expect("the test servers start");
+    let imap = served(Layout::Gmail, true);
+    let smtp = imap.clone();
+    let certificate = imap.certificate.clone();
     imap.append(
         "INBOX",
         "From: Ana <ana@veeza.example>\r\nTo: Ada <ada@example.test>\r\n\
@@ -264,7 +266,7 @@ Subject: Contract for review\r\nMessage-ID: <one@example.test>\r\n\
 Content-Type: text/plain\r\n\r\nHello Ada,\r\n\r\nThe draft is ready.\r\n",
         &[],
     );
-    let account = account(imap.port, smtp.port);
+    let account = account(imap.imap.port(), smtp.smtp.port());
     let secret = accounts::Secret::password("fixture-password");
     let session = LiveMailSession::also_trusting(vec![certificate]);
 
@@ -347,11 +349,8 @@ Message-ID: <{id}@example.test>\nContent-Type: text/plain\n\n{body}\n"
     reason = "one session's life with its server: every request is served over the connection the first one opened"
 )]
 fn a_host_pages_reads_searches_and_drafts_over_one_session() {
-    let runtime = ui::rt::app();
-    let (tls, certificate) = server_identity();
-    let imap = runtime
-        .block_on(FakeImap::start(Layout::Plain, tls))
-        .expect("the test server starts");
+    let imap = served(Layout::Plain, true);
+    let certificate = imap.certificate.clone();
     for n in 1..=60 {
         imap.append(
             "INBOX",
@@ -364,17 +363,19 @@ fn a_host_pages_reads_searches_and_drafts_over_one_session() {
             &[],
         );
     }
-    let asked = imap.append(
-        "INBOX",
-        &note(
-            "Jonas <jonas@northzone.example>",
-            "Cap table",
-            "cap-table",
-            "Could you send the cap table?",
-        ),
-        &[],
-    );
-    let account = account(imap.port, 465);
+    let asked = imap
+        .append(
+            "INBOX",
+            &note(
+                "Jonas <jonas@northzone.example>",
+                "Cap table",
+                "cap-table",
+                "Could you send the cap table?",
+            ),
+            &[],
+        )
+        .expect("the inbox holds it");
+    let account = account(imap.imap.port(), 465);
     let secret = accounts::Secret::password("fixture-password");
     let session = LiveMailSession::also_trusting(vec![certificate]);
     let inbox = |asking: FetchMail| {
@@ -533,11 +534,8 @@ fn a_host_pages_reads_searches_and_drafts_over_one_session() {
 /// their start, and one of those read on its own is whole again.
 #[test]
 fn a_folder_too_long_for_one_answer_is_answered_by_its_newest_and_the_start_of_the_rest() {
-    let runtime = ui::rt::app();
-    let (tls, certificate) = server_identity();
-    let imap = runtime
-        .block_on(FakeImap::start(Layout::Plain, tls))
-        .expect("the test server starts");
+    let imap = served(Layout::Plain, true);
+    let certificate = imap.certificate.clone();
     let long = "All work and no play makes a long message.\n".repeat(9000);
     assert!(long.len() > 300 * 1024);
     for n in 1..=3 {
@@ -552,7 +550,7 @@ fn a_folder_too_long_for_one_answer_is_answered_by_its_newest_and_the_start_of_t
             &[],
         );
     }
-    let account = account(imap.port, 465);
+    let account = account(imap.imap.port(), 465);
     let secret = accounts::Secret::password("fixture-password");
     let session = LiveMailSession::also_trusting(vec![certificate]);
 
@@ -628,22 +626,15 @@ fn filed_once() -> SendMail {
 /// sends is left to it.
 #[test]
 fn a_sent_message_is_filed_once_where_the_server_files_none() {
-    let runtime = ui::rt::app();
     for (layout, sent_folder, copies) in [
         (Layout::Plain, "Sent", 1),
         (Layout::Outlook, "Sent Items", 1),
         (Layout::Gmail, "[Gmail]/Sent Mail", 0),
     ] {
-        let (tls, certificate) = server_identity();
-        let (imap, smtp) = runtime
-            .block_on(async move {
-                (
-                    FakeImap::start(layout, tls.clone()).await,
-                    FakeSmtp::start(tls).await,
-                )
-            })
-            .expect("the test servers start");
-        let account = account(imap.port, smtp.port);
+        let imap = served(layout, true);
+        let smtp = imap.clone();
+        let certificate = imap.certificate.clone();
+        let account = account(imap.imap.port(), smtp.smtp.port());
         let secret = accounts::Secret::password("fixture-password");
         let session = LiveMailSession::also_trusting(vec![certificate]);
         for round in 1..=2 {
@@ -679,18 +670,11 @@ fn a_sent_message_is_filed_once_where_the_server_files_none() {
 /// why the Sent folder holds none.
 #[test]
 fn a_message_leaves_though_its_copy_cannot_be_filed() {
-    let runtime = ui::rt::app();
-    let (tls, certificate) = server_identity();
-    let (imap, smtp) = runtime
-        .block_on(async move {
-            (
-                FakeImap::start(Layout::Plain, tls.clone()).await,
-                FakeSmtp::start(tls).await,
-            )
-        })
-        .expect("the test servers start");
+    let imap = served(Layout::Plain, true);
+    let smtp = imap.clone();
+    let certificate = imap.certificate.clone();
     imap.refuse_appends();
-    let account = account(imap.port, smtp.port);
+    let account = account(imap.imap.port(), smtp.smtp.port());
     let secret = accounts::Secret::password("fixture-password");
     let session = LiveMailSession::also_trusting(vec![certificate]);
 
@@ -713,11 +697,8 @@ fn a_message_leaves_though_its_copy_cannot_be_filed() {
 /// the host upgrades the connection before it signs in, and reads the inbox.
 #[test]
 fn a_host_signs_in_to_a_plain_server_only_once_the_connection_is_secure() {
-    let runtime = ui::rt::app();
-    let (tls, certificate) = server_identity();
-    let imap = runtime
-        .block_on(FakeImap::start_starttls(Layout::Plain, tls))
-        .expect("the test server starts");
+    let imap = served(Layout::Plain, false);
+    let certificate = imap.certificate.clone();
     imap.append(
         "INBOX",
         "From: Ana <ana@veeza.example>\r\nTo: Ada <ada@example.test>\r\n\
@@ -725,7 +706,7 @@ Subject: Over STARTTLS\r\nMessage-ID: <upgraded@example.test>\r\n\
 Content-Type: text/plain\r\n\r\nHello Ada.\r\n",
         &[],
     );
-    let mut account = account(imap.port, 465);
+    let mut account = account(imap.imap.port(), 465);
     account.config["imap_tls"] = serde_json::json!(false);
     let secret = accounts::Secret::password("fixture-password");
     let session = LiveMailSession::also_trusting(vec![certificate]);
@@ -756,17 +737,10 @@ Content-Type: text/plain\r\n\r\nHello Ada.\r\n",
 /// as a page that builds none hands them.
 #[test]
 fn a_message_with_a_file_reads_back_with_the_file_intact() {
-    let runtime = ui::rt::app();
-    let (tls, certificate) = server_identity();
-    let (imap, smtp) = runtime
-        .block_on(async {
-            (
-                FakeImap::start(Layout::Gmail, tls.clone()).await,
-                FakeSmtp::start(tls).await,
-            )
-        })
-        .expect("the test servers start");
-    let account = account(imap.port, smtp.port);
+    let imap = served(Layout::Gmail, true);
+    let smtp = imap.clone();
+    let certificate = imap.certificate.clone();
+    let account = account(imap.imap.port(), smtp.smtp.port());
     let secret = accounts::Secret::password("fixture-password");
     let session = LiveMailSession::also_trusting(vec![certificate]);
     let pdf = b"%PDF-1.4\nfixture attachment\n%%EOF\n".to_vec();

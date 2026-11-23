@@ -574,6 +574,8 @@ async fn what_she_types_on_her_device_signs_her_in_and_her_mail_arrives() {
         smtp: "127.0.0.1:0".to_owned(),
         imap_wrapped: true,
         smtp_wrapped: false,
+        layout: mail_stand_in::Layout::Plain,
+        seeded: true,
     })
     .expect("the stand-in mail server starts");
     let (imap, smtp) = (up.imap.port(), up.smtp.port());

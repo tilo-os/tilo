@@ -56,9 +56,6 @@ tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true, features = ["std", "tls12"] }
 tilo-net = { path = "../tilo-net", optional = true, features = ["blocking"] }
 futures-util = { workspace = true, optional = true }
-# Throwaway certificates for the test servers other crates' tests reach through
-# `fake-servers`.
-rcgen = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -71,23 +68,13 @@ default = ["live"]
 # Compile the IMAP/SMTP backend; requires a TLS/async stack and a configured
 # account at runtime.
 live = ["account-credentials/store", "dep:async-imap", "dep:lettre", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util", "mail-builder/gethostname"]
-
-# The test IMAP and SMTP servers (`fake_servers`), for other crates' tests of
-# what talks to mail servers through this engine. Never in a release.
-fake-servers = ["live", "dep:rcgen", "ui/test-support"]
-# The constructors a dependent's tests build with, such as a secret release
-# from a directory. Never in a release.
-test-support = []
-
-[[example]]
-# A stand-in IMAP and SMTP server holding a few messages, for a rehearsal of connecting a mail
-# account on a local stack.
-name = "mail_server_stand_in"
-required-features = ["fake-servers"]
+# The constructors a dependent's tests build with, such as an engine that
+# trusts a test server's certificate. Never in a release.
+test-support = ["live"]
 
 [dev-dependencies]
-# The test IMAP and SMTP servers' TLS certificates are throwaway.
-rcgen.workspace = true
+# The stand-in IMAP and SMTP servers the engine's tests sign in to.
+tilo-account-probe = { path = "../account-probe", features = ["test-support"] }
 # A separate config directory keeps tests away from the user's account store.
 tempfile.workspace = true
 # The base64 encodings XOAUTH2 tests read.
@@ -99,10 +86,6 @@ tokio = { workspace = true, features = ["test-util"] }
 # sign-in tests.
 tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"] }
 tilo-test-env = { path = "../../dev/test-env" }
-# The session a host carries for an account it keeps, proved against the test
-# IMAP and SMTP servers above.
-tilo-mail-session = { path = "../mail-session" }
-tilo-actions = { path = "../../collab/actions" }
 
 [lints]
 workspace = true

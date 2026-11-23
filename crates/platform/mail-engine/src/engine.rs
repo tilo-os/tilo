@@ -515,7 +515,7 @@ pub mod live {
             })
         }
 
-        #[cfg(any(test, feature = "fake-servers"))]
+        #[cfg(any(test, feature = "test-support"))]
         pub fn trusting(
             content: tilo_content::ContentStore,
             wake: super::Wake,
@@ -1659,104 +1659,25 @@ pub mod live {
         lettre::address::Envelope::new(Some(from), to).map_err(|e| e.to_string())
     }
 
-    // ---- real-path integration tests against local in-process servers ------
-    //
-    // These stand up a local IMAP and SMTP server over a genuine TLS socket
-    // (a throwaway self-signed certificate) and drive the *production* engine
-    // functions against them: `list_folders` / `sync_folder` for receive,
-    // `smtp_send_with_tls` for send. They prove the two loops end to end over a
-    // real socket — TLS handshake, authentication, the exact IMAP command
-    // sequence, the `mail-parser` decode, and the `lettre` STARTTLS submission —
-    // with no public server and no live credentials. The only test shim is that
-    // the client accepts this one local certificate; the wire protocol and the
-    // parsing are the real ones.
+    // The live engine against the stand-in mail server: real sockets, real TLS with the
+    // server's own certificate trusted, the exact IMAP command sequence, the `mail-parser`
+    // decode and the `lettre` STARTTLS submission, with no public server and no real password.
     #[cfg(test)]
     mod live_tests {
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
 
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        use tokio::net::{TcpListener, TcpStream};
+        use tilo_account_probe::stand_in::{Layout, Serving, Started, started};
 
-        use super::{
-            LiveEngine, connect_session, list_folders, resolve_auth, smtp_send_with_tls,
-            sync_folder,
-        };
-        use crate::model::{AccountConfig, Addr, AuthMethod, Draft, Folder};
-        use crate::transport::build_mime;
+        use super::{LiveEngine, connect_session, list_folders, resolve_auth, sync_folder};
+        use crate::model::{AccountConfig, AuthMethod, Draft, Folder};
 
-        use crate::fake_servers::{accepting_client_config, serve_smtp, server_tls_config};
-
-        async fn bind_local() -> (TcpListener, u16) {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let port = listener.local_addr().unwrap().port();
-            (listener, port)
-        }
-
-        async fn serve_imap(tls: Arc<rustls::ServerConfig>, tcp: TcpStream, eml: Vec<u8>) {
-            let acceptor = tokio_rustls::TlsAcceptor::from(tls);
-            let Ok(stream) = acceptor.accept(tcp).await else {
-                return;
-            };
-            let (rd, mut wr) = tokio::io::split(stream);
-            let mut reader = BufReader::new(rd);
-            if wr
-                .write_all(b"* OK [CAPABILITY IMAP4rev1] test ready\r\n")
-                .await
-                .is_err()
-            {
-                return;
-            }
-            let _ = wr.flush().await;
-            let mut line = String::new();
-            loop {
-                line.clear();
-                match reader.read_line(&mut line).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {}
-                }
-                let tag = line.split_whitespace().next().unwrap_or("*").to_string();
-                let up = line.to_ascii_uppercase();
-                let mut resp: Vec<u8> = Vec::new();
-                if up.contains("LOGIN") {
-                    resp.extend_from_slice(format!("{tag} OK LOGIN completed\r\n").as_bytes());
-                } else if up.contains("LOGOUT") {
-                    resp.extend_from_slice(b"* BYE logging out\r\n");
-                    resp.extend_from_slice(format!("{tag} OK LOGOUT completed\r\n").as_bytes());
-                    let _ = wr.write_all(&resp).await;
-                    let _ = wr.flush().await;
-                    break;
-                } else if up.contains("LIST") {
-                    resp.extend_from_slice(b"* LIST (\\HasNoChildren) \".\" \"INBOX\"\r\n");
-                    resp.extend_from_slice(b"* LIST (\\HasNoChildren) \".\" \"Sent\"\r\n");
-                    resp.extend_from_slice(format!("{tag} OK LIST completed\r\n").as_bytes());
-                } else if up.contains("SELECT") || up.contains("EXAMINE") {
-                    resp.extend_from_slice(b"* 1 EXISTS\r\n");
-                    resp.extend_from_slice(b"* 0 RECENT\r\n");
-                    resp.extend_from_slice(b"* OK [UIDVALIDITY 7] UIDs valid\r\n");
-                    resp.extend_from_slice(b"* FLAGS (\\Seen \\Flagged)\r\n");
-                    resp.extend_from_slice(
-                        format!("{tag} OK [READ-WRITE] SELECT completed\r\n").as_bytes(),
-                    );
-                } else if up.contains("UID SEARCH") || up.contains("SEARCH") {
-                    resp.extend_from_slice(b"* SEARCH 1\r\n");
-                    resp.extend_from_slice(format!("{tag} OK SEARCH completed\r\n").as_bytes());
-                } else if up.contains("UID FETCH") || up.contains("FETCH") {
-                    let head = format!(
-                        "* 1 FETCH (UID 1 FLAGS (\\Seen) INTERNALDATE \"01-Jan-2021 09:30:00 +0000\" BODY[] {{{}}}\r\n",
-                        eml.len()
-                    );
-                    resp.extend_from_slice(head.as_bytes());
-                    resp.extend_from_slice(&eml);
-                    resp.extend_from_slice(b")\r\n");
-                    resp.extend_from_slice(format!("{tag} OK FETCH completed\r\n").as_bytes());
-                } else {
-                    resp.extend_from_slice(format!("{tag} OK completed\r\n").as_bytes());
-                }
-                if wr.write_all(&resp).await.is_err() {
-                    break;
-                }
-                let _ = wr.flush().await;
-            }
+        /// A stand-in laid out as `layout` that takes `me@example.com`'s password.
+        fn served(layout: Layout) -> Started {
+            started(Serving {
+                layout,
+                ..Serving::local("me@example.com", "app-password")
+            })
+            .unwrap()
         }
 
         fn mail(id: &str, subject: &str, body: &str) -> String {
@@ -1772,7 +1693,6 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
             reason = "one account's life with a server, each step depending on the last"
         )]
         fn an_account_lives_against_gmail_and_outlook_layouts() {
-            use crate::fake_imap::{FakeImap, Layout};
             use crate::sync::{Synced, Want, Window};
             use std::sync::mpsc::Receiver;
 
@@ -1795,12 +1715,7 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                 (Layout::Gmail, "[Gmail]/All Mail"),
                 (Layout::Outlook, "Archive"),
             ] {
-                let server =
-                    // On the app runtime, which outlives this call, so the
-                    // server keeps serving.
-                    ui::rt::app()
-                        .block_on(FakeImap::start(layout, server_tls_config()))
-                        .unwrap();
+                let server = served(layout);
                 server.append(
                     archive,
                     &mail("old", "Quarterly numbers", "From last year."),
@@ -1818,14 +1733,14 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                     username: "me@example.com".into(),
                     password: "app-password".into(),
                     imap_host: "127.0.0.1".into(),
-                    imap_port: server.port,
+                    imap_port: server.imap.port(),
                     auth: AuthMethod::Password,
                     ..Default::default()
                 };
                 let engine = LiveEngine::trusting(
                     tilo_content::ContentStore::memory(),
                     Arc::new(|| {}),
-                    accepting_client_config(),
+                    server.trusting_client().unwrap(),
                 )
                 .unwrap();
                 let (requests, events) = super::super::spawn_with(Box::new(engine));
@@ -1947,18 +1862,7 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
         /// to have left first, and then why its Sent folder holds none.
         #[test]
         fn a_message_is_said_to_have_left_before_its_copy_is_refused() {
-            use crate::fake_imap::{FakeImap, Layout};
-            use crate::fake_servers::FakeSmtp;
-
-            let (imap, smtp) = ui::rt::app()
-                .block_on(async move {
-                    let tls = server_tls_config();
-                    (
-                        FakeImap::start(Layout::Plain, tls.clone()).await,
-                        FakeSmtp::start(tls).await,
-                    )
-                })
-                .unwrap();
+            let imap = served(Layout::Plain);
             imap.refuse_appends();
             let account = AccountConfig {
                 display_name: "Me".into(),
@@ -1966,9 +1870,9 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                 username: "me@example.com".into(),
                 password: "app-password".into(),
                 imap_host: "127.0.0.1".into(),
-                imap_port: imap.port,
+                imap_port: imap.imap.port(),
                 smtp_host: "127.0.0.1".into(),
-                smtp_port: smtp.port,
+                smtp_port: imap.smtp.port(),
                 auth: AuthMethod::Password,
                 ..Default::default()
             };
@@ -1981,7 +1885,7 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
             let engine = LiveEngine::trusting(
                 tilo_content::ContentStore::memory(),
                 Arc::new(|| {}),
-                accepting_client_config(),
+                imap.trusting_client().unwrap(),
             )
             .unwrap();
             let (requests, events) = super::super::spawn_with(Box::new(engine));
@@ -2008,174 +1912,145 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                     _ => {}
                 }
             }
-            assert_eq!(smtp.sent().len(), 1, "the message left");
+            assert_eq!(imap.sent().len(), 1, "the message left");
             assert_eq!(told.len(), 2, "{told:?}");
             assert_eq!(told[0], "sent");
             assert!(told[1].contains("would not take the copy"), "{told:?}");
             assert!(imap.messages("Sent").is_empty());
         }
 
+        /// One signed-in session lists the server's folders and syncs the inbox, the message
+        /// read into the model with the time its server says it arrived; and a message is
+        /// handed to SMTP over a STARTTLS upgrade, signing in with the account's password.
         #[test]
         #[allow(
             clippy::too_many_lines,
-            reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+            reason = "one account's receive loop, then its send loop, against one server"
         )]
         fn imap_fetch_and_smtp_send_work_over_real_sockets() {
-            {
-                let eml = b"From: Ada Lovelace <ada@analytical.example>\r\n\
-    To: you@example.test\r\n\
-    Subject: Live inbox works\r\n\
-    Date: Fri, 01 Jan 2021 09:30:00 +0000\r\n\
-    Message-ID: <live-1@analytical.example>\r\n\
-    \r\n\
-    This message was fetched over a real IMAP socket.\r\n"
-                    .to_vec();
-
-                ui::rt::block_on(async move {
-                    let server_tls = server_tls_config();
-                    let (listener, port) = bind_local().await;
-                    let eml_for_server = eml.clone();
-                    let server = tokio::spawn(async move {
-                        while let Ok((tcp, _)) = listener.accept().await {
-                            let tls = server_tls.clone();
-                            let eml = eml_for_server.clone();
-                            tokio::spawn(async move { serve_imap(tls, tcp, eml).await });
-                        }
-                    });
-
-                    let account = AccountConfig {
-                        email: "me@example.com".into(),
-                        username: "me@example.com".into(),
-                        password: "app-password".into(),
-                        imap_host: "127.0.0.1".into(),
-                        imap_port: port,
-                        auth: AuthMethod::Password,
-                        ..Default::default()
-                    };
-                    let creds = resolve_auth(&account).unwrap();
-                    let client_tls = accepting_client_config();
-
-                    // One signed-in session serves every request: LIST
-                    // advertises the server's mailboxes …
-                    let mut session = connect_session(&account, &creds, client_tls)
-                        .await
-                        .expect("sign in over TLS");
-                    let folders = list_folders(&mut session)
-                        .await
-                        .expect("list folders over TLS");
-                    assert!(
-                        folders.iter().any(|(name, _)| name == "INBOX"),
-                        "server folders: {folders:?}"
-                    );
-                    let places = crate::sync::Places::from_list(&folders);
-                    assert_eq!(places.name(Folder::Sent), "Sent");
-
-                    // … and the first sync of a folder fetches its newest page
-                    // and parses the RFC 5322 message into our model.
-                    let synced = sync_folder(
-                        &mut session,
-                        &account,
-                        Folder::Inbox,
-                        &places,
-                        crate::sync::Want::Latest { known: None },
-                    )
-                    .await
-                    .expect("fetch INBOX over TLS");
-                    assert!(synced.reset, "a first sync replaces what was held");
-                    assert_eq!(synced.uid_validity, 7);
-                    assert_eq!(synced.has_older, Some(false));
-                    let msgs = synced.messages;
-                    assert_eq!(msgs.len(), 1, "the one served message is fetched");
-                    let m = &msgs[0];
-                    assert_eq!(m.account, "me@example.com");
-                    assert_eq!(
-                        m.server,
-                        Some(crate::model::ServerPlace {
-                            folder: Folder::Inbox,
-                            uid: 1,
-                            uid_validity: 7
-                        })
-                    );
-                    assert_eq!(m.subject, "Live inbox works");
-                    assert_eq!(m.from.email, "ada@analytical.example");
-                    assert!(
-                        m.body.contains("fetched over a real IMAP socket"),
-                        "body: {:?}",
-                        m.body
-                    );
-                    assert!(m.read, "the server's \\Seen flag maps to read");
-                    // The INTERNALDATE the server returned (2021-01-01 09:30 UTC) is
-                    // what parse_fetched used for the timestamp.
-                    assert_eq!(m.timestamp_min, 1_609_493_400 / 60);
-
-                    server.abort();
-                })
+            let server = served(Layout::Plain);
+            server
+                .append(
+                    "INBOX",
+                    "From: Ada Lovelace <ada@analytical.example>\r\nTo: you@example.test\r\n\
+Subject: Live inbox works\r\nDate: Fri, 01 Jan 2021 09:30:00 +0000\r\n\
+Message-ID: <live-1@analytical.example>\r\n\r\nThis message was fetched over a real IMAP socket.\r\n",
+                    &["\\Seen"],
+                )
                 .unwrap();
-            }
+            let account = AccountConfig {
+                display_name: "Me".into(),
+                email: "me@example.com".into(),
+                username: "me@example.com".into(),
+                password: "app-password".into(),
+                imap_host: "127.0.0.1".into(),
+                imap_port: server.imap.port(),
+                smtp_host: "127.0.0.1".into(),
+                smtp_port: server.smtp.port(),
+                auth: AuthMethod::Password,
+                ..Default::default()
+            };
+            let creds = resolve_auth(&account).unwrap();
+            let client_tls = server.trusting_client().unwrap();
+            ui::rt::block_on(async move {
+                let mut session = connect_session(&account, &creds, client_tls)
+                    .await
+                    .expect("sign in over TLS");
+                let folders = list_folders(&mut session)
+                    .await
+                    .expect("list folders over TLS");
+                assert!(
+                    folders.iter().any(|(name, _)| name == "INBOX"),
+                    "server folders: {folders:?}"
+                );
+                let places = crate::sync::Places::from_list(&folders);
+                let synced = sync_folder(
+                    &mut session,
+                    &account,
+                    Folder::Inbox,
+                    &places,
+                    crate::sync::Want::Latest { known: None },
+                )
+                .await
+                .expect("fetch INBOX over TLS");
+                assert!(synced.reset, "a first sync replaces what was held");
+                assert_eq!(synced.has_older, Some(false));
+                assert_eq!(
+                    synced.messages.len(),
+                    1,
+                    "the one served message is fetched"
+                );
+                let m = &synced.messages[0];
+                assert_eq!(m.account, "me@example.com");
+                assert_eq!(
+                    m.server,
+                    Some(crate::model::ServerPlace {
+                        folder: Folder::Inbox,
+                        uid: 1,
+                        uid_validity: synced.uid_validity,
+                    })
+                );
+                assert_eq!(m.subject, "Live inbox works");
+                assert_eq!(m.from.email, "ada@analytical.example");
+                assert!(
+                    m.body.contains("fetched over a real IMAP socket"),
+                    "{:?}",
+                    m.body
+                );
+                assert!(m.read, "the server's \\Seen flag maps to read");
+                // The time the server says the message arrived (2026-01-01 09:01 UTC), not
+                // the date its sender wrote, is the message's time.
+                assert_eq!(m.timestamp_min, 1_767_258_060 / 60);
+            })
+            .unwrap();
 
-            {
-                ui::rt::block_on(async move {
-                    let server_tls = server_tls_config();
-                    let (listener, port) = bind_local().await;
-                    let captured = Arc::new(Mutex::new(Vec::<u8>::new()));
-                    let captured_srv = captured.clone();
-                    let server = tokio::spawn(async move {
-                        while let Ok((tcp, _)) = listener.accept().await {
-                            let tls = server_tls.clone();
-                            let cap = captured_srv.clone();
-                            tokio::spawn(async move { serve_smtp(tls, tcp, cap).await });
-                        }
-                    });
-
-                    let account = AccountConfig {
+            let engine = LiveEngine::trusting(
+                tilo_content::ContentStore::memory(),
+                Arc::new(|| {}),
+                server.trusting_client().unwrap(),
+            )
+            .unwrap();
+            let (requests, events) = super::super::spawn_with(Box::new(engine));
+            let draft = Draft {
+                to: "rcpt@example.com".into(),
+                subject: "SMTP loop works".into(),
+                body: "Sent over a real SMTP socket.".into(),
+                ..Default::default()
+            };
+            requests
+                .send(super::EngineRequest::send(
+                    AccountConfig {
                         display_name: "Me".into(),
                         email: "me@example.com".into(),
                         username: "me@example.com".into(),
                         password: "app-password".into(),
+                        imap_host: "127.0.0.1".into(),
+                        imap_port: server.imap.port(),
                         smtp_host: "127.0.0.1".into(),
-                        smtp_port: port,
-                        auth: AuthMethod::Password,
+                        smtp_port: server.smtp.port(),
                         ..Default::default()
-                    };
-                    let draft = Draft {
-                        to: "rcpt@example.com".into(),
-                        subject: "SMTP loop works".into(),
-                        body: "Sent over a real SMTP socket.".into(),
-                        ..Default::default()
-                    };
-                    let from = Addr::new(account.display_name.clone(), account.email.clone());
-                    let mime = build_mime(&tilo_content::ContentStore::memory(), &from, &draft)
-                        .expect("build MIME");
-                    let creds = resolve_auth(&account).unwrap();
-
-                    // Send: the production submission path over a real STARTTLS
-                    // upgrade (the non-465 submission-port behaviour), authenticating
-                    // with AUTH LOGIN and delivering via DATA.
-                    let params = lettre::transport::smtp::client::TlsParameters::builder(
-                        "127.0.0.1".to_string(),
-                    )
-                    .dangerous_accept_invalid_certs(true)
-                    .build()
-                    .unwrap();
-                    smtp_send_with_tls(&account, &draft, &creds, &mime, Some(params))
-                        .await
-                        .expect("SMTP submit over STARTTLS");
-
-                    let received = captured.lock().unwrap().clone();
-                    assert!(!received.is_empty(), "server captured the DATA payload");
-                    let text = String::from_utf8_lossy(&received);
-                    assert!(text.contains("Subject: SMTP loop works"), "payload: {text}");
-                    assert!(text.contains("me@example.com"), "From reached the server");
-                    assert!(text.contains("rcpt@example.com"), "To reached the server");
-                    assert!(
-                        text.contains("Sent over a real SMTP socket."),
-                        "body reached the server"
-                    );
-
-                    server.abort();
-                })
+                    },
+                    Box::new(draft),
+                    Vec::new(),
+                ))
                 .unwrap();
+            loop {
+                match events.recv_timeout(ui::testing::hang_bound()).unwrap() {
+                    super::EngineEvent::Error { message, .. } => panic!("{message}"),
+                    super::EngineEvent::Completed { .. } => break,
+                    _ => {}
+                }
             }
+            let sent = server.sent();
+            assert_eq!(sent.len(), 1, "the server took the message");
+            let text = String::from_utf8_lossy(&sent[0]);
+            assert!(text.contains("Subject: SMTP loop works"), "payload: {text}");
+            assert!(text.contains("me@example.com"), "From reached the server");
+            assert!(text.contains("rcpt@example.com"), "To reached the server");
+            assert!(
+                text.contains("Sent over a real SMTP socket."),
+                "body reached the server"
+            );
         }
     }
 }

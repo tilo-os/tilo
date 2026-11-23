@@ -32,23 +32,6 @@ pub mod attachment_store;
 #[cfg(feature = "live")]
 pub mod connect;
 pub mod engine;
-#[cfg(any(test, feature = "fake-servers"))]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    reason = "test servers: a broken one fails the test that started it"
-)]
-pub mod fake_imap;
-#[cfg(any(test, feature = "fake-servers"))]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test servers: a broken one fails the test that started it"
-)]
-pub mod fake_servers;
 pub mod model;
 pub mod oauth;
 pub mod store;

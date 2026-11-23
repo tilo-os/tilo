@@ -7,11 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-use ::mail_engine::fake_servers::{
-    FakeImap, FakeSmtp, Layout, accepting_client_config, server_tls_config,
-};
 use ::mail_engine::model::{AccountConfig, AuthMethod};
 use serde_json::{Value as Json, json};
+use tilo_account_probe::stand_in::{Layout, Serving, Started, started};
 use tilolang_mail::serve::{Connector, Wakeup};
 use tilolang_tilo::runtime::store::Store as _;
 use tilolang_tilo::runtime::{ResourceRef, UiNode, Value as RtValue};
@@ -45,9 +43,10 @@ Date: Tue, 30 Jun 2026 09:00:00 +0000\n\n{body}\n"
     )
 }
 
+/// One account's mail servers: its IMAP and SMTP are the one stand-in.
 struct Servers {
-    imap: FakeImap,
-    smtp: FakeSmtp,
+    imap: Started,
+    smtp: Started,
 }
 
 /// The person's servers, their inbox holding a conversation of two and a message read already.
@@ -108,14 +107,20 @@ fn lease() -> String {
 /// The two servers with nothing in the inbox yet: what a test puts there once the window stands,
 /// as mail arrives at an open window.
 fn empty_servers() -> Servers {
-    let rt = ui::rt::app();
-    let imap = rt
-        .block_on(FakeImap::start(Layout::Gmail, server_tls_config()))
-        .expect("the IMAP server starts");
-    let smtp = rt
-        .block_on(FakeSmtp::start(server_tls_config()))
-        .expect("the SMTP server starts");
-    Servers { imap, smtp }
+    servers_of(ME)
+}
+
+/// Empty servers that take `login`'s sign-in.
+fn servers_of(login: &str) -> Servers {
+    let imap = started(Serving {
+        layout: Layout::Gmail,
+        ..Serving::local(login, "app-password")
+    })
+    .expect("the mail servers start");
+    Servers {
+        smtp: imap.clone(),
+        imap,
+    }
 }
 
 fn account(servers: &Servers) -> AccountConfig {
@@ -125,9 +130,9 @@ fn account(servers: &Servers) -> AccountConfig {
         username: ME.into(),
         password: "app-password".into(),
         imap_host: "127.0.0.1".into(),
-        imap_port: servers.imap.port,
+        imap_port: servers.imap.imap.port(),
         smtp_host: "127.0.0.1".into(),
-        smtp_port: servers.smtp.port,
+        smtp_port: servers.smtp.smtp.port(),
         auth: AuthMethod::Password,
         ..Default::default()
     }
@@ -164,7 +169,9 @@ impl MailConnector {
             let engine = ::mail_engine::engine::live::LiveEngine::trusting(
                 tilo_content::ContentStore::memory(),
                 Arc::clone(&wake),
-                accepting_client_config(),
+                // Each account's stand-in signs with a certificate of its own, made when it
+                // starts, after the connector: the connector takes whichever it is shown.
+                Arc::new(tilo_net::pinned_client_config(|_| true).expect("a client")),
             )
             .expect("the engine starts");
             let (requests, events) = ::mail_engine::engine::spawn_waking(Box::new(engine), wake);
@@ -1346,7 +1353,7 @@ fn a_window_closed_and_opened_again_has_the_mail_that_came_meanwhile_and_sends_n
 
 /// A second account's server, synced alongside the first: another address, its own inbox.
 fn second_account() -> Servers {
-    let servers = empty_servers();
+    let servers = servers_of("work@rivera.example");
     servers.imap.append(
         "INBOX",
         &mail_to(

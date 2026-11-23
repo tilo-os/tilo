@@ -663,7 +663,7 @@ doc = false
 "lzma-rust2-0_23_0" = { package = "lzma-rust2", version = "^0.23.0", default-features = false, features = ["optimization", "sha2", "std", "xz"] }
 "mac-addr-0_3_0" = { package = "mac-addr", version = "^0.3.0", default-features = false, features = ["default", "std"] }
 "mail-builder-0_4_4" = { package = "mail-builder", version = "^0.4.4", default-features = false, features = ["default", "gethostname"] }
-"mail-engine" = { path = "../../../crates/platform/mail-engine", default-features = false, features = ["default", "fake-servers", "live"] }
+"mail-engine" = { path = "../../../crates/platform/mail-engine", default-features = false, features = ["default", "live", "test-support"] }
 "mail-parser-0_11_4" = { package = "mail-parser", version = "^0.11.4", default-features = false, features = ["default"] }
 "maps" = { path = "../../../apps/maps", default-features = false, features = ["samples"] }
 "maps-model" = { path = "../../../apps/maps-model", default-features = false, features = [] }
@@ -3321,7 +3321,7 @@ doc = false
 "lzma-rust2-0_23_0" = { package = "lzma-rust2", version = "^0.23.0", default-features = false, features = ["optimization", "sha2", "std", "xz"] }
 "mac-addr-0_3_0" = { package = "mac-addr", version = "^0.3.0", default-features = false, features = ["default", "std"] }
 "mail-builder-0_4_4" = { package = "mail-builder", version = "^0.4.4", default-features = false, features = ["default", "gethostname"] }
-"mail-engine" = { path = "../../../crates/platform/mail-engine", default-features = false, features = ["default", "fake-servers", "live"] }
+"mail-engine" = { path = "../../../crates/platform/mail-engine", default-features = false, features = ["default", "live", "test-support"] }
 "mail-parser-0_11_4" = { package = "mail-parser", version = "^0.11.4", default-features = false, features = ["default"] }
 "maps" = { path = "../../../apps/maps", default-features = false, features = ["samples"] }
 "maps-model" = { path = "../../../apps/maps-model", default-features = false, features = [] }

@@ -1777,6 +1777,8 @@ mod tests {
             smtp: "127.0.0.1:0".to_owned(),
             imap_wrapped: false,
             smtp_wrapped: false,
+            layout: tilo_account_probe::stand_in::Layout::Plain,
+            seeded: true,
         })
         .expect("the stand-in starts");
         let mut roots = rustls::RootCertStore::empty();
@@ -1815,7 +1817,7 @@ mod tests {
         let leaving = Leaving::read(SendMail {
             account: "ada@example.test".into(),
             from_address: "ada@example.test".into(),
-            to: "Bob <bob@example.test>".into(),
+            to: "Ada <ada@example.test>".into(),
             subject: "Hello".into(),
             body: "Hi".into(),
             ..SendMail::default()
@@ -1832,7 +1834,7 @@ mod tests {
                 std::slice::from_ref(&up.certificate),
             ))
             .expect("the bearer token sends");
-        // The stand-in delivers what its SMTP server takes to the inbox.
+        // The stand-in delivers what its SMTP server takes for its login to the inbox.
         assert_eq!(inbox_holds(), before.saturating_add(1));
     }
 

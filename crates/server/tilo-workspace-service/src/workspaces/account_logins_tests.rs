@@ -60,6 +60,8 @@ impl MailServer {
                 smtp: "127.0.0.1:0".into(),
                 imap_wrapped: true,
                 smtp_wrapped: false,
+                layout: tilo_account_probe::stand_in::Layout::Plain,
+                seeded: true,
             })
             .expect("the stand-in mail server listens");
         Self { started }
