@@ -1881,8 +1881,8 @@ mod agents_kinds {
     }
 
     async fn wait_until(check: impl Fn() -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !check() && std::time::Instant::now() < deadline {
+        let start = std::time::Instant::now();
+        while !check() && start.elapsed() < std::time::Duration::from_secs(5) {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         assert!(check(), "timed out waiting for settle loop");
