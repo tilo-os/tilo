@@ -3358,10 +3358,10 @@ deb = ["amd64", "arm64"]
 # script in this tree, and the two a release builds on their own. Each check runs just that
 # userspace of the packaging job, so it needs neither the other four distributions' time nor the
 # app-store trust root that only the Fedora build stages. Both are release checks: dispatch one
-# to build the package and get it with its checksum (`t outputs package-arch`).
+# to build the package and get it with its checksum (`t outputs package/arch`).
 
 [[check]]
-name = "package-arch"
+name = "package/arch"
 # Installs the container engine from Fedora's mirrors and builds in an Arch image pulled from
 # Docker Hub, which then installs from Arch's mirrors: no fixed host list covers them.
 egress = { to = ["0.0.0.0/0", "::/0"] }
@@ -3375,7 +3375,7 @@ on = ["dispatch"]
 heavy = true
 
 [[check]]
-name = "package-nix"
+name = "package/nix"
 # Installs the container engine from Fedora's mirrors and builds in a Nix image pulled from Docker
 # Hub, which then fetches the flake's inputs and Cargo's crates: no fixed host list covers them.
 egress = { to = ["0.0.0.0/0", "::/0"] }

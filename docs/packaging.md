@@ -346,14 +346,14 @@ composition downloads; `publish-desktop-payload` publishes it and advances the
 `TILO_DESKTOP_PAYLOAD_*` channel variables. Distribution packages are built and
 validated on t; t does not publish them to a package registry.
 
-`package-arch` and `package-nix` each build one distribution userspace of the
+`package/arch` and `package/nix` each build one distribution userspace of the
 same job on its own: `makepkg` in an Arch container, and `nix build` in a Nix
 container, both in a micro-VM with the container engine the full job uses. A
 dispatch builds and install-tests just that package, without the four other
 userspaces' time or the app-store trust root only the Fedora build stages, and
 keeps what it built in its outputs with a `SHA256SUMS` beside it:
-`t dispatch package-arch` then `t outputs package-arch` gives the
-`.pkg.tar.zst` files, and `package-nix` the store closure as
+`t dispatch package/arch` then `t outputs package/arch` gives the
+`.pkg.tar.zst` files, and `package/nix` the store closure as
 `tilo-session-amd64.nar.gz`.
 
 The check runs on a native node for its architecture. amd64 containers run
