@@ -453,6 +453,9 @@ imports! {
     FileTrash = "file_trash" ([H] -> [H]);
     FileTrashEntries = "file_trash_entries" ([] -> [H]);
     FileRestore = "file_restore" ([H] -> [H]);
+    // Disk entries packed into an archive, and an archive extracted into a new folder.
+    FileCompress = "file_compress" ([H, H] -> [H]);
+    FileExtract = "file_extract" ([H, H] -> [H]);
     // Opening a file in the app that opens its kind: the path the app was granted, or the file an
     // action holds, by its name and the address of its bytes.
     FileOpenPath = "file_open_path" ([H] -> [H]);

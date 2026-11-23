@@ -276,6 +276,18 @@ d-7di40kuf = Open entry
 
 d-7di40kuf-e = E
 
+d-jt4au2t2 = Compress entry
+    .doc = Packs the entry at `path` into a new archive beside it, named after it: `zip` picks a ZIP, and TAR.ZST otherwise.
+
+d-jt4au2t2-path = Path
+
+d-jt4au2t2-zip = Zip
+
+d-33tyunh6 = Extract entry
+    .doc = Extracts the archive at `path` into a new folder beside it, named after it.
+
+d-33tyunh6-path = Path
+
 d-bxmkupyx = Open recent
     .doc = Opens a file from Recent again, as the entry it was.
 
@@ -446,6 +458,9 @@ d-n9jkqy4o = Files
     .w-get-info = Get info
     .w-restore = Restore
     .w-delete-permanently = Delete permanently
+    .w-extract = Extract
+    .w-compress-to-zip = Compress to ZIP
+    .w-compress-to-tar-zst = Compress to TAR.ZST
     .w-rename = Rename
     .w-files-is-starting = Files is starting…
 

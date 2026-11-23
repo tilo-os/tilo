@@ -87,6 +87,8 @@ tilo-content = { version = "0.1.0", path = "../../core/content" }
 tilo-canvas-engine = { version = "0.1.0", path = "../../engines/canvas-engine" }
 # The one PDF reader: what the device's PDF engine answers a package's `pdf.*` with.
 tilo-pdf-reader = { version = "0.1.0", path = "../../engines/pdf" }
+# The archives a package makes of its folder's entries and unpacks again, in pure Rust.
+tilo-archive = { version = "0.1.0", path = "../../engines/tilo-archive" }
 tilo-content-device = { version = "0.1.0", path = "../../core/content-device" }
 tilo-dialogs = { version = "0.1.0", path = "../../platform/tilo-dialogs" }
 # The person's clipboard, over the connection the session opens for each instance: what an app

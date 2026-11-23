@@ -364,6 +364,66 @@ pub fn write(path: &str, bytes: &[u8]) -> Result<Entry, String> {
     entry(&path)
 }
 
+/// Pack `paths`, each with its name and everything in it, into the new archive `to`: what
+/// `File.compress` does. The name says the format: `.zip` or `.tar.zst`.
+///
+/// # Errors
+///
+/// Why it cannot be packed (the name is taken or names no format, a path cannot be read).
+pub fn compress(paths: &[String], to: &str) -> Result<i64, String> {
+    if paths.is_empty() {
+        return Err("choose an entry to compress".to_owned());
+    }
+    let to = resolve(to);
+    let named = to.to_string_lossy().to_ascii_lowercase();
+    let packing = if named.ends_with(".zip") {
+        tilo_archive::Packing::Zip
+    } else if named.ends_with(".tar.zst") {
+        tilo_archive::Packing::TarZst
+    } else {
+        return Err("name the archive `.zip` or `.tar.zst`".to_owned());
+    };
+    let sources: Vec<std::path::PathBuf> = paths.iter().map(|path| resolve(path)).collect();
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&to)
+        .map_err(|error| format!("{}: {error}", to.display()))?;
+    match tilo_archive::create(&sources, file, packing, &()) {
+        Ok(_) => Ok(i64::try_from(sources.len()).unwrap_or(i64::MAX)),
+        Err(error) => {
+            // A half-written archive is no archive: the caller sees the refusal, not a file.
+            let _ = std::fs::remove_file(&to);
+            Err(format!("{}: {error}", to.display()))
+        }
+    }
+}
+
+/// Extract the archive `from` into the new folder `to`: what `File.extract` does. Nothing is
+/// written outside `to`, and an entry that would be is refused whole.
+///
+/// # Errors
+///
+/// Why it cannot be extracted (the folder is taken, the archive cannot be made one).
+pub fn extract(from: &str, to: &str) -> Result<i64, String> {
+    let from = resolve(from);
+    let to = resolve(to);
+    if to.symlink_metadata().is_ok() {
+        return Err(format!("{} already exists", to.display()));
+    }
+    std::fs::create_dir(&to).map_err(|error| format!("{}: {error}", to.display()))?;
+    match tilo_archive::extract_into(&from, &to, &()) {
+        Ok(done) => {
+            let entries = done.files.saturating_add(done.directories);
+            Ok(i64::try_from(entries).unwrap_or(i64::MAX))
+        }
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&to);
+            Err(format!("{}: {error}", from.display()))
+        }
+    }
+}
+
 /// Rename the entry at `path` to `name` in its own folder.
 ///
 /// # Errors

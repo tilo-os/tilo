@@ -211,6 +211,30 @@ pub trait FilesHost {
         Err(NO_FILES.to_owned())
     }
 
+    /// Pack the entries at `paths`, each with its name and everything in it, into the new
+    /// archive `to`, answering how many entries went.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be packed (a path is not granted or gone, the name is taken, it is no
+    /// archive's name).
+    fn compress(&self, paths: &[String], to: &str) -> Result<i64, String> {
+        let _ = (paths, to);
+        Err(NO_FILES.to_owned())
+    }
+
+    /// Extract the archive `from` into the new folder `to`, answering how many entries came
+    /// out.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be extracted (it is not granted or gone, the folder is taken, the archive
+    /// is no archive).
+    fn extract(&self, from: &str, to: &str) -> Result<i64, String> {
+        let _ = (from, to);
+        Err(NO_FILES.to_owned())
+    }
+
     /// Open `file` in the app that opens its kind: the person's own view of a file, or an app
     /// whose own action takes that kind. The shell picks the app by the file's first bytes and its
     /// name and starts it, under the app's grants; the file `file` names is not read here.
@@ -240,9 +264,10 @@ impl Core {
             };
         };
         if imp == Imp::FileTrashEntries {
-            return self.result(host.trash_entries().map(|entries| {
-                Value::List(entries.iter().map(TrashEntry::value).collect())
-            }));
+            return self.result(
+                host.trash_entries()
+                    .map(|entries| Value::List(entries.iter().map(TrashEntry::value).collect())),
+            );
         }
         match imp {
             Imp::FileList => {
@@ -296,6 +321,30 @@ impl Core {
             Imp::FileTrash => {
                 let path = self.text(a.h(0)?)?;
                 self.result(host.trash(&path).map(|entry| entry.value()))
+            }
+            Imp::FileCompress => {
+                let paths = self.with_val(a.h(0)?, |value| match value {
+                    Value::List(items) => items
+                        .iter()
+                        .map(|item| match item {
+                            Value::Text(path) => Ok(path.clone()),
+                            other => trap(format!(
+                                "a path is text, and this is a {}",
+                                other.kind_name()
+                            )),
+                        })
+                        .collect::<HResult<Vec<String>>>(),
+                    other => trap(format!(
+                        "expected a list of paths, got {}",
+                        other.kind_name()
+                    )),
+                })?;
+                let to = self.text(a.h(1)?)?;
+                self.result(host.compress(&paths, &to).map(Value::Int))
+            }
+            Imp::FileExtract => {
+                let (from, to) = (self.text(a.h(0)?)?, self.text(a.h(1)?)?);
+                self.result(host.extract(&from, &to).map(Value::Int))
             }
             Imp::FileRestore => {
                 let path = self.text(a.h(0)?)?;

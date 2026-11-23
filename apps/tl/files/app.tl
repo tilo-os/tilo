@@ -306,12 +306,40 @@ action open_entry(f: Files, e: Entry) uses files, time {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     if e.folder {
         go(f, e.path)
+    } else if is_archive(e.name) {
+        s.notice = "“{e.name}” is an archive: extract it to read what it holds"
     } else {
         match File.open(e.path) {
             .ok => { note_recent(f, e.name, e.path) }
             .err(why) => {
                 s.notice = "Nothing here opens “{e.name}”: {why}"
             }
+        }
+    }
+}
+
+/// Packs the entry at `path` into a new archive beside it, named after it: `zip` picks a ZIP,
+/// and TAR.ZST otherwise.
+action compress_entry(f: Files, path: Text, zip: Bool) uses files, time {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    let ext = if zip { ".zip" } else { ".tar.zst" }
+    let to = join(parent_of(path), name_of(path) + ext)
+    match File.compress([path], to) {
+        .ok(_) => { read_listing(f, s.here) }
+        .err(why) => {
+            s.notice = "Couldn’t compress “{name_of(path)}”: {why}"
+        }
+    }
+}
+
+/// Extracts the archive at `path` into a new folder beside it, named after it.
+action extract_entry(f: Files, path: Text) uses files, time {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    let to = join(parent_of(path), stem_of(name_of(path)))
+    match File.extract(path, to) {
+        .ok(_) => { read_listing(f, s.here) }
+        .err(why) => {
+            s.notice = "Couldn’t extract “{name_of(path)}”: {why}"
         }
     }
 }
@@ -680,6 +708,38 @@ fn is_picture(name: Text) -> Bool {
         ext == "svg",
     ]
         .any(x -> x)
+}
+
+/// The archive extension `name` ends with, longest first, or empty for a file that is none.
+fn archive_extension(name: Text) -> Text {
+    let lower = name.lower()
+    if let found = [
+            ".tar.gz",
+            ".tar.xz",
+            ".tar.zst",
+            ".tar.bz2",
+            ".tgz",
+            ".txz",
+            ".tzst",
+            ".tbz2",
+            ".tar",
+            ".zip",
+            ".7z",
+        ]
+            .find(m -> lower.ends_with(m)) {
+        found
+    } else { "" }
+}
+
+/// Whether `name` is an archive this app can extract.
+fn is_archive(name: Text) -> Bool {
+    archive_extension(name) != ""
+}
+
+/// The name `name` without its archive extension, so an extracted folder is called after it.
+fn stem_of(name: Text) -> Text {
+    let ext = archive_extension(name)
+    if ext == "" { name } else { name.slice(0, name.len() - ext.len()) }
 }
 
 /// Whether `name` is a text file's.
@@ -1191,6 +1251,18 @@ view entry_list(
                             on choose: delete_permanently(f, e.path)
                         }
                     } else {
+                        if is_archive(e.name) {
+                            ui.MenuItem("Extract", icon: .archive) {
+                                on choose: extract_entry(f, e.path)
+                            }
+                        } else {
+                            ui.MenuItem("Compress to ZIP", icon: .file_archive) {
+                                on choose: compress_entry(f, e.path, true)
+                            }
+                            ui.MenuItem("Compress to TAR.ZST", icon: .file_archive) {
+                                on choose: compress_entry(f, e.path, false)
+                            }
+                        }
                         ui.MenuItem("Rename", icon: .pencil) {
                             on choose: set(naming, e.path).then(set(name, e.name))
                         }

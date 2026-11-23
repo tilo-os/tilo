@@ -465,7 +465,11 @@ pub trait Platform {
     /// # Errors
     ///
     /// Why it cannot be renamed.
-    fn rename_file(&self, path: &str, name: &str) -> Result<tilolang_runtime::files::Entry, String> {
+    fn rename_file(
+        &self,
+        path: &str,
+        name: &str,
+    ) -> Result<tilolang_runtime::files::Entry, String> {
         let _ = (path, name);
         Err(tilolang_runtime::files::NO_FILES.to_owned())
     }
@@ -475,7 +479,11 @@ pub trait Platform {
     /// # Errors
     ///
     /// Why it cannot be moved.
-    fn move_file(&self, path: &str, folder: &str) -> Result<tilolang_runtime::files::Entry, String> {
+    fn move_file(
+        &self,
+        path: &str,
+        folder: &str,
+    ) -> Result<tilolang_runtime::files::Entry, String> {
         let _ = (path, folder);
         Err(tilolang_runtime::files::NO_FILES.to_owned())
     }
@@ -485,7 +493,11 @@ pub trait Platform {
     /// # Errors
     ///
     /// Why it cannot be copied.
-    fn copy_file(&self, path: &str, folder: &str) -> Result<tilolang_runtime::files::Entry, String> {
+    fn copy_file(
+        &self,
+        path: &str,
+        folder: &str,
+    ) -> Result<tilolang_runtime::files::Entry, String> {
         let _ = (path, folder);
         Err(tilolang_runtime::files::NO_FILES.to_owned())
     }
@@ -526,6 +538,26 @@ pub trait Platform {
     /// Why it cannot be restored.
     fn restore_file(&self, name: &str) -> Result<tilolang_runtime::files::Entry, String> {
         let _ = name;
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// Pack the entries at `paths` into the new archive `to`: what `File.compress` does.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be packed (not granted, gone, the name is taken).
+    fn compress_files(&self, paths: &[String], to: &str) -> Result<i64, String> {
+        let _ = (paths, to);
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// Extract the archive `from` into the new folder `to`: what `File.extract` does.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be extracted (not granted, gone, the folder is taken).
+    fn extract_file(&self, from: &str, to: &str) -> Result<i64, String> {
+        let _ = (from, to);
         Err(tilolang_runtime::files::NO_FILES.to_owned())
     }
 
@@ -743,6 +775,14 @@ impl tilolang_runtime::files::FilesHost for PlatformFiles {
 
     fn restore(&self, name: &str) -> Result<tilolang_runtime::files::Entry, String> {
         self.0.restore_file(name)
+    }
+
+    fn compress(&self, paths: &[String], to: &str) -> Result<i64, String> {
+        self.0.compress_files(paths, to)
+    }
+
+    fn extract(&self, from: &str, to: &str) -> Result<i64, String> {
+        self.0.extract_file(from, to)
     }
 
     fn open(&self, file: tilolang_runtime::files::FileTarget<'_>) -> Result<(), String> {

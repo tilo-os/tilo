@@ -369,6 +369,18 @@ d-0nodt7ql = Prüfen
 
 d-0nodt7ql-e = E
 
+d-jt4au2t2 = Eintrag komprimieren
+    .doc = Packt den Eintrag unter `path` in ein neues Archiv daneben, nach ihm benannt: `zip` wählt ein ZIP, sonst TAR.ZST.
+
+d-jt4au2t2-path = Pfad
+
+d-jt4au2t2-zip = Zip
+
+d-33tyunh6 = Eintrag entpacken
+    .doc = Entpackt das Archiv unter `path` in einen neuen Ordner daneben, nach ihm benannt.
+
+d-33tyunh6-path = Pfad
+
 d-e3tczbcu = In der Nähe senden
     .doc = Sendet den Eintrag, den die Person gewählt hat, an das Gerät `nearby`, wie es „In der Nähe senden“ anbietet.
     .w-choose-a-file-to-send-first = Wähle zuerst eine Datei zum Senden
@@ -419,6 +431,9 @@ d-n9jkqy4o = Dateien
     .w-copy = Kopieren
     .w-cut = Ausschneiden
     .w-paste = Einfügen
+    .w-extract = Entpacken
+    .w-compress-to-zip = Zu ZIP komprimieren
+    .w-compress-to-tar-zst = Zu TAR.ZST komprimieren
     .w-move-to-trash = In den Papierkorb
     .w-empty-trash = Papierkorb leeren
     .w-type-a-path-e-g-documents = Gib einen Pfad ein, z. B. ~/Dokumente

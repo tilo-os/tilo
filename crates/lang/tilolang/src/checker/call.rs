@@ -2953,6 +2953,8 @@ impl Checker<'_> {
                 | "trash"
                 | "trash_entries"
                 | "restore"
+                | "compress"
+                | "extract"
         ) {
             return self.file_device_method(name, args, span);
         }
@@ -2976,7 +2978,7 @@ impl Checker<'_> {
                     "E027",
                     name.span,
                     format!(
-                        "`File` has `of_text`, `of_bytes`, `of_sheets`, `of_document`, `at`, `zip` and `open`, not `{other}`: a file is made of what an action holds, as `File.of_text(\"Notes.md\", text)`"
+                        "`File` has `of_text`, `of_bytes`, `of_sheets`, `of_document`, `at`, `zip`, `open`, `compress` and `extract`, not `{other}`: a file is made of what an action holds, as `File.of_text(\"Notes.md\", text)`"
                     ),
                 );
                 for a in args {
@@ -3048,11 +3050,18 @@ impl Checker<'_> {
             "remove" => "`File.remove(path)`: the entry removed for good, folder and all",
             "trash" => "`File.trash(path)`: the entry put in this device's trash",
             "trash_entries" => "`File.trash_entries()`: what this device's trash holds",
+            "compress" => {
+                "`File.compress(paths, to)`: the entries at `paths` packed into the new archive \
+                 `to`, named `.zip` or `.tar.zst`"
+            }
+            "extract" => {
+                "`File.extract(from, to)`: the archive at `from` extracted into the new folder `to`"
+            }
             _ => "`File.restore(name)`: the trashed entry named, put back where it came from",
         };
         let wanted = match method {
             "trash_entries" => 0,
-            "watch" | "write" | "rename" | "move" | "copy" => 2,
+            "watch" | "write" | "rename" | "move" | "copy" | "compress" | "extract" => 2,
             _ => 1,
         };
         if args.len() != wanted {
@@ -3076,6 +3085,19 @@ impl Checker<'_> {
             span,
             &format!("`File.{method}`"),
         );
+        // An archive's two ends: entries packed into a new file, and an archive extracted into
+        // a folder it makes. Both answer how many entries went.
+        let counted = Ty::Result(Box::new(Ty::Int), Box::new(Ty::Text));
+        if method == "compress" {
+            let paths = self.expr_as(&args[0].value, &Ty::List(Box::new(Ty::Text)));
+            let to = self.expr_as(&args[1].value, &Ty::Text);
+            return Ex::host(Imp::FileCompress, vec![paths, to], counted);
+        }
+        if method == "extract" {
+            let from = self.expr_as(&args[0].value, &Ty::Text);
+            let to = self.expr_as(&args[1].value, &Ty::Text);
+            return Ex::host(Imp::FileExtract, vec![from, to], counted);
+        }
         // `File.open` names a path the app was granted, or the file an action holds: both are one
         // open, decided by the shell from the file's bytes and its name.
         if method == "open" {

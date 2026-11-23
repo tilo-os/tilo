@@ -750,6 +750,14 @@ impl Platform for HostPlatform {
         crate::files::mkdir(path)
     }
 
+    fn compress_files(&self, paths: &[String], to: &str) -> Result<i64, String> {
+        crate::files::compress(paths, to)
+    }
+
+    fn extract_file(&self, from: &str, to: &str) -> Result<i64, String> {
+        crate::files::extract(from, to)
+    }
+
     fn write_file(
         &self,
         path: &str,
@@ -786,10 +794,7 @@ impl Platform for HostPlatform {
         crate::files::remove(path)
     }
 
-    fn trash_file(
-        &self,
-        path: &str,
-    ) -> Result<tilolang_tilo::runtime::files::TrashEntry, String> {
+    fn trash_file(&self, path: &str) -> Result<tilolang_tilo::runtime::files::TrashEntry, String> {
         crate::files::trash(path)
     }
 
@@ -797,10 +802,7 @@ impl Platform for HostPlatform {
         crate::files::trash_entries()
     }
 
-    fn restore_file(
-        &self,
-        name: &str,
-    ) -> Result<tilolang_tilo::runtime::files::Entry, String> {
+    fn restore_file(&self, name: &str) -> Result<tilolang_tilo::runtime::files::Entry, String> {
         crate::files::restore(name)
     }
 
@@ -3828,13 +3830,9 @@ fn media_action(
         runtime_portal::process_link::MediaCommand::Stop => ("pause", vec![target]),
         runtime_portal::process_link::MediaCommand::Next => ("next", vec![target]),
         runtime_portal::process_link::MediaCommand::Previous => ("previous", vec![target]),
-        runtime_portal::process_link::MediaCommand::SeekBy(micros) => (
-            "seek_by",
-            vec![
-                target,
-                Value::Int(micros / 1_000_000),
-            ],
-        ),
+        runtime_portal::process_link::MediaCommand::SeekBy(micros) => {
+            ("seek_by", vec![target, Value::Int(micros / 1_000_000)])
+        }
         runtime_portal::process_link::MediaCommand::SeekTo(micros) => {
             #[expect(
                 clippy::cast_precision_loss,

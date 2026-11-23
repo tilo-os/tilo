@@ -22949,6 +22949,7 @@ dependencies = [
  "tilo-app-module",
  "tilo-app-state",
  "tilo-app-window",
+ "tilo-archive",
  "tilo-automerge-fork",
  "tilo-canvas-engine",
  "tilo-clipboard",
