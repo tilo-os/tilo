@@ -17,7 +17,7 @@ use crate::QuickSettingsState;
 use crate::effect::QsEffect;
 use crate::session::{
     BLUETOOTH, CHROME, CLIPBOARD, DEVICES, DISPLAY_SETTINGS, DISPLAYS, MEDIA, NETWORK, NIGHT_LIGHT,
-    NOTIFICATIONS, OVERLAYS, QUICK_SETTINGS, SCREEN, SLEEP, SOUND, VPN,
+    NOTIFICATIONS, OVERLAYS, POWER, QUICK_SETTINGS, SCREEN, SOUND, VPN,
 };
 
 /// What an effect asks of the session: the resource, its action and the
@@ -259,8 +259,8 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
             (NIGHT_LIGHT, "toggle")
         }
         QsEffect::SetPowerMode { mode } => {
-            put(&mut arguments, "profile", mode.published());
-            (SLEEP, "set-profile")
+            put(&mut arguments, "mode", mode.published());
+            (POWER, "set-power-mode")
         }
         QsEffect::OpenSettings { link } => {
             // Settings opens at the page the link names: the chrome opens it,
@@ -368,6 +368,30 @@ mod tests {
                 said(&QsEffect::SetRotationLock { locked: true }).as_deref(),
                 Some("settings:settings.display set-rotation-lock locked=true"),
                 "the lock is the person's display setting, kept by the settings service"
+            );
+            assert_eq!(
+                said(&QsEffect::SetPowerMode {
+                    mode: crate::PowerProfile::Saver,
+                })
+                .as_deref(),
+                Some("power set-power-mode mode=saver"),
+                "power saver switches through the system service's power resource"
+            );
+            assert_eq!(
+                said(&QsEffect::SetPowerMode {
+                    mode: crate::PowerProfile::Balanced,
+                })
+                .as_deref(),
+                Some("power set-power-mode mode=balanced"),
+                "balanced switches through the system service's power resource"
+            );
+            assert_eq!(
+                said(&QsEffect::SetPowerMode {
+                    mode: crate::PowerProfile::Performance,
+                })
+                .as_deref(),
+                Some("power set-power-mode mode=performance"),
+                "performance switches through the system service's power resource"
             );
         }
 

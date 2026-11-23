@@ -297,12 +297,12 @@ pub enum PowerProfile {
 }
 
 impl PowerProfile {
-    /// The name the power service publishes the profile by, and takes it
-    /// back as.
+    /// The name the system service's `power` resource takes in
+    /// `set-power-mode` (`PowerMode::named`).
     #[must_use]
     pub(crate) const fn published(self) -> &'static str {
         match self {
-            PowerProfile::Saver => "power-saver",
+            PowerProfile::Saver => "saver",
             PowerProfile::Balanced => "balanced",
             PowerProfile::Performance => "performance",
         }
