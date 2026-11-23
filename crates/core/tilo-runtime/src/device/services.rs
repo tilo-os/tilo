@@ -1291,8 +1291,8 @@ impl Daemon {
             session: Some(Arc::new(AdmittedRuntimeSession {
                 policy_time: self.policy_origin.capture().map_err(io::Error::other)?,
                 provider,
+                agent: Some(admission.caller().clone()),
                 admission,
-                agent: Some(key.name().to_owned()),
                 projection: None,
             })),
             tickets: None,
