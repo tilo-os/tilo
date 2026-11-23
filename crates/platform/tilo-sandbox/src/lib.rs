@@ -10,18 +10,12 @@
 //!   profile through `sandbox_init` that denies by default and allows reading the listed paths.
 //!   Web: a page has no processes, so [`confine::confine`] reports
 //!   [`confine::ConfineError::Unsupported`] and callers parse in process.
-//! - [`job`] (Linux only): run a whole command (a CI check, a shell session) as an isolated job on
-//!   a shared kernel: its own cgroup and namespaces, no capabilities, Landlock and the CI seccomp
-//!   filter; and [`job::vm`], a command that needs real root run in a micro-VM whose QEMU is such a
-//!   job. See `docs/job-sandbox.md`.
 //! - `shm` (Unix only): anonymous memory files. Linux: sealed memfds, so a reader maps what it
 //!   received as immutable bytes. macOS: unlinked POSIX shared memory, which cannot be sealed, so
 //!   [`shm::map_sealed`] takes a private copy instead of mapping, and sizes are rounded up to the
 //!   page size, so readers carry lengths explicitly.
 
 pub mod confine;
-#[cfg(target_os = "linux")]
-pub mod job;
 #[cfg(unix)]
 pub mod shm;
 
