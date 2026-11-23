@@ -21,10 +21,16 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Sequence
 
+#: How long one git call may take before the check refuses rather than waits. Every read these
+#: checks make is a listing, a diff or a blob read of what the commit carries: none of them walks
+#: the tree, so a call that reaches this is a git that is stuck, not one answering slowly. A
+#: commit refuses with the step named rather than hanging the person who made it.
+GIT_TIMEOUT_SECONDS = 60
 # The flag every check that can judge a commit takes.
 STAGED_FLAG = "--staged"
 STAGED_HELP = (
@@ -46,12 +52,23 @@ def git(root: Path, *args: str, input: bytes | None = None, empty: tuple[int, ..
     index of the commit it is assembling, which is the one to judge. An exit
     status in ``empty`` says nothing matched rather than that git failed.
     """
-    finished = subprocess.run(
-        ["git", "-C", str(root), *args],
-        input=input,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    command = ["git", "-C", str(root), *args]
+    try:
+        finished = subprocess.run(
+            command,
+            input=input,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"git {args[0]} did not finish within {GIT_TIMEOUT_SECONDS} s"
+            + (f" (git {' '.join(args)})" if len(args) > 1 else "")
+            + "; refusing rather than holding the commit",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from None
     if finished.returncode != 0 and finished.returncode not in empty:
         raise subprocess.CalledProcessError(
             finished.returncode, finished.args, finished.stdout, finished.stderr
