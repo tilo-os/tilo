@@ -71,6 +71,8 @@ workspace = true
 [target.'cfg(unix)'.dependencies]
 # Without a session, a window runs its instance in a tilolang host in its own process.
 tilolang-process = { path = "../../crates/platform/tilolang-process" }
+# A window a device shows on a web page answers the device on its page's link.
+tilo-server-protocol = { path = "../../crates/server/tilo-server-protocol" }
 uuid.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

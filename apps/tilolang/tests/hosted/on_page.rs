@@ -19,23 +19,31 @@ fn first_acting(body: &str, action: &str) -> (u32, Option<String>) {
     let at = body
         .find(&marker)
         .unwrap_or_else(|| panic!("the page offers a {action}"));
-    let tag_start = body[..at].rfind('<').expect("the press is in a tag");
-    let tag_end = at + body[at..].find('>').expect("the tag closes");
-    let tag = &body[tag_start..tag_end];
+    let before = body.get(..at).expect("the press starts on a character");
+    let tag_start = before.rfind('<').expect("the press is in a tag");
+    let tag_end = at
+        + body
+            .get(at..)
+            .and_then(|rest| rest.find('>'))
+            .expect("the tag closes");
+    let tag = body
+        .get(tag_start..tag_end)
+        .expect("the tag is whole characters");
     let attr = |text: &str, name: &str| {
         let key = format!("{name}=\"");
-        let from = text.rfind(&key)? + key.len();
-        Some(text[from..from + text[from..].find('"')?].to_owned())
+        let value = text.get(text.rfind(&key)? + key.len()..)?;
+        Some(value.get(..value.find('"')?)?.to_owned())
     };
     let id = attr(tag, "data-p")
-        .or_else(|| attr(&body[..tag_start], "data-p"))
+        .or_else(|| attr(before.get(..tag_start)?, "data-p"))
         .and_then(|id| id.parse().ok())
         .expect("a numbered element holds the press");
     (id, attr(tag, "data-t"))
 }
 
-/// A person's window of ten thousand tasks opens as a page of the rows it shows: the page is
-/// the window's own composition, and a page answers nothing when nothing changed.
+/// A person's window of ten thousand tasks opens as a page of the rows it shows, asked over the
+/// page link a device holds to the window: the page is the window's own composition, and a page
+/// answers nothing when nothing changed.
 #[test]
 fn a_page_of_ten_thousand_tasks_carries_the_rows_it_shows() {
     let bus = seeded_tasks(SEEDED_ON_PAGE);
@@ -46,28 +54,36 @@ fn a_page_of_ten_thousand_tasks_carries_the_rows_it_shows() {
         .first()
         .cloned()
         .expect("the list shows a row");
-    let mut page = ShownOnPage::new();
+    // The device's end of the page link asks from its own thread; the window answers on this
+    // one, as the window process does, until the device lets go.
+    let (device, window) = std::os::unix::net::UnixStream::pair().expect("a page link");
+    let asking = std::thread::spawn(move || {
+        let mut page = tilo_server_protocol::page::window::WindowLink::over(device);
+        let began = std::time::Instant::now();
+        let (_, css, body) = page.open(None).expect("the window answers the page");
+        let open_took = began.elapsed();
+        let began = std::time::Instant::now();
+        let unchanged = page.changed().expect("the window answers what changed");
+        (css, body, open_took, unchanged, began.elapsed())
+    });
+    let mut link = window;
+    tilolang_app::shown_on_page::serve(session.window.harness(), &mut link)
+        .expect("the window answers its page link");
+    let (css, body, open_took, unchanged, again_took) =
+        asking.join().expect("the device's asks finish");
 
-    let began = std::time::Instant::now();
-    let opened = page.open(session.window.harness(), None);
-    let open_took = began.elapsed();
     assert!(
-        opened
-            .body
-            .contains(&ui::composition::page::escape(&shown_first)),
+        body.contains(&ui::composition::page::escape(&shown_first)),
         "the page shows the list's first task, {shown_first:?}"
     );
     assert!(
-        opened.body.len() < OPEN_BYTES,
+        body.len() < OPEN_BYTES,
         "the page carries the rows the window lays out, not the workspace's {SEEDED_ON_PAGE}: \
          {} bytes",
-        opened.body.len()
+        body.len()
     );
-    assert!(!opened.css.is_empty(), "the page carries its theme");
+    assert!(!css.is_empty(), "the page carries its theme");
 
-    let began = std::time::Instant::now();
-    let unchanged = page.changed(session.window.harness());
-    let again_took = began.elapsed();
     assert!(
         unchanged.is_empty(),
         "nothing changed, so the page is answered nothing: {} patches",

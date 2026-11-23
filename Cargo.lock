@@ -21925,6 +21925,7 @@ dependencies = [
  "tilo-workspace-join",
  "toml 1.0.6+spec-1.1.0",
  "uuid",
+ "wire-frame",
  "workspace-hack",
  "zeroize",
 ]
@@ -23685,6 +23686,7 @@ dependencies = [
  "tilo-failure",
  "tilo-files",
  "tilo-render-protocol",
+ "tilo-server-protocol",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilolang",

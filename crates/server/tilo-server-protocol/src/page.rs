@@ -11,6 +11,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod window;
+
 /// Where a page of a workspace's app is: `/w/<workspace>/<app>`, and
 /// `/w/<workspace>/<app>/<target>` for one thing it shows (a note).
 /// `/w/<workspace>` is the workspace itself: the apps a member opens there.

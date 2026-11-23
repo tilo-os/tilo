@@ -10,6 +10,8 @@
 //! is the app's own action, run by its instance under the identity its connection was opened as.
 
 use tilo_render_protocol::channel::Channel;
+use tilo_server_protocol::page::window::{self, WindowAnswer, WindowAsk};
+use tilo_server_protocol::page::{PageAction, PagePatch};
 use ui::a11y::Action;
 use ui::composition::Composition;
 use ui::composition::page::{PAGE_CSS, Page, Patch, theme_css};
@@ -68,15 +70,13 @@ impl ShownOnPage {
     pub fn open(&mut self, frame: &mut FrameHarness, show: Option<&str>) -> Shown {
         if let Some(show) = show {
             let composition = composition(frame);
-            match widget_of_target(&composition, show) {
-                Some(widget) => {
-                    if let Err(reason) =
-                        frame.perform_semantic_named(&widget, Some(show), &Action::Activate)
-                    {
-                        tracing::debug!(%reason, show, "a page's address names nothing it opens");
-                    }
-                }
-                None => tracing::debug!(show, "a page's address names nothing its view shows"),
+            let opened = widget_of_target(&composition, show)
+                .ok_or_else(|| "nothing the view shows".to_owned())
+                .and_then(|widget| {
+                    frame.perform_semantic_named(&widget, Some(show), &Action::Activate)
+                });
+            if let Err(reason) = opened {
+                tracing::debug!(%reason, show, "a page's address names nothing it opens");
             }
         }
         let composition = composition(frame);
@@ -158,4 +158,80 @@ fn widget_of_target(composition: &Composition, target: &str) -> Option<String> {
     std::iter::once(&composition.root)
         .chain(&composition.layers)
         .find_map(|node| find(node, target))
+}
+
+/// The semantic action `act` is on the view.
+fn semantic(act: PageAction) -> Action {
+    match act {
+        PageAction::Activate => Action::Activate,
+        PageAction::Toggle => Action::ToggleCheck,
+        PageAction::Focus => Action::Focus,
+        PageAction::Value(value) => Action::SetValue(value),
+        PageAction::Select { anchor, focus } => Action::SetSelection {
+            anchor: usize::try_from(anchor).unwrap_or(usize::MAX),
+            focus: usize::try_from(focus).unwrap_or(usize::MAX),
+        },
+    }
+}
+
+/// Answer the device on the link `link` with `frame`'s view, one ask at a time, until the
+/// device lets go of the page.
+///
+/// # Errors
+/// The link fails, or carries something that is no ask.
+pub fn serve(
+    frame: &mut FrameHarness,
+    link: &mut (impl std::io::Read + std::io::Write),
+) -> std::io::Result<()> {
+    let mut page = ShownOnPage::new();
+    while let Some(ask) = window::receive::<WindowAsk>(link)? {
+        let answer = match ask {
+            WindowAsk::Open { show } => {
+                let Shown { title, css, body } = page.open(frame, show.as_deref());
+                WindowAnswer::Shown { title, css, body }
+            }
+            WindowAsk::Act { id, target, action } => WindowAnswer::Changed(patches(page.act(
+                frame,
+                id,
+                target.as_deref(),
+                &semantic(action),
+            ))),
+            WindowAsk::Changed => WindowAnswer::Changed(patches(page.changed(frame))),
+        };
+        window::send(link, &answer)?;
+    }
+    Ok(())
+}
+
+fn patches(patches: Vec<Patch>) -> Vec<PagePatch> {
+    patches
+        .into_iter()
+        .map(|patch| PagePatch {
+            id: patch.id,
+            html: patch.html,
+        })
+        .collect()
+}
+
+/// The window process a device started to show a view on a web page ([`window::WINDOW_ENV`]):
+/// the window over its instance's patch connection, answering the device on its link until the
+/// device lets go.
+///
+/// # Errors
+/// The variable names no two descriptors, or the window's connections are unusable.
+pub fn serve_from_env(named: &str) -> std::io::Result<()> {
+    use std::os::fd::{FromRawFd as _, OwnedFd, RawFd};
+    let unusable =
+        |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidInput, what.to_owned());
+    let (patch, link) = named
+        .split_once(',')
+        .and_then(|(patch, link)| Some((patch.parse::<RawFd>().ok()?, link.parse::<RawFd>().ok()?)))
+        .ok_or_else(|| unusable("the page's descriptors are not `<patch>,<page>`"))?;
+    // SAFETY: the device that started this process handed it these two descriptors, open and
+    // its own, for this process alone, and names them in the variable it reads them from.
+    let (patch, link) = unsafe { (OwnedFd::from_raw_fd(patch), OwnedFd::from_raw_fd(link)) };
+    let channel = Channel::from_socket(patch)?;
+    let mut link = std::os::unix::net::UnixStream::from(link);
+    let mut frame = frame_over(channel);
+    serve(&mut frame, &mut link)
 }
