@@ -784,8 +784,11 @@ esac
 # Validate the friendly name before touching the target disk.
 "$STAGING_HANDOFF" check-device-label "$DEVICE_LABEL" || die "invalid --device-label"
 
-# Validate hostname (RFC-1123 label: letters/digits/hyphens, no edge hyphen).
+# Validate hostname (RFC-1123 label: 1-63 letters/digits/hyphens, no edge hyphen).
 [ -n "$HOSTNAME_VAL" ] || die "missing --hostname <name>"
+if [ "${#HOSTNAME_VAL}" -gt 63 ]; then
+  die "invalid hostname '$HOSTNAME_VAL' (use at most 63 characters)"
+fi
 case "$HOSTNAME_VAL" in
   -*|*-) die "invalid hostname '$HOSTNAME_VAL'" ;;
   *[!A-Za-z0-9-]*) die "invalid hostname '$HOSTNAME_VAL' (letters, digits, hyphens only)" ;;

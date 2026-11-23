@@ -272,6 +272,13 @@ fn deserialize_profile<'de, D: serde::Deserializer<'de>>(
     deserializer.deserialize_map(ProfileVisitor)
 }
 
+/// One RFC-1123 DNS label (1-63 ASCII letters, digits or hyphens, with no
+/// leading/trailing hyphen and no surrounding whitespace or control characters).
+#[must_use]
+pub fn valid_hostname(value: &str) -> bool {
+    value.trim() == value && install_profile_model::valid_hostname(value)
+}
+
 /// Validate the closed, secret-free installer profile shared by both sides.
 pub fn validate_profile(
     profile: &serde_json::Map<String, serde_json::Value>,
@@ -279,8 +286,10 @@ pub fn validate_profile(
     for (key, value) in profile {
         let valid = match key.as_str() {
             "schema" => value.is_i64() || value.is_u64(),
-            "hostname" | "username" | "full_name" | "locale" | "keyboard" | "timezone"
-            | "filesystem" => value.as_str().is_some_and(|s| s.chars().count() <= 256),
+            "hostname" => value.as_str().is_some_and(valid_hostname),
+            "username" | "full_name" | "locale" | "keyboard" | "timezone" | "filesystem" => {
+                value.as_str().is_some_and(|s| s.chars().count() <= 256)
+            }
             "purpose" => value
                 .as_str()
                 .is_some_and(|s| matches!(s, "computer" | "server")),
@@ -587,7 +596,19 @@ mod tests {
             ("device_label", serde_json::json!(" ")),
             ("device_label", serde_json::json!("é".repeat(33))),
             ("device_label", serde_json::json!("bad\u{0080}")),
+            ("hostname", serde_json::json!("")),
+            ("hostname", serde_json::json!("a".repeat(64))),
             ("hostname", serde_json::json!("a".repeat(257))),
+            ("hostname", serde_json::json!("-desktop")),
+            ("hostname", serde_json::json!("desktop-")),
+            ("hostname", serde_json::json!("bad host")),
+            ("hostname", serde_json::json!(" desktop")),
+            ("hostname", serde_json::json!("desktop ")),
+            ("hostname", serde_json::json!("desktop\n")),
+            ("hostname", serde_json::json!("desktop\r")),
+            ("hostname", serde_json::json!("desktop\t")),
+            ("hostname", serde_json::json!("desktop\u{0000}")),
+            ("hostname", serde_json::json!("desktop.local")),
             ("prepared_setup", serde_json::json!(null)),
             (
                 "prepared_setup",
@@ -691,6 +712,16 @@ mod tests {
         let mut lowercase = handoff();
         lowercase.owned_boot_entry = "00ab".into();
         assert!(lowercase.validate().unwrap_err().contains("firmware"));
+    }
+
+    #[test]
+    fn hostnames_accept_valid_dns_labels_up_to_63_chars() {
+        for good in ["a", "desktop", "My-Host-01", &"a".repeat(63)] {
+            let mut h = handoff();
+            h.profile.insert("hostname".into(), good.into());
+            let bytes = h.to_padded(4096).unwrap();
+            assert_eq!(Handoff::parse(&bytes).unwrap(), h, "{good}");
+        }
     }
 
     #[test]

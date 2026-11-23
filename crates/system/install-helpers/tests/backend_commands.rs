@@ -405,6 +405,7 @@ fn the_backends_helper_commands() {
         assert!(backend.contains(
             "/usr/libexec/tilo-vm-install-proof code-refresh-check /run/tilo-installer/code-refresh"
         ));
+        assert!(backend.contains("if [ \"${#HOSTNAME_VAL}\" -gt 63 ]; then"));
 
         // The offline target, the handoff copy, the owner's SSH key and the install
         // proof are all the compiled helpers, never their retired Python scripts.

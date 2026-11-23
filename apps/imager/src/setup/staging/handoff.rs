@@ -42,8 +42,9 @@ const PROFILE_KEYS: [&str; 12] = [
     "tpm_handoff",
 ];
 
-pub fn validate_profile(
+fn validate_profile_with(
     profile: &serde_json::Map<String, serde_json::Value>,
+    strict_hostname: bool,
 ) -> Result<(), String> {
     for (key, value) in profile {
         if !PROFILE_KEYS.contains(&key.as_str()) {
@@ -53,6 +54,9 @@ pub fn validate_profile(
         }
         let ok = match key.as_str() {
             "schema" => value.as_u64() == Some(1),
+            "hostname" if strict_hostname => value
+                .as_str()
+                .is_some_and(staging_handoff_model::valid_hostname),
             "purpose" => value
                 .as_str()
                 .is_some_and(install_profile_model::valid_purpose),
@@ -76,6 +80,32 @@ pub fn validate_profile(
         }
     }
     Ok(())
+}
+
+pub fn validate_profile(
+    profile: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    validate_profile_with(profile, true)
+}
+
+/// Validates a profile read back from a staging record the Imager stored itself.
+/// Earlier builds could store a hostname outside the strict DNS-label rule; the
+/// record still loads and [`drop_invalid_hostname`] clears the bad value so the
+/// installer asks again.
+pub fn validate_stored_profile(
+    profile: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    validate_profile_with(profile, false)
+}
+
+pub fn drop_invalid_hostname(profile: &mut serde_json::Map<String, serde_json::Value>) {
+    if profile.get("hostname").is_some_and(|value| {
+        !value
+            .as_str()
+            .is_some_and(staging_handoff_model::valid_hostname)
+    }) {
+        profile.remove("hostname");
+    }
 }
 
 pub fn profile_from_install(
@@ -335,6 +365,7 @@ mod tests {
         }
         for (pointer, value) in [
             ("/host_os", serde_json::json!("windows")),
+            ("/profile/hostname", serde_json::json!("bad host")),
             (
                 "/migration/operation_id",
                 serde_json::json!("different-operation"),
@@ -420,6 +451,20 @@ mod tests {
                 let mut unknown = serde_json::to_value(sample()).unwrap();
                 unknown["extra"] = 1.into();
                 assert!(Handoff::parse(&serde_json::to_vec(&unknown).unwrap()).is_err());
+
+                let mut max_host = sample();
+                max_host
+                    .profile
+                    .insert("hostname".into(), "h".repeat(63).into());
+                assert!(validate_profile(&max_host.profile).is_ok());
+                assert!(max_host.validate().is_ok());
+
+                for bad_host in ["", &"h".repeat(64), "-tilo", "tilo-", "bad host", "tilo\n"] {
+                    let mut h = sample();
+                    h.profile.insert("hostname".into(), bad_host.into());
+                    assert!(validate_profile(&h.profile).is_err(), "{bad_host:?}");
+                    assert!(h.validate().is_err(), "{bad_host:?}");
+                }
             }
 
             {

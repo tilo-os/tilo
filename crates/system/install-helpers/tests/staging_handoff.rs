@@ -473,6 +473,24 @@ fn the_staged_plan_is_accepted_or_refused() {
         }
     }
 
+    for invalid in [
+        "",
+        &"h".repeat(64),
+        "-studio",
+        "studio-",
+        "bad host",
+        "studio\n",
+    ] {
+        let mut doc = handoff_document();
+        doc["profile"]["hostname"] = json!(invalid);
+        fixture.set_handoff(&doc, false);
+        assert_refused(&fixture.check("guided", &[]), "hostname is malformed");
+    }
+    let mut max_host = handoff_document();
+    max_host["profile"]["hostname"] = json!("h".repeat(63));
+    fixture.set_handoff(&max_host, false);
+    assert_eq!(fixture.check("guided", &[]).code, 0);
+
     // The disk no longer matches the staged plan.
     let lsblk_refusals = |cases: &[(&str, Value, &str)]| {
         for (path, value, message) in cases {
