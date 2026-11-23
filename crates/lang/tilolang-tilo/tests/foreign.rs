@@ -838,10 +838,10 @@ fn a_directory_of_ten_thousand_people_sends_no_picture() {
     let mut renamed = people;
     renamed[9999]["label"] = json!("Renamed");
     let second = json!({ "people": renamed }).to_string();
-    let sent = second.len() as i64 - first.len() as i64;
+    let sent = second.len().abs_diff(first.len());
     assert!(
-        sent.abs() <= 64,
-        "renaming one of ten thousand people sent {sent} bytes"
+        sent <= 64,
+        "renaming one of ten thousand people sent {sent} bytes differently"
     );
     host.runtime().set_reading(&directory(), &second).unwrap();
     assert_eq!(
