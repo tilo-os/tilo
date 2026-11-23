@@ -35,7 +35,7 @@ pub struct DeviceLink {
     pub sync: DirectSync,
     reader: Reader,
     _dialer: Arc<Dialer>,
-    running: tokio::task::JoinHandle<Result<(), Refusal>>,
+    running: Option<tokio::task::JoinHandle<Result<(), Refusal>>>,
 }
 
 impl DeviceLink {
@@ -46,8 +46,10 @@ impl DeviceLink {
 
     /// Let the link go, as a closed session does.
     pub async fn close(mut self) {
-        self.running.abort();
-        let _ = (&mut self.running).await;
+        if let Some(running) = self.running.take() {
+            running.abort();
+            let _ = running.await;
+        }
     }
 
     /// Read this device's copy of the workspace.
@@ -63,7 +65,9 @@ impl DeviceLink {
 
 impl Drop for DeviceLink {
     fn drop(&mut self) {
-        self.running.abort();
+        if let Some(running) = self.running.take() {
+            running.abort();
+        }
     }
 }
 
@@ -110,7 +114,7 @@ pub async fn connect(
         sync,
         reader,
         _dialer: dialer,
-        running,
+        running: Some(running),
     }
 }
 
