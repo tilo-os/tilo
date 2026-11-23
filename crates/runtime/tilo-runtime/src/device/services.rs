@@ -36,6 +36,7 @@ use tilo_api::daemon::DaemonPlace;
 use tilo_desktop_model::WorkspaceId;
 use tilo_device_identity::login::Device;
 use tilo_identity::broker::{IdentityBrokerHandle, WorkspaceMembership};
+use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed, this_device};
 use tilo_workspace_service::apps::{
