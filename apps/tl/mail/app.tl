@@ -2379,281 +2379,168 @@ view editor(d: Draft) {
 }
 
 /// An inbox a working week in: conversations to read, some answered, one flagged, a few
-/// archived, sent and junk.
+/// archived, sent and junk. The mail comes in the way mail comes to a person, through the action
+/// that takes a received message in, so every change the seed makes is one of Mail's own.
+///
+/// Mail's account and its mailboxes are the system's: the account stands in the workspace's
+/// settings and its folders come with the mail fetched from its server, and no action of this
+/// app makes either. The conversations therefore stand where a message delivered to a workspace
+/// no account sent from stands, with the mail kept outside the accounts.
 scenario "a busy inbox" -> Thread {
     let m = root Mail
-    let a = m.accounts.insert(
-        Account(
-            key: "sam@rivera.example",
-            address: "sam@rivera.example",
-            name: "Sam Rivera",
-            online: true,
-        ),
-    )
-    a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox", unread: 3, total: 7))
-    a.mailboxes.insert(Mailbox(key: "archive", name: "Archive", role: "archive", total: 2))
-    a.mailboxes.insert(Mailbox(key: "sent", name: "Sent", role: "sent", total: 1))
-    a.mailboxes.insert(Mailbox(key: "drafts", name: "Drafts", role: "drafts"))
-    a.mailboxes.insert(Mailbox(key: "junk", name: "Junk", role: "junk", total: 1))
-    a.mailboxes.insert(Mailbox(key: "trash", name: "Trash", role: "trash"))
-    let launch = a.threads.insert(
-        Thread(
-            key: "launch@rivera.example",
-            account: a.key,
+    invoke(
+        deliver_message(
+            m,
+            from: "Grace Hopper <grace@hopper.example>",
             subject: "Launch plan for the autumn release",
-            latest: 2026-06-30T10:34,
-            snippet: "Agreed on the twelfth. I will tell support today so they can prepare the help pages.",
-            senders: "Ada Lovelace, Grace Hopper",
-            count: 3,
-            unread: true,
-        ),
-    )
-    launch.boxes.add("inbox")
-    launch.messages.insert(
-        Message(
-            key: "launch@rivera.example",
-            account: a.key,
-            subject: "Launch plan for the autumn release",
-            from: "grace@hopper.example",
-            from_name: "Grace Hopper",
-            to: "sam@rivera.example, ada@analytical.example",
-            received: 2026-06-30T08:20,
-            snippet: "Here is the draft plan.",
             body: "Hi both,\n\nHere is the draft plan for the autumn release. The beta goes out on the fifth, the release on the twelfth if nothing turns up.\n\nCould you each look at your part by Wednesday?\n\nGrace",
+            folder: "inbox",
+            read: true,
+            to: "sam@rivera.example, ada@analytical.example",
+            date: 2026-06-30T08:20,
+            conversation: "launch@rivera.example",
             message_id: "launch@rivera.example",
-            mailbox: "inbox",
         ),
     )
-    launch.messages.insert(
-        Message(
-            key: "launch-2@rivera.example",
-            account: a.key,
+    invoke(
+        deliver_message(
+            m,
+            from: "Sam Rivera <sam@rivera.example>",
             subject: "Re: Launch plan for the autumn release",
-            from: "sam@rivera.example",
-            from_name: "Sam Rivera",
-            to: "grace@hopper.example, ada@analytical.example",
-            received: 2026-06-30T09:40,
-            snippet: "The fifth works for the beta.",
             body: "The fifth works for the beta. I would move the release to the fourteenth so the docs can catch up.\n\nSam",
+            folder: "sent",
+            read: true,
+            to: "grace@hopper.example, ada@analytical.example",
+            date: 2026-06-30T09:40,
+            conversation: "launch@rivera.example",
             message_id: "launch-2@rivera.example",
-            references: "launch@rivera.example",
-            mailbox: "sent",
         ),
     )
-    launch.messages.insert(
-        Message(
-            key: "launch-3@rivera.example",
-            account: a.key,
+    invoke(
+        deliver_message(
+            m,
+            from: "Ada Lovelace <ada@analytical.example>",
             subject: "Re: Launch plan for the autumn release",
-            from: "ada@analytical.example",
-            from_name: "Ada Lovelace",
-            to: "sam@rivera.example, grace@hopper.example",
-            received: 2026-06-30T10:34,
-            snippet: "Agreed on the twelfth.",
             body: "Agreed on the twelfth. I will tell support today so they can prepare the help pages.\n\nAda",
+            folder: "inbox",
+            read: false,
+            to: "sam@rivera.example, grace@hopper.example",
+            date: 2026-06-30T10:34,
+            conversation: "launch@rivera.example",
             message_id: "launch-3@rivera.example",
-            references: "launch@rivera.example launch-2@rivera.example",
-            unread: true,
-            mailbox: "inbox",
         ),
     )
-    launch.boxes.add("sent")
-    let lease = a.threads.insert(
-        Thread(
-            key: "lease@lettings.example",
-            account: a.key,
+    invoke(
+        deliver_message(
+            m,
+            from: "Mill Lane Lettings <office@lettings.example>",
             subject: "Your lease renewal",
-            latest: 2026-06-30T10:25,
-            snippet: "The new lease is attached. Please sign by Friday so we can register it before the month ends.",
-            senders: "Mill Lane Lettings",
-            count: 1,
-            unread: true,
-            flagged: true,
-        ),
-    )
-    lease.boxes.add("inbox")
-    lease.messages.insert(
-        Message(
-            key: "lease@lettings.example",
-            account: a.key,
-            subject: "Your lease renewal",
-            from: "office@lettings.example",
-            from_name: "Mill Lane Lettings",
-            to: "sam@rivera.example",
-            received: 2026-06-30T10:25,
-            snippet: "The new lease is attached.",
             body: "Dear Sam,\n\nThe new lease is attached. Please sign by Friday so we can register it before the month ends.\n\nKind regards,\nMill Lane Lettings",
+            folder: "inbox",
+            read: false,
+            to: "sam@rivera.example",
+            date: 2026-06-30T10:25,
             message_id: "lease@lettings.example",
-            unread: true,
-            flagged: true,
-            mailbox: "inbox",
         ),
     )
-    let dinner = a.threads.insert(
-        Thread(
-            key: "dinner@bo.example",
-            account: a.key,
+    // The lease is the one flagged, flagged the way a person flags a conversation, so the
+    // conversation and its message carry it.
+    if let lease = m.recovered_mail.find(x -> x.key == "lease@lettings.example") {
+        invoke(flag(lease, true))
+    }
+    invoke(
+        deliver_message(
+            m,
+            from: "Bo Chen <bo@chen.example>",
             subject: "Dinner on Friday?",
-            latest: 2026-06-30T08:51,
-            snippet: "Shall we try the new place on Mill Lane? I can book for eight.",
-            senders: "Bo Chen",
-            count: 1,
-            unread: true,
-        ),
-    )
-    dinner.boxes.add("inbox")
-    dinner.messages.insert(
-        Message(
-            key: "dinner@bo.example",
-            account: a.key,
-            subject: "Dinner on Friday?",
-            from: "bo@chen.example",
-            from_name: "Bo Chen",
-            to: "sam@rivera.example",
-            received: 2026-06-30T08:51,
-            snippet: "Shall we try the new place?",
             body: "Shall we try the new place on Mill Lane? I can book for eight.\n\nBo",
+            folder: "inbox",
+            read: false,
+            to: "sam@rivera.example",
+            date: 2026-06-30T08:51,
             message_id: "dinner@bo.example",
-            unread: true,
-            mailbox: "inbox",
         ),
     )
-    let review = a.threads.insert(
-        Thread(
-            key: "review@code.example",
-            account: a.key,
+    invoke(
+        deliver_message(
+            m,
+            from: "Forge <notifications@code.example>",
             subject: "Review requested: importer handles merged cells",
-            latest: 2026-06-29T17:05,
-            snippet: "Chen asked you to review the change to the table importer.",
-            senders: "Forge",
-            count: 1,
-        ),
-    )
-    review.boxes.add("inbox")
-    review.messages.insert(
-        Message(
-            key: "review@code.example",
-            account: a.key,
-            subject: "Review requested: importer handles merged cells",
-            from: "notifications@code.example",
-            from_name: "Forge",
-            to: "sam@rivera.example",
-            received: 2026-06-29T17:05,
-            snippet: "Chen asked you to review.",
             body: "Chen asked you to review the change to the table importer: merged cells are kept, and the column widths follow the source.",
+            folder: "inbox",
+            read: true,
+            to: "sam@rivera.example",
+            date: 2026-06-29T17:05,
             message_id: "review@code.example",
-            mailbox: "inbox",
         ),
     )
-    let library = a.threads.insert(
-        Thread(
-            key: "library@city.example",
-            account: a.key,
+    invoke(
+        deliver_message(
+            m,
+            from: "City Library <loans@city.example>",
             subject: "Two books due next week",
-            latest: 2026-06-29T09:30,
-            snippet: "Piranesi and The Dispossessed are due on the seventh. You can renew them twice more.",
-            senders: "City Library",
-            count: 1,
-        ),
-    )
-    library.boxes.add("inbox")
-    library.messages.insert(
-        Message(
-            key: "library@city.example",
-            account: a.key,
-            subject: "Two books due next week",
-            from: "loans@city.example",
-            from_name: "City Library",
-            to: "sam@rivera.example",
-            received: 2026-06-29T09:30,
-            snippet: "Two books are due.",
             body: "Piranesi and The Dispossessed are due on the seventh. You can renew them twice more.",
+            folder: "inbox",
+            read: true,
+            to: "sam@rivera.example",
+            date: 2026-06-29T09:30,
             message_id: "library@city.example",
-            mailbox: "inbox",
         ),
     )
-    let photos = a.threads.insert(
-        Thread(
-            key: "photos@mia.example",
-            account: a.key,
+    invoke(
+        deliver_message(
+            m,
+            from: "Mia Novak <mia@novak.example>",
             subject: "Photos from the lake",
-            latest: 2026-06-28T19:44,
-            snippet: "The sunset ones came out best. I put the rest in the shared album.",
-            senders: "Mia Novak",
-            count: 1,
-        ),
-    )
-    photos.boxes.add("inbox")
-    photos.messages.insert(
-        Message(
-            key: "photos@mia.example",
-            account: a.key,
-            subject: "Photos from the lake",
-            from: "mia@novak.example",
-            from_name: "Mia Novak",
-            to: "sam@rivera.example",
-            received: 2026-06-28T19:44,
-            snippet: "The sunset ones came out best.",
             body: "The sunset ones came out best. I put the rest in the shared album.\n\nMia",
+            folder: "inbox",
+            read: true,
+            to: "sam@rivera.example",
+            date: 2026-06-28T19:44,
             message_id: "photos@mia.example",
-            mailbox: "inbox",
         ),
     )
-    let invoice = a.threads.insert(
-        Thread(
-            key: "invoice@studio.example",
-            account: a.key,
+    invoke(
+        deliver_message(
+            m,
+            from: "North Studio <accounts@studio.example>",
             subject: "Invoice for June",
-            latest: 2026-06-27T08:00,
-            snippet: "Thanks for the work this month. The invoice is attached, payable within thirty days.",
-            senders: "North Studio",
-            count: 1,
-        ),
-    )
-    invoice.boxes.add("archive")
-    invoice.messages.insert(
-        Message(
-            key: "invoice@studio.example",
-            account: a.key,
-            subject: "Invoice for June",
-            from: "accounts@studio.example",
-            from_name: "North Studio",
-            to: "sam@rivera.example",
-            received: 2026-06-27T08:00,
-            snippet: "The invoice is attached.",
             body: "Thanks for the work this month. The invoice is attached, payable within thirty days.",
-            message_id: "invoice@studio.example",
-            mailbox: "archive",
-        ),
-    )
-    let offer = a.threads.insert(
-        Thread(
-            key: "offer@deals.example",
-            account: a.key,
-            subject: "You have won a cruise",
-            latest: 2026-06-26T03:12,
-            snippet: "Claim your prize within 24 hours by confirming your card details.",
-            senders: "Prize Draw",
-            count: 1,
-        ),
-    )
-    offer.boxes.add("junk")
-    offer.messages.insert(
-        Message(
-            key: "offer@deals.example",
-            account: a.key,
-            subject: "You have won a cruise",
-            from: "win@deals.example",
-            from_name: "Prize Draw",
+            folder: "archive",
+            read: true,
             to: "sam@rivera.example",
-            received: 2026-06-26T03:12,
-            snippet: "Claim your prize.",
-            body: "Claim your prize within 24 hours by confirming your card details.",
-            message_id: "offer@deals.example",
-            mailbox: "junk",
+            date: 2026-06-27T08:00,
+            message_id: "invoice@studio.example",
         ),
     )
-    launch
+    invoke(
+        deliver_message(
+            m,
+            from: "Prize Draw <win@deals.example>",
+            subject: "You have won a cruise",
+            body: "Claim your prize within 24 hours by confirming your card details.",
+            folder: "junk",
+            read: true,
+            to: "sam@rivera.example",
+            date: 2026-06-26T03:12,
+            message_id: "offer@deals.example",
+        ),
+    )
+    // The conversation the window opens: the launch one the first messages came into.
+    if let launch = m.recovered_mail.find(x -> x.key == "launch@rivera.example") {
+        launch
+    } else {
+        Thread(
+            key: "launch@rivera.example",
+            account: "",
+            subject: "Launch plan for the autumn release",
+            latest: 2026-06-30T08:20,
+            snippet: "",
+            senders: "Grace Hopper",
+            count: 1,
+            unread: true,
+        )
+    }
 }
 
 /// An answer being written to a long conversation: its window, with whom it goes to and what it
