@@ -464,7 +464,7 @@ class Notebook(Resource):
         return self.action("export_notebook")
 
     def export_notebook_markdown(self) -> Any:
-        """The notebook as one Markdown document: each note a heading one level deeper than the note it stands under (six at the deepest), its body beneath, and the notes under it after it — the notebook read as one text, in the order the tree keeps it."""
+        """The notebook as one Markdown document: each note a heading one level deeper than the note it stands under (six at the deepest), its body beneath, and the notes under it after it. The whole notebook reads as one text, in the order the tree keeps it."""
         return self.action("export_notebook_markdown")
 
     def import_markdown(self, *, file: Any) -> Note:

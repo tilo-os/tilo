@@ -316,7 +316,7 @@ export interface Notebook extends tilo.Resource {
   delete_tagMany(items: DeleteTagArgs[]): Promise<tilo.ActionAnswer[]>;
   /** The notebook as a zip, one Markdown file for each note: a note's own under the folder of the note it stands in, and the pictures it shows in its own `images` folder beside it. That is the shape the import reads, so the notebook comes back as the tree it is, titles, bodies and pictures alike. */
   export_notebook(): Promise<unknown>;
-  /** The notebook as one Markdown document: each note a heading one level deeper than the note it stands under (six at the deepest), its body beneath, and the notes under it after it — the notebook read as one text, in the order the tree keeps it. */
+  /** The notebook as one Markdown document: each note a heading one level deeper than the note it stands under (six at the deepest), its body beneath, and the notes under it after it. The whole notebook reads as one text, in the order the tree keeps it. */
   export_notebook_markdown(): Promise<unknown>;
   /** Imports a Markdown file as a note, or opens the note that file already made: a note keeps the address of the file it came from, so importing the same file twice makes one note. The note stands under the note of the folder its file's path names — `Q3 plan/Ideas.md` under `Q3 plan.md` — and at the top of the tree when its path names no folder. Its title is the document's first heading, or the file's name; the heading it says the title with is not said again in its body. */
   import_markdown(args: {
