@@ -152,48 +152,19 @@ pub fn request(home: &Path, operation: &str) -> io::Result<Option<Request>> {
 }
 /// Descriptive installed-plan routing only; the root independently admits the
 /// registered apps-only declaration and actual source/caller/setup bindings.
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PendingComputerApplicationsScope {
-    schema: u32,
-    source_operation: String,
-    applications_operation: String,
-    staging_operation: String,
-    staging_plan_sha256: String,
-    setup_binding: String,
-    identity_public_key: [u8; 32],
-}
 pub fn pending_applications_operation(home: &Path, expected: &Request) -> io::Result<String> {
     let bytes = read_private(&plans(home).join(format!("{}.migration.json", expected.operation)))?;
     if !expected.applications || hex::encode(Sha256::digest(&bytes)) != expected.digest {
         return Err(failure());
     }
     let plan: serde_json::Value = serde_json::from_slice(&bytes)?;
-    let scope: PendingComputerApplicationsScope = serde_json::from_value(
+    let scope: staging_handoff_model::ComputerApplicationsScope = serde_json::from_value(
         plan.get("pending_computer_applications_scope")
             .cloned()
             .ok_or_else(failure)?,
     )?;
-    let canonical = |value: &str| {
-        uuid::Uuid::parse_str(value).is_ok_and(|id| !id.is_nil() && id.to_string() == value)
-    };
-    if scope.schema != 1
-        || scope.source_operation != expected.operation
-        || scope.identity_public_key != expected.identity_public_key
-        || !canonical(&scope.source_operation)
-        || !canonical(&scope.applications_operation)
-        || !canonical(&scope.staging_operation)
-        || scope.staging_operation == scope.source_operation
-        || scope.staging_operation == scope.applications_operation
-        || scope.source_operation == scope.applications_operation
-        || scope.staging_plan_sha256.len() != 64
-        || !scope
-            .staging_plan_sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        || scope.setup_binding.is_empty()
-        || scope.setup_binding.len() > 256
-        || scope.setup_binding.chars().any(char::is_control)
+    if scope.identity_public_key != expected.identity_public_key
+        || scope.validate_fields(&expected.operation).is_err()
     {
         return Err(failure());
     }

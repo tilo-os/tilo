@@ -39,6 +39,7 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 sha2.workspace = true
+staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 tempfile.workspace = true
 threshold-identity = { path = "../../collab/threshold-identity" }
 tilo-clock = { path = "../../platform/tilo-clock" }
