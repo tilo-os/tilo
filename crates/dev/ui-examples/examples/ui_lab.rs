@@ -7,7 +7,6 @@ mod registry;
 
 registry::scenario_modules! {
     Lab;
-    activity_timeline, "activity_timeline.rs", "collaborative history timeline";
     dashboard, "dashboard.rs", "dashboard composition";
 }
 

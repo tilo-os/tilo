@@ -79,30 +79,8 @@ macro_rules! scenario_modules {
 
 pub(crate) use scenario_modules;
 
-const LAB_SOURCES: &[&str] = &["activity_timeline.rs", "dashboard.rs"];
-const SHOT_SOURCES: &[&str] = &[
-    "content_shots.rs",
-    "ctrl_k_palette.rs",
-    "data_table.rs",
-    "denied_state_shots.rs",
-    "floating_surface_shots.rs",
-    "history_cases.rs",
-    "inline_emoji_shots.rs",
-    "nav_shell_shots.rs",
-    "perf_hud_shot.rs",
-    "quick_tile_shots.rs",
-    "scrollbar_shots.rs",
-    "search_showcase.rs",
-    "send_to_shots.rs",
-    "soft_shadow_shots.rs",
-    "table_shots.rs",
-    "text_shots.rs",
-    "textinput_ext_shots.rs",
-    "undo_controls_shots.rs",
-    "widget_states_shots.rs",
-    "window_chrome_shots.rs",
-    "window_of_its_own_shots.rs",
-];
+const LAB_SOURCES: &[&str] = &["dashboard.rs"];
+const SHOT_SOURCES: &[&str] = &["perf_hud_shot.rs"];
 const PERF_SOURCES: &[&str] = &[
     "dashboard_perf_bench.rs",
     "material_bench.rs",
@@ -253,35 +231,33 @@ mod tests {
     #[test]
     fn duplicate_names_and_sources_are_rejected() {
         let duplicate_name = [
-            Scenario::new("timeline", "activity_timeline.rs", "one", noop),
-            Scenario::new("timeline", "dashboard.rs", "two", noop),
+            Scenario::new("bench", "dashboard_perf_bench.rs", "one", noop),
+            Scenario::new("bench", "material_bench.rs", "two", noop),
+            Scenario::new("scenario", "perf_scenario.rs", "three", noop),
+            Scenario::new("widgets", "widget_perf_bench.rs", "four", noop),
         ];
-        assert!(validate(Surface::Lab, &duplicate_name).is_err());
+        let error = validate(Surface::Perf, &duplicate_name).expect_err("a name used twice");
+        assert!(error.contains("duplicate scenario name"), "{error}");
 
         let duplicate_source = [
-            Scenario::new("timeline", "activity_timeline.rs", "one", noop),
-            Scenario::new("dashboard", "activity_timeline.rs", "two", noop),
+            Scenario::new("dashboard", "dashboard_perf_bench.rs", "one", noop),
+            Scenario::new("material", "dashboard_perf_bench.rs", "two", noop),
+            Scenario::new("scenario", "perf_scenario.rs", "three", noop),
+            Scenario::new("widgets", "widget_perf_bench.rs", "four", noop),
         ];
-        assert!(validate(Surface::Lab, &duplicate_source).is_err());
+        let error = validate(Surface::Perf, &duplicate_source).expect_err("a source used twice");
+        assert!(error.contains("duplicate scenario source"), "{error}");
     }
 
     /// Example binary roots that are not scenario modules. The `ui_*`
     /// dispatchers and `registry.rs` are filtered by name; these are the
     /// remaining `[[example]]` entry points declared in Cargo.toml.
     const STANDALONE_ENTRYPOINTS: &[&str] = &[
-        "block_editor_typing.rs",
-        "card_composition_shots.rs",
-        "distinct_letters_shots.rs",
-        "distinct_letters_specimen.rs",
         "form_composition_shots.rs",
         "manual_composition_shots.rs",
-        "multiline_typing.rs",
         "native_file_picker.rs",
-        "native_input_probe.rs",
         "page_view_shots.rs",
         "reading_face_shots.rs",
-        "search_latency.rs",
-        "type_specimen_shots.rs",
         "windows_host.rs",
     ];
 
