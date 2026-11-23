@@ -1,0 +1,81 @@
+# Calendar: a working week, the agenda, the tasks and a month, seeded through
+# the calendar's actions. Dates follow the day the shots are taken.
+
+[[situation]]
+name = "week-with-events"
+title = "A working week with meetings and a dinner"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event", args = { title = "Team stand-up", at = "${MON+0}T09:30:00Z", minutes = 15 } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event", args = { title = "Design review", at = "${MON+1}T10:00:00Z", minutes = 90 } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event", args = { title = "Lunch with Amira", at = "${MON+2}T12:30:00Z", minutes = 60 } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event", args = { title = "Quarterly planning", at = "${MON+3}T14:00:00Z", minutes = 120 } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event", args = { title = "Dentist", at = "${MON+4}T08:15:00Z", minutes = 45 } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event", args = { title = "Dinner at Jonas and Priya's", at = "${MON+5}T19:00:00Z", minutes = 180 } }
+
+[[situation.steps]]
+perform = { target = "NavList", semantic_target = "key:week", action = "activate" }
+
+[[situation]]
+name = "agenda"
+title = "The agenda for the coming days"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event", args = { title = "Flight to Lisbon", at = "${TODAY+1}T16:20:00Z", minutes = 140 } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event", args = { title = "Walking tour of Alfama", at = "${TODAY+2}T10:00:00Z", minutes = 120 } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event", args = { title = "Belém", day = "${TODAY+3}" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event", args = { title = "Train back", at = "${TODAY+3}T17:05:00Z", minutes = 145 } }
+
+[[situation.steps]]
+perform = { target = "NavList", semantic_target = "key:agenda", action = "activate" }
+
+[[situation]]
+name = "tasks"
+title = "Tasks in a project, some done"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Book the room for the offsite", due = "${TODAY+2}" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Send the agenda to the team", due = "${TODAY+3}" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Order lunch for twelve", due = "${TODAY+6}" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Collect feedback from last offsite" }, bind = "feedback" }
+
+[[situation.steps]]
+invoke = { resource = "{{feedback.value.id}}", action = "check_task", args = { done = true } }
+
+[[situation.steps]]
+perform = { target = "NavList", semantic_target = "key:tasks", action = "activate" }
+
+[[situation]]
+name = "month"
+title = "A month with birthdays and a holiday"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event", args = { title = "Mum's birthday", day = "${TODAY+4}" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event", args = { title = "Holiday in the mountains", day = "${TODAY+9}" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event", args = { title = "Book club", at = "${TODAY+6}T19:30:00Z", minutes = 90 } }

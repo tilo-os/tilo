@@ -1,0 +1,149 @@
+# Contacts: an address book seeded through the book's actions, and its pages.
+
+[[situation]]
+name = "address-book"
+title = "An address book of friends, family and colleagues"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.contacts:root-etcwj7o5", action = "add_contacts", args = { cards = """BEGIN:VCARD
+FN:Amira Haddad
+ORG:Northwind Studio
+TITLE:Product designer
+TEL;mobile:+49 151 2345 6789
+EMAIL;work:amira@northwind.studio
+ADR;home:;;Lindenstraße 12;Berlin;;10969;Germany
+BDAY:1990-03-14
+CATEGORIES:Work
+END:VCARD
+BEGIN:VCARD
+FN:Jonas Becker
+ORG:Northwind Studio
+TITLE:Illustrator
+TEL;mobile:+49 160 9876 5432
+EMAIL;work:jonas@northwind.studio
+CATEGORIES:Work
+END:VCARD
+BEGIN:VCARD
+FN:Priya Raman
+ORG:City Parks Office
+TITLE:Arborist
+TEL;mobile:+49 30 9012 3344
+EMAIL;work:p.raman@parks.berlin.de
+CATEGORIES:Work
+END:VCARD
+BEGIN:VCARD
+FN:Wen Zhao
+TEL;mobile:+49 176 5550 1212
+EMAIL;home:wen.zhao@posteo.de
+ADR;home:;;Kastanienallee 7;Berlin;;10435;Germany
+CATEGORIES:Family,Garden
+END:VCARD
+BEGIN:VCARD
+FN:Marta Oliveira
+ORG:Café Linde
+TITLE:Owner
+URL:https://cafe-linde.de
+TEL;mobile:+49 30 4411 2200
+EMAIL;work:hello@cafe-linde.de
+END:VCARD
+BEGIN:VCARD
+FN:Tomás Silva
+TEL;mobile:+351 912 345 678
+EMAIL;home:tomas.silva@gmail.com
+ADR;home:;;Rua da Regueira 21;Lisboa;;1100-438;Portugal
+CATEGORIES:Friends
+NOTE:Met at the Lisbon design meetup; recommends the bakery on Rua da Regueira.
+END:VCARD
+BEGIN:VCARD
+FN:Dr. Elif Yılmaz
+ORG:Praxis am Park
+TITLE:Dentist
+TEL;mobile:+49 30 2233 4455
+ADR;home:;;Parkstraße 3;Berlin;;13187;Germany
+END:VCARD
+BEGIN:VCARD
+FN:Grace Okafor
+ORG:Northwind Studio
+TITLE:Head of design
+TEL;mobile:+44 20 7946 0958
+EMAIL;work:grace@northwind.studio
+CATEGORIES:Work
+END:VCARD
+""" } }
+
+[[situation]]
+name = "favorites"
+title = "Favourite contacts"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.contacts:root-etcwj7o5", action = "add_contacts", args = { cards = """BEGIN:VCARD
+FN:Jonas Becker
+ORG:Northwind Studio
+TITLE:Illustrator
+TEL;mobile:+49 160 9876 5432
+EMAIL;work:jonas@northwind.studio
+CATEGORIES:Work
+END:VCARD
+BEGIN:VCARD
+FN:Marta Oliveira
+ORG:Café Linde
+TITLE:Owner
+TEL;mobile:+49 30 4411 2200
+EMAIL;work:hello@cafe-linde.de
+END:VCARD
+BEGIN:VCARD
+FN:Tomás Silva
+TEL;mobile:+351 912 345 678
+EMAIL;home:tomas.silva@gmail.com
+CATEGORIES:Friends
+END:VCARD
+BEGIN:VCARD
+FN:Grace Okafor
+ORG:Northwind Studio
+TITLE:Head of design
+TEL;mobile:+44 20 7946 0958
+EMAIL;work:grace@northwind.studio
+CATEGORIES:Work
+END:VCARD
+""" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.contacts:root-etcwj7o5", action = "new_contact", args = { name = "Amira Haddad" }, bind = "amira" }
+
+[[situation.steps]]
+invoke = { resource = "{{amira.value.id}}", action = "add_phone", args = { number = "+49 151 2345 6789", label = "mobile" } }
+
+[[situation.steps]]
+invoke = { resource = "{{amira.value.id}}", action = "add_email", args = { address = "amira@northwind.studio", label = "work" } }
+
+[[situation.steps]]
+invoke = { resource = "{{amira.value.id}}", action = "favorite", args = { on = true } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.contacts:root-etcwj7o5", action = "new_contact", args = { name = "Priya Raman" }, bind = "priya" }
+
+[[situation.steps]]
+invoke = { resource = "{{priya.value.id}}", action = "add_phone", args = { number = "+49 30 9012 3344", label = "mobile" } }
+
+[[situation.steps]]
+invoke = { resource = "{{priya.value.id}}", action = "add_email", args = { address = "p.raman@parks.berlin.de", label = "work" } }
+
+[[situation.steps]]
+invoke = { resource = "{{priya.value.id}}", action = "favorite", args = { on = true } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.contacts:root-etcwj7o5", action = "new_contact", args = { name = "Wen Zhao" }, bind = "wen" }
+
+[[situation.steps]]
+invoke = { resource = "{{wen.value.id}}", action = "add_phone", args = { number = "+49 176 5550 1212", label = "mobile" } }
+
+[[situation.steps]]
+invoke = { resource = "{{wen.value.id}}", action = "favorite", args = { on = true } }
+
+[[situation.steps]]
+perform = { target = "NavList", semantic_target = "key:is:favorites", action = "activate" }
+
+[[situation]]
+name = "new-contact"
+title = "A contact just added, shown"
+scenario = "a contact"
