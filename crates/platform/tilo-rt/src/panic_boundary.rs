@@ -25,6 +25,15 @@ pub fn abort_outside_boundaries() {
         std::panic::set_hook(Box::new(move |info| {
             earlier(info);
             if !is_isolated() {
+                // The earlier hooks may have written to a capture the abort
+                // discards, as a test harness's is: say on the process's own
+                // stderr what ended it, so no abort goes unexplained.
+                let _ = std::io::Write::write_fmt(
+                    &mut std::io::stderr().lock(),
+                    format_args!(
+                        "{info}\naborting: the panic above happened outside a panic boundary\n"
+                    ),
+                );
                 std::process::abort();
             }
         }));

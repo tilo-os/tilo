@@ -378,10 +378,12 @@ pub(super) fn start(
     let spawned = std::thread::Builder::new()
         .name("tilo-external-moderation".into())
         .spawn(move || {
-            let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| context.run()))
-                .unwrap_or_else(|_| {
-                    Err("external moderation worker panicked; outcome unobserved".into())
-                });
+            // A moderation worker's panic is a terminal refusal of this run alone: it
+            // unwinds to this panic boundary, where outside one a release build's panic
+            // hook ends the whole process.
+            let reply = tilo_rt::panic_boundary::isolate(|| context.run()).unwrap_or_else(|_| {
+                Err("external moderation worker panicked; outcome unobserved".into())
+            });
             if let Some(state) = state.upgrade()
                 && let Ok(mut registry) = state.external_moderation_jobs.lock()
             {

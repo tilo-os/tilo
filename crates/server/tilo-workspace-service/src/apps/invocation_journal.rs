@@ -240,6 +240,22 @@ impl Index {
         records.push(record);
         Ok(at)
     }
+
+    /// Takes the record at `at` out of `records` and out of the index, as
+    /// though it had never been inserted.
+    fn remove(&mut self, records: &mut Vec<DurableInvocation>, at: usize) {
+        if at >= records.len() {
+            return;
+        }
+        let record = records.remove(at);
+        self.by_invocation.remove(&record.key.invocation);
+        self.wire_ids.remove(&record.wire_id);
+        for position in self.by_invocation.values_mut() {
+            if *position > at {
+                *position = position.saturating_sub(1);
+            }
+        }
+    }
 }
 
 /// The store the writer appends to, as the journal staged it.
@@ -539,9 +555,21 @@ pub(super) struct InvocationJournal {
 struct Undurable {
     durable: Option<DurableInvocation>,
     writes: Vec<(DurableInvocation, std::sync::Arc<writer::Ticket>)>,
+    /// Whether the first of `writes` admits the invocation: before it the
+    /// store held no record of it at all.
+    admission: bool,
 }
 
 impl Undurable {
+    /// Whether the admission these writes began with left nothing durable,
+    /// so the invocation was never admitted.
+    fn admission_withdrawn(&self) -> bool {
+        self.admission
+            && self
+                .writes
+                .first()
+                .is_some_and(|(_, ticket)| ticket.outcome().as_ref().is_some_and(writer::withdrew))
+    }
     /// The record as durable now, or `None` once no write is in flight.
     fn visible(&self) -> Option<&DurableInvocation> {
         self.writes
@@ -819,11 +847,11 @@ impl InvocationJournal {
         let Some(at) = self.position(key) else {
             return Ok(None);
         };
-        if let Some(undurable) = self
-            .undurable
-            .get(&key.invocation)
-            .filter(|undurable| !undurable.settled())
-        {
+        let undurable = self.undurable.get(&key.invocation);
+        if undurable.is_some_and(Undurable::admission_withdrawn) {
+            return Ok(None);
+        }
+        if let Some(undurable) = undurable.filter(|undurable| !undurable.settled()) {
             return Ok(undurable.visible().cloned());
         }
         Ok(self.snapshot.records.get(at).cloned())
@@ -854,6 +882,7 @@ impl InvocationJournal {
         admission: Option<crate::apps::action_evidence::AdmissionEvidence>,
     ) -> Result<(bool, Durable), String> {
         self.ready()?;
+        self.prune();
         if let Some(evidence) = &admission {
             check_evidence(&key, &intent, evidence)?;
             evidence
@@ -916,7 +945,7 @@ impl InvocationJournal {
                 injected.crash_after = true;
             }
         }
-        let durable = self.commit(at, injected)?;
+        let durable = self.commit_from(at, injected, true)?;
         Ok((true, durable))
     }
 
@@ -1093,6 +1122,17 @@ impl InvocationJournal {
     /// entry, or a compaction once the entries would outgrow the snapshot.
     /// Readers keep seeing the record as it was until the write is durable.
     fn commit(&mut self, at: usize, injected: Injected) -> Result<Durable, String> {
+        self.commit_from(at, injected, false)
+    }
+
+    /// [`Self::commit`] of record `at`, which an `admission` just inserted:
+    /// before it there was no record at all.
+    fn commit_from(
+        &mut self,
+        at: usize,
+        injected: Injected,
+        admission: bool,
+    ) -> Result<Durable, String> {
         let before = self.before.take();
         if let Some(record) = self.snapshot.records.get_mut(at)
             && let Some(admission) = &record.admission
@@ -1141,10 +1181,18 @@ impl InvocationJournal {
         let ticket = durable.ticket();
         let outcome = ticket.as_ref().and_then(|ticket| ticket.outcome());
         let withdrawn = outcome.as_ref().is_some_and(writer::withdrew);
+        if withdrawn && admission {
+            // Nothing of the admission is durable, so the invocation was
+            // never admitted: an admission of it again is a new one, which
+            // must reach the store, not an answer that it is already there.
+            self.withdraw_admission(at);
+            self.prune();
+            return Ok(durable);
+        }
         if withdrawn {
             self.roll_back(at, &started);
         }
-        self.undurable.retain(|_, undurable| !undurable.settled());
+        self.prune();
         // What readers see is what is durable, never a write still in flight
         // or one that made nothing durable.
         if let Some(ticket) =
@@ -1155,6 +1203,7 @@ impl InvocationJournal {
                 .or_insert_with(|| Undurable {
                     durable: Some(started.clone()),
                     writes: Vec::new(),
+                    admission,
                 })
                 .writes
                 .push((record, ticket.clone()));
@@ -1183,6 +1232,33 @@ impl InvocationJournal {
 
     /// Puts record `at` back as `started`, as the store still has it: a
     /// write that left nothing durable must not be read as durable.
+    /// Forgets the writes that have resolved, taking back first every
+    /// admission among them that left nothing durable: one that resolved
+    /// after its caller was answered is undone here, before the next
+    /// admission could be told the invocation is already admitted.
+    fn prune(&mut self) {
+        let withdrawn: std::collections::BTreeSet<usize> = self
+            .undurable
+            .iter()
+            .filter(|(_, undurable)| undurable.admission_withdrawn())
+            .filter_map(|(invocation, _)| self.index.by_invocation.get(invocation).copied())
+            .collect();
+        // From the last position down, so each removal leaves the positions
+        // still to remove where they were.
+        for at in withdrawn.into_iter().rev() {
+            self.withdraw_admission(at);
+        }
+        self.undurable.retain(|_, undurable| !undurable.settled());
+    }
+
+    /// Takes back record `at`, an admission no byte of which is durable.
+    fn withdraw_admission(&mut self, at: usize) {
+        if let Some(record) = self.snapshot.records.get(at) {
+            self.undurable.remove(&record.key.invocation);
+        }
+        self.index.remove(&mut self.snapshot.records, at);
+    }
+
     fn roll_back(&mut self, at: usize, started: &DurableInvocation) {
         if let Some(record) = self.snapshot.records.get_mut(at) {
             record.clone_from(started);
@@ -1923,6 +1999,61 @@ mod tests {
                 "renamed admission survives but never creates another permit"
             );
         }
+    }
+
+    /// An admission whose write the disk takes back after its caller was
+    /// answered was never admitted: the caller's retry is a new admission
+    /// that reaches the store, not an answer that it is already there.
+    #[test]
+    fn a_retry_of_an_admission_the_disk_took_back_late_is_admitted_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("journal");
+        let mut journal = InvocationJournal::open(&root).unwrap();
+        let mut invocation = key();
+        invocation.host = journal.host();
+        // The writer holds the admission's write until the admission has
+        // answered, as a loaded disk would.
+        let (release, resume) = std::sync::mpsc::sync_channel::<()>(1);
+        let resume = std::sync::Mutex::new(resume);
+        journal.hold_writes = Some(std::sync::Arc::new(move || {
+            let _ = resume.lock().unwrap().recv();
+        }));
+        journal.fail_at = Some(BarrierFailure::File);
+        let (fresh, durable) = journal
+            .admit_with_evidence(invocation.clone(), serde_json::json!({}), 1, None)
+            .unwrap();
+        assert!(fresh);
+        assert!(
+            !durable.is_settled(),
+            "the admission is still being written"
+        );
+        release.send(()).unwrap();
+        assert!(durable.wait_blocking().is_err());
+        assert!(
+            journal.lookup(&invocation).unwrap().is_none(),
+            "an admission the disk took back is not read as admitted"
+        );
+
+        journal.fail_at = None;
+        journal.hold_writes = None;
+        let (fresh, durable) = journal
+            .admit_with_evidence(invocation.clone(), serde_json::json!({}), 1, None)
+            .unwrap();
+        assert!(
+            fresh,
+            "the retry admits the invocation the store never kept"
+        );
+        durable.wait_blocking().unwrap();
+        assert!(journal.lookup(&invocation).unwrap().is_some());
+        drop(journal);
+        assert!(
+            InvocationJournal::open(&root)
+                .unwrap()
+                .lookup(&invocation)
+                .unwrap()
+                .is_some(),
+            "the retried admission is in the store"
+        );
     }
 
     fn key() -> InvocationKey {
