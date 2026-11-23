@@ -1,11 +1,13 @@
 //! The platform a window with nothing on screen stands on: the packages it loads, the words its
-//! window speaks and the clock and zone it reads. `tilolang layout-check` lays its windows out on
-//! it, and a browser page runs its apps on it.
+//! window speaks, the clock and zone it reads and the content its apps keep. `tilolang
+//! layout-check` lays its windows out on it, and a browser page runs its apps on it.
 
 use std::sync::Arc;
 
 use std::rc::Rc;
 use tilo_clipboard::{ClipboardBackend, ClipboardImage, ClipboardTarget};
+use tilo_content::ContentStore;
+use tilolang_runtime::blob::FileValue;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::{GlobalLocale, Locale, Platform};
 use tilolang_tilo::tilolang::Compiled;
@@ -26,6 +28,10 @@ pub struct Packages {
     /// The clipboard its apps copy to and paste from: the browser's on a page, the page's own in
     /// memory when nothing lays it out.
     clipboard: Arc<dyn ClipboardBackend>,
+    /// The content its apps keep and read: the file an action makes of what it holds
+    /// (`File.of_text`), kept in memory, as a window laid out or run with nothing on disk holds
+    /// it.
+    content: ContentStore,
 }
 
 impl Packages {
@@ -39,6 +45,7 @@ impl Packages {
             compiled,
             platform,
             clipboard: page_clipboard(),
+            content: ContentStore::memory(),
         }
     }
 
@@ -153,6 +160,27 @@ impl Platform for Packages {
             }
         }
         None
+    }
+
+    /// The content at `hash`, when this host holds it: a file an action reads (`.text()`), and a
+    /// scenario's file a view shows.
+    fn read_content(&self, hash: &str) -> Option<Vec<u8>> {
+        self.content.read(hash)
+    }
+
+    /// `File.of_text` and what else makes a file of what it holds: its bytes are kept in this
+    /// host's own store, so a file a scenario makes is one its views read.
+    fn keep_content(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
+        let hash = self
+            .content
+            .put(bytes)
+            .map_err(|error| format!("`{name}` could not be kept: {error}"))?;
+        Ok(FileValue::new(
+            name,
+            media,
+            i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+            hash,
+        ))
     }
 
     fn waker(&self) -> tilolang_tilo::background::Waker {

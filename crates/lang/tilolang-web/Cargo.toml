@@ -25,6 +25,9 @@ tilo-render-protocol = { version = "0.1.0", path = "../../platform/tilo-render-p
 # The clipboard a page's apps copy to and paste from: the browser's, as the Rust apps of the
 # page use it.
 tilo-clipboard = { path = "../../platform/tilo-clipboard" }
+# The content a page's apps keep and read: a file an action makes of what it holds, in memory,
+# as the browser page holds content while it is open.
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 # The frame pipeline that lays the window out, and the page its composition is written as.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 # The pinned startup fonts a page hands its windows.

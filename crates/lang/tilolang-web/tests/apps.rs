@@ -367,3 +367,46 @@ fn the_playground_runs_one_source_for_two_people() {
     assert!(answer["alice"]["tree"]["kind"].is_string());
     assert_eq!(answer["online"], true);
 }
+
+/// A page keeps a file an action makes of what it holds: a scenario's `File.of_text` stages,
+/// and the view that shows it stands in the page.
+#[test]
+fn the_page_keeps_a_file_an_action_makes() {
+    let files = serde_json::json!({
+        "apps/tl/slip/app.tl": "app so.tilo.slip \"Slip\" (icon: .file, category: .utility)\n\
+             \n\
+             type Slip {\n\
+             subject: Text\n\
+             paper: File\n\
+             }\n\
+             \n\
+             root Slip\n\
+             \n\
+             default view slip for Slip\n\
+             \n\
+             view slip(s: Slip) {\n\
+             std.page(s) {\n\
+             ui.Text(s.paper.name, role: .body)\n\
+             }\n\
+             }\n\
+             \n\
+             scenario \"a slip with its paper\" {\n\
+             let s = root Slip\n\
+             s.subject = \"The lease\"\n\
+             s.paper = File.of_text(\"Lease.md\", \"# Tenancy agreement\")\n\
+             }\n",
+    })
+    .to_string();
+    let answer = open(
+        &files,
+        "apps/tl/slip",
+        r#"{"scenario": "a slip with its paper"}"#,
+    );
+    assert_eq!(answer["ok"], true, "{}", answer["message"]);
+    let body = answer["body"].as_str().expect("a body");
+    assert!(
+        body.contains("Lease.md"),
+        "the file a scenario made stands in the page: {body}"
+    );
+    tilolang_web::app_close(handle(&answer));
+}
