@@ -217,7 +217,9 @@ fn published_call(
                     "published": true,
                 }))
             }
-            _ => Err(format!(
+            // An action never reaches here: the branch above built it. Named so the match is
+            // whole.
+            Invocation::Action { .. } => Err(format!(
                 "{} publishes its resources' fields read-only; change them through its actions",
                 meta.title
             )),
