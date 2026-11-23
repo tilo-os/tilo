@@ -20,11 +20,11 @@ const MAX_INTENT_BYTES: usize = MAX_WORKSPACE_JOIN_REQUEST_BYTES + 8192;
 const INTENT_VERSION: u8 = 2;
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct IntentRecord {
-    version: u8,
-    prepared_at_ns: u64,
-    local_device: DeviceCert,
-    complete: Vec<u8>,
-    hint_index: u32,
+    pub(crate) version: u8,
+    pub(crate) prepared_at_ns: u64,
+    pub(crate) local_device: DeviceCert,
+    pub(crate) complete: Vec<u8>,
+    pub(crate) hint_index: u32,
 }
 /// Historical signed proof ownership, not current workspace or media authority.
 #[derive(Clone)]
