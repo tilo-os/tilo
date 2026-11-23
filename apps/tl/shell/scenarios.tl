@@ -2557,7 +2557,11 @@ scenario "the emoji picker" {
             shell: "so.tilo.shell",
         ),
     )
-    stage(device.windows, device.Windows(all: [device.Window(
+    stage(
+        device.windows,
+        device.Windows(
+            all: [
+                device.Window(
                     key: "p1",
                     title: "Release planning",
                     origin_app: "Notes",
@@ -2568,7 +2572,10 @@ scenario "the emoji picker" {
                     recency: 1,
                     focused: true,
                     preview: "live",
-                )]))
+                ),
+            ],
+        ),
+    )
     stage(device.overlays, device.Overlays(here: "emoji", emoji: true))
 }
 
@@ -2621,7 +2628,11 @@ scenario "holding Super" {
             shell: "so.tilo.shell",
         ),
     )
-    stage(device.windows, device.Windows(all: [device.Window(
+    stage(
+        device.windows,
+        device.Windows(
+            all: [
+                device.Window(
                     key: "p1",
                     title: "Release planning",
                     origin_app: "Notes",
@@ -2632,7 +2643,10 @@ scenario "holding Super" {
                     recency: 1,
                     focused: true,
                     preview: "live",
-                )]))
+                ),
+            ],
+        ),
+    )
     stage(
         device.overlays,
         device.Overlays(

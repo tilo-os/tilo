@@ -58,9 +58,7 @@ view window_elsewhere(w: device.Window) {
     ui.EmptyState(
         if w.device_name != "" {
             "{w.origin_app} on {w.device_name}"
-        } else {
-            "{w.origin_app} on another device"
-        },
+        } else { "{w.origin_app} on another device" },
         message: "This window runs on that device. Open it there to see it.",
         icon: .monitor,
         inline: true,
