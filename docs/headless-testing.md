@@ -400,7 +400,7 @@ The same driver runs in Rust, which is how app tests are written: `HeadlessApp` 
 
 Assert on the record, not the widget: the body the store holds, the history entry's author, the undo that reaches the starting state. A test that reads internal fields of the widget proves nothing a user, a script or an agent can observe.
 
-`Driver::invoke_action` is the same call from Rust, and `Driver::deliver_external` delivers a `UserEvent::External` payload the way the live host does. `apps/imager/tests/destination_headless_wizard.rs` runs the whole installer wizard this way against a recording install backend.
+`Driver::invoke_action` is the same call from Rust, and `Driver::deliver_external` delivers a `UserEvent::External` payload the way the live host does. `apps/imager/src/setup/destination/installer_app/host_journeys_tests.rs` runs the installer's journeys this way, through the host API, against a recording install backend, a Wi-Fi backend and an account fixture.
 
 ## Layout checks on the build servers
 

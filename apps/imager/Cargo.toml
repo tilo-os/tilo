@@ -174,11 +174,6 @@ path = "tests/prepared_setup_cli.rs"
 required-features = ["installation"]
 
 [[test]]
-name = "destination_headless_wizard"
-path = "tests/destination_headless_wizard.rs"
-required-features = ["destination"]
-
-[[test]]
 name = "profile_transport"
 path = "tests/profile_transport.rs"
 required-features = ["installation", "destination"]

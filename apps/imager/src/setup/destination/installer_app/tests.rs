@@ -60,7 +60,7 @@ fn sample() -> Vec<Disk> {
     Disk::samples()
 }
 
-fn disk_with_two_guided_extents() -> Disk {
+pub(super) fn disk_with_two_guided_extents() -> Disk {
     let gib = 1024_u64 * 1024 * 1024;
     let mut disk = Disk::samples().remove(1);
     disk.partitions.push(DiskPartition {

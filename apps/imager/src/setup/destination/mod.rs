@@ -101,6 +101,12 @@ pub(crate) const SCENARIOS: &[&str] = &[
 ];
 
 pub(crate) fn view(cx: &mut ui::framework::ViewCx<crate::resource::Imager>) -> ui::widget::Element {
+    #[cfg(test)]
+    {
+        if let Some(app) = installer_app::host_journeys_tests::armed_window() {
+            return crate::window_view::window_view(cx, app, InstallerApp::effect);
+        }
+    }
     let app = if cx.mode().is_live() {
         let mut app = InstallerApp::new();
         app.attach_live(cx.waker());

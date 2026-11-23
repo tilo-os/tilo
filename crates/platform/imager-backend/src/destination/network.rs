@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-pub use os_actions::{ConnectivityState, WifiNetworkInfo};
+pub use os_actions::{ConnectivityState, WifiNetworkInfo, WifiSecurity};
 use zeroize::Zeroizing;
 
 /// Wakes the installer after a network worker publishes into its queue.
@@ -177,6 +177,13 @@ impl InstallerNetwork {
             notice: "Checking network availability…".to_string(),
             initial_scan_started: false,
         }
+    }
+
+    /// An installer network that asks `backend` instead of `NetworkManager`, so a
+    /// test drives the Wi-Fi step with no radio and no system bus.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(backend: Arc<dyn NetworkBackend>) -> Self {
+        Self::new(backend)
     }
 
     pub fn is_busy(&self) -> bool {
