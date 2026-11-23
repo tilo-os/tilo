@@ -819,4 +819,57 @@ view shelf(s: papers.Shelf) {
         );
         assert_eq!(rt.read(&shelf(), "tags").unwrap(), Value::List(Vec::new()));
     }
+
+    /// A view over a note of an app this runtime does not run, handing the note's reactions to
+    /// the strip a person presses.
+    const NOTE_VIEW: &str = r#"app test.note "Note"
+
+use other as other
+
+view note(n: other.Note) {
+  ui.Reactions(reactions: n.reactions)
+}
+"#;
+
+    /// The app whose notes this view reads: what a note says, and who reacted to it by emoji.
+    fn reacted_notes() -> Meta {
+        meta(json!({
+            "app": "other",
+            "types": [
+                {"id": "Note", "name": "Note", "fields": [
+                    {"id": "Note.text", "name": "text", "type": "Text"},
+                    {"id": "Note.reactions", "name": "reactions", "type": "Map<Set<Actor>>"},
+                ]},
+            ],
+        }))
+    }
+
+    #[test]
+    fn a_map_field_a_reading_leaves_out_reaches_a_view_as_the_empty_map() {
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let other = reacted_notes();
+        rt.load_foreign(other.clone()).unwrap();
+        let view = App::compile(NOTE_VIEW, std::slice::from_ref(&other));
+        view.load(&rt);
+        let note = ResourceRef::parse_id("note-1", "other#Note").expect("a resource id");
+        for reading in [
+            // A note written before its app kept reactions, and one whose map is empty: the
+            // strip is handed the map it declares, not a list the shell would refuse.
+            r#"{"text": "Groceries"}"#,
+            r#"{"text": "Groceries", "reactions": {}}"#,
+        ] {
+            rt.set_reading(&note, reading)
+                .expect("a reading of the note");
+            let opened = rt
+                .open_view(&me(), &view.view("note"), vec![Value::resource(&note)])
+                .unwrap_or_else(|why| panic!("{why}"));
+            let strip = of_kind(opened.tree(), "ui.Reactions")[0].clone();
+            assert_eq!(
+                strip.props.get("reactions"),
+                Some(&Value::Map(Vec::new())),
+                "a note that holds no reaction hands the strip an empty map ({reading}): {}",
+                dump(opened.tree())
+            );
+        }
+    }
 }

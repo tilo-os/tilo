@@ -366,6 +366,20 @@ fn the_preset_switch_and_the_strips_stand_apart_and_each_placed_note_is_on_scree
     }
 }
 
+/// A note that holds no reaction opens its page in the shell: the field the note was made
+/// without reads as the empty map its strip draws, in the view the shell composes over the app's
+/// reading as the app's own window draws it, so the shell refuses nothing of it.
+#[test]
+fn a_placed_note_with_no_reactions_opens_its_page() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, notes) = session_at(WIDTH, HEIGHT);
+    place(&mut session, &notes[1]);
+    let shown = shown_as(&session, TITLES[1]);
+    until(&mut session, &format!("{shown} on screen"), |session| {
+        within(session, &shown, WIDTH, HEIGHT).is_some()
+    });
+}
+
 /// A note placed in the strips preset stands as a window of the shell's height, and the body the
 /// notes app draws in it has room of its own: its title field and its running text are laid out a
 /// whole line tall, under the window's bar, rather than flat. A view that says `fill` fills the
