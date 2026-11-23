@@ -14,9 +14,9 @@
 
 use std::fmt::Write as _;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
@@ -405,6 +405,77 @@ impl Drop for Responder {
     }
 }
 
+/// A loopback TCP listener that counts every accepted connection and closes it
+/// immediately, so a client never waits out a read timeout.
+pub struct CountingListener {
+    port: u16,
+    accepted: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl CountingListener {
+    /// Bind an ephemeral port on `127.0.0.1` and start accepting and counting
+    /// connections until dropped.
+    ///
+    /// # Panics
+    /// If the loopback listener cannot be created.
+    #[must_use]
+    #[allow(
+        clippy::expect_used,
+        reason = "a test fixture that cannot bind loopback has no meaningful fallback"
+    )]
+    pub fn start() -> Self {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind counting listener");
+        let port = listener
+            .local_addr()
+            .expect("counting listener address")
+            .port();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let count = Arc::clone(&accepted);
+        let stopping = Arc::clone(&stop);
+        let worker = std::thread::spawn(move || {
+            while let Ok((stream, _)) = listener.accept() {
+                if stopping.load(Ordering::SeqCst) {
+                    break;
+                }
+                count.fetch_add(1, Ordering::SeqCst);
+                drop(stream);
+            }
+        });
+        Self {
+            port,
+            accepted,
+            stop,
+            worker: Some(worker),
+        }
+    }
+
+    /// The listening port on `127.0.0.1`.
+    #[must_use]
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// How many connections have been accepted so far.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.accepted.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for CountingListener {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        // Wake the accept loop so it sees the flag and exits.
+        let _ = TcpStream::connect((Ipv4Addr::LOCALHOST, self.port));
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 fn serve(listener: &TcpListener, replies: Vec<Reply>, sender: &Sender<Request>) {
     for reply in replies {
         let Ok((mut stream, _)) = listener.accept() else {
@@ -664,5 +735,17 @@ mod tests {
         assert!(chunked.ends_with("/c:abcde"), "{chunked}");
         assert_eq!(roundtrip(port, "DROP / HTTP/1.1\r\n\r\n"), "");
         assert_eq!(responder.drain_requests().len(), 6);
+    }
+
+    #[test]
+    fn a_counting_listener_counts_accepted_connections() {
+        let listener = CountingListener::start();
+        assert_eq!(listener.count(), 0);
+        for expected in 1..=2 {
+            let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, listener.port())).unwrap();
+            let mut scratch = Vec::new();
+            let _ = stream.read_to_end(&mut scratch);
+            assert_eq!(listener.count(), expected);
+        }
     }
 }
