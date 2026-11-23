@@ -7,9 +7,9 @@ use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::service::{ChannelPage, PlaylistPage, SearchPage, Service, ServiceError, TrendingPage};
-
-use crate::service::{ChannelPage, Playback, SearchPage, Service, ServiceError, TrendingPage};
+use crate::service::{
+    ChannelPage, Playback, PlaylistPage, SearchPage, Service, ServiceError, TrendingPage,
+};
 use crate::wire::{self, Ask, FromConnector};
 
 /// [`Service`] over the socket to the YouTube connector process.
