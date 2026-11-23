@@ -1683,7 +1683,22 @@ impl Core {
             } else {
                 self.decide(&ctx, &aref)?
             };
+            // A person allowed this run, and what it reaches it reaches through the calls its own
+            // code makes: an action that calls an outside one is outside for that call, so it was
+            // asked about as a whole. The call that would ask again is the one they allowed,
+            // unless code they were not asked about stands in its chain.
+            let allowed = journal
+                .approved_by
+                .clone()
+                .filter(|_| d == Decision::Ask && self.asked_about(journal, &ctx.chain));
             match d {
+                Decision::Ask if allowed.is_some() => {
+                    let ctx = ExecCtx {
+                        approved_by: allowed,
+                        ..ctx
+                    };
+                    self.run_step(run, journal, &ctx, &aref)
+                }
                 Decision::Allow => self.run_step(run, journal, &ctx, &aref),
                 Decision::Deny => {
                     journal.entries.push(JournalEntry::Denied {
@@ -1695,6 +1710,20 @@ impl Core {
                 Decision::Ask => Ok(Some(Self::ask(run, journal, &ctx, &aref))),
             }
         }
+    }
+
+    /// Whether the code in `chain` is all code the person who allowed `journal`'s run was asked
+    /// about: the chain the run was asked about, and the package of the action they allowed.
+    fn asked_about(&self, journal: &Journal, chain: &[ModuleHash]) -> bool {
+        let own = journal.action.as_ref().and_then(|action| {
+            self.registry
+                .borrow()
+                .action_package(action)
+                .map(|pkg| pkg.hash.clone())
+        });
+        chain
+            .iter()
+            .all(|m| journal.chain.contains(m) || own.as_ref() == Some(m))
     }
 
     /// Record that `run` waits for a person's answer to `aref`, and hand the suggestion out.

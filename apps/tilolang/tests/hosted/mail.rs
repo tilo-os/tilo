@@ -1068,6 +1068,27 @@ fn a_reply_goes_out_through_the_outbox_once_the_server_takes_it() {
     assert!(session.flag(&draft, "sent"));
 }
 
+/// The conversation's reply bar answers and sends in one press: the person is asked once, and
+/// allowing it sends the answer the bar made, as the Send of a draft does.
+#[test]
+fn an_answer_typed_under_a_conversation_goes_out_once_allowed() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    session.hold_for(0);
+    let plan = session.thread("Launch plan");
+    session.call("answer", &plan, &json!({ "body": "Thursday works." }));
+    session.until("the server to take the answer", |_| {
+        servers.smtp.sent().len() == 1
+    });
+    session.until("the outbox to settle", |session| {
+        session.instance_host().store().outbox_pending().is_empty()
+    });
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    assert!(sent.contains("Subject: Re: Launch plan"), "{sent}");
+    assert!(sent.contains("Thursday works."), "{sent}");
+}
+
 #[test]
 fn an_unreachable_server_is_said_on_the_account() {
     let servers = servers();

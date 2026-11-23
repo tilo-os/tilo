@@ -68,6 +68,7 @@ mod members;
 mod multi_select;
 #[path = "names.rs"]
 mod names;
+mod nested_proposals;
 #[path = "outcomes.rs"]
 mod outcomes;
 #[path = "outside.rs"]
