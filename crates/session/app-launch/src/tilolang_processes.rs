@@ -685,10 +685,9 @@ impl Processes {
         dir.is_dir().then_some((dir, under))
     }
 
-    /// Start the process `key`, with its socket at the launch kind's descriptor, and follow it on a
-    /// thread of its own until it ends.
+    /// Start the process `key`, with its socket as its stdin, and follow it on a thread of its own
+    /// until it ends.
     fn start(self: &Arc<Self>, key: &HostKey) -> std::io::Result<Host> {
-        use std::os::unix::process::CommandExt as _;
         let storage = self.storage(key)?;
         let (ours, theirs) = runtime_portal::process_link::pair()?;
         let earlier = self.earlier(key);
@@ -701,28 +700,14 @@ impl Processes {
                 .map(|(dir, under)| (dir.as_path(), under.as_path())),
         );
         command
-            .stdin(std::process::Stdio::null())
+            // The socket goes as the launcher's stdin, which it moves to the launch kind's
+            // descriptor itself: a descriptor placed anywhere else takes a `pre_exec` step, and
+            // that makes `Command::spawn` `fork()` the compositor (`runtime_portal::launch_hold`).
+            .stdin(std::process::Stdio::from(theirs))
             // Read here: what it said last is why it ended when it could not say so itself.
             .stderr(std::process::Stdio::piped());
-        let socket = theirs.as_raw_fd();
-        let slot = runtime_portal::process_link::CHILD_FD;
-        // SAFETY: only async-signal-safe calls between fork and exec: the socket is placed at its
-        // slot without close-on-exec.
-        unsafe {
-            command.pre_exec(move || {
-                if socket == slot {
-                    if libc::fcntl(slot, libc::F_SETFD, 0) < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                } else if libc::dup2(socket, slot) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
         let mut child = command.spawn()?;
         drop(command);
-        drop(theirs);
         let tag = format!("{} {}", key.workspace, key.app);
         let said = child.stderr.take().map(|stderr| {
             std::thread::Builder::new()
