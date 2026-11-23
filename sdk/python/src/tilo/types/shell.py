@@ -74,13 +74,13 @@ __all__ = [
     "SetFramesSnapArgs",
     "TabPlaceHereArgs",
     "ReorderPlaceArgs",
+    "BringForwardArgs",
     "ShowStyleArgs",
-    "FocusStripArgs",
-    "ShowPlaceArgs",
     "SizePlaceArgs",
     "PlaceDroppedArgs",
     "QueryShowArgs",
     "QueryRetryArgs",
+    "ShowPlaceArgs",
 ]
 
 BarPartKind = Literal["menu", "workspace", "app_menu", "strip", "tasks", "clock", "people", "status", "power", "agent", "spacer"]
@@ -267,7 +267,6 @@ SetFramesSnapArgs = TypedDict("SetFramesSnapArgs", {
 """The arguments of `set_frames_snap`."""
 
 TabPlaceHereArgs = TypedDict("TabPlaceHereArgs", {
-    "v": "Viewing",
     "s": "LayoutStrip",
     "target": "Any",
 })
@@ -280,21 +279,15 @@ ReorderPlaceArgs = TypedDict("ReorderPlaceArgs", {
 })
 """The arguments of `reorder_place`."""
 
+BringForwardArgs = TypedDict("BringForwardArgs", {
+    "s": "LayoutStrip",
+})
+"""The arguments of `bring_forward`."""
+
 ShowStyleArgs = TypedDict("ShowStyleArgs", {
     "style": "str",
 })
 """The arguments of `show_style`."""
-
-FocusStripArgs = TypedDict("FocusStripArgs", {
-    "strip": "str",
-})
-"""The arguments of `focus_strip`."""
-
-ShowPlaceArgs = TypedDict("ShowPlaceArgs", {
-    "strip": "str",
-    "place": "Any",
-})
-"""The arguments of `show_place`."""
 
 SizePlaceArgs = TypedDict("SizePlaceArgs", {
     "key": "str",
@@ -319,9 +312,14 @@ QueryRetryArgs = TypedDict("QueryRetryArgs", {
 })
 """The arguments of `query_retry`."""
 
+ShowPlaceArgs = TypedDict("ShowPlaceArgs", {
+    "place": "Any",
+})
+"""The arguments of `show_place`."""
+
 class Shell(Resource):
     """Shell — `tl.so.tilo.shell.Shell`."""
-    __surface__ = "so.tilo.shell@1055dac19a014096"
+    __surface__ = "so.tilo.shell@e650ee2a8014cb92"
     qsrjrjkd: ChromePreset  # preset
     @property
     def _2se66uzq(self) -> ChromePreset:
@@ -706,14 +704,14 @@ class Shell(Resource):
 
 class BarPart(Resource):
     """BarPart — `tl.so.tilo.shell.BarPart`."""
-    __surface__ = "so.tilo.shell@1055dac19a014096"
+    __surface__ = "so.tilo.shell@e650ee2a8014cb92"
     fjzbw5un: BarPartKind  # kind
     pbly7ymy: bool  # shown
 
 
 class DockItem(Resource):
     """DockItem — `tl.so.tilo.shell.DockItem`."""
-    __surface__ = "so.tilo.shell@1055dac19a014096"
+    __surface__ = "so.tilo.shell@e650ee2a8014cb92"
     rfsefuzv: str  # key
     qsnrl2gk: str  # title
     @property
@@ -739,8 +737,9 @@ class DockItem(Resource):
 
 class Layout(Resource):
     """Layout — `tl.so.tilo.shell.Layout`."""
-    __surface__ = "so.tilo.shell@1055dac19a014096"
+    __surface__ = "so.tilo.shell@e650ee2a8014cb92"
     uykuo63i: str  # person
+    k4p3z4ee: str  # front
     yb7sokzs: list[Entry[LayoutPerson]]  # people
     @property
     def _7n7jrcg3(self) -> list[Entry[LayoutWorkspace]]:
@@ -814,12 +813,11 @@ class Layout(Resource):
 
     def tab_place_here(self,
         *,
-        v: Viewing,
         s: LayoutStrip,
         target: Any,
     ) -> None:
         """Tab the place whose window's bar was dragged onto the strip `s` into that strip: a person drags one window's bar onto another's to make its tabs, and the window's menu's 'Move into … as a tab' runs the same arranging action. The place lands after the strip's other tabs and comes to the front of them, so the window shows what was dropped on it. A place already in this strip is only brought to the front, so dropping a window on itself raises it rather than opening a second place. The strip comes forward with it."""
-        return self.action("tab_place_here", v=v, s=s, target=target)
+        return self.action("tab_place_here", s=s, target=target)
 
     def tab_place_here_many(self, items: list[TabPlaceHereArgs]) -> list[dict[str, Any]]:
         """Runs `tab_place_here` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
@@ -838,14 +836,22 @@ class Layout(Resource):
         """Runs `reorder_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("reorder_place", items)
 
+    def bring_forward(self, *, s: LayoutStrip) -> None:
+        """Brings the window of the strip `s` to the front, the keyboard in it: the session brings its place in front forward, as it does for a press, a script or an agent alike. A strip with no place has no window to bring."""
+        return self.action("bring_forward", s=s)
+
+    def bring_forward_many(self, items: list[BringForwardArgs]) -> list[dict[str, Any]]:
+        """Runs `bring_forward` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("bring_forward", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"a_workspace", "a_front_workspace", "a_strip", "a_note_place", "a_foreign_place", "a_query_place", "tab_place_here", "tab_place_here_many", "reorder_place", "reorder_place_many"})
+    __actions__ = frozenset({"a_workspace", "a_front_workspace", "a_strip", "a_note_place", "a_foreign_place", "a_query_place", "tab_place_here", "tab_place_here_many", "reorder_place", "reorder_place_many", "bring_forward", "bring_forward_many"})
 
 
 class LayoutQuery(Resource):
     """LayoutQuery — `tl.so.tilo.shell.LayoutQuery`."""
-    __surface__ = "so.tilo.shell@1055dac19a014096"
+    __surface__ = "so.tilo.shell@e650ee2a8014cb92"
     @property
     def _6jget5cg(self) -> str:
         """key (`6jget5cg` on the wire)."""
@@ -863,7 +869,7 @@ class LayoutQuery(Resource):
 
 class LayoutRef(Resource):
     """LayoutRef — `tl.so.tilo.shell.LayoutRef`."""
-    __surface__ = "so.tilo.shell@1055dac19a014096"
+    __surface__ = "so.tilo.shell@e650ee2a8014cb92"
     k652vouu: str  # key
     vdsinb5l: str  # query
     vj5mgxi6: str  # address
@@ -880,7 +886,7 @@ class LayoutRef(Resource):
 
 class LayoutWorkspace(Resource):
     """LayoutWorkspace — `tl.so.tilo.shell.LayoutWorkspace`."""
-    __surface__ = "so.tilo.shell@1055dac19a014096"
+    __surface__ = "so.tilo.shell@e650ee2a8014cb92"
     @property
     def _5zibpqs6(self) -> str:
         """key (`5zibpqs6` on the wire)."""
@@ -895,7 +901,7 @@ class LayoutWorkspace(Resource):
 
 class LayoutPerson(Resource):
     """LayoutPerson — `tl.so.tilo.shell.LayoutPerson`."""
-    __surface__ = "so.tilo.shell@1055dac19a014096"
+    __surface__ = "so.tilo.shell@e650ee2a8014cb92"
     @property
     def _3rpmhtjf(self) -> str:
         """key (`3rpmhtjf` on the wire)."""
@@ -916,7 +922,7 @@ class LayoutPerson(Resource):
 
 class LayoutRow(Resource):
     """LayoutRow — `tl.so.tilo.shell.LayoutRow`."""
-    __surface__ = "so.tilo.shell@1055dac19a014096"
+    __surface__ = "so.tilo.shell@e650ee2a8014cb92"
     @property
     def _3xc5xbon(self) -> str:
         """key (`3xc5xbon` on the wire)."""
@@ -933,7 +939,7 @@ class LayoutRow(Resource):
 
 class LayoutStrip(Resource):
     """LayoutStrip — `tl.so.tilo.shell.LayoutStrip`."""
-    __surface__ = "so.tilo.shell@1055dac19a014096"
+    __surface__ = "so.tilo.shell@e650ee2a8014cb92"
     dufcke3u: str  # key
     x42tiiqe: str  # workspace
     dvberkpa: str  # row
@@ -972,7 +978,7 @@ class LayoutStrip(Resource):
 
 class LayoutPlace(Resource):
     """LayoutPlace — `tl.so.tilo.shell.LayoutPlace`."""
-    __surface__ = "so.tilo.shell@1055dac19a014096"
+    __surface__ = "so.tilo.shell@e650ee2a8014cb92"
     ba3kyokq: str  # key
     @property
     def _7dno3n47(self) -> str:
@@ -993,16 +999,8 @@ class LayoutPlace(Resource):
 
 class Viewing(Resource):
     """Viewing — `tl.so.tilo.shell.Viewing`."""
-    __surface__ = "so.tilo.shell@1055dac19a014096"
+    __surface__ = "so.tilo.shell@e650ee2a8014cb92"
     kna5sco4: str  # style
-    @property
-    def _6b2coqll(self) -> str:
-        """focused (`6b2coqll` on the wire)."""
-        return self.fields["6b2coqll"]
-
-    @_6b2coqll.setter
-    def _6b2coqll(self, value: str) -> None:
-        self.edit("6b2coqll", value=value)
 
     def show_style(self, *, style: str) -> None:
         """Shows the shell through the style `style`: a package and a view (`so.tilo.shell:strips`). Switching keeps the layout: the same places stand where they were, drawn another way."""
@@ -1012,42 +1010,14 @@ class Viewing(Resource):
         """Runs `show_style` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("show_style", items)
 
-    def focus_strip(self, *, strip: str) -> None:
-        """Makes the strip `strip` the one in front: what a press on a column's header does."""
-        return self.action("focus_strip", strip=strip)
-
-    def focus_strip_many(self, items: list[FocusStripArgs]) -> list[dict[str, Any]]:
-        """Runs `focus_strip` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("focus_strip", items)
-
-    def detach_place(self,
-        *,
-        s: LayoutStrip,
-        place: Any,
-    ) -> None:
-        """Give the place `place` a window of its own: what dragging a tab out of its window's bar does, as the shell's own `split-right` for the window in front. The place stands in front of its new window, and that window comes to the front of the shell."""
-        return self.action("detach_place", s=s, place=place)
-
-    def show_place(self,
-        *,
-        strip: str,
-        place: Any,
-    ) -> None:
-        """Shows the place `place` and brings its strip forward with it: what choosing a tab does, and the same arranging action a script or an agent runs. The strip's own reading moves first, the shell then brings the place in front of its strip."""
-        return self.action("show_place", strip=strip, place=place)
-
-    def show_place_many(self, items: list[ShowPlaceArgs]) -> list[dict[str, Any]]:
-        """Runs `show_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("show_place", items)
-
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"show_style", "show_style_many", "focus_strip", "focus_strip_many", "detach_place", "show_place", "show_place_many"})
+    __actions__ = frozenset({"show_style", "show_style_many"})
 
 
 class TiloShell(Resource):
     """Shell — `tl.so.tilo.shell`."""
-    __surface__ = "so.tilo.shell@1055dac19a014096"
+    __surface__ = "so.tilo.shell@e650ee2a8014cb92"
     def size_place(self,
         *,
         key: str,
@@ -1108,8 +1078,20 @@ class TiloShell(Resource):
         """Runs `query_retry` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("query_retry", items)
 
+    def detach_place(self, *, place: Any) -> None:
+        """Give the place `place` a window of its own: what dragging a tab out of its window's bar does, as the shell's own `split-right` for the window in front. The place stands in front of its new window, and that window comes to the front of the shell."""
+        return self.action("detach_place", place=place)
+
+    def show_place(self, *, place: Any) -> None:
+        """Shows the place `place` and brings its window forward with it, the keyboard in it: what choosing a tab does, and the same arranging action a script or an agent runs."""
+        return self.action("show_place", place=place)
+
+    def show_place_many(self, items: list[ShowPlaceArgs]) -> list[dict[str, Any]]:
+        """Runs `show_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("show_place", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"size_place", "size_place_many", "drew_place", "place_dropped", "place_dropped_many", "open_first", "a_style_settings", "query_show", "query_show_many", "query_retry", "query_retry_many"})
+    __actions__ = frozenset({"size_place", "size_place_many", "drew_place", "place_dropped", "place_dropped_many", "open_first", "a_style_settings", "query_show", "query_show_many", "query_retry", "query_retry_many", "detach_place", "show_place", "show_place_many"})
 
 

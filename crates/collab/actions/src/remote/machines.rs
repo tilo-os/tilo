@@ -19,12 +19,16 @@ pub const PLAN: &str = "machine.plan";
 pub const LIST: &str = "machine.list";
 /// One planned machine (`plan`).
 pub const SHOW: &str = "machine.show";
+/// The person's servers in service, as the document of their workspace
+/// names them: a list of `tilo_server_protocol::servers::PersonServer`, each
+/// one's device key, name and address.
+pub const SERVERS: &str = "machine.servers";
 /// Take a machine that enrolled with a plan's token into its entry (`device`,
 /// `nonce`, and what it reported: `drives`, `ask`).
 pub const ADMIT: &str = "machine.admit";
 
 /// The steps, as the command and the window reach them.
-pub const STEPS: [&str; 4] = [PLAN, LIST, SHOW, ADMIT];
+pub const STEPS: [&str; 5] = [PLAN, LIST, SHOW, SERVERS, ADMIT];
 
 /// The parameters the step `step` takes.
 #[must_use]

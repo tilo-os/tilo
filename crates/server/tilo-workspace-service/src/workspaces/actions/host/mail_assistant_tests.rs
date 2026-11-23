@@ -55,7 +55,12 @@ struct Setup {
 }
 
 impl Setup {
+    /// [`Self::made`], boxed: the whole of it is too large a future to hold in place.
     async fn new() -> Self {
+        Box::pin(Self::made()).await
+    }
+
+    async fn made() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
@@ -324,11 +329,8 @@ async fn a_members_agent_reads_and_searches_and_its_changes_ask_first() {
         setup.device.user_public_key,
         setup.device.device_public_key,
     )
-    .on_roster_turn(
-        Turn::new("chat/main", "message-1"),
-        0,
-        setup.device.user_public_key,
-    );
+    .on_roster(0, setup.device.user_public_key)
+    .on_roster_turn(Turn::new("chat/main", "message-1"));
     assert!(in_turn.turn().is_some(), "the turn is the caller's");
     let sent = json!({"account": ACCOUNT, "folder": "sent"});
     let turned = setup.ask(&in_turn, person_accounts::FETCH, sent).await;
@@ -635,7 +637,12 @@ struct Sending {
 }
 
 impl Sending {
+    /// [`Self::made`], boxed: the whole of it is too large a future to hold in place.
     async fn new() -> Self {
+        Box::pin(Self::made()).await
+    }
+
+    async fn made() -> Self {
         let setup = Setup::new().await;
         let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
         setup.workspaces.ask_people(allowing.clone());

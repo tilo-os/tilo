@@ -58,7 +58,7 @@ use tilo_actions::remote::{
 use tilo_dav::Url;
 use tilo_lock::MutexRecover as _;
 
-use super::{AddWithItem, CONNECT, RESOURCE, account_id, accounts_at, argument, server_of};
+use super::{AddWithItem, CONNECT, RESOURCE, account_id, accounts_in, argument, server_of};
 use crate::connections::wire::{Destinations, Lookup, check_destination, is_public, system_lookup};
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::{AskedTurn, CARRIED_OUT, HostedTurn, NOTHING_WAITS};
@@ -535,7 +535,11 @@ impl Workspaces {
         let place = Place::parse(server.as_str()).map_err(|error| refused(error.to_string()))?;
         let root = self.workspace_root(&using.workspace);
         let id = account_id(&username, &server);
-        if accounts_at(&root).iter().any(|kept| kept.id == id) {
+        let held = self
+            .workspace_accounts(&using.workspace)
+            .await
+            .map_err(refused)?;
+        if accounts_in(&held).iter().any(|kept| kept.id == id) {
             return Err(refused(ALREADY));
         }
         // What the vault keeps now stays whatever comes of this.

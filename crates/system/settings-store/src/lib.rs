@@ -1,8 +1,9 @@
 //! The person's desktop settings: one document of independent sections, and reads that never
 //! fail.
 //!
-//! A profile's settings are two Automerge documents, the person's and this device's ([`Store`]).
-//! The process holding the profile writes them; every other process reads the same documents and
+//! A profile's settings are one Automerge document ([`Store`]), the sections the person holds a
+//! copy of their record ([`RoamingSettings`]). The process holding the profile writes it; every
+//! other process reads the same document and
 //! follows the holder. A read that finds a missing setting, a section of the wrong type or a value
 //! out of range returns the caller's default instead of failing.
 
@@ -111,7 +112,7 @@ pub use source::{
     flush_pending_writes, install_source, installed_source, installed_version, merge_section,
     note_deferred_failure, scoped_source, take_deferred_failures,
 };
-pub use store::{BOOKKEEPING, Store, device, made_by, profile};
+pub use store::{BOOKKEEPING, RoamingSettings, Store, device, made_by, profile};
 
 /// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo`, else `$HOME/.config/tilo`. `None`
 /// only when neither variable yields a usable path. Per the XDG spec, `XDG_CONFIG_HOME` is
@@ -450,7 +451,7 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
         assert!(
             !home
-                .join(".local/share/so.tilo.settings-person/state.automerge")
+                .join(".local/share/so.tilo.settings-device/state.automerge")
                 .exists()
         );
 

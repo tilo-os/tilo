@@ -1035,7 +1035,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_host_profile_window_uses_that_profiles_accounts_credentials_and_sync_health;
+    phase a_host_profile_window_uses_that_profiles_accounts_and_sync_health;
     {
         let profiles = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
         for (profile, name) in profiles.iter().zip(["first", "second"]) {
@@ -1062,7 +1062,10 @@ tilo_test_env::scenario! {
                 panic!("the profile's one account, got {:?}", configured.accounts);
             };
             assert_eq!(account.config.username, format!("{name}-dav"));
-            assert_eq!(account.config.password, format!("{name}-fixture-password"));
+            assert_eq!(
+                account.config.password, "",
+                "a calendar's password is the workspace's vault's, never this device's"
+            );
             let _ = app.effect(&CalendarEffect::Sync);
             let health = accounts::AccountSyncStatusStore::load_in(profile.path());
             assert!(

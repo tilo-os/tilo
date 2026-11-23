@@ -30,7 +30,7 @@ Today. The session installs them (`--install-tapp`) beside native Notes
 (`--apps notes`), then:
 
 - **registry**: each package is an application under its own id, name and
-  category (`actions list`, provider `applications`).
+  category (`tilo action list`, the workspace's open of an app).
 - **launch**: each opens from the applications provider, and the compositor
   admits its window under its own app id, which a sandboxed client gets only
   through verified launch ownership. Each window presents a frame.

@@ -906,7 +906,6 @@ impl Task {
                 .send(Envelope::OpenDocument {
                     workspace_id,
                     channel,
-                    own: self.own_channel(&route),
                 })
                 .is_err()
             {

@@ -209,8 +209,6 @@ impl Workspaces {
         let person = member
             .person_id()
             .ok_or("the writer is no person's device")?;
-        // A person's view of the layout is theirs to write: every member reads it.
-        guard::may_write(&app_id, &document_id, person).map_err(|refusal| refusal.to_string())?;
         if !guard::is_shared_desktop(&app_id, &document_id) {
             // Nothing of the workspace's own layout is judged where this record holds none: what a
             // view names is the person's, and it is theirs alone.

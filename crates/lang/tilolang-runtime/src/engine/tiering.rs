@@ -207,12 +207,6 @@ impl Tiering {
         self.finish(hash, Err(why));
     }
 
-    /// Forget the modules compiled in this process, and why any failed.
-    pub(super) fn forget(&self) {
-        self.compiler.forget();
-        self.state().failed.clear();
-    }
-
     /// Why the module's compile failed, if it did.
     pub(super) fn failure(&self, hash: &ModuleHash) -> Option<String> {
         self.state().failed.get(hash).cloned()

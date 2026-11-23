@@ -191,7 +191,6 @@ tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-ide
 [target.'cfg(target_os = "linux")'.dependencies]
 # The apps the session runs itself keep their resources in the workspace's store, whose
 # commands are answered by this device's own workspace service.
-futures = { workspace = true, features = ["executor"] }
 tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" }
 # The toolkit's native half: the winit runner, the host services and the
 # broker transport, which only a desktop host runs.
@@ -327,7 +326,6 @@ tilo-projector = { path = "../../system/projector", default-features = false }
 # compositor draws it, through the one real-time encoder.
 tilo-window-share = { path = "../window-share" }
 # The sanctioned blocking HTTP client, which installs the crypto provider.
-tilo-net = { path = "../../platform/tilo-net", features = ["blocking", "json"] }
 # The identity record the launcher bound and the person's own: the directories
 # whose changes a worker follows.
 os-actions = { path = "../../system/os-actions" }
@@ -509,7 +507,6 @@ tilo-onboarding = { path = "../onboarding" }
 tilo-onboarding-session = { path = "../onboarding-session", features = ["test-support"] }
 tilo-quick-settings = { path = "../quick-settings", features = ["test-support"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
-tilo-rich-edit = { path = "../../sdk/tilo-rich-edit" }
 # The sheets' apps mounted for a person, so a test presses a control of one
 # as the person's own gesture.
 tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }

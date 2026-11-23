@@ -41,7 +41,6 @@ smithay = { version = "0.7", default-features = false, optional = true }
 [dev-dependencies]
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["test-support"] }
 serde_json.workspace = true
-libc.workspace = true
 
 [lints]
 workspace = true

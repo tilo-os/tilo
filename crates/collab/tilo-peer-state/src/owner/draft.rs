@@ -155,7 +155,6 @@ pub fn draft_local_write(
             now,
         )
         .map_err(WriteRefusal::Refused)?;
-    let own = peer.own_write(app, document, device);
     Ok((
         OwnerCommitRequest {
             workspace: workspace.to_owned(),
@@ -163,7 +162,6 @@ pub fn draft_local_write(
                 app: app.to_owned(),
                 document: document.to_owned(),
                 envelope: Box::new(envelope),
-                own,
                 readers: readers.map(str::to_owned),
             },
         },
@@ -243,7 +241,7 @@ async fn signed_local_write(
     let drafted = replica.read(StatePeer::clone);
     let (mut request, author) =
         draft_local_write(&drafted, &write.workspace, &device, write.borrowed())?;
-    let CommitOperation::Document { envelope, own, .. } = &mut request.operation else {
+    let CommitOperation::Document { envelope, .. } = &mut request.operation else {
         return Err(WriteRefusal::Refused(
             "a local write is a document write".to_owned(),
         ));
@@ -259,7 +257,7 @@ async fn signed_local_write(
         .await
         .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
     envelope.signature = collab_types::Signature(signature);
-    let (envelope, own) = ((**envelope).clone(), own.clone());
+    let envelope = (**envelope).clone();
     replica
         .write(|peer| {
             peer.admit_new_local_document_read_by(
@@ -288,6 +286,5 @@ async fn signed_local_write(
         author,
         replayed: false,
         envelope,
-        own,
     })
 }

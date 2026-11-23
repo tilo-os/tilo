@@ -207,7 +207,6 @@ messages-drafts = Nachrichtenentwürfe
 messages-drafts-keep-draft = Entwurf behalten
 messages-drafts-drop-draft = Entwurf verwerfen
 
-messages-import-previous-draft = Vorherigen Entwurf importieren
 # Was der Verlauf zu den Entwurfsaktionen sagt: der eigene Satz der App je Verb.
 messages-import-previous = Vorherigen Entwurf importiert
 messages-sent = Nachricht gesendet

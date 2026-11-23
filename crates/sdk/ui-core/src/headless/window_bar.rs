@@ -12,7 +12,7 @@ use crate::widget::{TabBar, TabDescriptor, Widget, WindowBar, WindowSearchReques
 
 const TAB: u64 = 1;
 
-const SEARCH_CONTROL_WIDTH: f64 =
+pub(super) const SEARCH_CONTROL_WIDTH: f64 =
     crate::widget::window_controls::CONTROL_PX + crate::widget::window_controls::CONTROL_GAP;
 
 impl FrameHarness {
@@ -833,7 +833,7 @@ impl FrameHarness {
             }
             return;
         }
-        let mut bar = self.window_bar(width);
+        let mut bar = self.painted_window_bar(width);
         let search = &mut self.window_search;
         search.set_app_name(&title);
         crate::widget::place_window_search(&bar, search);
@@ -1461,180 +1461,6 @@ mod tests {
             "the app's frame moves back up once the notice goes"
         );
         crate::window_toolbar::declare(None);
-    }
-
-    /// The 1st of the calendar's weeks across a month: Mon, Jun 29 to Sun, Jul 5, 2026.
-    fn week_across_a_month() -> crate::format::Period {
-        let day = |m, d| jiff::civil::Date::new(2026, m, d).ok().unwrap_or_default();
-        crate::format::Period::Days(day(6, 29), day(7, 5))
-    }
-
-    /// The calendar's whole bar (the sidebar, previous, next and Today, a week as its period, five
-    /// views, New event and a menu of more) in a `width`-wide window that lists History, painted
-    /// once so its views are measured.
-    fn compact_calendar_bar_at(width: u32) -> (HostedReset, FrameHarness, TabBar) {
-        use crate::window_toolbar::{
-            ToolbarAction, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
-        };
-        let hosted = HostedReset;
-        let mut harness = FrameHarness::for_app(
-            crate::State::new(),
-            NamedApp,
-            (width, 800),
-            crate::theme::Theme::dark(),
-        );
-        harness.present_in_window_bar();
-        let view = |id: &str, label: &str| ToolbarView {
-            id: id.into(),
-            label: label.into(),
-        };
-        crate::window_toolbar::declare(Some(
-            WindowToolbar {
-                sidebar: Some(true),
-                leading: vec![
-                    ToolbarAction::new("previous", "chevron-left", "Previous week").navigating(),
-                    ToolbarAction::new("next", "chevron-right", "Next week").navigating(),
-                    ToolbarAction::new("today", "calendar", "Today").labelled(),
-                ],
-                location: Some(ToolbarLocation::period(week_across_a_month())),
-                views: Some(ToolbarViews {
-                    name: "View".into(),
-                    choices: vec![
-                        view("month", "Month"),
-                        view("week", "Week"),
-                        view("day", "Day"),
-                        view("agenda", "Agenda"),
-                        view("tasks", "Tasks"),
-                    ],
-                    chosen: "week".into(),
-                }),
-                actions: vec![
-                    ToolbarAction::new("new-event", "plus", "New event"),
-                    ToolbarAction::new("export", "upload", "Export calendar").in_menu(),
-                    ToolbarAction::new("import", "download", "Import calendar").in_menu(),
-                ],
-                ..WindowToolbar::default()
-            }
-            .bounded(),
-        ));
-        let width = f64::from(width);
-        let mut bar = harness.window_bar(width);
-        bar.set_history_control(TAB, Some(crate::widget::HistoryControl::of(false)));
-        lay_out_bar(&mut bar, width, &harness.theme);
-        bar.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut harness.text,
-            &harness.theme,
-            &harness.presence,
-        );
-        (hosted, harness, bar)
-    }
-
-    /// A compact (420 px) window's bar names the period whole beside its navigation: Today,
-    /// New event and the views go into the overflow menu to make the room.
-    #[test]
-    fn a_compact_window_keeps_its_navigation_and_location_and_folds_the_views() {
-        use crate::a11y::{AccessNode, Role};
-        fn find<'a>(node: &'a AccessNode, role: Role, name: &str) -> Option<&'a AccessNode> {
-            if node.role == role && node.name.as_deref() == Some(name) {
-                return Some(node);
-            }
-            node.children
-                .iter()
-                .find_map(|child| find(child, role, name))
-        }
-        let (_hosted, _harness, bar) = compact_calendar_bar_at(420);
-        let rects = bar.test_rects();
-        let rect = |name: &str| {
-            rects
-                .iter()
-                .find(|(n, _)| n == name)
-                .map_or(Rect::ZERO, |(_, r)| *r)
-        };
-        let history = rect(crate::widget::tabs::WINDOW_HISTORY_TARGET);
-        for name in [
-            "window_sidebar",
-            "window_leading:0",
-            "window_leading:1",
-            "window_leading:2",
-            "window_location",
-            "window_more",
-        ] {
-            assert!(
-                rect(name).area() > 0.0,
-                "{name} stands in the bar: {rects:?}"
-            );
-        }
-        assert_eq!(
-            rect("window_views_menu"),
-            Rect::ZERO,
-            "the views fold: {rects:?}"
-        );
-        assert!(
-            rect("window_more").x1 + SEARCH_CONTROL_WIDTH <= history.x0,
-            "the window's search keeps its area before History: {rects:?}"
-        );
-        let tree = Widget::accessibility(&bar).expect("the bar is reachable");
-        for label in ["Month", "Week", "Day", "Agenda", "Tasks"] {
-            let item = find(&tree, Role::MenuItem, label)
-                .unwrap_or_else(|| panic!("{label} is in the overflow menu"));
-            assert_eq!(item.state.checked, Some(label == "Week"));
-        }
-        crate::window_toolbar::declare(None);
-    }
-
-    /// The period the bar names, whole and one of its forms; `None` where it leaves the row.
-    fn period_shown(bar: &TabBar, harness: &mut FrameHarness) -> Option<String> {
-        let location = bar
-            .test_rects()
-            .into_iter()
-            .find(|(name, _)| name == "window_location")
-            .map_or(Rect::ZERO, |(_, rect)| rect);
-        if location.area() <= 0.0 {
-            return None;
-        }
-        let toolbar = crate::window_toolbar::declared().expect("the calendar declared its bar");
-        let declared = toolbar.location.as_ref().expect("with its period");
-        let forms = week_across_a_month().forms();
-        assert_eq!(declared.label, forms[0], "the widest form is the label");
-        let (shown, _) = crate::widget::window_toolbar_row::location_shown(
-            declared,
-            bar.toolbar_row().parts().form,
-            &harness.theme,
-        );
-        assert!(
-            forms.iter().any(|form| form == shown),
-            "{shown:?} is one of the period's forms {forms:?}"
-        );
-        let style = harness.theme.text(crate::tokens::TextRole::Body);
-        let width = f64::from(harness.text.measure_style(shown, None, &style).0);
-        assert!(
-            width <= location.width(),
-            "{shown:?} stands whole in {location:?}"
-        );
-        Some(shown.to_owned())
-    }
-
-    /// A compact bar names the period whole in every language, down to the numeric span where
-    /// the spelled forms do not fit, never cut in half.
-    #[test]
-    fn a_compact_window_names_its_period_whole_in_a_longer_language() {
-        use crate::format::speak_locale as speak;
-        for locale in ["en-US", "de-DE"] {
-            speak(locale);
-            for width in [360_u32, 420] {
-                let (_hosted, mut harness, bar) = compact_calendar_bar_at(width);
-                let shown = period_shown(&bar, &mut harness)
-                    .unwrap_or_else(|| panic!("{locale} {width} px: the period stands"));
-                assert!(
-                    week_across_a_month().forms().contains(&shown),
-                    "{locale} {width} px: {shown:?}"
-                );
-                crate::window_toolbar::declare(None);
-            }
-        }
-        speak("en-US");
     }
 
     #[test]

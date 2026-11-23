@@ -229,7 +229,7 @@ impl Workspaces {
         session: (&DeviceCert, &Delegation),
         inside: Option<(&str, &str)>,
     ) -> Option<ViewReadPolicy> {
-        let agent = caller.acting().agent_id()?;
+        let agent = caller.approved_agent()?;
         let keeper = caller.user_public_key()?;
         let created_at = caller.roster_created_at()?;
         let entry = self
@@ -259,7 +259,7 @@ impl Workspaces {
     ) -> Option<ViewReadPolicy> {
         use tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents};
 
-        let agent = caller.acting().agent_id()?;
+        let agent = caller.approved_agent()?;
         let keeper = caller.user_public_key()?;
         let workspace = governed.workspace_id();
         if caller.workspace() != Some(governed.workspace()) || governed.member.is_some() {
@@ -294,7 +294,7 @@ impl Workspaces {
         session: (&DeviceCert, &Delegation),
         inside: Option<(&str, &str)>,
     ) -> Option<ViewReadPolicy> {
-        let agent = caller.acting().agent_id()?;
+        let agent = caller.approved_agent()?;
         let keeper = caller.user_public_key()?;
         let (cert, delegation) = self.approved_agent(peer, workspace, agent, keeper)?;
         if caller.device_public_key() != Some(&cert.device_public_key)

@@ -4,8 +4,8 @@ There is one driving story: `tilo-control`. `tilo-vm control` runs the VM's
 copy against your account's session; it never reimplements it.
 
 ```sh
-tilo-vm control actions list                 # what this desktop can do
-tilo-vm control actions invoke PROVIDER ID   # do it, no coordinates
+tilo-vm control actions list                 # what this desktop can do (tilo action list)
+tilo-vm account exec -- tilo do NAME         # do it, no coordinates
 tilo-vm control state-dump --pretty          # what it believes is on screen
 tilo-vm control list-targets                 # named rects
 tilo-vm control click NAME                   # also click-at, drag, key, type
@@ -13,9 +13,9 @@ tilo-vm shot -o target/account.png              # the account compositor's own f
 tilo-vm logs -n 200                          # the session's journal
 ```
 
-Prefer the semantic half (`actions`, `state-dump`): it is the surface real
+Prefer the semantic half (action frames, `state-dump`): it is the surface real
 users and agents depend on. On the host, without a VM, the same story is
-`tilo-control` and `shots` (AGENTS.md, "Driving a running desktop").
+`tilo action list`, `tilo do` and `shots` (AGENTS.md, "Driving a running desktop").
 
 ## Screenshots: `shot` and `vm shot`
 
@@ -86,7 +86,7 @@ has no identity and every app refuses to start. `--identity` gives it one:
 
 ```sh
 tilo-vm account create apps --headful --identity
-tilo-vm control --account apps actions list
+tilo-vm control --account apps state-dump --pretty
 ```
 
 The session mints it through a control op (`provision_test_identity`); a

@@ -315,14 +315,10 @@ impl PeerOutboxMut<'_> {
         if let NeighbourMsg::AppDocument { envelope, .. } = original {
             candidate.replace_local_sealed(&local.route.app, &local.route.record, envelope);
         }
-        let own = candidate
-            .core
-            .own_write(&local.route.app, &local.route.record, &selected);
         let message = NeighbourMsg::AppDocument {
             peer: peer_handle(&selected),
             app_id: local.route.app,
             cluster_id: candidate.core.workspace.clone(),
-            own,
             readers,
             document_id: local.route.record,
             envelope: Box::new(renewal),

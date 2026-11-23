@@ -66,6 +66,7 @@ pub mod stdlib;
 pub mod text;
 pub mod toolkit;
 pub mod types;
+pub mod workspace;
 pub mod written;
 
 pub use checker::{RESOURCE_TYPE_NAME, resource_key};

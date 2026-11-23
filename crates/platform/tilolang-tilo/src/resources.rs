@@ -193,6 +193,8 @@ struct TxnState {
     dirty: HashMap<String, Dirty>,
     touched: BTreeMap<DocId, BTreeSet<FieldKey>>,
     collections: BTreeMap<DocId, BTreeSet<FieldKey>>,
+    /// The key of the item last put at the end of each collection (holder, field) here.
+    last_keys: HashMap<(String, String), String>,
     /// What [`Inner::local`] held when it began, put back on rollback.
     before: HashMap<String, Before>,
 }
@@ -277,8 +279,6 @@ struct Subscription {
 struct Inner {
     port: Rc<dyn Port>,
     kinds: RefCell<Kinds>,
-    /// Who may read what this store writes: `*` for every member of the workspace.
-    readers: RefCell<String>,
     /// The person whose device writes here: who the platform's own writes are by (a root
     /// made, an outside effect handed over, a mark), [`PLATFORM_WRITES`].
     writer: RefCell<Option<Actor>>,
@@ -567,7 +567,6 @@ impl ResourceStore {
             inner: Rc::new(Inner {
                 port,
                 kinds: RefCell::new(Kinds::default()),
-                readers: RefCell::new("*".to_owned()),
                 writer: RefCell::default(),
                 cache: RefCell::default(),
                 local: RefCell::default(),
@@ -754,12 +753,6 @@ impl ResourceStore {
     #[must_use]
     pub fn kinds(&self) -> std::cell::Ref<'_, Kinds> {
         self.inner.kinds.borrow()
-    }
-
-    /// Who may read what this store writes from here on: `*` for every member of the
-    /// workspace, else whatever names the people (a person's own resources).
-    pub fn set_readers(&self, readers: impl Into<String>) {
-        *self.inner.readers.borrow_mut() = readers.into();
     }
 
     /// The person whose device writes here: who the platform's own writes are by.
@@ -1286,6 +1279,12 @@ impl ResourceStore {
         })
     }
 
+    /// The kind the resource `id` is stored as, whatever type it is ([`Self::type_of_id`]).
+    #[must_use]
+    pub fn kind_of_id(&self, id: &str) -> Option<String> {
+        self.kind_of_type(&self.type_of_id(id)?).ok()
+    }
+
     /// The type of the resource `id` (`doc` or `doc/item`), whatever type it is: what an id
     /// alone is read as, a published address or a reference in a text. `None` when the store
     /// holds no such resource of a loaded type.
@@ -1696,6 +1695,21 @@ impl ResourceStore {
         *self.inner.local.borrow_mut() = saved.local;
         self.inner.unsent.borrow_mut().truncate(saved.unsent);
         self.inner.listings.borrow_mut().clear();
+    }
+
+    /// The workspace's own state as code reads it (`workspace.leases`), asked of the device that
+    /// holds the workspace now ([`Command::Leases`]): never kept here, since the device that
+    /// holds a lease can change at any moment.
+    ///
+    /// # Errors
+    /// Why the workspace's host could not be asked, or answered something else.
+    pub fn workspace_state(&self) -> Result<Json, String> {
+        match self.inner.port.command(Command::Leases)? {
+            Reply::Content(Some(state)) => Ok(state),
+            other => Err(format!(
+                "the workspace's host answered its leases with {other:?}"
+            )),
+        }
     }
 
     fn command(&self, command: Command) -> Result<Reply, StoreError> {
@@ -2461,8 +2475,14 @@ impl ResourceStore {
     }
 
     /// The order key of the last item of the collection `field` of `at`: one item read, however
-    /// many the collection holds.
+    /// many the collection holds, and none after a transaction put one at its end.
     fn last_key(&self, at: &ResourceRef, field: &str) -> Result<Option<String>, StoreError> {
+        let holder = id_of(at);
+        if let Some(open) = self.inner.txn.borrow().as_ref()
+            && let Some(last) = open.last_keys.get(&(holder.clone(), field.to_owned()))
+        {
+            return Ok(Some(last.clone()));
+        }
         let Some(item_types) = self.field(&at.ty, field).map(|entry| entry.items) else {
             return Err(StoreError::Invalid(format!("{field} is not a collection")));
         };
@@ -2478,7 +2498,6 @@ impl ResourceStore {
             return Err(StoreError::Invalid(format!("{field} is not a collection")));
         };
         let kind = self.kind_of_type(item_ty)?;
-        let holder = id_of(at);
         let local = self.inner.local.borrow();
         // What was written here and not sent stands in for what the store holds of it: the
         // store's last is the first of its items, newest first, that none of them overrides, so
@@ -2506,7 +2525,7 @@ impl ResourceStore {
     /// Queues an outside effect of the document `at` names, in `txn`: what its capability
     /// carries out, with `payload`, held until `held_until` when that is given. The same entry
     /// (`key`) queued again keeps what became of it.
-    fn push_outbox(
+    fn push_effect(
         &self,
         txn: Txn,
         at: &ResourceRef,
@@ -2539,7 +2558,7 @@ impl ResourceStore {
             content: Some(serde_json::Map::new()),
         };
         self.write(txn, &id, Some(held), |dirty| dirty.put = true)?;
-        self.touch_outbox(txn, &at.doc)
+        self.touch_effects(txn, &at.doc)
     }
 
     /// What a write `m` of the field `name` of the resource `id` changes of links: the
@@ -2640,6 +2659,25 @@ impl ResourceStore {
         Ok(())
     }
 
+    /// The item `item` of `at`'s collection `field`.
+    fn item_of(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        item: &str,
+    ) -> Result<ResourceRef, StoreError> {
+        if self
+            .field(&at.ty, field)
+            .is_none_or(|entry| entry.items.is_empty())
+        {
+            return Err(StoreError::Invalid(format!("{field} is not a collection")));
+        }
+        let ty = self
+            .type_of_id(&at.item(item, String::new()).id_string())
+            .unwrap_or_default();
+        Ok(at.item(item, ty))
+    }
+
     /// [`Store::apply`] of a mutation of a collection or an outbox: `None` for a write of a
     /// field.
     fn apply_structure(
@@ -2660,6 +2698,11 @@ impl ResourceStore {
                     .clone()
                     .unwrap_or_else(|| self.fresh(&format!("{}-", short(&item.ty))));
                 let order = self.insert_key(at, field, *index, None)?;
+                let collection = (id.clone(), field.clone());
+                self.txn_mut(txn, |state| match index {
+                    None => state.last_keys.insert(collection, order.clone()),
+                    Some(_) => state.last_keys.remove(&collection),
+                })?;
                 let mut held = self.new_held(item, Some(id), Some(order))?;
                 self.stand_in(&mut held, &at.ty, field);
                 let edits = self.initial_edits(&item.ty, &mut held);
@@ -2675,34 +2718,18 @@ impl ResourceStore {
                 Ok(Some(Applied::Item(item_id)))
             }
             Mutation::CollRemove { field, item } => {
-                if self
-                    .field(&at.ty, field)
-                    .is_none_or(|entry| entry.items.is_empty())
-                {
-                    return Err(StoreError::Invalid(format!("{field} is not a collection")));
-                }
-                let ty = self
-                    .type_of_id(&at.item(item, String::new()).id_string())
-                    .unwrap_or_default();
-                let child = at.item(item, ty);
+                let child = self.item_of(at, field, item)?;
                 self.remove_tree(txn, &child)?;
                 self.touch(txn, at, field, true)?;
                 self.touch(txn, &child, ANY_FIELD, false)?;
                 Ok(Some(Applied::Done))
             }
             Mutation::CollMove { field, item, index } => {
-                if self
-                    .field(&at.ty, field)
-                    .is_none_or(|entry| entry.items.is_empty())
-                {
-                    return Err(StoreError::Invalid(format!("{field} is not a collection")));
-                }
-                let ty = self
-                    .type_of_id(&at.item(item, String::new()).id_string())
-                    .unwrap_or_default();
-                let child = at.item(item, ty);
+                let child = self.item_of(at, field, item)?;
                 let mut held = self.held_at(&child)?;
                 let old = held.parent.clone();
+                let collection = (id.clone(), field.clone());
+                self.txn_mut(txn, |state| state.last_keys.remove(&collection))?;
                 held.order = Some(self.insert_key(at, field, Some(*index), Some(item))?);
                 held.parent = Some(id.clone());
                 self.stand_in(&mut held, &at.ty, field);
@@ -2732,7 +2759,7 @@ impl ResourceStore {
                 held_until,
                 key,
             } => {
-                self.push_outbox(
+                self.push_effect(
                     txn,
                     at,
                     capability,
@@ -2744,7 +2771,7 @@ impl ResourceStore {
             }
             Mutation::OutboxWithdraw => {
                 self.withdraw_in(txn, &at.doc, "")?;
-                self.touch_outbox(txn, &at.doc)?;
+                self.touch_effects(txn, &at.doc)?;
                 Ok(Some(Applied::Done))
             }
             _ => Ok(None),
@@ -2853,7 +2880,7 @@ impl ResourceStore {
     }
 
     /// The outbox entries the store holds that hold to `filters`, by id.
-    fn outbox_rows(&self, filters: Vec<Filter>) -> Vec<(String, BTreeMap<String, Cell>)> {
+    fn effect_rows(&self, filters: Vec<Filter>) -> Vec<(String, BTreeMap<String, Cell>)> {
         let mut query = Query::of(OUTBOX, PAGE);
         query.filters = filters;
         let mut rows = Vec::new();
@@ -2875,7 +2902,7 @@ impl ResourceStore {
     /// Note that the commit of `txn` changed what the document `doc` has waiting to go out:
     /// whoever carries out a device's outside effects, and every reader of how the document's
     /// delivery stands, hears of it with the rest of the commit.
-    fn touch_outbox(&self, txn: Txn, doc: &str) -> Result<(), StoreError> {
+    fn touch_effects(&self, txn: Txn, doc: &str) -> Result<(), StoreError> {
         let key = FieldKey {
             resource: doc.to_owned(),
             field: OUTBOX.to_owned(),
@@ -2888,7 +2915,7 @@ impl ResourceStore {
     /// Settles every outbox entry of the document `doc` not settled yet as withdrawn, for
     /// `reason`, in the open transaction. How many it settled.
     fn withdraw_in(&self, txn: Txn, doc: &str, reason: &str) -> Result<usize, StoreError> {
-        let rows = self.outbox_rows(vec![
+        let rows = self.effect_rows(vec![
             Filter::Is(OUT_DOC.to_owned(), Value::Text(doc.to_owned())),
             Filter::Is(OUT_SETTLED.to_owned(), Value::Bool(false)),
         ]);
@@ -2911,7 +2938,7 @@ impl ResourceStore {
     }
 
     /// Writes what `change` makes of the outbox entry `entry`'s fields, as the change `note`.
-    fn outbox_write(
+    fn effect_write(
         &self,
         entry: &OutboxEntry,
         note: &ChangeNote,
@@ -3169,6 +3196,7 @@ impl ResourceStore {
                 placed.push(nested.id.clone());
             }
         }
+        let who = stamp.invoked_by();
         // A step that took changes back is History's, not an action's.
         let action = if stamp.undoes.is_some() {
             tilolang_runtime::store::STEP_ACTION.to_owned()
@@ -3176,7 +3204,7 @@ impl ResourceStore {
             stamp.verb
         };
         Version {
-            who: invoker_of(&stamp.invoker),
+            who,
             at: stamp.at,
             action,
             run: stamp.group.map(|group| tilolang_runtime::store::Run {
@@ -3420,7 +3448,8 @@ impl ResourceStore {
                     kind: held.kind.clone(),
                     id: id.clone(),
                     resource: Resource {
-                        readers: self.inner.readers.borrow().clone(),
+                        // Every member of the workspace reads what an app writes.
+                        readers: "*".to_owned(),
                         parent: held.parent.clone(),
                         order: held.order.clone(),
                         fields: held.fields.clone(),
@@ -5058,7 +5087,7 @@ impl Store for ResourceStore {
 
     fn outbox_pending(&self) -> Vec<OutboxEntry> {
         let device = self.inner.device.borrow().clone();
-        self.outbox_rows(vec![
+        self.effect_rows(vec![
             Filter::Is(OUT_SETTLED.to_owned(), Value::Bool(false)),
             Filter::Is(OUT_OWNER.to_owned(), Value::Text(device)),
         ])
@@ -5113,7 +5142,7 @@ impl Store for ResourceStore {
             OutboxState::Sending { by } => ("sending", by.as_str()),
             OutboxState::Waiting { reason } => ("waiting", reason.as_str()),
         };
-        self.outbox_write(entry, note, |fields| {
+        self.effect_write(entry, note, |fields| {
             fields.insert(
                 OUT_STATE.to_owned(),
                 Cell::One(Value::Text(word.to_owned())),
@@ -5131,12 +5160,12 @@ impl Store for ResourceStore {
         outcome: &Settled,
         note: &ChangeNote,
     ) -> Result<(), StoreError> {
-        self.outbox_write(entry, note, |fields| settle_fields(fields, outcome))
+        self.effect_write(entry, note, |fields| settle_fields(fields, outcome))
     }
 
     fn outbox_states(&self) -> Vec<(DocId, DeliveryState)> {
         let mut by_doc: BTreeMap<DocId, Vec<(OutboxEntry, Option<Outcome>)>> = BTreeMap::new();
-        for (_, fields) in self.outbox_rows(Vec::new()) {
+        for (_, fields) in self.effect_rows(Vec::new()) {
             let (entry, settled) = outbox_entry(&fields);
             by_doc
                 .entry(entry.doc.clone())
@@ -5289,21 +5318,4 @@ fn ids_written(command: &Command, written: &mut BTreeMap<String, BTreeSet<String
         Command::Undo { .. } => false,
         _ => true,
     }
-}
-
-/// Who a stamp names: the actor the runtime wrote, or the person the workspace's resource route
-/// stamped on a person's own write (their person id alone). Nobody for a stamp naming neither.
-fn invoker_of(invoker: &str) -> Option<Actor> {
-    if let Ok(actor) = tilo_failure::ignored!(
-        "a stamp the route wrote holds a person id, which is read next",
-        serde_json::from_str::<Actor>(invoker)
-    ) {
-        return Some(actor);
-    }
-    tilo_failure::ignored!(
-        "a stamp naming neither an actor nor a person names nobody",
-        tilo_actions::policy::PersonId::parse(invoker)
-    )
-    .ok()
-    .map(|person| Actor::Member(tilo_actions::policy::MemberId::person(person)))
 }

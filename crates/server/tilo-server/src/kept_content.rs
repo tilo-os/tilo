@@ -34,6 +34,11 @@
 //! member that may hold it is reached or joins, at a pace the links carry
 //! ([`ASKS_PER_TICK`]), and otherwise after a long silence, in case a
 //! holder's answer was lost ([`neighbour_wire::content::LACKED_PATIENCE_MS`]).
+//! An ask nothing answers at all, the ask or its answer lost on a link that
+//! fell behind, lapses: the record that named it is read again, further apart
+//! each time, until the host keeps all it names ([`LAPSED_LONGEST`]). The host
+//! keeps at most [`OPEN_WANTS`] asks open and asks for the rest of a tree as
+//! answers make room, rather than dropping an ask whose answer is on its way.
 //!
 //! Sealed content is asked by its ciphertext's address,
 //! which the store keys it under: the host keeps and serves the ciphertext,
@@ -41,10 +46,9 @@
 //!
 //! A record the host cannot open yet — its workspace's channels hand it the
 //! keys after it joins them — is read again in a moment, further apart each
-//! time. A person's own record ([`collab_types::OwnResource`]) is theirs: the
-//! host keeps its ciphertext and never reads it. The shared desktop's record
-//! is left alone: its layout names no content and is written with every
-//! window moved.
+//! time. A person's private record is theirs: the host keeps its ciphertext and
+//! never reads it. The shared desktop's record is left alone: its layout names
+//! no content and is written with every window moved.
 //!
 //! What it keeps goes into the workspace's store ([`crate::content`]), from
 //! where the host answers members asking for content
@@ -84,12 +88,19 @@ const MISSING_EVERY: Duration = Duration::from_millis(100);
 const ASKS_PER_TICK: usize = 64;
 /// The content requests the host keeps open at once: a tree written at once
 /// is asked for at once, and an answer that follows later finds its request.
-const OPEN_WANTS: usize = 16_384;
+/// What a larger tree names past it is asked for as answers make room.
+pub const OPEN_WANTS: usize = 16_384;
 /// How long a record that could not be read waits before it is read again, at
 /// first: each failed read waits twice as long, up to [`RETRY_LONGEST`].
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 /// The longest wait between two reads of a record that does not open.
 const RETRY_LONGEST: Duration = Duration::from_secs(60);
+/// The longest wait between two reads of a record whose asks lapsed
+/// unanswered while it still names content the host lacks: the first read
+/// again comes [`READ_EVERY`] after the ask lapsed, each one after that
+/// twice as late, so content no member serves costs a read every ten
+/// minutes, not a stream of asks.
+const LAPSED_LONGEST: Duration = Duration::from_secs(600);
 
 /// When a record the host could not read is read again, and how long it will
 /// wait after the next read that does not open either.
@@ -113,6 +124,12 @@ struct State {
     /// record a workspace seals arrive after its host joins the channel that
     /// seals it.
     reopened: BTreeMap<Route, Retry>,
+    /// Records an ask for whose content lapsed unanswered, and when to read
+    /// them again: until the host keeps all they name.
+    lapsed: BTreeMap<Route, Retry>,
+    /// Records that named more content than the open asks had room for: read
+    /// again once answers make room.
+    crowded: BTreeSet<Route>,
     /// The workspaces whose records were all read: a change of their members
     /// reads again only what did not open.
     read: BTreeSet<String>,
@@ -129,6 +146,8 @@ impl Default for State {
             written: BTreeSet::new(),
             again: BTreeSet::new(),
             reopened: BTreeMap::new(),
+            lapsed: BTreeMap::new(),
+            crowded: BTreeSet::new(),
             read: BTreeSet::new(),
             lacking: BTreeMap::new(),
         }
@@ -228,7 +247,7 @@ async fn counted(
                 // Its keys reach this host as it is let into the resource's
                 // channel: until they do, what it names is not known.
                 if count == (Count::LackedOpening { waiting: true })
-                    && !workspaces.own_record(workspace, &app, &record).await
+                    && !tilo_action_policy::roles::is_private_record(&app, &record)
                     && workspaces.waits_for_keys(workspace, &app, &record).await
                 {
                     blobs = blobs.saturating_add(1);
@@ -351,9 +370,18 @@ impl KeptContent {
     async fn ask_again_for_missing(&self) {
         let asks = {
             let mut state = self.state.lock_recover();
-            state
-                .wants
-                .reask_at_most(&self.device, now_ms(), ASKS_PER_TICK)
+            let now = now_ms();
+            for route in state.wants.lapsed(now) {
+                // A record already waiting to be read again keeps its wait.
+                let at = Instant::now()
+                    .checked_add(READ_EVERY)
+                    .unwrap_or_else(Instant::now);
+                state.lapsed.entry(route).or_insert(Retry {
+                    at,
+                    wait: READ_EVERY,
+                });
+            }
+            state.wants.reask_at_most(&self.device, now, ASKS_PER_TICK)
         };
         for ((workspace, _, _), ask) in asks {
             if let Err(error) = self.workspaces.ask_members(&workspace, ask).await {
@@ -378,20 +406,34 @@ impl KeptContent {
 
     /// The records whose content is to be looked over again, taken.
     fn again(&self) -> Vec<Route> {
-        std::mem::take(&mut self.state.lock_recover().again)
-            .into_iter()
-            .collect()
+        let mut state = self.state.lock_recover();
+        let mut again = std::mem::take(&mut state.again);
+        if state.wants.has_room() {
+            again.append(&mut state.crowded);
+        }
+        drop(state);
+        again.into_iter().collect()
     }
 
-    /// The records due to be read again, `now`.
+    /// The records due to be read again, `now`. A record whose asks lapsed is read again twice as late as the last
+    /// time, until it names nothing the host lacks.
     fn reopening(&self, now: Instant) -> Vec<Route> {
-        self.state
-            .lock_recover()
+        let mut state = self.state.lock_recover();
+        let mut due: Vec<Route> = state
             .reopened
             .iter()
             .filter(|(_, retry)| retry.at <= now)
             .map(|(route, _)| route.clone())
-            .collect()
+            .collect();
+        for (route, retry) in &mut state.lapsed {
+            if retry.at <= now {
+                due.push(route.clone());
+                retry.wait = retry.wait.saturating_mul(2).min(LAPSED_LONGEST);
+                retry.at = now.checked_add(retry.wait).unwrap_or(now);
+            }
+        }
+        drop(state);
+        due
     }
 
     /// `workspace` appeared, or its membership moved. One this host has not
@@ -519,8 +561,8 @@ impl KeptContent {
             }
             Err(error) => {
                 tracing::debug!(%workspace, %app, %record, %error, "a governed workspace's record is not readable yet");
-                if self.workspaces.own_record(workspace, app, record).await {
-                    // A person's own record is theirs: never asked to open.
+                if tilo_action_policy::roles::is_private_record(app, record) {
+                    // A record the policy keeps for one person alone: never asked to open.
                     self.state.lock_recover().reopened.remove(route);
                     return self.count(route, 0).await;
                 }
@@ -538,6 +580,9 @@ impl KeptContent {
             return self.count(route, 0).await;
         };
         let missing = self.ask_for(route, addresses).await;
+        if missing == 0 {
+            self.state.lock_recover().lapsed.remove(route);
+        }
         self.count(route, missing).await;
     }
 
@@ -573,6 +618,12 @@ impl KeptContent {
             for address in addresses {
                 for hash in missing_pieces(&store, &address) {
                     missing = missing.saturating_add(1);
+                    if !state.wants.has_room() {
+                        // Asked for once answers make room: asking now would
+                        // drop an open ask whose answer is on its way.
+                        state.crowded.insert(route.clone());
+                        continue;
+                    }
                     if let Some(ask) = state.wants.ask(
                         &self.device,
                         route.clone(),

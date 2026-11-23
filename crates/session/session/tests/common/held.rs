@@ -149,6 +149,19 @@ pub fn workspace_founded_on_own_service(
     cert: &DeviceCert,
     key: &SigningKey,
 ) {
+    workspace_founded_on_this_device_then(state, workspace, name, cert, key, async |_| {});
+}
+
+/// [`workspace_founded_on_own_service`], doing `then` on the service once the workspace is founded
+/// there: what the person did in it before the session started.
+pub fn workspace_founded_on_this_device_then(
+    state: &Path,
+    workspace: &str,
+    name: &str,
+    cert: &DeviceCert,
+    key: &SigningKey,
+    then: impl AsyncFnOnce(&tilo_workspace_service::service::WorkspaceService),
+) {
     let root = state.join("tilo").join("workspace-service");
     let workspace_id = WorkspaceId::parse(workspace).expect("a workspace id");
     let owner = owner::open_file(
@@ -208,6 +221,7 @@ pub fn workspace_founded_on_own_service(
         owner
             .install(&enrollment, SystemTime::now())
             .expect("the founding installs here");
+        then(&service).await;
         drop(service);
         endpoint.close().await;
     });

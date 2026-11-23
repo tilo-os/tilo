@@ -104,7 +104,7 @@ mod session_voice;
 mod share;
 mod terminal;
 mod timing;
-mod tree_put;
+mod tree;
 pub use crate::worker::PersonRegion;
 pub(super) use arguments::invoke_arguments;
 pub use content::MAX_PUT_BYTES;
@@ -481,7 +481,7 @@ impl WorkspaceActions {
             .map(|entry| {
                 InvocationState::new(*id, entry.update.clone())
                     .linked(entry.link.clone())
-                    .with_untrusted(tree_put::answers_from_outside(&entry.request.target))
+                    .with_untrusted(tree::answers_from_outside(&entry.request.target))
             })
     }
 
@@ -1359,10 +1359,6 @@ struct Worker {
     /// notebook of a hundred notes costs seconds to read for search, and every request of this
     /// share's workspaces waited for it while it was read here.
     warm: index::Warm,
-    /// Each workspace's tree as the last request served on it left it, by
-    /// workspace and tree name ([`tree_put::KeptTree`]): the next takes in
-    /// only what changed since.
-    trees: HashMap<(WorkspaceId, String), tree_put::KeptTree>,
     /// The documents the request being served wrote to ([`publish::Worker::saved`]):
     /// what its answer's link opens ([`share::Worker::changed_link`]).
     wrote: HashSet<DocumentRoute>,
@@ -1460,7 +1456,6 @@ impl Worker {
             clock: 0,
             handed: HashMap::new(),
             canonical: canonical::CanonicalReads::default(),
-            trees: HashMap::new(),
             wrote: HashSet::new(),
             named: HashMap::new(),
             unmounted: HashMap::new(),
@@ -2020,7 +2015,6 @@ impl Worker {
         self.parked.retain(|(route, ..)| !of(route));
         self.beside.retain(|route, held| !of(route) && !of(held));
         self.channels_opened.retain(|route| !of(route));
-        self.trees.retain(|(held, _), _| *held != workspace_id);
         self.canonical.forget(of);
         for Waiting { queued, job, .. } in self.joining.remove(&workspace_id).unwrap_or_default() {
             self.timed(queued, job);

@@ -251,7 +251,7 @@ impl Session {
         })
         .map_err(|error| tracing::warn!(%error, "settings are not watched"))
         .ok();
-        let presentation = (options.presentation)();
+        let mut presentation = (options.presentation)();
         tilo_startup_metrics::mark("session-presentation-done");
         let overview = crate::overview::Overview::new(
             presentation.theme.motion(),
@@ -339,6 +339,9 @@ impl Session {
         // settings as they are now; the shell wears the same theme.
         let warmth =
             crate::window_warmth::Windows::new(presentation.theme.clone(), &options.person);
+        // The shell wears the person's own colour, as every app window does: a theme whose accent is
+        // the person's draws it, and their focus ring is the same on the shell as in their apps.
+        presentation.theme = warmth.theme().clone();
         desktop.set_theme(presentation.theme.clone());
         tilo_startup_metrics::mark("shell-build-done");
         let handle = desktop.with_policy(|policy| policy.handle().clone());
@@ -659,8 +662,11 @@ impl Session {
         published.add(Rc::clone(&lists_surface));
         // The chrome above the windows: its own tree, beside the shell's.
         let intents = Rc::new(RefCell::new(Vec::new()));
-        // Where this device's own workspace service is installed, and what its roles read from.
-        let (workspace_service, document_reads) = crate::broker_services::session_documents();
+        // Where this device's own workspace service is installed, and what its roles read from:
+        // every role here reads what its workspaces hold through it.
+        let (workspace_service, document_reads) = crate::broker_services::session_documents_on(
+            tilo_workspace_service::service::ServiceSlot::default(),
+        );
         let writes = crate::broker_services::session_writes(workspace_service.clone());
         // A write the service takes to a layout or a view has it read again off the loop.
         desktops.follow_writes(workspace_service.clone());
@@ -1473,8 +1479,8 @@ impl Session {
         // So do the records the services keep of every app the session runs itself (a seeded
         // session's Tasks, Notes, Mail): a REPL's or an agent's `find(tasks.Task)` reads them on the
         // session's pass, as it reads the shell's, and starts no app to read one.
-        for record in services.borrow().documents() {
-            session_services.keep_records_of(&record.app);
+        for app in services.borrow().apps() {
+            session_services.keep_records_of(&app);
         }
         // The shell's own readings and verbs, on the same API every other
         // service answers on.

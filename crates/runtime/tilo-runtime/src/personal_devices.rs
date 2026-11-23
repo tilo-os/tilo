@@ -1,12 +1,52 @@
-//! The person's devices as this device's own store holds them, for the action APIs
-//! that admit another of their devices: the MCP server between devices and a
-//! key's sessions with this device's host.
+//! The person's devices as this device's own store holds them, for a key's
+//! sessions with this device's host, which admit another of their devices.
 
 use std::time::SystemTime;
 
-use tilo_device_mcp::{PersonsDevices, Refusal};
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_user_identity::{DeviceCert, RevocationList};
+
+/// Why a device is not taken as one of the person's own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The certificate it showed names another device than the one that
+    /// connected.
+    NotTheDialer,
+    /// The device is someone else's.
+    OtherPerson,
+    /// Its certificate does not hold now.
+    NotCertified(String),
+    /// The person removed it from their devices.
+    Revoked,
+    /// A key made for an agent asked for a workspace its scope does not
+    /// reach, or named none.
+    OutOfScope,
+}
+
+impl Refusal {
+    /// The reason the dialing side is told.
+    #[must_use]
+    pub fn reason(&self) -> String {
+        match self {
+            Self::NotTheDialer => {
+                "the certificate shown names another device than the one that connected".to_owned()
+            }
+            Self::OtherPerson => {
+                "that device belongs to someone else; this server serves only its person's own \
+                 devices"
+                    .to_owned()
+            }
+            Self::NotCertified(why) => format!("that device's certificate does not hold: {why}"),
+            Self::Revoked => {
+                "that device was removed from its person's devices; it no longer reaches them"
+                    .to_owned()
+            }
+            Self::OutOfScope => {
+                "this key reaches only the workspaces it was made for: name one of them".to_owned()
+            }
+        }
+    }
+}
 
 /// The person's devices as their own store holds them: the identity root it
 /// opened on, the certificates it admitted, and the revocations that root
@@ -29,26 +69,10 @@ fn now_ns(now: SystemTime) -> u64 {
         })
 }
 
-impl PersonsDevices for PersonalDevices {
-    fn this_device(&self) -> DeviceCert {
-        self.0.read(|store| store.device().clone())
-    }
-
-    fn devices(&self) -> Vec<DeviceCert> {
-        let now = SystemTime::now();
-        self.0.read(|store| {
-            store
-                .devices()
-                .into_iter()
-                .filter(|device| {
-                    holds(store.root(), device, now).is_ok()
-                        && store.admits_device(&device.device_public_key, now).is_ok()
-                })
-                .collect()
-        })
-    }
-
-    fn admit(&self, dialer: [u8; 32], certificate: &DeviceCert) -> Result<(), Refusal> {
+impl PersonalDevices {
+    /// Whether `certificate`, shown on a connection the transport proved is
+    /// from `dialer`, is one of the person's devices now.
+    pub fn admit(&self, dialer: [u8; 32], certificate: &DeviceCert) -> Result<(), Refusal> {
         if certificate.device_public_key != dialer {
             return Err(Refusal::NotTheDialer);
         }
@@ -69,6 +93,8 @@ impl PersonsDevices for PersonalDevices {
         })
     }
 
+    /// The revocations the person's identity root signed, as this device's
+    /// store holds them.
     fn revocations(&self) -> RevocationList {
         let entries = self.0.read(PersonalStore::revocations);
         let mut revocations = RevocationList::new();

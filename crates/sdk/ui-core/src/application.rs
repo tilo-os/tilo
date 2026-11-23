@@ -397,7 +397,6 @@ impl Reopener {
         definition: &ApplicationDefinition,
         record: DocumentId,
     ) -> Result<(ProcessContext, LaunchTarget), LaunchError> {
-        definition.refuse_archived_document(&self.records, &self.author, &record)?;
         let checkout = DocumentCheckout::new(record.clone(), definition.resource_type.clone());
         let (target, new_resource) = match self.records.try_open_resource(&checkout) {
             Ok(_) => (
@@ -570,14 +569,6 @@ impl ProcessContext {
             if !permissions.borrow().check(required) {
                 return Err(LaunchError::CapabilityDenied(required.clone()));
             }
-        }
-        let named = match target {
-            LaunchTarget::New => new_document_id.as_ref(),
-            LaunchTarget::PrimaryNew => None,
-            LaunchTarget::Record { checkout, .. } => Some(&checkout.id),
-        };
-        if let Some(named) = named {
-            definition.refuse_archived_document(&records, &author, named)?;
         }
         let (record, reservation) = match target {
             LaunchTarget::New => {
@@ -1019,29 +1010,6 @@ impl Drop for ProcessContext {
     }
 }
 impl ApplicationDefinition {
-    fn refuse_archived_document(
-        &self,
-        records: &ResourceStore,
-        author: &MemberId,
-        id: &DocumentId,
-    ) -> Result<(), LaunchError> {
-        if id.is_package_primary() || records.app_and_home().1 == crate::resource::PERSONAL_SCOPE {
-            return Ok(());
-        }
-        let Some(person) = author.person_id() else {
-            return Ok(());
-        };
-        let mut root = [0; 32];
-        if hex::decode_to_slice(person, &mut root).is_ok()
-            && collab_types::OwnResource::recognise(self.app_id(), id.as_str(), root).is_some()
-        {
-            return Err(LaunchError::Record(
-                ResourceOpenError::ArchivedMemberDocument,
-            ));
-        }
-        Ok(())
-    }
-
     /// Whether the app keeps one record per workspace, its package primary, rather than a record per
     /// window ([`Self::workspace_resource`]).
     pub fn keeps_workspace_resource(&self) -> bool {
@@ -2451,26 +2419,6 @@ mod bound_lifetime_tests {
             let primary = prepare(&LaunchTarget::PrimaryNew, None).unwrap();
             assert!(primary.record.id.is_package_primary());
 
-            crate::app_surface::register_package(
-                definition.app_id(),
-                b"[[resources]]\nkind = \"probe\"\nlabel = \"Probe\"\nversion = 1\nown = true\n",
-            );
-            let archived = DocumentId::of_member(&person, definition.resource_type.as_str())
-                .expect("the member's earlier document id");
-            assert!(matches!(
-                prepare(&LaunchTarget::New, Some(archived.clone())),
-                Err(LaunchError::Record(ResourceOpenError::ArchivedMemberDocument))
-            ));
-            assert!(matches!(
-                prepare(
-                    &LaunchTarget::Record {
-                        checkout: DocumentCheckout::new(archived, definition.resource_type.clone()),
-                        reveal: None,
-                    },
-                    None,
-                ),
-                Err(LaunchError::Record(ResourceOpenError::ArchivedMemberDocument))
-            ));
         }
 
         phase existing_package_primary_is_local_while_invalid_ordinary_records_are_rejected;

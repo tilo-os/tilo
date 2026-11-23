@@ -151,12 +151,12 @@ impl AskedIn {
 
     /// The caller of the turn that asked, as `asker` (the agent acting for `person` under its
     /// approved key, [`super::ServerAgents::agent_caller`]).
-    pub(super) fn turn_of(&self, asker: Caller, person: [u8; 32], agent: &Agent) -> Caller {
+    pub(super) fn turn_of(&self, asker: Caller, agent: &Agent) -> Caller {
         let turn =
             tilo_action_policy::turn::Turn::new(self.conversation.clone(), self.cause.clone());
         asker
             .in_agent_session(self.session.clone())
-            .on_roster_turn(turn.clone(), agent.created_at, person)
+            .on_roster_turn(turn.clone())
             .on_turn(turn, agent.bound_rules().unwrap_or_default())
     }
 }
@@ -1070,7 +1070,7 @@ impl Agents {
                 ));
             }
         }
-        let turn = asked_in.turn_of(asker, person, agent);
+        let turn = asked_in.turn_of(asker, agent);
         let outcome = self.carried(workspace_id, &turn, &claimed, answer).await;
         let came = match &outcome {
             _ if changed => format!("It was not done: {NOT_AS_ASKED}"),

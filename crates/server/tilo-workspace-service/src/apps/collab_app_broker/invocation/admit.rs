@@ -86,6 +86,17 @@ impl AppBrokerState {
                 _ => None,
             },
         );
+        let context = invoker::signed_by(
+            context,
+            actor,
+            match &origin {
+                Some(InvocationCaller::Certified { caller, .. }) => {
+                    caller.admitted.certificate.as_ref()
+                }
+                Some(InvocationCaller::NativePerson { certificate, .. }) => Some(certificate),
+                Some(InvocationCaller::Local { .. }) | None => None,
+            },
+        );
         // A certified local origin retains its original registered clock and
         // exact person/workspace through an asynchronous directory lookup. Never
         // recapture a replacement origin at dispatch or accept a payload actor.

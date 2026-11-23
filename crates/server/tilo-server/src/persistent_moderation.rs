@@ -1,12 +1,10 @@
 //! The persistent workspace's moderation agent, when the operator mounts a model
 //! key (`--moderation-key-file`).
 //!
-//! The key is kept in this host's secret store like every provider key, and
-//! the agent's verdicts are enforced through the workspace's own governance, as
-//! the workspace's root: a restriction is the workspace's expiring `restrict:<person>`
-//! Deny, a ban the workspace's ban. Reports are read, and messages taken back and
-//! reports settled, through Chat's own actions as the moderation bot; the host runs
-//! it as the workspace's moderation bot ([`tilo_server::workspace_bots::ModerationBot`]).
+//! The key is kept in the host's secret store. The workspace's moderation bot
+//! ([`tilo_server::workspace_bots::ModerationBot`]) reads reports, takes messages back and
+//! settles reports through Chat's own actions under its Chat grant. A person with moderation
+//! authority handles membership changes.
 
 use std::path::Path;
 
@@ -41,8 +39,7 @@ pub(crate) const PUBLIC_MODERATION_MODEL_ENV: &str = "TILO_SERVER_MODERATION_MOD
 /// model key ([`PUBLIC_MODERATION_KEY_ENV`]): a public workspace takes in
 /// strangers, so its reports are answered even while its moderators are
 /// away. Each workspace's agent is the persistent workspace's
-/// ([`tilo_server::workspace_bots::ModerationBot`]), its verdicts enforced
-/// through that workspace's governance.
+/// ([`tilo_server::workspace_bots::ModerationBot`]).
 ///
 /// # Errors
 /// The key is named but unusable; the server refuses to start rather than
@@ -97,7 +94,6 @@ pub(crate) fn follow_published(
                         let bot = tilo_server::workspace_bots::ModerationBot::new(
                             workspaces.clone(),
                             workspace.clone(),
-                            workspaces.governor().clone(),
                             agent,
                         );
                         // A person who governs the workspace turns it on.

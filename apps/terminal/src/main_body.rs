@@ -452,7 +452,6 @@ struct Here {
 
 struct RunHistory {
     record: crate::history::HistoryRecord,
-    opener: ui::framework::ResourceOpener<crate::history::CommandHistory>,
     session: String,
     me: ui::tilo_resource::MemberId,
 }
@@ -1878,9 +1877,6 @@ impl TerminalWidget {
             return Err("agents may not send input to the device's own shell".into());
         }
         match effect {
-            E::ImportPreviousHistory => {
-                self.import_previous_history()?;
-            }
             E::InspectSession | E::ReadScreen => {
                 return Err(
                     "inspecting and reading the session are answered by the resource's read-only handler".into(),
@@ -2067,25 +2063,14 @@ impl TerminalWidget {
     pub(crate) fn remember_in(
         &mut self,
         record: crate::history::HistoryRecord,
-        opener: ui::framework::ResourceOpener<crate::history::CommandHistory>,
         session: String,
         me: ui::tilo_resource::MemberId,
     ) {
         self.commands.history = Some(RunHistory {
             record,
-            opener,
             session,
             me,
         });
-    }
-
-    pub(crate) fn import_previous_history(&self) -> Result<usize, String> {
-        let history = self
-            .commands
-            .history
-            .as_ref()
-            .ok_or("the workspace history is unavailable")?;
-        crate::history::import_previous(&history.opener)
     }
 
     /// A new process: what the last one had not run settles as failed.

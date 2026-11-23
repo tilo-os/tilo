@@ -417,24 +417,25 @@ impl DeviceMeshArea {
         self.remote.clone()
     }
 
-    fn source(&self) -> (PathBuf, bool) {
+    fn source(&self) -> PathBuf {
         if self.devices {
-            (PathBuf::from(DEFAULT_CONFIG), true)
+            PathBuf::from(DEFAULT_CONFIG)
         } else {
-            (PathBuf::from("/nonexistent/tilo/server.toml"), false)
+            PathBuf::from("/nonexistent/tilo/server.toml")
         }
     }
 
     pub fn model(&self) -> &Rc<RefCell<DeviceMeshModel>> {
         self.model.get_or_init(|| {
-            let read = self.read.take().unwrap_or_else(|| {
-                let (path, devices) = self.source();
-                MeshRead::of(path, devices, ui::time::wall())
-            });
+            let read = self
+                .read
+                .take()
+                .unwrap_or_else(|| MeshRead::of(self.source(), ui::time::wall()));
             let mut model = DeviceMeshModel::from_read(self.devices, read);
             model.remote = self.remote.clone();
             if self.devices {
                 model.follow_personal_devices();
+                model.read_servers();
             } else if let Some(scene) = self.scene.as_deref() {
                 model.personal_devices = Some(scene.personal_devices.clone());
             } else {
@@ -448,9 +449,9 @@ impl DeviceMeshArea {
         if self.is_open() {
             return false;
         }
-        let (path, devices) = self.source();
+        let path = self.source();
         let now = ui::time::wall();
-        self.read.start(move || MeshRead::of(path, devices, now))
+        self.read.start(move || MeshRead::of(path, now))
     }
 
     pub(crate) fn poll(&self) {
@@ -487,7 +488,7 @@ impl DeviceMeshArea {
 
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
-        model.home_peers.iter().map(home_server_row).collect()
+        model.servers.iter().map(home_server_row).collect()
     }
 }
 
@@ -506,8 +507,8 @@ fn home_server_row_id(node: &str) -> String {
     format!("settings.home-server:{node}")
 }
 
-fn home_server_row(peer: &tilo_server_protocol::HomePeerRegistration) -> LiveRow {
-    let device = peer.device_node_id.clone();
+fn home_server_row(peer: &tilo_server_protocol::servers::PersonServer) -> LiveRow {
+    let device = peer.device.clone();
     let bindings = tilo_resource::RowBindings::new()
         .bind(
             DeviceMeshEffect::RENAME_HOME_SERVER,
@@ -612,7 +613,13 @@ pub struct DeviceMeshModel {
     devices: bool,
     changed: bool,
     runtime_status: ServerRuntimeStatus,
-    home_peers: Vec<tilo_server_protocol::HomePeerRegistration>,
+    /// The person's servers, as their workspace's document names them; empty until the
+    /// session's first answer lands.
+    servers: Vec<tilo_server_protocol::servers::PersonServer>,
+    /// The session's answer to the last reading of the person's servers.
+    servers_call: Option<ui::InvocationCall>,
+    /// The person's root key; read from the identity when `None`.
+    person: Option<[u8; 32]>,
     home_peer_health: HashMap<String, HomePeerHealth>,
     /// When each home server last answered while this pane ran: a reading it shows, which the
     /// app keeps no record of.
@@ -669,29 +676,6 @@ pub(super) enum PairingTarget {
     #[default]
     HomePeer,
     PersonalDevice,
-}
-
-/// Change this device's list of the person's home servers with `edit`: what
-/// the pane lists them by.
-fn edit_registry(edit: impl FnOnce(&mut Vec<tilo_server_protocol::HomePeerRegistration>)) {
-    let path = tilo_server_protocol::home_peer_registry_path(&identity_root());
-    let Ok(mut peers) = tilo_server_protocol::read_home_peers(&path) else {
-        return;
-    };
-    edit(&mut peers);
-    if let Err(error) = tilo_server_protocol::write_home_peers(&path, &peers) {
-        tracing::warn!(target: "tilo::settings", %error, "the list of home servers was not written");
-    }
-}
-
-fn registered_home_peers() -> Vec<tilo_server_protocol::HomePeerRegistration> {
-    std::fs::read(tilo_server_protocol::home_peer_registry_path(
-        &identity_root(),
-    ))
-    .ok()
-    .filter(|bytes| bytes.len() <= 1024 * 1024)
-    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-    .unwrap_or_default()
 }
 
 fn peer_key(action: &str, device: &str) -> String {
@@ -787,7 +771,6 @@ pub(crate) struct MeshRead {
     config: ServerConfig,
     status: MeshStatus,
     runtime_status: ServerRuntimeStatus,
-    home_peers: Vec<tilo_server_protocol::HomePeerRegistration>,
     home_peer_last_seen: HashMap<String, u64>,
 }
 
@@ -849,7 +832,7 @@ fn devices_in(reading: &str) -> Option<Vec<PersonalDevice>> {
 }
 
 impl MeshRead {
-    fn of(config_path: PathBuf, devices: bool, now: SystemTime) -> Self {
+    fn of(config_path: PathBuf, now: SystemTime) -> Self {
         let (config, status) = match ServerConfig::load(&config_path) {
             Ok(config) => (config, MeshStatus::Ready),
             // No sync settings file: this device was never set up to sync, whether or not the
@@ -875,17 +858,11 @@ impl MeshRead {
             }
         };
         let runtime_status = ServerRuntimeStatus::read(&config, now);
-        let home_peers = if devices {
-            registered_home_peers()
-        } else {
-            Vec::new()
-        };
         Self {
             config_path,
             config,
             status,
             runtime_status,
-            home_peers,
             home_peer_last_seen: HashMap::new(),
         }
     }
@@ -894,10 +871,7 @@ impl MeshRead {
 impl DeviceMeshModel {
     #[cfg(test)]
     fn from_path(config_path: PathBuf, devices: bool) -> Self {
-        Self::from_read(
-            devices,
-            MeshRead::of(config_path, devices, ui::time::wall()),
-        )
+        Self::from_read(devices, MeshRead::of(config_path, ui::time::wall()))
     }
 
     fn from_read(devices: bool, read: MeshRead) -> Self {
@@ -908,7 +882,9 @@ impl DeviceMeshModel {
             devices,
             changed: false,
             runtime_status: read.runtime_status,
-            home_peers: read.home_peers,
+            servers: Vec::new(),
+            servers_call: None,
+            person: None,
             home_peer_health: HashMap::new(),
             home_peer_last_seen: read.home_peer_last_seen,
             personal_devices: None,
@@ -985,10 +961,10 @@ impl DeviceMeshModel {
             }
             DeviceMeshEffect::RenameHomeServer { device, name } => {
                 let peer = self.home_peer(device)?;
-                if !tilo_server_protocol::valid_home_peer_label(name) {
+                if !tilo_server_protocol::valid_device_label(name) {
                     return Err("that name cannot be used for a home server".into());
                 }
-                let managing = Managing::Rename(peer.device_node_id.clone(), name.trim().into());
+                let managing = Managing::Rename(peer.device.clone(), name.trim().into());
                 self.ask_server(&peer, "server.rename", [("name", name.trim())], managing);
                 false
             }
@@ -1058,9 +1034,43 @@ impl DeviceMeshModel {
         }
     }
 
+    /// Ask the session for the person's servers; the answer lands in [`Self::poll_host_calls`].
+    fn read_servers(&mut self) {
+        use ui::tilo_actions::remote::{InvokeArgument, machines};
+        if self.servers_call.is_none() {
+            self.servers_call = Some(self.remote.invoke(
+                machines::target(machines::SERVERS),
+                InvokeArgument::None,
+                None,
+            ));
+        }
+    }
+
     fn poll_host_calls(&mut self) {
-        if self.management_call.is_some() {
+        if self.management_call.is_some() || self.servers_call.is_some() {
             self.remote.poll();
+        }
+        if let Some(answer) = self
+            .servers_call
+            .as_ref()
+            .and_then(crate::device_fleet::settled)
+        {
+            self.servers_call = None;
+            match answer.map(|output| output.value.map(serde_json::from_value)) {
+                Ok(Some(Ok(servers))) => {
+                    self.changed |= self.servers != servers;
+                    self.servers = servers;
+                }
+                Ok(_) => tracing::warn!(
+                    target: "tilo::settings",
+                    "the session's list of the person's servers does not read"
+                ),
+                Err(detail) => tracing::warn!(
+                    target: "tilo::settings",
+                    %detail,
+                    "the session did not list the person's servers"
+                ),
+            }
         }
         if let Some(answer) = self
             .management_call
@@ -1074,13 +1084,13 @@ impl DeviceMeshModel {
 
     /// Remove `peer`: the person's root signs the revocation of its key here,
     /// and its entry in their Servers workspace is retired with it.
-    fn start_home_peer_removal(&mut self, peer: &tilo_server_protocol::HomePeerRegistration) {
+    fn start_home_peer_removal(&mut self, peer: &tilo_server_protocol::servers::PersonServer) {
         use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
         if self.management_call.is_some() {
             return;
         }
         let mut arguments = serde_json::Map::new();
-        arguments.insert("device".into(), peer.device_node_id.clone().into());
+        arguments.insert("device".into(), peer.device.clone().into());
         arguments.insert("reason".into(), "retired".into());
         arguments.insert("confirm".into(), true.into());
         let call = self.remote.invoke(
@@ -1088,9 +1098,9 @@ impl DeviceMeshModel {
             InvokeArgument::Json(arguments),
             Some(Confirmation::Confirmed),
         );
-        self.management_call = Some((call, Managing::Revoke(peer.device_node_id.clone())));
+        self.management_call = Some((call, Managing::Revoke(peer.device.clone())));
         self.home_peer_health
-            .insert(peer.device_node_id.clone(), HomePeerHealth::Connecting);
+            .insert(peer.device.clone(), HomePeerHealth::Connecting);
         self.changed = true;
     }
 
@@ -1098,22 +1108,19 @@ impl DeviceMeshModel {
     /// workspace, with `arguments` beside the server it names.
     fn ask_server<const N: usize>(
         &mut self,
-        peer: &tilo_server_protocol::HomePeerRegistration,
+        peer: &tilo_server_protocol::servers::PersonServer,
         verb: &str,
         arguments: [(&str, &str); N],
         managing: Managing,
     ) {
         use ui::tilo_actions::remote::{Confirmation, InvokeArgument, RemoteActionTarget};
-        let Some(person) = hex::decode(&peer.user_public_key)
-            .ok()
-            .and_then(|key| <[u8; 32]>::try_from(key).ok())
-        else {
+        let Some(person) = self.person() else {
             self.home_peer_health
-                .insert(peer.device_node_id.clone(), HomePeerHealth::Unreachable);
+                .insert(peer.device.clone(), HomePeerHealth::Unreachable);
             return;
         };
         let mut argument = serde_json::Map::new();
-        argument.insert("server".into(), peer.device_node_id.clone().into());
+        argument.insert("server".into(), peer.device.clone().into());
         for (name, value) in arguments {
             argument.insert(name.into(), value.into());
         }
@@ -1129,7 +1136,7 @@ impl DeviceMeshModel {
         );
         self.management_call = Some((call, managing));
         self.home_peer_health
-            .insert(peer.device_node_id.clone(), HomePeerHealth::Connecting);
+            .insert(peer.device.clone(), HomePeerHealth::Connecting);
         self.changed = true;
     }
 
@@ -1165,22 +1172,8 @@ impl DeviceMeshModel {
                     _ => HomePeerHealth::Unreachable,
                 }
             }
-            (Managing::Retire(_), Ok(_)) => {
-                edit_registry(|peers| peers.retain(|peer| peer.device_node_id != device));
-                HomePeerHealth::Removed
-            }
-            (Managing::Rename(_, name), Ok(_)) => {
-                edit_registry(|peers| {
-                    for peer in peers
-                        .iter_mut()
-                        .filter(|peer| peer.device_node_id == device)
-                    {
-                        peer.label.clone_from(&name);
-                    }
-                });
-                HomePeerHealth::Online
-            }
-            (Managing::Status(_), Ok(_)) => HomePeerHealth::Online,
+            (Managing::Retire(_), Ok(_)) => HomePeerHealth::Removed,
+            (Managing::Rename(..) | Managing::Status(_), Ok(_)) => HomePeerHealth::Online,
             (_, Err(detail)) => {
                 tracing::warn!(
                     target: "tilo::settings",
@@ -1193,19 +1186,32 @@ impl DeviceMeshModel {
         if health != HomePeerHealth::Unreachable {
             self.home_peer_last_seen
                 .insert(device.clone(), ui::time::unix_now_ms());
-            self.home_peers = registered_home_peers();
+            self.read_servers();
         }
         self.home_peer_health.insert(device, health);
         self.changed = true;
     }
 
+    /// The person's root key, which names their Servers workspace: the
+    /// identity's, unless a test set it.
+    fn person(&self) -> Option<[u8; 32]> {
+        self.person.or_else(|| {
+            tilo_identity_client::load_metadata()
+                .inspect_err(|error| {
+                    tracing::warn!(target: "tilo::settings", ?error, "the identity is not readable");
+                })
+                .ok()
+                .map(|metadata| metadata.group_public_key)
+        })
+    }
+
     fn home_peer(
         &self,
         device: &str,
-    ) -> Result<tilo_server_protocol::HomePeerRegistration, String> {
-        self.home_peers
+    ) -> Result<tilo_server_protocol::servers::PersonServer, String> {
+        self.servers
             .iter()
-            .find(|peer| peer.device_node_id == device)
+            .find(|peer| peer.device == device)
             .cloned()
             .ok_or_else(|| "that home server is no longer paired".to_string())
     }
@@ -1641,14 +1647,14 @@ impl DeviceMeshModel {
     }
 
     fn refresh_one_home_peer(&mut self) {
-        if self.management_call.is_some() || self.home_peers.is_empty() {
+        if self.management_call.is_some() || self.servers.is_empty() {
             return;
         }
-        let index = self.next_peer_health % self.home_peers.len();
+        let index = self.next_peer_health % self.servers.len();
         self.next_peer_health = self.next_peer_health.wrapping_add(1);
-        let peer = self.home_peers.get(index).cloned();
+        let peer = self.servers.get(index).cloned();
         if let Some(peer) = peer {
-            let managing = Managing::Status(peer.device_node_id.clone());
+            let managing = Managing::Status(peer.device.clone());
             self.ask_server(&peer, "server.status", [], managing);
         }
     }
@@ -1736,7 +1742,7 @@ impl DeviceMeshModel {
             return None;
         }
         match self.following.upgrade() {
-            Some(_) => (!self.home_peers.is_empty()).then_some(self.next_status_refresh),
+            Some(_) => (!self.servers.is_empty()).then_some(self.next_status_refresh),
             None => Some(self.next_status_refresh),
         }
     }
@@ -1750,7 +1756,7 @@ impl DeviceMeshModel {
         }
         let follow = Rc::new(MeshFollow::start(&self.config)?);
         self.following = Rc::downgrade(&follow);
-        self.health_round = self.home_peers.len().max(1);
+        self.health_round = self.servers.len().max(1);
         self.next_status_refresh = ui::time::now();
         Some(follow)
     }
@@ -2131,7 +2137,7 @@ mod tests {
                 "a test reads the stand-in configuration"
             );
             assert_eq!(model.personal_devices, Some(Vec::new()));
-            assert!(model.home_peers.is_empty());
+            assert!(model.servers.is_empty());
             drop(model);
             assert!(!area.start_read(), "a built model is not read again");
         }
@@ -2142,7 +2148,7 @@ mod tests {
             let path = dir.path().join("server.toml");
             std::fs::write(&path, "iroh_listen = \"0.0.0.0:1234\"\n").unwrap();
             let here = DeviceMeshModel::from_path(path.clone(), false);
-            let read = MeshRead::of(path, false, ui::time::wall());
+            let read = MeshRead::of(path, ui::time::wall());
             let there = DeviceMeshModel::from_read(false, read);
             assert_eq!(here.config_path, there.config_path);
             assert_eq!(here.status, there.status);
@@ -2355,17 +2361,7 @@ mod tests {
             ]})
             .to_string(),
         );
-        pane.home_peers = vec![
-            serde_json::from_value(serde_json::json!({
-                "schema_version": tilo_server_protocol::HomePeerRegistration::CURRENT_SCHEMA,
-                "device_node_id": NEARBY_DEVICE,
-                "server_node_id": NEARBY_SERVICE,
-                "label": "Kitchen NAS",
-                "user_public_key": "33".repeat(32),
-                "server_workspace_ids": [],
-            }))
-            .unwrap(),
-        ];
+        pane.servers = vec![nearby_server()];
         pane
     }
 
@@ -2519,17 +2515,9 @@ mod tests {
                 host.clone(),
                 ui::tilo_actions::remote::Caller::local_person("owner"),
             );
-            let server: tilo_server_protocol::HomePeerRegistration =
-                serde_json::from_value(serde_json::json!({
-                    "schema_version": tilo_server_protocol::HomePeerRegistration::CURRENT_SCHEMA,
-                    "device_node_id": NEARBY_DEVICE,
-                    "server_node_id": NEARBY_SERVICE,
-                    "label": "Kitchen NAS",
-                    "user_public_key": "33".repeat(32),
-                    "server_workspace_ids": [],
-                }))
-                .unwrap();
-            pane.home_peers = vec![server];
+            let server = nearby_server();
+            pane.servers = vec![server];
+            pane.person = Some([0x33; 32]);
             pane.apply(&DeviceMeshEffect::RemoveHomeServer {
                 device: NEARBY_DEVICE.into(),
             })
@@ -2681,6 +2669,19 @@ mod tests {
     const NEARBY_SERVICE: &str = "bb00000000000000000000000000000000000000000000000000000000000002";
     /// The revocation the identity step answers, as the pane passes it on.
     const SIGNED_REVOCATION: &str = "{\"signed\":true}";
+
+    /// The server the person's workspace names for the nearby device.
+    fn nearby_server() -> tilo_server_protocol::servers::PersonServer {
+        serde_json::from_value(serde_json::json!({
+            "device": NEARBY_DEVICE,
+            "label": "Kitchen NAS",
+            "endpoint": {
+                "id": hex::encode(tilo_server_protocol::server_node_id(&[0xbb; 32])),
+                "addrs": [],
+            },
+        }))
+        .unwrap()
+    }
 
     #[derive(Default)]
     pub(super) struct PairingHost {

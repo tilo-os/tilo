@@ -161,7 +161,7 @@ isolation = { nested = ["launcher", "runtime-bundle", "tilo-sandbox-core", "tilo
 # none builds it (tools/ci/nextest.sh, or the render helper's setup step, .config/nextest.toml),
 # and a shard names none. So is the capability probe a job of a package
 # .config/nextest-capabilities.toml names first.
-starts = { app-cli = ["install:tilo-install"], launcher = ["tilo-test-env:tilo-capability-probe"], windows-vm = ["tilo-test-env:tilo-capability-probe"], tilo-agent-session = ["tilo-video-render:tilo-video-render", "linux-vm-agent:tilo-linux-vm-agent", "tilolang-process:tilolang-process"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe", "linux-vm-agent:tilo-linux-vm-agent"] }
+starts = { app-cli = ["install:tilo-install"], launcher = ["tilo-test-env:tilo-capability-probe"], windows-vm = ["tilo-test-env:tilo-capability-probe"], tilo-agent-session = ["tilo-video-render:tilo-video-render", "tilolang-process:tilolang-process"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe"] }
 matrix = { arch = ["x86_64", "aarch64"] }
 
 # The packages whose tests cost main a lot for what they catch: on main's newest head when t has
@@ -503,10 +503,6 @@ git = true
 
 [[check.matrix.set]]
 when = { test = "macos_collection" }
-git = true
-
-[[check.matrix.set]]
-when = { test = "signal_provider_release" }
 git = true
 
 [[check.matrix.set]]
@@ -1147,17 +1143,6 @@ on = ["dispatch", "idle"]
 heavy = true
 
 [[check]]
-name = "real-fuse-server"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-server --test it personal_device_process::ordinary_device_enrollment_survives_approver_offline_with_home_peer_route -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
-env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
-requires = ["/dev/fuse", "/dev/fuse"]
-isolation = "nested"
-on = ["dispatch", "idle"]
-heavy = true
-
-[[check]]
 name = "real-fuse-runtime"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
@@ -1166,24 +1151,6 @@ env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
 on = ["dispatch", "idle"]
-heavy = true
-
-[[check]]
-name = "real-fuse-privileged-build"
-egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "# Read every message before selecting: closing cargo's pipe early makes it\n# fail with a broken pipe while it is still writing build messages.\ntest=$(cargo test --locked -p tilo-server --test it --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == \"it\"))')\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\ncp \"$test\" \"$CARGO_TARGET_DIR/vm/tilo-server-it\"\n"
-requires = ["arch=x86_64"]
-outputs = ["/target/vm/tilo-server-it", "/target/debug/tilo-enroll", "/target/debug/tilo-home-peer-control"]
-on = ["dispatch"]
-heavy = true
-
-[[check]]
-name = "real-fuse-privileged"
-run = "cd crates/server/tilo-server\n/target/vm/tilo-server-it --ignored --exact personal_device_process::privileged_helper_preserves_user_owned_personal_device_projection --nocapture --test-threads=1\n"
-needs = ["real-fuse-privileged-build"]
-requires = ["arch=x86_64"]
-isolation = "vm"
-on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -1479,8 +1446,6 @@ name = "weekly-latency"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo test --locked -p tilo-media --features realtime --test realtime -- --ignored --exact realtime_latency_per_frame --nocapture"
 on = ["dispatch"]
-# A frame's latency is held to a budget: t runs it on a node with nothing beside it.
-timed = true
 
 # A workspace taking records and files at the same speed however full, as one nextest run of
 # `tilo-agent-session`'s `it` binary with `--run-ignored only`: the same binary, the same units and
@@ -1488,14 +1453,14 @@ timed = true
 # compiles instead of resolving a `cargo nextest -p` command's own graph and compiling them again.
 # It is a family of its own because its tests are `#[ignore]`d, which the plain `test-x86_64` run
 # leaves out: they are timed, the workspace's speed however full and an import's floors beside a
-# person's calls, so `timed` has t run them on a node with nothing beside them (its build shares a
-# node as any build does). `t test throughput` runs them, and `unify` makes the units the family
-# build's.
+# person's calls. Main runs them on its newest head alone (`idle`), a few times a day rather than on
+# every change that reaches the package, and `t test throughput` runs them when asked; `unify` makes
+# the units the family build's.
 [[cargo]]
 name = "throughput"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "nextest"
-timed = true
+on = ["dispatch", "idle"]
 requires = ["arch=x86_64"]
 wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests", "--run-ignored", "only", "-E", "test(=workspace_actions::throughput::a_workspace_takes_records_and_files_at_the_same_speed_however_full) | test(=workspace_actions::import_rate::an_import_lands_at_its_floor_while_the_person_works_beside_it) | test(=workspace_actions::api_beside_import::an_import_into_another_app_never_slows_a_keys_listings)", "--test-threads", "1"]
@@ -2202,48 +2167,6 @@ git = true
 timeout_secs = 10800
 on = ["dispatch"]
 dispatch_inputs = { only = "", outputs = "1920x1080@1,1280x800@1.25", gl = "auto" }
-
-# A disk without a TPM opens at boot by another of the person's devices releasing
-# its half of the keyslot, and stays at its own prompt when the person declines the
-# sheet, the exchange is replayed, the boot key was never certified or the device was
-# revoked. The device that holds no root enrols its slot through the owner's device
-# too, over the peer network (os/dev/test-nearby-pairing.sh --unlock,
-# os/dev/nearby-unlock-phase.sh).
-[[check]]
-name = "nearby-unlock-x86_64"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt && TILO_VM_DISPLAY=2d bash os/dev/test-nearby-pairing.sh /target/publish/os-dev-disk/x86_64/disk/disk.qcow2 --out /target/nearby-unlock --unlock"
-needs = ["os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
-env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
-requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
-isolation = "vm"
-outputs = ["/target/nearby-unlock/**"]
-cache = false
-git = true
-timeout_secs = 7200
-default = false
-on = ["dispatch"]
-
-# The same disk and the same two devices with no network between them but their
-# own and the iroh relay: pairing happens first, then the segment the pair shared
-# goes, and the enrolment ask and the unlock still cross
-# (os/dev/test-nearby-pairing.sh --unlock --relay-only).
-[[check]]
-name = "nearby-unlock-relay-x86_64"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt && TILO_VM_DISPLAY=2d bash os/dev/test-nearby-pairing.sh /target/publish/os-dev-disk/x86_64/disk/disk.qcow2 --out /target/nearby-unlock-relay --unlock --relay-only"
-needs = ["os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
-env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
-requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
-isolation = "vm"
-outputs = ["/target/nearby-unlock-relay/**"]
-cache = false
-git = true
-timeout_secs = 7200
-default = false
-on = ["dispatch"]
 
 # An encrypted install whose keyslot is sealed to its TPM opens by itself at the
 # next boot, with nobody typing, and reaches a login
@@ -2973,8 +2896,8 @@ on = ["dispatch"]
 
 # ---- App and engine releases -------------------------------------------------------------
 #
-# Per architecture, what `Release / apps` publishes through, in two steps: the compile, which
-# holds no key and builds every selected app once, then the packaging that signs with the release
+# Per architecture, the app release, in two steps: the compile, which holds no key and builds
+# every selected app once, then the packaging that signs with the release
 # identities, which only a trusted run has. They are checks of their own so that a run without
 # identities can never produce a signed package, and so that the compile's result serves the
 # package, the size budgets and the dev shapes alike. `dist/apps/package-apps.sh` is the one path
@@ -3047,6 +2970,26 @@ outputs = ["/target/app-release/{arch}/**"]
 on = ["dispatch"]
 heavy = true
 timeout_secs = 5400
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# What a release's signed packages must show before they are published: every windowed app draws
+# its first frame against the shared runtime, a media app decodes through the GStreamer the runtime
+# loads on first use, Typst Editor and Music run their engine libraries, and every app's own engine
+# library loads when it starts. It reads the compile's tree and the signed release the sign check
+# wrote (`tools/apps/release-smoke.sh`), so it builds nothing.
+[[check]]
+name = "app-release-smoke-{arch}"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = '''set -euo pipefail
+export CARGO_TARGET_DIR=/target/apps-build/{arch}
+export TILO_APP_RELEASE_OUT=/target/app-release/{arch}
+bash tools/apps/release-smoke.sh {arch}'''
+needs = ["apps-build-{arch}", "sign-apps-{arch}"]
+requires = ["arch={arch}"]
+timeout_secs = 5400
+on = ["dispatch"]
+heavy = true
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
@@ -6997,19 +6940,6 @@ timeout_secs = 3000
 [check.matrix]
 story = ["agent-mcp", "second-device", "files-in", "calendar-invite", "nextcloud-files", "mail-password", "shared-mailbox", "desktop-easy"]
 
-# The two programs the tilo.sh stack's checks run as a release's: tilo-enroll makes the VM host's
-# member device, and tilo-approve answers for the person the startup page made. Built here, once,
-# and handed to the checks that use them, so the micro-VM that runs the stack only runs it: the
-# compiler's units do not fit in the guest beside the stack and a workspace's own VM.
-[[check]]
-name = "tilo-sh-tools"
-egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo build --locked -p tilo-server --bin tilo-enroll --bin tilo-approve\nrm -rf /target/tilo-sh-tools && mkdir -p /target/tilo-sh-tools\ninstall -m 0755 \"$CARGO_TARGET_DIR/debug/tilo-enroll\" \"$CARGO_TARGET_DIR/debug/tilo-approve\" /target/tilo-sh-tools/\n"
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
-requires = ["arch=x86_64"]
-outputs = ["/target/tilo-sh-tools/**"]
-default = false
-
 # The programs the local tilo.sh stack's checks run, and its server's laid-out context: built once
 # here, at the release's code and opt-level without its whole-program link (Cargo.toml's
 # `lounge-check`), so a check's bring-up compiles nothing. The server and its Discord worker are
@@ -7242,8 +7172,8 @@ run = "bash os/containers/tilo-sh/check-in-vm.sh /target/tilo-sh-local-vm"
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False podman util-linux xfsprogs python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
-needs = ["tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context", "cli-x86_64", "image-vm-host", "image-hosted-guest", "tilo-sh-tools"]
-env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "1", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_BROWSER_FREE_ACTIONS = "200", TILO_SH_TILO_ENROLL = "/target/tilo-sh-tools/tilo-enroll", TILO_SH_TILO_APPROVE = "/target/tilo-sh-tools/tilo-approve" }
+needs = ["tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context", "cli-x86_64", "image-vm-host", "image-hosted-guest"]
+env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "1", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_BROWSER_FREE_ACTIONS = "200" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/tilo-sh-local-vm/**"]
@@ -7896,11 +7826,11 @@ on = ["dispatch"]
 name = "tilo-sh-vm-host"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash os/containers/tilo-sh/test-vm-host.sh /target/publish/vm-host/image.oci.tar /target/publish/hosted-guest/image /target/tilo-sh-tools/tilo-enroll"
+run = "bash os/containers/tilo-sh/test-vm-host.sh /target/publish/vm-host/image.oci.tar /target/publish/hosted-guest/image"
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False podman xfsprogs util-linux && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
-needs = ["image-vm-host", "image-hosted-guest", "tilo-sh-tools"]
+needs = ["image-vm-host", "image-hosted-guest"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 timeout_secs = 3600

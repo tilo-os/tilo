@@ -321,7 +321,6 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     let attestors = host.join("trusted-attestors.toml");
     let revoked = host.join("revoked-keys.toml");
     let registries = host.join("registries.toml");
-    let record = home.data().join("so.tilo.settings-person/state.automerge");
     let state = host.join("state.json");
     let settings = home.data().join("so.tilo.settings-device/state.automerge");
     let accounts = host.join("accounts/store.json");
@@ -335,7 +334,6 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
         (&attestors, "# trusted attestors"),
         (&revoked, "# revoked keys"),
         (&registries, "# registries"),
-        (&record, r#"{"person":true}"#),
         (&state, r#"{"workspaces":[]}"#),
         (&settings, r#"{"region":{"units":"metric"}}"#),
         (&accounts, r#"{"accounts":[]}"#),
@@ -438,7 +436,6 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     for (path, contents) in [
         (&revoked, "# revoked keys"),
         (&registries, "# registries"),
-        (&record, r#"{"person":true}"#),
         (&root_secret, "root secret"),
         (&active, "primary"),
         (&identity_record, r#"{"schema_version":2}"#),

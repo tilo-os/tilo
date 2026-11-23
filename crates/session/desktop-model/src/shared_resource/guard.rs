@@ -44,57 +44,6 @@ pub fn is_desktop(app: &str, record: &str) -> bool {
         && (record == DESKTOP_DOCUMENT || crate::person_view::person_of(record).is_some())
 }
 
-/// The person whose view of a workspace's layout `app`'s `document` is, when it is one.
-#[must_use]
-pub fn view_owner<'a>(app: &str, document: &'a str) -> Option<&'a str> {
-    if app == DESKTOP_APP {
-        crate::person_view::person_of(document)
-    } else {
-        None
-    }
-}
-
-/// The person whose own resource `app`'s `document` is, for one that member writes whatever
-/// their role: their view of the layout ([`view_owner`]), or a resource of a kind `app` declares
-/// each member's own (`declared`, as its write names it). Nobody else writes either.
-#[must_use]
-pub fn own_person(
-    app: &str,
-    document: &str,
-    declared: Option<&collab_types::OwnResource>,
-) -> Option<String> {
-    declared
-        .filter(|own| own.names(document))
-        .map(collab_types::OwnResource::person)
-        .or_else(|| view_owner(app, document).map(str::to_owned))
-}
-
-/// Who may write `(app, record)`: every member writes the workspace's layout, and a person's view
-/// of it is that person's alone, so the others' devices and their pages show where they are looking
-/// and never move it.
-///
-/// # Errors
-/// Why `person` may not write it.
-pub fn may_write(app: &str, document: &str, person: &str) -> Result<(), NotTheirView> {
-    match view_owner(app, document) {
-        Some(owner) if owner != person => Err(NotTheirView {
-            writer: person.to_owned(),
-            owner: owner.to_owned(),
-        }),
-        _ => Ok(()),
-    }
-}
-
-/// Why a write of a person's view of the layout was refused.
-#[derive(Debug, PartialEq, Eq, thiserror::Error)]
-#[error("{writer} may not write {owner}'s view of the layout: a view is its person's")]
-pub struct NotTheirView {
-    /// The writer's person id.
-    pub writer: String,
-    /// The person whose view it is.
-    pub owner: String,
-}
-
 /// A workspace's shared desktop, whose writes its action API decides.
 pub struct DesktopGuard {
     doc: AutoCommit,

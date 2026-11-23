@@ -383,7 +383,7 @@ impl AppBrokerState {
                     admit_agent_cert(&mut current, (**agent_cert).clone());
                 } else if let Some(agent_id) = &admitted.agent_id {
                     let roster = agents.ok_or("this host reads no workspace's agents")?;
-                    admit_kept_agent(roster, &route.cluster_id, &mut current, agent_id).map_err(
+                    admit_listed_agent(roster, &route.cluster_id, &mut current, agent_id).map_err(
                         |error| format!("certified agent session is no longer admitted: {error}"),
                     )?;
                 } else {
@@ -466,11 +466,7 @@ impl AppBrokerState {
         };
         let allowed = admitted
             .with_current_authority(self.membership.as_ref(), &route.cluster_id, |access| {
-                let owner = self.admitted_record_owner(route, admitted, envelope, access)?;
-                let mut cx = tilo_desktop_model::context_at(now);
-                if let Some(person) = &owner {
-                    cx = cx.with_own_resource(&route.document_id, person);
-                }
+                let cx = tilo_desktop_model::context_at(now);
                 let allows = |invoker: Option<&tilo_action_policy::Acting>,
                               node: &tilo_action_policy::TreePath,
                               kind| {
@@ -499,51 +495,5 @@ impl AppBrokerState {
             artifact: envelope.artifact,
             payload,
         })
-    }
-
-    fn admitted_record_owner(
-        &self,
-        route: &CrdtRoute,
-        admitted: &AdmittedJoinIdentity,
-        envelope: &SignedOp,
-        access: &tilo_action_policy::MemberAccess,
-    ) -> Result<Option<String>, BrokerError> {
-        if self.personal_route(route).is_some() {
-            return Ok(None);
-        }
-        let certified = admitted.verified.user_public_key;
-        let own = collab_types::OwnResource::recognise_in(
-            &route.app_id,
-            &route.document_id,
-            &access.policy,
-        )
-        .or_else(|| {
-            collab_types::OwnResource::recognise(&route.app_id, &route.document_id, certified)
-        });
-        let Some(own) = own else {
-            return Ok(None);
-        };
-        if own.owner != certified {
-            return Err(BrokerError::failed(
-                "only the owning member's device may change this record".into(),
-            ));
-        }
-        if !own.is_live_in(&route.app_id) {
-            return Err(BrokerError::failed(
-                collab_types::own_resource::ARCHIVE_READ_ONLY.into(),
-            ));
-        }
-        if !matches!(
-            envelope.encryption,
-            Some(collab_types::EncryptionMetadata {
-                scheme: collab_types::EncryptionScheme::DocumentContentKey { .. },
-                ..
-            })
-        ) {
-            return Err(BrokerError::failed(
-                "this document requires its own encryption group".into(),
-            ));
-        }
-        Ok(Some(own.person()))
     }
 }

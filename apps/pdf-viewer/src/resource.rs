@@ -913,27 +913,6 @@ fn reader_view(cx: &ViewCx<PdfMarkup>, mut app: PdfApp) -> Element {
     if cx.mode().is_live()
         && let Some(signature) = cx.profile_resource::<crate::signature::SignatureProfile>()
     {
-        use crate::signature::SignatureProfile;
-        let held = signature.get();
-        if !held.restored_previous && held.signer.is_empty() && held.strokes.is_empty() {
-            let opener = cx.resource_opener::<SignatureProfile>(ui::apps::PDF_VIEWER);
-            let imported = opener.legacy_member_state().and_then(|previous| {
-                if let Some(previous) = previous
-                    .filter(|previous| !previous.signer.is_empty() || !previous.strokes.is_empty())
-                {
-                    signature
-                        .invoke(
-                            &SignatureProfile::RESTORE_PREVIOUS
-                                .with(ui::tilo_resource::Model::to_json(&*previous)),
-                        )
-                        .map_err(|error| error.to_string())?;
-                }
-                Ok(())
-            });
-            if let Err(error) = imported {
-                tracing::warn!(%error, "could not restore the previous signature");
-            }
-        }
         app.attach_signature(signature);
     }
     app.follow(cx.live().clone(), cx.read_only_state());

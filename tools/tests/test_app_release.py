@@ -112,44 +112,6 @@ class AppReleaseTests(unittest.TestCase):
                 app_release.resolve_collection("default", catalog, config),
             )
             self.assertEqual(catalog["tl-notes"]["kind"], "tilolang")
-        with self.subTest(phase='a promotion selects affected apps and publishes default collection'):
-            workflow = (ROOT / ".forgejo/workflows/release-apps.yml").read_text(
-                encoding="utf-8"
-            )
-            selection = workflow.split(
-                "- name: Select only the affected apps or requested collection", 1
-            )[1].split(
-                'python3 -I tools/ci/python.py tools/apps/app_release.py "${args[@]}"', 1
-            )[0]
-            push = workflow.split("  push:\n", 1)[1].split("  workflow_dispatch:\n", 1)[0]
-            self.assertIn("    branches: [stable]", push)
-            self.assertNotIn("refs/heads/main", selection)
-            # Superseded queued runs must not drop their changes: select
-            # relative to the published collection, else rebuild it all.
-            self.assertNotIn("github.event.before", workflow)
-            self.assertIn("COLLECTION_SOURCE: ${{ vars.TILO_APP_COLLECTION_SOURCE }}", selection)
-            self.assertIn(
-                'if ! [[ $base =~ ^[0-9a-f]{40}$ ]] || ! use_base "$base"; then\n'
-                "              args+=(--collection default)",
-                selection,
-            )
-            self.assertIn('update_variable TILO_APP_COLLECTION_SOURCE "$GITHUB_SHA"',
-                          (ROOT / "tools/apps/publish-collections.sh").read_text(encoding="utf-8"))
-            self.assertIn("if [[ $GITHUB_REF == refs/heads/stable ]]; then", workflow)
-            self.assertIn("collection=default", workflow)
-
-            catalog = app_release.app_catalog(ROOT)
-            expected = sorted(catalog)
-            for path in (
-                "tools/canonical_verifier_bundle.py",
-                "tools/assemble_verified_apps.py",
-                ".forgejo/actions/restore-cargo-downloads/action.yml",
-                "dist/apps/new-release-helper.sh",
-                "tools/ci/sccache.sh",
-            ):
-                with self.subTest(path=path):
-                    self.assertEqual(app_release.apps_from_changes([path], catalog), expected)
-
     def test_app_manifest_changes_rebuild_the_shared_runtime_collection(self):
         catalog = app_release.app_catalog(ROOT)
         # An app's dependency change can alter the shared runtime's hashes while
@@ -183,7 +145,6 @@ class AppReleaseTests(unittest.TestCase):
                 "os/Containerfile.builder": "binary",
                 "os/external-assets/github-assets.tsv": "binary",
                 "tools/apps/canonical_app_verifier.py": "verification",
-                "tools/apps/create_app_receipt.py": "verification",
                 "tools/apps/final_app_receipt.py": "verification",
                 "tools/apps/app_channel_manifest.py": "verification",
                 "tools/ci/__init__.py": "verification",
@@ -347,23 +308,6 @@ class AppReleaseTests(unittest.TestCase):
                 ),
                 sorted(catalog),
             )
-        with self.subTest(phase='every global release input triggers main packaging'):
-            workflow = (ROOT / ".forgejo/workflows/release-apps.yml").read_text(
-                encoding="utf-8"
-            )
-            push = workflow.split("  push:\n", 1)[1].split("  workflow_dispatch:\n", 1)[0]
-            patterns = re.findall(r'^      - "([^"]+)"$', push, re.MULTILINE)
-            inputs = set(app_release.GLOBAL_INPUTS)
-            inputs.update(
-                prefix + "unknown-input"
-                for prefix in app_release.GLOBAL_PREFIXES + app_release.FULL_REBUILD_PREFIXES
-            )
-            for path in sorted(inputs):
-                with self.subTest(path=path):
-                    self.assertTrue(
-                        any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns),
-                        f"{path} does not trigger Release / apps",
-                    )
         with self.subTest(phase='a browser change releases the browser tapp'):
             catalog = {**CATALOG, "browser": {}}
             self.assertEqual(
@@ -552,23 +496,5 @@ dependencies = ["markdown-parser 1.1.0"]
                     capture_output=True, text=True, check=True,
                 )
                 self.assertEqual(result.stdout.strip(), expected)
-        with self.subTest(phase="the workflow plans and publishes against one collection"):
-            workflow = (ROOT / ".forgejo/workflows/release-apps.yml").read_text(encoding="utf-8")
-            selection = workflow.split(
-                "- name: Select only the affected apps or requested collection", 1
-            )[1].split("python3 -I tools/ci/python.py tools/apps/app_release.py \"${args[@]}\"", 1)[0]
-            self.assertIn("COLLECTION_BUILDER: ${{ vars.TILO_APP_COLLECTION_BUILDER }}", selection)
-            self.assertIn("BUILDER: ${{ steps.builder.outputs.image }}", selection)
-            self.assertIn("--prior-collection-base", selection)
-            self.assertIn('echo "prior_x86_url=${PRIOR_X86_URL:-}"', selection)
-            publish = workflow.split("- name: Publish reusable tapps and assemble immutable collections", 1)[1]
-            self.assertIn("PRIOR_X86_URL: ${{ needs.plan.outputs.prior_x86_url }}", publish)
-            self.assertIn("PRIOR_ARM64_SHA256: ${{ needs.plan.outputs.prior_arm64_sha256 }}", publish)
-            self.assertNotIn("vars.TILO_APP_COLLECTION_URL", publish.split("run: ", 1)[0])
-            self.assertIn("run: tools/apps/publish-collections.sh", publish)
-            script = (ROOT / "tools/apps/publish-collections.sh").read_text(encoding="utf-8")
-            self.assertIn('update_variable TILO_APP_COLLECTION_BUILDER "$BUILDER_IMAGE"', script)
-
-
 if __name__ == "__main__":
     unittest.main()

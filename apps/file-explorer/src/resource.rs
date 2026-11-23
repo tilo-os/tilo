@@ -959,26 +959,6 @@ impl DeviceRecentFiles {
     fn open(cx: &ViewCx<FileExplorer>) -> (ui::framework::Setting<Self>, String) {
         let workspace = cx.workspace().unwrap_or_default();
         let settings = cx.settings::<Self>();
-        if !settings.get().by_workspace.contains_key(&workspace)
-            && let Some(device) = cx.device()
-        {
-            let opener =
-                cx.resource_opener::<crate::recent::RecentResource>(ui::apps::FILE_EXPLORER);
-            match opener.legacy_member_state() {
-                Ok(Some(previous)) => {
-                    if let Err(error) = settings.update(|state| {
-                        state
-                            .by_workspace
-                            .entry(workspace.clone())
-                            .or_insert_with(|| previous.on(device));
-                    }) {
-                        tracing::warn!(%error, "could not restore recent files");
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => tracing::warn!(%error, "could not read earlier recent files"),
-            }
-        }
         (settings, workspace)
     }
 }

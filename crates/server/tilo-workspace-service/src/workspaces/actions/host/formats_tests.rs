@@ -1,5 +1,6 @@
-//! A person's region and formats and their zone on their server: kept from their page, theirs
-//! alone, and the zone their views are rendered in is the one they chose, else their browser's.
+//! A person's region and formats and their zone, kept from their page by a server of theirs in
+//! their own workspace: theirs alone, and the zone their views are rendered in is the one they
+//! chose, else their browser's.
 
 #![expect(
     clippy::significant_drop_tightening,
@@ -7,7 +8,7 @@
 )]
 
 use serde_json::{Value, json};
-use tilo_actions::remote::person_formats;
+use tilo_actions::remote::formats;
 use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
@@ -15,6 +16,7 @@ use tilo_user_identity::DeviceCert;
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{admit, caller, governed};
 use super::vault_tests::ask_at;
+use crate::workspaces::region::{REGION, Region};
 use crate::workspaces::tests::{governor, test_host};
 
 /// `action` of the person's formats, asked by `who` as their page asks it.
@@ -29,28 +31,39 @@ async fn ask(
         service,
         workspace_id,
         who,
-        person_formats::target(action),
+        formats::target(action),
         argument,
     )
     .await
 }
 
+/// Whether a folder named `name` is anywhere under `dir`.
+fn holds_folder(dir: &std::path::Path, name: &str) -> bool {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            let path = entry.path();
+            path.is_dir() && (entry.file_name() == name || holds_folder(&path, name))
+        })
+}
+
 #[tokio::test]
-async fn a_persons_formats_are_kept_for_them_alone() {
+async fn a_persons_formats_are_a_resource_for_them_alone() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
+    let (key, ada) = governor();
+    let server = test_host(dir.path(), &key, &ada).await;
     let workspaces = server.workspaces();
     let (workspace, workspace_id, service) = governed(workspaces).await;
-    let ada = admit(workspaces, &workspace, &owner, 1).await;
-    let bo = admit(workspaces, &workspace, &owner, 2).await;
+    let bo = admit(workspaces, &workspace, &ada, 2).await;
     let (as_ada, as_bo) = (caller(&ada), caller(&bo));
 
     let nothing = ask(
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_formats::READ,
+        formats::READ,
         json!({}),
     )
     .await
@@ -63,7 +76,7 @@ async fn a_persons_formats_are_kept_for_them_alone() {
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_formats::SET,
+        formats::SET,
         json!({"formats": {"time_format": "H24", "date_format": "EU", "currency": "EUR"}}),
     )
     .await
@@ -75,40 +88,44 @@ async fn a_persons_formats_are_kept_for_them_alone() {
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_formats::READ,
+        formats::READ,
         json!({}),
     )
     .await
     .unwrap();
     assert_eq!(read, kept, "what she reads back is what was kept");
 
-    // Bo reads and keeps his own, and Ada's stay as she left them.
-    let his = ask(
-        &service,
-        workspace_id,
-        (&bo, &as_bo),
-        person_formats::READ,
-        json!({}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(his, json!({}), "Bo reads nothing of Ada's");
-    ask(
-        &service,
-        workspace_id,
-        (&bo, &as_bo),
-        person_formats::SET,
-        json!({"formats": {"time_format": "H12"}}),
-    )
-    .await
-    .expect("Bo keeps his own");
+    // It is a typed resource of her own workspace, with a history and an author, and no file of
+    // the server's.
+    let own = tilo_server_protocol::servers::person_workspace_id(&ada.user_public_key);
+    let region = crate::workspaces::person_workspace::read_on::<Region>(workspaces, &own, REGION)
+        .await
+        .expect("the resource reads");
+    assert_eq!(region.time_format, "H24");
+    assert!(
+        !holds_folder(dir.path(), "people"),
+        "the server keeps no store of people beside its workspaces"
+    );
+
+    // Bo, another member of the workspace they share, reads none of it and keeps nothing here:
+    // this server is not his.
+    for (action, argument) in [
+        (formats::READ, json!({})),
+        (formats::SET, json!({"formats": {"time_format": "H12"}})),
+    ] {
+        let refused = ask(&service, workspace_id, (&bo, &as_bo), action, argument).await;
+        assert!(
+            matches!(&refused, Err(ActionCallError::Refused { .. })),
+            "{action}: {refused:?}"
+        );
+    }
+    assert_eq!(workspaces.region(&bo.user_public_key).await, None);
     let (formats, _) = workspaces
-        .person_region(&ada.user_public_key)
+        .region(&ada.user_public_key)
+        .await
         .expect("Ada's are kept");
     assert_eq!(formats.time, tilo_formats::TimeStyle::H24);
     assert_eq!(formats.date, tilo_formats::DateStyle::Eu);
-    let (formats, _) = workspaces.person_region(&bo.user_public_key).unwrap();
-    assert_eq!(formats.time, tilo_formats::TimeStyle::H12);
 
     // No agent reaches them, whoever it acts for, and neither does Ada on Bo's device.
     let not_her = [
@@ -120,7 +137,7 @@ async fn a_persons_formats_are_kept_for_them_alone() {
             &service,
             workspace_id,
             (&ada, asking),
-            person_formats::SET,
+            formats::SET,
             json!({"formats": {"time_format": "H12"}}),
         )
         .await;
@@ -133,7 +150,7 @@ async fn a_persons_formats_are_kept_for_them_alone() {
         &service,
         workspace_id,
         (&bo, &as_ada),
-        person_formats::READ,
+        formats::READ,
         json!({}),
     )
     .await;
@@ -141,22 +158,22 @@ async fn a_persons_formats_are_kept_for_them_alone() {
         matches!(refused, Err(ActionCallError::UnknownAction)),
         "{refused:?}"
     );
-    let (formats, _) = workspaces.person_region(&ada.user_public_key).unwrap();
+    let (formats, _) = workspaces.region(&ada.user_public_key).await.unwrap();
     assert_eq!(formats.time, tilo_formats::TimeStyle::H24, "still hers");
 }
 
 #[tokio::test]
 async fn the_browsers_zone_is_taken_until_the_person_chooses_one() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
+    let (key, ada) = governor();
+    let server = test_host(dir.path(), &key, &ada).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, service) = governed(workspaces).await;
-    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let (_, workspace_id, service) = governed(workspaces).await;
     let as_ada = caller(&ada);
-    let zone = || {
+    let zone = || async {
         workspaces
-            .person_region(&ada.user_public_key)
+            .region(&ada.user_public_key)
+            .await
             .and_then(|(_, zone)| zone)
     };
     let tell = |zone: &'static str| {
@@ -164,7 +181,7 @@ async fn the_browsers_zone_is_taken_until_the_person_chooses_one() {
             &service,
             workspace_id,
             (&ada, &as_ada),
-            person_formats::BROWSER_ZONE,
+            formats::BROWSER_ZONE,
             json!({"zone": zone}),
         )
     };
@@ -173,16 +190,16 @@ async fn the_browsers_zone_is_taken_until_the_person_chooses_one() {
             &service,
             workspace_id,
             (&ada, &as_ada),
-            person_formats::CHOOSE_ZONE,
+            formats::CHOOSE_ZONE,
             json!({"zone": zone}),
         )
     };
 
-    assert_eq!(zone(), None, "no zone before her page says");
+    assert_eq!(zone().await, None, "no zone before her page says");
     tell("Pacific/Auckland")
         .await
         .expect("her page says where its browser is");
-    assert_eq!(zone().as_deref(), Some("Pacific/Auckland"));
+    assert_eq!(zone().await.as_deref(), Some("Pacific/Auckland"));
 
     // A zone she chose wins, whatever her browser says after.
     let chosen = choose(json!("Europe/Vienna"))
@@ -191,21 +208,21 @@ async fn the_browsers_zone_is_taken_until_the_person_chooses_one() {
     assert_eq!(chosen["chosenZone"], "Europe/Vienna");
     assert_eq!(chosen["browserZone"], "Pacific/Auckland");
     tell("America/New_York").await.unwrap();
-    assert_eq!(zone().as_deref(), Some("Europe/Vienna"));
+    assert_eq!(zone().await.as_deref(), Some("Europe/Vienna"));
 
     // Given back, the browser's is taken again.
     choose(Value::Null)
         .await
         .expect("she follows her browser again");
-    assert_eq!(zone().as_deref(), Some("America/New_York"));
+    assert_eq!(zone().await.as_deref(), Some("America/New_York"));
 
     // Only a zone's name is kept as a zone.
     for not_a_zone in ["../../etc/passwd", "", "Somewhere far"] {
         let refused = tell(not_a_zone).await;
         assert!(
-            matches!(refused, Err(ActionCallError::InvalidRequest { .. })),
+            matches!(refused, Err(ActionCallError::Refused { .. })),
             "{not_a_zone:?}: {refused:?}"
         );
     }
-    assert_eq!(zone().as_deref(), Some("America/New_York"));
+    assert_eq!(zone().await.as_deref(), Some("America/New_York"));
 }

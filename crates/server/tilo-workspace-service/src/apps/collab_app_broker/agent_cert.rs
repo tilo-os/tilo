@@ -1,5 +1,7 @@
-//! Agents in the broker: a join admitted by the agent certificate a device of the agent's person
-//! signed, or as the agent the workspace keeps for that person, checked again on every
+//! Agents in the broker: a join admitted by the agent certificate a member's device signed, or
+//! on a member's own session, for an agent the workspace's record lists. The agents are the
+//! workspace's: any member's admitted device is a runner for one, and the agent acts for that
+//! member, capped, so the workspace's grants decide what it does. Checked again on every
 //! revalidation, with whether the agent session it works in still goes.
 
 use super::{
@@ -120,8 +122,7 @@ impl AppBrokerState {
     }
 
     /// The agent session `cert` names, while it goes in `workspace`: the
-    /// workspace lists its agent, kept by the person whose device signed it,
-    /// and the session's connection lasts.
+    /// workspace lists its agent, and the session's connection lasts.
     pub(super) fn agent_session_goes(
         &self,
         workspace: &str,
@@ -167,7 +168,8 @@ impl AppBrokerState {
             .agents
             .as_deref()
             .ok_or("this host reads no workspace's agents")?
-            .keeper(workspace, agent)
+            .lists(workspace, agent)
+            .then_some(())
             .ok_or_else(|| format!("the workspace lists no agent {agent}"))?;
         self.services
             .agent_sessions
@@ -187,34 +189,27 @@ impl AppBrokerState {
     }
 
     /// Whether the workspace's record of its agents lists the agent `cert`
-    /// names, kept by the person whose device signed it.
+    /// names. The member whose admitted device signed it runs it for them.
     fn agent_listed(&self, workspace: &str, cert: &AgentCert) -> Result<(), String> {
         let roster = self
             .services
             .agents
             .as_deref()
             .ok_or("this host reads no workspace's agents")?;
-        let keeper = roster
-            .keeper(workspace, &cert.agent_id)
-            .ok_or_else(|| format!("the workspace lists no agent {}", cert.agent_id))?;
-        let person = tilo_broker_core::person_id_for_root(cert.user_public_key);
-        if keeper != person {
-            return Err(format!(
-                "the agent {} is {keeper}'s, not this device's person's",
-                cert.agent_id
-            ));
+        if !roster.lists(workspace, &cert.agent_id) {
+            return Err(format!("the workspace lists no agent {}", cert.agent_id));
         }
         Ok(())
     }
 }
 
-/// Admit agent `agent_id`, kept in `workspace`, to join on the session of the
-/// person who keeps it. The workspace's record of its agents is the whole
-/// admission: no membership row and no grant is asked for, and the agent acts
-/// for its keeper, capped ([`roles::agent_policy::ROLE_CAP`]), inside the
-/// turns its conversations start. A record that no longer names it, or names
-/// another keeper, refuses the join and every later revalidation of it.
-pub(super) fn admit_kept_agent(
+/// Admit agent `agent_id`, listed in `workspace`, to join on the session of a
+/// member running it. The workspace's record of its agents and the member's own
+/// admission are the whole of it: the agent acts for that member, capped
+/// ([`roles::agent_policy::ROLE_CAP`]), inside the turns its conversations
+/// start, so the workspace's grants decide what it does. A record that no
+/// longer lists it refuses the join and every later revalidation of it.
+pub(super) fn admit_listed_agent(
     roster: &dyn crate::apps::services::AgentRoster,
     workspace: &str,
     admitted: &mut AdmittedJoinIdentity,
@@ -223,16 +218,11 @@ pub(super) fn admit_kept_agent(
     tilo_peer_state::workspace_membership::valid_agent_id(agent_id)?;
     if admitted.verified.capped {
         return Err(format!(
-            "the agent {agent_id} runs only on a device of the session that keeps it"
+            "the agent {agent_id} runs only on a member's own device, not on one the workspace caps"
         ));
     }
-    let keeper = roster
-        .keeper(workspace, agent_id)
-        .ok_or_else(|| format!("the workspace keeps no active agent {agent_id}"))?;
-    if keeper != admitted.actor_key {
-        return Err(format!(
-            "the agent {agent_id} is {keeper}'s to launch, not this session's"
-        ));
+    if !roster.lists(workspace, agent_id) {
+        return Err(format!("the workspace keeps no active agent {agent_id}"));
     }
     admitted.role = roles::agent_policy::role(admitted.role, roles::agent_policy::ROLE_CAP);
     admitted.agent_id = Some(agent_id.to_string());

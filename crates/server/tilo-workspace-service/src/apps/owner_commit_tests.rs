@@ -326,7 +326,6 @@ mod owner_commit_tests {
                             app: fixture.route.app_id.clone(),
                             document: fixture.route.document_id.clone(),
                             envelope: Box::new(owner_snapshot(&fixture)),
-                            own: None,
                             readers: None,
                         },
                     };
@@ -378,7 +377,6 @@ mod owner_commit_tests {
                         app: fixture.route.app_id.clone(),
                         document: fixture.route.document_id.clone(),
                         envelope: Box::new(owner_snapshot(&fixture)),
-                        own: None,
                         readers: None,
                     },
                 };
@@ -1242,14 +1240,14 @@ mod owner_commit_tests {
         };
         let actions = broker.app_action_broker().unwrap();
         let job = start(
-                actions.state(),
-                surface.peer_id,
-                &action.resource,
-                &action.action,
-                Some("Added through the broker"),
-                &actor,
-            )
-            .unwrap();
+            actions.state(),
+            surface.peer_id,
+            &action.resource,
+            &action.action,
+            Some("Added through the broker"),
+            &actor,
+        )
+        .unwrap();
         loop {
             scene.reset();
             app.surface_frame(&HeadlessSurface, &mut scene);
@@ -1412,7 +1410,6 @@ mod owner_commit_tests {
                     app: f.route.app_id.clone(),
                     document: f.route.document_id.clone(),
                     envelope: Box::new(owner_snapshot(&f)),
-                    own: None,
                     readers: None,
                 },
             };

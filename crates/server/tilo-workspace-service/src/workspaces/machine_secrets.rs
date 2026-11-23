@@ -8,7 +8,7 @@
 //! from that document as this server holds it ([`super::vault`]), an item the vault does not
 //! hold is refused, and nothing is read from anywhere else.
 
-use accounts::vault_items::{ItemId, UsedFor};
+use accounts::vault_items::{ItemError, ItemId, UsedFor};
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::environment_commands::VmSecret;
 use tilo_actions::remote::person_vault::ItemRef;
@@ -20,9 +20,6 @@ use super::Workspaces;
 
 /// What a use of an item for the machine is written down as.
 const USING: &str = "tilo.terminal/machine-secret";
-
-/// The words for an item the workspace's vault does not hold.
-pub const NOT_KEPT: &str = "That item is not kept here";
 
 impl Workspaces {
     /// The variables a program `by` starts in `workspace`'s machine gets, each with its secret:
@@ -48,7 +45,8 @@ impl Workspaces {
         let named = MachineSecrets::read(&doc).map_err(|error| error.to_string())?;
         let mut secrets = Vec::with_capacity(named.secrets.len());
         for secret in named.secrets {
-            let item = ItemRef::parse(&secret.item).ok_or(NOT_KEPT)?;
+            let item =
+                ItemRef::parse(&secret.item).ok_or_else(|| ItemError::NotFound.to_string())?;
             let value = self
                 .workspace_secret(workspace, &item, by, &secret.variable)
                 .await?;
@@ -78,13 +76,13 @@ impl Workspaces {
             .policy_of(workspace)
             .await
             .ok_or("this server does not hold that workspace")?;
-        if !super::vault::may_read_vault(&policy, workspace, by, None) {
+        if !super::vault::may_read_vault(&policy, workspace, by) {
             return Err(
                 "Whoever started this may not read the workspace's vault, so its secrets stay in it"
                     .to_owned(),
             );
         }
-        let id = ItemId::parse(item.id()).ok_or(NOT_KEPT)?;
+        let id = ItemId::parse(item.id()).ok_or_else(|| ItemError::NotFound.to_string())?;
         let by_name = by
             .agent_called()
             .map_or_else(String::new, ToOwned::to_owned);
@@ -96,7 +94,7 @@ impl Workspaces {
                 .facts()
                 .into_iter()
                 .find(|facts| facts.id == id)
-                .ok_or(accounts::vault_items::ItemError::NotFound)?;
+                .ok_or(ItemError::NotFound)?;
             items.use_for(
                 &id,
                 facts.kind,
@@ -111,12 +109,5 @@ impl Workspaces {
         })
         .await
         .map(|released| released.secret)
-        .map_err(|error| {
-            if error == accounts::vault_items::ItemError::NotFound.to_string() {
-                NOT_KEPT.to_owned()
-            } else {
-                error
-            }
-        })
     }
 }

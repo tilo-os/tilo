@@ -44,7 +44,6 @@ use wire_frame::{FrameError, Framing};
 pub mod client;
 pub mod files;
 pub mod link;
-pub mod served;
 #[cfg(target_os = "linux")]
 pub mod vsock;
 pub mod waypipe;
@@ -515,7 +514,7 @@ mod tests {
                         read_only: false,
                     }],
                 },
-                HostMessage::LaunchServingAgents(launch(&["claude"])),
+                HostMessage::LaunchServingAgents(launch(&["agent"])),
                 HostMessage::AgentBytes {
                     connection: 3,
                     bytes: b"{}\n".to_vec(),

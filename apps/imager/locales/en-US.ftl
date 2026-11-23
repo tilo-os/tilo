@@ -776,10 +776,6 @@ installer-preview-password-hint = Use at least 15 characters, ideally several un
 
 installer-preview-connect-heading = Bring your Tilo identity
 
-installer-preview-device-title = Use another Tilo device
-
-installer-preview-device-body = Confirm the connection on a device you already use.
-
 installer-preview-backup-title = Restore an identity backup
 
 installer-preview-backup-body = Use your encrypted backup and its passphrase.
@@ -1663,33 +1659,6 @@ installer-accounts-tilo-changed = This saved connection has changed since you re
 
 installer-accounts-already-included = This connection is already included in your setup.
 
-installer-pairing-body = Open Tilo on your other device to approve this computer.
-
-installer-pairing-start = Connect to my Tilo device
-
-installer-pairing-cancel = Cancel pairing
-
-installer-pairing-cancelled = Pairing stopped here. If you already approved this device, it may still appear on your other device.
-
-installer-pairing-failed = We couldn’t connect this device. Try again or use your identity backup.
-
-installer-pairing-busy = Pairing is already in progress.
-
-installer-pairing-helper-unavailable = This installer cannot connect to another Tilo device. Use your identity backup or a supported native Linux installer.
-installer-pairing-component-missing = A required component for connecting to another device is missing or unsafe. Download the complete installer again, or use your identity backup.
-
-installer-pairing-label-locked = This device name was approved by your other Tilo device and cannot be changed here.
-
-installer-pairing-name-body = Choose the name your other Tilo device will see when you connect this computer.
-
-installer-pairing-name-heading = What will you call this computer?
-
-installer-pairing-not-running = Pairing is not running on this computer.
-
-installer-pairing-code-intro = Open Tilo on your other device. Check that it shows this same code before approving this computer.
-
-installer-pairing-code-pending = Getting a code to connect this computer…
-
 installer-restart-heading = Welcome back
 
 installer-restart-intro = Your unfinished preparation is still here. Would you like to continue?
@@ -2107,6 +2076,8 @@ installer-preview-current-body = Continue with the Tilo identity already used on
 installer-current-identity-unavailable = This computer’s identity is unavailable. Choose another way to connect.
 
 installer-current-device-name-locked = Keep this computer’s existing device name.
+
+installer-device-name-set-by-identity = This name came with your identity and cannot be changed here.
 
 installer-review-device-current = This computer’s existing name
 
@@ -2775,7 +2746,6 @@ imager-installer-preview-select-preview-avatar = Use a granted avatar file
 imager-installer-preview-choose-existing-identity-backup = Choose an identity backup
 imager-installer-preview-select-existing-identity-backup = Use a granted backup file
 imager-installer-preview-set-existing-identity-password = Enter the backup passphrase
-imager-installer-preview-start-existing-device-pairing = Pair with an existing device
 imager-installer-preview-choose-preview = Choose an option
 imager-installer-preview-choose-and-continue-preview = Choose and continue
 imager-installer-preview-set-preview-name = Set your display name

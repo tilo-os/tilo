@@ -58,7 +58,7 @@ impl Workspaces {
                 },
             )?
         };
-        let CommitOperation::Document { envelope, own, .. } = &mut request.operation else {
+        let CommitOperation::Document { envelope, .. } = &mut request.operation else {
             return Err(WriteRefusal::Refused(
                 "a local write is a document write".to_owned(),
             ));
@@ -67,7 +67,7 @@ impl Workspaces {
         let signing = crate::timing::start();
         sign_op(envelope, &*device.signer)
             .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
-        let (envelope, own) = ((**envelope).clone(), own.clone());
+        let envelope = (**envelope).clone();
         crate::timing::event("own_write.sign", signing, 0);
         let committing = crate::timing::start();
         crate::timing::said_if_long(
@@ -85,7 +85,6 @@ impl Workspaces {
             author,
             replayed: false,
             envelope,
-            own,
         })
     }
 }

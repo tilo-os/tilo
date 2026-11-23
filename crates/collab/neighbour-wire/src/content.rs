@@ -198,6 +198,13 @@ impl<T> Want<T> {
         patience_ms(self.reasks)
     }
 
+    /// Whether the want went unanswered past [`WANT_TTL_MS`] at `now_ms`:
+    /// neither a piece nor word that a device lacks it arrived, so the ask or
+    /// its answer was lost on the way.
+    fn lapsed(&self, now_ms: u64) -> bool {
+        !self.lacked && !self.woken && now_ms.saturating_sub(self.asked_ms) >= WANT_TTL_MS
+    }
+
     /// Whether the want waits for what was lacking to follow: a device said
     /// it keeps none and nothing of it arrived.
     fn waits_for_holder(&self) -> bool {
@@ -251,6 +258,25 @@ impl<T> ContentWants<T> {
             wants: BTreeMap::new(),
             room: room.max(1),
         }
+    }
+
+    /// Whether one more request fits without the oldest going: an asker that
+    /// must not lose a request it made asks for more only while this holds.
+    #[must_use]
+    pub fn has_room(&self) -> bool {
+        self.wants.len() < self.room
+    }
+
+    /// Take the requests that went unanswered past [`WANT_TTL_MS`] at
+    /// `now_ms`, their tags: the ask or its answer was lost on the way, and
+    /// [`Self::reask`] drops them too, so an asker that still needs the
+    /// content asks afresh.
+    pub fn lapsed(&mut self, now_ms: u64) -> Vec<T> {
+        let (lapsed, open): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut self.wants)
+            .into_iter()
+            .partition(|(_, want)| want.lapsed(now_ms) && !want.whole());
+        self.wants = open;
+        lapsed.into_values().map(|want| want.tag).collect()
     }
 
     /// The request device `device` sends on the workspace's presence for content
@@ -400,10 +426,8 @@ impl<T> ContentWants<T> {
     where
         T: Clone,
     {
-        self.wants.retain(|_, want| {
-            (want.lacked || want.woken || now_ms.saturating_sub(want.asked_ms) < WANT_TTL_MS)
-                && !want.whole()
-        });
+        self.wants
+            .retain(|_, want| !want.lapsed(now_ms) && !want.whole());
         let mut asks = Vec::new();
         for (hash, want) in &mut self.wants {
             if asks.len() >= limit {
@@ -984,6 +1008,52 @@ mod tests {
             arrived,
             Some(bytes),
             "what was owed still finds its request"
+        );
+    }
+
+    /// An ask whose answer was lost hands its request back once it lapses, so the asker that
+    /// still needs the content asks afresh; content a device said it lacks waits for that device
+    /// instead, and an asker short of room asks for no more than it keeps open.
+    #[test]
+    fn an_unanswered_request_lapses_back_to_its_asker() {
+        let (host, member) = ([1; 32], [2; 32]);
+        let workspace = ("so.tilo.files", "workspace");
+        let mut wants = ContentWants::with_room(3);
+        let hash = |name: &str| blake3::hash(name.as_bytes()).to_hex().to_string();
+        let now_ms = 1_000;
+        wants
+            .ask(&host, "lost", workspace, &hash("lost"), now_ms)
+            .unwrap();
+        let owed = wants
+            .ask(&host, "owed", workspace, &hash("owed"), now_ms)
+            .unwrap();
+        assert!(wants.lacks(&host, &answer(&member, &host, &owed, |_, _, _| None)[0]));
+        assert!(wants.has_room(), "two of three requests open");
+        wants
+            .ask(&host, "late", workspace, &hash("late"), now_ms + 30_000)
+            .unwrap();
+        assert!(!wants.has_room(), "three of three requests open");
+        assert!(
+            wants.lapsed(now_ms + WANT_TTL_MS - 1).is_empty(),
+            "nothing lapses within {WANT_TTL_MS} ms"
+        );
+        assert_eq!(
+            wants.lapsed(now_ms + WANT_TTL_MS),
+            ["lost"],
+            "only the request nothing answered lapses"
+        );
+        assert!(wants.has_room(), "a lapsed request leaves room");
+        assert!(
+            wants
+                .ask(
+                    &host,
+                    "lost",
+                    workspace,
+                    &hash("lost"),
+                    now_ms + WANT_TTL_MS
+                )
+                .is_some(),
+            "and is asked afresh"
         );
     }
 

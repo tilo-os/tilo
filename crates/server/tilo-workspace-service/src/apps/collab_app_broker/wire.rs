@@ -389,11 +389,6 @@ impl JoinedChannel {
                             app: route.app_id.clone(),
                             document: route.document_id.clone(),
                             envelope: Box::new(envelope),
-                            own: collab_types::OwnResource::recognise(
-                                &route.app_id,
-                                &route.document_id,
-                                current_identity.verified.user_public_key,
-                            ),
                             readers: None,
                         },
                     },

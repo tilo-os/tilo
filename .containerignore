@@ -41,7 +41,6 @@ host-components/
 # context.
 bin/tilo-relay
 bin/tilo-relay-admin
-bin/tilo-enroll
 bin/fs
 bin/tilo-api
 bin/tilo-linux-vm

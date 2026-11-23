@@ -212,11 +212,7 @@ async fn a_hosted_agent_answers_the_message_that_mentions_it() {
     assert_eq!(answered.len(), 1, "{answered:?}");
     let ask = &answered[0];
     assert_eq!(ask.state, AskState::Done, "{ask:?}");
-    let lease = format!(
-        "ask/{}/{}",
-        asks::chat_packages().unwrap().app(),
-        ask.at.id_string()
-    );
+    let lease = format!("ask/{}", ask.at.id_string());
     assert_eq!(
         workspaces.lease_holder(&workspace, &lease).await.unwrap(),
         Some(workspaces.governor().device_public_key),
@@ -634,6 +630,19 @@ async fn a_hosted_turn_keeps_what_its_keeper_tells_it_only_where_nobody_else_rea
         "remember: Takes her coffee black.",
     )
     .await;
+    let waiting = asked(&workspaces, &workspace, &person).await;
+    assert_eq!(
+        waiting.len(),
+        1,
+        "writing to Scout asked it once: {waiting:?}"
+    );
+    assert_eq!(waiting[0].agent, MemberId::agent(SCOUT));
+    assert_eq!(waiting[0].state, AskState::Waiting);
+    assert_eq!(
+        waiting[0].who,
+        Some(asks::Actor::Member(MemberId::person(person.clone()))),
+        "she asked it: {waiting:?}"
+    );
     let turn = answered_one(&agents, &workspace).await;
     assert!(
         matches!(turn.ask, Ask::Asked { private: true, .. }),

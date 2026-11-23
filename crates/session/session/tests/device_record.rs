@@ -90,7 +90,11 @@ fn a_browser_approved_on_the_web_is_in_the_desktop_s_settings_list() {
         &tilo_device_identity::IdentityPaths::under(directory.path()),
         "This browser",
     );
-    site.workspaces.keep_issued_device(&browser, "");
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime")
+        .block_on(site.workspaces.keep_issued_device(&browser, ""));
 
     // The desktop lists it, though its own fleet never saw the key: the list
     // is the person's record, which the host keeps for all their devices.

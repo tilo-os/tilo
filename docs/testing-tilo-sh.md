@@ -207,10 +207,10 @@ stack:
 - **Python SDK:** `Tilo()` reads `TILO_API_URL` and `TILO_API_KEY`, e.g.
   `uv run --project sdk/python python sdk/python/examples/visa_proof.py`.
 - **TypeScript SDK:** `new Tilo()` reads the same two variables.
-- **An agent's MCP client:** `claude mcp add --transport http tilo-local
-  http://localhost:24110/mcp`. For a one-workspace key use
-  `http://localhost:24110/w/<workspace>/mcp` with `--header "Authorization:
-  Bearer <token>"`.
+- **An agent's MCP client:** the streamable HTTP server
+  `http://localhost:24110/mcp`. For a one-workspace key use
+  `http://localhost:24110/w/<workspace>/mcp` with the header `Authorization:
+  Bearer <token>`.
 - **Discord:** with `--discord`, the fake's control port at
   `http://127.0.0.1:24142` posts and reads as Discord's users do.
 

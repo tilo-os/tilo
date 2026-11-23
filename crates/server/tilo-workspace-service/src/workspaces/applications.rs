@@ -220,6 +220,24 @@ impl Workspaces {
         Ok(result)
     }
 
+    /// Current access of a bot device, as every other device decides its signed writes.
+    ///
+    /// # Errors
+    /// The workspace does not admit the device.
+    pub async fn bot_access(
+        &self,
+        workspace: &str,
+        device: [u8; 32],
+    ) -> Result<tilo_action_policy::MemberAccess, CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        state
+            .lock()
+            .await
+            .peer()
+            .permissions(device, tilo_clock::wall())
+            .map_err(|error| CollaborationError::new(error.to_string()))
+    }
+
     /// Publish the changes a bot's run made to a native record (`""` for
     /// the primary), signed by the bot's own device `bot`, which this
     /// governor holds for a bot it installed. Every member admits them as

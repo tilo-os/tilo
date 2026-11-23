@@ -1,4 +1,5 @@
 use super::*;
+use accounts::AccountId;
 use test_http::{Reply, Responder};
 
 fn run<T>(future: impl Future<Output = T>) -> T {
@@ -84,13 +85,10 @@ fn calendar_only_google_grant_uses_canonical_provider_and_enabled_state() {
         .unwrap();
     let trusted = Responder::start(vec![Reply::status(204)]);
     let service = Service::for_test_origin(credential_store, &trusted.url()).unwrap();
-    let mut store = AccountStore::new();
     let mut account = accounts::Account::new(id.clone(), "caldav");
     account.config = serde_json::json!({"calendar_provider": "google"});
-    store.upsert(account);
-    store.save_in(root.path()).unwrap();
     let client = service
-        .authorised(Some(id.as_str()), &trusted.url(), "", "", "/")
+        .authorised(Some(&account), &trusted.url(), "", "", "/")
         .unwrap();
     run(async {
         assert_eq!(
@@ -118,17 +116,17 @@ fn calendar_only_google_grant_uses_canonical_provider_and_enabled_state() {
         let mut account = accounts::Account::new(id.clone(), type_id);
         account.config = serde_json::json!({"calendar_provider": provider});
         account.enabled = enabled;
-        store.upsert(account);
-        store.save_in(root.path()).unwrap();
         let error = service
-            .authorised(Some(id.as_str()), &trusted.url(), "", "", "/")
+            .authorised(Some(&account), &trusted.url(), "", "", "/")
             .err()
             .unwrap();
         assert!(
             error.contains(expected),
             "{type_id}/{provider}/{enabled}: {error}"
         );
-        let error = service.discover(&id, &trusted.url(), "", true).unwrap_err();
+        let error = service
+            .discover(&account, &trusted.url(), "", true)
+            .unwrap_err();
         assert!(
             error.contains(expected),
             "{type_id}/{provider}/{enabled}: {error}"
@@ -158,26 +156,27 @@ fn production_google_never_accepts_alternate_origin_or_endpoint() {
     let root = tempfile::tempdir().unwrap();
     let service = Service::new(CredentialStore::for_root(Some(root.path().to_owned())));
     let attacker = Responder::silent();
+    let google = accounts::Account::new(AccountId::from("google"), cloud_types::GOOGLE_DRIVE);
     for server in [
         attacker.url(),
         "https://apidata.googleusercontent.com/not-caldav".into(),
         "http://apidata.googleusercontent.com/caldav/v2/".into(),
     ] {
         let error = service
-            .authorised(Some("google"), &server, "", "", &server)
+            .authorised(Some(&google), &server, "", "", &server)
             .err()
             .unwrap();
         assert!(error.contains("Google CalDAV v2"), "{error}");
         assert!(
             service
-                .discover(&AccountId::from("google"), &server, "", true)
+                .discover(&google, &server, "", true)
                 .unwrap_err()
                 .contains("Google CalDAV v2")
         );
     }
     assert!(
         service
-            .authorised(Some("google"), GOOGLE_SERVER, "", "", &attacker.url())
+            .authorised(Some(&google), GOOGLE_SERVER, "", "", &attacker.url())
             .is_err()
     );
     attacker.assert_untouched();
@@ -188,9 +187,6 @@ fn discovery_reuses_adopted_nextcloud_password_and_follows_server_identity() {
     let root = tempfile::tempdir().unwrap();
     let id = AccountId::from("nextcloud");
     let account = accounts::Account::new(id.clone(), cloud_types::NEXTCLOUD);
-    let mut store = AccountStore::new();
-    store.upsert(account.clone());
-    store.save_in(root.path()).unwrap();
     let mut vault = SecretVault::open_in(root.path());
     vault.put(
         &id,
@@ -209,7 +205,7 @@ fn discovery_reuses_adopted_nextcloud_password_and_follows_server_identity() {
     ]);
     let service = Service::new(CredentialStore::for_root(Some(root.path().to_owned())));
     let collections = service
-        .discover(&id, &format!("{}/dav/", server.url()), "login", false)
+        .discover(&account, &format!("{}/dav/", server.url()), "login", false)
         .unwrap();
     assert_eq!(collections.len(), 1);
     assert_eq!(collections[0].name, "Team");
@@ -263,12 +259,7 @@ fn fixture_bearer_is_bound_and_requires_canonical_google_calendar_grant() {
     let credential_store = CredentialStore::for_root(Some(root.path().to_owned()))
         .with_issuer_endpoints(OAuthIssuer::Google, provider);
     let id = AccountId::from("google");
-    let mut store = AccountStore::new();
-    store.upsert(accounts::Account::new(
-        id.clone(),
-        cloud_types::GOOGLE_DRIVE,
-    ));
-    store.save_in(root.path()).unwrap();
+    let google = accounts::Account::new(id.clone(), cloud_types::GOOGLE_DRIVE);
     credential_store
         .seal_oauth(
             &id,
@@ -286,11 +277,11 @@ fn fixture_bearer_is_bound_and_requires_canonical_google_calendar_grant() {
     let service = Service::for_test_origin(credential_store.clone(), &trusted.url()).unwrap();
     assert!(
         service
-            .authorised(Some(id.as_str()), &attacker.url(), "", "", "/")
+            .authorised(Some(&google), &attacker.url(), "", "", "/")
             .is_err()
     );
     let client = service
-        .authorised(Some(id.as_str()), &trusted.url(), "", "", "/")
+        .authorised(Some(&google), &trusted.url(), "", "", "/")
         .unwrap();
     run(async {
         assert!(
@@ -327,16 +318,15 @@ fn fixture_bearer_is_bound_and_requires_canonical_google_calendar_grant() {
         .unwrap();
     assert!(
         service
-            .authorised(Some(id.as_str()), &trusted.url(), "", "", "/")
+            .authorised(Some(&google), &trusted.url(), "", "", "/")
             .err()
             .unwrap()
             .contains("no calendar grant")
     );
-    store.upsert(accounts::Account::new(id.clone(), cloud_types::DROPBOX));
-    store.save_in(root.path()).unwrap();
+    let dropbox = accounts::Account::new(id, cloud_types::DROPBOX);
     assert!(
         service
-            .authorised(Some(id.as_str()), &trusted.url(), "", "", "/")
+            .authorised(Some(&dropbox), &trusted.url(), "", "", "/")
             .err()
             .unwrap()
             .contains("account type")

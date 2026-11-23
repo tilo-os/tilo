@@ -4,7 +4,6 @@ use anyhow::{Context, bail};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use tilo_device_identity::IdentityPaths;
 use tilo_identity::device_fleet::DeviceFleetStore;
-use tilo_server_protocol::HomePeerRegistration;
 use tilo_user_identity::DeviceCert;
 use tilo_user_identity::canonical::signing_digest;
 
@@ -75,28 +74,17 @@ pub fn fleet_store(
     }
 }
 
-/// This device and the person's other personal devices, leaving out a device
-/// the home-peer registry names: a home peer is reached through that registry,
-/// not as one of the person's personal devices.
+/// This device and the person's other devices, servers among them: each is a
+/// device of theirs.
 #[must_use]
 pub fn personal_devices_of(
     device_public_key: [u8; 32],
     user_public_key: [u8; 32],
     fleet: &tilo_identity::device_fleet::DeviceFleet,
-    home_peers: &[HomePeerRegistration],
     now_ns: u64,
 ) -> Vec<[u8; 32]> {
-    let home_peers: Vec<[u8; 32]> = home_peers
-        .iter()
-        .filter_map(|peer| hex::decode(&peer.device_node_id).ok()?.try_into().ok())
-        .collect();
     let mut devices = vec![device_public_key];
-    devices.extend(
-        fleet
-            .personal_devices(&user_public_key, now_ns)
-            .into_iter()
-            .filter(|device| !home_peers.contains(device)),
-    );
+    devices.extend(fleet.personal_devices(&user_public_key, now_ns));
     devices
 }
 
@@ -181,23 +169,6 @@ pub fn share_directory_like_parent(directory: &std::path::Path) -> anyhow::Resul
         }
     }
     Ok(())
-}
-
-/// This identity's home peers, checked, as an approval hands them to a
-/// joining device: the registry holds every identity's routes.
-pub fn bounded_home_peer_registry(
-    identity_root: &std::path::Path,
-    user: [u8; 32],
-) -> anyhow::Result<Vec<u8>> {
-    let peers = tilo_server_protocol::read_home_peers(
-        &tilo_server_protocol::home_peer_registry_path(identity_root),
-    )?;
-    Ok(serde_json::to_vec_pretty(
-        &peers
-            .into_iter()
-            .filter(|entry| entry.user_public_key == hex::encode(user))
-            .collect::<Vec<_>>(),
-    )?)
 }
 
 /// A public-only runtime identity file for `user`: what a joining device is
@@ -361,7 +332,7 @@ pub fn valid_solicitation(solicitation: &PairSolicitation) -> bool {
     solicitation.magic == PAIR_MAGIC
         && VerifyingKey::from_bytes(&solicitation.device_public_key).is_ok()
         && solicitation.server_node_id != [0; 32]
-        && tilo_server_protocol::valid_home_peer_label(&solicitation.label)
+        && tilo_server_protocol::valid_device_label(&solicitation.label)
         && solicitation.hardware.len() <= 200
         && !solicitation.hardware.chars().any(char::is_control)
 }

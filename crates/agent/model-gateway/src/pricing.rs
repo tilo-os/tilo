@@ -1,7 +1,7 @@
 //! What a provider's answer costs.
 //!
 //! A person's agents plan with a model whose provider bills per token, and a
-//! keeper bounds what an agent may spend in a day. Bounding it needs a price
+//! workspace bounds what an agent may spend in a day. Bounding it needs a price
 //! for every call, so the trusted gateway prices each answer here, as list
 //! prices in millionths of the currency per million tokens: an exact integer,
 //! never a rounded estimate. The gateway's own log records the same figure
@@ -386,7 +386,7 @@ mod tests {
             "deepseek-chat",
         ] {
             assert!(listed_price_of(guessed).is_none(), "{guessed}");
-            // What a keeper's bound counts by stays as it was.
+            // What an agent's bound counts by stays as it was.
             assert!(price_of(guessed).is_some(), "{guessed}");
         }
         assert!(listed_price_of("my-local-model").is_none());

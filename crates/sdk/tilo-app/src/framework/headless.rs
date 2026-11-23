@@ -419,15 +419,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .unwrap_or_default()
     }
 
-    /// The person's own record of `P` the running app keeps, as its views
-    /// open it.
-    #[cfg(feature = "test-support")]
-    pub fn person<P: Resource>(&mut self) -> Option<super::PersonResource<P>> {
-        self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot| root.storage.person::<P>())
-            .flatten()
-    }
-
     /// The record `P` every app of the workspace opens that `owner` keeps, as
     /// the app's views open it.
     pub fn shared_workspace<P: Resource>(
@@ -916,10 +907,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
             },
             beside,
             &mut |context| {
-                #[cfg(feature = "test-support")]
-                if let Some(records) = context.person_resources().cloned() {
-                    context.provide_person_resources(records.with_legacy_member_fixture());
-                }
                 if let Some(configure) = configure.take() {
                     configure(context);
                 }

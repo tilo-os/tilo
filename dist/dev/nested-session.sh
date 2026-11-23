@@ -106,8 +106,8 @@ done
 
 host_runtime=${XDG_RUNTIME_DIR:-}
 host_display=
-# --print-runtime starts nothing, so it asks for no display.
-if ((!headless && !print_runtime)); then
+# --print-runtime and --prepare-only start nothing, so they ask for no display.
+if ((!headless && !print_runtime && !prepare_only)); then
     [[ -n $host_runtime ]] || die "XDG_RUNTIME_DIR is unset"
     [[ -n ${WAYLAND_DISPLAY:-} ]] || die "run this from a Wayland desktop session (WAYLAND_DISPLAY is unset), or pass --headless"
     case $WAYLAND_DISPLAY in
@@ -829,9 +829,10 @@ if [[ -d /var/workspace ]] && { [[ $(id -u) == 0 ]] || [[ -w /var/workspace ]]; 
     chmod 700 "$files_mount" 2>/dev/null || true
 fi
 say "the session's workspace mounts at $files_mount"
-# This build's daemon, mounting this session's workspace: no capability list yet (the session
-# publishes the person's own as its apps are granted), so the device acts as itself. Its
-# authority and content sockets live in /run/tilo on a Tilo machine, which the image's tmpfiles
+# This build's daemon, mounting this session's workspace with the capability list a device's
+# `fs.service` starts with: the shipped one, which grants the local person the whole workspace,
+# until the session tells the daemon its own and the daemon keeps that one here instead. The
+# workspace's file keys are given only as that list allows. Its authority and content sockets live in /run/tilo on a Tilo machine, which the image's tmpfiles
 # make; a desktop that is not Tilo has none, so they go in a private directory of this user's
 # whose path any socket fits (a socket path over 107 bytes is refused).
 if [[ ! -d /run/tilo ]] || [[ ! -w /run/tilo ]]; then
@@ -840,9 +841,12 @@ if [[ ! -d /run/tilo ]] || [[ ! -w /run/tilo ]]; then
 fi
 # One person's session: the mount is theirs alone, as the process harness takes it, so no
 # desktop's /etc/fuse.conf has to allow other users in.
+files_acl=$files_state/fs-capabilities.json
+[[ -f $files_acl ]] || cp "$repo_root/os/usr/share/tilo/fs-capabilities.json" "$files_acl"
 TILO_FS_FUSE_OWNER_ONLY=1 setsid "$bin/fs" serve --mount-point "$files_mount" --cache-dir "$files_state/cache" \
     --storage-sock "$runtime/tilo/files-storage/storage.sock" \
     --blob-sock "$files_runtime/fs-blobs.sock" \
+    --acl "$files_acl" --member person:local \
     --backend fuse > "$logs/files-workspace.log" 2>&1 &
 files_pid=$!
 children+=("$files_pid")

@@ -1,10 +1,10 @@
-//! Agents a person runs in their workspace's machine: `claude` typed in a hosted workspace's
-//! Terminal, as an agent of the workspace's own.
+//! Agents a person runs in their workspace's machine: an agent's command typed in a hosted
+//! workspace's Terminal, as an agent of the workspace's own.
 //!
 //! A program a Terminal session starts in the workspace's machine finds Tilo's MCP server at the
 //! machine's agent socket, as an environment's programs do on a device
-//! (`docs/app-model/environments.md`, "Coding agents"). Each connection one of its processes makes
-//! there reaches this server ([`ush::hosted_vm::MachineAgents`]), named by the workspace, the
+//! (`docs/app-model/environments.md`, "Agents in an environment"). Each connection one of its
+//! processes makes there reaches this server ([`ush::hosted_vm::MachineAgents`]), named by the workspace, the
 //! environment and the shell session it came from, and the program that made it.
 //!
 //! - **Who decides.** The person whose Terminal session started the program: the one whose `run`
@@ -13,12 +13,12 @@
 //!   session nobody is known to have started is refused before anyone is asked.
 //! - **The question.** It is put to the person's approving devices as any question of this
 //!   server's is ([`CertificationProtocol::confirm_for`]), naming the agent the connection would
-//!   be (`claude-code@dev#1`), the environment and the program. "Always allow" is remembered for
-//!   that person per environment, executable and client name, so allowing Claude Code once in
+//!   be (`reviewer@dev#1`), the environment and the program. "Always allow" is remembered for
+//!   that person per environment, executable and client name, so allowing Reviewer once in
 //!   *dev* covers its later sessions there, and only there.
 //! - **An agent per connection.** Each connection admitted is an agent of its own: the client's
 //!   name, the environment's record key and an instance number counting from one in each
-//!   workspace since this server started (`claude-code@dev#2`). It acts as that agent for the
+//!   workspace since this server started (`reviewer@dev#2`). It acts as that agent for the
 //!   person, through the workspace's actions: held to the person's access and an agent's bound,
 //!   attributed to its own id, never the person's and never the host's.
 //! - **Where it shows, and Stop.** Each invocation it makes is present in the workspace under the
@@ -100,9 +100,9 @@ struct Running {
 /// One agent at work in a workspace's machine, as [`MachineAgentsServer::running`] lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineAgent {
-    /// Its id: `claude-code@dev#1`.
+    /// Its id: `reviewer@dev#1`.
     pub agent: String,
-    /// What it is shown by: `Claude Code in dev #1`, or the session its client named.
+    /// What it is shown by: `Reviewer in dev #1`, or the session its client named.
     pub name: String,
     /// The environment's record key it works from.
     pub environment: String,

@@ -417,15 +417,7 @@ fn set_document_access(
     (who, app, document): (String, String, String),
     access: String,
 ) {
-    let own = fed.handle.read(|tree| {
-        tree.active_workspace().is_some_and(|ws| {
-            fed.tabs
-                .records
-                .own_records(&ws.id().to_string())
-                .contains_key(&(app.clone(), document.clone()))
-        })
-    });
-    if own {
+    if tilo_action_policy::roles::is_private_record(&app, &document) {
         refuse(state, fed, "this document belongs to a person");
         return;
     }
@@ -1272,14 +1264,13 @@ fn document_access(
 ) -> sheet::DocumentAccess {
     let workspace = ws.id().to_string();
     // The workspace's records as its copy here holds them, that this device reads: not its own
-    // documents, nor a member's own record, which no rule of the workspace's reaches.
+    // documents, nor a person's private record, which only its person's grant reaches.
     let documents = engine.map_or_else(Vec::new, |engine| {
         let reads = engine.document_read_policy(ws.id());
-        let own = held.own_records(&workspace);
         let mut documents = held.listing(&workspace);
         documents.retain(|(app, document_id)| {
             collab_types::workspace_document(app, document_id).is_none()
-                && !own.contains_key(&(app.clone(), document_id.clone()))
+                && !tilo_action_policy::roles::is_private_record(app, document_id)
                 && reads(app, document_id)
         });
         documents

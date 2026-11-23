@@ -99,12 +99,13 @@ no development control variable is needed. The endpoint is
 `$XDG_RUNTIME_DIR/tilo-session/headless-owner-control.sock`, separate from the
 device's `admin-control.sock`; an existing live listener is never replaced.
 
-That socket serves the semantic half of the protocol only — `actions list`,
-`actions invoke`, `actions status`, `state-dump`, `windows`, `record-read`, the
-profile ops — and never synthetic input, snapshots or the test identity.
+That socket serves the semantic half of the protocol only — action frames
+(listing, invoking and following actions), `state-dump`, `windows`,
+`record-read`, the profile ops — and never synthetic input, snapshots or the test
+identity. `tilo action list` and `tilo do` speak those frames:
 
 ```bash
-tilo-control --socket "$XDG_RUNTIME_DIR/tilo-session/headless-owner-control.sock" actions list
+TILO_TEST_CONTROL="$XDG_RUNTIME_DIR/tilo-session/headless-owner-control.sock" tilo action list
 ```
 
 A locked session still requires its normal unlock action, and physical cursor and display acceptance stay a real-seat test.
@@ -129,9 +130,8 @@ The socket is 0600 in a 0700 directory the session creates. `--test-control PATH
 cargo build -p tilo-control          # lands in target/debug; images ship /usr/bin/tilo-control
 alias qc='cargo run -q --bin tilo-control --'
 
-qc actions list Calculator --json            # inspect search results without opening the palette
-qc actions invoke applications dev.tilo.calculator
-qc actions status INVOCATION_ID --wait       # follow a pending receipt to its result
+tilo action list calculator                  # what the desktop offers, without opening the palette
+tilo open calculator                         # open an app; tilo do NAME does any action
 qc list-targets                              # NAME (X, Y, W, H) per line
 qc click add_workspace                       # click_named
 qc click-at 400 300                          # click_at
@@ -155,7 +155,7 @@ decline are actions of, so a check answers one as the person would:
 
 ```bash
 qc questions --json                          # [{handle, resource, kind, app, label, details}, …]
-qc actions invoke so.tilo.session "$(printf 'question:%s\037answer' "$handle")"
+tilo do "question:$handle#answer"
 ```
 
 Default socket: `$TILO_TEST_CONTROL`, else `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` (an error, not a `/tmp` fallback, when `XDG_RUNTIME_DIR` is unset). Override with `--socket /path`. Errors surface as a non-zero exit and a structured `code: message` on stderr.
@@ -295,7 +295,7 @@ Read the ids the app publishes (`apps/tl/<app>/app.ids`) rather than its words; 
 
 ### Select search results by identity
 
-Use `actions list QUERY --json` to inspect the same providers the palette uses. Enumeration starts asynchronous index refreshes; a cold query can be incomplete. Retry within a bounded deadline when the expected app is missing, and report it as unavailable if the deadline expires. Opening the palette is unnecessary.
+Use `tilo action list QUERY` (or a catalogue frame, as `real_apps.catalogue` sends one) to inspect the same providers the palette uses. Enumeration starts asynchronous index refreshes; a cold query can be incomplete. Retry within a bounded deadline when the expected app is missing, and report it as unavailable if the deadline expires. Opening the palette is unnecessary.
 
 Titles are display text, not identities. Two results can both say "Open Calculator":
 
@@ -304,9 +304,9 @@ Titles are display text, not identities. Two results can both say "Open Calculat
 | `applications` | `dev.tilo.calculator` | Native Tilo Calculator |
 | `applications` | `org.gnome.Calculator` | Host GNOME Calculator |
 
-Inspect `kind`, `subtitle` and the `(provider, id)` pair before choosing, keep the pair, and pass both to `actions invoke`; never substitute the first same-named result when the intended app is absent. `score` ranks results but does not establish identity.
+Inspect `kind`, `subtitle` and the `(provider, id)` pair before choosing, keep the pair, and invoke that target; never substitute the first same-named result when the intended app is absent. `score` ranks results but does not establish identity.
 
-After launch, enumerate again and inspect the app actions' `application`, `resource`, `operation`, `params` and `contract` fields. Invoke the returned pair with its declared arguments, adding `--wait` so the answer is the result and not the admission. To follow a pending receipt, use `actions status ID --wait`, never a sleep-and-retry loop. Then read back the affected resource or the session's state to verify the effect. A descriptor alone does not prove execution, and a visible tile alone does not prove the app has rendered. A packaged app is up when a process of it runs from the session's store — `/var/tilo-apps/<application id>/`, the only place its binary sits inside the sandbox — and the session holds its window (`windows`); what it draws is proved by a control it offers (`list-targets`) pressed, and what that changes. `real_apps.Session.answering` waits for the first two and leaves the last to the check.
+After launch, enumerate again and inspect the app actions' `application`, `resource`, `operation`, `params` and `contract` fields. Invoke the returned target with its declared arguments, with a `wait_ms` so the answer is the result and not the admission. To follow a pending receipt, observe its invocation with a `wait_ms`, never a sleep-and-retry loop. Then read back the affected resource or the session's state to verify the effect. A descriptor alone does not prove execution, and a visible tile alone does not prove the app has rendered. A packaged app is up when a process of it runs from the session's store — `/var/tilo-apps/<application id>/`, the only place its binary sits inside the sandbox — and the session holds its window (`windows`); what it draws is proved by a control it offers (`list-targets`) pressed, and what that changes. `real_apps.Session.answering` waits for the first two and leaves the last to the check.
 
 ## A session with the tree's own apps
 
@@ -529,7 +529,7 @@ For a source-matched fixture, opt into `TILO_FRAME_CPU_TRACE` through its suppor
 
 ### What an agent waits for
 
-`scripts/perf/agent_rtt.py` times the control socket: `actions list`, `state dump`, a no-op invoke and throughput under concurrent clients. `--socket PATH` drives a running session; `--spawn SHELL` starts one through `real_apps.ScriptedSession` and removes it on exit.
+`scripts/perf/agent_rtt.py` times the control socket: a catalogue frame, `state dump`, a no-op invoke and throughput under concurrent clients. `--socket PATH` drives a running session; `--spawn SHELL` starts one through `real_apps.ScriptedSession` and removes it on exit.
 
 ## Idle wakeups and idle memory
 

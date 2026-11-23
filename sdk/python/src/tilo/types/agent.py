@@ -94,7 +94,7 @@ SupersedeArgs = TypedDict("SupersedeArgs", {
 
 class Ask(Resource):
     """Ask — `tl.so.tilo.agent.Ask`."""
-    __surface__ = "so.tilo.agent@ae7c7a90e4ca67e5"
+    __surface__ = "so.tilo.agent@2098097e16618ed1"
     mcsi6vp5: str  # agent
     @property
     def _7j5pok54(self) -> str | None:
@@ -142,7 +142,7 @@ class Ask(Resource):
 
 class Step(Resource):
     """Step — `tl.so.tilo.agent.Step`."""
-    __surface__ = "so.tilo.agent@ae7c7a90e4ca67e5"
+    __surface__ = "so.tilo.agent@2098097e16618ed1"
     ippal7k2: str  # called
     cyu3le2j: str  # answered
     cma7vgpx: bool  # failed
@@ -150,20 +150,20 @@ class Step(Resource):
 
 class SentView(Resource):
     """SentView — `tl.so.tilo.agent.SentView`."""
-    __surface__ = "so.tilo.agent@ae7c7a90e4ca67e5"
+    __surface__ = "so.tilo.agent@2098097e16618ed1"
     gdhl4pzx: str  # title
     ytw765gn: str  # definition
 
 
 class Shown(Resource):
     """Shown — `tl.so.tilo.agent.Shown`."""
-    __surface__ = "so.tilo.agent@ae7c7a90e4ca67e5"
+    __surface__ = "so.tilo.agent@2098097e16618ed1"
     mx5wcfl2: str  # card
 
 
 class Reply(Resource):
     """Reply — `tl.so.tilo.agent.Reply`."""
-    __surface__ = "so.tilo.agent@ae7c7a90e4ca67e5"
+    __surface__ = "so.tilo.agent@2098097e16618ed1"
     gjd462ep: Ask  # ask
     oka345cb: str  # body
     czzg7mhh: str  # thinking
@@ -251,7 +251,7 @@ class Reply(Resource):
 
 class Agents(Resource):
     """Agents — `tl.so.tilo.agent.Agents`."""
-    __surface__ = "so.tilo.agent@ae7c7a90e4ca67e5"
+    __surface__ = "so.tilo.agent@2098097e16618ed1"
     mzzoxssv: list[Entry[Ask]]  # asks
     @property
     def _353i7jsi(self) -> list[Entry[Reply]]:
@@ -283,5 +283,5 @@ class Agents(Resource):
 
 class Agent(Resource):
     """Agents — `tl.so.tilo.agent`."""
-    __surface__ = "so.tilo.agent@ae7c7a90e4ca67e5"
+    __surface__ = "so.tilo.agent@2098097e16618ed1"
 

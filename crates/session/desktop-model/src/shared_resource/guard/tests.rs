@@ -509,9 +509,9 @@ tilo_test_env::scenario! {
         assert_eq!(windows(&guard), vec![1, 2, 4]);
     }
 
-    phase a_view_of_the_layout_belongs_to_its_person_and_the_layout_to_everyone;
-    // A person's view of the layout is theirs to write, and the workspace's layout is every member's:
-    // the record a write names decides whose it is.
+    phase a_view_of_the_layout_is_a_record_of_the_desktop;
+    // Who writes a person's view of the layout is the workspace's policy's to say
+    // (`tilo_action_policy::roles::person_view_grant`); the desktop knows it for one of its records.
     {
         use crate::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
         use crate::person_view::resource_of;
@@ -519,30 +519,5 @@ tilo_test_env::scenario! {
         assert!(is_desktop(DESKTOP_APP, DESKTOP_DOCUMENT));
         assert!(is_desktop(DESKTOP_APP, &resource_of(ADA)));
         assert!(!is_desktop("so.tilo.notes", &resource_of(ADA)));
-
-        may_write(DESKTOP_APP, &resource_of(ADA), ADA).expect("her own view");
-        let refused = may_write(DESKTOP_APP, &resource_of(ADA), BEN).unwrap_err();
-        assert_eq!(
-            refused,
-            NotTheirView {
-                writer: BEN.into(),
-                owner: ADA.into()
-            }
-        );
-        may_write(DESKTOP_APP, DESKTOP_DOCUMENT, BEN).expect("every member writes the layout");
-
-        assert_eq!(
-            own_person(DESKTOP_APP, &resource_of(ADA), None).as_deref(),
-            Some(ADA),
-            "a view of the layout is its person's own resource, whatever their role"
-        );
-        assert_eq!(own_person(DESKTOP_APP, DESKTOP_DOCUMENT, None), None);
-        assert_eq!(own_person("so.tilo.notes", &resource_of(ADA), None), None);
-        let mailbox = collab_types::OwnResource::new("mail.copies", [7; 32]).unwrap();
-        assert_eq!(
-            own_person("so.tilo.mail", &mailbox.document_id(), Some(&mailbox)).as_deref(),
-            Some(mailbox.person().as_str()),
-            "and so is a resource of a kind its app declares each member's own"
-        );
     }
 }

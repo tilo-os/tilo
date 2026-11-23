@@ -500,20 +500,16 @@ tilo_test_env::scenario! {
         };
 
         let workspace_id = tree.workspaces[0].id().to_string();
-        let kept = crate::apps::test_support::KeptAgents::default().keeping(
-            &workspace_id,
-            "scribe",
-            &person_id_for_root(root.verifying_key().to_bytes()),
-        );
+        let kept = crate::apps::test_support::KeptAgents::default().listing(&workspace_id, "scribe");
 
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
         assert_eq!(admitted.role, CapRole::Owner);
-        admit_kept_agent(&kept, &workspace_id, &mut admitted, "scribe").unwrap();
+        admit_listed_agent(&kept, &workspace_id, &mut admitted, "scribe").unwrap();
 
         let mut admitted = admit_verified_join(&tree, &route, foreign.clone()).unwrap();
         assert!(
-            admit_kept_agent(&kept, &workspace_id, &mut admitted, "scribe").is_err(),
-            "an agent joins on its keeper's session, not on a device the workspace caps"
+            admit_listed_agent(&kept, &workspace_id, &mut admitted, "scribe").is_err(),
+            "an agent runs on a member's own device, not on one the workspace caps"
         );
         let changes = |admitted: &AdmittedJoinIdentity, tree: &WorkspaceTree| {
             admitted
@@ -572,15 +568,11 @@ tilo_test_env::scenario! {
         tree.workspaces.push(workspace);
 
         let workspace_id = tree.workspaces[0].id().to_string();
-        let kept = crate::apps::test_support::KeptAgents::default().keeping(
-            &workspace_id,
-            "scribe",
-            &person_id_for_root(root.verifying_key().to_bytes()),
-        );
+        let kept = crate::apps::test_support::KeptAgents::default().listing(&workspace_id, "scribe");
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&root))
-            .expect("the keeper is admitted before their agent is");
-        admit_kept_agent(&kept, &workspace_id, &mut admitted, "scribe")
-            .expect("the record names the keeper of the agent it runs");
+            .expect("the member is admitted before the agent they run is");
+        admit_listed_agent(&kept, &workspace_id, &mut admitted, "scribe")
+            .expect("the record lists the agent the member runs");
         assert_eq!(admitted.broker_actor().member(), &MemberId::agent("scribe"));
         assert!(admitted.broker_actor().is_agent());
         let answer = |kind| {
@@ -675,24 +667,12 @@ tilo_test_env::scenario! {
 
         let workspace_id = tree.workspaces[0].id().to_string();
         let kept = crate::apps::test_support::KeptAgents::default()
-            .keeping(
-                &workspace_id,
-                "scribe",
-                &person_id_for_root(owner_root.verifying_key().to_bytes()),
-            )
-            .keeping(
-                &workspace_id,
-                "reader",
-                &person_id_for_root(bob_root.verifying_key().to_bytes()),
-            )
-            .keeping(
-                &workspace_id,
-                "bobs-scribe",
-                &person_id_for_root(bob_root.verifying_key().to_bytes()),
-            );
+            .listing(&workspace_id, "scribe")
+            .listing(&workspace_id, "reader")
+            .listing(&workspace_id, "bobs-scribe");
         let delegate = |root: &SigningKey, agent: &str, tree: &WorkspaceTree| {
             let mut admitted = admit_verified_join(tree, &route, verified_device(root)).unwrap();
-            admit_kept_agent(&kept, &workspace_id, &mut admitted, agent).map(|()| admitted)
+            admit_listed_agent(&kept, &workspace_id, &mut admitted, agent).map(|()| admitted)
         };
         let answer = |admitted: &AdmittedJoinIdentity,
                       tree: &WorkspaceTree,
@@ -734,6 +714,15 @@ tilo_test_env::scenario! {
             answer(&reader, &tree, &notes, ActionKind::Undoable),
             Answer::Deny,
             "a commenter's agent changes nothing"
+        );
+        // The workspace's agents are its own: Bob runs the one its owner added, and it acts at
+        // Bob's role, not at the role of whoever added it.
+        let owners_for_bob = delegate(&bob_root, "scribe", &tree).unwrap();
+        assert_eq!(owners_for_bob.role, Role::Commenter, "the role of the member running it");
+        assert_eq!(
+            answer(&owners_for_bob, &tree, &notes, ActionKind::Undoable),
+            Answer::Deny,
+            "run by a commenter, it changes nothing"
         );
         let bobs = delegate(&bob_root, "bobs-scribe", &tree).unwrap();
         assert_eq!(bobs.role, Role::Commenter, "capped by its person's role");
@@ -795,14 +784,14 @@ tilo_test_env::scenario! {
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&member))
             .expect("the person is a member");
         assert!(
-            admit_kept_agent(
+            admit_listed_agent(
                 &crate::apps::test_support::KeptAgents::default(),
                 &workspace_id,
                 &mut admitted,
                 "operator"
             )
             .is_err(),
-            "the workspace keeps no agent of that id"
+            "the workspace lists no agent of that id"
         );
     }
 }

@@ -41,9 +41,8 @@ pub(super) fn asking(action: &str, argument: Value) -> InvokeRequest {
     }
 }
 
-/// `address` kept in the workspace's own store, as a window's add keeps one.
-fn keep(root: &std::path::Path, address: &str) {
-    let mut store = accounts::AccountStore::load_in(root);
+/// `address` kept in the workspace's accounts, as a window's add keeps one.
+async fn keep(workspaces: &crate::workspaces::Workspaces, workspace: &str, address: &str) {
     let mut account = accounts::Account::new(address, accounts::email::TYPE_ID);
     account.config = json!({
         "email": address,
@@ -52,8 +51,10 @@ fn keep(root: &std::path::Path, address: &str) {
         "smtp_host": "smtp.example.test",
         "smtp_port": 465,
     });
-    store.upsert(account);
-    store.save_in(root).expect("the store saves");
+    workspaces
+        .keep_workspace_account(workspace, &account)
+        .await
+        .expect("the account is kept");
 }
 
 /// The listing the follow `id` reads now, as the window is sent it.
@@ -83,9 +84,9 @@ async fn a_window_following_the_accounts_is_sent_them_again_when_they_change() {
     let (workspace, workspace_id, host) = governed(&workspaces).await;
     let ada = admit(&workspaces, &workspace, &owner, 1).await;
     let bo = admit(&workspaces, &workspace, &owner, 2).await;
-    let keeping = workspaces.workspace_root(&workspace_id.to_string());
-    keep(&keeping, "ada@example.test");
-    keep(&keeping, "bob@example.test");
+    let keeping = workspace_id.to_string();
+    keep(&workspaces, &keeping, "ada@example.test").await;
+    keep(&workspaces, &keeping, "bob@example.test").await;
     let hers = host.in_workspace_as(workspace_id, &ada);
     let ada = caller(&ada);
     let bos_page = host.in_workspace_as(workspace_id, &bo);

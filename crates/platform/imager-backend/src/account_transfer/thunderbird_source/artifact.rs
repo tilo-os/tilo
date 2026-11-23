@@ -802,8 +802,8 @@ fn import_stream(
     cancel: &AtomicBool,
 ) -> io::Result<Option<ThunderbirdImportReceipt>> {
     let root = target_root(target_home).map_err(|_| io::Error::other("target"))?;
-    let mut store =
-        super::super::connect::load_store(&root).map_err(|_| io::Error::other("store"))?;
+    let record =
+        crate::account_store::Accounts::read(&root).map_err(|_| io::Error::other("store"))?;
     let cache = ensure_dir(target_home, &[".cache", MAIL_APP, "mail"]).map_err(as_io)?;
     let retained = ensure_dir(target_home, &RETAINED).map_err(as_io)?;
     let mut receipt = ThunderbirdImportReceipt {
@@ -818,7 +818,7 @@ fn import_stream(
     let mut accounts = Vec::with_capacity(profile.accounts.len());
     for account in &profile.accounts {
         let (id, created) =
-            publish_account(&mut store, &account.inventory, &account.metadata).map_err(as_io)?;
+            publish_account(&record, &account.inventory, &account.metadata).map_err(as_io)?;
         let stem = file_stem(id.as_str());
         let files = cache.join(format!("{stem}.files"));
         let snapshot = read_private(&cache_path(&cache, &id), MAX_CACHE).map_err(as_io)?;
@@ -989,8 +989,8 @@ fn import_stream(
             folders,
         });
     }
-    store
-        .save_in(&root)
+    record
+        .project(&root)
         .map_err(|_| io::Error::other("store"))?;
     Ok(Some(receipt))
 }

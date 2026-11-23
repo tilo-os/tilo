@@ -99,10 +99,27 @@ async fn bridged_lounge(workspaces: &Workspaces, workspace: &str, cert: &DeviceC
         .unwrap();
 }
 
+/// `bridge` as the workspace holds it when it grants the bridge none of `actions`: what a
+/// workspace that takes a grant back has installed.
+fn granted_none_of(bridge: &installed::InstalledBot, actions: &[&str]) -> installed::InstalledBot {
+    let mut program = bridge.shortcut().unwrap();
+    program.grant.retain(|rule| {
+        !rule
+            .node
+            .id_at(tilo_action_policy::Level::Action)
+            .is_some_and(|action| actions.contains(&action))
+    });
+    installed::InstalledBot {
+        program: String::from_utf8(tilo_automation::program::canonical_bytes(&program).unwrap())
+            .unwrap(),
+        ..bridge.clone()
+    }
+}
+
 /// A bridge run the workspace refuses part of leaves the import half done: the
-/// category it made stands, the moves after it were dropped. The run goes
-/// again from the workspace's records and finishes the layout, the channels
-/// under the server's category as in Discord.
+/// category it made stands, the channels it would put in it were refused. The run
+/// goes again from the workspace's records and, once the workspace grants it that,
+/// finishes the layout, the channels under the server's category as in Discord.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bridge_run_the_workspace_refuses_part_of_finishes_the_import_when_it_goes_again() {
     let scratch = tempfile::tempdir().unwrap();
@@ -122,7 +139,18 @@ async fn a_bridge_run_the_workspace_refuses_part_of_finishes_the_import_when_it_
     assert!(runner.step().await.unwrap().is_empty());
 
     // A change to the workspace's Chat has the bridge reconcile; the workspace
-    // refuses the run's second change, mapping the category it just made.
+    // grants it no placing of a channel in a category, and refuses the first.
+    let certifier = membership::HostRootCertifier::new(owner_root());
+    let placing = ["add_channel", "add_voice_channel", "move_channel"];
+    membership::keep_member(
+        &workspaces,
+        &workspace,
+        &cert,
+        &certifier,
+        &granted_none_of(&discord_bridge(), &placing),
+    )
+    .await
+    .unwrap();
     let owner = hex::encode(cert.user_public_key);
     let who = crate::tl_chat::member(MemberId::person(owner));
     let packages = crate::tl_chat::packages().unwrap();
@@ -135,7 +163,6 @@ async fn a_bridge_run_the_workspace_refuses_part_of_finishes_the_import_when_it_
         )
         .await
         .unwrap();
-    runner.refuse_change_after(1);
     runner.step().await.unwrap();
     let half = chat_layout(&workspaces, &workspace).await;
     assert!(
@@ -144,7 +171,17 @@ async fn a_bridge_run_the_workspace_refuses_part_of_finishes_the_import_when_it_
         "the category stands, empty: {half:?}"
     );
 
-    // It goes again, from the workspace's records, and finishes.
+    // The workspace grants it what it lacked; it goes again, from the workspace's
+    // records, and finishes.
+    membership::keep_member(
+        &workspaces,
+        &workspace,
+        &cert,
+        &certifier,
+        &discord_bridge(),
+    )
+    .await
+    .unwrap();
     let done = |layout: &[(String, Vec<String>)]| {
         layout.iter().any(|(name, channels)| {
             name == "chat"

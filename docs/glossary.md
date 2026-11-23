@@ -22,9 +22,9 @@ used in code.
   its operator's device, so what it serves or narrates reads as theirs. One that holds several
   people's workspaces keeps each one's work in its own sandbox.
 - **Agent**: a model-driven member. It does what members ask, in the workspace, like a person. A
-  person adds it and picks the device it runs on. Claude Code connected over MCP is an agent.
-- **Agent session**: one context of one agent: a conversation with a Tilo agent, or one Claude
-  Code session (one MCP connection).
+  person adds it and picks the device it runs on. An outside agent connected over MCP is an agent.
+- **Agent session**: one context of one agent: a conversation with a Tilo agent, or one MCP
+  connection of an outside agent.
 - **Step**: one thing an agent session asks for: an action it calls, or a question it puts to
   its person.
 - **Bot**: an installed program with its own identity and role in a workspace, reacting to events

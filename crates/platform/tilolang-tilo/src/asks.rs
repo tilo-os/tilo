@@ -164,8 +164,12 @@ fn item(host: &Host, agent: &Meta, resource: &str, fields: &BTreeSet<String>) ->
             invoked = invoked.saturating_add(1);
         }
     }
+    // Only an ask a mention made goes when the mention does. One made outright (writing to the
+    // agent in a Direct, an event, a sub-agent's lead), keyed otherwise or not at all, stays
+    // whatever the text says.
     for (mention, ask) in &made {
         if ask.state == "waiting"
+            && is_mention(mention)
             && !mentioned.contains_key(mention)
             && invoke(host, agent, "withdraw", vec![Value::resource(&ask.at)], &at)
         {
@@ -173,6 +177,15 @@ fn item(host: &Host, agent: &Meta, resource: &str, fields: &BTreeSet<String>) ->
         }
     }
     invoked
+}
+
+/// Whether `key` names an ask by a mention of a member, as a text marks it ([`item`]).
+fn is_mention(key: &str) -> bool {
+    tilo_failure::ignored!(
+        "a key that is no member's mark names an ask made outright",
+        serde_json::from_str::<tilo_action_policy::MemberId>(key)
+    )
+    .is_ok()
 }
 
 /// The rich text fields of the type `ty`, by id; `None` for a type of the agent package or one

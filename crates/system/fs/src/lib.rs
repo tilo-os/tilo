@@ -69,10 +69,6 @@ pub mod store;
 pub mod sync_folder;
 #[cfg(feature = "filesystem")]
 pub mod thumbs;
-/// Putting a file into a workspace's tree from a host or a page that has the tree
-/// and no folder of its own.
-#[cfg(feature = "filesystem")]
-pub mod tree_put;
 /// Keeping a namespace of that tree converged with a peer's records of it.
 #[cfg(feature = "tree-sync")]
 pub mod tree_sync;

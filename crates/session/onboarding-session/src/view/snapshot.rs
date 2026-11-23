@@ -16,7 +16,7 @@ pub enum OnboardingVisualState {
     Intro,
     Existing,
     Nearby,
-    NearbyCode,
+    NearbyJoining,
     Restore,
     Protect,
     Backup,
@@ -72,9 +72,7 @@ impl OnboardingView {
         self.tour_only = false;
         self.codec_page = false;
         self.codec_error = None;
-        self.nearby_status = None;
         self.nearby_failure = None;
-        self.nearby_code = None;
         self.nearby_active_for_snapshot = false;
         self.recovery_only = matches!(
             state,
@@ -108,7 +106,6 @@ impl OnboardingView {
                 self.flow.begin_existing();
                 self.flow.choose_nearby();
                 self.nearby_active_for_snapshot = true;
-                self.nearby_status = Some(tilo_onboarding::t("onboarding-nearby-waiting"));
             }
             OnboardingVisualState::RecoveryRestore => {
                 self.flow.begin_existing();
@@ -159,16 +156,10 @@ impl OnboardingView {
                         super::words_check(&words, self.expected_identity)
                     });
             }
-            OnboardingVisualState::Nearby | OnboardingVisualState::NearbyCode => {
+            OnboardingVisualState::Nearby | OnboardingVisualState::NearbyJoining => {
                 self.flow.begin_existing();
                 self.flow.choose_nearby();
-                self.nearby_active_for_snapshot = true;
-                if state == OnboardingVisualState::NearbyCode {
-                    self.nearby_code = Some("482913".into());
-                    self.nearby_status = Some(tilo_onboarding::t("onboarding-nearby-code"));
-                } else {
-                    self.nearby_status = Some(tilo_onboarding::t("onboarding-nearby-waiting"));
-                }
+                self.nearby_active_for_snapshot = state == OnboardingVisualState::NearbyJoining;
             }
             OnboardingVisualState::Restore | OnboardingVisualState::RestoreError => {
                 self.flow.begin_existing();

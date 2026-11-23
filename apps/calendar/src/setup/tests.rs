@@ -1,5 +1,5 @@
 use super::*;
-use accounts::{Account, AccountId, AccountStore, Secret, SecretVault};
+use accounts::{Account, AccountId, AccountStore, SecretVault};
 use test_http::{Reply, Responder};
 
 fn collection(server: &str) -> RemoteCalendar {
@@ -14,18 +14,14 @@ fn collection(server: &str) -> RemoteCalendar {
 
 tilo_test_env::scenario! {
     /// Setting up a Nextcloud account: discovery, and the selection that is kept or refused.
-    fn nextcloud_calendars_are_discovered_and_selected_with_adopted_credentials;
+    fn nextcloud_calendars_are_discovered_and_selected;
 
-    phase selected_nextcloud_calendars_keep_files_and_adopted_credentials;
+    phase selected_nextcloud_calendars_keep_files_and_no_password;
     {
         let root = tempfile::tempdir().unwrap();
         let mut account = Account::new("canonical-nextcloud", "nextcloud");
         account.config = serde_json::json!({"server_url":"https://cloud.example/remote.php/dav/files/internal/", "username":"internal", "use_files":true, "files":{"root":"documents"}});
         let original = account.config.clone();
-        let secret = account_credentials::copied_secret(&account, &Secret::password("adopted-password"));
-        let mut vault = SecretVault::open_in(root.path());
-        vault.put(&account.id, &secret);
-        vault.save();
         let config = CalDavConfig {
             server_url: "https://cloud.example/remote.php/dav/".into(),
             username: "internal".into(),
@@ -45,13 +41,13 @@ tilo_test_env::scenario! {
         let mut shared = AccountStore::new();
         shared.upsert(account.clone());
         shared.save_in(root.path()).unwrap();
-        let mut projection = crate::AccountStore::from_store(
-            &shared,
-            &accounts::AccountCredentials::open_in(root.path()).unwrap(),
-        );
+        let mut projection = crate::AccountStore::from_store(&shared);
         assert_eq!(projection.accounts.len(), 1);
         assert_eq!(projection.accounts[0].id, "canonical-nextcloud");
-        assert_eq!(projection.accounts[0].config.password, "adopted-password");
+        assert_eq!(
+            projection.accounts[0].config.password, "",
+            "a calendar's password is the workspace's vault's, never this device's"
+        );
         projection.accounts[0].calendars[0].visible = false;
         projection.persist_in(root.path()).unwrap();
         let saved = AccountStore::load_in(root.path());
@@ -64,9 +60,9 @@ tilo_test_env::scenario! {
             saved.get(&account.id).unwrap().config["files"],
             original["files"]
         );
-        assert_eq!(
-            SecretVault::open_in(root.path()).get(&account.id),
-            Some(secret)
+        assert!(
+            SecretVault::open_in(root.path()).get(&account.id).is_none(),
+            "a calendar's password is the workspace's vault's, never this device's"
         );
     }
 
@@ -110,7 +106,7 @@ tilo_test_env::scenario! {
         );
         let mut shared = AccountStore::new();
         shared.upsert(account);
-        let projection = crate::AccountStore::from_shared(&shared, None);
+        let projection = crate::AccountStore::from_shared(&shared);
         assert_eq!(projection.accounts.len(), 1);
         assert!(projection.accounts[0].read_only);
         assert!(projection.accounts[0].calendars[0].read_only);
@@ -175,55 +171,6 @@ tilo_test_env::scenario! {
         assert_eq!(account, before);
     }
 
-    phase nextcloud_discovery_uses_adopted_canonical_password_and_server_owned_paths;
-    {
-        let xml = |href: &str, properties: &str| {
-            format!(
-                r#"<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:response><d:href>{href}</d:href><d:propstat><d:prop>{properties}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#
-            )
-        };
-        let server = Responder::start(vec![
-            Reply::status(207).body(xml("/dav/", "<d:current-user-principal><d:href>/principals/opaque/</d:href></d:current-user-principal>")),
-            Reply::status(207).body(xml("/principals/opaque/", "<c:calendar-home-set><d:href>/calendars/opaque/</d:href></c:calendar-home-set>")),
-            Reply::status(207).body(xml("/calendars/opaque/team/", "<d:resourcetype><d:collection/><c:calendar/></d:resourcetype><d:displayname>Team</d:displayname><d:current-user-privilege-set><d:privilege><d:read/></d:privilege></d:current-user-privilege-set>")),
-        ]);
-        let root = tempfile::tempdir().unwrap();
-        let account = Account::new("canonical", "nextcloud");
-        let secret = account_credentials::copied_secret(&account, &Secret::password("adopted"));
-        let mut vault = SecretVault::open_in(root.path());
-        vault.put(&account.id, &secret);
-        vault.save();
-        let config = CalDavConfig {
-            server_url: format!("{}/dav/", server.url()),
-            username: "login".into(),
-            ..Default::default()
-        };
-        let credential_store = account_credentials::CredentialStore::for_root(Some(root.path().to_owned()));
-        let mut store = AccountStore::new();
-        store.upsert(account.clone());
-        store.save_in(root.path()).unwrap();
-        let service = tilo_dav::oauth::Service::new(credential_store);
-        let found = discover_calendars(&service, &account, &config, false).unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(
-            found[0].id,
-            format!("{}/calendars/opaque/team/", server.url())
-        );
-        assert!(found[0].read_only);
-        for path in ["/dav/", "/principals/opaque/", "/calendars/opaque/"] {
-            let request = server.next_request();
-            assert_eq!(request.method, "PROPFIND");
-            assert_eq!(request.target, path);
-            assert_eq!(
-                request.header("authorization"),
-                Some("Basic bG9naW46YWRvcHRlZA==")
-            );
-        }
-        assert_eq!(
-            SecretVault::open_in(root.path()).get(&account.id),
-            Some(secret)
-        );
-    }
 }
 
 tilo_test_env::scenario! {
@@ -260,13 +207,16 @@ tilo_test_env::scenario! {
             server_url: server.url(),
             ..Default::default()
         };
-        let mut store = AccountStore::new();
-        store.upsert(Account::new(id.clone(), "google-drive"));
-        store.save_in(root.path()).unwrap();
         let service = tilo_dav::oauth::Service::for_test_origin(credential_store, &server.url()).unwrap();
         let url = format!("{}/cal/", server.url());
         let client = service
-            .authorised(Some(id.as_str()), &config.server_url, "", "", &url)
+            .authorised(
+                Some(&Account::new(id.clone(), accounts::cloud_types::GOOGLE_DRIVE)),
+                &config.server_url,
+                "",
+                "",
+                &url,
+            )
             .unwrap();
         let run = |future| ui::rt::block_on(future).expect("test thread may block");
         assert_eq!(
@@ -370,10 +320,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let vault = SecretVault::open_in(root.path());
         let before = vault.get(&AccountId::from("drive-account")).unwrap();
-        let projection = crate::AccountStore::from_store(
-            &shared,
-            &accounts::AccountCredentials::open_in(root.path()).unwrap(),
-        );
+        let projection = crate::AccountStore::from_store(&shared);
         assert_eq!(
             projection.accounts[0].config.oauth_account_id.as_deref(),
             Some("drive-account")

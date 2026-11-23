@@ -9,13 +9,6 @@ use linux_vm_protocol::vsock::VsockListener;
 use linux_vm_protocol::{AGENT_PORT, HOST_CID};
 
 fn main() -> ExitCode {
-    // Started as a program of the guest's own user to serve one run, not as
-    // the agent: the mode comes first, before anything the agent reads.
-    #[cfg(target_os = "linux")]
-    if std::env::args().nth(1).as_deref() == Some(linux_vm_protocol::served::MODE) {
-        let arguments: Vec<String> = std::env::args().skip(2).collect();
-        return linux_vm_agent::served::main(&arguments);
-    }
     let name = std::env::args()
         .skip_while(|arg| arg != "--user")
         .nth(1)

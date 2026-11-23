@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The tilo-control action protocol served by a console session app (installer, greeter) that runs outside the Tilo compositor"
+description = "The action frames a console session app (installer, greeter) that runs outside the Tilo compositor serves"
 
 [lib]
 name = "console_control"

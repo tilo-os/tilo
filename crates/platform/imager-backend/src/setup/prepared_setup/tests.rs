@@ -132,9 +132,9 @@ fn real_prepared_setup_authenticates_exact_identity_accounts_then_imports_fresh_
         reviewed.import_accounts(&config, PASSWORD).unwrap(),
         vec![selected.clone()]
     );
-    let store = accounts::AccountStore::load_in(&config);
-    assert!(store.get(&selected).is_some());
-    assert!(store.get(&other).is_none());
+    let store = crate::account_store::Accounts::read(&config).unwrap();
+    assert!(store.get(selected.as_str()).unwrap().is_some());
+    assert!(store.get(other.as_str()).unwrap().is_none());
     assert_eq!(
         fs::read(accounts::store_path_in(&source)).unwrap(),
         account_before
@@ -711,7 +711,7 @@ fn prepared_setup_authenticates_separate_selected_session_before_any_adoption() 
     review.import_service_sessions(&target, PASSWORD).unwrap();
     let selected = account_credentials::CredentialStore::for_root(Some(target))
         .service_session(
-            &AccountId::from(declaration.sessions[0].id.clone()),
+            &declaration.sessions[0].account("selected-operation"),
             identity.public_key(),
             "selected-operation",
         )

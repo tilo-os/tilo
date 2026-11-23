@@ -64,6 +64,9 @@ pub struct Caller {
     // what the agent would click.
     pub(super) turn: Option<tilo_action_policy::turn::Turn>,
     roster_created_at: Option<i64>,
+    // The roster agent whose approval this caller works under, where that is another agent
+    // than the one acting: a sub-agent its starter started (`Self::working_under`).
+    approved_as: Option<String>,
     // The person whose message the server's turn answers, as the server read
     // its cause (`Self::on_roster_turn`).
     turn_person: Option<[u8; 32]>,
@@ -92,6 +95,7 @@ impl Caller {
             within: within::Within::NONE,
             turn: None,
             roster_created_at: None,
+            approved_as: None,
             turn_person: None,
             agent_name: None,
             asked: None,
@@ -417,19 +421,47 @@ impl Caller {
         self
     }
 
-    /// [`Self::on_roster`], inside `turn`.
+    /// A caller bound to its roster entry ([`Self::on_roster`]), inside `turn`. Changes nothing
+    /// for a caller that is not so bound.
     #[must_use]
-    pub fn on_roster_turn(
-        self,
-        turn: tilo_action_policy::turn::Turn,
-        created_at: i64,
-        person: [u8; 32],
-    ) -> Self {
-        let mut caller = self.on_roster(created_at, person);
-        if caller.roster_created_at.is_some() {
-            caller.turn = Some(turn);
+    pub fn on_roster_turn(mut self, turn: tilo_action_policy::turn::Turn) -> Self {
+        if self.roster_created_at.is_some() {
+            self.turn = Some(turn);
         }
-        caller
+        self
+    }
+
+    /// The agent `agent_id`, named `name`, working under this roster agent's approval: a
+    /// sub-agent its starter started. It acts as itself, so what it writes and says is its
+    /// own, for the same person. Its starter hands it the work as a person's device hands an
+    /// agent its session ([`Acting::handed`]), and every change it makes is signed by the
+    /// starter's key, whose approval bounds what that tree may do
+    /// ([`Acting::signed_by`]): it may do only what its person, an agent's preset and its
+    /// starter's approval all allow. It holds no approval of its own. Changes nothing for a caller not bound to its roster entry
+    /// ([`Self::on_roster`]).
+    #[must_use]
+    pub fn working_under(mut self, agent_id: impl Into<String>, name: &str) -> Self {
+        let Some(approved) = self.approved_agent().map(str::to_owned) else {
+            return self;
+        };
+        let Some(person) = self.acting.acted_for_person().map(str::to_owned) else {
+            return self;
+        };
+        self.acting = Acting::handed_agent(agent_id.into(), person);
+        self.approved_as = Some(approved);
+        self.agent_name = None;
+        self.named(name)
+    }
+
+    /// The roster agent whose approval a caller bound to its roster entry acts under
+    /// ([`Self::on_roster`]): the acting agent itself, or the starter of a sub-agent
+    /// ([`Self::working_under`]). `None` for any other caller.
+    #[must_use]
+    pub fn approved_agent(&self) -> Option<&str> {
+        self.roster_created_at?;
+        self.approved_as
+            .as_deref()
+            .or_else(|| self.acting.agent_id())
     }
 
     /// The person a roster agent works for ([`Self::on_roster`]).

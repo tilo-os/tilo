@@ -343,31 +343,6 @@ impl Worker {
         Ok(false)
     }
 
-    /// The record at `route`, saved, when this host holds it, with the heads it stands at;
-    /// `None` for one the workspace holds none of. A record the workspace may still send is
-    /// refused as on its way, as [`Self::held_or_owed`] refuses it, `act` waiting for its keys
-    /// every time as a write to it needs them. The heads are what a follower of the record
-    /// asks the changes after, next time.
-    #[allow(
-        clippy::result_large_err,
-        reason = "the outcome becomes the receipt the host records"
-    )]
-    pub(super) fn saved_here(
-        &mut self,
-        workspace_id: WorkspaceId,
-        route: &DocumentRoute,
-        act: bool,
-    ) -> Result<Option<super::Saved>, Outcome> {
-        let held = self.refreshed_for(workspace_id, route, act)?;
-        match held.document(route) {
-            Ok(saved) => Ok(Some(saved)),
-            Err(_) if !self.held_or_owed(workspace_id, route)? => Ok(None),
-            Err(why) => Err(Outcome::Rejected(ActionCallError::Unavailable {
-                reason: why,
-            })),
-        }
-    }
-
     /// The workspace as this member holds it, with what the document at
     /// `route` needs to be read (or, with `act`, changed) held first.
     #[allow(
@@ -392,7 +367,7 @@ impl Worker {
 }
 
 /// Whether `request` opens files in Files: what puts them into the
-/// workspace's tree ([`super::tree_put`]), one file or many at once.
+/// workspace's tree ([`super::tree`]), one file or many at once.
 fn puts_into_the_tree(request: &InvokeRequest) -> bool {
     let target = &request.target;
     if provider_workspace(&target.provider).is_none() {
@@ -400,7 +375,7 @@ fn puts_into_the_tree(request: &InvokeRequest) -> bool {
     }
     // One of Files' verbs by a path in the workspace reads the tree and writes it, as a put
     // does, and one of its reads by a path reads it.
-    if super::tree_put::acts_on_tree(target) {
+    if super::tree::acts_on_tree(target) {
         return true;
     }
     let arguments = super::invoke_arguments(&request.argument);

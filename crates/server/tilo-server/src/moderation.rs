@@ -5,13 +5,13 @@
 //! and the reported person's messages through Chat's own types, takes their messages back with
 //! Chat's `delete` and settles each report with Chat's `decide`, each invoked as the moderation
 //! bot, so the record's history names the bot for every step like anyone's. Restricting and
-//! banning are governance, which a bot never holds: the host enforces those as the workspace's
-//! root through `govern`, held to the workspace's policy.
+//! banning are governance, which a bot never holds: only a person with the workspace's
+//! moderation authority enforces a verdict that restricts or bans a member.
 
 use tilo_action_policy::Change;
 use tilo_action_policy::bot::MODERATION;
 use tilo_actions::MemberId;
-use tilo_moderation::model::moderation::Decide;
+use tilo_moderation::model::moderation::DecideReports;
 use tilo_moderation::{Activity, Moderation, Outcome, Report, WorkspaceApi};
 use tilo_workspace_service::tl_records::Opened;
 use tilo_workspace_service::tl_records::runtime::{Actor, ResourceRef};
@@ -70,7 +70,7 @@ pub fn moderation(opened: &Opened) -> Result<Moderation, String> {
 }
 
 /// How a decision reads on the reports it settles.
-fn decision_text(decide: &Decide) -> String {
+fn decision_text(decide: &DecideReports) -> String {
     let ruling = &decide.ruling;
     let outcome = match ruling.outcome {
         Outcome::NoAction => "No action".to_owned(),
@@ -92,22 +92,17 @@ fn decision_text(decide: &Decide) -> String {
 }
 
 /// The workspace as the moderation agent reaches it: its Chat, opened on the host, changed as
-/// the moderation bot, and the host's governance.
+/// the moderation bot.
 pub struct ChatApi<'a> {
     opened: &'a mut Opened,
-    govern: &'a mut dyn FnMut(Change) -> Result<(), String>,
     now_ms: i64,
     /// Every report filed when it opened, by id.
     reports: std::collections::BTreeMap<String, ResourceRef>,
 }
 
 impl<'a> ChatApi<'a> {
-    /// The API over the workspace's Chat `opened`, enforcing governance through `govern`.
-    pub fn new(
-        opened: &'a mut Opened,
-        govern: &'a mut dyn FnMut(Change) -> Result<(), String>,
-        now_ms: i64,
-    ) -> Self {
+    /// The API over the workspace's Chat `opened`.
+    pub fn new(opened: &'a mut Opened, now_ms: i64) -> Self {
         let reports = tl_chat::reports(opened)
             .unwrap_or_default()
             .into_iter()
@@ -115,7 +110,6 @@ impl<'a> ChatApi<'a> {
             .collect();
         Self {
             opened,
-            govern,
             now_ms,
             reports,
         }
@@ -168,8 +162,8 @@ impl WorkspaceApi for ChatApi<'_> {
         activity
     }
 
-    fn govern(&mut self, change: Change) -> Result<(), String> {
-        (self.govern)(change)
+    fn govern(&mut self, _: Change) -> Result<(), String> {
+        Err("Workspace membership changes require a person with moderation authority".into())
     }
 
     /// Takes back what a person wrote: `undo { by, steps }` on a conversation deletes the
@@ -217,7 +211,7 @@ impl WorkspaceApi for ChatApi<'_> {
 
     /// Settles each report the decision answers with Chat's `decide`, saying what was decided
     /// and why.
-    fn decide(&mut self, decision: Decide) -> Result<(), String> {
+    fn decide(&mut self, decision: DecideReports) -> Result<(), String> {
         let text = decision_text(&decision);
         let bot = bot();
         for id in &decision.reports {

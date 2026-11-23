@@ -47,7 +47,6 @@ libc.workspace = true
 # `fcntl(F_GETFD)` probes whether a fd is open before handing it to tokio.
 rustix = { workspace = true, features = ["event", "net", "process"] }
 # Whether the process runs inside a Tilo login, to pick the host to attach to.
-tilo-paths.workspace = true
 # Service descriptors are Unix sockets; other hosts report `NotAvailable`.
 tokio = { workspace = true, features = ["net"] }
 

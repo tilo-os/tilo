@@ -438,9 +438,9 @@ impl Whereabouts for Places {
     }
 }
 
-/// A client of A's login asking, as `tilo agent connect --device` does, to work on the device
-/// `named`: A reads the line it opens with, as its host does, and serves it on a thread of its
-/// own. The client's end of the socket, once A answered.
+/// A client of A's login asking, as an agent configured with `tilo-runtime --connect --device`
+/// does, to work on the device `named`: A reads the line it opens with, as its host does, and
+/// serves it on a thread of its own. The client's end of the socket, once A answered.
 fn connect(a: &OtherDevices, named: &str) -> std::io::Result<UnixStream> {
     let (mut client, mut served) = UnixStream::pair().unwrap();
     let a = a.clone();
@@ -474,7 +474,7 @@ fn answer(lines: &mut impl Iterator<Item = std::io::Result<String>>, id: u64) ->
     }
 }
 
-/// `tilo agent connect --device`: a client of A's login names B, and A serves it MCP, sending
+/// `tilo-runtime --connect --device`: a client of A's login names B, and A serves it MCP, sending
 /// each of its requests to B as the agent's, for the person and never as the person. A name no
 /// device of the person's goes by is refused, saying which devices there are.
 #[test]

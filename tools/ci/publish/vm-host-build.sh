@@ -18,7 +18,7 @@ rpms=${2:?$usage}
 binaries=${3:?$usage}
 out=${4:?$usage}
 cd "$repo_root"
-for bin in tilo-linux-vm tilo-hosted-jail tilo-runtime; do
+for bin in tilo-linux-vm tilo-hosted-jail tilo-runtime tilo tilo-device-admin; do
   [[ -x $binaries/$bin ]] || die "no $bin in $binaries"
 done
 # oci-build.sh builds on this store, so an unpublished snapshot loaded here is the one FROM finds.
@@ -40,7 +40,8 @@ rm -rf "$context"
 mkdir -p "$context/bin" "$context/etc" "$context/os/containers/tilo-vm-host" \
   "$context/os/etc/containers/registries.d" "$context/keys/release"
 cp os/containers/tilo-vm-host/Containerfile "$context/"
-cp "$binaries/tilo-linux-vm" "$binaries/tilo-hosted-jail" "$binaries/tilo-runtime" "$context/bin/"
+cp "$binaries/tilo-linux-vm" "$binaries/tilo-hosted-jail" "$binaries/tilo-runtime" \
+  "$binaries/tilo" "$binaries/tilo-device-admin" "$context/bin/"
 cp os/containers/tilo-vm-host/hosted-jail.json os/containers/tilo-vm-host/entrypoint.sh \
   "$context/os/containers/tilo-vm-host/"
 mkdir -p "$context/os/usr/libexec"

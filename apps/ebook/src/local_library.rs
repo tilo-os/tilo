@@ -6,7 +6,6 @@ use std::path::{Component, Path, PathBuf};
 
 use ui::framework::ViewCx;
 use ui::storage::{Scope, Settings, SettingsSchema};
-use ui::tilo_resource::{self, Model, Refusal, resource};
 
 const MAX_ENTRIES: usize = 200;
 const MAX_PATH_BYTES: usize = 4096;
@@ -20,52 +19,6 @@ pub struct Stored {
     books: BTreeMap<String, PathBuf>,
     #[serde(default)]
     watched_folders: Vec<PathBuf>,
-}
-
-tilo_resource::json_model!(Stored);
-
-/// Where each device opens the library's books from, by device: a resource
-/// Books keeps beside the library in the workspace. A path names a file on
-/// one device, so each device reads and writes only its own entry.
-#[derive(Model, Clone, Debug, Default, PartialEq)]
-pub struct BookFiles {
-    pub devices: BTreeMap<String, Stored>,
-}
-
-impl BookFiles {
-    /// What the resource holds: where each device opens the library's books from.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the resource as it reads any app's resource, and
-    /// a named item is read from the resource's table or by the read its own
-    /// type gives it.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "ebook.files",
-    read_content = BookFiles::read_document
-)]
-impl BookFiles {
-    /// `device`'s grants and watched folders are now `kept`.
-    #[action(housekeeping)]
-    pub fn keep(
-        &mut self,
-        device: String,
-        #[param("The device's book files and watched folders, as it stores them")]
-        kept: serde_json::Value,
-    ) -> Result<(), Refusal> {
-        let kept: Stored = serde_json::from_value(kept)
-            .map_err(|error| Refusal::new(format!("not a device's book files: {error}")))?;
-        self.devices
-            .insert(device, LocalLibrary::from_stored(&kept).stored());
-        Ok(())
-    }
 }
 
 #[derive(Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -99,27 +52,6 @@ impl LocalLibrary {
     pub(crate) fn open(cx: &ViewCx<crate::resource::Ebook>) -> Self {
         let workspace = cx.workspace().unwrap_or_default();
         let settings = cx.settings::<DeviceBookFiles>();
-        if !settings.get().by_workspace.contains_key(&workspace)
-            && let Some(device) = cx.device()
-        {
-            let opener = cx.resource_opener::<BookFiles>(ui::apps::EBOOK);
-            match opener.legacy_member_state() {
-                Ok(Some(previous)) => {
-                    if let Some(held) = previous.devices.get(device)
-                        && let Err(error) = settings.update(|state| {
-                            state
-                                .by_workspace
-                                .entry(workspace.clone())
-                                .or_insert_with(|| Self::from_stored(held).stored());
-                        })
-                    {
-                        tracing::warn!(%error, "could not restore local book files");
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => tracing::warn!(%error, "could not read earlier local book files"),
-            }
-        }
         Self::load(settings.settings().clone(), workspace)
     }
 

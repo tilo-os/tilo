@@ -362,11 +362,6 @@ pub struct Instance {
     /// for is left where it was, never opened as a page of its own.
     pressed_shows: Vec<(u64, String)>,
     ask: Option<crate::host::Waiting>,
-    /// The account an origin waits on the person's yes to sign in to, while the Ask bar asks
-    /// about it.
-    sign_in: Option<(crate::origin::SharedOrigin, String)>,
-    /// The sign-ins the person declined: not asked again while the window is open.
-    declined_sign_ins: BTreeSet<String>,
     settle_due: bool,
     sink: Option<Box<dyn OutsideSink>>,
     /// The outside services the package's types with an origin are kept in step with.
@@ -480,8 +475,6 @@ impl Instance {
             pressed_opens: Vec::new(),
             pressed_shows: Vec::new(),
             ask: None,
-            sign_in: None,
-            declined_sign_ins: BTreeSet::new(),
             settle_due: false,
             sink: Some(
                 config
@@ -1257,59 +1250,8 @@ impl Instance {
         });
     }
 
-    /// Ask the person about the first account an origin waits on their yes to sign in to, while
-    /// the Ask bar asks about no run. Whether the Ask bar changed.
-    fn ask_sign_ins(&mut self) -> bool {
-        if self.ask.is_some() {
-            return false;
-        }
-        let origins: Vec<_> = self.origins.borrow().clone();
-        let waiting = origins.iter().find_map(|origin| {
-            let asks = origin.try_borrow().map(|origin| origin.asks()).ok()?;
-            asks.into_iter()
-                .find(|account| !self.declined_sign_ins.contains(account))
-                .map(|account| (Rc::clone(origin), account))
-        });
-        match (&self.sign_in, waiting) {
-            (None, None) => false,
-            (Some((_, shown)), Some((_, account))) if *shown == account => false,
-            (Some(_), None) => {
-                // Signed in, or no longer an account: nobody waits on the person.
-                self.sign_in = None;
-                self.out.push(ToUi::Ask(None));
-                true
-            }
-            (_, Some((origin, account))) => {
-                let action = self.platform.phrase(
-                    "tilolang-ask-sign-in",
-                    &[("account".to_owned(), account.clone())],
-                );
-                let invoker = self
-                    .host()
-                    .and_then(|host| host.package(&self.app))
-                    .map_or_else(
-                        || self.app.clone(),
-                        |package| {
-                            let key = tilolang::messages::key_of(&package.meta.app);
-                            let said = self.platform.phrase(&key, &[]);
-                            if said == key {
-                                package.meta.title
-                            } else {
-                                said
-                            }
-                        },
-                    );
-                self.out.push(ToUi::Ask(Some(ui::Ask { action, invoker })));
-                self.sign_in = Some((origin, account));
-                true
-            }
-        }
-    }
-
     /// Show the Ask bar for what `waiting` waits on.
     fn ask(&mut self, waiting: crate::host::Waiting) {
-        // A run's ask goes first: a sign-in still waiting is asked again after it.
-        self.sign_in = None;
         let suggestion = &waiting.suggestion;
         let action = self
             .host()
@@ -2242,18 +2184,6 @@ impl Instance {
     }
 
     fn answer(&mut self, answer: ui::Answer) {
-        if let Some((origin, account)) = self.sign_in.take() {
-            // The workspace's rule asks each time it is used: "Always" says yes for as long as
-            // the account's connection lasts, and only its owners change the rule.
-            match answer {
-                ui::Answer::Decline => {
-                    self.declined_sign_ins.insert(account);
-                }
-                ui::Answer::Allow | ui::Answer::Always => origin.borrow_mut().allow(&account),
-            }
-            self.out.push(ToUi::Ask(None));
-            return;
-        }
         let (Some(waiting), Some(host)) = (self.ask.take(), self.host()) else {
             return;
         };
@@ -2456,7 +2386,6 @@ impl Instance {
         let asked = self.take_suspended();
         let opened = self.take_open_requests();
         let pulled = self.poll_origins();
-        let asked = self.ask_sign_ins() || asked;
         let settled = self.settle_outbox();
         // The person's environment — their language, their formats, what the member list calls
         // someone — changed: the boundaries that show what only the window knows run again, and

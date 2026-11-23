@@ -47,6 +47,9 @@ impl<'g> Decision<'g> {
 ///    competing personal or preset rules the strictest answer wins.
 ///    Governance uses the strictest answer at each scope.
 /// 5. No grant: Deny.
+///
+/// A node in a person's view of the layout is decided as one
+/// ([`crate::roles::decided_node`]).
 pub fn decide<'g>(
     grants: impl IntoIterator<Item = &'g Grant>,
     grantees: &[Grantee],
@@ -54,6 +57,7 @@ pub fn decide<'g>(
     kind: ActionKind,
     cx: &Context<'_>,
 ) -> Decision<'g> {
+    let node = &*crate::roles::decided_node(node);
     let governs = node.id_at(Level::Kind) == Some(crate::roles::WORKSPACE_KIND);
     let mut best: Option<&'g Grant> = None;
     for grant in grants {
@@ -233,13 +237,6 @@ impl<'g> Party<'g> {
         self
     }
 
-    /// [`Self::also_as`] for each of `grantees`.
-    #[must_use]
-    pub fn with_also(mut self, grantees: impl IntoIterator<Item = Grantee>) -> Self {
-        self.grantees.extend(grantees);
-        self
-    }
-
     #[must_use]
     pub fn decide(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
         let held = self.decide_grants(node, kind, cx);
@@ -260,44 +257,18 @@ impl<'g> Party<'g> {
     }
 
     fn decide_grants(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
-        if kind == ActionKind::Read && crate::roles::lacks_private_record_owner_at(node, cx) {
+        let node = &*crate::roles::decided_node(node);
+        if kind == ActionKind::Read && crate::roles::lacks_private_record_owner_at(node) {
             return Decision {
                 answer: Answer::Deny,
                 basis: Basis::NoGrant,
             };
         }
-        // A member's own document is that person's alone, whatever the workspace's
-        // grants or owner say ([`Context::with_own_resource`]). A delegation, known
-        // by no person, is decided by its grants as anywhere else.
-        if let Some(member) = cx.owner_of(node)
-            && self
-                .grantees
-                .iter()
-                .any(|grantee| grantee.person_id().is_some())
+        // A person's private record is theirs, not the workspace's owner's: only a grant reaches
+        // it ([`crate::roles::private_record_grants`]).
+        if !crate::roles::in_private_record(node)
+            && self.owns.iter().any(|owned| cx.covers(owned, node))
         {
-            let theirs = self
-                .grantees
-                .iter()
-                .any(|grantee| grantee.person_id() == Some(member));
-            let held_off = self.held_off.iter().copied().find(|grant| {
-                grant.kinds.contains(kind) && cx.covers(&grant.node, node) && grant.is_live(cx)
-            });
-            return match (theirs, held_off) {
-                (true, None) => Decision {
-                    answer: Answer::Allow,
-                    basis: Basis::Owner,
-                },
-                (_, Some(deny)) => Decision {
-                    answer: Answer::Deny,
-                    basis: Basis::Grant(deny),
-                },
-                (false, None) => Decision {
-                    answer: Answer::Deny,
-                    basis: Basis::NoGrant,
-                },
-            };
-        }
-        if self.owns.iter().any(|owned| cx.covers(owned, node)) {
             return Decision {
                 answer: Answer::Allow,
                 basis: Basis::Owner,
@@ -458,7 +429,7 @@ impl<'g> Authority<'g> {
                 .min()
                 .unwrap_or(Answer::Deny)
         };
-        if self.unowned_actor_reads_own_record(node, kind, cx) {
+        if self.unowned_actor_reads_own_record(node, kind) {
             answer = Answer::Deny;
         }
         if let (Some(app), Some(kinds)) = (self.app, self.app_kinds)
@@ -501,13 +472,12 @@ impl Authority<'_> {
                 .any(|at| allows(&at))
     }
 
-    fn unowned_actor_reads_own_record(
-        &self,
-        node: &TreePath,
-        kind: ActionKind,
-        cx: &Context<'_>,
-    ) -> bool {
-        kind == ActionKind::Read && self.people == 0 && cx.owner_of(node).is_some()
+    /// Whether no person acts here and `node` is in a person's private record, which only
+    /// its person reads.
+    fn unowned_actor_reads_own_record(&self, node: &TreePath, kind: ActionKind) -> bool {
+        kind == ActionKind::Read
+            && self.people == 0
+            && crate::roles::in_private_record(&crate::roles::decided_node(node))
     }
 
     /// [`Self::decide`]'s answer alone, made [`Verdict::privileged`] when
@@ -521,7 +491,7 @@ impl Authority<'_> {
         privileged: bool,
         cx: &Context<'_>,
     ) -> Answer {
-        if self.unowned_actor_reads_own_record(node, kind, cx) {
+        if self.unowned_actor_reads_own_record(node, kind) {
             return Answer::Deny;
         }
         let person = self.person.decide(node, kind, cx).answer;

@@ -144,26 +144,15 @@ pub fn install_answer(
         person_uid,
         ..
     } = options;
+    // The device this one asks into the person's workspace, once its service
+    // starts: one of the person's.
+    if let Some(introducer) = &payload.introducer {
+        introducer
+            .checked(&token.user_public_key)
+            .map_err(anyhow::Error::msg)
+            .context("approval named no device of the person's to ask in")?;
+    }
     if kind == EnrollmentKind::HomePeer {
-        // The person's earlier servers, which take this one in among them when
-        // it starts.
-        let earlier = tilo_server_protocol::checked_home_peers(
-            payload
-                .home_peers_json
-                .as_deref()
-                .context("approving device omitted the person's servers")?,
-        )
-        .context("the approval's servers are not a registry this build accepts")?;
-        if earlier
-            .iter()
-            .any(|entry| entry.user_public_key != hex::encode(token.user_public_key))
-        {
-            bail!("approval named another person's servers");
-        }
-        tilo_server_protocol::write_home_peers(
-            &tilo_server_protocol::home_peer_registry_path(identity_root),
-            &earlier,
-        )?;
         // The person's own store, kept here under the identity this machine
         // was enrolled into: it lists every device they certified, which is
         // how a machine with no session of theirs finds the devices it may
@@ -215,6 +204,7 @@ pub fn install_answer(
         )?;
         None
     };
+    tilo_server_protocol::servers::keep_introducer(identity_root, payload.introducer.as_ref())?;
     // Publish the default cert as the completion marker only after the approver
     // durably registers us, authenticates Finalized, and the member projection
     // is fully installed. A crash can therefore only leave a retryable partial
@@ -237,7 +227,9 @@ pub fn install_answer(
         DeviceFleetStore::of_device(paths.clone(), &hex::encode(token.user_public_key))
             .fleet_file(&hex::encode(token.user_public_key))
     });
+    let introducer = tilo_server_protocol::servers::introducer_path(identity_root);
     for output in [
+        payload.introducer.is_some().then_some(introducer.as_path()),
         per_user_cert.parent(),
         Some(per_user_cert.as_path()),
         Some(paths.user_pubkey.as_path()),
@@ -399,7 +391,7 @@ pub fn pair_device(
     let (device, _) = tilo_device_identity::persist::load_or_create_device_key(&paths)?;
     let server_node_id = tilo_server_protocol::server_node_id(&device.to_bytes());
     let label: String = label.chars().take(80).collect();
-    if !tilo_server_protocol::valid_home_peer_label(&label) {
+    if !tilo_server_protocol::valid_device_label(&label) {
         bail!("home-server label must be a printable single-line name");
     }
     let solicitation = postcard::to_stdvec(&PairSolicitation {

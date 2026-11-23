@@ -56,7 +56,7 @@ impl DocumentRead {
                         .person_id()
                         .is_some_and(|person| readers.split(',').any(|reader| reader == person))
                 })
-                && self.allows_route(store, access, &app, &document, None);
+                && self.allows_route(store, access, &app, &document);
         }
         let Some((route, _)) = store.payloads().open_document(body) else {
             return false;
@@ -64,7 +64,7 @@ impl DocumentRead {
         if route.cluster_id != access.workspace() {
             return false;
         }
-        self.allows_route(store, access, &route.app_id, &route.document_id, route.own)
+        self.allows_route(store, access, &route.app_id, &route.document_id)
     }
 
     fn allows_route(
@@ -73,26 +73,15 @@ impl DocumentRead {
         access: &tilo_action_policy::MemberAccess,
         app: &str,
         document: &str,
-        declared: Option<collab_types::OwnResource>,
     ) -> bool {
-        // Key frames do not carry the record's ownership descriptor. Consult retained
-        // metadata even if the original owner has since left the workspace.
+        // Key frames do not name the record they open the keys of beyond its route: consult
+        // retained metadata even if the person whose record it is has since left the workspace.
         let channel = neighbour_wire::app_document_group(app, document);
         if !store.reaches_person(&channel, &self.reader) {
             return false;
         }
-        let own = declared
-            .filter(|own| own.names(document))
-            .or_else(|| collab_types::OwnResource::recognise_in(app, document, &access.policy));
-        if own.as_ref().is_some_and(|own| own.owner != self.reader) {
-            return false;
-        }
-        let owner = own.map(|own| own.person());
-        let mut context = tilo_action_policy::Context::at_time(tilo_clock::wall());
-        if let Some(owner) = &owner {
-            context = context.with_own_resource(document, owner);
-        }
         let node = collab_types::document_node(access.workspace(), app, document);
+        let context = tilo_action_policy::Context::at_time(tilo_clock::wall());
         access.answer(&node, tilo_action_policy::ActionKind::Read, &context)
             == tilo_action_policy::Answer::Allow
     }
@@ -153,7 +142,6 @@ pub(super) async fn handle_open_document(
     let Envelope::OpenDocument {
         workspace_id,
         channel: requested,
-        own,
     } = envelope
     else {
         return Ok(None);
@@ -200,32 +188,18 @@ pub(super) async fn handle_open_document(
                 "device not in workspace membership".into(),
             ));
         }
-        // Another person's own record is theirs alone: this device is told so,
-        // and is sent nothing of it. A host the workspace is attached to keeps
-        // all of the workspace.
-        // The record may be one nothing was written of yet: what the device
-        // says it is counts when it names the requested opened.
+        // A document a set of people reads is theirs alone: another device is
+        // told so, and is sent nothing of it. A host the workspace is attached
+        // to keeps all of the workspace.
         let read = head.unwrap_or(requested);
-        let named_owner = own
-            .as_ref()
-            .filter(|own| own.names(&requested))
-            .map(|own| own.record.owner);
         if !runtime.attached(&peer.device_public_key)
-            && (!runtime.store.reaches_person(&read, &peer.user_public_key)
-                || named_owner.is_some_and(|owner| owner != peer.user_public_key))
+            && !runtime.store.reaches_person(&read, &peer.user_public_key)
         {
             return Ok(Some(Envelope::DocumentOpened {
                 workspace_id,
                 channel: requested,
                 answer: tilo_server_protocol::DocumentAnswer::NotYours,
             }));
-        }
-        // Its person's device opening their own record says whose it is.
-        if let Some(own) = own
-            .as_ref()
-            .filter(|own| own.names(&requested) && own.record.owner == peer.user_public_key)
-        {
-            runtime.store.learn_own(&own.app_id, &own.record);
         }
         let device = &peer.device_public_key;
         runtime.hold_document(device, session.outbound, requested);
@@ -324,7 +298,7 @@ async fn frames_of(
 mod tests {
     use super::*;
     use crate::payloads::{NeighbourPayloads, Route, ShellPayloads as _};
-    use collab_types::{Ed25519PublicKey, OwnResource, SignedOp};
+    use collab_types::{Ed25519PublicKey, SignedOp};
     use tilo_action_policy::{Acting, Actor, MemberAccess, MemberId, Role, WorkspacePolicy};
 
     #[test]
@@ -335,13 +309,13 @@ mod tests {
         let store = crate::store::WorkspaceStore::open(root.path(), workspace, false).unwrap();
         let reader = [1; 32];
         let workspace_owner = [2; 32];
-        let own = OwnResource::new("tube.watch-history", reader).unwrap();
-        let record = own.document_id();
+        let record =
+            tilo_action_policy::roles::member_record("tube.watch-history", &hex::encode(reader))
+                .unwrap();
         let route = Route {
             app_id: APP.to_owned(),
             cluster_id: workspace.to_string(),
             document_id: record.clone(),
-            own: Some(own),
             readers: None,
         };
         let device = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
@@ -392,6 +366,7 @@ mod tests {
         let store = crate::store::WorkspaceStore::open(root.path(), workspace, false).unwrap();
         let mut policy = WorkspacePolicy::new(workspace.to_string(), hex::encode(workspace_owner));
         policy.members.insert(hex::encode(reader), Role::Viewer);
+        let policy = policy.with_current_roles();
         let access = |policy, reader| {
             let actor = Acting::from(Actor::Member(MemberId::person(hex::encode(reader))));
             DocumentRead {
@@ -401,8 +376,9 @@ mod tests {
             }
         };
         assert!(access(policy.clone(), reader).allows(&store, &keys));
+        let mut policy = policy;
         policy.members.remove(&hex::encode(reader));
-        let keeper = access(policy, workspace_owner);
+        let keeper = access(policy.with_current_roles(), workspace_owner);
         assert!(!keeper.allows(&store, &keys));
         assert!(!keeper.allows(&store, &document));
     }

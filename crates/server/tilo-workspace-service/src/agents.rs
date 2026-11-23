@@ -922,17 +922,39 @@ impl ServerAgents {
         self
     }
 
-    /// `agent` of `workspace` as its own approved key, working for `person` ([`agent_caller`]).
+    /// `agent` of `workspace` working for `person`: as its own approved key ([`agent_caller`]),
+    /// or, for a sub-agent, as itself working under the approved key of the agent that heads
+    /// its line of starters ([`Caller::working_under`]). A sub-agent holds no approval of its
+    /// own: what it may do is what its starter's approval lets, and no more.
     ///
     /// # Errors
-    /// As [`agent_caller`].
+    /// As [`agent_caller`]: for a sub-agent, as its head's; and a workspace that keeps no list
+    /// of its agents.
     async fn agent_caller(
         &self,
         workspace: WorkspaceId,
         agent: &Agent,
         person: [u8; 32],
     ) -> Result<Caller, String> {
-        agent_caller(&self.roster, &self.workspaces, workspace, agent, person).await
+        // A sub-agent this server works acts under the approval of the agent that heads its
+        // line; on a person's own device the agent their device hands the turn to is the one
+        // that works.
+        if agent.sub.is_none() || self.roster.is_none() {
+            return agent_caller(&self.roster, &self.workspaces, workspace, agent, person).await;
+        }
+        let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+        let roster = self
+            .read::<WorkspaceAgents>(&workspace.to_string(), AGENTS_OWNER, &record)
+            .await?
+            .ok_or("the workspace keeps no list of its agents")?;
+        // A line whose head is gone ends at the sub-agent itself, which holds no approval:
+        // nothing is done in its name then.
+        let approved = roster.root_of(agent);
+        Ok(
+            agent_caller(&self.roster, &self.workspaces, workspace, approved, person)
+                .await?
+                .working_under(agent.id.0.clone(), &agent.name),
+        )
     }
 
     /// These agents, told the devices this server placed itself for its workspaces' windows:
@@ -1996,7 +2018,7 @@ impl TurnScope {
             .clone()
             .in_agent_session(&session)
             .asked(&turn.asked)
-            .on_roster_turn(cause.clone(), turn.agent.created_at, self.person)
+            .on_roster_turn(cause.clone())
             // On the person's own device, the agent their device hands the turn to, held to the
             // bound its own record carries.
             .on_turn(cause, turn.agent.turn_rules(&self.workspace));

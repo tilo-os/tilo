@@ -574,4 +574,3 @@ d-oqpazwvc = Editor
     .w-subject = Subject
     .w-write-your-message = Write your message
     .w-send = Send
-    .w-add-a-mail-account-in-settings = Add a mail account in Settings first

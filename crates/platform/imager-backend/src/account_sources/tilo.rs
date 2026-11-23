@@ -1,7 +1,7 @@
 //! Bounded metadata-only review of owner-local canonical connections.
 use super::{Inventory, SourceRoots};
-use crate::account_store::ConnectionError;
-use accounts::{Account, AccountStore};
+use crate::account_store::{Accounts, ConnectionError};
+use accounts::Account;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -34,22 +34,17 @@ fn supported(account: &Account) -> bool {
 pub(super) fn discover(roots: &SourceRoots, inventory: &mut Inventory) {
     let root = roots.config.join("tilo");
     let result = (|| {
-        let path = accounts::store_path_in(&root);
-        let text = super::metadata(&roots.config, &path)
-            .map_err(|_| ConnectionError::StorageUnavailable)?;
-        let store: AccountStore = match text {
-            Some(text) => {
-                serde_json::from_str(&text).map_err(|_| ConnectionError::StorageUnavailable)?
-            }
-            None => AccountStore::new(),
-        };
-        if store.all().len() > 64 {
+        // The source home is consented as a wider root, so the `tilo` folder is checked within
+        // it: a redirected folder must not be read.
+        let accounts = Accounts::read_within(&roots.config, &root)?;
+        let all = accounts.all()?;
+        if all.len() > 64 {
             return Err(ConnectionError::InvalidConfiguration);
         }
         let mut ids = std::collections::BTreeSet::new();
         let mut candidates = Vec::new();
-        for account in store.all() {
-            if !ids.insert(account.id.as_str()) {
+        for account in &all {
+            if !ids.insert(account.id.as_str().to_owned()) {
                 return Err(ConnectionError::InvalidConfiguration);
             }
             if account.owner.is_some() || !account.enabled || !supported(account) {

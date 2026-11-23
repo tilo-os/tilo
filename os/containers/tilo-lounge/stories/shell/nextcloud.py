@@ -232,9 +232,9 @@ def on_page(one, operation: str, args: dict | None = None):
                           and names_page(str(a.get("resource", "")))})
         raise Failed(f"Tilo's Browser offers no {operation} on its page; it offers "
                      f"{offered[:60]}") from error
-    answer = one.session.invoke(action["provider"], action["id"], args or {})
+    answer = one.session.invoke_row(action, args or {})
     try:
-        return answer["receipt"]["update"]["output"]["value"]
+        return answer["Completed"]["output"]["value"]
     except (KeyError, TypeError):
         raise Failed(f"the Browser's {operation} on the page answered "
                      f"{json.dumps(answer)[:1500]}") from None

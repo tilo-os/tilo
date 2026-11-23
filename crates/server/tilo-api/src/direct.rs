@@ -30,6 +30,52 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tilo_user_identity::DeviceCert;
 
+/// Whether `key_file`, or the login `token` carries, names this computer's
+/// own device key: only then do a program's calls go to the session the
+/// computer holds. `None` for both is the login itself, and so this
+/// computer's.
+///
+/// A key named outright needs no login here: a login this computer cannot read
+/// is no device key, so the key's calls go their own way rather than failing on
+/// it. Only the key's public half is compared, from the login's certificate, so
+/// naming the device's own key keeps this process dumpable, which the daemon
+/// requires of a caller it admits.
+pub(crate) fn names_this_device(
+    key_file: Option<&std::path::Path>,
+    token: Option<String>,
+) -> anyhow::Result<bool> {
+    let named: Option<[u8; 32]> = match (key_file, token) {
+        (Some(path), _) => {
+            let file = KeyFile::read(path).map_err(anyhow::Error::msg)?;
+            public_key_of(&file.key)
+        }
+        (None, Some(token)) => {
+            crate::store::carried_key(&token).map(|(_, key)| key.key().verifying_key().to_bytes())
+        }
+        (None, None) => return Ok(true),
+    };
+    // A key this computer cannot read is no device key.
+    let Some(named) = named else {
+        return Ok(false);
+    };
+    let Ok(Some(device)) = tilo_device_identity::login::Place::here(crate::client::device_keys())
+        .and_then(|place| tilo_device_identity::login::load_public(&place))
+    else {
+        return Ok(false);
+    };
+    Ok(named == device.cert.device_public_key)
+}
+
+/// The public key the 32-byte hex secret in a key file names.
+fn public_key_of(secret: &str) -> Option<[u8; 32]> {
+    let seed: [u8; 32] = hex::decode(secret).ok()?.try_into().ok()?;
+    Some(
+        ed25519_dalek::SigningKey::from_bytes(&seed)
+            .verifying_key()
+            .to_bytes(),
+    )
+}
+
 /// A key as a file holds it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KeyFile {
@@ -490,6 +536,25 @@ async fn next_data(body: &mut Option<Body>) -> Option<Bytes> {
     }
 }
 
+impl crate::client::Client {
+    /// The workspace a computer serves before a login exists: the one it founded. The device
+    /// actions are called in it, as `tilo login` and setup call them.
+    ///
+    /// # Errors
+    /// The workspaces could not be listed, or the daemon serves none.
+    pub async fn founded_workspace(&self) -> anyhow::Result<String> {
+        self.workspaces()
+            .await?
+            .get("workspaces")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|workspaces| workspaces.first())
+            .and_then(|workspace| workspace.get("id")?.as_str().map(str::to_owned))
+            .ok_or_else(|| {
+                anyhow::anyhow!("this computer's daemon serves no workspace to log in to")
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Answer, AnswerBody, Direct};
@@ -563,7 +628,7 @@ mod tests {
         tokio::spawn(direct.serve(listener));
 
         let client = crate::client::Client::session(&socket);
-        let listed = client.get("/v1/workspaces").await.unwrap();
+        let listed = client.workspaces().await.unwrap();
         assert_eq!(listed["workspaces"][0]["id"], WORKSPACE, "{listed}");
         assert_eq!(listed["workspaces"][0]["name"], "Release", "{listed}");
         let apps = client
@@ -577,7 +642,11 @@ mod tests {
             "the desktop's own actions answer the listing: {apps}"
         );
         let refused = client
-            .post("/v1/workspaces", &serde_json::json!({"name": "Another"}))
+            .account(
+                "account/workspaces",
+                "create",
+                &serde_json::json!({"name": "Another"}),
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -630,16 +699,19 @@ mod tests {
             .unwrap();
         tokio::spawn(connection);
         let request = hyper::Request::builder()
-            .method("GET")
-            .uri("/v1/workspaces")
-            .body(http_body_util::Full::new(hyper::body::Bytes::new()))
+            .method("POST")
+            .uri("/v1/resources/account/workspaces/actions/list")
+            .header("content-type", "application/json")
+            .body(http_body_util::Full::new(hyper::body::Bytes::from_static(
+                b"{}",
+            )))
             .unwrap();
         let answer = sender.send_request(request).await.unwrap();
         assert_eq!(answer.status(), 200, "a request with no key is answered");
         let body = answer.into_body().collect().await.unwrap().to_bytes();
         let listed: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(
-            listed["workspaces"][0]["id"], WORKSPACE,
+            listed["result"]["workspaces"][0]["id"], WORKSPACE,
             "the desktop answers as its own key: {listed}"
         );
         std::fs::remove_dir_all(&dir).unwrap();

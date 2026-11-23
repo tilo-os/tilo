@@ -16,7 +16,7 @@ from story import PROFILE, Failed, Story, until, walk  # noqa: E402
 from real_apps import BUILD  # noqa: E402
 
 SHELL = "so.tilo.session"
-SHOW_PAIR_DEVICE = "session:invite\u001fshow-pair-device"
+SHOW_PAIR_DEVICE = ("session:invite", "show-pair-device")
 SESSION = BUILD / "bin/tilo-session"
 APPS = "tasks file-explorer settings activity"
 
@@ -38,7 +38,7 @@ def steps(story: Story) -> None:
 
     def asks():
         nonlocal link
-        laptop.session.invoke(SHELL, SHOW_PAIR_DEVICE, {})
+        laptop.session.invoke(SHELL, *SHOW_PAIR_DEVICE, {})
         laptop.press("Copy link", "Copy link in Add a device", deadline=12)
         link = until("the Add a device link on the clipboard",
                      lambda: (laptop.session.state_dump() or {}).get("clipboard"), 3, 0.1)

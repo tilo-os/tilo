@@ -687,7 +687,7 @@ impl PlayerState {
                 self.adopt_settings(&setting.get());
                 self.setting = Some(setting);
                 let workspace = cx.workspace().unwrap_or_default();
-                let recents = VideoRecents::open(cx, &workspace);
+                let recents = cx.settings::<VideoRecents>();
                 if let Some(rows) = recents.get().by_workspace.get(&workspace) {
                     self.adopt_recent(rows);
                 }

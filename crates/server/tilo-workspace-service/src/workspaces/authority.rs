@@ -57,6 +57,10 @@ pub(super) enum WorkspaceOp<'a> {
     /// Give the person with this root key a place: a role, which adds them
     /// when they are not in yet, or the workspace's administration.
     Place([u8; 32], MemberPlace),
+    /// Change the place of a person the workspace holds: a role, its administration, or its
+    /// ownership. Someone it does not hold has no place to change; [`Self::Place`] gives them
+    /// one.
+    Role([u8; 32], MemberPlace),
 }
 
 impl WorkspaceOp<'_> {
@@ -79,6 +83,7 @@ impl WorkspaceOp<'_> {
             Self::MakeOwner => "make-owner",
             Self::Change(change) => change.action(),
             Self::Place(..) => roles::governance::ADD_MEMBER,
+            Self::Role(..) => roles::governance::SET_ROLE,
         }
     }
 }
@@ -223,6 +228,22 @@ impl Workspaces {
         }
         tilo_user_identity::verify_device_cert_at(device, now)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
+        // A place is changed on a person the workspace holds, whoever asks: someone it does
+        // not hold is given one by `member.add`, never a place here.
+        if let WorkspaceOp::Role(target, _) = op {
+            let governed = workspace.ok_or_else(|| CollaborationError::new(HOST_PERSON_ONLY))?;
+            let target = hex::encode(target);
+            let policy = governed
+                .peer()
+                .governance()
+                .governed_policy()
+                .map_err(CollaborationError::new)?;
+            if !policy.is_member(&target) {
+                return Err(CollaborationError::new(
+                    tilo_action_policy::Refusal::NotAMember(target).to_string(),
+                ));
+            }
+        }
         if let WorkspaceOp::Host(operation) = op {
             // What anyone may do here is for a host that keeps workspaces of
             // people's own: making theirs, listing them, and keeping their list.
@@ -368,6 +389,17 @@ fn decide_by_governance(
                 }
             };
             return decide_by_governance(workspace, device, op, now, host);
+        }
+        // Who the place belongs to was checked before this host's own authority: one the
+        // workspace holds is moved as [`Self::Place`] moves one.
+        WorkspaceOp::Role(target, place) => {
+            return decide_by_governance(
+                workspace,
+                device,
+                WorkspaceOp::Place(target, place),
+                now,
+                host,
+            );
         }
     };
     decided.map_err(|refusal| CollaborationError::new(refusal.to_string()))?;

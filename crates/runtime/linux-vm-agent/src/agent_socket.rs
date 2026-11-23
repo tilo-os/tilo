@@ -9,12 +9,11 @@
 //! what it is. A connection is the launch's when the kernel says it came from
 //! a process of the tenant's that is the launched program or descends from it
 //! ([`Processes::lineage`]). Anything else, another account's process or one
-//! of no launch that serves agents (a served run, the Browser's session, a
-//! program the tenant started some other way), is closed before a byte of it
-//! is read, and the host never hears of it.
+//! of no launch that serves agents (the Browser's session, a program the
+//! tenant started some other way), is closed before a byte of it is read, and
+//! the host never hears of it.
 //!
-//! As with a served run's endpoints, this is a rule among the guest's ordinary
-//! processes and no wall against the machine's own administrator (the tenant
+//! This is a rule among the guest's ordinary processes and no wall against the machine's own administrator (the tenant
 //! has sudo): what a connection may do is decided on the host, where the
 //! person who decides is.
 
@@ -28,7 +27,7 @@ use std::sync::{Arc, Mutex};
 
 use tilo_lock::MutexRecover as _;
 
-use crate::served::peer::Processes;
+use crate::processes::Processes;
 
 /// The agent socket, and the launches it serves.
 pub struct AgentSocket {

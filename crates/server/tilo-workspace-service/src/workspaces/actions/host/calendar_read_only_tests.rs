@@ -84,12 +84,14 @@ async fn a_calendar_account_connected_for_reading_only_is_never_written_to() {
 
     // Her settings say so, beside the account's server and user name: where
     // a device's Calendar reads the account too.
-    let root = ada.root();
-    let settings = accounts::AccountStore::load_in(&root)
-        .get(&accounts::AccountId::from(account.clone()))
+    let settings = ada
+        .workspaces
+        .workspace_accounts(&ada.workspace_id.to_string())
+        .await
+        .unwrap()
+        .account(&account)
         .expect("the account is kept")
-        .config
-        .clone();
+        .config;
     assert_eq!(settings["read_only"], true, "{settings}");
     assert!(
         settings["calendars"]

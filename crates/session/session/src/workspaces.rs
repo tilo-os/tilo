@@ -9,10 +9,8 @@
 //! person's, so that one made on the laptop appears on the board as well.
 //! That list is the person's workspace directory
 //! ([`WorkspaceDirectory`]), a small CRDT every device of theirs holds: one
-//! resource of the person's own store, which carries it between their devices
-//! as it carries every other resource of theirs, each write signed by the
-//! device that made it and checked against the person's root
-//! ([`Personal::sync_store`]).
+//! resource of the person's own workspace, which carries it between their
+//! devices as any other resource of theirs ([`Personal::sync_store`]).
 //!
 //! The whole session stays on the device. Besides the workspaces it records
 //! what this device is looking at (the active workspace, which strip each
@@ -280,6 +278,9 @@ fn entries_of(directory: &WorkspaceDirectory) -> Vec<(WorkspaceId, WorkspaceMeta
 fn shows_on(entry: &WorkspaceMeta, device: &[u8; 32]) -> bool {
     !entry.kept_off_devices.contains(device)
 }
+
+/// The resource of the person's own workspace their list of workspaces is kept in.
+pub(crate) const WORKSPACES_RESOURCE: (&str, &str) = ("so.tilo.identity", "identity.workspaces");
 
 impl Personal {
     /// Ask `workspace` 's host again after [`ASK_AGAIN_AFTER`]: it did not take this device in.
@@ -707,7 +708,11 @@ impl Personal {
         handle: &DesktopHandle,
         unknown_here: &dyn Fn(WorkspaceId) -> bool,
     ) -> Adoption {
-        let entries = entries_of(&self.directory);
+        let own = tilo_server_protocol::servers::person_workspace_id(
+            &self.identity.device_cert.user_public_key,
+        );
+        let mut entries = entries_of(&self.directory);
+        entries.retain(|(workspace, _)| workspace.to_string() != own);
         let mut adoption = Adoption::default();
         let present: Vec<WorkspaceId> =
             handle.read(|tree| tree.workspaces.iter().map(Workspace::id).collect());
@@ -883,14 +888,15 @@ impl Personal {
         true
     }
 
-    /// Bring the list and the person's own store together: take in what their other devices wrote
-    /// there, and write the list there when the store lacks something this device holds. The store
-    /// carries it to their other devices, and admits a write only from a device their root
-    /// certified. Returns whether another device's write moved this list.
+    /// Bring the list and the person's own workspace together: take in what their other devices
+    /// wrote there, and write the list there when the workspace lacks something this device holds.
+    /// The workspace carries it to their other devices. Returns whether another device's write
+    /// moved this list.
     ///
-    /// Cheap when neither the store nor the list moved since the last call, which every pass makes.
-    pub(crate) fn sync_store(&mut self, personal: &tilo_peer_state::PersonalSync) -> bool {
-        let revision = *personal.changes().borrow();
+    /// Cheap when neither the workspace nor the list moved since the last call, which every pass
+    /// makes.
+    pub(crate) fn sync_store(&mut self, store: &crate::person_resources::PersonResources) -> bool {
+        let revision = *store.changes().borrow();
         let heads = self.directory.heads();
         if self
             .synced
@@ -899,11 +905,11 @@ impl Personal {
         {
             return false;
         }
-        let held = personal.read(|store| store.person_resource(tilo_peer_state::WORKSPACES_KIND));
+        let held = store.document(WORKSPACES_RESOURCE);
         let taken = match held.as_deref().map(|bytes| self.directory.merge(bytes)) {
             Some(Ok(taken)) => taken,
             Some(Err(error)) => {
-                tracing::warn!(%error, "the person's list of workspaces in their store does not read");
+                tracing::warn!(%error, "the person's list of workspaces in their own workspace does not read");
                 false
             }
             None => false,
@@ -917,14 +923,16 @@ impl Personal {
             None => !self.directory.heads().is_empty(),
         };
         if owed {
-            let whole = collab_types::DocumentMutation::Snapshot(self.directory.save());
-            if let Err(error) = personal.publish(|store, key, now| {
-                store.publish_person_resource(tilo_peer_state::WORKSPACES_KIND, &whole, key, now)
-            }) {
-                tracing::warn!(%error, "the person's list of workspaces was not written to their store");
-            }
+            let bytes = self.directory.save();
+            store.edit_document(WORKSPACES_RESOURCE, move |document| {
+                let mut source =
+                    automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+                tilo_automerge::ApplyIncoming::merge_incoming(document, &mut source)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            });
         }
-        self.synced = Some((*personal.changes().borrow(), self.directory.heads()));
+        self.synced = Some((*store.changes().borrow(), self.directory.heads()));
         taken
     }
 
@@ -945,8 +953,16 @@ impl Personal {
             .into_iter()
             .map(|(workspace, _)| workspace)
             .collect();
+        // The person's own workspace holds what is theirs alone (their devices, their settings,
+        // this list): Settings shows what is in it, and the shell never shows it as a workspace.
+        let own = tilo_server_protocol::servers::person_workspace_id(
+            &self.identity.device_cert.user_public_key,
+        );
         let mut moved = false;
         for (workspace, entry) in listed {
+            if workspace.to_string() == own {
+                continue;
+            }
             let host = entry.host.host.writes_for();
             let Ok(hint) = postcard::to_allocvec(&entry.host) else {
                 continue;
@@ -1634,11 +1650,12 @@ impl crate::Shared {
             // list names the device hosting a workspace, never the one that happens to hold it
             // here.
             personal.refresh_hosts(self.engine.as_deref());
-            let store = self.sync.as_ref().and_then(|sync| sync.personal());
-            let store = store.as_deref().map(crate::personal::Personal::sync);
+            let store = self.sync.as_ref().and_then(|sync| sync.person_resources());
             // What the person's other devices wrote to the list is taken in before this session's
             // pass is written over it, so the pass reconciles against their list.
-            let mut news = store.is_some_and(|store| personal.sync_store(store));
+            let mut news = store
+                .as_ref()
+                .is_some_and(|store| personal.sync_store(store));
             if let Some(hosted) = hosted {
                 news |= personal.take_hosted(hosted.take_listed());
             }
@@ -1709,9 +1726,9 @@ impl crate::Shared {
                 }
             }
             self.settle_seed(&mut personal, hosted);
-            // What this pass wrote to the list goes to the person's store, which carries it to their
-            // other devices.
-            if let Some(store) = store {
+            // What this pass wrote to the list goes to the person's own workspace, which carries it
+            // to their other devices.
+            if let Some(store) = &store {
                 news |= personal.sync_store(store);
             }
             self.keep_readable(
@@ -2046,26 +2063,9 @@ impl crate::Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::personal::linked::store_of;
     use tilo_desktop_model::{IdMinter, Workspace, WorkspaceId};
     use tilo_desktop_surface::seed_tree;
-    use tilo_peer_state::PersonalSync;
     use tilo_user_identity::DeviceCert;
-
-    /// One of the person's devices: its list and its own store.
-    type Device<'a> = (&'a mut Personal, &'a PersonalSync);
-
-    /// `to` takes in what `from` keeps of the list: `from` writes its list to its store, the link
-    /// between the two devices carries the store as it does between two sessions — who `from` is,
-    /// then every resource of the person's it holds — and `to` takes its store's list in. Whether
-    /// `to`'s list moved.
-    fn hand_over(from: Device<'_>, to: Device<'_>) -> bool {
-        let (from_list, from_store) = from;
-        let (to_list, to_store) = to;
-        from_list.sync_store(from_store);
-        crate::personal::linked::hand(from_store, to_store);
-        to_list.sync_store(to_store)
-    }
 
     /// The list as a later session opens it.
     fn open(identity: tilo_network_actor::DeviceIdentity, state: Option<&Path>) -> Personal {
@@ -2395,254 +2395,6 @@ mod tests {
                 ),
                 None,
                 "a list naming another host waits for the host it names"
-            );
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn a_workspace_follows_the_persons_list_onto_and_off_this_device;
-
-        phase a_workspace_made_on_another_device_opens_here_without_joining;
-        {
-            let a_state = tempfile::tempdir().expect("a state directory");
-            let b_state = tempfile::tempdir().expect("a state directory");
-            let a = session();
-            let a_identity = identity(0x11, 0x21, "The laptop");
-            let a_device = a_identity.device_cert.device_public_key;
-            let mut a_list = open(a_identity.clone(), Some(a_state.path()));
-            a_list.publish_local(&a);
-            let a_workspaces = on_shell(&a);
-            let [(a_id, a_name)] = a_workspaces.as_slice() else {
-                panic!("the other device holds one workspace");
-            };
-            let (a_id, a_name) = (*a_id, a_name.clone());
-            let a_store = store_of(&a_identity.device_cert, std::sync::Arc::clone(&a_identity.signer));
-
-            let b = session();
-            let b_identity = identity(0x11, 0x22, "The desktop");
-            let b_device = b_identity.device_cert.device_public_key;
-            let b_store = store_of(&b_identity.device_cert, std::sync::Arc::clone(&b_identity.signer));
-            let mut b_list = open(b_identity, Some(b_state.path()));
-            b_list.publish_local(&b);
-            assert!(
-                hand_over(
-                    (&mut a_list, &a_store),
-                    (&mut b_list, &b_store),
-                ),
-                "the person's own device's list is taken"
-            );
-            // This device's own workspace goes the other way, through the store it wrote it to.
-            let [(b_id, _)] = on_shell(&b)
-                .try_into()
-                .expect("this device holds one workspace of its own");
-            hand_over(
-                (&mut b_list, &b_store),
-                (&mut a_list, &a_store),
-            );
-            assert!(
-                listed(&a_list, b_id).is_some(),
-                "and the person's other device lists this one's"
-            );
-
-            let adoption = b_list.adopt_into(&b, &|_| false);
-            assert_eq!(
-                adoption.enter,
-                vec![ToEnter {
-                    workspace: a_id,
-                    name: a_name.clone(),
-                    host: a_device,
-                    held: false,
-                }],
-                "the workspace made on their other device opens here"
-            );
-
-            // What the session does with it: the session makes the workspace.
-            open_here(&b, a_id, &a_name);
-            let again = b_list.adopt_into(&b, &|_| false);
-            assert!(
-                again.enter.is_empty(),
-                "a workspace now here is not opened again"
-            );
-            // A machine copied from this one holds it on its session as the device it was copied from: it
-            // is entered as this device, at its host, and stays on the shell.
-            let copied = b_list.adopt_into(&b, &|workspace| workspace == a_id);
-            assert_eq!(
-                copied.enter,
-                vec![ToEnter {
-                    workspace: a_id,
-                    name: a_name,
-                    host: a_device,
-                    held: true,
-                }]
-            );
-            assert!(copied.release.is_empty());
-            assert!(on_shell(&b).iter().any(|(id, _)| *id == a_id));
-            b_list.publish_local(&b);
-            assert_eq!(
-                listed(&b_list, a_id).map(|listed| listed.host),
-                Some(Some(a_device)),
-                "it stays hosted by the device that made it, not by this one"
-            );
-            assert_ne!(a_device, b_device, "two devices of the same person");
-        }
-
-        phase a_workspace_taken_off_here_is_taken_off_the_list;
-        {
-            let state = tempfile::tempdir().expect("a state directory");
-            let session = session();
-            let identity = identity(0x11, 0x21, "The laptop");
-            let other =
-                WorkspaceId::parse("1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e").expect("a workspace id");
-            open_here(&session, other, "Book club");
-            let mut personal = open(identity.clone(), Some(state.path()));
-            personal.publish_local(&session);
-            assert!(listed(&personal, other).is_some(), "both are listed");
-
-            let mut tree = session.read(Clone::clone);
-            tree.workspaces.retain(|workspace| workspace.id() != other);
-            session.replace_tree(tree);
-            assert!(personal.publish_local(&session), "the list changed here");
-            assert_eq!(
-                listed(&personal, other),
-                None,
-                "a workspace taken off this session is gone from the list"
-            );
-            let mut reopened = open(identity, Some(state.path()));
-            assert!(!reopened.publish_local(&session));
-            assert_eq!(reopened.agreed.len(), 1, "and it is not brought back");
-        }
-
-        phase a_workspace_gone_from_the_list_is_taken_off_here;
-        {
-            let a_state = tempfile::tempdir().expect("a state directory");
-            let b_state = tempfile::tempdir().expect("a state directory");
-            let a = session();
-            let a_identity = identity(0x11, 0x21, "The laptop");
-            let mut a_list = open(a_identity.clone(), Some(a_state.path()));
-            let other =
-                WorkspaceId::parse("1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e").expect("a workspace id");
-            open_here(&a, other, "Book club");
-            a_list.publish_local(&a);
-
-            let b = session();
-            let b_identity = identity(0x11, 0x22, "The desktop");
-            let (a_store, b_store) = (store_of(&a_identity.device_cert, std::sync::Arc::clone(&a_identity.signer)), store_of(&b_identity.device_cert, std::sync::Arc::clone(&b_identity.signer)));
-            let mut b_list = open(b_identity, Some(b_state.path()));
-            hand_over(
-                (&mut a_list, &a_store),
-                (&mut b_list, &b_store),
-            );
-            let adoption = b_list.adopt_into(&b, &|_| false);
-            for opened in &adoption.enter {
-                open_here(&b, opened.workspace, &opened.name);
-            }
-            assert_eq!(
-                on_shell(&b).len(),
-                3,
-                "this device's own and both of their other device's workspaces are here"
-            );
-
-            // Taken off the other device's session, the list no longer names it.
-            let mut tree = a.read(Clone::clone);
-            tree.workspaces.retain(|workspace| workspace.id() != other);
-            a.replace_tree(tree);
-            a_list.publish_local(&a);
-            hand_over(
-                (&mut a_list, &a_store),
-                (&mut b_list, &b_store),
-            );
-            let adoption = b_list.adopt_into(&b, &|_| false);
-            assert_eq!(
-                adoption.release,
-                vec![other],
-                "a workspace gone from their other device is taken off this session"
-            );
-        }
-
-        phase a_workspace_kept_off_a_device_is_taken_off_its_shell;
-        {
-            let a_state = tempfile::tempdir().expect("a state directory");
-            let b_state = tempfile::tempdir().expect("a state directory");
-            let a = session();
-            let a_identity = identity(0x11, 0x21, "The laptop");
-            let mut a_list = open(a_identity.clone(), Some(a_state.path()));
-            a_list.publish_local(&a);
-            let a_workspaces = on_shell(&a);
-            let [(a_id, _)] = a_workspaces.as_slice() else {
-                panic!("the other device holds one workspace");
-            };
-            let a_id = *a_id;
-
-            let b = session();
-            let b_identity = identity(0x11, 0x22, "The desktop");
-            let b_device = b_identity.device_cert.device_public_key;
-            let mut b_list = open(b_identity.clone(), Some(b_state.path()));
-            b_list.publish_local(&b);
-            let (a_store, b_store) = (store_of(&a_identity.device_cert, std::sync::Arc::clone(&a_identity.signer)), store_of(&b_identity.device_cert, std::sync::Arc::clone(&b_identity.signer)));
-            // Each device's store carries what it holds to the other's.
-            hand_over(
-                (&mut a_list, &a_store),
-                (&mut b_list, &b_store),
-            );
-            hand_over(
-                (&mut b_list, &b_store),
-                (&mut a_list, &a_store),
-            );
-            for opened in b_list.adopt_into(&b, &|_| false).enter {
-                open_here(&b, opened.workspace, &opened.name);
-            }
-            b_list.publish_local(&b);
-            assert!(
-                on_shell(&b).iter().any(|(id, _)| *id == a_id),
-                "both devices hold the workspace"
-            );
-
-            // On the laptop, the person keeps the workspace off the desktop.
-            assert!(
-                a_list.set_shown(a_id, b_device, false),
-                "the choice is a change to their list"
-            );
-            let choices = a_list.device_choices(a_id);
-            let here = choices.iter().find(|choice| choice.here).expect("its row");
-            assert!(here.shown, "the workspace still shows here");
-            let elsewhere = choices
-                .iter()
-                .find(|choice| !choice.here)
-                .expect("the other device's row");
-            assert_eq!(
-                (elsewhere.device, elsewhere.shown, elsewhere.label.as_str()),
-                (b_device, false, "The desktop"),
-                "the control shows the workspace kept off the desktop"
-            );
-            let reopened = open(a_identity, Some(a_state.path()));
-            assert_eq!(
-                reopened.device_choices(a_id),
-                choices,
-                "and keeps showing it: the choice is in their list, kept beside the session"
-            );
-
-            // The sessiontop learns of it and honours it: the workspace leaves its session and is not opened
-            // there again.
-            hand_over(
-                (&mut a_list, &a_store),
-                (&mut b_list, &b_store),
-            );
-            let adoption = b_list.adopt_into(&b, &|_| false);
-            assert_eq!(
-                adoption.release,
-                vec![a_id],
-                "a workspace kept off this device is taken off its session"
-            );
-            let mut tree = b.read(Clone::clone);
-            tree.workspaces.retain(|workspace| workspace.id() != a_id);
-            b.replace_tree(tree);
-            assert!(
-                b_list.adopt_into(&b, &|_| false).enter.is_empty(),
-                "and a session without it does not open it again"
-            );
-            assert!(
-                on_shell(&a).iter().any(|(id, _)| *id == a_id),
-                "the device it shows on still has it"
             );
         }
     }

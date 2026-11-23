@@ -19,7 +19,7 @@ path = "src/lib.rs"
 test-support = ["tilo-workspace-service/test-support"]
 # The workspaces' records and roster agents on the host (`--workspace-documents`):
 # tilo-agent-session, which links every web app, as the app-serving protocol.
-agents = ["web", "tilo-workspace-service/agents", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-workspace-emoji", "dep:collaboration", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs"]
+agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/files", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-workspace-emoji", "dep:collaboration", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs"]
 web = ["tilo-workspace-service/device-keys", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac", "dep:ring"]
 
 [[bin]]
@@ -31,16 +31,8 @@ name = "tilo-server-admin"
 path = "src/admin.rs"
 
 [[bin]]
-name = "tilo-enroll"
-path = "src/enroll.rs"
-
-[[bin]]
 name = "tilo-home-peer-control"
 path = "src/home_peer_control/main.rs"
-
-[[bin]]
-name = "tilo-approve"
-path = "src/approve.rs"
 
 # The host / server daemon.
 #
@@ -106,9 +98,6 @@ iroh.workspace = true
 iroh-base.workspace = true
 # The packet relay this host runs for the pages it serves.
 iroh-relay = { version = "1.0.3", features = ["server"] }
-# A machine with no token shows its enrollment line as a code the console
-# draws, for a camera to read off a screen or a photograph of one.
-qrcode.workspace = true
 
 # Identity + workspace directory + cert-chain verification.
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }

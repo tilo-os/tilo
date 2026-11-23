@@ -541,6 +541,15 @@ pub fn is_foreign(target: &ResourceRef) -> bool {
     target.ty.contains('#')
 }
 
+/// Whether `target` is the workspace's own resource (`workspace.<field>`), which the host reads
+/// afresh at each read ([`crate::Runtime::set_workspace_reading`]).
+#[must_use]
+pub fn is_workspace(target: &ResourceRef) -> bool {
+    target.ty.split_once('#').is_some_and(|(app, ty)| {
+        app == tilolang::workspace::APP && ty == tilolang::workspace::ROOT_TYPE
+    })
+}
+
 /// Whether `target`'s app is one whose code runs here (`Runtime::load_foreign_package`): a
 /// tilolang app, each of whose records the session publishes as a resource of its own. A
 /// description's records (a menu's rows) stand only inside the readings that hold them.

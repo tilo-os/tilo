@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use account_credentials::{Authorization, CredentialError, CredentialStore};
-use accounts::{Account, AccountId, AccountStore, Secret, SecretVault};
+use accounts::{Account, AccountId, Secret, SecretVault};
 use zeroize::Zeroizing;
 
+use crate::account_store::Accounts;
 pub use crate::account_store::ConnectionError;
 pub(super) use crate::account_store::PrivateSecret;
 
@@ -19,6 +20,9 @@ enum ImportPurpose {
 pub struct Connector {
     pub(super) root: PathBuf,
     pub(super) credential_store: CredentialStore,
+    /// The destination's accounts record as it stood when this connector was made, or why it did
+    /// not read. Each edit this connector lands goes into it.
+    pub(super) accounts: Result<Accounts, ConnectionError>,
     #[cfg(any(test, feature = "test-support"))]
     pub(super) spotify_api: Option<String>,
 }
@@ -26,21 +30,35 @@ pub struct Connector {
 impl Connector {
     pub fn new(root: PathBuf) -> Self {
         let credential_store = CredentialStore::for_root(Some(root.clone()));
+        let accounts = Accounts::read(&root);
         Self {
             root,
             credential_store,
+            accounts,
             #[cfg(any(test, feature = "test-support"))]
             spotify_api: None,
         }
     }
 
     pub fn with_credential_store(root: PathBuf, credential_store: CredentialStore) -> Self {
+        let accounts = Accounts::read(&root);
         Self {
             root,
             credential_store,
+            accounts,
             #[cfg(any(test, feature = "test-support"))]
             spotify_api: None,
         }
+    }
+
+    /// The destination's accounts record, or why it did not read.
+    ///
+    /// # Errors
+    /// The projection it was made from did not read.
+    pub fn accounts(&self) -> Result<&Accounts, ConnectionError> {
+        self.accounts
+            .as_ref()
+            .map_err(|_| ConnectionError::StorageUnavailable)
     }
 
     /// Uses the exact grant slot Tilo Music consumes; streaming stays a separate consent.
@@ -60,7 +78,7 @@ impl Connector {
         authorization: Authorization,
     ) -> Result<AccountId, ConnectionError> {
         let id = AccountId::from("music.spotify");
-        if load_store(&self.root)?.get(&id).is_some() {
+        if self.accounts()?.get(id.as_str())?.is_some() {
             return Err(ConnectionError::AlreadyPresent);
         }
         let mut tokens =
@@ -88,7 +106,7 @@ impl Connector {
         authorization: Authorization,
     ) -> Result<AccountId, ConnectionError> {
         let id = AccountId::from("music.spotify.streaming");
-        if load_store(&self.root)?.get(&id).is_some() {
+        if self.accounts()?.get(id.as_str())?.is_some() {
             return Err(ConnectionError::AlreadyPresent);
         }
         let mut tokens =
@@ -202,7 +220,7 @@ impl Connector {
         } else {
             // Preserve offline copied grants: only an explicit new connection promises this endpoint
             // is ready before target ownership is published.
-            let _ = load_store(&self.root)?;
+            let _ = self.accounts()?.state()?;
             super::dav_readiness::verify(&account, username, &password)?;
             self.persist(account, Secret::password(password.to_string()))
         }
@@ -220,8 +238,7 @@ impl Connector {
     }
 
     fn remove_prepared(&self, id: &AccountId, revoke: bool) -> Result<(), ConnectionError> {
-        let mut store = load_store(&self.root)?;
-        let account = store.get(id).cloned();
+        let account = self.accounts()?.get(id.as_str())?;
         let mut vault = SecretVault::open_in(&self.root);
         if vault.recovery_error().is_some() {
             return Err(ConnectionError::StorageUnavailable);
@@ -236,10 +253,8 @@ impl Connector {
         vault
             .try_save()
             .map_err(|_| ConnectionError::StorageUnavailable)?;
-        store.remove(id);
-        store
-            .save_in(&self.root)
-            .map_err(|_| ConnectionError::StorageUnavailable)
+        self.accounts()?.remove(id.as_str())?;
+        self.accounts()?.project(&self.root)
     }
 
     /// Reseals one configured account with the destination vault's key. A live Secret Service or
@@ -284,11 +299,10 @@ impl Connector {
         }
         let source_pin = crate::migration_directory::PinnedDirectory::open_absolute(source)
             .map_err(|_| ConnectionError::CredentialUnavailable)?;
-        let store = load_store(source)?;
-        let account = store
-            .get(id)
+        let source_accounts = Accounts::read(source)?;
+        let account = source_accounts
+            .get(id.as_str())?
             .filter(|account| account.owner.is_none())
-            .cloned()
             .ok_or(ConnectionError::AccountMissing)?;
         if let Some(reviewed) = reviewed {
             if account.type_id.as_str() != reviewed.type_id
@@ -322,9 +336,11 @@ impl Connector {
                 .ok_or(ConnectionError::CredentialUnavailable)?,
         );
         if let Some(reviewed) = reviewed {
-            let current = load_store(source)?;
-            let current = current.get(id).ok_or(ConnectionError::AccountMissing)?;
-            if super::tilo_sources::fingerprint(current)? != reviewed.metadata_sha256 {
+            let current = Accounts::read(source)?;
+            let current = current
+                .get(id.as_str())?
+                .ok_or(ConnectionError::AccountMissing)?;
+            if super::tilo_sources::fingerprint(&current)? != reviewed.metadata_sha256 {
                 return Err(ConnectionError::AccountMissing);
             }
         }
@@ -407,7 +423,13 @@ impl Connector {
         account: Account,
         secret: Secret,
     ) -> Result<AccountId, ConnectionError> {
-        crate::account_store::persist_import(&self.root, || load_store(&self.root), account, secret)
+        let id = account.id.clone();
+        let kept = account.clone();
+        let record = self.accounts()?.state()?;
+        let _edits = crate::account_store::persist_import(&self.root, &record, account, secret)?;
+        self.accounts()?.keep(&kept)?;
+        self.accounts()?.project(&self.root)?;
+        Ok(id)
     }
 
     pub(super) fn persist(
@@ -415,7 +437,13 @@ impl Connector {
         account: Account,
         secret: Secret,
     ) -> Result<AccountId, ConnectionError> {
-        crate::account_store::persist(&self.root, || load_store(&self.root), account, secret)
+        let id = account.id.clone();
+        let kept = account.clone();
+        let record = self.accounts()?.state()?;
+        let _edits = crate::account_store::persist(&self.root, &record, account, secret)?;
+        self.accounts()?.keep(&kept)?;
+        self.accounts()?.project(&self.root)?;
+        Ok(id)
     }
 }
 
@@ -451,14 +479,4 @@ pub(super) fn rclone_id(candidate: &super::Candidate) -> AccountId {
         "migrated-rclone-{}",
         hex::encode(digest.finalize())
     ))
-}
-
-pub(super) fn load_store(root: &Path) -> Result<AccountStore, ConnectionError> {
-    let path = accounts::store_path_in(root);
-    let data =
-        super::discovery::metadata(root, &path).map_err(|_| ConnectionError::StorageUnavailable)?;
-    match data {
-        None => Ok(AccountStore::new()),
-        Some(data) => serde_json::from_str(&data).map_err(|_| ConnectionError::StorageUnavailable),
-    }
 }

@@ -586,10 +586,10 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
     );
 }
 
-const OFFLOAD_TEST: &str = "device::services::tests::the_session_hands_its_broker_a_route_that_asks_its_workspaces_devices";
+const OFFLOAD_TEST: &str = "device::services::tests::the_session_hands_its_workspace_service_a_route_that_asks_the_workspaces_devices";
 
 #[test]
-fn the_session_hands_its_broker_a_route_that_asks_its_workspaces_devices() {
+fn the_session_hands_its_workspace_service_a_route_that_asks_the_workspaces_devices() {
     let Some(root) = isolated_root(OFFLOAD_TEST) else {
         return;
     };

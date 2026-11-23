@@ -3391,9 +3391,10 @@ fn a_document_not_here_holds_back_only_itself() {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace,
         document: Some(
-            collab_types::OwnResource::new("chat.drafts", [0xad; 32])
+            collab_types::document::DocumentId::of_member(&"ad".repeat(32), "chat.drafts")
                 .unwrap()
-                .document_id(),
+                .as_str()
+                .to_owned(),
         ),
     };
     manager.join_route(

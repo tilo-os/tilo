@@ -240,7 +240,7 @@ pub const ACCOUNT_APP: &str = "tilo.host";
 /// app or kind of resource, which would let actions they never looked at go
 /// unasked as well.
 ///
-/// What every list of an agent's answers offers, and what its keeper's bound
+/// What every list of an agent's answers offers, and what the workspace's bound
 /// is held to.
 #[must_use]
 pub fn may_give(scope: Option<&AnswerScope>, kind: ActionKind, answer: Answer) -> bool {

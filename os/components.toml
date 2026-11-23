@@ -502,7 +502,7 @@ features = [
   "model-providers/runtime-engine", "calendar/runtime-engine",
   "clocks/runtime-engine", "contacts/runtime-engine", "messages/runtime-engine",
   "pdf-viewer/runtime-engine", "file-explorer/runtime-engine",
-  "print-centre/runtime-engine", "sheets/runtime-engine", "agent/runtime-engine",
+  "print-centre/runtime-engine", "sheets/runtime-engine",
   "imager/runtime-engine", "browser/runtime-engine",
   "store/runtime-engine", "chat/runtime-engine", "osk/runtime-engine",
 ]
@@ -604,7 +604,7 @@ scope = "vm"
 packages = ["tilo-server"]
 # As the image builds it: the server serves browsers (`run --web`, a node).
 features = ["tilo-server/web"]
-bins = ["tilo-server", "tilo-server-admin", "tilo-enroll", "tilo-home-peer-control"]
+bins = ["tilo-server", "tilo-server-admin", "tilo-home-peer-control"]
 units = ["tilo-server.service"]
 layer = "desktop-binaries"
 files = [
@@ -612,8 +612,6 @@ files = [
   { link = "tilo", to = "/usr/bin/tilo-server" },
   { from = "tilo-server-admin", to = "/usr/libexec/tilo/tilo-server-admin", mode = "0755" },
   { link = "tilo", to = "/usr/bin/tilo-server-admin" },
-  { from = "tilo-enroll", to = "/usr/libexec/tilo/tilo-enroll", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-enroll" },
   { from = "tilo-home-peer-control", to = "/usr/libexec/tilo-home-peer-control", mode = "0755" },
   # A node.
   { from = "@manifest/usr/lib/tilo/node-server.toml", to = "/usr/lib/tilo/node-server.toml", mode = "0644", layer = "desktop-files" },
@@ -624,27 +622,39 @@ files = [
   { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.path", to = "/usr/lib/systemd/system/tilo-node-session@.path", mode = "0644", layer = "desktop-files" },
 ]
 
-# The server image's own server: the daemon, its admin and enroll programs, built
-# without the browser listener a node serves (`web`) and linked from /usr/bin
-# straight to their programs, since the server image carries no `tilo` to answer
-# for them. tools/ci/publish/server-binaries.sh builds it and host-build.sh lays it
-# out from this entry, as a swap into a server does.
+# The server image's own server: the daemon and its admin program, built
+# without the browser listener a node serves (`web`). Their old names in /usr/bin
+# resolve through the image's own tilo (host-tilo-cli), as a desktop's do.
+# tools/ci/publish/server-binaries.sh builds it and host-build.sh lays it out
+# from this entry, as a swap into a server does.
 [[component]]
 name = "host-server"
 kind = "userspace"
 scope = "vm"
 images = ["host"]
 packages = ["tilo-server"]
-bins = ["tilo-server", "tilo-server-admin", "tilo-enroll"]
+bins = ["tilo-server", "tilo-server-admin"]
 units = ["tilo-server.service"]
 layer = "host-binaries"
 files = [
   { from = "tilo-server", to = "/usr/libexec/tilo/tilo-server", mode = "0755" },
-  { link = "../libexec/tilo/tilo-server", to = "/usr/bin/tilo-server" },
+  { link = "tilo", to = "/usr/bin/tilo-server" },
   { from = "tilo-server-admin", to = "/usr/libexec/tilo/tilo-server-admin", mode = "0755" },
-  { link = "../libexec/tilo/tilo-server-admin", to = "/usr/bin/tilo-server-admin" },
-  { from = "tilo-enroll", to = "/usr/libexec/tilo/tilo-enroll", mode = "0755" },
-  { link = "../libexec/tilo/tilo-enroll", to = "/usr/bin/tilo-enroll" },
+  { link = "tilo", to = "/usr/bin/tilo-server-admin" },
+]
+
+# The command line a server logs in with at first boot, spending the ticket left on its
+# volume (tilo-server-firstboot): its own `tilo`, as the server image carries no OS image's.
+[[component]]
+name = "host-tilo-cli"
+kind = "userspace"
+scope = "vm"
+images = ["host"]
+packages = ["tilo-cli"]
+bins = ["tilo"]
+layer = "host-binaries"
+files = [
+  { from = "tilo", to = "/usr/bin/tilo", mode = "0755" },
 ]
 
 [[component]]
@@ -1006,8 +1016,7 @@ files = [
 ]
 
 # The host CLI, so a Tilo dev machine is a developer's machine too: it drives
-# other devices over SSH, or beyond the LAN through tilo-device-admin beside
-# it (os/dev/test-device-admin-reach.sh drives a device that way).
+# other devices over SSH, or beyond the LAN through tilo-device-admin beside it.
 [[component]]
 name = "vm-cli"
 kind = "userspace"

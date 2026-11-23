@@ -14,9 +14,11 @@ import { Contract, ContractError } from "./openapiContract.ts";
 
 const contract = new Contract();
 
+const HOOKS = "/v1/workspaces/11111111-2222-3333-4444-555555555555/webhooks";
+
 function call(
   method = "GET",
-  path = "/v1/workspaces",
+  path = HOOKS,
   options: { query?: Record<string, string>; body?: string; contentType?: string } = {},
 ): Recorded {
   return {
@@ -36,7 +38,7 @@ function answer(body: unknown, status = 200): Response {
   });
 }
 
-const LISTED = { workspaces: [{ id: "11111111-2222-3333-4444-555555555555", name: "jane-doe" }] };
+const LISTED = { webhooks: [{ id: "h1", url: "https://example.test/hook", events: [] }] };
 
 async function refused(call: Recorded, response: Response, match: RegExp): Promise<void> {
   let caught: unknown;
@@ -60,19 +62,19 @@ describe("the openapi contract", () => {
 
   it("refuses a method the path does not route", async () => {
     await refused(
-      call("PATCH", "/v1/workspaces", { body: "{}", contentType: "application/json" }),
+      call("PATCH", HOOKS, { body: "{}", contentType: "application/json" }),
       answer({}),
       /declares no PATCH/,
     );
   });
 
   it("refuses an answer with an undeclared property", async () => {
-    const listed = { workspaces: [{ id: "x", name: "jane-doe", bogus: 1 }] };
+    const listed = { webhooks: [{ id: "x", url: "https://x", events: [], bogus: 1 }] };
     await refused(call(), answer(listed), /bogus is not a property the spec names/);
   });
 
   it("refuses an answer short a required property", async () => {
-    await refused(call(), answer({ workspaces: [{ id: "x" }] }), /has no `name`/);
+    await refused(call(), answer({ webhooks: [{ id: "x", events: [] }] }), /has no `url`/);
   });
 
   it("refuses a refusal shaped like something else", async () => {
@@ -80,16 +82,16 @@ describe("the openapi contract", () => {
   });
 
   it("refuses a body with an undeclared property", async () => {
-    const sent = JSON.stringify({ name: "x", bogus: true });
+    const sent = JSON.stringify({ url: "https://x", bogus: true });
     await refused(
-      call("POST", "/v1/workspaces", { body: sent, contentType: "application/json" }),
-      answer({ id: "x", name: "x" }, 201),
+      call("POST", HOOKS, { body: sent, contentType: "application/json" }),
+      answer({ id: "x", url: "https://x", events: [] }, 201),
       /body\.bogus is not a property/,
     );
   });
 
   it("refuses a query parameter the route does not declare", async () => {
-    await refused(call("GET", "/v1/workspaces", { query: { bogus: "1" } }), answer(LISTED), /does not declare/);
+    await refused(call("GET", HOOKS, { query: { bogus: "1" } }), answer(LISTED), /does not declare/);
   });
 
   it("refuses an answer short its content type", async () => {

@@ -439,6 +439,12 @@ pub struct ActionPalette {
     bypass_fuzzy: bool,
     /// More results are still coming ([`Self::set_searching`]).
     searching: bool,
+    /// The rows shown answer an earlier query than the one typed ([`Self::set_stale`]).
+    stale: bool,
+    /// Whether the rows are drawn dimmed as stale: they fade down when kept over a query still
+    /// being answered, as data that went out of date ([`crate::motion::CrossFade::arrive`]), and
+    /// the rows that replace them come in at full strength.
+    stale_dim: crate::motion::CrossFade<bool>,
     /// What the field says while nothing is typed; a host names the source it searches ("Search
     /// files…").
     query_placeholder: String,
@@ -691,6 +697,8 @@ impl ActionPalette {
             host_index: ListIndex::default(),
             bypass_fuzzy: false,
             searching: false,
+            stale: false,
+            stale_dim: crate::motion::CrossFade::new(false),
             query_placeholder: widget_text("palette-placeholder"),
             host_step: None,
             saved_host_query: String::new(),
@@ -2554,13 +2562,59 @@ impl ActionPalette {
         self.field
             .draw_child(scene, transform, text_renderer, theme, presence);
         self.draw_facet_chips(scene, transform, text_renderer, theme);
+        let dimmed = self.begin_stale_dim(scene, transform, theme);
         self.results
             .draw_child(scene, transform, text_renderer, theme, presence);
+        if dimmed {
+            scene.pop_layer();
+        }
         if self.controls_node.is_some() {
             self.controls
                 .draw_child(scene, transform, text_renderer, theme, presence);
         }
         pose.end(scene);
+    }
+
+    /// Lay the rows painted next under the stale dim, when they are kept from an earlier query
+    /// ([`Self::set_stale`]); whether a layer was pushed, which the caller pops once the rows are
+    /// painted.
+    pub(crate) fn begin_stale_dim(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+    ) -> bool {
+        let dim = self.follow_stale(theme.motion());
+        if dim <= 0.0 {
+            return false;
+        }
+        let alpha = 1.0 - dim * (1.0 - crate::widget::DISABLED_ALPHA);
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            transform,
+            &self.results.get_rect().inflate(2.0, 2.0),
+        );
+        true
+    }
+
+    /// How dimmed the rows are drawn now, `0..=1`: kept rows of an earlier query fade down as data
+    /// that went out of date, not as a change a hand made.
+    fn follow_stale(&mut self, motion: crate::tokens::EffectiveMotion) -> f32 {
+        let now = crate::motion::frame_now();
+        self.stale_dim.arrive(self.stale, motion, now);
+        let shown = if *self.stale_dim.shown() {
+            self.stale_dim.incoming(now)
+        } else {
+            0.0
+        };
+        let leaving = self
+            .stale_dim
+            .outgoing(now)
+            .filter(|(stale, _)| **stale)
+            .map_or(0.0, |(_, opacity)| opacity);
+        shown.max(leaving).clamp(0.0, 1.0)
     }
 
     pub(crate) fn presentation_widgets(&self) -> (&dyn Widget, &dyn Widget) {

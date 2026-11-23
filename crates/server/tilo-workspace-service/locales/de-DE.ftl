@@ -23,6 +23,10 @@ tilo-servers-set-interface = Eine Netzwerkschnittstelle einrichten
 tilo-servers-release-interface = Eine Netzwerkschnittstelle nicht mehr einrichten
 tilo-servers-report-device-config = Festhalten, was sein Rechner angewendet hat
 tilo-servers-retire-server = Server stilllegen
+tilo-region = Region und Formate
+tilo-region-set-formats = Datums-, Zeit- und Zahlenformate festlegen
+tilo-region-choose-zone = Zeitzone wählen
+tilo-region-browser-zone = Zeitzone des Browsers übernehmen
 tilo-servers-ask-retirement = Einen Server bitten, sich stillzulegen
 # The name a person's own workspace gets when they do not name it, read in
 # their language when they found it.
@@ -43,3 +47,7 @@ model-settings-unreadable = Deine Modelleinstellungen konnten nicht gelesen werd
 model-cannot-take-picture = { $model } liest keine Bilder. Wähle in den Einstellungen ein Modell, das es kann.
 model-workspace-refuses = Dieser Arbeitsbereich lässt seine Inhalte nicht an { $provider } gehen.
 model-day-limit = { $agent } hat das heutige Limit von { $limit } aufgebraucht. Erhöhe das Limit, damit es weitergeht.
+tilo-devices = Deine Geräte
+tilo-devices-keep-device = Ein Gerät der Person behalten
+tilo-devices-keep-fact = Behalten, was ein Gerät über sich sagt
+tilo-devices-keep-wifi = Ein WLAN-Passwort behalten

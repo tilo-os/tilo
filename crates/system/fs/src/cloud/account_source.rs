@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use accounts::sign_ins::{self, Answer, Ask, Held};
-use accounts::{Account, AccountId, AccountStore};
+use accounts::{Account, AccountId};
 use cloud_source::{Credential, CredentialSource};
 use tilo_lock::MutexRecover as _;
 use zeroize::Zeroizing;
@@ -22,7 +22,7 @@ use zeroize::Zeroizing;
 /// The cloud service's file accounts and their sign-ins.
 pub trait AccountSource: Send + Sync {
     /// The file accounts now.
-    fn store(&self) -> AccountStore;
+    fn accounts(&self) -> Vec<Account>;
     /// Call `changed` each time the accounts may have changed, until the returned watch drops.
     fn watch(&self, changed: Box<dyn Fn() + Send + Sync>) -> io::Result<AccountsWatch>;
     /// What `account` signs in with.
@@ -88,9 +88,7 @@ impl Inner {
                 Ok(changed)
             }
             Answer::Refused { error } => Err(io::Error::other(error)),
-            Answer::SignIn { .. } | Answer::Asks { .. } => {
-                Err(io::Error::other("the session answered another ask"))
-            }
+            Answer::SignIn { .. } => Err(io::Error::other(accounts::sign_ins::NOT_ANSWERED)),
         }
     }
 
@@ -111,18 +109,17 @@ impl Inner {
 }
 
 impl AccountSource for SessionAccounts {
-    fn store(&self) -> AccountStore {
+    fn accounts(&self) -> Vec<Account> {
         // Read anew: a removal must not wait for the watch to tell it.
         if let Err(error) = self.inner.fetch(None) {
             tracing::info!(%error, "the session does not tell the file accounts now");
         }
-        let mut store = AccountStore::new();
-        if let Some((_, held)) = self.inner.latest.lock_recover().as_ref() {
-            for held in held {
-                store.upsert(held.account.clone());
-            }
-        }
-        store
+        self.inner
+            .latest
+            .lock_recover()
+            .as_ref()
+            .map(|(_, held)| held.iter().map(|held| held.account.clone()).collect())
+            .unwrap_or_default()
     }
 
     #[allow(
@@ -199,7 +196,6 @@ impl CredentialSource for EntrySignIn {
         let answer = self.inner.ask(&Ask::SignIn {
             workspace,
             item: item.clone(),
-            confirmed: false,
         });
         match answer {
             Ok(Answer::SignIn { secret }) => {
@@ -212,9 +208,7 @@ impl CredentialSource for EntrySignIn {
                     password: secret,
                 })
             }
-            // A mount has no window to ask its person in: a sign-in the workspace's rules ask
-            // about first stays unreleased, said in the log as the session words it.
-            Ok(Answer::Refused { error } | Answer::Asks { question: error }) => {
+            Ok(Answer::Refused { error }) => {
                 tracing::info!(%error, "the session released no sign-in for a file account");
                 Err(cloud_source::Error::Unauthorized)
             }

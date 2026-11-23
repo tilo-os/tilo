@@ -71,8 +71,7 @@ test('the setup prompt is one line: install, log in with the code by the install
   assert.equal(setupPrompt(CODE, {site: 'https://dev.tilo.example'}),
     'Set up Tilo for me: run curl -fsSL https://dev.tilo.example | sh -s login K7Q-MX2P --site https://dev.tilo.example, then do what it tells you.');
   assert.equal(signInPrompt(CODE), 'Sign me in to Tilo: run tilo login K7Q-MX2P, then do what it tells you.');
-  assert.equal(manualCommands(CODE), ['curl -fsSL tilo.sh | sh -s login K7Q-MX2P',
-    'claude mcp add --transport http tilo https://mcp.tilo.sh'].join('\n'));
+  assert.equal(manualCommands(CODE), 'curl -fsSL tilo.sh | sh -s login K7Q-MX2P');
   assert.equal(MCP_URL, 'https://mcp.tilo.sh');
 });
 

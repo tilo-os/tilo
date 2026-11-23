@@ -21,7 +21,3 @@ if [ -n "${TILO_CAPTURE_PINS:-}${TILO_CAPTURE_SIDECAR:-}" ] || [ "${TILO_REQUIRE
 else
     "${CARGO:-cargo}" build --locked --release -p imager --features "$capture_host_feature"
 fi
-# Pairing is native Linux only; all Linux host formats need the canonical helper.
-if [ "$(uname -s)" = Linux ]; then
-    "${CARGO:-cargo}" build --locked --release -p tilo-server --bin tilo-enroll
-fi

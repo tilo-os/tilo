@@ -238,9 +238,18 @@ pub(crate) trait ControlCore: AppCore {
             ordinary.validate(tree.root, &tree.state.doc, self.control_domain())?;
         }
         let target = match (&pending.history_target, &pending.ordinary) {
+            // History is a window's own, and the web build draws no window.
+            #[cfg(not(target_arch = "wasm32"))]
             (Some(target), _) => {
                 self.held_palette_row_unchanged(pending, target)?;
                 target
+            }
+            #[cfg(target_arch = "wasm32")]
+            (Some(_), _) => {
+                return Err(ApiError::Unavailable {
+                    code: "history_target_on_page".into(),
+                    reason: "the web build holds no palette row back to History".into(),
+                });
             }
             (None, Some(ordinary)) => &ordinary.target,
             (None, None) => {
@@ -261,6 +270,7 @@ pub(crate) trait ControlCore: AppCore {
 
     /// Whether the row History held back for `target` still means, resolves and encodes what it
     /// did when held: refused as stale otherwise.
+    #[cfg(not(target_arch = "wasm32"))]
     fn held_palette_row_unchanged(
         &self,
         pending: &crate::action_palette::PendingOperation,

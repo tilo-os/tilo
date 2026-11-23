@@ -171,7 +171,6 @@ fn edit_from_view(
             app: APP.into(),
             document: String::new(),
             envelope,
-            own: None,
             readers: None,
         },
     })
@@ -587,7 +586,6 @@ fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
             app: APP.into(),
             document: String::new(),
             envelope: Box::new(envelope),
-            own: None,
             readers: None,
         },
     }
@@ -1002,7 +1000,6 @@ fn commit_sealed_as(
                     app: APP.into(),
                     document: String::new(),
                     envelope: envelope.clone(),
-                    own: None,
                     readers: None,
                 },
             },
@@ -1491,7 +1488,6 @@ async fn a_draft_under_a_write_its_device_sent_meanwhile_is_saved() {
                         app: APP.into(),
                         document: String::new(),
                         envelope: Box::new(envelope),
-                        own: None,
                         readers: None,
                     },
                 })
@@ -1605,7 +1601,6 @@ async fn an_apps_write_names_the_governance_its_owner_admitted_it_under() {
         cluster_id: WORKSPACE.into(),
         document_id: String::new(),
         envelope,
-        own: None,
         readers: None,
     };
     receiver

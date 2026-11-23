@@ -341,11 +341,14 @@ def asking(ctx, user: str):
     return lambda frame: first_json(control(ctx, user, "raw", json.dumps(frame)))
 
 
-def onboarding_rows(ctx, user: str) -> list[dict] | None:
-    """Setup's action rows, or None while the socket does not answer."""
+def onboarding_rows(ctx, user: str, why: dict | None = None) -> list[dict] | None:
+    """Setup's action rows, or None while the socket does not answer; what it answered
+    instead is kept in `why`, for the report."""
     try:
         rows = listed(asking(ctx, user))
-    except (VmError, ValueError, KeyError, TypeError):
+    except (VmError, ValueError, KeyError, TypeError) as exc:
+        if why is not None:
+            why["last"] = f"{type(exc).__name__}: {str(exc)[:400]}"
         return None
     return [a for a in rows if a.get("application") == SETUP]
 
@@ -368,10 +371,11 @@ def go_through_first_use(ctx, user: str) -> list[str]:
     acknowledged: set[str] = set()
     for _ in range(FIRST_USE_STEPS):
         # A listing, even an empty one, once the socket answers.
-        listed = wait_until(lambda: (rows,) if (rows := onboarding_rows(ctx, user)) is not None else None,
-                            30, interval=1.0)
+        why: dict = {}
+        listed = wait_until(lambda: (rows,) if (rows := onboarding_rows(ctx, user, why)) is not None
+                            else None, 30, interval=1.0)
         if listed is None:
-            raise Unobservable(f"{user}'s control socket does not list actions")
+            raise Unobservable(f"{user}'s control socket does not list actions: {why.get('last')}")
         rows = {r.get("operation"): r for r in listed[0] if r.get("operation")}
         if not rows:
             return done

@@ -1,7 +1,7 @@
 //! Machines the person planned to install, from making the plan through the
-//! session's own action API to the machine finishing its installation: one
-//! person with no server founds their Servers workspace by planning a machine,
-//! the token names an enrollment endpoint of theirs, the machine is taken into
+//! session's own action API to the machine finishing its installation: the
+//! device that made a person's root founds their workspace and plans a machine
+//! in it, the token names an enrollment endpoint of theirs, the machine is taken into
 //! its entry, reads its plan, asks about its disk, another device answers, and
 //! it finishes.
 
@@ -26,6 +26,7 @@ const HOST_RESOURCE: &str = "host.workspaces";
 /// `tilo machine`'s verbs, as the command spells them.
 const PLAN_MACHINE: &str = "machine.plan";
 const ADMIT_MACHINE: &str = "machine.admit";
+const LIST_SERVERS: &str = "machine.servers";
 
 /// A host on `device`'s own endpoint that keeps the workspaces of people's
 /// own, as a device's own workspace service does.
@@ -132,14 +133,10 @@ async fn a_person_with_no_server_plans_a_machine_and_walks_it_through_its_instal
     // holds their Servers workspace.
     let session = own_session(&alice, &phone, &laptop_host).await;
     let admin = person_workspace_id(&alice.user_pk);
-    assert!(
-        !servers::holds_person_workspace(laptop_host.host.workspaces()).await,
-        "the person has no Servers workspace yet"
-    );
 
     // `tilo machine add`: the choices make a plan document, and the session's
-    // own action API writes it into the person's Servers workspace, making
-    // that workspace first.
+    // own action API writes it into the person's Servers workspace. A device
+    // that holds none plans nothing: it waits to be taken in.
     // The machine's own key, as the image hands it one before it is certified.
     let machine_key = hex::encode([0x33_u8; 32]);
     // The token names an enrollment endpoint of theirs: the one derived from
@@ -187,28 +184,49 @@ async fn a_person_with_no_server_plans_a_machine_and_walks_it_through_its_instal
         },
     )
     .unwrap();
-    let said: String = host_action(
+    let arguments = serde_json::json!({
+        "plan": serde_json::to_string(&plan).unwrap(),
+        "label": "cupboard",
+        "token_file": token_file.display().to_string(),
+        "installer_url": install_plan::INSTALLER_URL,
+    });
+    let serde_json::Value::Object(map) = arguments.clone() else {
+        unreachable!("the arguments are an object")
+    };
+    let refused = tilo_server::workspaces::ask_host(
         &session,
-        PLAN_MACHINE,
-        serde_json::json!({
-            "plan": serde_json::to_string(&plan).unwrap(),
-            "label": "cupboard",
-            "token_file": token_file.display().to_string(),
-            "installer_url": install_plan::INSTALLER_URL,
-        }),
+        InvokeRequest {
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: HOST_PROVIDER.into(),
+                address: ActionAddress::new(HOST_RESOURCE.to_owned(), PLAN_MACHINE),
+            },
+            argument: InvokeArgument::Json(map),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        },
     )
-    .await;
+    .await
+    .expect("the host answers");
+    assert!(
+        !matches!(refused, ReceiptStatus::Completed { .. }),
+        "a device without the person's workspace founds none to plan in: {refused:?}"
+    );
+    assert!(!servers::holds_person_workspace(laptop_host.host.workspaces()).await);
+
+    // The laptop made the person's root, so it founds their workspace.
+    servers::found(laptop_host.host.workspaces()).await.unwrap();
+    let said: String = host_action(&session, PLAN_MACHINE, arguments).await;
     assert!(
         said.contains("plan 0123456789abcdef0123456789abcdef"),
         "{said}"
     );
     assert!(said.contains("token "), "the token file is named: {said}");
-    tilo_test_env::within("the Servers workspace to be founded", async {
-        while !servers::holds_person_workspace(laptop_host.host.workspaces()).await {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
     let planned = servers::read(laptop_host.host.workspaces()).await.unwrap();
     assert_eq!(planned.waiting().count(), 1, "the machine waits to install");
 
@@ -371,9 +389,7 @@ async fn a_machine_that_enrolled_with_a_plan_installs_from_it_on_its_first_start
     let nonce = hex::encode([0x5a_u8; 16]);
 
     // The person plans the machine: its entry names the token's nonce.
-    servers::founded(laptop_host.host.workspaces())
-        .await
-        .unwrap();
+    servers::found(laptop_host.host.workspaces()).await.unwrap();
     let plan = install_plan::Choices {
         destination: "tilo-server".to_owned(),
         name: Some("cupboard".to_owned()),
@@ -432,17 +448,8 @@ async fn a_machine_that_enrolled_with_a_plan_installs_from_it_on_its_first_start
     })
     .await;
 
-    // What the enumeration wrote: the plan it must finish installing.
+    // The machine's first start: its entry is its own, under its device key.
     let state = tempfile::tempdir().unwrap();
-    std::fs::write(
-        state.path().join("install-plan.nonce"),
-        format!("{nonce}\n"),
-    )
-    .unwrap();
-    assert_eq!(
-        tilo_server::servers::first_install::recorded_nonce(state.path()).as_deref(),
-        Some(nonce.as_str())
-    );
 
     // The machine's first start: it reports the two drives it has and asks
     // which to install on, since the plan's rule names no drive.
@@ -466,18 +473,11 @@ async fn a_machine_that_enrolled_with_a_plan_installs_from_it_on_its_first_start
     let installing = {
         let workspaces = machine_host.host.workspaces().clone();
         let cert = cupboard.cert.clone();
-        let nonce = nonce.clone();
         let requests = requests.clone();
         let drives = drives.clone();
         tokio::spawn(async move {
-            tilo_server::servers::first_install::install(
-                &workspaces,
-                &cert,
-                &nonce,
-                &drives,
-                &requests,
-            )
-            .await
+            tilo_server::servers::first_install::install(&workspaces, &cert, &drives, &requests)
+                .await
         })
     };
     let entry = entry_where(&laptop_host, &machine_key, |entry| {
@@ -561,7 +561,7 @@ async fn a_desktop_alone_hands_its_first_server_the_servers_workspace() {
     .await;
 
     // The person's own device makes the workspace when it is first needed.
-    servers::founded(desktop_host.host.workspaces())
+    servers::found(desktop_host.host.workspaces())
         .await
         .unwrap();
     assert!(
@@ -616,6 +616,21 @@ async fn a_desktop_alone_hands_its_first_server_the_servers_workspace() {
             .any(|hint| hint.host.device_public_key == nas.device_pubkey()),
         "the server is named among the workspace's holders"
     );
+
+    // Another device of the person lists the server from the document, with
+    // where it is dialled: what `tilo server` and Settings read.
+    let phone = alice.enrol("phone", DeviceCapabilities::member());
+    let session = own_session(&alice, &phone, &desktop_host).await;
+    let listed: Vec<tilo_server_protocol::servers::PersonServer> =
+        host_action(&session, LIST_SERVERS, serde_json::json!({})).await;
+    assert_eq!(
+        listed,
+        vec![tilo_server_protocol::servers::PersonServer {
+            device: hex::encode(nas.device_pubkey()),
+            label: "nas".into(),
+            endpoint: Some(server_host.host.node_addr()),
+        }]
+    );
 }
 
 /// A device of the person without the person's workspace asks the device that
@@ -629,9 +644,7 @@ async fn a_device_asks_its_introducer_into_its_persons_workspace() {
     let desktop = alice.enrol("desktop", DeviceCapabilities::member());
     let laptop_host = own_host(&alice, &laptop).await;
     let asking = own_host(&alice, &desktop).await;
-    servers::founded(laptop_host.host.workspaces())
-        .await
-        .unwrap();
+    servers::found(laptop_host.host.workspaces()).await.unwrap();
     servers::apply(
         laptop_host.host.workspaces(),
         Servers::ENROLL_SERVER.with((
@@ -684,4 +697,65 @@ async fn a_device_asks_its_introducer_into_its_persons_workspace() {
     )
     .await;
     assert!(refused.is_err(), "another person's device is not taken in");
+}
+
+/// A Wi-Fi passphrase one device of the person kept, and what that device says
+/// of itself, reach a device of theirs taken in later through their own
+/// workspace: the new device reads both as the first one wrote them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_device_reads_the_wifi_and_devices_its_person_kept() {
+    use tilo_workspace_service::workspaces::person_workspace::{
+        self,
+        devices::{DEVICES, Devices},
+    };
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let desktop = alice.enrol("desktop", DeviceCapabilities::member());
+    let laptop_host = own_host(&alice, &laptop).await;
+    let desktop_host = own_host(&alice, &desktop).await;
+    servers::found(laptop_host.host.workspaces()).await.unwrap();
+    let network = "ab".repeat(32);
+    let key = hex::encode(laptop.device_pubkey());
+    person_workspace::apply(
+        laptop_host.host.workspaces(),
+        DEVICES,
+        Devices::KEEP_WIFI.with((network.clone(), "0a0b".into())),
+    )
+    .await
+    .unwrap();
+    person_workspace::apply(
+        laptop_host.host.workspaces(),
+        DEVICES,
+        Devices::KEEP_FACT.with((key.clone(), "00".into(), "about".into(), "0c".into())),
+    )
+    .await
+    .unwrap();
+
+    servers::take_in(
+        laptop_host.host.workspaces(),
+        &desktop.cert,
+        &desktop_host.host.node_addr(),
+    )
+    .await
+    .unwrap();
+    tilo_test_env::within("the new device to read what the person kept", async {
+        loop {
+            let read = person_workspace::read::<Devices>(desktop_host.host.workspaces(), DEVICES)
+                .await
+                .unwrap();
+            let wifi = read
+                .wifi
+                .get(&tilo_resource::Id::from_raw(network.clone()))
+                .map(|kept| kept.credential.clone());
+            let about = read
+                .devices
+                .get(&tilo_resource::Id::from_raw(key.clone()))
+                .and_then(|kept| kept.facts.get("about").cloned());
+            if wifi.as_deref() == Some("0a0b") && about.as_deref() == Some("0c") {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
 }

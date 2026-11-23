@@ -122,12 +122,15 @@ async fn written_before_listed_after() {
         &on_server.api,
         &token,
         hyper::Method::POST,
-        "/v1/workspaces",
+        "/v1/resources/account/workspaces/actions/create",
         &json!({"name": "Team"}),
     )
     .await;
-    assert_eq!(status, 201, "{workspace}");
-    let base = format!("/v1/workspaces/{}", workspace["id"].as_str().unwrap());
+    assert_eq!(status, 200, "{workspace}");
+    let base = format!(
+        "/v1/workspaces/{}",
+        workspace["result"]["workspace"]["id"].as_str().unwrap()
+    );
     let writes = [
         ("tasks", "open", json!({})),
         (

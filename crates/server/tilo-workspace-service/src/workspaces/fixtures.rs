@@ -271,6 +271,9 @@ pub struct TestGroupKeys {
     /// The groups a read asked the person's other devices for the frames of, and the epoch the
     /// device held at the time.
     behind: Mutex<Vec<(collab_types::WorkspaceId, u64)>>,
+    /// Whether the key service is not ready: it answers no group until it is unpaused, as a
+    /// device service whose persisted keys are not open yet.
+    paused: std::sync::atomic::AtomicBool,
 }
 
 impl Default for TestGroupKeys {
@@ -280,11 +283,18 @@ impl Default for TestGroupKeys {
             admitted_only: std::sync::atomic::AtomicBool::new(false),
             handed: tokio::sync::watch::Sender::new(0),
             behind: Mutex::default(),
+            paused: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
 
 impl TestGroupKeys {
+    /// Simulate startup of a device service whose persisted keys are not open yet.
+    pub fn pause(&self, paused: bool) {
+        self.paused
+            .store(paused, std::sync::atomic::Ordering::Release);
+    }
+
     /// The keys of a device that opens no group itself: it reads a sealed record only once a
     /// group's keys are handed to it ([`Self::hand`]), as a device that joined a workspace holds
     /// none until the group lets it in.
@@ -355,6 +365,9 @@ impl GroupKeys for TestGroupKeys {
             // The route the endpoint seals for: a workspace's every-member group, or the
             // record's own group when the route names one.
             let _ = readers;
+            if self.paused.load(std::sync::atomic::Ordering::Acquire) {
+                return Some(Err("the fixture's key service is not ready".into()));
+            }
             let group = neighbour_wire::KeyScope::parse(workspace)
                 .expect("a key scope")
                 .group()

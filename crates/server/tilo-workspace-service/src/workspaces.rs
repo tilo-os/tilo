@@ -32,6 +32,7 @@ mod authored;
 mod authority;
 mod bootstrap;
 mod branch;
+mod moderation_history;
 pub use branch::{BranchContent, BranchFileKeys, Branched};
 mod channel_governance;
 mod commit;
@@ -102,10 +103,6 @@ mod writes;
 // workspace runs: a page has no mail connection and no vault of its own.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod person_learned;
-// The person's region and formats and their zone: what a view rendered here for them shows
-// dates in.
-#[cfg(not(target_arch = "wasm32"))]
-mod person_formats;
 #[cfg(not(target_arch = "wasm32"))]
 mod person_models;
 pub use person_models::OpenAiSignIn;
@@ -166,6 +163,8 @@ mod record_authority;
 #[cfg(feature = "agents")]
 pub mod repaired_documents;
 mod resources;
+#[cfg(feature = "agents")]
+pub use resources::RecordFailure;
 mod revocations;
 pub use own::OwnWorkspaceOffer;
 pub(crate) mod sealed_documents;
@@ -189,6 +188,10 @@ mod governed_grants_tests;
 #[cfg(test)]
 mod naming_tests;
 pub mod person_workspace;
+// The person's region and formats and their zone: what a view rendered here for them shows
+// dates in.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod region;
 pub mod servers;
 mod shares;
 #[cfg(test)]
@@ -231,7 +234,9 @@ pub use collaboration::{AddMemberRequest, CollaborationError, GovernanceCompleti
 pub use listing::EntryRefusal;
 pub use pages::PreAdmitRequest;
 use tilo_server_protocol::WorkspaceId;
-pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListMail, WaitListed};
+pub use wait_list::{
+    Mailbox, SealedInvitations, Secrets as WaitListSecrets, WaitListMail, WaitListed,
+};
 
 // The administration vocabulary (the actions' names and answers), under the
 // daemon's historic paths.
@@ -391,6 +396,8 @@ struct GovernedWorkspace {
     member: Option<member::Member>,
     /// The workspace's resources, in the framework's store.
     resources: resources::Resources,
+    /// Legacy Chat moderation has been read completely and imported in this run.
+    moderation_history_checked: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The generation of the base `peer`'s workspace document starts from: `0`
@@ -516,6 +523,7 @@ impl GovernedWorkspace {
             removals: removals::Removals::open(&path)
                 .map_err(|error| format!("removals: {error}"))?,
             resources: resources::Resources::open(&path, entry.workspace_id),
+            moderation_history_checked: std::sync::Arc::default(),
             record: entry,
             peer: Replica::new(peer),
             made_at_ms,
@@ -1100,10 +1108,6 @@ struct WorkspacesInner {
     /// one ([`repaired_documents`]).
     #[cfg(feature = "agents")]
     repairs: repaired_documents::Repairs,
-    /// Where iCloud accounts' calendars are kept, where a test's calendar
-    /// server stands in for iCloud's own ([`person_settings`]).
-    #[cfg(all(feature = "agents", any(test, feature = "test-support")))]
-    icloud_calendars_at: std::sync::RwLock<Option<String>>,
     /// What members asking for content are answered from.
     content: content::ContentSlot,
     /// Channel access requests and commits of members waiting for the device's
@@ -1137,17 +1141,23 @@ struct WorkspacesInner {
     /// The workspaces of people's own, once the host's operator offers them
     /// ([`Workspaces::offer_own_workspaces`]).
     own: std::sync::OnceLock<own::OwnWorkspaces>,
+    /// The trees this service puts files into when no folder of a device holds them
+    /// ([`Workspaces::puts`]).
+    #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
+    puts: std::sync::OnceLock<Arc<crate::files::Puts>>,
     /// Which people each workspace here lists, by person, as its governance
     /// settled last ([`memberships`]).
     memberships: memberships::Memberships,
     /// The owner invitations the host handed out and nobody accepted yet
     /// ([`host_invitations`]).
     owner_invitations: host_invitations::OwnerInvitations,
-    /// The workspace lists people's devices kept here ([`personal`]).
-    personal: personal::PersonalLists,
     /// The sessions of people's devices here, sent their person's workspace
     /// list whenever it changes ([`personal::PersonalPushes`]).
     personal_pushes: personal::PersonalPushes,
+    /// Each person's devices as their own workspace lists them, by device key:
+    /// the name each reads by and whether a revocation here refuses it. Kept
+    /// beside the resource so the host answers a pairing synchronously.
+    device_names: std::sync::Mutex<HashMap<[u8; 32], personal::DeviceNames>>,
     /// How many sessions of each device key are open here now, by key: every
     /// session of every person's, so a record says which of their keys is
     /// here ([`personal`]).
@@ -1286,6 +1296,20 @@ impl Workspaces {
         Some((held, reading.replica.read(read)))
     }
 
+    /// The trees files are put into where this service holds them: the one writer of a
+    /// workspace's tree for a caller that has the content and no folder
+    /// ([`crate::files::Puts`]).
+    #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
+    #[must_use]
+    pub fn puts(&self) -> Arc<crate::files::Puts> {
+        Arc::clone(self.inner.puts.get_or_init(|| {
+            Arc::new(crate::files::Puts::new(
+                self.clone(),
+                self.inner.host.access.state_root().join("files-puts"),
+            ))
+        }))
+    }
+
     /// The channel keys of the device this host runs on, when its embedder
     /// runs that device's channel service beside it: the host asks it for the
     /// records of the workspaces it holds and keeps no keys of its own.
@@ -1372,8 +1396,6 @@ impl Workspaces {
                 telling: person_telling::Telling::default(),
                 #[cfg(feature = "agents")]
                 repairs: repaired_documents::Repairs::default(),
-                #[cfg(all(feature = "agents", any(test, feature = "test-support")))]
-                icloud_calendars_at: std::sync::RwLock::default(),
                 content: content::ContentSlot::default(),
                 channel_notices: std::sync::Mutex::default(),
                 queued_admissions: std::sync::Mutex::default(),
@@ -1386,10 +1408,12 @@ impl Workspaces {
                 entry: wait_list::EntrySettings::default(),
                 releasing: AsyncMutex::new(()),
                 own: std::sync::OnceLock::new(),
+                #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
+                puts: std::sync::OnceLock::new(),
                 memberships: memberships::Memberships::default(),
                 owner_invitations: host_invitations::OwnerInvitations::open(&dir),
-                personal: personal::PersonalLists::new(&dir),
                 personal_pushes: personal::PersonalPushes::default(),
+                device_names: std::sync::Mutex::default(),
                 online: std::sync::Mutex::default(),
                 mcp_server: mcp_server::McpServer::default(),
                 own_address: std::sync::OnceLock::new(),
@@ -1411,6 +1435,7 @@ impl Workspaces {
         // Before any member's session reaches them: what a member reads of
         // the workspace's agents is already all of them.
         this.move_agent_rosters().await;
+        this.follow_moderation_history().await;
         // And what a member's Files reads of the workspace's file tree is all of it.
         this.name_kept_trees().await;
         this.serve_kept_members().await;
@@ -1642,6 +1667,13 @@ impl Workspaces {
         agents.map_err(CollaborationError::new)
     }
 
+    /// The person this server's device belongs to: who it runs the workspace's hosted agents
+    /// as, and who it counts what they spend as.
+    #[must_use]
+    pub fn device_person(&self) -> [u8; 32] {
+        self.inner.host.cert.user_public_key
+    }
+
     /// The device that governs every workspace here: this server's own.
     #[must_use]
     pub fn governor(&self) -> &DeviceCert {
@@ -1765,6 +1797,11 @@ impl Workspaces {
         app: &str,
         record: &str,
     ) -> Result<Option<Vec<u8>>, CollaborationError> {
+        if self.moderation_history_pending(workspace, app, record) {
+            return Err(CollaborationError::new(
+                "the workspace's moderation history is still arriving",
+            ));
+        }
         if collab_types::is_store_document(record) {
             let state = self.workspace(workspace).await?;
             return Ok(state.lock().await.store_document(record));
@@ -1802,9 +1839,8 @@ impl Workspaces {
         Ok(routes)
     }
 
-    /// [`Self::document_routes`] but the members' own records
-    /// ([`collab_types::OwnResource`]): each is that person's alone, no record
-    /// of the workspace's.
+    /// [`Self::document_routes`] but each person's private records
+    /// ([`tilo_action_policy::roles::is_private_record`]).
     ///
     /// # Errors
     /// As [`Self::document_routes`].
@@ -1818,21 +1854,9 @@ impl Workspaces {
         if governed.seals() {
             routes.extend(governed.peer().sealed_routes());
         }
-        routes.retain(|(app, record)| governed.peer().own_resource(app, record).is_none());
+        routes.retain(|(app, record)| !tilo_action_policy::roles::is_private_record(app, record));
         drop(governed);
         Ok(routes)
-    }
-
-    /// Whether `record` of `app` in `workspace` is a member's own
-    /// ([`collab_types::OwnResource`]): their drafts and settings, which the
-    /// host keeps sealed to their devices and never reads. `false` for a
-    /// workspace not governed here.
-    pub async fn own_record(&self, workspace: &str, app: &str, record: &str) -> bool {
-        let Ok(state) = self.workspace(workspace).await else {
-            return false;
-        };
-        let governed = state.lock().await;
-        governed.peer().own_resource(app, record).is_some()
     }
 
     /// The state of `workspace` as this host holds it now: what a channel
@@ -1888,7 +1912,7 @@ impl Workspaces {
 
     /// Every person `workspace` still keeps, by person (hex root): its members that
     /// nothing removed, the server's own person among them. What the server decides who
-    /// acts here by, an agent through its keeper, never what a listing shows: that
+    /// acts here by, an agent through the member it acts for, never what a listing shows: that
     /// leaves the server's own account out ([`Self::membership`]).
     ///
     /// # Errors

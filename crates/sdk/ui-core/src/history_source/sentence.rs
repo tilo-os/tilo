@@ -70,16 +70,14 @@ pub fn wire_author_line(author: &wire::Author) -> String {
 }
 
 /// The badge that names what wrote an attributed change beside the person's
-/// own avatar: the agent tool ("Claude Code"), the app's name, or the
-/// program's name. `None` for the person's own change, for an author whose
-/// change carries no recorded writer, and for any other agent, which is the
-/// author itself and goes by its member name ([`author_parts`]).
+/// own avatar: the app's name or the program's name. `None` for the person's
+/// own change, for an author whose change carries no recorded writer, and for
+/// an agent, which is the author itself and goes by its member name
+/// ([`author_parts`]).
 pub fn writer_badge(author: &HistoryAuthor) -> Option<String> {
     let attribution = author.attribution.as_ref()?;
     match attribution.writer.as_ref()? {
-        fs_protocol::AttributedWriter::Agent { agent, .. } => {
-            agent_tool_name(agent).map(str::to_owned)
-        }
+        fs_protocol::AttributedWriter::Agent { .. } => None,
         fs_protocol::AttributedWriter::App(_) | fs_protocol::AttributedWriter::Program(_) => {
             attribution.writer_label.clone()
         }
@@ -171,7 +169,7 @@ pub fn author_spoken(parts: &AuthorParts) -> String {
 }
 
 /// The hover that names what wrote an attributed change, a field to a line: "External
-/// agent", "Claude Code", "‘Prepare the report’", "Kaiserslautern", "/Reports".
+/// agent", "Scout", "‘Prepare the report’", "Kaiserslautern", "/Reports".
 /// `None` for a change with no recorded writer, whose row names a person.
 pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
     // Each fact on a line of its own: the tooltip lays them out apart, never joined by a glyph.
@@ -198,17 +196,13 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
     let label = attribution.writer_label.as_deref().unwrap_or_default();
     let mut parts = Vec::with_capacity(6);
     match writer {
-        fs_protocol::AttributedWriter::Agent { agent, .. } => {
+        fs_protocol::AttributedWriter::Agent { .. } => {
             parts.push(crate::i18n::widget_format("history-writer-agent", &[]));
-            let tool = agent_tool_name(agent);
-            // The tool, else the agent itself when it is the author.
-            if let Some(tool) = tool {
-                parts.push(tool.to_owned());
-            } else if author.relation == AuthorRelation::Software {
+            // The agent itself when it is the author, then the session's own title.
+            if author.relation == AuthorRelation::Software {
                 parts.push(author.name.clone());
             }
-            // The session's own title, unless it only repeats the tool's name.
-            if !label.trim().is_empty() && Some(label) != tool {
+            if !label.trim().is_empty() {
                 parts.push(format!("‘{label}’"));
             }
         }
@@ -251,17 +245,6 @@ pub(crate) fn acted_for(author: &HistoryAuthor) -> Option<String> {
     (!person.trim().is_empty() && person.trim() != author.name.trim()).then(|| {
         crate::i18n::widget_format("history-acted-for", &[("person", person.to_owned().into())])
     })
-}
-
-/// The name of the coding agent `agent` (`claude` is Claude Code). `None`
-/// for any other agent.
-pub(crate) fn agent_tool_name(agent: &str) -> Option<&'static str> {
-    match agent {
-        "claude" => Some("Claude Code"),
-        "codex" => Some("Codex"),
-        "pi" => Some("pi"),
-        _ => None,
-    }
 }
 
 fn actor_line(name: &str, for_person: Option<&str>, is_reader: bool, task: Option<&str>) -> String {

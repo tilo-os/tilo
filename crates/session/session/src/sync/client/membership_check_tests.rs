@@ -60,7 +60,6 @@ impl Device {
                 hosts: Vec::new(),
                 continuity: Continuity::default(),
                 wake: std::sync::Arc::new(|| ()),
-                personal: None,
                 relays: host.relays(),
                 lan: None,
                 records: crate::platform::records::Changes::default(),

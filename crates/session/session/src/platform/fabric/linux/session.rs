@@ -9,11 +9,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use crate::person_resources::PersonResources;
 use iroh::EndpointId;
 use settings_store::continuity_privacy::ContinuityCapability;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::PersonalFabricPayload;
-use tilo_peer_state::PersonalSync;
 
 use super::live::Live;
 use super::store;
@@ -117,11 +117,12 @@ fn about(label: &str) -> DeviceAbout {
 /// way this device's frames leave.
 pub(crate) struct SessionFabric {
     live: Mutex<Live>,
-    /// The person's own store, where what lasts of each of their devices is kept. A session without
-    /// one keeps nothing of its own and reads only this device.
-    personal: Option<PersonalSync>,
-    /// The person's devices as the store last read, and the store's change count then: read again
-    /// only when the store moved.
+    /// The person's own workspace, where what lasts of each of their devices is kept, and this
+    /// device's certificate there. A session without it keeps nothing of its own and reads only
+    /// this device.
+    personal: Option<(PersonResources, tilo_user_identity::DeviceCert)>,
+    /// The person's devices as the workspace last read, and its change count then: read again
+    /// only when it moved.
     kept: Mutex<Option<(u64, PersonDevices)>>,
     /// Whether what this device says of itself, and the copies it offers, moved since the person's
     /// other devices were last told.
@@ -195,11 +196,11 @@ impl SessionFabric {
     pub(crate) fn new(
         device: DeviceId,
         label: String,
-        personal: Option<PersonalSync>,
+        personal: Option<(PersonResources, tilo_user_identity::DeviceCert)>,
         reach: Reach,
     ) -> Arc<Self> {
-        if let Some(personal) = &personal
-            && let Err(error) = store::keep_own(personal, store::ABOUT, &about(&label))
+        if let Some((resources, cert)) = &personal
+            && let Err(error) = store::keep_own(resources, cert, store::ABOUT, &about(&label))
         {
             tracing::warn!(%error, "what this device is was not kept for the person's devices");
         }
@@ -217,6 +218,13 @@ impl SessionFabric {
             nearby: Mutex::new(None),
             lan: reach.lan,
         })
+    }
+
+    /// The person's own workspace's resources this fabric keeps what lasts of this device in.
+    pub(crate) fn person_resources(&self) -> Option<PersonResources> {
+        self.personal
+            .as_ref()
+            .map(|(resources, _)| resources.clone())
     }
 
     /// This session's Nearby Send takes what the person's devices offer and stream here.
@@ -339,7 +347,7 @@ impl SessionFabric {
     /// outputs it offers in its part of the person's store, when they moved. Nothing is offered
     /// while Media continuity is off.
     fn keep_speakers(&self) {
-        let Some(personal) = &self.personal else {
+        let Some((resources, cert)) = &self.personal else {
             return;
         };
         let local = self.live.lock_recover().local().clone();
@@ -359,7 +367,7 @@ impl SessionFabric {
         if kept.as_ref() == Some(&speakers) {
             return;
         }
-        if let Err(error) = store::keep_own(personal, store::SPEAKERS, &speakers) {
+        if let Err(error) = store::keep_own(resources, cert, store::SPEAKERS, &speakers) {
             tracing::warn!(%error, "this device's speaker groups were not kept");
         }
     }
@@ -401,13 +409,13 @@ impl SessionFabric {
 impl FabricLink for SessionFabric {
     fn devices(&self) -> PersonDevices {
         let mut kept = match &self.personal {
-            Some(personal) => {
-                let seen = *personal.changes().borrow();
+            Some((resources, _)) => {
+                let seen = *resources.changes().borrow();
                 let mut cache = self.kept.lock_recover();
                 match cache.as_ref() {
                     Some((at, devices)) if *at == seen => devices.clone(),
                     _ => {
-                        let (devices, wifi) = store::kept(personal);
+                        let (devices, wifi) = store::kept(resources, &self.user_public_key);
                         let devices = PersonDevices::new(devices, wifi);
                         *cache = Some((seen, devices.clone()));
                         devices
@@ -543,8 +551,8 @@ impl FabricLink for SessionFabric {
         password: &str,
     ) -> Result<(), String> {
         self.require_wifi_settings()?;
-        let Some(personal) = &self.personal else {
-            return Err("this session keeps no store of the person's own".to_owned());
+        let Some((resources, _)) = &self.personal else {
+            return Err("this session keeps nothing of the person's own".to_owned());
         };
         let local = self.live.lock_recover().local().clone();
         // Sealed to every device of the person's their store holds, this one included: a device
@@ -567,7 +575,7 @@ impl FabricLink for SessionFabric {
             },
         )
         .map_err(|error| error.to_string())?;
-        store::keep_wifi(personal, &credential).map(drop)
+        store::keep_wifi(resources, &credential).map(drop)
     }
 
     fn share_wake_routes(&self, routes: Vec<WakeRoute>) {
@@ -612,10 +620,10 @@ impl FabricLink for SessionFabric {
     }
 
     fn share_unlock(&self, unlock: UnlockFabricState) {
-        let Some(personal) = &self.personal else {
+        let Some((resources, cert)) = &self.personal else {
             return;
         };
-        if let Err(error) = store::keep_own(personal, store::UNLOCK, &unlock) {
+        if let Err(error) = store::keep_own(resources, cert, store::UNLOCK, &unlock) {
             tracing::warn!(%error, "this device's disk unlock is not kept");
         }
     }

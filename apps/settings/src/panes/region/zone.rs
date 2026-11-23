@@ -1,9 +1,9 @@
 //! The person's time zone on a page: automatic, from the browser, or one they choose.
 //!
-//! The server their workspace is on keeps it ([`person_formats`]), so the dates their agent reads
-//! of an app are in the zone the page shows them in. Choosing one tells the server and shows it
-//! here at once; Automatic goes back to the browser's. A computer of their own keeps its zone
-//! in the system's Time & date pane instead.
+//! Their own workspace keeps it, through the server of theirs the page is on ([`formats`]), so
+//! the dates their agent reads of an app are in the zone the page shows them in. Choosing one
+//! tells the server and shows it here at once; Automatic goes back to the browser's. A computer
+//! of their own keeps its zone in the system's Time & date pane instead.
 
 #![cfg_attr(
     feature = "tilo-os",
@@ -15,7 +15,7 @@ use std::cell::{Cell, RefCell};
 use ui::LocalState;
 use ui::framework::{Actions, EffectAnswer, EffectCx, Effected};
 use ui::tilo_actions::remote::InvokeArgument;
-use ui::tilo_actions::remote::person_formats::{self, PersonFormats};
+use ui::tilo_actions::remote::formats::{self, Formats};
 use ui::tilo_resource;
 use ui::widget::Dropdown;
 
@@ -116,7 +116,7 @@ impl ZoneArea {
             return;
         }
         *self.reading.borrow_mut() = Some(self.remote.invoke(
-            person_formats::target(person_formats::READ),
+            formats::target(formats::READ),
             InvokeArgument::Json(serde_json::Map::new()),
             None,
         ));
@@ -130,7 +130,7 @@ impl ZoneArea {
             zone.clone().map_or(serde_json::Value::Null, Into::into),
         );
         let call = self.remote.invoke(
-            person_formats::target(person_formats::CHOOSE_ZONE),
+            formats::target(formats::CHOOSE_ZONE),
             InvokeArgument::Json(argument),
             None,
         );
@@ -149,7 +149,7 @@ impl ZoneArea {
         if let Some(read) = read {
             *self.reading.borrow_mut() = None;
             match read.and_then(|kept| {
-                serde_json::from_value::<PersonFormats>(kept).map_err(|error| error.to_string())
+                serde_json::from_value::<Formats>(kept).map_err(|error| error.to_string())
             }) {
                 Ok(kept) => self.keep(kept.chosen_zone),
                 Err(error) => *self.failed.borrow_mut() = Some(error),
@@ -314,7 +314,7 @@ mod tests {
             let InvokeArgument::Json(argument) = &request.argument else {
                 return Pending::ready(Err(ActionCallError::NotPermitted));
             };
-            if request.target == person_formats::target(person_formats::CHOOSE_ZONE) {
+            if request.target == formats::target(formats::CHOOSE_ZONE) {
                 self.asked
                     .lock()
                     .unwrap()
@@ -324,10 +324,10 @@ mod tests {
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned);
             }
-            let kept = PersonFormats {
+            let kept = Formats {
                 chosen_zone: self.chosen.lock().unwrap().clone(),
                 browser_zone: Some("Pacific/Auckland".into()),
-                ..PersonFormats::default()
+                ..Formats::default()
             };
             Pending::ready(Ok(InvocationReceipt {
                 invocation: request.invocation,

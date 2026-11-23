@@ -61,7 +61,7 @@ impl ResourceApp for QueueApp {
     const TITLE: &'static str = "Queue";
 
     fn view(cx: &mut ViewCx<Queue>) -> Element {
-        let watched = cx.person::<Watched>();
+        let watched = cx.profile_resource::<Watched>();
         let shown = watched.map_or_else(
             || "no history".to_owned(),
             |watched| format!("{} watched", watched.with(|state| state.videos.len())),
@@ -75,15 +75,6 @@ fn ada() -> String {
     "ad".repeat(32)
 }
 
-/// The workspace the tests open the app in.
-const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000a";
-
-/// The id of `person`'s own watch history in a workspace.
-fn watched_resource_of(person: &str) -> String {
-    collab_types::OwnResource::of_person(person, "test.watched")
-        .map_or_else(String::new, |own| own.document_id())
-}
-
 fn videos(record: &PersonResource<Watched>) -> Vec<String> {
     let mut videos: Vec<String> = record.with(|state| state.videos.values().cloned().collect());
     videos.sort();
@@ -91,120 +82,23 @@ fn videos(record: &PersonResource<Watched>) -> Vec<String> {
 }
 
 tilo_test_env::scenario! {
-    fn a_record_kept_beside_the_apps_own_is_one_record_in_each_workspace;
-
-    phase a_record_of_a_kind_is_the_same_record_on_each_device_of_the_workspace;
-    {
-        crate::own_kinds::declare("so.tilo.test-queue", &["test.watched"]);
-        let mut laptop = TestApp::<QueueApp>::for_person_in(&ada(), WORKSPACE).unwrap();
-        let mut phone = TestApp::<QueueApp>::for_person_in(&ada(), WORKSPACE).unwrap();
-        let on_laptop = laptop.person::<Watched>().unwrap();
-        let on_phone = phone.person::<Watched>().unwrap();
-        assert!(on_laptop.syncs(), "the workspace has a workspace id");
-        let route = on_laptop.record().route().unwrap();
-        assert_eq!(route, on_phone.record().route().unwrap());
-        assert_eq!(route.app_id, QueueApp::ID);
-        assert_eq!(
-            route.cluster_id.to_string(),
-            WORKSPACE,
-            "the record lives in the workspace the app is open in"
-        );
-        assert_eq!(
-            route.document.as_deref(),
-            Some(watched_resource_of(&ada()).as_str()),
-            "it is Ada's own record there: no other member reads or writes it"
-        );
-
-        // Each device watches something before they meet; the record's genesis
-        // is the same on both, so they merge into one history.
-        on_laptop
-            .apply(&Watched::WATCH.with("on-the-laptop").build(0).unwrap())
-            .unwrap();
-        on_phone
-            .invoke(&Watched::WATCH.with("on-the-phone"))
-            .unwrap();
-        let laptops = on_laptop.record().document().unwrap();
-        on_phone.record().merge_peer_document(laptops).unwrap();
-        let phones = on_phone.record().document().unwrap();
-        on_laptop.record().merge_peer_document(phones).unwrap();
-        assert_eq!(videos(&on_laptop), ["on-the-laptop", "on-the-phone"]);
-        assert_eq!(videos(&on_laptop), videos(&on_phone));
-
-        // The edit is an action of Ada's in the record's history, and her undo
-        // takes back her own step on this device.
-        let version = on_laptop
-            .record()
-            .read(|doc| {
-                tilo_app::tilo_resource::history::versions(&mut doc.clone())
-                    .into_iter()
-                    .filter_map(|version| version.context)
-                    .find(|context| context.invoker.is_some())
-            })
-            .flatten()
-            .expect("the watch is a version of the record");
-        assert_eq!(version.invoker.unwrap().acting.by, MemberId::person(ada()).into());
-        assert!(on_laptop.undo());
-        assert_eq!(videos(&on_laptop), ["on-the-phone"]);
-        assert!(on_laptop.redo());
-
-        // It is a record of its own: the queue the app shows holds nothing of
-        // it.
-        let queue = laptop.peer_document();
-        assert!(!format!("{queue:?}").contains("on-the-laptop"));
-    }
-
-    phase each_workspace_has_its_own_record_of_a_kind;
-    {
-        let mut here = TestApp::<QueueApp>::for_person_in(&ada(), WORKSPACE).unwrap();
-        let mut elsewhere =
-            TestApp::<QueueApp>::for_person_in(&ada(), "00000000-0000-4000-8000-00000000000b").unwrap();
-        let watched_here = here.person::<Watched>().unwrap();
-        watched_here.invoke(&Watched::WATCH.with("here")).unwrap();
-
-        // The app opened in another workspace starts empty, on another route:
-        // nothing routes this workspace's record there.
-        let watched_elsewhere = elsewhere.person::<Watched>().unwrap();
-        assert!(watched_elsewhere.with(|state| state.videos.is_empty()));
-        let (route_here, route_elsewhere) = (
-            watched_here.record().route().unwrap(),
-            watched_elsewhere.record().route().unwrap(),
-        );
-        assert_eq!(
-            route_here.document, route_elsewhere.document,
-            "the same kind of record"
-        );
-        assert_ne!(
-            route_here.cluster_id, route_elsewhere.cluster_id,
-            "in each workspace"
-        );
-
-        // Even handed this workspace's bytes, the other refuses them: they
-        // belong to another workspace.
-        let bytes = watched_here.record().document().unwrap();
-        assert!(
-            watched_elsewhere
-                .record()
-                .merge_peer_document(bytes)
-                .is_err()
-        );
-        assert!(watched_elsewhere.with(|state| state.videos.is_empty()));
-    }
+    fn a_record_kept_beside_the_apps_own_is_the_persons;
 
     phase a_record_of_a_kind_survives_a_relaunch;
     {
         let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
-        app.person::<Watched>()
+        app.profile_resource::<Watched>()
             .unwrap()
             .invoke(&Watched::WATCH.with("kept"))
             .unwrap();
         let mut app = app.reopen().unwrap();
-        assert_eq!(videos(&app.person::<Watched>().unwrap()), ["kept"]);
+        assert_eq!(videos(&app.profile_resource::<Watched>().unwrap()), ["kept"]);
     }
 
     phase the_palette_and_agents_take_back_the_persons_own_steps;
     {
         let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
-        let watched = app.person::<Watched>().unwrap();
+        let watched = app.profile_resource::<Watched>().unwrap();
         watched.invoke(&Watched::WATCH.with("first")).unwrap();
         watched.invoke(&Watched::WATCH.with("second")).unwrap();
         app.harness().relayout();
@@ -329,7 +223,7 @@ tilo_test_env::scenario! {
     phase an_agent_reads_the_persons_own_record_now_and_at_a_version;
     {
         let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
-        let watched = app.person::<Watched>().unwrap();
+        let watched = app.profile_resource::<Watched>().unwrap();
         watched.invoke(&Watched::WATCH.with("first")).unwrap();
         let after_first = watched
             .record()

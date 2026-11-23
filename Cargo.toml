@@ -477,7 +477,6 @@ members = [
     "crates/runtime/tilo-file-provider",
     "crates/runtime/tilo-identity",
     "crates/runtime/tilo-mcp",
-    "crates/runtime/device-mcp",
     "crates/runtime/tilo-runtime",
     # The wasm host layer every wasm host in the tree runs its guests on.
     "crates/runtime/tilo-wasm-host",

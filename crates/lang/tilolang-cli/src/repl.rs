@@ -494,7 +494,7 @@ async fn workspaces(
         return Ok(Ok(entered));
     }
     let listed = client
-        .get("/v1/workspaces")
+        .workspaces()
         .await
         .map_err(|error| error.to_string())?;
     let mut all: Vec<(String, String)> = listed

@@ -51,7 +51,6 @@ fn sealed(peer: &StatePeer, key: &SigningKey, seq: u64, ciphertext: &[u8]) -> Ne
         cluster_id: peer.workspace_id().into(),
         document_id: RECORD.into(),
         envelope: Box::new(envelope),
-        own: None,
         readers: None,
     }
 }

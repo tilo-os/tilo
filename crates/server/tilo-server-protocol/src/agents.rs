@@ -1,14 +1,14 @@
 //! The signing grants of a workspace's roster agents: who an agent is, what it may touch, and
-//! how its keeper asks the host for its grant.
+//! how its runner asks the host for its grant.
 //!
-//! An agent is a device of its keeper. It holds its own device key and a root-signed
-//! `DeviceCert` issued through ordinary device certification (with no capabilities), and a
-//! root-signed [`crate::delegation::Delegation`] naming it an agent, its label and cursor
-//! colour, and the workspace and apps it may act in. The host refuses an agent device outside
-//! its workspace; browsers verify the delegation against the keeper's root before drawing the
-//! agent as "yours".
+//! An agent is a device of its runner, the host's own person. It holds its own device key and a
+//! root-signed `DeviceCert` issued through ordinary device certification (with no
+//! capabilities), and a root-signed [`crate::delegation::Delegation`] naming it an agent, its
+//! label and cursor colour, and the workspace and apps it may act in. The host refuses an agent
+//! device outside its workspace; browsers verify the delegation against the runner's root
+//! before drawing the agent as "yours".
 //!
-//! The keeper asks over `tilo_actions::remote`, from a certified session of the workspace,
+//! The runner asks over `tilo_actions::remote`, from a certified session of the workspace,
 //! addressed to the host that governs it:
 //!
 //! | Resource | Action | Argument | Answer |
@@ -28,7 +28,7 @@ pub const AGENTS_PROVIDER: &str = "agents";
 pub const SUPERVISOR_RESOURCE: &str = "agents";
 /// Prefix of one agent's resource id: `agent:<agent id>`.
 pub const AGENT_RESOURCE_PREFIX: &str = "agent:";
-/// Ask the keeper's approver for a roster agent's grant.
+/// Ask the runner's approver for a roster agent's grant.
 pub const REQUEST_GRANT_ACTION: &str = "request-grant";
 /// Withdraw a grant: the host refuses its device.
 pub const REVOKE_ACTION: &str = "revoke";
@@ -53,7 +53,7 @@ pub struct GrantRequest {
 }
 
 /// The existing roster form of `request-grant`. Its workspace must be the
-/// one that carried the request. The server reads the name and keeper from the roster.
+/// one that carried the request. The server reads the name from the roster.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RosterGrantRequest {

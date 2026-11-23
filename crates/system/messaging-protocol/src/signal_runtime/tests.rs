@@ -23,9 +23,11 @@ fn route() -> Route {
     .unwrap()
 }
 
-fn accounts() -> accounts::AccountStore {
-    let mut accounts = accounts::AccountStore::new();
-    accounts.upsert(accounts::Account::new("tilo-account-a", "signal"));
+fn accounts() -> accounts::person::PersonAccounts {
+    let mut accounts = accounts::person::PersonAccounts::default();
+    accounts
+        .keep(&accounts::Account::new("tilo-account-a", "signal"))
+        .unwrap();
     accounts
 }
 

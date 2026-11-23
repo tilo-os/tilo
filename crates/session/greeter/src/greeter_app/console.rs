@@ -1,5 +1,5 @@
-//! The greeter's console: the same `tilo-control` action protocol the
-//! installer answers, so a caller that cannot see the screen can tell that
+//! The greeter's console: its actions on the action wire, as the installer
+//! serves its own, so a caller that cannot see the screen can tell that
 //! a first boot reached sign-in, which system image it booted, and what the
 //! greeter publishes — without OCR, SSH or a debug service.
 //!
@@ -14,17 +14,19 @@
 //! handlers, which call the same `attempt_login` and choosers.
 
 use automerge::AutoCommit;
-use console_control::{Request, catalog, wire};
+use console_control::ConsoleApp;
 use serde_json::{Value, json};
 use tilo_resource::Effect as _;
-use ui::tilo_actions::{ActionSpec, Availability, EncodedAction, ResourceSpec};
+use ui::tilo_actions::{
+    ActionAddress, ActionFailure, ActionSpec, Availability, EncodedAction, ResourceSpec,
+};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{AuthPhase, GreeterApp};
 use tilo_lock::MutexRecover as _;
 use ui::a11y::AccessibilityRequest;
 
-/// `provider` in `tilo-control` terms.
+/// The provider callers address the greeter's actions at.
 pub const PROVIDER: &str = "greeter";
 
 /// The operation type every greeter action travels under: the declared
@@ -42,6 +44,43 @@ fn refused(code: &'static str, message: impl Into<String>) -> Refused {
 /// queued.
 pub const CONSOLE_WAKE: &str = "\u{1}greeter-console";
 
+/// The greeter as its console answers: what it publishes over the document it draws from.
+pub(super) struct Console<'a> {
+    pub(super) app: &'a mut GreeterApp,
+    pub(super) state: &'a AutoCommit,
+}
+
+impl ConsoleApp for Console<'_> {
+    fn provider(&self) -> &'static str {
+        PROVIDER
+    }
+
+    fn published(&self) -> Vec<ResourceSpec> {
+        ui::resources::resources(self.app, self.state)
+    }
+
+    fn run(
+        &mut self,
+        _address: &ActionAddress,
+        mut encoded: EncodedAction,
+    ) -> Result<Value, Box<ActionFailure>> {
+        let applied = self.app.apply_operation(&encoded);
+        encoded.payload.zeroize();
+        applied.map_err(|(code, message)| {
+            Box::new(ActionFailure {
+                code: code.to_owned(),
+                message,
+                details: None,
+                retryable: false,
+            })
+        })
+    }
+
+    fn state(&self) -> Value {
+        self.app.console_state()
+    }
+}
+
 impl GreeterApp {
     /// Attach the console request queue; `main` starts its endpoints.
     #[must_use]
@@ -54,43 +93,8 @@ impl GreeterApp {
         let Some(console) = self.console.clone() else {
             return;
         };
-        for pending in console.take_pending() {
-            let reply = self.answer_console(pending.line(), state);
-            pending.respond(reply);
-        }
-    }
-
-    /// One request line in, one reply line out.
-    pub fn answer_console(&mut self, line: &str, state: &AutoCommit) -> String {
-        match wire::parse(line) {
-            Err(error) => wire::error("parse_error", &error.0),
-            Ok(Request::Unsupported { op }) => wire::unsupported(&op),
-            Ok(Request::StateDump) => wire::state(&self.console_state()),
-            Ok(Request::Enumerate { query }) => wire::answer(&catalog::enumerate(
-                PROVIDER,
-                &ui::resources::resources(self, state),
-                &query,
-            )),
-            Ok(Request::Invoke { provider, id, args }) => {
-                let admitted = console_control::admit(
-                    PROVIDER,
-                    &ui::resources::resources(self, state),
-                    &provider,
-                    &id,
-                    &args,
-                );
-                match admitted {
-                    Err(refusal) => wire::error(&refusal.code, &refusal.message),
-                    Ok(mut admitted) => {
-                        let reply = match self.apply_operation(&admitted.encoded) {
-                            Ok(answer) => wire::answer(&answer),
-                            Err((code, message)) => wire::error(code, &message),
-                        };
-                        admitted.encoded.payload.zeroize();
-                        reply
-                    }
-                }
-            }
+        for asked in console.take_pending() {
+            asked.answer(&mut Console { app: self, state });
         }
     }
 
@@ -564,9 +568,7 @@ mod tests {
     use crate::greeter_app::AuthScenario;
     use ui::tilo_actions::OperationKind;
 
-    fn ask(app: &mut GreeterApp, line: &str) -> Value {
-        serde_json::from_str(&app.answer_console(line, &AutoCommit::new())).unwrap()
-    }
+    use super::console_tests::{actions, invoke, state};
 
     tilo_test_env::scenario! {
         fn the_console_publishes_the_greeters_state_and_actions;
@@ -574,24 +576,18 @@ mod tests {
         phase the_console_publishes_sign_in_without_synthetic_input;
         {
             let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
-            let state = ask(&mut app, r#"{"op":"state_dump"}"#);
-            assert_eq!(state["state"]["app"], "greeter");
-            assert_eq!(state["state"]["phase"], "sign-in");
-            assert_eq!(state["state"]["accepts_input"], false);
-            let catalogue = ask(&mut app, r#"{"op":"actions_enumerate"}"#);
+            let shown = state(&mut app);
+            assert_eq!(shown["app"], "greeter");
+            assert_eq!(shown["phase"], "sign-in");
+            assert_eq!(shown["accepts_input"], false);
             assert!(
-                catalogue["answer"]["actions"]
-                    .as_array()
-                    .unwrap()
+                actions(&mut app)
                     .iter()
-                    .any(|action| action["id"] == "sign-in@greeter")
+                    .any(|action| action.address.action == "sign-in")
             );
-            let invoked = ask(
-                &mut app,
-                r#"{"op":"actions_invoke","provider":"greeter","id":"sign-in@greeter"}"#,
-            );
+            let invoked = invoke(&mut app, "sign-in", &json!({}));
             assert_eq!(invoked["err"]["code"], "invalid_arguments");
-            let typed = ask(&mut app, r#"{"op":"type","text":"hunter2"}"#);
+            let typed = super::console_tests::line(&mut app, r#"{"op":"type","text":"hunter2"}"#);
             assert_eq!(typed["err"]["code"], "not_implemented");
         }
 
@@ -661,64 +657,60 @@ mod tests {
             // controls without a pointer.
             let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
             app.phase = AuthPhase::Authenticating;
-            let catalogue = ask(&mut app, r#"{"op":"actions_enumerate"}"#);
-            let actions = catalogue["answer"]["actions"].as_array().unwrap();
+            let offered = actions(&mut app);
             for id in [
-                "suspend@greeter",
-                "reboot@greeter",
-                "power-off@greeter",
-                "larger-text@greeter",
-                "high-contrast@greeter",
-                "screen-reader@greeter",
+                "suspend",
+                "reboot",
+                "power-off",
+                "larger-text",
+                "high-contrast",
+                "screen-reader",
             ] {
-                let action = actions
+                let action = offered
                     .iter()
-                    .find(|action| action["id"] == id)
+                    .find(|action| action.address.action == id)
                     .unwrap_or_else(|| panic!("{id} is not published"));
-                assert_eq!(action["available"], true, "{id}");
+                assert_eq!(
+                    action.contract.availability,
+                    Availability::Available,
+                    "{id}"
+                );
             }
 
             for (id, expected) in [
-                ("suspend@greeter", super::super::PowerAction::Suspend),
-                ("reboot@greeter", super::super::PowerAction::Reboot),
-                ("power-off@greeter", super::super::PowerAction::PowerOff),
+                ("suspend", super::super::PowerAction::Suspend),
+                ("reboot", super::super::PowerAction::Reboot),
+                ("power-off", super::super::PowerAction::PowerOff),
             ] {
                 app.last_power_action = None;
-                let reply = ask(
-                    &mut app,
-                    &json!({"op":"actions_invoke","provider":PROVIDER,"id":id}).to_string(),
-                );
+                let reply = invoke(&mut app, id, &json!({}));
                 assert_eq!(reply["answer"]["status"], "accepted", "{id}: {reply}");
                 assert_eq!(app.last_power_action, Some(expected), "{id}");
             }
 
             for (id, enabled, expected) in [
                 (
-                    "high-contrast@greeter",
+                    "high-contrast",
                     true,
                     AccessibilityRequest::HighContrast(true),
                 ),
                 (
-                    "larger-text@greeter",
+                    "larger-text",
                     true,
                     AccessibilityRequest::TextScale(super::super::LARGER_TEXT_SCALE),
                 ),
                 (
-                    "larger-text@greeter",
+                    "larger-text",
                     false,
                     AccessibilityRequest::TextScale(1.0),
                 ),
                 (
-                    "screen-reader@greeter",
+                    "screen-reader",
                     true,
                     AccessibilityRequest::ScreenReader(true),
                 ),
             ] {
-                let reply = ask(
-                    &mut app,
-                    &json!({"op":"actions_invoke","provider":PROVIDER,"id":id,"args":{"enabled":enabled}})
-                        .to_string(),
-                );
+                let reply = invoke(&mut app, id, &json!({ "enabled": enabled }));
                 assert_eq!(reply["answer"]["status"], "accepted", "{id}: {reply}");
                 assert_eq!(
                     ui::widget::Widget::take_accessibility_request(&mut app),
@@ -727,10 +719,7 @@ mod tests {
                 );
             }
             assert_eq!(app.console_state()["screen_reader"], true);
-            let refused = ask(
-                &mut app,
-                r#"{"op":"actions_invoke","provider":"greeter","id":"high-contrast@greeter"}"#,
-            );
+            let refused = invoke(&mut app, "high-contrast", &json!({}));
             assert_eq!(refused["err"]["code"], "invalid_arguments");
         }
 
@@ -739,18 +728,18 @@ mod tests {
             let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
             app.keyboard_focus = true;
             assert_eq!(
-                ask(&mut app, r#"{"op":"state_dump"}"#)["state"]["accepts_input"],
+                state(&mut app)["accepts_input"],
                 true
             );
             app.phase = AuthPhase::Authenticating;
             assert_eq!(
-                ask(&mut app, r#"{"op":"state_dump"}"#)["state"]["accepts_input"],
+                state(&mut app)["accepts_input"],
                 false
             );
             app.phase = AuthPhase::Idle;
             app.keyboard_focus = false;
             assert_eq!(
-                ask(&mut app, r#"{"op":"state_dump"}"#)["state"]["accepts_input"],
+                state(&mut app)["accepts_input"],
                 false
             );
         }
@@ -839,11 +828,7 @@ mod authentication_tests {
         }
     }
 
-    fn invoke(app: &mut GreeterApp, id: &str, args: &Value) -> Value {
-        let line =
-            json!({"op":"actions_invoke","provider":PROVIDER,"id":id,"args":args}).to_string();
-        serde_json::from_str(&app.answer_console(&line, &AutoCommit::new())).unwrap()
-    }
+    use super::console_tests::invoke;
 
     tilo_test_env::scenario! {
         fn session_diagnostics_are_declared_and_reach_the_session_start;
@@ -854,7 +839,7 @@ mod authentication_tests {
             assert!(app.next_sign_in_diagnostics.is_none());
             *app.password_buffer.lock().unwrap() = SECRET.into();
             let options = json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false});
-            let reply = invoke(&mut app, "configure-session-diagnostics@greeter", &options);
+            let reply = invoke(&mut app, "configure-session-diagnostics", &options);
             assert_eq!(reply["answer"]["status"], "accepted");
             assert_eq!(app.console_state()["session_diagnostics"], options);
             assert!(!reply.to_string().contains(SECRET));
@@ -870,20 +855,20 @@ mod authentication_tests {
             );
             let refused = invoke(
                 &mut app,
-                "configure-session-diagnostics@greeter",
+                "configure-session-diagnostics",
                 &json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":false,"gpu_dispatch_timestamps":true}),
             );
             assert_eq!(refused["err"]["code"], "invalid_arguments");
             assert_eq!(app.console_state()["session_diagnostics"], options);
             let refused = invoke(
                 &mut app,
-                "configure-session-diagnostics@greeter",
+                "configure-session-diagnostics",
                 &json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false,"environment":{"TILO_NATIVE_SCENARIO":SECRET}}),
             );
             assert_eq!(refused["err"]["code"], "invalid_arguments");
             assert!(!refused.to_string().contains(SECRET));
             let disabled = json!({"presentation":false,"gpu_stages":false,"gpu_timestamps":false,"gpu_dispatch_timestamps":false});
-            let reply = invoke(&mut app, "configure-session-diagnostics@greeter", &disabled);
+            let reply = invoke(&mut app, "configure-session-diagnostics", &disabled);
             assert_eq!(reply["answer"]["status"], "accepted");
             assert_eq!(
                 GreeterApp::session_env(app.next_sign_in_diagnostics).len(),
@@ -891,8 +876,8 @@ mod authentication_tests {
             );
             assert_eq!(app.console_state()["session_diagnostics"], disabled);
             app.phase = AuthPhase::Authenticating;
-            let refused = invoke(&mut app, "configure-session-diagnostics@greeter", &options);
-            assert_eq!(refused["err"]["code"], "action_unavailable");
+            let refused = invoke(&mut app, "configure-session-diagnostics", &options);
+            assert_eq!(refused["err"]["code"], "refused");
             assert_eq!(app.console_state()["session_diagnostics"], disabled);
             assert!(
                 GreeterApp::for_shot(AuthScenario::PersonalSessions)
@@ -953,7 +938,7 @@ mod authentication_tests {
         let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
         let configured = invoke(
             &mut app,
-            "configure-session-diagnostics@greeter",
+            "configure-session-diagnostics",
             &json!({
                 "presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false
             }),
@@ -1011,7 +996,7 @@ mod authentication_tests {
             );
             let answer = invoke(
                 &mut app,
-                "respond-challenge@greeter",
+                "respond-challenge",
                 &json!({"challenge":first.id.to_string(),"response":"one-time-code"}),
             );
             assert_eq!(answer["answer"]["status"], "accepted");
@@ -1029,14 +1014,14 @@ mod authentication_tests {
             assert!(!state.to_string().contains("one-time-code"));
             let refusal = invoke(
                 &mut app,
-                "respond-challenge@greeter",
+                "respond-challenge",
                 &json!({"challenge":first.id.to_string(),"response":SECRET}),
             );
             assert_eq!(refusal["err"]["code"], "invalid_arguments");
             assert!(!refusal.to_string().contains(SECRET));
             let answer = invoke(
                 &mut app,
-                "respond-challenge@greeter",
+                "respond-challenge",
                 &json!({"challenge":second.id.to_string(),"response":"private-realm"}),
             );
             assert_eq!(answer["answer"]["status"], "accepted");
@@ -1085,7 +1070,7 @@ mod authentication_tests {
             let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
             let updates = start_worker(&mut app, &socket);
             let challenge = await_challenge(&app);
-            let answer = invoke(&mut app, "cancel-authentication@greeter", &json!({}));
+            let answer = invoke(&mut app, "cancel-authentication", &json!({}));
             assert_eq!(answer["answer"]["status"], "accepted");
             assert_eq!(
                 app.phase,
@@ -1096,10 +1081,10 @@ mod authentication_tests {
             assert!(app.console_state()["challenge"].is_null());
             let refusal = invoke(
                 &mut app,
-                "respond-challenge@greeter",
+                "respond-challenge",
                 &json!({"challenge":challenge.id.to_string(),"response":SECRET}),
             );
-            assert_eq!(refusal["err"]["code"], "action_unavailable");
+            assert_eq!(refusal["err"]["code"], "refused");
             assert!(!refusal.to_string().contains(SECRET));
             ack_tx.send(()).unwrap();
             let mut doc = AutoCommit::new();
@@ -1128,42 +1113,28 @@ mod authentication_tests {
         {
             let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
             let doc = AutoCommit::new();
-            let request = |id: &str, args: Value| {
-                json!({"op":"actions_invoke","provider":PROVIDER,"id":id,"args":args}).to_string()
+            let request = |app: &mut GreeterApp, id: &str, args: Value| {
+                super::console_tests::invoke_in(app, &doc, id, &args)
             };
-            assert!(
-                app.answer_console(
-                    &request("choose-session@greeter", json!({"session":"GNOME"})),
-                    &doc
-                )
-                .contains("accepted")
+            assert_eq!(
+                request(&mut app, "choose-session", json!({"session":"GNOME"}))["answer"]["status"],
+                "accepted"
             );
             assert_eq!(
                 app.sessions[app.selected_session].argv,
                 vec!["/usr/bin/gnome-session"]
             );
-            let refused: Value = serde_json::from_str(&app.answer_console(
-                &request("choose-session@greeter", json!({"session":"/bin/attacker"})),
-                &doc,
-            ))
-            .unwrap();
+            let refused = request(&mut app, "choose-session", json!({"session":"/bin/attacker"}));
             assert_eq!(refused["err"]["code"], "invalid_arguments");
-            let refused: Value = serde_json::from_str(&app.answer_console(
-                &request(
-                    "sign-in@greeter",
-                    json!({"password":SECRET,"username":"root"}),
-                ),
-                &doc,
-            ))
-            .unwrap();
+            let refused = request(
+                &mut app,
+                "sign-in",
+                json!({"password":SECRET,"username":"root"}),
+            );
             assert_eq!(refused["err"]["code"], "invalid_arguments");
             app.phase = AuthPhase::Authenticating;
-            let refused: Value = serde_json::from_str(&app.answer_console(
-                &request("sign-in@greeter", json!({"password":SECRET})),
-                &doc,
-            ))
-            .unwrap();
-            assert_eq!(refused["err"]["code"], "action_unavailable");
+            let refused = request(&mut app, "sign-in", json!({"password":SECRET}));
+            assert_eq!(refused["err"]["code"], "refused");
             assert!(!refused.to_string().contains(SECRET));
             assert!(app.password_buffer.lock().unwrap().is_empty());
         }
@@ -1268,7 +1239,16 @@ mod authentication_tests {
         // The secret is a `Secret` parameter: the published catalogue never
         // carries it; it reaches the handler only inside the in-process
         // operation, as every typed effect's secret does.
-        let catalogue = catalog::enumerate(PROVIDER, &resources, "");
+        let catalogue = super::console_tests::line(
+            &mut app,
+            &ui::tilo_actions::remote::frame_line(
+                ui::tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+                    correlation: 1,
+                    query: ui::tilo_actions::remote::CatalogueQuery::default(),
+                },
+            ),
+        );
+        assert!(catalogue["message"]["CatalogueResponse"]["result"]["Ok"]["rows"].is_array());
         assert!(!catalogue.to_string().contains(SECRET));
         let reply = if route == "surface" {
             let encoded = ui::tilo_actions::api::resolve(
@@ -1294,11 +1274,8 @@ mod authentication_tests {
             .unwrap();
             started.value.unwrap().to_string()
         } else {
-            app.answer_console(
-                &json!({"op":"actions_invoke","provider":PROVIDER,"id":"sign-in@greeter","args":args})
-                    .to_string(),
-                &doc,
-            )
+            super::console_tests::invoke_in(&mut app, &doc, "sign-in", &Value::Object(args))
+                .to_string()
         };
         assert_eq!(app.phase, AuthPhase::Idle);
         assert_eq!(app.failures, 1);
@@ -1307,5 +1284,100 @@ mod authentication_tests {
         assert!(!app.console_state().to_string().contains(SECRET));
         assert!(!String::from_utf8_lossy(&doc.save()).contains(SECRET));
         assert!(matches!(app.notice, super::super::Notice::Error(_)));
+    }
+}
+
+/// Driving the greeter through its console as a caller does: frames in, frames out, answered
+/// by the app on the test's thread.
+#[cfg(test)]
+pub(super) mod console_tests {
+    use super::{Console, GreeterApp, PROVIDER};
+    use automerge::AutoCommit;
+    use serde_json::{Map, Value, json};
+    use ui::tilo_actions::remote::{
+        CatalogueQuery, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+        RemoteActionTarget, frame_line,
+    };
+    use ui::tilo_actions::{ActionAddress, ActionDescriptor};
+
+    /// The answer to one console line, as JSON.
+    pub fn line(app: &mut GreeterApp, line: &str) -> Value {
+        line_in(app, &AutoCommit::new(), line)
+    }
+
+    fn line_in(app: &mut GreeterApp, state: &AutoCommit, line: &str) -> Value {
+        let answer = console_control::ConsoleServer::new(PROVIDER)
+            .exchange(&mut Console { app, state }, line);
+        serde_json::from_str(&answer).unwrap()
+    }
+
+    /// What the greeter shows, as `state_dump` answers it.
+    pub fn state(app: &mut GreeterApp) -> Value {
+        line(app, r#"{"op":"state_dump"}"#)["state"].clone()
+    }
+
+    /// The actions the greeter offers.
+    pub fn actions(app: &mut GreeterApp) -> Vec<ActionDescriptor> {
+        let asked = frame_line(RemoteActionMessage::CatalogueRequest {
+            correlation: 1,
+            query: CatalogueQuery::default(),
+        });
+        let answer = serde_json::to_vec(&line(app, &asked)).unwrap();
+        let Ok(RemoteActionFrame {
+            message:
+                RemoteActionMessage::CatalogueResponse {
+                    result: Ok(page), ..
+                },
+            ..
+        }) = RemoteActionFrame::decode(&answer)
+        else {
+            panic!("no catalogue");
+        };
+        page.rows.into_iter().filter_map(|row| row.action).collect()
+    }
+
+    /// Invoke the greeter's `action` with `args`: `{"answer": ..}` with what it answered, or
+    /// `{"err": {"code", "message"}}` with why it was refused or failed.
+    pub fn invoke(app: &mut GreeterApp, action: &str, args: &Value) -> Value {
+        invoke_in(app, &AutoCommit::new(), action, args)
+    }
+
+    /// [`invoke`] over the document `state`.
+    pub fn invoke_in(
+        app: &mut GreeterApp,
+        state: &AutoCommit,
+        action: &str,
+        args: &Value,
+    ) -> Value {
+        let request = InvokeRequest::plain(
+            RemoteActionTarget {
+                provider: PROVIDER.into(),
+                address: ActionAddress::new(PROVIDER, action),
+            },
+            args.as_object().cloned().unwrap_or_else(Map::new),
+        );
+        let answer = line_in(
+            app,
+            state,
+            &frame_line(RemoteActionMessage::Invoke(request)),
+        );
+        let answer = serde_json::to_vec(&answer).unwrap();
+        let Ok(RemoteActionFrame {
+            message: RemoteActionMessage::Receipt(receipt),
+            ..
+        }) = RemoteActionFrame::decode(&answer)
+        else {
+            panic!("no receipt: {}", String::from_utf8_lossy(&answer));
+        };
+        match receipt.status {
+            ReceiptStatus::Completed { output } => json!({ "answer": output.value }),
+            ReceiptStatus::Failed { error } => {
+                json!({ "err": { "code": error.code, "message": error.message } })
+            }
+            ReceiptStatus::Rejected { error } => {
+                json!({ "err": { "code": error.code(), "message": error.to_string() } })
+            }
+            other => panic!("a console action answers once it ran: {other:?}"),
+        }
     }
 }

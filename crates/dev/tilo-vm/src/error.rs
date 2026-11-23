@@ -566,7 +566,7 @@ impl CliError {
             }
             Self::Scenario { phase, artifacts, console, .. } => {
                 let inspect = if phase == "install" || phase == "boot-installer" {
-                    format!("rerun with --keep and read the installer yourself while it runs: tilo-control --socket {console} state-dump --pretty   (actions list shows every step and why it is blocked)")
+                    format!("rerun with --keep and read the installer yourself while it runs: tilo-control --socket {console} state-dump --pretty")
                 } else {
                     "rerun with --keep to keep the target disk for inspection".to_owned()
                 };

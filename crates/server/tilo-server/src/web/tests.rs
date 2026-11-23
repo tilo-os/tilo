@@ -112,10 +112,10 @@ fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
         content_links: Arc::default(),
         presence: Arc::new(live::Authority::new(server.web_context().server.clone())),
         page_errors: page_errors::PageErrors::default(),
-        shelf: shelf::Shelf::opening(
+        shelf: Arc::new(shelf::Shelf::opening(
             server.state_root().join("invitations"),
             tilo_clock::unix_now_ns(),
-        ),
+        )),
         site: site.and_then(Site::new),
         login_codes: Arc::new(login_codes::LoginCodes::new(None)),
         wait_list: Arc::default(),

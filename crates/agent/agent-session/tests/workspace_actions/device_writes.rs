@@ -190,7 +190,7 @@ async fn a_group_whose_write_is_refused_is_answered_failed() {
     let (status, made) = json_of(
         api.dispatch(
             &hyper::Method::POST,
-            "/v1/workspaces",
+            "/v1/resources/account/workspaces/actions/create",
             "",
             &headers(&pairs),
             json!({"name": "Imported"}).to_string().as_bytes(),
@@ -198,8 +198,11 @@ async fn a_group_whose_write_is_refused_is_answered_failed() {
         .await,
     )
     .await;
-    assert_eq!(status, 201, "{made}");
-    let workspace = made["id"].as_str().unwrap().to_owned();
+    assert_eq!(status, 200, "{made}");
+    let workspace = made["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     // A person who reads the workspace joins it: a key of theirs reaches it as
     // them, and the workspace takes no write of theirs.
     let (status, invited) = json_of(
@@ -368,7 +371,7 @@ async fn a_members_key_takes_what_its_role_lets_it() {
     let (status, made) = json_of(
         api.dispatch(
             &hyper::Method::POST,
-            "/v1/workspaces",
+            "/v1/resources/account/workspaces/actions/create",
             "",
             &headers(&pairs),
             json!({"name": "Shared"}).to_string().as_bytes(),
@@ -376,8 +379,11 @@ async fn a_members_key_takes_what_its_role_lets_it() {
         .await,
     )
     .await;
-    assert_eq!(status, 201, "{made}");
-    let workspace = made["id"].as_str().unwrap().to_owned();
+    assert_eq!(status, 200, "{made}");
+    let workspace = made["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let mut owner_mcp = Mcp {
         api: &api,
         path: format!("/w/{workspace}/mcp"),

@@ -69,6 +69,24 @@ fn an_entry_join_enters_the_workspace_its_path_names_and_asks_nothing() {
     }
 }
 
+/// The host a site names, as its web entry serves it: the host's `web-host.json` line, as text.
+fn named_host() -> tilo_server_protocol::web::PageHost {
+    tilo_server_protocol::web::PageHost {
+        server_cert: tilo_user_identity::DeviceCert {
+            user_public_key: [1; 32],
+            device_public_key: [2; 32],
+            device_label: "workspaces.tilo.sh".to_owned(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [3; 64],
+            issuer: None,
+        },
+        address: None,
+        origin: Some("https://workspaces.tilo.sh".to_owned()),
+    }
+}
+
 #[test]
 fn a_site_says_its_home_workspace_and_its_directory() {
     let responder = Responder::handle(|request: &test_http::Request| {
@@ -76,7 +94,10 @@ fn a_site_says_its_home_workspace_and_its_directory() {
             serde_json::json!({
                 "home": {
                     "name": "tilo.sh",
-                    "host": { "origin": "https://workspaces.tilo.sh/" },
+                    "host": {
+                        "origin": "https://workspaces.tilo.sh/",
+                        "info": serde_json::to_string(&named_host()).expect("a host's line"),
+                    },
                     "admission": "https://workspaces.tilo.sh/",
                 },
                 "directory": "directory",
@@ -102,6 +123,11 @@ fn a_site_says_its_home_workspace_and_its_directory() {
         .expect("a site read");
     let home = read.home.expect("the site's home workspace");
     assert_eq!(home.name, "tilo.sh");
+    assert_eq!(
+        home.host,
+        Some(named_host()),
+        "the host is dialled as the site names it"
+    );
     assert_eq!(
         home.admission.as_ref().map(url::Url::as_str),
         Some("https://workspaces.tilo.sh/")

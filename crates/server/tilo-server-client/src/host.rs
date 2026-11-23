@@ -165,7 +165,13 @@ impl ServerAddress {
                 "the server named no relay a page can reach it through".into(),
             ));
         }
-        let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal);
+        let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            // This endpoint dials a server and is never dialled: the server
+            // answers on the connection this device opened, so there is no
+            // port to ask a router for. Asking is a probe of the network —
+            // UPnP over SSDP, PCP, NAT-PMP — which the device's network, or
+            // a sandbox it runs in, need never see.
+            .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled);
         // A page has only the relay; a native device asked to go through it
         // drops its own addresses.
         #[cfg(not(target_family = "wasm"))]

@@ -47,13 +47,6 @@ pub enum HomePeerManagementRequest {
         /// Where the asking server is dialled.
         endpoint: iroh_base::EndpointAddr,
     },
-    /// Hand the asking device, another of the person's, their Servers
-    /// workspace: it holds that workspace from then on like any other of
-    /// theirs, and no device that is not a server ever makes one.
-    HoldAdmin {
-        /// Where the asking device is dialled.
-        endpoint: iroh_base::EndpointAddr,
-    },
 }
 
 /// One thing the person who owns a server asks it to do from another of their
@@ -704,10 +697,6 @@ pub enum Envelope {
         /// The record's retained channel
         /// (`neighbour_wire::app_document_group`).
         channel: [u8; 32],
-        /// The member's own record the channel carries, when the device knows
-        /// it is one: the server answers another person's
-        /// [`DocumentAnswer::NotYours`] even before anything of it was written.
-        own: Option<OwnedGroup>,
     },
 
     /// The server's answer to an opened record: everything it retains of it
@@ -881,34 +870,6 @@ pub enum Envelope {
         /// Why.
         refusal: crate::refusal::Refusal,
     },
-}
-
-/// A member's own record a device opens ([`Envelope::OpenDocument`]): the app
-/// whose record it is and its kind and person. The server takes it only when
-/// it names the channel opened.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OwnedGroup {
-    pub app_id: String,
-    pub record: collab_types::OwnResource,
-}
-
-impl OwnedGroup {
-    /// `app`'s `record` as the person `owner`'s own, of a kind its manifest
-    /// declares each member's own ([`collab_types::OwnResource::recognise`]);
-    /// `None` for any other record.
-    #[must_use]
-    pub fn recognise(app: &str, record: &str, owner: [u8; 32]) -> Option<Self> {
-        collab_types::OwnResource::recognise(app, record, owner).map(|record| Self {
-            app_id: app.to_owned(),
-            record,
-        })
-    }
-
-    /// Whether this is the record `channel` carries.
-    #[must_use]
-    pub fn names(&self, channel: &[u8; 32]) -> bool {
-        neighbour_wire::app_document_group(&self.app_id, &self.record.document_id()) == *channel
-    }
 }
 
 /// What the server answered of a record a device opened ([`Envelope::OpenDocument`]).

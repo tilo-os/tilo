@@ -287,7 +287,6 @@ async fn deliver(
                 author,
                 replayed: false,
                 envelope: frame.envelope,
-                own: None,
             },
         );
         if delivered != collab_inbound::Delivery::Done {

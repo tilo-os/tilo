@@ -384,7 +384,7 @@ mod tests {
                 else {
                     panic!("expected a launch serving agents");
                 };
-                assert_eq!(launch.argv, ["claude"]);
+                assert_eq!(launch.argv, ["agent"]);
                 send(&mut guest, &GuestMessage::Started { pid: 42 }).unwrap();
                 for connection in [1, 2] {
                     let program = "/usr/bin/tilo-runtime".to_owned();
@@ -444,7 +444,7 @@ mod tests {
                 let _ = ended.send(());
             });
             let request = Launch {
-                argv: vec!["claude".into()],
+                argv: vec!["agent".into()],
                 cwd: None,
                 env: Vec::new(),
                 stdio: Stdio::Pump,

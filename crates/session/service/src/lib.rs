@@ -217,12 +217,10 @@ pub trait Service {
     /// place has nothing to note.
     fn note_beside(&mut self, _beside: &str) {}
 
-    /// The document of the app `app` this service keeps, when the session runs the app's package
-    /// itself (the shell) and its documents are the person's as any app's: what a connection the
-    /// session admits — a REPL, an agent's task — reads and changes by the app, as it does
-    /// Notes'. `None` for a service that keeps no document, or none of that app.
-    fn document(&self, _app: &str) -> Option<Document> {
-        None
+    /// The apps whose resources this service keeps, running their packages itself (the shell, a
+    /// seeded session's Tasks): a connection's programs compile against their modules.
+    fn apps(&self) -> Vec<String> {
+        Vec::new()
     }
 
     /// Whether this service is the session's own document — the one document the packages the
@@ -231,20 +229,6 @@ pub trait Service {
     /// services; a session with two would keep the shell's package twice.
     fn keeps_session_document(&self) -> bool {
         false
-    }
-
-    /// Every document [`Self::document`] answers, each with the app it is of: what a connection the
-    /// session admits reads by the app.
-    fn documents(&self) -> Vec<Document> {
-        Vec::new()
-    }
-
-    /// The documents this service keeps, as the workspace's activity reads them: each app's document
-    /// with the document it lives in. A document no app's process holds still shows its steps in
-    /// History and takes one of its runs back through its own history, so the activity lists and
-    /// undoes those runs as it does a running app's.
-    fn history_documents(&self) -> Vec<HistoryDocument> {
-        Vec::new()
     }
 
     /// Keep the apps' resources this service runs over in the workspace the person is in, from
@@ -334,38 +318,6 @@ pub struct Share<'a> {
     /// The store its parts write into and draw from, as the host that runs the package keeps it
     /// (a tilolang package's `ResourceStore`): the service publishes what it holds.
     pub store: &'a dyn std::any::Any,
-}
-
-/// A document an app keeps, as [`Service::document`] publishes it: the app, its id there, the
-/// document, and the packages whose code a reader of it needs.
-pub struct Document {
-    /// The app the document is of, as its package names it (`so.tilo.shell`).
-    pub app: String,
-    /// The document's id in its app, as the workspace names it (empty for a package's document of
-    /// the workspace).
-    pub id: String,
-    /// The document: its committed content, as Automerge writes it.
-    pub document: Vec<u8>,
-    /// The compiled module of the app and of each package it uses, each its description
-    /// embedded: what a task's host loads to run a program that reads the document by the app's
-    /// own package.
-    pub packages: Vec<std::sync::Arc<[u8]>>,
-}
-
-/// One document a service keeps, as the workspace's activity reads its history: the app whose
-/// record it is, the kind it is, and the document it lives in.
-///
-/// One document may hold several apps' documents (the session's own workspace document holds a root
-/// per package it runs), so `kind` says which of them this entry is: the activity keeps the steps
-/// whose resource is of that kind, and none of the others.
-pub struct HistoryDocument {
-    /// The app whose document it is, as its package names it (`so.tilo.notes`).
-    pub app: String,
-    /// The document's kind, as its app publishes it (`tl.so.tilo.notes.Notebook`): what tells
-    /// this app's steps in a document from another's.
-    pub kind: String,
-    /// The document, as it stands: what the activity's history reads.
-    pub document: tilo_resource::Doc,
 }
 
 /// The store of the workspace the person is in, as the session reaches it for the apps it runs
@@ -533,21 +485,12 @@ impl Services {
         opened
     }
 
-    /// The document of the app `app`, from the service keeping it; see [`Service::document`].
+    /// The apps whose packages the services run themselves; see [`Service::apps`].
     #[must_use]
-    pub fn document(&self, app: &str) -> Option<Document> {
+    pub fn apps(&self) -> Vec<String> {
         self.started
             .iter()
-            .find_map(|service| service.document(app))
-    }
-
-    /// Every document the services keep for apps the session runs itself, by the app: what a
-    /// connection the session admits reads by the app, as it does any app's documents.
-    #[must_use]
-    pub fn documents(&self) -> Vec<Document> {
-        self.started
-            .iter()
-            .flat_map(|service| service.documents())
+            .flat_map(|service| service.apps())
             .collect()
     }
 
@@ -573,16 +516,6 @@ impl Services {
             self.changed();
         }
         refused.map_or(Ok(moved), Err)
-    }
-
-    /// Every document the services keep, as the activity's history reads it; see
-    /// [`Service::history_documents`].
-    #[must_use]
-    pub fn history_documents(&self) -> Vec<HistoryDocument> {
-        self.started
-            .iter()
-            .flat_map(|service| service.history_documents())
-            .collect()
     }
 
     /// Keep what the services' documents reference in the store `store` names for each document's app:
@@ -868,6 +801,10 @@ impl Service for Services {
 
     fn module(&self, app: &str) -> Option<std::sync::Arc<[u8]>> {
         Self::module(self, app)
+    }
+
+    fn apps(&self) -> Vec<String> {
+        Self::apps(self)
     }
 
     #[cfg(unix)]

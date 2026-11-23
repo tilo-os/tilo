@@ -750,7 +750,7 @@ impl Workspaces {
             workspace
                 .peer()
                 .check_document_read(caller.device_public_key, app, document, at)?;
-            if workspace.peer().own_resource(app, document).is_some() {
+            if tilo_action_policy::roles::is_private_record(app, document) {
                 return Err(CollaborationError::new("this document belongs to a person"));
             }
             document

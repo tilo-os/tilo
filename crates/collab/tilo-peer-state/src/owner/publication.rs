@@ -720,7 +720,6 @@ pub(crate) fn request(message: &NeighbourMsg) -> Result<OwnerCommitRequest, Stri
         cluster_id,
         document_id,
         envelope,
-        own,
         readers,
         ..
     } = message
@@ -733,7 +732,6 @@ pub(crate) fn request(message: &NeighbourMsg) -> Result<OwnerCommitRequest, Stri
             app: app_id.clone(),
             document: document_id.clone(),
             envelope: envelope.clone(),
-            own: own.clone(),
             readers: readers.clone(),
         },
     })
@@ -812,7 +810,6 @@ pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
         app,
         document: record,
         envelope,
-        own,
         readers,
     } = &request.operation
     else {
@@ -835,7 +832,6 @@ pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
             cluster_id: request.workspace.clone(),
             document_id: record.clone(),
             envelope: envelope.clone(),
-            own: own.clone(),
             readers: readers.clone(),
         },
         MAX_BYTES,
@@ -2701,7 +2697,6 @@ fn drafted_here(
         app_id,
         cluster_id,
         document_id,
-        own,
         readers,
         ..
     } = message
@@ -2748,7 +2743,6 @@ fn drafted_here(
         cluster_id,
         document_id,
         envelope: Box::new(op),
-        own,
         readers,
     })
 }

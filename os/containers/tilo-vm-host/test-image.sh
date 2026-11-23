@@ -30,8 +30,10 @@ inside curl --version >/dev/null || die 'no curl for the placer'
 hosted_help=$(inside tilo-linux-vm hosted help)
 grep -q -- 'place --listen' <<<"$hosted_help" || die 'tilo-linux-vm hosted lacks place'
 inside mkfs.xfs -V >/dev/null || die 'no mkfs.xfs'
-inside tar --version >/dev/null || die 'no tar, which unpacks the member identity'
+inside tar --version >/dev/null || die 'no tar'
 [[ -x $root/usr/local/bin/tilo-runtime ]] || die 'no tilo-runtime, the member that takes the server'"'"'s runs'
+[[ -x $root/usr/local/bin/tilo ]] || die 'no tilo, the command the host joins with'
+[[ -x $root/usr/local/bin/tilo-device-admin ]] || die 'no tilo-device-admin, which reads the key the login left'
 [[ -x $root/usr/local/bin/tilo-hosted-serve ]] || die 'no tilo-hosted-serve, the guest fetch and service start'
 [[ -x $root/usr/local/bin/tilo-hosted-prepare ]] || die 'no tilo-hosted-prepare, the machine setup of the start'
 grep -q 'tilo-hosted-prepare$' "$root/usr/local/bin/tilo-vm-host" \

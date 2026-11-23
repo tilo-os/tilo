@@ -141,6 +141,15 @@ impl Answer {
         (200..300).contains(&self.status)
     }
 
+    /// The answer's JSON, `pending` (202) included: an action held for its person is an
+    /// answer too. Anything else is the refusal it carries.
+    fn settled(self) -> Result<Value> {
+        if !self.ok() && self.status != 202 {
+            return Err(self.refused());
+        }
+        Ok(self.json())
+    }
+
     /// The refusal this answer carries, with what a caller can do instead.
     fn refused(&self) -> anyhow::Error {
         let json = self.json();
@@ -326,6 +335,33 @@ impl Client {
         Ok(answer.json())
     }
 
+    /// Run `action` on the account's `resource` (`account/workspaces`,
+    /// `create`), which no workspace holds: what it answered. One put to the person, who has
+    /// not answered yet, is refused as waiting for them: it is done once they allow it.
+    pub async fn account(&self, resource: &str, action: &str, args: &Value) -> Result<Value> {
+        let path = format!("/v1/resources/{}/actions/{action}", encode_path(resource));
+        let mut answer = self.post(&path, args).await?;
+        if answer.get("status").and_then(Value::as_str) == Some("pending") {
+            return Err(anyhow::Error::new(Refusal {
+                code: crate::v1::AWAITING_APPROVAL.to_owned(),
+                message: "Waiting for your approval: Tilo asks you on the devices that hold \
+                          your identity (your Tilo tab). It is done once you allow it there."
+                    .to_owned(),
+                retry_after_ms: None,
+            }));
+        }
+        Ok(answer
+            .get_mut("result")
+            .map_or_else(|| serde_json::json!({}), Value::take))
+    }
+
+    /// The workspaces this key reaches, as `account/workspaces#list` lists
+    /// them: `{"workspaces": [...]}`.
+    pub async fn workspaces(&self) -> Result<Value> {
+        self.account("account/workspaces", "list", &serde_json::json!({}))
+            .await
+    }
+
     /// `PUT path` with `body` as its JSON, under a new idempotency key: the
     /// answer.
     pub async fn put(&self, path: &str, body: &Value) -> Result<Value> {
@@ -347,10 +383,7 @@ impl Client {
         let answer = self
             .call(Method::Put, path, said.as_bytes(), &[], Waiting::ForPerson)
             .await?;
-        if !answer.ok() && answer.status != 202 {
-            return Err(answer.refused());
-        }
-        Ok(answer.json())
+        answer.settled()
     }
 
     /// `DELETE path`, under a new idempotency key: the answer.
@@ -365,7 +398,7 @@ impl Client {
     }
 
     /// The workspace `named`: an id as it is, or the workspace of that name
-    /// this key reaches, as `GET /v1/workspaces` lists them. Every command
+    /// this key reaches, as `account/workspaces#list` lists them. Every command
     /// that takes `-w` resolves its name here, whatever the key is: a name
     /// two of them share is refused, each named by its id, and so is one none
     /// of them answers to, with the ones the key does reach.
@@ -373,7 +406,7 @@ impl Client {
         if is_uuid(named) {
             return Ok(named.to_owned());
         }
-        let listed = self.get("/v1/workspaces").await?;
+        let listed = self.workspaces().await?;
         let workspaces = listed
             .get("workspaces")
             .and_then(Value::as_array)
@@ -433,10 +466,7 @@ impl Client {
                 Waiting::ForPerson,
             )
             .await?;
-        if !answer.ok() && answer.status != 202 {
-            return Err(answer.refused());
-        }
-        Ok(answer.json())
+        answer.settled()
     }
 
     /// Run `action` on `resource` in `workspace` as a step of the invocation
@@ -475,10 +505,7 @@ impl Client {
                 Waiting::Transient,
             )
             .await?;
-        if !answer.ok() && answer.status != 202 {
-            return Err(answer.refused());
-        }
-        Ok(answer.json())
+        answer.settled()
     }
 
     /// The invocation `run` in `workspace`, held while it is pending for up
@@ -491,10 +518,7 @@ impl Client {
         let answer = self
             .call(Method::Get, &path, &[], &[], Waiting::Transient)
             .await?;
-        if !answer.ok() && answer.status != 202 {
-            return Err(answer.refused());
-        }
-        Ok(answer.json())
+        answer.settled()
     }
 
     /// Run `program` as one step of `workspace`, titled `title` in History:
@@ -1157,36 +1181,15 @@ pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
 /// of its own would cut the computer's off. `None` for any other key.
 ///
 /// A key named outright needs no login here: a login this computer cannot read is no device
-/// key, so the key's calls go their own way rather than failing on it.
+/// key, so the key's calls go their own way rather than failing on it. Only the key's public half
+/// is compared, from the login's certificate, so naming the device's own key keeps this process
+/// dumpable, which the daemon requires of a caller it admits.
 ///
 /// # Errors
 /// The key file cannot be read, or, with no key named, the login is damaged.
 pub fn held_api_for(reach: Reach<'_>) -> Result<Option<std::path::PathBuf>> {
-    let named = match (reach.key_file, api_key()) {
-        (Some(path), _) => Some(
-            crate::direct::KeyFile::read(path)
-                .map_err(anyhow::Error::msg)?
-                .key,
-        ),
-        (None, Some(token)) => Some(
-            crate::store::carried_key(&token)
-                .map(|(_, key)| hex::encode(key.secret()))
-                .unwrap_or_default(),
-        ),
-        (None, None) => None,
-    };
-    if let Some(secret) = named {
-        let Ok(Some((key, _))) =
-            device::Place::here(device_keys()).and_then(|place| device::load(&place))
-        else {
-            return Ok(None);
-        };
-        if !crate::constant_time_eq(
-            secret.to_ascii_lowercase().as_bytes(),
-            hex::encode(key.to_bytes()).as_bytes(),
-        ) {
-            return Ok(None);
-        }
+    if !crate::direct::names_this_device(reach.key_file, api_key())? {
+        return Ok(None);
     }
     device::held_api(device_keys())
 }
@@ -1250,14 +1253,14 @@ mod tests {
                 status: 403,
                 body: serde_json::json!({"error": {"code": "beyond_scope",
                     "message": "this key does not reach that workspace",
-                    "next_steps": ["GET /v1/workspaces names the workspaces it reaches"]}})
+                    "next_steps": ["account/workspaces#list names the workspaces it reaches"]}})
                 .to_string()
                 .into_bytes(),
             };
             assert_eq!(
                 answer.refused().to_string(),
                 "this key does not reach that workspace (beyond_scope)\n  \
-             GET /v1/workspaces names the workspaces it reaches"
+             account/workspaces#list names the workspaces it reaches"
             );
             let bare = Answer {
                 status: 500,
@@ -1499,7 +1502,7 @@ mod tests {
             },
         };
         let began = Instant::now();
-        let listed = client.get("/v1/workspaces").await.unwrap();
+        let listed = client.get("/v1/resources").await.unwrap();
         assert!(
             listed.get("workspaces").is_some(),
             "the call answered once the workspace served it: {listed}"

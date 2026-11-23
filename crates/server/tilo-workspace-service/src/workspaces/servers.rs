@@ -63,6 +63,7 @@ use tilo_server_protocol::transport::{OperationEntry, ServerOperation};
 use tilo_user_identity::{DeviceCert, RevocationEntry, verify_revocation_entry};
 
 use super::Workspaces;
+use super::person_workspace::{NAME as PERSON_WORKSPACE_NAME, holds_person_workspace};
 
 pub mod attach;
 pub mod device;
@@ -72,8 +73,6 @@ mod refound;
 
 /// The Servers workspace's document of the person's servers.
 pub const SERVERS: (&str, &str) = ("so.tilo.servers", "servers");
-/// The name the Servers workspace is made with.
-const PERSON_WORKSPACE_NAME: &str = "Servers";
 /// The ways a server unlocks after a boot: an owner's device approves it, its
 /// TPM unseals its keys, or someone types a passphrase at it.
 pub const UNLOCK_POLICIES: [&str; 3] = ["owner-device", "tpm", "passphrase"];
@@ -1122,71 +1121,10 @@ fn validate_endpoint(endpoint: &str) -> Result<String, Refusal> {
 }
 
 fn validate_label(label: &str) -> Result<String, Refusal> {
-    if !tilo_server_protocol::valid_home_peer_label(label) {
+    if !tilo_server_protocol::valid_device_label(label) {
         return Err(Refusal::new("a server's name is one line of 1 to 80 bytes"));
     }
     Ok(label.trim().to_owned())
-}
-
-/// Whether this device holds its person's Servers workspace: the workspace
-/// names it among its holders, so it writes the document as its own, whether
-/// it founded the workspace or was handed it.
-pub async fn holds_person_workspace(workspaces: &Workspaces) -> bool {
-    let own = workspaces.serving_certificate();
-    let Some(state) = workspaces
-        .state(&person_workspace_id(&own.user_public_key))
-        .await
-    else {
-        return false;
-    };
-    state
-        .governance()
-        .keeping_devices()
-        .iter()
-        .any(|hint| hint.host.device_public_key == own.device_public_key)
-}
-
-/// Found this device's person's Servers workspace here, unless this device
-/// holds it already, and answer its id: what the first thing that needs it
-/// does — the first machine planned, or the first server taken in. Only one
-/// device founds it: one whose person's list says another device of theirs
-/// keeps it is handed it by a holder instead, as their other workspaces are.
-///
-/// # Errors
-/// Another device of the person keeps the workspace, or it could not be made.
-pub async fn founded(workspaces: &Workspaces) -> Result<String, String> {
-    let person = workspaces.serving_certificate().user_public_key;
-    let admin = person_workspace_id(&person);
-    if holds_person_workspace(workspaces).await {
-        return Ok(admin);
-    }
-    may_found(workspaces, &person).await?;
-    workspaces
-        .create_workspace(PERSON_WORKSPACE_NAME, Some(&admin))
-        .await?;
-    Ok(admin)
-}
-
-/// Whether this device may found `person`'s Servers workspace: not when their
-/// list says another of their devices keeps it, which hands it to this one.
-///
-/// # Errors
-/// Another device of the person keeps the workspace.
-pub async fn may_found(workspaces: &Workspaces, person: &[u8; 32]) -> Result<(), String> {
-    let admin = person_workspace_id(person);
-    if workspaces
-        .kept_elsewhere(person)
-        .await
-        .iter()
-        .any(|(workspace, _)| *workspace == admin)
-    {
-        return Err(
-            "your Servers workspace is kept on another of your devices; it reaches this one as \
-             your other workspaces do"
-                .into(),
-        );
-    }
-    Ok(())
 }
 
 /// Apply `action` to the Servers workspace's [`SERVERS`] document as this device,

@@ -1,8 +1,7 @@
-"""Exercise engine-only authority, native payload rejection and source coherence."""
+"""Exercise source admission, native payload rejection and package coherence."""
 import importlib.util
 import os
 import json
-import re
 import sys
 from unittest.mock import patch
 from pathlib import Path
@@ -39,45 +38,6 @@ class BrowserRuntimeRelease(unittest.TestCase):
                 release.main()
             run.assert_not_called()
 
-    def plan(self, overrides):
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / 'output'
-            environment = dict(os.environ, GITHUB_OUTPUT=str(output), ENGINE_RUNTIME_ONLY='true',
-                               GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REF='refs/heads/main',
-                               GITHUB_SHA=release.head())
-            for key in ('COORDINATOR_INTENT', 'REQUESTED_BUILDER', 'BASELINE_SHA', 'BASELINE_RUN_ID',
-                        'BASELINE_EVIDENCE', 'BASELINE_RECEIPT_SHA256', 'COORDINATOR_POLICY_SHA256',
-                        'VERIFY_FINAL_RECEIPT', 'REQUESTED_APPS', 'REQUESTED_COLLECTION'):
-                environment.pop(key, None)
-            environment.update(overrides)
-            result = subprocess.run(['python3', str(SCRIPT), 'plan'], env=environment,
-                                    capture_output=True, text=True)
-            return result, output.read_text() if output.exists() else ''
-
-    def test_only_explicit_exact_main_dispatch_enables_engine_release(self):
-        result, output = self.plan({})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, 'engine_runtime_only=true\n')
-        for overrides in ({'GITHUB_EVENT_NAME': 'push'}, {'GITHUB_EVENT_NAME': 'pull_request'},
-                          {'GITHUB_REF': 'refs/heads/codex/task'}, {'GITHUB_REF': 'refs/tags/v1'},
-                          {'GITHUB_SHA': 'a' * 40}, {'ENGINE_RUNTIME_ONLY': 'yes'}):
-            with self.subTest(overrides=overrides):
-                result, output = self.plan(overrides)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(output, '')
-        result, output = self.plan({'ENGINE_RUNTIME_ONLY': 'false', 'GITHUB_EVENT_NAME': 'push'})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, 'engine_runtime_only=false\n')
-
-    def test_no_qualification_or_unrelated_app_inputs_are_accepted(self):
-        for key in ('COORDINATOR_INTENT', 'REQUESTED_BUILDER', 'BASELINE_SHA', 'BASELINE_RUN_ID',
-                    'BASELINE_EVIDENCE', 'BASELINE_RECEIPT_SHA256', 'COORDINATOR_POLICY_SHA256',
-                    'VERIFY_FINAL_RECEIPT', 'REQUESTED_APPS', 'REQUESTED_COLLECTION'):
-            with self.subTest(key=key):
-                result, output = self.plan({key: 'unexpected'})
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(output, '')
-
     def test_runtime_source_manifest_and_os_recipe_must_agree(self):
         self.assertTrue(release.runtime_version(ROOT).endswith('-chromium'))
         with tempfile.TemporaryDirectory() as directory:
@@ -111,44 +71,6 @@ class BrowserRuntimeRelease(unittest.TestCase):
             (root / 'escape').symlink_to(outside)
             with self.assertRaisesRegex(ValueError, 'escapes'):
                 release.native_payload(root, 'aarch64')
-
-    def test_normal_publication_selects_the_engine_of_built_or_reused_browser(self):
-        environment = dict(REQUESTED_PUBLISH='true', SELECTED_APPS='browser')
-        self.assertTrue(release.engine_dependency(environment))
-        self.assertFalse(release.engine_dependency(dict(environment, REQUESTED_PUBLISH='false')))
-        self.assertFalse(release.engine_dependency(dict(environment, ENGINE_RUNTIME_ONLY='true')))
-        self.assertFalse(release.engine_dependency(dict(environment, SIGNAL_PROVIDER_ONLY='true')))
-        self.assertFalse(release.engine_dependency(dict(environment, SELECTED_APPS='calculator')))
-        self.assertTrue(release.engine_dependency(dict(environment, SELECTED_APPS='calculator', COMPLETE='true')))
-        self.assertFalse(release.engine_dependency(dict(environment, SELECTED_APPS='', COMPLETE='true')))
-
-    def test_workflow_admits_engine_dependencies_after_authorization_and_confines_keys(self):
-        workflow = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-        plan = workflow.split('\n  plan:\n', 1)[1].split('\n  authorize-publish:', 1)[0]
-        self.assertLess(plan.index('id: engine-mode'), plan.index('id: builder'))
-        self.assertIn('engine_runtime_only: ${{ steps.engine-mode.outputs.engine_runtime_only }}', plan)
-        for job in ('build', 'publish'):
-            block = workflow.split('\n  ' + job + ':\n', 1)[1]
-            block = re.split(r'\n  [a-z][a-z-]+:\n', block, maxsplit=1)[0]
-            self.assertIn("needs.plan.outputs.engine_runtime_only != 'true'", block)
-        engine = workflow.split('\n  build-engine-runtime:\n', 1)[1].split('\n  publish-engine-runtime:', 1)[0]
-        self.assertIn("if: needs.plan.outputs.engine_runtime_only == 'true' || needs.plan.outputs.engine_runtime_required == 'true'", engine)
-        publishing = workflow.split('\n  publish:\n', 1)[1].split('\n  build-signal-provider:', 1)[0]
-        self.assertIn('needs: [plan, authorize-publish, build, publish-engine-runtime]', publishing)
-        self.assertIn("needs.publish-engine-runtime.result == 'success'", publishing)
-        self.assertIn("needs.plan.outputs.engine_runtime_required != 'true' && needs.publish-engine-runtime.result == 'skipped'", publishing)
-        self.assertIn('tools/apps/browser_runtime_release.py dependencies', plan)
-        self.assertIn('needs: [plan, authorize-publish]', engine)
-        compile_step, sealing = engine.split('      - name: Seal the verified engine', 1)
-        self.assertNotIn('secrets.', compile_step)
-        self.assertIn('secrets.RUNTIME_BUNDLE_SIGNING_KEY', sealing)
-        upload = sealing.split('      - uses: actions/upload-artifact', 1)[1]
-        self.assertIn('dist/browser-runtime-release/package/**', upload)
-        self.assertNotIn('/work/', upload)
-        publisher = (ROOT / 'tools/apps/publish-browser-runtime.sh').read_text()
-        self.assertLess(publisher.index('browser_runtime_release.py verify'), publisher.index('jwt=$(curl'))
-        self.assertIn('tools/apps/publish-runtime-package.sh', publisher)
-        self.assertIn('( $GITHUB_EVENT_NAME == push || $GITHUB_EVENT_NAME == workflow_dispatch ) && $GITHUB_REF == refs/heads/main', publisher)
 
     def test_snapshot_admission_matches_actual_git_tree_and_rejects_source_changes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -353,16 +275,6 @@ class BrowserRuntimeRelease(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError, 'architecture differs'):
                             release.verify_package(out, architecture, source, '9', key)
             self.assertEqual(trace.read_text().splitlines(), ['verify', 'inspect'] * 14)
-
-    def test_publication_wrong_event_stops_before_tools_credentials_or_network(self):
-        for event, ref in (('pull_request', 'refs/heads/main'), ('push', 'refs/heads/task'),
-                           ('workflow_dispatch', 'refs/heads/task')):
-            result = subprocess.run(['bash', str(ROOT / 'tools/apps/publish-browser-runtime.sh')],
-                                    env={'PATH': os.environ['PATH'], 'GITHUB_EVENT_NAME': event,
-                                         'GITHUB_REF': ref}, capture_output=True, text=True)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertEqual(result.stderr, '')
-
 
     def test_trusted_steps_without_git_name_their_commit(self):
         # t's x86_64 micro-VM steps carry the commit's sources but no Git repository.

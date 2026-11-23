@@ -86,9 +86,7 @@ pub(super) fn shared_target(
     let permissions = binding.map(|binding| binding.permissions.borrow());
     let decider = binding
         .zip(permissions.as_ref())
-        .map(|(binding, permissions)| {
-            permissions.action_decider_on(&binding.app_id, binding.checkout.id.as_str())
-        });
+        .map(|(binding, permissions)| permissions.action_decider(&binding.app_id));
     let node = forest
         .iter()
         .find_map(|node| first(decider.as_ref(), node, &address.resource))?;

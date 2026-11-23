@@ -1,23 +1,22 @@
-//! Mail's view of the shared multi-account store.
+//! Mail's shape of the workspace's accounts.
 //!
 //! Account management lives in Settings, not in Mail, which only consumes the account list to
-//! fetch and send. The accounts are the workspace's accounts record ([`PersonAccounts`]), which
-//! holds every account of every type and no secret.
+//! fetch and send. The accounts are the workspace's one record ([`PersonAccounts`], kind
+//! `tilo.accounts`), which every member and device of the workspace reads as its policy allows;
+//! no secret is in it.
 //!
-//! This module keeps the shapes the rest of Mail works with, [`Account`] and
-//! [`AccountStore`], reads them from that record ([`AccountStore::from_shared`]) and makes the
-//! edits that keep them there ([`AccountStore::edits_for`]). The connection settings are
-//! serialised into each account's opaque `config`. A password is never read here: the session
-//! releases it from the workspace's vault to whoever signs in (`accounts::sign_ins`).
-
-use std::path::Path;
+//! This module keeps the shape the rest of Mail works with, [`Account`], hydrates it from the
+//! record ([`accounts_of`]) and says what edits keep a list of them in it ([`edits_for`]). The
+//! connection settings are serialised into each account's opaque `config`. A password is never
+//! read here: the session releases it from the workspace's vault to whoever signs in
+//! (`accounts::sign_ins`).
 
 use accounts::person::PersonAccounts;
-use accounts::{Account as StoredAccount, AccountId, AccountStore as SharedStore, AccountTypeId};
+use accounts::{Account as StoredAccount, AccountId};
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{Id, Invoke};
 
-use crate::model::{AccountConfig, Folder};
+use crate::model::AccountConfig;
 
 pub const TYPE_ID: &str = accounts::email::TYPE_ID;
 
@@ -47,7 +46,10 @@ impl Account {
         }
     }
 
-    fn to_stored(&self) -> StoredAccount {
+    /// The account as the workspace's record keeps it: its connection settings, and never its
+    /// password.
+    #[must_use]
+    pub fn to_stored(&self) -> StoredAccount {
         let type_id = if self.config.import_pending {
             accounts::thunderbird::PENDING_TYPE
         } else {
@@ -62,7 +64,9 @@ impl Account {
         stored
     }
 
-    fn from_stored(stored: &StoredAccount) -> Option<Self> {
+    /// The account `stored` describes, without a password.
+    #[must_use]
+    pub fn from_stored(stored: &StoredAccount) -> Option<Self> {
         let config = config_of(stored)?;
         Some(Self {
             id: stored.id.to_string(),
@@ -87,233 +91,88 @@ struct StoredConfig {
     config: AccountConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct AccountStore {
-    pub accounts: Vec<Account>,
-    pub active: usize,
+/// Every account of the workspace's record that Mail works with: the email accounts and the
+/// ones an import from another mail program is still bringing in, in the record's order, each
+/// without a password.
+#[must_use]
+pub fn accounts_of(record: &PersonAccounts) -> Vec<Account> {
+    accounts_from(&record.all())
 }
 
-impl AccountStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
+/// [`accounts_of`], for accounts already read out of the record: what a connector process is
+/// sent, which holds no record of its own.
+#[must_use]
+pub fn accounts_from(stored: &[StoredAccount]) -> Vec<Account> {
+    stored
+        .iter()
+        .filter(|stored| {
+            stored.type_id.as_str() == TYPE_ID
+                || stored.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
+        })
+        .filter_map(Account::from_stored)
+        .collect()
+}
 
-    pub fn single(config: AccountConfig) -> Self {
-        Self {
-            accounts: vec![Account::new(config)],
-            active: 0,
+/// The edits that make the workspace's record hold `accounts` as Mail does now: each saved as
+/// it is, and every email account the record keeps that `accounts` does not named for removal.
+#[must_use]
+pub fn edits_for(
+    accounts: &[Account],
+    record: &PersonAccounts,
+) -> (Vec<Invoke<PersonAccounts>>, Vec<AccountId>) {
+    let mut edits = Vec::new();
+    let mut removed = Vec::new();
+    for stale in record.of_type(TYPE_ID) {
+        if !accounts.iter().any(|a| a.id == stale.id.as_str()) {
+            edits.push(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw(stale.id.0.clone())));
+            removed.push(stale.id.clone());
         }
     }
-
-    /// The mail accounts the store under `config_root` keeps, without a password.
-    pub fn load_in(config_root: &Path) -> Self {
-        Self::from_shared(&SharedStore::load_in(config_root))
-    }
-
-    /// The mail accounts `shared` keeps, without a password.
-    pub fn from_shared(shared: &SharedStore) -> Self {
-        let ty = AccountTypeId::from(TYPE_ID);
-        let accounts: Vec<Account> = shared
-            .list(&ty)
-            .into_iter()
-            .chain(shared.list(&accounts::thunderbird::PENDING_TYPE.into()))
-            .filter_map(Account::from_stored)
-            .collect();
-        let active = shared
-            .active_id(&ty)
-            .and_then(|id| accounts.iter().position(|a| a.id == id.as_str()))
-            .unwrap_or(0);
-        Self { accounts, active }
-    }
-
-    /// The edits that make the workspace's accounts hold these mail accounts.
-    pub fn edits_for(
-        &self,
-        person: &PersonAccounts,
-    ) -> (Vec<Invoke<PersonAccounts>>, Vec<AccountId>) {
-        let ty = AccountTypeId::from(TYPE_ID);
-        let held = person.store();
-        let mut edits = Vec::new();
-        let mut removed = Vec::new();
-        for stale in held.list(&ty) {
-            if !self.accounts.iter().any(|a| a.id == stale.id.as_str()) {
-                edits.push(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw(stale.id.0.clone())));
-                removed.push(stale.id.clone());
-            }
+    for account in accounts {
+        let mut stored = account.to_stored();
+        let kept = record.account(&account.id);
+        // The vault entry its password is in is the workspace's to name, which Mail's settings
+        // of the account do not carry: it stays as the record names it.
+        if let Some(item) = kept
+            .as_ref()
+            .and_then(|kept| accounts::email::password_item(&kept.config))
+        {
+            accounts::email::set_password_item(&mut stored.config, Some(item));
         }
-        for account in &self.accounts {
-            let mut stored = account.to_stored();
-            // The vault entry its password is in is the workspace's to name, which Mail's
-            // settings of the account do not carry: it stays as the record names it.
-            if let Some(item) = held
-                .get(&stored.id)
-                .and_then(|kept| accounts::email::password_item(&kept.config))
-            {
-                accounts::email::set_password_item(&mut stored.config, Some(item));
-            }
-            if held.get(&stored.id) != Some(&stored) {
-                edits.push(PersonAccounts::saving(&stored));
-            }
-        }
-        (edits, removed)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.accounts.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.accounts.len()
-    }
-
-    pub fn active_account(&self) -> Option<&Account> {
-        if self.accounts.is_empty() {
-            return None;
-        }
-        let idx = self.active.min(self.accounts.len() - 1);
-        self.accounts.get(idx)
-    }
-
-    pub fn active_config(&self) -> AccountConfig {
-        self.active_account()
-            .map(|a| a.config.clone())
-            .unwrap_or_default()
-    }
-
-    /// The name the person knows the account `id` by: its display name, or
-    /// its address. `None` for an account this window no longer holds.
-    pub fn label_for(&self, id: &str) -> Option<String> {
-        self.accounts
-            .iter()
-            .find(|account| account.id == id || account.config.email == id)
-            .map(|account| account.config.label().to_owned())
-    }
-
-    pub fn set_active(&mut self, idx: usize) {
-        if idx < self.accounts.len() {
-            self.active = idx;
+        if kept.as_ref() != Some(&stored) {
+            edits.push(PersonAccounts::saving(&stored));
         }
     }
-
-    pub fn upsert(&mut self, account: Account) {
-        if let Some(idx) = self.accounts.iter().position(|a| a.id == account.id) {
-            if let Some(slot) = self.accounts.get_mut(idx) {
-                *slot = account;
-            }
-            self.active = idx;
-        } else {
-            self.accounts.push(account);
-            self.active = self.accounts.len() - 1;
-        }
-    }
-
-    pub fn remove(&mut self, id: &str) {
-        self.accounts.retain(|a| a.id != id);
-        if self.active >= self.accounts.len() && !self.accounts.is_empty() {
-            self.active = self.accounts.len() - 1;
-        }
-    }
-
-    pub fn toggle_collapsed(&mut self, idx: usize) {
-        if let Some(a) = self.accounts.get_mut(idx) {
-            a.collapsed = !a.collapsed;
-        }
-    }
-
-    pub fn folders_for(_account: &Account) -> [Folder; 7] {
-        Folder::ALL
-    }
+    (edits, removed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::tilo_resource::Replica;
 
-    fn cfg(email: &str, name: &str) -> AccountConfig {
-        AccountConfig {
-            display_name: name.into(),
-            email: email.into(),
-            username: email.into(),
-            imap_host: "imap.example".into(),
-            smtp_host: "smtp.example".into(),
-            ..Default::default()
-        }
-    }
-
-    /// Keep `store`'s accounts in `record` as Mail's edits do, and read them back as Mail does.
-    fn kept(record: &mut Replica<PersonAccounts>, store: &AccountStore) -> AccountStore {
-        let (edits, _) = store.edits_for(&record.state().unwrap());
-        for edit in edits {
-            record.apply(edit).unwrap();
-        }
-        AccountStore::from_shared(&record.state().unwrap().store())
-    }
-
-    tilo_test_env::scenario! {
-        /// Mail's accounts, kept in the workspace's accounts record and read back from it.
-        fn the_accounts_record_keeps_the_workspaces_accounts;
-
-        phase the_accounts_record_upserts_clamps_and_round_trips;
-        {
-            {
-                let mut store = AccountStore::new();
-                store.upsert(Account::new(cfg("a@x.example", "A")));
-                let mut updated = Account::new(cfg("a@x.example", "A renamed"));
-                updated.id = "a@x.example".into();
-                store.upsert(updated);
-                assert_eq!(store.len(), 1);
-                assert_eq!(store.accounts[0].config.display_name, "A renamed");
-            }
-
-            {
-                let mut store = AccountStore::new();
-                store.upsert(Account::new(cfg("a@x.example", "A")));
-                store.upsert(Account::new(cfg("b@y.example", "B")));
-                store.set_active(1);
-                store.remove("b@y.example");
-                assert_eq!(store.active_account().unwrap().config.email, "a@x.example");
-            }
-
-            {
-                let mut record = Replica::<PersonAccounts>::new();
-                let mut store = AccountStore::new();
-                store.upsert(Account::new(cfg("a@x.example", "A")));
-                store.upsert(Account::new(cfg("b@y.example", "B")));
-                let back = kept(&mut record, &store);
-                assert_eq!(back.len(), 2);
-                assert_eq!(back.accounts[1].config.display_name, "B");
-
-                // A removed account leaves the record, so a read does not bring it back.
-                store.remove("a@x.example");
-                let back = kept(&mut record, &store);
-                assert_eq!(back.len(), 1);
-                assert_eq!(back.accounts[0].config.email, "b@y.example");
-            }
-        }
-
-        phase a_mail_account_from_the_workspaces_accounts_reads_back_without_a_password;
-        {
-            let config = AccountConfig {
-                display_name: "Work".into(),
-                email: "me@work.example".into(),
-                password: "typed-into-settings".into(),
-                ..AccountConfig::default()
-            };
-            let account = Account::new(config);
-            let mut record = Replica::<PersonAccounts>::new();
-            let shown = kept(&mut record, &AccountStore {
-                accounts: vec![account.clone()],
-                active: 0,
-            });
-            let mut unsigned = account;
-            unsigned.config.password.clear();
-            assert_eq!(shown.accounts, vec![unsigned]);
-            assert!(
-                !format!("{:?}", record.state().unwrap()).contains("typed-into-settings"),
-                "the password never enters the resource"
-            );
-        }
+    #[test]
+    fn a_mail_account_from_the_workspaces_accounts_reads_back_without_a_password() {
+        use accounts::person::PersonAccounts;
+        let config = AccountConfig {
+            display_name: "Work".into(),
+            email: "me@work.example".into(),
+            password: "typed-but-never-kept".into(),
+            ..AccountConfig::default()
+        };
+        let account = Account::new(config);
+        let mut replica = ui::tilo_resource::Replica::<PersonAccounts>::new();
+        replica
+            .apply(PersonAccounts::saving(&account.to_stored()))
+            .unwrap();
+        let person = replica.state().unwrap();
+        let shown = accounts_of(&person);
+        let mut unsigned = account;
+        unsigned.config.password.clear();
+        assert_eq!(shown, vec![unsigned]);
+        assert!(
+            !format!("{person:?}").contains("typed-but-never-kept"),
+            "the password never enters the resource"
+        );
     }
 }
 

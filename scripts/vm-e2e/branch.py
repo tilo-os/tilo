@@ -417,8 +417,7 @@ def what_shows(vm: TiloVm) -> str:
     except (VmError, ValueError) as exc:
         parts.append(f"targets: {str(exc)[:400]}")
     try:
-        parts.append("actions " + vm.run("control", "actions", "list", "Terminal", "--json",
-                                         "--limit", "20", timeout=60)[:600])
+        parts.append("actions " + json.dumps(vm.actions("Terminal")[:20])[:600])
     except VmError as exc:
         parts.append(f"actions: {str(exc)[:800]}")
     return "; ".join(parts)
@@ -495,13 +494,16 @@ def keep_session(run: Run, name: str, label: str) -> None:
     vm = run.vm(name)
     parts = []
     for args in (("logs", ACCOUNT, "-n", "4000"),
-                 ("control", "raw", '{"op":"list_targets"}'),
-                 ("control", "actions", "list", "--json", "--limit", "300")):
+                 ("control", "raw", '{"op":"list_targets"}')):
         try:
             parts.append(f"$ tilo-vm {' '.join(args)}\n" + vm.run(*args, timeout=120, check=False,
                                                                  account=args[0] != "logs"))
         except VmError as exc:
             parts.append(f"$ tilo-vm {' '.join(args)}: {exc}")
+    try:
+        parts.append("actions " + json.dumps(vm.actions()[:300]))
+    except VmError as exc:
+        parts.append(f"actions: {exc}")
     try:
         targets = first_json(vm.run("control", "raw", '{"op":"list_targets"}', timeout=60, check=False))
         names = [t.get("name") for t in (targets.get("answer") or targets).get("targets") or []]
@@ -694,19 +696,14 @@ def keep_awake(vm: TiloVm) -> None:
 
 
 def act(vm: TiloVm, provider: str, name: str, args: dict | None = None, wait: bool = False) -> dict:
-    """Invoke the desktop action `name` of `provider`, addressed as `tilo-control actions list`
-    prints it (`resource␟action`): the listed row whose id is `name` or ends in it."""
+    """Invoke the desktop action `name` of `provider`, addressed as the listing reads it
+    (`resource␟action`): the listed row whose id is `name` or ends in it."""
     keep_awake(vm)
     rows = [r for r in listed_actions(vm) if r.get("provider") == provider
             and (r["id"] == name or r["id"].endswith("\x1f" + name))]
     pages = "every"
     expect(rows, f"{vm.vm} lists no {provider} action {name!r} in {pages} page(s)")
-    argv = ["actions", "invoke", provider, rows[0]["id"]]
-    if wait:
-        argv.append("--wait=20000")
-    if args is not None:
-        argv += ["--args-json", json.dumps(args)]
-    return vm.control_json(*argv, timeout=90)
+    return vm.invoke(provider, rows[0]["id"], args, wait_ms=20000 if wait else 0)
 
 
 # -- a model provider's API key, through Settings ------------------------------------
@@ -724,36 +721,7 @@ def listed_actions(vm: TiloVm, *query: str) -> list[dict]:
     """Every row the desktop lists for `query`, page after page: a page holds at most 256 rows
     (`MAX_CATALOGUE_PAGE`), and the shell's own chrome fills most of the first."""
     keep_awake(vm)
-    for _ in range(LISTING_READS):
-        rows = read_listing(vm, query)
-        if rows is not None:
-            return rows
-    raise VmError(f"the action listing changed on each of {LISTING_READS} reads while it was paged")
-
-
-# How often a listing is read again from its first page when it moved on while paged, as it
-# does while an app that just opened publishes its actions.
-LISTING_READS = 10
-
-
-def read_listing(vm: TiloVm, query: tuple[str, ...]) -> list[dict] | None:
-    """One paged read of the listing, or `None` when it moved on between two pages
-    (`stale_cursor`): a page past the first is cut from the listing the first was."""
-    rows, cursor = [], None
-    for _ in range(40):
-        page = ["--cursor", cursor] if cursor else []
-        try:
-            listed = vm.control_json("actions", "list", *query, "--json", "--programmatic",
-                                     "--wait=8000", "--limit", "256", *page)
-        except VmError as exc:
-            if cursor and "stale_cursor" in str(exc):
-                return None
-            raise
-        rows.extend(listed.get("actions", []))
-        cursor = listed.get("next_cursor")
-        if not cursor:
-            break
-    return rows
+    return vm.actions(" ".join(query))
 
 
 def app_rows(vm: TiloVm, query: str, action: str) -> list[dict]:
@@ -781,11 +749,8 @@ def app_action(vm: TiloVm, query: str, action: str, args: dict | None = None, pa
                    if part in r["id"] or part == r.get("application")),
                   key=lambda row: row["id"].startswith("directory"))
     expect(rows, f"{vm.vm} offers no {action} (asked for {query!r})")
-    argv = ["actions", "invoke", rows[0]["provider"], rows[0]["id"], "--wait=20000"]
-    if args is not None:
-        argv += ["--args-json", json.dumps(args)]
     try:
-        answer = vm.control_json(*argv, timeout=90)
+        answer = vm.invoke(rows[0]["provider"], rows[0]["id"], args, wait_ms=20000)
     except VmError:
         if vm.vm in run_of:
             run_of[vm.vm].write(f"invoke-{action}-{vm.vm}.txt", invoke_excerpt(vm))

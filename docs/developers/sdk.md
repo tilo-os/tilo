@@ -8,9 +8,7 @@ history and undo. There is no second API.
 
 Both SDKs are published as `tilo-sdk` (`uv add tilo-sdk`, `bun add tilo-sdk`). The Python module
 is `tilo`: plain `tilo` on PyPI is another project's name, so only the distribution is
-`tilo-sdk`. A release tag publishes both, at that tag's version ([Publishing the
-SDKs](../publishing.md#publishing-the-sdks) has the tag, the credentials and what the native
-packages will publish as).
+`tilo-sdk`. A release tag publishes both, at that tag's version.
 
 ## One model, four ways in
 
@@ -23,8 +21,8 @@ packages will publish as).
 
 The CLI calls [`/v1`](api.md): `POST
 /v1/workspaces/<workspace>/resources/<path>/actions/<action>` for an action,
-`POST /v1/workspaces` for one more workspace,
-`POST /v1/workspaces/<workspace>/branches` for a branch of one. It reaches the API through an
+`POST /v1/resources/account/workspaces/actions/create` for one more workspace,
+`…/actions/branch` for a branch of one. It reaches the API through an
 API server with `TILO_API_KEY`, or with no server at all: on a computer `tilo
 login` made one of your devices, through the process holding that device's
 session, and for a script, as a key of its own in process (`tilo keys export

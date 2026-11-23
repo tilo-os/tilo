@@ -54,8 +54,6 @@ mod hosted_browser;
 #[path = "hosting_member.rs"]
 mod hosting_member;
 #[cfg(unix)]
-#[path = "image_enrollment_methods.rs"]
-mod image_enrollment_methods;
 #[path = "live_session.rs"]
 mod live_session;
 #[path = "multi_host.rs"]
@@ -64,13 +62,9 @@ mod multi_host;
 #[path = "offloadable_action.rs"]
 mod offloadable_action;
 #[cfg(unix)]
-#[path = "out_of_band_join_modes.rs"]
-mod out_of_band_join_modes;
 #[cfg(feature = "agents")]
 #[path = "persistent_workspace.rs"]
 mod persistent_workspace;
-#[path = "personal_device_process.rs"]
-mod personal_device_process;
 #[cfg(feature = "agents")]
 #[path = "placed_browser.rs"]
 mod placed_browser;
@@ -87,6 +81,8 @@ mod placed_terminal;
 mod presence_batching;
 #[path = "record_content_routing.rs"]
 mod record_content_routing;
+#[path = "region_follows.rs"]
+mod region_follows;
 #[path = "remote_action_routing.rs"]
 mod remote_action_routing;
 #[path = "server_cost.rs"]

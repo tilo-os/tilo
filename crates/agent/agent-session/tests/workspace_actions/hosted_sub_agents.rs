@@ -669,6 +669,108 @@ async fn a_note_asks_it_again_and_a_stop_takes_back_what_waits() {
     page.peer.close();
 }
 
+/// What a sub-agent writes is kept under its own name. Only the person's own agent is
+/// approved; the sub-agent it starts holds no approval of its own and works under its
+/// starter's. Its answer is its own reply, and History reads every change of that reply as
+/// the sub-agent's, none as its starter's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sub_agents_write_is_kept_under_its_own_name() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let server = crate::harness::hosted::start(
+        &root,
+        &host,
+        state.path(),
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
+    )
+    .await;
+    let workspaces = server.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let page = Browser::open_at(&server, &browser, &host, &workspace).await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    make_agent(&page, &workspaces, &workspace, &person, None).await;
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = worked(
+        &server,
+        &workspace,
+        plays(&asked, |request| {
+            let said = if of_sub_agent(request) {
+                "The notes are tidy."
+            } else {
+                "Told."
+            };
+            answer(
+                vec![Content::Text { text: said.into() }],
+                StopReason::EndTurn,
+                1_000,
+            )
+        }),
+    )
+    .await;
+    starts(
+        &workspaces,
+        &workspace,
+        &person,
+        ("Writer", "Tidy the notes."),
+    )
+    .await;
+    let writer = roster(&workspaces, &workspace)
+        .await
+        .agents
+        .iter()
+        .find(|agent| agent.name == "Writer")
+        .map(|agent| agent.id.0.clone())
+        .expect("the list holds the sub-agent");
+    let turns = agents.turns(&workspace).await.unwrap();
+    let job = turns
+        .iter()
+        .find(|turn| turn.agent.id.0 == writer)
+        .expect("its job is its turn");
+    answers(&agents, &workspace, job).await;
+    let asked_it = asks_of(&workspaces, &workspace, &person, &writer).await;
+    let asked_it = answered(&workspaces, &workspace, &person, &asked_it[0].at).await;
+    let reply = asked_it.latest().unwrap().clone();
+    assert!(
+        reply.body.contains("The notes are tidy."),
+        "its answer is its own words: {}",
+        reply.body
+    );
+
+    let packages = asks::chat_packages().unwrap();
+    let history = workspaces
+        .with_tl_record(
+            &workspace,
+            &packages,
+            asks::Actor::Member(MemberId::person(person.clone())),
+            |opened| opened.changes(),
+        )
+        .await
+        .unwrap();
+    let reply_id = reply.at.id_string();
+    let by: Vec<Option<asks::Actor>> = history
+        .iter()
+        .filter(|entry| {
+            entry["resource"]
+                .as_str()
+                .is_some_and(|resource| resource.ends_with(&reply_id))
+        })
+        .map(|entry| serde_json::from_value(entry["who"].clone()).unwrap())
+        .collect();
+    let itself = asks::Actor::Member(MemberId::agent(&writer));
+    assert!(
+        by.contains(&Some(itself)),
+        "History holds the sub-agent's writes of its reply: {by:?}"
+    );
+    let starter = asks::Actor::Member(MemberId::agent(SCOUT));
+    assert!(
+        !by.contains(&Some(starter)),
+        "none of them is its starter's, whose key it works under: {by:?}"
+    );
+    page.peer.close();
+}
+
 /// A team from inside a turn: the person's own agent starts and steers its sub-agents from
 /// its own turn, and a lead reads the team under it.
 #[path = "hosted_sub_agent_teams.rs"]

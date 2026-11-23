@@ -2,18 +2,16 @@
 
 use std::collections::BTreeMap;
 
-use ui::framework::{Setting, ViewCx};
 use ui::storage::{Scope, SettingsSchema};
 
 use super::{GeoBounds, MapsApp, TileId, bounds_contains, failure, format_bytes};
 use crate::model::DownloadedRegion;
-use crate::offline_areas::{OfflineAreas, recorded};
-use crate::workspace::Workspace;
+use crate::offline_areas::recorded;
 
 #[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DownloadedAreas {
     #[serde(default)]
-    by_workspace: BTreeMap<String, Vec<DownloadedRegion>>,
+    pub(crate) by_workspace: BTreeMap<String, Vec<DownloadedRegion>>,
 }
 
 impl SettingsSchema for DownloadedAreas {
@@ -21,30 +19,6 @@ impl SettingsSchema for DownloadedAreas {
 }
 
 impl DownloadedAreas {
-    pub(crate) fn open(cx: &ViewCx<Workspace>, workspace: &str) -> Setting<Self> {
-        let settings = cx.settings::<Self>();
-        if !settings.get().by_workspace.contains_key(workspace)
-            && let Some(device) = cx.device()
-        {
-            let opener = cx.resource_opener::<OfflineAreas>(ui::apps::MAPS);
-            match opener.legacy_member_state() {
-                Ok(Some(previous)) => {
-                    if let Err(error) = settings.update(|state| {
-                        state
-                            .by_workspace
-                            .entry(workspace.to_owned())
-                            .or_insert_with(|| previous.on(device));
-                    }) {
-                        tracing::warn!(%error, "could not restore offline map areas");
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => tracing::warn!(%error, "could not read earlier offline map areas"),
-            }
-        }
-        settings
-    }
-
     pub(crate) fn in_workspace(&self, workspace: &str) -> &[DownloadedRegion] {
         self.by_workspace.get(workspace).map_or(&[], Vec::as_slice)
     }

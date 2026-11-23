@@ -328,6 +328,16 @@ impl BrowserServiceSessionCommand {
             Self::StoreAccountSecret { .. } | Self::ReleaseAccountSecret { .. }
         )
     }
+    /// Whether this lists, resolves or forgets one of the workspace's website sessions:
+    /// answered once the workspace's accounts on the device were read, never on the
+    /// connection's dispatch.
+    #[must_use]
+    pub const fn website_session(&self) -> bool {
+        matches!(
+            self,
+            Self::List {} | Self::Resolve { .. } | Self::Forget { .. }
+        )
+    }
     /// The page action an item's use is asked for: `None` for every other command.
     #[must_use]
     pub const fn item_use(&self) -> Option<InvocationId> {

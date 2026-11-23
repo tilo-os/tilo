@@ -50,10 +50,15 @@ impl Windows {
         let your_colour = PresenceHue::worn_in(&Value::Object(document.clone()), person);
         Self {
             warmth: WindowWarmth::new(your_colour),
-            theme,
+            theme: theme.with_your_colour(your_colour),
             document,
             stamp: settings_store::stamp(),
         }
+    }
+
+    /// The theme the shell and its windows wear, in the person's own colour.
+    pub(crate) fn theme(&self) -> &Theme {
+        &self.theme
     }
 
     /// Read the person's settings again when they changed, with `person` sitting at this machine:
@@ -69,11 +74,9 @@ impl Windows {
         }
         self.stamp = stamp;
         self.document = settings_store::load();
-        self.warmth.set_your_colour(PresenceHue::worn_in(
-            &Value::Object(self.document.clone()),
-            person,
-        ));
-        self.theme = shell_theme(&self.document);
+        let your_colour = PresenceHue::worn_in(&Value::Object(self.document.clone()), person);
+        self.warmth.set_your_colour(your_colour);
+        self.theme = shell_theme(&self.document).with_your_colour(your_colour);
         Some(self.theme.clone())
     }
 

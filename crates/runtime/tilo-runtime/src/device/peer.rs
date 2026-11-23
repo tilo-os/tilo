@@ -455,8 +455,8 @@ impl Peer {
             workspace,
             &state.join("tree"),
             (key, person),
-            Arc::clone(&self.store),
-            Arc::clone(&routed.content),
+            Some(Arc::clone(&self.store)),
+            Some(Arc::clone(&routed.content)),
         )
         .await?;
         let actor = fs_protocol::FileActor {

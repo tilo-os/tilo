@@ -2,7 +2,7 @@
 //! ([`tilo_onboarding`]).
 //!
 //! The shell keeps the ceremony: the decisions ([`crate::identity::Onboarding`]),
-//! the identity work, the crash journal, nearby pairing, the prepared setup
+//! the identity work, the crash journal, adding this computer with a code, the prepared setup
 //! and its transfers, the media codecs install and every secret's ownership.
 //! The app shows the page this view projects ([`tilo_onboarding::Page`]) and
 //! asks through the state this view lends it; secrets are typed into buffers
@@ -58,7 +58,7 @@ pub use tilo_onboarding::{OnboardingContext, TourPage, WordsCheck};
 use tilo_onboarding::{t, t_args};
 
 /// How often setup looks for news from its background work (codec install,
-/// nearby pairing) while that work runs.
+/// a code being redeemed) while that work runs.
 const BACKGROUND_POLL: Duration = Duration::from_millis(250);
 /// What the ceremony does once a journal change is on disk: the step the
 /// change was written ahead of. Each re-checks the guard its action had, as
@@ -67,9 +67,9 @@ const BACKGROUND_POLL: Duration = Duration::from_millis(250);
 enum AfterJournal {
     /// The change records a step already taken.
     Nothing,
+    /// Redeem the typed code on the device that printed it.
     StartNearby,
-    StartPairingLink,
-    /// A nearby join reached the hand-off.
+    /// A join reached the hand-off.
     EnterReadyAfterJoin,
     /// The backup step reached the hand-off.
     EnterReady,
@@ -94,7 +94,6 @@ struct JournalWrite {
 
 pub const KEY_BEGIN: &str = "onboarding.begin";
 pub const KEY_EXISTING: &str = "onboarding.existing";
-pub const KEY_CHOOSE_PAIRING_LINK: &str = "onboarding.existing.pairing-link.submit";
 pub const KEY_CHOOSE_NEARBY: &str = "onboarding.existing.nearby";
 pub const KEY_CHOOSE_RESTORE: &str = "onboarding.existing.restore";
 pub const KEY_CHOOSE_RECOVERY_KEY: &str = "onboarding.existing.recovery-key";
@@ -481,29 +480,21 @@ pub struct OnboardingView {
     key_answers: [Arc<Mutex<String>>; 3],
     connect_source_selected: bool,
     connect_passphrase: Arc<Mutex<String>>,
-    pairing_link: Arc<Mutex<String>>,
+    /// The code another of the person's devices printed, as typed or pasted.
+    ticket: Arc<Mutex<String>>,
     /// The backup file to restore from, as typed or chosen.
     connect_path: ui::LocalState<String>,
     backup_passphrase: Arc<Mutex<String>>,
     backup_confirmation: Arc<Mutex<String>>,
     identity_dir: Option<PathBuf>,
     session: SessionPaths,
-    nearby: Option<crate::nearby::NearbyPairing>,
-    nearby_from_link: bool,
-    nearby_status: Option<String>,
-    /// Why the last pairing attempt ended without joining. The nearby
-    /// screen titles its error with this cause; `error` holds its message.
+    nearby: Option<crate::nearby::NearbyJoin>,
+    /// Why the last attempt ended without joining. The nearby screen titles
+    /// its error with this cause; `error` holds its message.
     nearby_failure: Option<crate::nearby::NearbyFailure>,
-    /// The verification code both devices show while pairing waits for
-    /// approval.
-    nearby_code: Option<String>,
-    /// Review renderer only: draw the nearby screen as if pairing were
-    /// running, without starting the privileged helper.
+    /// Review renderer only: draw the nearby screen as if a code were being
+    /// redeemed, without calling any device.
     nearby_active_for_snapshot: bool,
-    /// The keys of the choice rows activated since the last sync. A row
-    /// reports its activation here; sync turns each into the same model key
-    /// a button would have set.
-    nearby_status_path: Option<PathBuf>,
     codec_setup: Option<CodecSetup>,
     /// Whether this run offers the media codecs step: the pack is available
     /// and nobody has opted in yet (the installer may already have asked).
@@ -650,7 +641,6 @@ impl OnboardingView {
             .ok()
             .flatten();
         view.session = session;
-        view.nearby_status_path = Some(identity_dir.join(".nearby-enrollment-status.json"));
         view.recovery_only = recovery_only;
         if context == OnboardingContext::FullSystem
             && !recovery_only
@@ -802,19 +792,15 @@ impl OnboardingView {
             key_answers: std::array::from_fn(|_| Arc::new(Mutex::new(String::new()))),
             connect_source_selected: false,
             connect_passphrase: Arc::new(Mutex::new(String::new())),
-            pairing_link: Arc::new(Mutex::new(String::new())),
+            ticket: Arc::new(Mutex::new(String::new())),
             connect_path: ui::LocalState::new(String::new()),
             backup_passphrase: Arc::new(Mutex::new(String::new())),
             backup_confirmation: Arc::new(Mutex::new(String::new())),
             identity_dir: None,
             session: SessionPaths::default(),
             nearby: None,
-            nearby_from_link: false,
-            nearby_status: None,
             nearby_failure: None,
-            nearby_code: None,
             nearby_active_for_snapshot: false,
-            nearby_status_path: None,
             codec_setup: None,
             codec_step_offered: false,
             codec_page: false,
@@ -1120,7 +1106,7 @@ impl OnboardingView {
                     revision,
                 });
             }
-            Err(error) => self.journal_failed(change, &then, &error.to_string()),
+            Err(error) => self.journal_failed(change, &error.to_string()),
         }
     }
 
@@ -1133,10 +1119,7 @@ impl OnboardingView {
         self.journal_store.as_mut()
     }
 
-    fn journal_failed(&mut self, change: JournalChange, then: &AfterJournal, error: &str) {
-        if *then == AfterJournal::StartPairingLink {
-            clear_secret(&self.pairing_link);
-        }
+    fn journal_failed(&mut self, change: JournalChange, error: &str) {
         let key = match change {
             JournalChange::Store(_) => "onboarding-progress-save-failed",
             JournalChange::Clear => "onboarding-progress-clear-failed",
@@ -1166,7 +1149,7 @@ impl OnboardingView {
                     self.progress_error = None;
                     self.after_journal(write.then);
                 }
-                Err(error) => self.journal_failed(write.change, &write.then, &error),
+                Err(error) => self.journal_failed(write.change, &error),
             }
             self.invalidation.structure();
         }
@@ -1178,12 +1161,7 @@ impl OnboardingView {
             AfterJournal::Nothing => {}
             AfterJournal::StartNearby => {
                 if self.flow.screen() == Screen::Nearby && self.nearby.is_none() {
-                    self.start_nearby_pairing();
-                }
-            }
-            AfterJournal::StartPairingLink => {
-                if self.flow.screen() == Screen::Nearby && self.nearby.is_none() {
-                    self.start_link_pairing();
+                    self.redeem_nearby_code();
                 }
             }
             AfterJournal::EnterReadyAfterJoin => {
@@ -1345,92 +1323,99 @@ impl OnboardingView {
             copy.clear();
         }
         clear_secret(&self.connect_passphrase);
-        clear_secret(&self.pairing_link);
+        clear_secret(&self.ticket);
         clear_secret(&self.recovery_words);
         clear_secret(&self.backup_passphrase);
         clear_secret(&self.backup_confirmation);
     }
 
-    fn submit_pairing_link(&mut self) {
-        let valid = self.pairing_link.lock().is_ok_and(|mut buffer| {
-            if tilo_enrollment::local_link::is_link(&buffer) {
-                return true;
-            }
-            buffer.zeroize();
-            false
-        });
-        if !valid {
-            self.error = Some(t("onboarding-pairing-link-invalid"));
+    /// Take the code the person typed into the nearby screen and redeem it,
+    /// once the journal records the step. A code this computer cannot use is
+    /// said here, without calling any device.
+    fn start_nearby_join(&mut self) {
+        if self.identity_dir.is_none() || self.session.identity.is_none() {
+            self.fail_nearby(crate::nearby::NearbyFailure::new(
+                crate::nearby::NearbyCause::Unavailable,
+            ));
+            return;
+        }
+        if self
+            .ticket
+            .lock()
+            .is_ok_and(|buffer| buffer.trim().is_empty())
+        {
+            self.error = Some(t("onboarding-nearby-ticket-empty"));
+            self.nearby_failure = None;
             self.invalidation.structure();
             return;
         }
-        self.enter_pairing(true);
+        // A code this computer cannot use is said here: nothing was attempted,
+        // so nothing is recorded and no device is called.
+        if let Err(failure) = self.typed_ticket() {
+            clear_secret(&self.ticket);
+            self.fail_nearby(failure);
+            return;
+        }
         self.journal_then(
             JournalChange::Store(PersistedStage::AcquiringIdentity),
-            AfterJournal::StartPairingLink,
+            AfterJournal::StartNearby,
         );
     }
 
-    fn enter_pairing(&mut self, from_link: bool) {
-        self.error = None;
-        self.nearby_from_link = from_link;
-        self.nearby_failure = None;
-        self.nearby_status = None;
-        self.nearby_code = None;
-        self.flow.choose_nearby();
-    }
-
-    fn start_link_pairing(&mut self) {
-        let link = self
-            .pairing_link
+    /// The code the person typed, with the rest of the line `tilo device add`
+    /// printed taken off, when it is a code this computer can use.
+    fn typed_ticket(&self) -> Result<Zeroizing<String>, crate::nearby::NearbyFailure> {
+        let typed = self
+            .ticket
             .lock()
             .ok()
-            .map(|mut buffer| Zeroizing::new(std::mem::take(&mut *buffer)));
-        if let Some(link) = link.filter(|link| !link.is_empty()) {
-            self.start_pairing(Some(link.trim()));
+            .map(|buffer| Zeroizing::new(buffer.trim().to_owned()))
+            .unwrap_or_default();
+        let ticket = typed.strip_prefix("tilo login ").unwrap_or(&typed).trim();
+        if ticket.is_empty() || tilo_device_identity::login::Ticket::parse(ticket).is_err() {
+            return Err(crate::nearby::NearbyFailure::new(
+                crate::nearby::NearbyCause::Wrong,
+            ));
         }
+        Ok(Zeroizing::new(ticket.to_owned()))
     }
 
-    fn start_nearby_pairing(&mut self) {
-        self.start_pairing(None);
+    fn fail_nearby(&mut self, failure: crate::nearby::NearbyFailure) {
+        self.error = Some(failure.message());
+        self.nearby_failure = Some(failure);
+        self.invalidation.structure();
     }
 
-    fn start_pairing(&mut self, link: Option<&str>) {
-        if let (Some(identity_dir), Some(status_path), Some(system)) = (
-            &self.identity_dir,
-            &self.nearby_status_path,
-            &self.session.identity,
-        ) {
-            let result = match link {
-                Some(link) => crate::nearby::NearbyPairing::start_link(
-                    &system.root,
-                    identity_dir,
-                    status_path,
-                    link,
-                ),
-                None => crate::nearby::NearbyPairing::start(
-                    &system.root,
-                    identity_dir,
-                    status_path,
-                    &self.session.device_label,
-                ),
-            };
-            match result {
-                Ok(pairing) => {
-                    self.nearby = Some(pairing);
-                    self.nearby_status = Some(tilo_onboarding::t("onboarding-nearby-waiting"));
-                    self.nearby_code = None;
-                    self.error = None;
-                    self.nearby_failure = None;
-                }
-                Err(failure) => {
-                    self.error = Some(failure.message());
-                    self.nearby_failure = Some(failure);
-                }
+    /// Redeem the code the nearby screen holds on the device that printed it.
+    fn redeem_nearby_code(&mut self) {
+        let (Some(identity_dir), Some(system)) = (&self.identity_dir, &self.session.identity)
+        else {
+            self.fail_nearby(crate::nearby::NearbyFailure::new(
+                crate::nearby::NearbyCause::Unavailable,
+            ));
+            return;
+        };
+        let ticket = match self.typed_ticket() {
+            Ok(ticket) => ticket,
+            Err(failure) => {
+                clear_secret(&self.ticket);
+                self.fail_nearby(failure);
+                return;
             }
-        } else {
-            self.error = Some(tilo_onboarding::t("onboarding-nearby-unavailable"));
-            self.nearby_failure = None;
+        };
+        clear_secret(&self.ticket);
+        match crate::nearby::NearbyJoin::start(
+            ticket.to_string(),
+            identity_dir,
+            &system.paths,
+            &self.session.device_label,
+        ) {
+            Ok(join) => {
+                self.nearby = Some(join);
+                self.error = None;
+                self.nearby_failure = None;
+            }
+            Err(failure) => self.fail_nearby(failure),
         }
         self.invalidation.structure();
     }
@@ -1996,7 +1981,7 @@ impl Drop for OnboardingView {
         self.app.close_api();
         self.nearby = None;
         clear_secret(&self.connect_passphrase);
-        clear_secret(&self.pairing_link);
+        clear_secret(&self.ticket);
         clear_secret(&self.backup_passphrase);
         clear_secret(&self.backup_confirmation);
     }
@@ -2167,21 +2152,17 @@ impl Widget for OnboardingView {
 
         self.sync_recovery_key();
 
-        // Choosing the nearby flow is the explicit request to pair, so the
-        // screen opens with pairing already under way.
-        let mut start_nearby = self.pressed.take(KEY_CHOOSE_NEARBY)
-            && self.flow.screen() == Screen::Existing
-            && self.identity_idle();
-        if start_nearby {
-            clear_secret(&self.pairing_link);
-            self.enter_pairing(false);
-        }
-        if self.take_journaled(KEY_CHOOSE_PAIRING_LINK)
+        // Choosing the nearby flow opens the code's screen; nothing is sent
+        // until the person has typed the code and chosen Join.
+        if self.pressed.take(KEY_CHOOSE_NEARBY)
             && self.flow.screen() == Screen::Existing
             && self.identity_idle()
-            && !self.recovery_only
         {
-            self.submit_pairing_link();
+            clear_secret(&self.ticket);
+            self.error = None;
+            self.nearby_failure = None;
+            self.flow.choose_nearby();
+            self.invalidation.structure();
         }
 
         if self.pressed.take(KEY_CONNECT_BROWSE)
@@ -2192,64 +2173,47 @@ impl Widget for OnboardingView {
             self.invalidation.focus();
         }
 
-        if self.pressed.take(KEY_CONNECT_NEARBY) && !self.nearby_from_link {
-            start_nearby = true;
-        }
-        if start_nearby && !self.journal_idle() {
-            // Pairing starts once the outstanding journal change is written.
-            self.pressed.press(KEY_CONNECT_NEARBY);
-        } else if start_nearby && self.flow.screen() == Screen::Nearby && self.nearby.is_none() {
-            self.journal_then(
-                JournalChange::Store(PersistedStage::AcquiringIdentity),
-                AfterJournal::StartNearby,
-            );
+        if self.pressed.take(KEY_CONNECT_NEARBY)
+            && self.flow.screen() == Screen::Nearby
+            && self.nearby.is_none()
+            && self.identity_idle()
+        {
+            if self.journal_idle() {
+                self.start_nearby_join();
+            } else {
+                // The code is redeemed once the outstanding journal change is
+                // written.
+                self.pressed.press(KEY_CONNECT_NEARBY);
+            }
         }
 
         if self.pressed.take(KEY_CONNECT_CANCEL) {
             self.nearby = None;
-            clear_secret(&self.pairing_link);
-            if let Some(path) = &self.nearby_status_path {
-                let _ = std::fs::remove_file(path);
-            }
-            self.nearby_status = Some(t(if self.nearby_from_link {
-                "onboarding-pairing-link-cancelled"
-            } else {
-                "onboarding-nearby-cancelled"
-            }));
-            self.nearby_code = None;
+            clear_secret(&self.ticket);
+            self.nearby_failure = None;
+            self.error = Some(t("onboarding-nearby-cancelled"));
             self.invalidation.structure();
         }
 
         let nearby = if proving {
             None
         } else {
-            self.nearby
-                .as_mut()
-                .map(|pairing| pairing.poll(Instant::now()))
+            self.nearby.as_mut().map(|join| join.poll(Instant::now()))
         };
         match nearby {
             None | Some(crate::nearby::NearbyEvent::Idle) => {}
-            Some(crate::nearby::NearbyEvent::Code(code)) => {
-                self.nearby_code = Some(code);
-                self.nearby_status = Some(tilo_onboarding::t("onboarding-nearby-code"));
-                self.invalidation.structure();
-            }
             Some(crate::nearby::NearbyEvent::Joined(identity)) => {
                 self.nearby = None;
-                self.nearby_code = None;
                 self.error = self
                     .accept_connected_identity(identity)
                     .err()
                     .map(|()| t("onboarding-connect-recovery-message"));
-                self.nearby_status = Some(tilo_onboarding::t("onboarding-nearby-connected"));
                 self.invalidation.structure();
             }
             Some(crate::nearby::NearbyEvent::Failed(failure)) => {
                 self.nearby = None;
-                self.nearby_code = None;
-                self.nearby_status = None;
+                self.nearby_failure = Some(failure.clone());
                 self.error = Some(failure.message());
-                self.nearby_failure = Some(failure);
                 self.invalidation.structure();
             }
         }
@@ -2331,12 +2295,9 @@ impl Widget for OnboardingView {
         if self.pressed.take(KEY_BACK) && self.identity_idle() {
             self.error = None;
             clear_secret(&self.connect_passphrase);
-            clear_secret(&self.pairing_link);
-            self.nearby_from_link = false;
+            clear_secret(&self.ticket);
             self.nearby = None;
             self.nearby_failure = None;
-            self.nearby_status = None;
-            self.nearby_code = None;
             if !(self.recovery_only && self.flow.screen() == Screen::Existing) {
                 self.flow.back();
             }
@@ -2584,11 +2545,11 @@ impl Widget for OnboardingView {
         // the state, for the next `sync`.
         let shown = self.app.update(state, path);
         let asked = self.app.state().has_asked();
-        // Background work (nearby pairing, the codecs worker) changes the
-        // page from `sync` with no input behind it. The compositor presents
-        // only what `update` reports, so a page that is not yet laid out is
-        // a change: otherwise a pairing that fails on the same screen stays
-        // on its code until something unrelated repaints.
+        // Background work (a code being redeemed, the codecs worker) changes
+        // the page from `sync` with no input behind it. The compositor
+        // presents only what `update` reports, so a page that is not yet laid
+        // out is a change: otherwise a join that fails on the same screen
+        // stays on its wait until something unrelated repaints.
         shown || asked || self.invalidation.structure_pending()
     }
 
@@ -2607,8 +2568,8 @@ impl Widget for OnboardingView {
 
     fn next_wake_deadline(&self) -> Option<Instant> {
         // The codecs worker and status watcher only raise `codec_changed`,
-        // and nearby pairing reports through its child and a status file;
-        // nothing wakes the compositor for them, so look while they run.
+        // and a code being redeemed reports through its own thread; nothing
+        // wakes the compositor for them, so look while they run.
         let polling = self.prepared_working()
             || self
                 .migration
@@ -3144,10 +3105,9 @@ mod tests {
 
     use super::*;
     use crate::view::tests::layout::LaidOut;
-    use durable_store::{DurableStore, StorageKey, WriteOp};
+    use durable_store::{DurableStore, WriteOp};
     use journal::{clear_progress, journal_store, progress_key, store_progress};
     use os_actions::codec_pack::PackState;
-    use std::process::Command;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3172,266 +3132,229 @@ mod tests {
         (v, calls)
     }
 
-    #[test]
-    fn the_existing_identity_action_hands_off_a_private_pairing_link() {
+    /// Setup on a logged-out account that can join: the identity directory it
+    /// writes into, this computer's device key and certificates.
+    fn joining(account: &crate::nearby::tests::Account) -> (OnboardingView, PathBuf) {
+        let identity_dir = account.identity_dir();
         let (mut view, _) = view();
-        assert!(act(&mut view, &OnboardingEffect::choose("existing")));
-        assert!(act(&mut view, &OnboardingEffect::choose("pairing-link")));
-        assert_eq!(view.flow.screen(), Screen::Existing);
-        assert!(view.error.is_some(), "empty input is refused");
-
-        // The secret field writes its local buffer directly. The public
-        // submit action carries only the choice.
-        let link = "tilo://pair-device?token=fixture";
-        *view.pairing_link.lock().unwrap() = link.to_owned();
-        assert!(act(&mut view, &OnboardingEffect::choose("pairing-link")));
-        assert_eq!(view.flow.screen(), Screen::Nearby);
-        assert!(view.page().nearby.from_link);
-        assert!(view.pairing_link.lock().unwrap().is_empty());
-        assert!(!format!("{:?}", view.page()).contains(link));
-
-        assert!(act(&mut view, &OnboardingEffect::Back));
-        assert_eq!(view.flow.screen(), Screen::Existing);
-        assert!(!view.page().nearby.from_link);
+        view.identity_dir = Some(identity_dir.clone());
+        view.session.identity = Some(session::SystemIdentity {
+            root: account.dir.path().to_path_buf(),
+            paths: account.paths.clone(),
+        });
+        (view, identity_dir)
     }
 
-    #[test]
-    fn cancelling_nearby_pairing_revokes_the_entire_process_group() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let started = dir.path().join("descendant");
-        let status = dir.path().join("pairing.json");
-        let mut helper = Command::new("sh");
-        helper
-            .args([
-                "-c",
-                r#"trap '' TERM; sleep 30 & printf '%s' "$$" > "$STARTED"; wait"#,
-            ])
-            .env("STARTED", &started);
-        let (mut view, _) = view();
-        view.flow.begin_existing();
-        view.flow.choose_nearby();
-        view.nearby_status_path = Some(status.clone());
-        view.nearby = Some(
-            crate::nearby::NearbyPairing::spawn(
-                helper,
-                dir.path(),
-                &status,
-                Duration::from_secs(60),
-            )
-            .expect("start pairing"),
-        );
-        tilo_test_env::wait_until("the shell to start its descendant", || {
-            std::fs::read_to_string(&started).is_ok_and(|text| !text.is_empty())
-        });
-        let pgid = std::fs::read_to_string(started)
-            .unwrap()
-            .parse::<i32>()
-            .expect("test process group");
-
-        let mut doc = AutoCommit::new();
-        press(&view, &mut doc, KEY_CONNECT_CANCEL);
-        view.sync(&doc, &automerge::ROOT);
-
-        assert!(view.nearby.is_none());
-        assert!(view.nearby_code.is_none());
-        assert_eq!(
-            view.nearby_status,
-            Some(tilo_onboarding::t("onboarding-nearby-cancelled"))
-        );
+    /// Sync until `done`, letting the journal and a code's redemption report
+    /// between frames.
+    fn sync_until(
+        view: &mut OnboardingView,
+        document: &AutoCommit,
+        what: &str,
+        done: impl Fn(&OnboardingView) -> bool,
+    ) {
         let deadline = tilo_test_env::hang_deadline();
-        loop {
-            // A killed grandchild can remain as a zombie until the host's PID
-            // 1 reaps it. `kill(-pgid, 0)` reports that inert bookkeeping
-            // entry as present, so inspect procfs and require that the group
-            // has no process capable of executing instead.
-            if !process_group_has_live_member(pgid) {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "a descendant survived cancellation in process group {pgid}"
-            );
+        while !done(view) {
+            assert!(Instant::now() < deadline, "{what}");
             std::thread::sleep(Duration::from_millis(20));
+            view.sync(document, &automerge::ROOT);
         }
+    }
+
+    /// A code in the form `tilo device add` prints it.
+    fn a_code() -> String {
+        let issuer = tilo_device_identity::login::Reached {
+            endpoint: *ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+                .verifying_key()
+                .as_bytes(),
+            relay: None,
+            direct: Vec::new(),
+        };
+        tilo_device_identity::login::Ticket::new(issuer).encode()
     }
 
     tilo_test_env::scenario! {
-        fn a_nearby_pairing_presents_its_news_and_ends_first_use_on_the_ready_screen;
+        fn the_nearby_card_asks_for_a_code_and_adds_this_computer;
 
-        phase nearby_pairing_news_asks_the_compositor_to_present;
+        phase the_card_opens_a_code_field_with_the_join_control;
         {
-            // The helper reports through its status file with no input behind
-            // it. The compositor paints only what `update` reports, so every
-            // change the poll makes must be reported there, or a failure on the
-            // same screen stays hidden behind the code.
-            let dir = tempfile::tempdir().expect("tempdir");
-            let identity_dir = dir.path().join("identity");
-            std::fs::create_dir(&identity_dir).expect("identity dir");
-            let status = identity_dir.join(".nearby-enrollment-status.json");
-            let report_code = dir.path().join("report-code");
-            let report_failure = dir.path().join("report-failure");
-            let mut helper = Command::new("sh");
-            helper
-                .args([
-                    "-c",
-                    r#"while [ ! -e "$2" ]; do sleep 0.02; done
-                   printf '%s' '{"state":"waiting_for_approval","verification_code":"424242"}' > "$1"
-                   while [ ! -e "$3" ]; do sleep 0.02; done
-                   printf '%s' '{"state":"failed","error":"Permission denied (os error 13)"}' > "$1"
-                   exit 1"#,
-                    "helper",
-                ])
-                .arg(&status)
-                .arg(&report_code)
-                .arg(&report_failure);
-            let (mut view, _) = view();
-            view.flow.begin_existing();
-            view.flow.choose_nearby();
+            let account = crate::nearby::tests::Account::new();
+            let (mut view, _) = joining(&account);
+            let mut document = AutoCommit::new();
+            press(&view, &mut document, KEY_EXISTING);
+            press(&view, &mut document, KEY_CHOOSE_NEARBY);
+            view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Nearby);
-            view.nearby = Some(
-                crate::nearby::NearbyPairing::spawn(
-                    helper,
-                    &identity_dir,
-                    &status,
-                    Duration::from_secs(600),
-                )
-                .expect("spawn helper"),
-            );
-            view.nearby_status_path = Some(status);
-            let doc = AutoCommit::new();
-            // The page as it was laid out when pairing started.
-            view.sync(&doc, &automerge::ROOT);
-            let _ = view.take_structure_dirty();
-            assert!(!view.update(&doc, &automerge::ROOT), "nothing new yet");
-
-            std::fs::write(&report_code, b"").expect("let the helper show its code");
-            let deadline = tilo_test_env::hang_deadline();
-            while view.nearby_code.is_none() {
-                assert!(Instant::now() < deadline, "the code never arrived");
-                std::thread::sleep(Duration::from_millis(20));
-                view.sync(&doc, &automerge::ROOT);
-            }
+            assert!(view.nearby.is_none(), "nothing is sent before Join");
+            assert_eq!(view.error(), None, "opening the screen is not an error");
+            let composition = laid_out_themed(&mut view, &Theme::dark());
             assert!(
-                view.update(&doc, &automerge::ROOT),
-                "the verification code is presented"
+                accessibility_for_id(composition, "onboarding.nearby.ticket.field").is_some(),
+                "the screen asks for the code"
             );
-            assert!(view.take_structure_dirty());
-            assert!(
-                !view.update(&doc, &automerge::ROOT),
-                "a laid-out page is not presented again"
-            );
-
-            std::fs::write(&report_failure, b"").expect("let the helper fail");
-            while view.nearby.is_some() {
-                assert!(Instant::now() < deadline, "the failure never arrived");
-                std::thread::sleep(Duration::from_millis(20));
-                view.sync(&doc, &automerge::ROOT);
-            }
-            assert!(
-                view.error()
-                    .is_some_and(|error| error.contains("Permission denied")),
-                "{:?}",
-                view.error()
-            );
-            assert!(
-                view.update(&doc, &automerge::ROOT),
-                "the failure and its Try again are presented"
-            );
-            let composition = laid_out(&mut view);
             assert!(
                 accessibility_for_id(composition, "onboarding.connect.nearby.button").is_some(),
-                "a failed pairing offers Try again"
+                "the Join control is there"
             );
             assert!(
-                accessibility_for_id(composition, "onboarding.nearby.code").is_none(),
-                "the stale code is gone"
+                accessibility_for_id(composition, "onboarding.connect.cancel.button").is_none(),
+                "nothing runs yet to cancel"
             );
-            // What went wrong is the error's accessible name, not only its
-            // description: a screen reader speaks it first, and the generic
-            // outcome alone would hide that the commit was refused.
+
+            // Nothing typed: the person is told what to type, and no device is called.
+            press(&view, &mut document, KEY_CONNECT_NEARBY);
+            view.sync(&document, &automerge::ROOT);
+            assert_eq!(view.error(), Some(t("onboarding-nearby-ticket-empty").as_str()));
+            assert!(view.nearby.is_none());
+
+            // A mistyped code is named as one this computer cannot use, and is
+            // not kept in the field.
+            *view.ticket.lock().unwrap() = "K7Q-MX2P".to_owned();
+            press(&view, &mut document, KEY_CONNECT_NEARBY);
+            view.sync(&document, &automerge::ROOT);
+            let failure = view.nearby_failure.clone().expect("a designed failure");
+            assert_eq!(failure.cause, crate::nearby::NearbyCause::Wrong);
+            assert_eq!(view.error(), Some(failure.message().as_str()));
+            assert!(view.ticket.lock().unwrap().is_empty());
+            assert!(view.nearby.is_none());
+            let composition = laid_out(&mut view);
+            let mut said = Vec::new();
+            accessible_descriptions(composition, &mut said);
+            assert!(
+                said.iter().any(|words| words.contains("tilo1")),
+                "the banner says what a code looks like: {said:?}"
+            );
+
+            // Back leaves the flow's words behind.
+            press(&view, &mut document, KEY_BACK);
+            view.sync(&document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Existing);
+            assert!(view.error().is_none());
+            assert!(view.nearby_failure.is_none());
+        }
+
+        phase a_used_code_says_to_make_a_new_one_and_offers_join_again;
+        {
+            let account = crate::nearby::tests::Account::new();
+            let _daemon = crate::nearby::testing::FakeDaemon::start(
+                &account.paths,
+                crate::nearby::testing::Answer::Refuse(
+                    "Your device didn't take this ticket: this ticket was used already: ask for a new one.",
+                ),
+            );
+            let (mut view, identity_dir) = joining(&account);
+            let mut document = AutoCommit::new();
+            press(&view, &mut document, KEY_EXISTING);
+            press(&view, &mut document, KEY_CHOOSE_NEARBY);
+            view.sync(&document, &automerge::ROOT);
+            *view.ticket.lock().unwrap() = a_code();
+            press(&view, &mut document, KEY_CONNECT_NEARBY);
+            sync_until(&mut view, &document, "the join to start", |view| {
+                view.nearby.is_some() || view.nearby_failure.is_some()
+            });
+            sync_until(&mut view, &document, "the refusal to arrive", |view| {
+                view.nearby.is_none()
+            });
+            let failure = view
+                .nearby_failure
+                .clone()
+                .expect("the refusal is one a person acts on");
+            assert_eq!(failure.cause, crate::nearby::NearbyCause::Used);
+            assert_eq!(view.error(), Some(failure.message().as_str()));
+            assert_eq!(view.flow.screen(), Screen::Nearby);
+            let composition = laid_out(&mut view);
+            // The cause is the banner's accessible name, so a screen reader
+            // speaks it first and the outcome alone does not hide it.
             let mut names = Vec::new();
             accessible_names(composition, &mut names);
             assert!(
-                names.iter().any(|name| name.contains("Permission denied")),
-                "the cause is named: {names:?}"
+                names.iter().any(|name| name.contains("already used")),
+                "{names:?}"
             );
             assert!(
-                !names.contains(&tilo_onboarding::t("onboarding-connect-failed")),
-                "a refused commit is not reported generically: {names:?}"
+                accessibility_for_id(composition, "onboarding.connect.nearby.button").is_some(),
+                "Join is offered again"
+            );
+            assert!(
+                tilo_identity::store::resolve_active_identity(&identity_dir).is_none(),
+                "a refused code adds nothing"
             );
         }
 
-        phase a_joined_identity_ends_first_use_on_the_ready_screen;
+        phase cancelling_a_join_stops_setup_waiting;
         {
-            // A device that joined from a nearby one holds a public record and a
-            // member certificate; the root key never leaves the approving device.
-            // Its first use ends where the person can enter the desktop, not on a
-            // backup step warning that losing this device loses the identity.
-            use std::os::unix::fs::PermissionsExt as _;
-            let dir = tempfile::tempdir().expect("tempdir");
-            let identity_dir = dir.path().join("identity");
-            std::fs::create_dir(&identity_dir).expect("identity dir");
-            std::fs::set_permissions(&identity_dir, std::fs::Permissions::from_mode(0o700))
-                .expect("private identity dir");
-            let record = identity_dir.join("identity-joined.json");
-            std::fs::write(
-                &record,
-                tilo_identity::store::public_member_record("Member", [1, 2, 3], [7; 32]).expect("record"),
-            )
-            .expect("write record");
-            std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600))
-                .expect("private record");
-            let status = identity_dir.join(".nearby-enrollment-status.json");
-            let complete = serde_json::json!({
-                "state": "complete",
-                "verification_code": "123456",
-                "identity": hex::encode([7; 32]),
-                "record_path": record,
-            });
-            let mut helper = Command::new("sh");
-            helper
-                .args(["-c", r#"printf '%s' "$2" > "$1"; exec sleep 30"#, "helper"])
-                .arg(&status)
-                .arg(complete.to_string());
-            let (mut view, _) = view();
-            view.identity_dir = Some(identity_dir.clone());
-            view.flow.begin_existing();
-            view.flow.choose_nearby();
-            view.nearby = Some(
-                crate::nearby::NearbyPairing::spawn(
-                    helper,
-                    &identity_dir,
-                    &status,
-                    Duration::from_secs(600),
-                )
-                .expect("spawn helper"),
+            let account = crate::nearby::tests::Account::new();
+            let _daemon = crate::nearby::testing::FakeDaemon::start(
+                &account.paths,
+                crate::nearby::testing::Answer::Hold,
             );
-            view.nearby_status_path = Some(status);
-            // Hold the journal write that records the join, so the assertion
-            // below sees the hand-off waiting for it rather than racing it.
-            let held = Rc::new(HeldOnDisk::over(journal_store(&identity_dir)));
-            view.journal_store = Some(Journal {
-                store: Rc::clone(&held) as Rc<dyn DurableStore>,
-                identity_dir: Some(identity_dir.clone()),
-                lease: None,
+            let (mut view, _) = joining(&account);
+            let mut document = AutoCommit::new();
+            press(&view, &mut document, KEY_EXISTING);
+            press(&view, &mut document, KEY_CHOOSE_NEARBY);
+            view.sync(&document, &automerge::ROOT);
+            *view.ticket.lock().unwrap() = a_code();
+            press(&view, &mut document, KEY_CONNECT_NEARBY);
+            sync_until(&mut view, &document, "the join to start", |view| {
+                view.nearby.is_some()
             });
-            let doc = AutoCommit::new();
-            let deadline = tilo_test_env::hang_deadline();
-            while view.nearby.is_some() {
-                assert!(Instant::now() < deadline, "the join never arrived");
-                std::thread::sleep(Duration::from_millis(20));
-                view.sync(&doc, &automerge::ROOT);
-            }
+            let composition = laid_out(&mut view);
             assert!(
-                !view.identity_ready_page,
-                "the hand-off waits for the journal that records it"
+                accessibility_for_id(composition, "onboarding.connect.cancel.button").is_some(),
+                "a join under way offers Cancel"
             );
-            held.release();
-            sync_journaled(&mut view, &doc);
+            assert!(
+                accessibility_for_id(composition, "onboarding.connect.nearby.button").is_none()
+            );
+            assert!(
+                accessibility_for_id(composition, "onboarding.nearby.status").is_some(),
+                "the wait is on screen"
+            );
+            press(&view, &mut document, KEY_CONNECT_CANCEL);
+            view.sync(&document, &automerge::ROOT);
+            assert!(view.nearby.is_none());
+            assert_eq!(view.error(), Some(t("onboarding-nearby-cancelled").as_str()));
+            assert!(view.ticket.lock().unwrap().is_empty());
+        }
 
+        phase a_good_code_ends_first_use_on_the_ready_screen;
+        {
+            let account = crate::nearby::tests::Account::new();
+            let _daemon = crate::nearby::testing::FakeDaemon::start(
+                &account.paths,
+                crate::nearby::testing::Answer::Certify,
+            );
+            let (mut view, identity_dir) = joining(&account);
+            let mut document = AutoCommit::new();
+            press(&view, &mut document, KEY_EXISTING);
+            press(&view, &mut document, KEY_CHOOSE_NEARBY);
+            view.sync(&document, &automerge::ROOT);
+            let _ = view.take_structure_dirty();
+            assert!(!view.update(&document, &automerge::ROOT), "nothing new yet");
+
+            // The whole line `tilo device add` prints is accepted, not only the code.
+            *view.ticket.lock().unwrap() = format!("tilo login {}", a_code());
+            press(&view, &mut document, KEY_CONNECT_NEARBY);
+            sync_until(&mut view, &document, "the join to start", |view| {
+                view.nearby.is_some() || view.nearby_failure.is_some()
+            });
+            assert!(
+                view.ticket.lock().unwrap().is_empty(),
+                "the code does not stay in an editable field"
+            );
+            sync_until(
+                &mut view,
+                &document,
+                "the join to end on the ready screen",
+                |view| view.nearby.is_none() && view.identity_ready_page,
+            );
+            assert_eq!(
+                view.nearby_failure, None,
+                "the join ended well: {:?}",
+                view.error()
+            );
             assert_eq!(view.flow.screen(), Screen::Done);
             assert_eq!(view.error(), None);
-            assert!(view.identity_ready_page);
             assert_eq!(
                 load_progress(&identity_dir).expect("load progress"),
                 Some(PersistedStage::ReadyToEnter),
@@ -3442,7 +3365,7 @@ mod tests {
                 assert_eq!(
                     label("onboarding.done.heading"),
                     Some(tilo_onboarding::t("onboarding-device-added")),
-                    "the ready screen confirms the paired device"
+                    "the ready screen confirms the added device"
                 );
                 assert_eq!(
                     label("onboarding.finish.button"),
@@ -3461,40 +3384,16 @@ mod tests {
             };
             joined_ready(laid_out(&mut view));
 
-            // Close the first view and its writer lease before restarting.
+            // The joined identity is the account's, so a restart resumes there.
             drop(view);
-            drop(held);
-            tilo_identity::store::set_active_identity(&identity_dir, "identity-joined")
-                .expect("select the joined identity");
             let mut resumed = OnboardingView::isolated(identity_dir.clone(), false);
             assert_eq!(resumed.flow.screen(), Screen::Done);
             joined_ready(laid_out(&mut resumed));
             assert!(act(&mut resumed, &OnboardingEffect::Finish));
-            sync_journaled(&mut resumed, &doc);
+            sync_journaled(&mut resumed, &document);
             assert!(resumed.finished(), "{:?}", resumed.progress_error);
             assert!(!has_pending_progress(&identity_dir));
         }
-    }
-
-    fn process_group_has_live_member(pgid: i32) -> bool {
-        std::fs::read_dir("/proc").is_ok_and(|entries| {
-            entries.flatten().any(|entry| {
-                let Ok(process_id) = entry.file_name().to_string_lossy().parse::<u32>() else {
-                    return false;
-                };
-                let Ok(stat) = std::fs::read_to_string(format!("/proc/{process_id}/stat")) else {
-                    return false;
-                };
-                let Some((_, tail)) = stat.rsplit_once(')') else {
-                    return false;
-                };
-                let mut fields = tail.split_whitespace();
-                let state = fields.next();
-                let _parent = fields.next();
-                let process_group = fields.next().and_then(|field| field.parse::<i32>().ok());
-                process_group == Some(pgid) && !matches!(state, Some("Z" | "X"))
-            })
-        })
     }
 
     /// Set `key`'s acknowledgement to `checked`, through the declared
@@ -3564,6 +3463,15 @@ mod tests {
         }
         for child in widget.children() {
             accessible_names(child, names);
+        }
+    }
+
+    fn accessible_descriptions(widget: &dyn Widget, said: &mut Vec<String>) {
+        if let Some(description) = widget.accessibility().and_then(|node| node.description) {
+            said.push(description);
+        }
+        for child in widget.children() {
+            accessible_descriptions(child, said);
         }
     }
 
@@ -4038,101 +3946,6 @@ mod tests {
         (journal, store)
     }
 
-    /// The journal's own store, saying its changes are still being written
-    /// until the test [releases](Self::release) them: a disk that takes its
-    /// time.
-    struct HeldOnDisk {
-        inner: Rc<dyn DurableStore>,
-        released: std::cell::Cell<bool>,
-    }
-
-    impl HeldOnDisk {
-        fn over(inner: Rc<dyn DurableStore>) -> Self {
-            Self {
-                inner,
-                released: std::cell::Cell::new(false),
-            }
-        }
-
-        fn release(&self) {
-            self.released.set(true);
-        }
-    }
-
-    impl DurableStore for HeldOnDisk {
-        fn namespace(&self) -> &str {
-            self.inner.namespace()
-        }
-
-        fn read(
-            &self,
-            key: &StorageKey,
-        ) -> Result<Option<durable_store::Stored>, durable_store::StoreError> {
-            self.inner.read(key)
-        }
-
-        fn write(
-            &self,
-            key: &StorageKey,
-            op: WriteOp,
-            writer: Option<&[u8]>,
-        ) -> Result<durable_store::Revision, durable_store::StoreError> {
-            self.inner.write(key, op, writer)
-        }
-
-        fn durability(
-            &self,
-            key: &StorageKey,
-            revision: durable_store::Revision,
-        ) -> durable_store::Durability {
-            if self.released.get() {
-                self.inner.durability(key, revision)
-            } else {
-                durable_store::Durability::Pending
-            }
-        }
-
-        fn flush(&self, key: Option<&StorageKey>) -> Result<(), durable_store::StoreError> {
-            if self.released.get() {
-                self.inner.flush(key)
-            } else {
-                Err(durable_store::StoreError::Pending(
-                    "the held journal".into(),
-                ))
-            }
-        }
-
-        fn wake_when_settled(
-            &self,
-            key: &StorageKey,
-            wake: durable_store::ReadyWake,
-        ) -> durable_store::SettleWatch {
-            self.inner.wake_when_settled(key, wake)
-        }
-
-        fn lease(
-            &self,
-            key: &StorageKey,
-        ) -> Result<durable_store::Lease, durable_store::StoreError> {
-            self.inner.lease(key)
-        }
-
-        fn lease_shared(
-            &self,
-            key: &StorageKey,
-        ) -> Result<durable_store::SharedLease, durable_store::StoreError> {
-            self.inner.lease_shared(key)
-        }
-
-        fn claim(
-            &self,
-            key: &StorageKey,
-            claimant: &str,
-        ) -> Result<bool, durable_store::StoreError> {
-            self.inner.claim(key, claimant)
-        }
-    }
-
     /// Wait until the view's journal changes are on disk. A journal held in
     /// memory stays pending until acknowledged.
     fn flush_journal(view: &OnboardingView) {
@@ -4538,60 +4351,36 @@ mod tests {
     tilo_test_env::scenario! {
         fn onboarding_copy_and_live_regions_speak_the_real_contract;
 
-        phase nearby_pairing_updates_share_one_polite_live_region;
+        phase a_join_under_way_speaks_through_one_polite_live_region;
         {
             let (mut view, _) = view();
             view.flow.begin_existing();
             view.flow.choose_nearby();
+            view.nearby_active_for_snapshot = true;
             let theme = Theme::dark();
-
-            for status in [
-                "Waiting for your other device.",
-                "Check that your other device shows the same code, then approve it there.",
-                "Connected. Your workspaces will appear automatically.",
-            ] {
-                view.nearby_status = Some(status.into());
-                let node = accessibility_for_id(
-                    laid_out_themed(&mut view, &theme),
-                    "onboarding.nearby.status",
-                )
-                .expect("nearby status accessibility node");
-
-                assert_eq!(node.role, ui::a11y::Role::StaticText);
-                assert_eq!(node.name.as_deref(), Some(status));
-                assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
-            }
-
-            view.nearby_code = Some("123456".into());
-            let code =
+            let node = accessibility_for_id(
+                laid_out_themed(&mut view, &theme),
+                "onboarding.nearby.status",
+            )
+            .expect("the join's wait has one status region");
+            assert_eq!(node.role, ui::a11y::Role::StaticText);
+            assert_eq!(node.name, Some(t("onboarding-nearby-joining")));
+            assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
+            assert!(
                 accessibility_for_id(laid_out_themed(&mut view, &theme), "onboarding.nearby.code")
-                    .expect("the verification code is shown on its own");
-            assert_eq!(code.name.as_deref(), Some("123 456"));
+                    .is_none(),
+                "no code from the other device is shown here"
+            );
         }
 
-        phase nearby_steps_say_this_device_waits_for_the_other_one;
+        phase the_code_screen_says_what_to_run_on_the_other_device;
         {
-            let waiting = tilo_onboarding::t("onboarding-nearby-waiting").to_lowercase();
-            assert!(waiting.contains("other device"), "{waiting}");
-            assert!(!waiting.contains("trusted device nearby"), "{waiting}");
-            let steps = [
-                "onboarding-nearby-step-open",
-                "onboarding-nearby-step-add",
-                "onboarding-nearby-step-compare",
-            ]
-            .map(tilo_onboarding::t)
-            .join(" ");
-            for surface in [
-                "Settings",
-                "Sync between devices",
-                "Add device",
-                "six-digit code",
-            ] {
-                assert!(
-                    steps.contains(surface),
-                    "nearby steps must name {surface}: {steps}"
-                );
-            }
+            let body = tilo_onboarding::t("onboarding-nearby-body");
+            assert!(body.contains("tilo device add"), "{body}");
+            assert!(body.to_lowercase().contains("code"), "{body}");
+            let field = tilo_onboarding::t("onboarding-nearby-ticket-field").to_lowercase();
+            assert!(field.contains("code"), "{field}");
+            assert!(!field.contains("link"), "{field}");
         }
 
         phase onboarding_copy_uses_no_typed_glyphs_as_layout;
@@ -4600,10 +4389,9 @@ mod tests {
                 "onboarding-intro-point-collaboration",
                 "onboarding-intro-point-local",
                 "onboarding-intro-point-not-account",
-                "onboarding-nearby-step-open",
-                "onboarding-nearby-step-add",
-                "onboarding-nearby-step-compare",
-                "onboarding-nearby-code",
+                "onboarding-nearby-body",
+                "onboarding-nearby-ticket-field",
+                "onboarding-nearby-joining",
                 "onboarding-progress-stage",
                 "onboarding-tour-eyebrow",
                 "onboarding-tour-stage",
@@ -6111,24 +5899,32 @@ mod tests {
             view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Existing);
 
-            // Without an identity directory the helper cannot start; the
-            // nearby screen still opens and reports why, with a retry.
+            // The code's screen opens on its own; without an identity
+            // directory to write into, Join says that and nothing is called.
             press(&view, &mut document, KEY_CHOOSE_NEARBY);
             view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Nearby);
-            assert_eq!(
-                view.error(),
-                Some(tilo_onboarding::t("onboarding-nearby-unavailable").as_str()),
-                "choosing nearby is the request to pair"
-            );
+            assert_eq!(view.error(), None, "opening the screen is not a failure");
             let composition = laid_out_themed(&mut view, &theme);
             assert!(
                 accessibility_for_id(composition, "onboarding.connect.path.field").is_none(),
                 "nearby does not carry the restore form"
             );
             assert!(
+                accessibility_for_id(composition, "onboarding.nearby.ticket.field").is_some(),
+                "the screen asks for the code"
+            );
+            assert!(
                 accessibility_for_id(composition, "onboarding.connect.nearby.button").is_some(),
-                "a failed start offers Try again"
+                "the Join control is offered"
+            );
+            *view.ticket.lock().unwrap() = "K7Q-MX2P".to_owned();
+            press(&view, &mut document, KEY_CONNECT_NEARBY);
+            view.sync(&document, &automerge::ROOT);
+            assert_eq!(
+                view.error(),
+                Some(tilo_onboarding::t("onboarding-nearby-unavailable").as_str()),
+                "this session cannot add a computer"
             );
             press(&view, &mut document, KEY_BACK);
             view.sync(&document, &automerge::ROOT);
@@ -6142,17 +5938,17 @@ mod tests {
             assert_eq!(view.flow.screen(), Screen::Intro);
         }
 
-        phase nearby_shows_cancel_while_pairing_runs;
+        phase nearby_shows_cancel_while_a_join_runs;
         {
             let (mut view, _) = view();
-            view.set_visual_state_for_snapshot(OnboardingVisualState::NearbyCode);
+            view.set_visual_state_for_snapshot(OnboardingVisualState::NearbyJoining);
             let theme = Theme::dark();
             let composition = laid_out_themed(&mut view, &theme);
             assert!(accessibility_for_id(composition, "onboarding.connect.cancel.button").is_some());
             assert!(accessibility_for_id(composition, "onboarding.connect.nearby.button").is_none());
             assert_eq!(
-                accessibility_for_id(composition, "onboarding.nearby.code").and_then(|node| node.name),
-                Some("482 913".to_string())
+                accessibility_for_id(composition, "onboarding.nearby.status").and_then(|node| node.name),
+                Some(tilo_onboarding::t("onboarding-nearby-joining"))
             );
         }
     }

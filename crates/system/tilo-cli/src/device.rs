@@ -22,6 +22,15 @@ use tilo_user_identity::{DeviceCert, RevocationReason};
 use crate::api::{Client, Reach};
 use crate::login::{self, Device};
 
+/// What a computer added with a ticket becomes.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum Adding {
+    /// An ordinary member device.
+    Member,
+    /// A device that administers the person's other devices.
+    Admin,
+}
+
 /// How long a revocation is waited for to show in the person's list.
 const REVOKED_WAIT: Duration = Duration::from_secs(20);
 
@@ -67,15 +76,28 @@ fn person_here() -> Result<(SigningKey, Device, crate::identity::Person)> {
 }
 
 /// `tilo device add`: print a ticket, wait for a computer to log in with it, and say which one
-/// it was.
+/// it was. With `no_wait`, print only the ticket: this computer's daemon keeps serving it while
+/// it lasts. With `server`, the computer is a server, which keeps the person's workspaces; with
+/// `plan`, it is the machine that plan describes, and its certification takes the plan's entry
+/// into its own.
+///
+/// A computer with the person's root and no login adds devices too: the workspace its daemon
+/// serves is where the action is asked.
 ///
 /// # Errors
 /// This computer cannot add devices, or no computer came before the ticket ran out.
-pub fn add(json: bool) -> Result<ExitCode> {
+pub fn add(
+    json: bool,
+    adding: Adding,
+    no_wait: bool,
+    plan: Option<&str>,
+    server: bool,
+) -> Result<ExitCode> {
     login::trust_test_certificates()?;
     crate::identity::convert_earlier()?;
     let login_place = login::Place::here(crate::identity::paths())?;
-    let (key, here) = login::load(&login_place)?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    let key = login::this_device_key()?;
+    let here = login::load(&login_place)?;
     let place = DaemonPlace::of(login_place.dir(), &key.verifying_key().to_bytes())
         .map_err(anyhow::Error::msg)?;
     login::ensure_daemon(&place)?;
@@ -86,13 +108,23 @@ pub fn add(json: bool) -> Result<ExitCode> {
             key_file: None,
             json: false,
         })?;
-        let workspace = here.workspace.clone();
+        let workspace = match &here {
+            Some((_, device)) => device.workspace.clone(),
+            None => client.founded_workspace().await?,
+        };
+        let capability = match adding {
+            Adding::Member => "member",
+            Adding::Admin => "admin",
+        };
+        // A role the person did not ask for goes as null, which the daemon reads as none.
+        let args =
+            json!({ "capability": capability, "plan": plan, "server": server.then_some(true) });
         let issued = client
             .act(
                 &workspace,
                 "devices",
                 tilo_device_identity::login::ISSUE,
-                &json!({}),
+                &args,
                 "Add a device",
             )
             .await?;
@@ -106,7 +138,16 @@ pub fn add(json: bool) -> Result<ExitCode> {
         } else {
             eprintln!("On the computer to add, run:");
             println!("tilo login {ticket}");
-            eprintln!("The ticket works once, for 10 minutes. Waiting for it…");
+            eprintln!(
+                "The ticket works once, for 10 minutes. It adds the computer as {}.",
+                match adding {
+                    Adding::Member => "an ordinary device",
+                    Adding::Admin => "an administrator of your other devices",
+                }
+            );
+        }
+        if no_wait {
+            return Ok::<Option<DeviceCert>, anyhow::Error>(None);
         }
         let done = client
             .act(
@@ -125,19 +166,25 @@ pub fn add(json: bool) -> Result<ExitCode> {
         let bytes = hex::decode(encoded).map_err(|error| anyhow!("the certificate: {error}"))?;
         let cert: DeviceCert = tilo_user_identity::canonical::from_canonical_bytes(&bytes)
             .map_err(|error| anyhow!("the certificate: {error}"))?;
-        // The person's other devices list it as soon as the host keeps it there.
-        match login::connect(&key, &here, None).await {
-            Ok(entered) => {
-                let kept = keep_in_list(&entered, &cert).await;
-                entered.close();
-                if let Err(error) = kept {
-                    eprintln!("Your other devices list it once it enters: {error}");
+        // The person's other devices list it as soon as the host keeps it there. A computer with
+        // no login has no session of its own to enter with: the host lists it as it enters.
+        if let Some((key, here)) = &here {
+            match login::connect(key, here, None).await {
+                Ok(entered) => {
+                    let kept = keep_in_list(&entered, &cert).await;
+                    entered.close();
+                    if let Err(error) = kept {
+                        eprintln!("Your other devices list it once it enters: {error}");
+                    }
                 }
+                Err(error) => eprintln!("Your other devices list it once it enters: {error}"),
             }
-            Err(error) => eprintln!("Your other devices list it once it enters: {error}"),
         }
-        Ok::<DeviceCert, anyhow::Error>(cert)
+        Ok::<Option<DeviceCert>, anyhow::Error>(Some(cert))
     })?;
+    let Some(cert) = cert else {
+        return Ok(ExitCode::SUCCESS);
+    };
     let key_hex = hex::encode(cert.device_public_key);
     if json {
         println!(

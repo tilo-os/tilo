@@ -224,22 +224,12 @@ impl Task {
             );
             return;
         };
-        let author: [u8; 32] = *op.author.as_bytes();
-        let own = self
-            .replicas
-            .owner()
-            .replica(workspace)
-            .ok()
-            .and_then(|replica| {
-                replica.read(|peer| peer.own_write(&route.app_id, &route.document, &author))
-            });
         let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
             workspace: route.cluster_id.clone(),
             operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                 app: route.app_id.clone(),
                 document: route.document.clone(),
                 envelope: Box::new(op),
-                own,
                 readers: None,
             },
         };
@@ -403,7 +393,6 @@ impl Task {
                         app: route.app_id.clone(),
                         document: route.document.clone(),
                         envelope: Box::new(receipt.envelope),
-                        own: receipt.own,
                         readers: None,
                     },
                 };

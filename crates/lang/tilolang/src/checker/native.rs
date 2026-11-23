@@ -962,7 +962,13 @@ impl Checker<'_> {
         let first = args
             .iter()
             .find(|a| a.name.is_none() && !self.is_flag(None, &a.value))?;
-        let applied = applied_action(&first.value);
+        self.declared_action_of(&first.value)
+    }
+
+    /// The declared action `e` applies, as `send(d)` or `send(d).then(...)` applies `send`; `None`
+    /// for a host verb (`set`, `open`) or anything else.
+    pub(super) fn declared_action_of(&self, e: &ast::Expr) -> Option<Callable> {
+        let applied = applied_action(e);
         let ExprKind::Call { callee, .. } = &applied.kind else {
             return None;
         };

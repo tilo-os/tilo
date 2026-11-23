@@ -22,10 +22,6 @@ pub enum CommitOperation {
         app: String,
         document: String,
         envelope: Box<collab_types::SignedOp>,
-        /// The member's own record `record` is, when it is one: the write
-        /// carries it on the wire.
-        #[serde(default)]
-        own: Option<collab_types::OwnResource>,
         /// The reader set of the resource store's document `document` is, when
         /// it is one: the write carries it on the wire.
         #[serde(default)]

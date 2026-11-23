@@ -175,19 +175,13 @@ impl DocumentId {
         (id.storage_key() == storage_key).then_some(id)
     }
 
-    /// A member's own document ([`crate::OwnResource`]): only that person's
-    /// devices read or change it.
-    #[must_use]
-    pub fn of_own(own: &crate::OwnResource) -> Self {
-        Self(own.document_id())
-    }
-
-    /// The id of the own document of `kind` of the person `person` names (the
-    /// hex of their user root key, [`crate::OwnResource::of_person`]); `None`
-    /// when either is not one.
+    /// The record of `kind` about the person `person` names (the hex of their user root key), the
+    /// same on every device and naming neither ([`tilo_action_policy::roles::member_record`]): an
+    /// ordinary record of the workspace, which its policy decides like any other. `None` when
+    /// `person` is not a root key.
     #[must_use]
     pub fn of_member(person: &str, kind: &str) -> Option<Self> {
-        crate::OwnResource::of_person(person, kind).map(|own| Self::of_own(&own))
+        tilo_action_policy::roles::member_record(kind, person).map(Self)
     }
 
     /// The document of the pair two people share in a workspace

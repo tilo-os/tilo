@@ -329,11 +329,11 @@ impl<'a> Caller<'a> {
                     "beyond_scope",
                     "this key does not reach that workspace",
                 )
-                .next("GET /v1/workspaces names the workspaces it reaches"));
+                .next("account/workspaces#list names the workspaces it reaches"));
             }
             if uuid::Uuid::parse_str(workspace).is_err() {
                 return Err(ApiError::new("not_found", "no such workspace")
-                    .next("GET /v1/workspaces names them by id"));
+                    .next("account/workspaces#list names them by id"));
             }
         }
         let session = server.api_session(&grant).await?;
@@ -398,29 +398,35 @@ impl<'a> Caller<'a> {
             .await
     }
 
-    /// An account action: its `result`.
-    async fn account(&self, path: &str, args: Value) -> Result<Value, ApiError> {
-        let arguments = json!({"path": path, "args": args});
-        let done = self
-            .session
-            .typed(None, "tilo_do", arguments, self.group.clone())
-            .await?;
-        Ok(done.get("result").cloned().unwrap_or_default())
-    }
-
     async fn handle(self, operation: &Operation) -> Result<Answer, ApiError> {
+        // The account's routes reach what the account holds alone; a workspace's resources
+        // are under its own routes, which admit the key for that workspace.
+        if matches!(
+            operation.id,
+            "listAccountResources" | "readAccountResource" | "runAccountAction"
+        ) && !Some(self.params.get("path"))
+            .filter(|path| !path.is_empty())
+            .or_else(|| self.query("path"))
+            .is_none_or(|path| path == "account" || path.starts_with("account/"))
+        {
+            return Err(ApiError::new(
+                "not_found",
+                "the account holds only what is under `account/`",
+            )
+            .next("a workspace's resources are under /v1/workspaces/{workspace}/resources"));
+        }
         match operation.id {
-            "getAccount" | "listWorkspaces" | "createWorkspace" | "renameWorkspace"
-            | "deleteWorkspace" | "listKeys" | "mintKey" | "revokeKey" => {
-                self.account_operation(operation.id).await
+            "listResources"
+            | "readResource"
+            | "search"
+            | "getLink"
+            | "viewResource"
+            | "listAccountResources"
+            | "readAccountResource" => self.resource_operation(operation.id).await,
+            "runAction" | "runAccountAction" | "getInvocation" | "cancelInvocation"
+            | "undoInvocation" | "invocationOutput" => {
+                self.invocation_operation(operation.id).await
             }
-            "branchWorkspace" => self.branch_workspace().await,
-            "setUnattended" => self.set_unattended().await,
-            "listResources" | "readResource" | "search" | "getLink" | "viewResource" => {
-                self.resource_operation(operation.id).await
-            }
-            "runAction" | "getInvocation" | "cancelInvocation" | "undoInvocation"
-            | "invocationOutput" => self.invocation_operation(operation.id).await,
             "listWebhooks" | "createWebhook" | "deleteWebhook" => {
                 self.webhook_operation(operation.id)
             }
@@ -429,112 +435,10 @@ impl<'a> Caller<'a> {
         }
     }
 
-    /// The account: its workspaces and keys.
-    async fn account_operation(&self, id: &str) -> Result<Answer, ApiError> {
-        match id {
-            "getAccount" => {
-                let read = self
-                    .call("tilo_read", json!({"path": "account/usage"}))
-                    .await?;
-                let usage = read.get("fields").cloned().unwrap_or(read);
-                shaped::<answers::Account>(usage).map(Answer::ok)
-            }
-            "listWorkspaces" => {
-                // The person's list, as the key reaches it: one workspace for a
-                // key for one, every one wherever it is hosted for the rest;
-                // with `label.<name>=<value>`, those labelled so.
-                let labels: tilo_server_session::workspaces::WorkspaceLabels = self
-                    .query
-                    .iter()
-                    .filter_map(|(name, value)| {
-                        let label = name.strip_prefix(LABEL_QUERY)?.strip_prefix('[')?;
-                        Some((label.strip_suffix(']')?.to_owned(), value.clone()))
-                    })
-                    .collect();
-                tilo_server_session::workspaces::check_labels(&labels)
-                    .map_err(|why| ApiError::new("invalid_arguments", why))?;
-                let mut listed = self
-                    .session
-                    .workspaces(&labels)
-                    .await
-                    .map_err(ApiError::from)?;
-                listed.retain(|workspace| crate::account::labelled(workspace, &labels));
-                shaped::<answers::WorkspaceList>(json!({"workspaces": listed})).map(Answer::ok)
-            }
-            "createWorkspace" => {
-                let new: answers::NewWorkspace = self.json_body()?;
-                // A retry asks the host for the workspace the first try made.
-                let args = with(
-                    json!({"name": new.name, "labels": new.labels}),
-                    "id",
-                    self.invocation.as_ref(),
-                );
-                let made = self.account("account/workspaces#create", args).await?;
-                shaped::<answers::Workspace>(made.get("workspace").cloned().unwrap_or_default())
-                    .map(Answer::created)
-            }
-            "renameWorkspace" => {
-                let new: answers::WorkspaceName = self.json_body()?;
-                let args = json!({"workspace": self.workspace(), "name": new.name});
-                let renamed = self.account("account/workspaces#rename", args).await?;
-                shaped::<answers::Workspace>(renamed.get("workspace").cloned().unwrap_or_default())
-                    .map(Answer::ok)
-            }
-            "deleteWorkspace" => {
-                let args = json!({"workspace": self.workspace()});
-                let deleted = self.account("account/workspaces#delete", args).await?;
-                shaped::<answers::DeletedWorkspace>(deleted).map(Answer::ok)
-            }
-            "listKeys" => {
-                let listed = self.account("account/keys#list", json!({})).await?;
-                shaped::<answers::KeyList>(listed).map(Answer::ok)
-            }
-            "mintKey" => {
-                let new: answers::NewKey = self.json_body()?;
-                let args = serde_json::to_value(new).unwrap_or_default();
-                let minted = self.account("account/keys#mint", args).await?;
-                shaped::<answers::MintedKey>(minted).map(Answer::created)
-            }
-            _ => {
-                let args = json!({"grant": self.params.get("grant")});
-                let revoked = self.account("account/keys#revoke", args).await?;
-                shaped::<answers::RevokedKey>(revoked).map(Answer::ok)
-            }
-        }
-    }
-
-    /// Branch the route's workspace, one of the person's own: the branch, made
-    /// under the request's own id when it has an `Idempotency-Key`, so a retry
-    /// answers the same branch and copies nothing twice.
-    async fn branch_workspace(&self) -> Result<Answer, ApiError> {
-        let new: answers::NewBranch = self.json_body()?;
-        let args = with(
-            json!({"workspace": self.workspace(), "name": new.name, "labels": new.labels}),
-            "id",
-            self.invocation.as_ref(),
-        );
-        let made = self.account("account/workspaces#branch", args).await?;
-        shaped::<answers::Workspace>(made.get("workspace").cloned().unwrap_or_default())
-            .map(Answer::created)
-    }
-
-    /// Turn running commands unattended in the route's workspace on or off:
-    /// done at once when off, or answered `202` while the person is asked,
-    /// followed at the invocation it names like an action's.
-    async fn set_unattended(&self) -> Result<Answer, ApiError> {
-        let change: answers::UnattendedChange = self.json_body()?;
-        let call = with(
-            json!({"path": "workspace/unattended#set", "args": {"on": change.on}}),
-            "invocation_id",
-            self.invocation.as_ref(),
-        );
-        action_answer(self.call("tilo_do", call).await?, &self.workspace())
-    }
-
     /// Reading the workspace: listings, resources, search and links.
     async fn resource_operation(&self, id: &str) -> Result<Answer, ApiError> {
         match id {
-            "listResources" => {
+            "listResources" | "listAccountResources" => {
                 let limit = self
                     .query("limit")
                     .map(|limit| {
@@ -550,7 +454,7 @@ impl<'a> Caller<'a> {
                 let listed = self.call("tilo_ls", with(args, "limit", limit)).await?;
                 shaped::<answers::Listing>(listed).map(Answer::ok)
             }
-            "readResource" => {
+            "readResource" | "readAccountResource" => {
                 self.check_surface(&self.workspace()).await?;
                 let args = with(
                     json!({"path": self.params.get("path")}),
@@ -608,7 +512,7 @@ impl<'a> Caller<'a> {
         let ws = self.workspace();
         let invocation = self.params.get("invocation");
         match id {
-            "runAction" => self.run_action().await,
+            "runAction" | "runAccountAction" => self.run_action().await,
             "getInvocation" => self.get_invocation().await,
             "cancelInvocation" => {
                 let args = json!({"invocation_id": invocation, "cancel": true});
@@ -1324,10 +1228,6 @@ fn webhook_row(
 }
 
 /// `object` with `name` set to `value` when there is one.
-/// The query parameter a listing of workspaces is filtered by, one per
-/// label, as `OpenAPI`'s deep objects are written: `label[customer_id]=cus_8121`.
-pub const LABEL_QUERY: &str = "label";
-
 fn with(mut object: Value, name: &str, value: Option<impl serde::Serialize>) -> Value {
     if let (Some(fields), Some(value)) = (object.as_object_mut(), value) {
         fields.insert(name.to_owned(), json!(value));

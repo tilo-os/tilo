@@ -1,4 +1,5 @@
-//! Which of a profile's two documents holds each section.
+//! Which sections of a profile's settings are the person's, kept in their record, and which this
+//! device's.
 //!
 //! A section is the person's or this device's, never some of each. [`SECTIONS`] declares each
 //! section once; one it does not name is the device's, so nothing leaves the device until someone

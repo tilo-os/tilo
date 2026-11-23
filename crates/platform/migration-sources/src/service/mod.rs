@@ -42,7 +42,11 @@ mod outline;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use accounts::{Account, AccountId, AccountStore, SecretVault};
+use accounts::person::PersonAccounts;
+use accounts::{Account, AccountId, SecretVault};
+use tilo_resource::Invoke;
+
+pub use mail::publish as publish_mail;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -270,7 +274,11 @@ pub struct ServiceReport {
     clippy::needless_pass_by_value,
     reason = "the address owns the secret the person typed once"
 )]
-pub fn connect(config_root: &Path, address: ServiceAddress) -> Result<AccountId, ServiceError> {
+pub fn connect(
+    config_root: &Path,
+    record: &PersonAccounts,
+    address: ServiceAddress,
+) -> Result<(AccountId, Invoke<PersonAccounts>), ServiceError> {
     match address.kind {
         ServiceKind::Outline => {
             let server = http::base(&address.server)?;
@@ -312,7 +320,7 @@ pub fn connect(config_root: &Path, address: ServiceAddress) -> Result<AccountId,
                 &address.secret,
             )
         }
-        ServiceKind::Mail => mail::connect(config_root, &address),
+        ServiceKind::Mail => mail::connect(config_root, record, &address),
     }
 }
 
@@ -337,8 +345,8 @@ pub fn config_root() -> Option<std::path::PathBuf> {
 
 /// The connected service sources under `config_root`.
 #[must_use]
-pub fn connected(config_root: &Path) -> Vec<(AccountId, ServiceKind, String)> {
-    AccountStore::load_in(config_root)
+pub fn connected(record: &PersonAccounts) -> Vec<(AccountId, ServiceKind, String)> {
+    record
         .all()
         .iter()
         .filter_map(|account| {
@@ -355,27 +363,27 @@ fn persist(
     title: &str,
     config: serde_json::Value,
     secret: &str,
-) -> Result<AccountId, ServiceError> {
+) -> Result<(AccountId, Invoke<PersonAccounts>), ServiceError> {
     let id = AccountId::new(format!("{type_id}-{}", short_digest(server)));
     let mut account = Account::new(id, type_id);
     account.display_name = title.chars().take(256).collect();
     account.config = config;
-    crate::vault::persist(
+    crate::vault::persist::<ServiceError>(
         config_root,
-        || Ok(AccountStore::load_in(config_root)),
-        account,
+        &account,
         accounts::Secret::password(secret.to_owned()),
-    )
+    )?;
+    Ok((account.id.clone(), PersonAccounts::saving(&account)))
 }
 
 /// The account, its server and its key as the vault holds them.
 fn reach(
     config_root: &Path,
+    record: &PersonAccounts,
     account: &str,
 ) -> Result<(Account, String, Zeroizing<String>), ServiceError> {
     let id = AccountId::new(account);
-    let store = AccountStore::load_in(config_root);
-    let account = store.get(&id).cloned().ok_or(ServiceError::Missing)?;
+    let account = record.account(id.as_str()).ok_or(ServiceError::Missing)?;
     let vault = SecretVault::open_read_only_in(config_root);
     if vault.recovery_error().is_some() {
         return Err(ServiceError::Storage);
@@ -398,9 +406,10 @@ fn reach(
 /// No such connected mail account, or the vault could not be read.
 pub fn mail_account(
     config_root: &Path,
+    record: &PersonAccounts,
     account: &str,
 ) -> Result<(accounts::email::AccountConfig, Zeroizing<String>), ServiceError> {
-    let (stored, _, secret) = reach(config_root, account)?;
+    let (stored, _, secret) = reach(config_root, record, account)?;
     if ServiceKind::of_account(&stored) != Some(ServiceKind::Mail) {
         return Err(ServiceError::Missing);
     }
@@ -414,8 +423,12 @@ pub fn mail_account(
 ///
 /// # Errors
 /// The source is not connected, refused its key or could not be read.
-pub fn review(config_root: &Path, account: &str) -> Result<ServiceReview, ServiceError> {
-    let (stored, server, key) = reach(config_root, account)?;
+pub fn review(
+    config_root: &Path,
+    record: &PersonAccounts,
+    account: &str,
+) -> Result<ServiceReview, ServiceError> {
+    let (stored, server, key) = reach(config_root, record, account)?;
     let kind = ServiceKind::of_account(&stored).ok_or(ServiceError::Missing)?;
     let (title, groups) = match kind {
         ServiceKind::Outline => (stored.display_name, outline::review(&server, &key)?),
@@ -447,14 +460,16 @@ pub fn review(config_root: &Path, account: &str) -> Result<ServiceReview, Servic
 /// journal keeps what landed before.
 pub fn run(
     config_root: &Path,
+    record: &PersonAccounts,
     journal: &mut ServiceJournal,
     landing: &mut dyn Landing,
+    publish: &mut dyn FnMut(&str) -> Result<(), String>,
     save: &mut dyn FnMut(&ServiceJournal) -> Result<(), String>,
     cancel: &AtomicBool,
 ) -> Result<ServiceReport, ServiceError> {
     journal.state = JournalState::Running;
     save(journal).map_err(ServiceError::Journal)?;
-    let result = land(config_root, journal, landing, save, cancel);
+    let result = land(config_root, record, journal, landing, publish, save, cancel);
     journal.state = match &result {
         // What the destination refused did not come over: the import is not complete.
         Ok(report) if !report.refused.is_empty() => JournalState::Failed,
@@ -485,8 +500,10 @@ pub fn run(
 
 fn land(
     config_root: &Path,
+    record: &PersonAccounts,
     journal: &mut ServiceJournal,
     landing: &mut dyn Landing,
+    publish: &mut dyn FnMut(&str) -> Result<(), String>,
     save: &mut dyn FnMut(&ServiceJournal) -> Result<(), String>,
     cancel: &AtomicBool,
 ) -> Result<ServiceReport, ServiceError> {
@@ -499,7 +516,7 @@ fn land(
     let mut report = ServiceReport::default();
     match journal.review.kind {
         ServiceKind::Outline => {
-            let (_, server, key) = reach(config_root, &journal.review.account)?;
+            let (_, server, key) = reach(config_root, record, &journal.review.account)?;
             let pages = outline::pages(&server, &key, &journal.review, &chosen, cancel)?;
             let pending = waiting(pages.pages, journal, &mut report, |page| &page.key);
             for part in pending.chunks(landing.batch().max(1)) {
@@ -512,11 +529,11 @@ fn land(
         }
         ServiceKind::Linear | ServiceKind::Forgejo => {
             let issues = if journal.review.kind == ServiceKind::Linear {
-                let (_, server, key) = reach(config_root, &journal.review.account)?;
+                let (_, server, key) = reach(config_root, record, &journal.review.account)?;
                 let issues = linear::issues(&server, &key, &chosen, cancel)?;
                 (issues.issues, issues.not_reviewed, issues.gone)
             } else {
-                let (account, server, key) = reach(config_root, &journal.review.account)?;
+                let (account, server, key) = reach(config_root, record, &journal.review.account)?;
                 let scope = forgejo_scope(&account, server);
                 let issues = forgejo::issues(&scope, &key, &chosen, cancel)?;
                 (issues.issues, issues.not_reviewed, issues.gone)
@@ -533,7 +550,7 @@ fn land(
                 if journal.landed.contains(&account) {
                     report.already_there += 1;
                 } else {
-                    mail::publish(config_root, &account).map_err(ServiceError::Unavailable)?;
+                    publish(&account).map_err(ServiceError::Unavailable)?;
                     journal.landed.insert(account);
                     save(journal).map_err(ServiceError::Journal)?;
                     report.landed += 1;

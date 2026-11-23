@@ -10,6 +10,10 @@ use super::*;
 use crate::setup::destination::effects::{DestinationEffect, STORAGE, reviewed_digest};
 use automerge::AutoCommit;
 use imager_backend::destination::disks::LINUX_FILESYSTEM_GUID;
+use ui::tilo_actions::remote::{
+    CatalogueQuery, CatalogueRow, Confirmation, InvokeRequest, ReceiptStatus, RemoteActionFrame,
+    RemoteActionMessage, RemoteActionTarget, frame_line,
+};
 use ui::tilo_resource::Effect as _;
 
 mod capacity_tests;
@@ -90,24 +94,116 @@ fn app(backend: &Arc<FakeBackend>) -> (InstallerApp, AutoCommit) {
     (app, doc)
 }
 
-fn console(app: &mut InstallerApp, _doc: &mut AutoCommit, request: &Value) -> Value {
-    serde_json::from_str(&app.answer_console(&request.to_string())).unwrap()
+/// The installer's answer to one console line, as an endpoint gives it.
+fn exchange(app: &mut InstallerApp, line: &str) -> Value {
+    let console = imager_backend::destination::console::ConsoleServer::new(
+        crate::setup::destination::effects::PROVIDER,
+    );
+    serde_json::from_str(&console.exchange(&mut Console(app), line)).unwrap()
 }
 
-fn invoke(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str, args: &Value) -> Value {
-    console(
-        app,
-        doc,
-        &json!({"op": "actions_invoke", "provider": "installer", "id": id, "args": args}),
+fn frame(line: &Value) -> RemoteActionMessage {
+    RemoteActionFrame::decode(&serde_json::to_vec(line).unwrap())
+        .unwrap_or_else(|error| panic!("{error}: {line}"))
+        .message
+}
+
+/// The actions the installer offers that `needle` names, as its console lists them.
+fn listed(app: &mut InstallerApp, _doc: &mut AutoCommit, needle: &str) -> Vec<CatalogueRow> {
+    // A listing is one level; a caller browses down into what each resource holds.
+    let mut rows = Vec::new();
+    let mut parents = vec![None];
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(parent_resource) = parents.pop() {
+        let asked = frame_line(RemoteActionMessage::CatalogueRequest {
+            correlation: 1,
+            query: CatalogueQuery {
+                parent_resource,
+                ..CatalogueQuery::default()
+            },
+        });
+        let page = match frame(&exchange(app, &asked)) {
+            RemoteActionMessage::CatalogueResponse {
+                result: Ok(page), ..
+            } => page,
+            other => panic!("no catalogue: {other:?}"),
+        };
+        for row in page.rows {
+            if seen.insert(row.resource.id.clone()) {
+                parents.push(Some(row.resource.id.clone()));
+            }
+            rows.push(row);
+        }
+    }
+    let needle = needle.to_lowercase();
+    rows.retain(|row| {
+        serde_json::to_string(row)
+            .unwrap()
+            .to_lowercase()
+            .contains(&needle)
+    });
+    rows
+}
+
+/// Everything the console publishes, as one text: what a leak check reads.
+fn public(app: &mut InstallerApp, doc: &mut AutoCommit) -> String {
+    let rows = listed(app, doc, "");
+    format!(
+        "{}{}",
+        state(app, doc),
+        serde_json::to_string(&rows).unwrap()
     )
+}
+
+/// Invoke `action@resource` with `args`: `{"answer": ..}` with what it answered, or
+/// `{"err": {"code", "message"}}` with why it was refused or failed. A test spells the
+/// confirmation it gives in `args`: `confirmation_phrase` types the phrase, `confirm` says yes.
+fn invoke(app: &mut InstallerApp, _doc: &mut AutoCommit, id: &str, args: &Value) -> Value {
+    let (action, resource) = id.split_once('@').expect("action@resource");
+    let mut arguments = args.as_object().cloned().unwrap_or_default();
+    let phrase = arguments.remove("confirmation_phrase");
+    let confirmed = arguments.remove("confirm");
+    let published: Vec<_> = app
+        .published()
+        .iter()
+        .map(|row| ui::tilo_actions::Exports::exported(row).clone())
+        .collect();
+    let address = ui::tilo_actions::api::published(&published, resource, action)
+        .unwrap_or_else(|| panic!("{resource} publishes no {action}"));
+    let mut request = InvokeRequest::plain(
+        RemoteActionTarget {
+            provider: crate::setup::destination::effects::PROVIDER.into(),
+            address,
+        },
+        arguments,
+    );
+    request.confirmation = match (phrase, confirmed) {
+        (Some(Value::String(phrase)), _) => Some(Confirmation::Phrase(phrase)),
+        (_, Some(Value::Bool(true))) => Some(Confirmation::Confirmed),
+        _ => None,
+    };
+    let answer = exchange(app, &frame_line(RemoteActionMessage::Invoke(request)));
+    let RemoteActionMessage::Receipt(receipt) = frame(&answer) else {
+        panic!("no receipt: {answer}");
+    };
+    match receipt.status {
+        ReceiptStatus::Completed { output } => json!({ "answer": output.value }),
+        ReceiptStatus::Failed { error } => {
+            json!({ "err": { "code": error.code, "message": error.message } })
+        }
+        ReceiptStatus::Rejected { error } => {
+            json!({ "err": { "code": error.code(), "message": error.to_string() } })
+        }
+        other => panic!("a console action answers once it ran: {other:?}"),
+    }
 }
 
 fn refused(reply: &Value) -> Option<&str> {
     reply.pointer("/err/code").and_then(Value::as_str)
 }
 
-fn state(app: &mut InstallerApp, doc: &mut AutoCommit) -> Value {
-    console(app, doc, &json!({"op": "state_dump"}))["state"].clone()
+fn state(app: &mut InstallerApp, _doc: &mut AutoCommit) -> Value {
+    exchange(app, r#"{"op":"state_dump"}"#)["state"].clone()
 }
 
 fn input_value(widget: &dyn Widget, id: &str) -> Option<String> {
@@ -166,16 +262,7 @@ tilo_test_env::scenario! {
             app.accounts_controller.as_mut().unwrap(),
         );
         assert_eq!(server.verifiers().len(), 1);
-        for request in [
-            json!({"op": "state_dump"}),
-            json!({"op": "actions_enumerate"}),
-        ] {
-            assert!(
-                !console(&mut app, &mut doc, &request)
-                    .to_string()
-                    .contains("personal@example.org")
-            );
-        }
+        assert!(!public(&mut app, &mut doc).contains("personal@example.org"));
         app.accounts_form.files.set(false);
         app.accounts_form.mail.set(false);
         app.accounts_form.calendar.set(true);
@@ -256,19 +343,14 @@ tilo_test_env::scenario! {
             input_value(local_view.as_ref(), "installer.online.server"),
             Some(hint.server.clone())
         );
-        for request in [
-            json!({"op": "state_dump"}),
-            json!({"op": "actions_enumerate"}),
+        let published = public(&mut app, &mut doc);
+        for private in [
+            &hint.email,
+            &hint.server,
+            "prepared-password",
+            "wrong-password",
         ] {
-            let public = console(&mut app, &mut doc, &request).to_string();
-            for private in [
-                &hint.email,
-                &hint.server,
-                "prepared-password",
-                "wrong-password",
-            ] {
-                assert!(!public.contains(private));
-            }
+            assert!(!published.contains(private));
         }
         crate::setup::destination::accounts_hints::WindowsReview::private_test_skip(&app.accounts_form);
         app.sync_accounts();
@@ -295,9 +377,9 @@ tilo_test_env::scenario! {
                 .selected()
                 .is_empty()
         );
-        let public = console(&mut app, &mut doc, &json!({"op": "actions_enumerate"})).to_string();
-        assert!(public.contains("Confirm selected calendars"));
-        assert!(!public.contains("cloud.example"));
+        let published = public(&mut app, &mut doc);
+        assert!(published.contains("Confirm selected calendars"));
+        assert!(!published.contains("cloud.example"));
         assert!(
             refused(&invoke(
                 &mut app,
@@ -330,8 +412,11 @@ tilo_test_env::scenario! {
             .unwrap()
             .unwrap()
             .path();
-        let store = accounts::AccountStore::load_in(&root);
-        let account = store.get(&controller.selected()[0]).unwrap();
+        let store = imager_backend::account_store::Accounts::read(&root).unwrap();
+        let account = store
+            .get(controller.selected()[0].as_str())
+            .unwrap()
+            .unwrap();
         assert_eq!(
             account.config["calendar"]["calendars"][0]["id"],
             selected_calendar
@@ -510,7 +595,7 @@ tilo_test_env::scenario! {
 
             app.install_state = InstallState::Running;
             let running = invoke(&mut app, doc, "return-to-host@installer", &json!({}));
-            assert_eq!(refused(&running), Some("action_unavailable"), "{running}");
+            assert_eq!(refused(&running), Some("refused"), "{running}");
             assert!(backend.power.lock().unwrap().is_empty());
 
             app.install_state = InstallState::Failed;
@@ -602,12 +687,8 @@ tilo_test_env::scenario! {
             );
             assert!(started.get("answer").is_some(), "{started}");
             assert_eq!(app.install_state, InstallState::Failed);
-            let listed = console(
-                &mut app,
-                &mut doc,
-                &json!({"op": "actions_enumerate", "query": "Review storage"}),
-            );
-            assert_eq!(listed["answer"]["count"], 1, "{listed}");
+            let review = listed(&mut app, &mut doc, "Review storage");
+            assert_eq!(review.len(), 1, "{review:?}");
             let back = invoke(&mut app, &mut doc, "back@installer", &json!({}));
             assert_eq!(back["answer"]["step"], "disk", "{back}");
             assert_eq!(
@@ -672,7 +753,7 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
         "set-hostname@installer",
         &json!({"hostname": "x"}),
     );
-    assert_eq!(refused(&early), Some("action_unavailable"));
+    assert_eq!(refused(&early), Some("refused"));
     assert!(early.to_string().contains("Options"), "{early}");
 
     assert!(
@@ -804,17 +885,30 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
         "review"
     );
 
-    let listed = console(
-        &mut app,
-        doc,
-        &json!({"op": "actions_enumerate", "query": "begin"}),
+    let offered = listed(&mut app, doc, "begin");
+    let begin = offered
+        .iter()
+        .find_map(|row| {
+            row.action
+                .as_ref()
+                .filter(|action| action.address.action == "begin")
+        })
+        .expect("begin is offered");
+    assert_eq!(begin.address.resource, "installer.review");
+    assert_eq!(
+        begin.contract.risk,
+        ui::tilo_actions::RiskLevel::Destructive
     );
-    let begin = &listed["answer"]["actions"][0];
-    assert_eq!(begin["id"], "begin@installer.review");
-    assert_eq!(begin["contract"]["risk"], "destructive");
-    assert_eq!(begin["contract"]["confirmation"]["phrase"], "/dev/nvme0n1");
-    assert_eq!(begin["available"], false);
-    assert_eq!(begin["unavailable"]["code"], "recovery_key_promise");
+    assert_eq!(
+        begin.contract.confirmation,
+        ui::tilo_actions::ConfirmationPolicy::Phrase {
+            phrase: "/dev/nvme0n1".into()
+        }
+    );
+    assert!(matches!(
+        &begin.contract.availability,
+        ui::tilo_actions::Availability::Unavailable { code, .. } if code == "recovery_key_promise"
+    ));
     assert_eq!(
         refused(&invoke(
             &mut app,
@@ -822,7 +916,7 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
             "begin@installer.review",
             &json!({"confirmation_phrase": "/dev/nvme0n1"})
         )),
-        Some("action_unavailable")
+        Some("refused")
     );
     assert!(
         invoke(
@@ -871,10 +965,7 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
     let finished = state(&mut app, doc);
     assert_eq!(finished["install"]["state"], "done");
     assert_eq!(finished["recovery_key"]["available"], true);
-    let everything = format!(
-        "{finished}{}",
-        console(&mut app, doc, &json!({"op": "actions_enumerate"}))
-    );
+    let everything = format!("{finished}{}", public(&mut app, doc));
     assert!(
         !everything.contains(KEY),
         "recovery key leaked through the console"
@@ -890,7 +981,7 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
     );
     assert_eq!(
         refused(&invoke(&mut app, doc, "power-off@installer", &json!({}))),
-        Some("action_unavailable")
+        Some("refused")
     );
     assert!(backend.power.lock().unwrap().is_empty());
     assert!(

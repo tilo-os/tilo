@@ -56,6 +56,14 @@ pub trait Workspace {
     /// The workspace refused it ([`Refused`], by its code) or could not be reached.
     fn ask(&mut self, action: &str, args: Value) -> Result<Answer>;
 
+    /// Read `path` (`record:<app>:<id>`) as its typed answer.
+    ///
+    /// # Errors
+    /// The workspace refused it or could not be reached.
+    fn read(&mut self, path: &str) -> Result<Value> {
+        bail!("{path}: this migration reads nothing of the workspace")
+    }
+
     /// Ask `action` of `path` (`workspace/mail-accounts`) on the workspace's
     /// server, as the person on their own device rather than as their agent: what only they may
     /// do, such as keeping a mail account and its sign-in. Its answer, or why it was refused.
@@ -190,10 +198,10 @@ impl Held {
     /// This computer is not logged in, or its peer could not be reached.
     pub fn connect() -> Result<Self> {
         let login = crate::login::Place::here(crate::identity::paths())?;
-        let (key, _) =
-            crate::login::load(&login)?.ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
+        let device = crate::login::load_public(&login)?
+            .ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
         crate::login::trust_test_certificates()?;
-        let place = tilo_api::daemon::DaemonPlace::of(login.dir(), &key.verifying_key().to_bytes())
+        let place = tilo_api::daemon::DaemonPlace::of(login.dir(), &device.cert.device_public_key)
             .map_err(|why| anyhow!(why))?;
         let stream = if let Some(stream) = place.connect() {
             stream
@@ -508,8 +516,8 @@ impl Workspace for Held {
         // calls are answered as the person there, never as the agent a migration acts as.
         if self.own.is_none() {
             let workspace =
-                crate::login::load(&crate::login::Place::here(crate::identity::paths())?)?
-                    .map(|(_, device)| device.workspace)
+                crate::login::load_public(&crate::login::Place::here(crate::identity::paths())?)?
+                    .map(|device| device.workspace)
                     .ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
             self.own = Some(Hosted::connect(
                 crate::api::Reach {
@@ -524,6 +532,10 @@ impl Workspace for Held {
             .as_mut()
             .ok_or_else(|| anyhow!("no session of this computer's device"))?
             .person(path, action, args)
+    }
+
+    fn read(&mut self, path: &str) -> Result<Value> {
+        self.tool("tilo_read", &json!({"path": path}), None)
     }
 
     fn ask(&mut self, action: &str, args: Value) -> Result<Answer> {
@@ -575,6 +587,51 @@ impl Workspace for Held {
         Ok(reference.to_owned())
     }
 }
+
+/// The workspace's accounts, as `workspace` reads their record.
+///
+/// # Errors
+/// The record could not be read, or this computer does not hold it yet.
+pub fn accounts(workspace: &mut dyn Workspace) -> Result<accounts::person::PersonAccounts> {
+    let path = format!(
+        "record:{}:{}",
+        accounts::person::ACCOUNTS_OWNER,
+        collab_types::workspace_document_id(accounts::person::PersonAccounts::kind())
+    );
+    let read = workspace.read(&path)?;
+    let record = read
+        .get("records")
+        .and_then(Value::as_array)
+        .and_then(|records| records.first())
+        .ok_or_else(|| anyhow!("the workspace answered no accounts: {read}"))?;
+    if record.get("absent").and_then(Value::as_bool) == Some(true) {
+        return Ok(accounts::person::PersonAccounts::default());
+    }
+    let value = record.get("value").ok_or_else(|| {
+        anyhow!("the workspace's accounts are still arriving on this computer; try again shortly")
+    })?;
+    accounts::person::PersonAccounts::from_readable(value).map_err(|error| anyhow!(error))
+}
+
+/// Make the edit `edit` (its address and arguments) of the workspace's accounts in `workspace`:
+/// the action Settings' own controls make.
+///
+/// # Errors
+/// The workspace refused it or could not be reached.
+pub fn change_accounts(
+    workspace: &mut dyn Workspace,
+    (address, arguments): (
+        &tilo_actions::ActionAddress,
+        &serde_json::Map<String, Value>,
+    ),
+) -> Result<()> {
+    let action = format!("{}/{}", SETTINGS_PATH, address.encode());
+    workspace.ask(&action, Value::Object(arguments.clone()))?;
+    Ok(())
+}
+
+/// Where the agent's paths name Settings, which keeps the workspace's accounts.
+const SETTINGS_PATH: &str = "settings";
 
 /// The workspace through Tilo's API, with the key this computer holds: a hosted workspace reached
 /// over HTTPS (`TILO_API_KEY`, and the server `--api` names), or in process as this computer's own
@@ -982,9 +1039,9 @@ mod tests {
         let _key = keyed();
         let server = test_http::Responder::handle(|request: &test_http::Request| {
             match (request.method.as_str(), request.target.as_str()) {
-                ("GET", "/v1/workspaces") => reply(
+                ("POST", "/v1/resources/account/workspaces/actions/list") => reply(
                     200,
-                    &json!({"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}),
+                    &json!({"result": {"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}}),
                 ),
                 ("POST", route) if route.ends_with("/uploads") => {
                     reply(201, &json!({"content": "tilo.content:abc"}))
@@ -1056,9 +1113,9 @@ mod tests {
         let _key = keyed();
         let server = test_http::Responder::handle(|request: &test_http::Request| {
             match (request.method.as_str(), request.target.as_str()) {
-                ("GET", "/v1/workspaces") => reply(
+                ("POST", "/v1/resources/account/workspaces/actions/list") => reply(
                     200,
-                    &json!({"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}),
+                    &json!({"result": {"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}}),
                 ),
                 ("POST", route) if route.contains("/actions/") => reply(
                     202,
@@ -1101,9 +1158,9 @@ mod tests {
         let _key = keyed();
         let server = test_http::Responder::handle(|request: &test_http::Request| {
             match (request.method.as_str(), request.target.as_str()) {
-                ("GET", "/v1/workspaces") => reply(
+                ("POST", "/v1/resources/account/workspaces/actions/list") => reply(
                     200,
-                    &json!({"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}),
+                    &json!({"result": {"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}}),
                 ),
                 ("POST", route) if route.ends_with("/actions/history") => reply(
                     200,

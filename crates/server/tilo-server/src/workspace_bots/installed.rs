@@ -330,10 +330,6 @@ pub struct BotRunner {
     /// Records of the workspace the bot follows that this host could not read
     /// as last tried, said in the log as they appear, not on every pass.
     unreadable: Mutex<BTreeSet<(String, String)>>,
-    /// How many more changes are published before the workspace is made to
-    /// refuse one, for a test.
-    #[cfg(test)]
-    refuse_after: Mutex<Option<usize>>,
 }
 
 impl BotRunner {
@@ -456,8 +452,6 @@ impl BotRunner {
             gone_said: None,
             kept: Mutex::new(BTreeSet::new()),
             unreadable: Mutex::new(BTreeSet::new()),
-            #[cfg(test)]
-            refuse_after: Mutex::new(None),
         })
     }
 
@@ -482,12 +476,6 @@ impl BotRunner {
         Arc::clone(&self.keeps)
     }
 
-    /// Have the workspace refuse the change published after `published` more.
-    #[cfg(test)]
-    pub(crate) fn refuse_change_after(&self, published: usize) {
-        *self.refuse_after.lock_recover() = Some(published);
-    }
-
     /// Read the time from `clock` rather than this host's own clock, so a
     /// test reaches a schedule's fire time without waiting for it.
     #[cfg(test)]
@@ -498,22 +486,6 @@ impl BotRunner {
     /// What the clock reads now, ms since the epoch.
     fn now_ms(&self) -> i64 {
         i64::try_from(self.clock.now_ms()).unwrap_or(i64::MAX)
-    }
-
-    #[cfg(test)]
-    fn refuse_for_test(&self) -> bool {
-        let mut left = self.refuse_after.lock_recover();
-        match *left {
-            Some(0) => {
-                *left = None;
-                true
-            }
-            Some(n) => {
-                *left = Some(n.saturating_sub(1));
-                false
-            }
-            None => false,
-        }
     }
 
     /// Firings that will not run again on their own, newest last: what
@@ -736,33 +708,40 @@ impl BotRunner {
                     continue;
                 }
             };
-            // A part is of its own resource (a chat's messages), as its
-            // record names it. A tilolang record keeps resources of every
-            // type of its app: each change is of the kind it says it wrote.
-            let kind = (!tilolang).then(|| {
-                collaboration::resource::identity(&doc)
-                    .map(|checkout| checkout.kind.as_str().to_owned())
-                    .or_else(|| {
-                        self.catalogue
-                            .get(&app)
-                            .map(|definition| definition.resource_type.as_str().to_owned())
-                    })
-                    .unwrap_or_default()
-            });
-            // A tilolang app's changes name their action by the declaration id history keeps,
-            // which survives a rename; the program plans by the name the app publishes, so the
-            // id is read back to its name here.
-            let packages = self.tilolang.get(&app);
-            for (mut event, _) in tilo_agent_session::bot::events_since(
-                &self.workspace,
-                &record,
-                kind.as_deref(),
-                doc.document(),
-                &since,
-            ) {
-                if let Some(packages) = packages {
-                    name_tilolang_action(packages, &mut event);
+            let events = match self.tilolang.get(&app) {
+                // A tilolang record is a document of the workspace's resource store: its events
+                // are the versions the store reads of its changes, through the app's package.
+                Some(packages) => {
+                    let (workspace, record, since) =
+                        (self.workspace.clone(), record.clone(), since.clone());
+                    let viewer = tl_records::runtime::Actor::App(app.as_str().into());
+                    self.workspaces
+                        .with_tl_record(&self.workspace, packages, viewer, move |opened| {
+                            let mut doc = doc;
+                            Ok(opened.events_since(&workspace, &record, doc.document(), &since))
+                        })
+                        .await?
                 }
+                // A part is of its own resource (a chat's messages), as its record names it.
+                None => {
+                    let kind = collaboration::resource::identity(&doc)
+                        .map(|checkout| checkout.kind.as_str().to_owned())
+                        .or_else(|| {
+                            self.catalogue
+                                .get(&app)
+                                .map(|definition| definition.resource_type.as_str().to_owned())
+                        })
+                        .unwrap_or_default();
+                    tilo_agent_session::bot::events_since(
+                        &self.workspace,
+                        &record,
+                        &kind,
+                        doc.document(),
+                        &since,
+                    )
+                }
+            };
+            for (event, _) in events {
                 firings.extend(
                     tilo_automation::dispatch::dispatch(&armed, Event::Record(&event)).firings,
                 );
@@ -1011,8 +990,10 @@ impl BotRunner {
         // with it. A tilolang app's record is read through its package from the workspace's
         // store, which each of its steps writes as it runs.
         let access = std::sync::Arc::new(self.access.clone());
+        let mut records = Vec::with_capacity(self.tilolang.len());
         for (app, packages) in &self.tilolang {
             let record = self.workspaces.tl_record(&self.workspace, app)?;
+            records.push((app.clone(), record.clone()));
             self.held.lock_recover().hold_tilolang(
                 app,
                 Box::new(ProgramRecord::new(
@@ -1088,6 +1069,12 @@ impl BotRunner {
         })
         .await
         .map_err(|error| error.to_string())?;
+        // A tilolang record takes each write as a step makes it: one the workspace refused
+        // stopped the run there. What the run changed before it stands, in every record, and the
+        // run goes again.
+        let refused = records
+            .iter()
+            .find_map(|(app, record)| record.refused().map(|refusal| (app, refusal)));
         let changes = self.held.lock_recover().take_changes();
         let count = changes.len();
         let mut changes = changes.into_iter().enumerate();
@@ -1122,6 +1109,13 @@ impl BotRunner {
                 );
                 return Ok(Fired::Refused(reason));
             }
+        }
+        if let Some((app, refusal)) = refused {
+            self.api.forget_steps();
+            tracing::warn!(installation = %self.bot.installation, run = %firing.invocation.0, %app, %refusal, "bot change refused; the changes before it stand and the run goes again");
+            return Ok(Fired::Refused(format!(
+                "the workspace refused the bot's change to {app}: {refusal}"
+            )));
         }
         Ok(Fired::Ran(Box::new(report)))
     }
@@ -1262,10 +1256,6 @@ impl BotRunner {
         route: &DocumentRoute,
         mutation: DocumentMutation,
     ) -> Result<(), String> {
-        #[cfg(test)]
-        if self.refuse_for_test() {
-            return Err("refused for the test".into());
-        }
         let bytes = match mutation {
             DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
         };
@@ -1382,17 +1372,6 @@ fn bot_access(
         tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::bot(installation)),
         grants,
     )
-}
-
-/// Read a tilolang change's action back to the name its app publishes it under, so a program
-/// plans by `send`, `relay` and the like rather than by the declaration id history keeps (which
-/// survives a rename). Its kind is already `tl.<app>.<Type>`, the resource the change wrote.
-fn name_tilolang_action(packages: &Packages, event: &mut tilo_automation::dispatch::DocumentEvent) {
-    if let tilo_actions::entry::Did::Verb(call) = &mut event.did
-        && let Some(name) = packages.action_name(&call.action.action)
-    {
-        call.action.action = name;
-    }
 }
 
 /// What changed in the workspace's membership from `before` to `after`, as

@@ -167,26 +167,6 @@ mod tests {
             .to_vec()
     }
 
-    #[test]
-    fn previous_analyzed_folders_move_to_device_settings() {
-        let person = "b6".repeat(32);
-        let mut app = TestApp::<DiskUsageShell>::for_person(&person).unwrap();
-        let previous = app.person::<RecentFolders>().unwrap();
-        let path = scratch_folder("legacy-device-recents");
-        previous
-            .invoke(
-                &RecentFolders::REMEMBER
-                    .with(("test-device".to_owned(), AbsolutePath::new(&path).unwrap())),
-            )
-            .unwrap();
-        previous.record().flush();
-        drop(previous);
-
-        let app = app.reopen().unwrap();
-        assert_eq!(recent(&app), std::slice::from_ref(&path));
-        let _ = std::fs::remove_dir_all(path);
-    }
-
     /// Run frames until the scan a row started has shown and remembered `folder`.
     fn settle_until_recent(app: &mut TestApp<DiskUsageShell>, folder: &std::path::Path) {
         tilo_test_env::wait_until(format!("{} to be remembered", folder.display()), || {

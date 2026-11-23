@@ -355,7 +355,6 @@ fn answer(
         }
         MessagesEffect::SearchMessages { .. }
         | MessagesEffect::ExportContent { .. }
-        | MessagesEffect::ImportPreviousDraft
         | MessagesEffect::OpenConversation { .. } => {
             return Err("the resource answers this before the broker".to_owned());
         }
@@ -805,20 +804,9 @@ fn register_effects(
     let jobs = cx.jobs();
     let status_history = history.clone();
     let content = cx.content();
-    let legacy_drafts = cx.resource_opener::<crate::drafts::MessageDrafts>(ui::apps::MESSAGES);
     cx.effects(move |effect: MessagesEffect, cx| {
         // What the resource holds is read here, never through the broker.
         match &effect {
-            MessagesEffect::ImportPreviousDraft => {
-                let selection = state.get();
-                let choice = choices(&effect_sources, &selection.person)
-                    .into_iter()
-                    .find(|choice| choice.value() == selection.choice)
-                    .ok_or_else(|| CATALOG.t("messages-not-selected"))?;
-                crate::drafts::import_previous(&legacy_drafts, crate::drafts::key(&choice))?;
-                effect_sending.open_draft(&choice);
-                return Ok(Effected::done());
-            }
             MessagesEffect::SearchMessages { query } => {
                 return cx.live().get().search(query).map(Effected::value);
             }

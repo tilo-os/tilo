@@ -132,11 +132,6 @@ operation = "document"
 asks = "pane"
 [[offers]]
 resource = "terminal.session"
-action = "import-previous-history"
-label = "Import previous workspace commands"
-confirm = true
-[[offers]]
-resource = "terminal.session"
 action = "inspect-session"
 label = "Inspect session"
 kind = "read"

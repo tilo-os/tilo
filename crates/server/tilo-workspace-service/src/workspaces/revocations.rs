@@ -29,7 +29,7 @@ impl Workspaces {
     /// root the server does not serve, or one naming a device this server knows
     /// certified by another root, is another person's key, which the entry's
     /// root has no say over: it is dropped.
-    pub(super) async fn take_revocations(
+    pub(crate) async fn take_revocations(
         &self,
         entries: Vec<RevocationEntry>,
     ) -> Result<(), String> {

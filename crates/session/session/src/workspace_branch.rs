@@ -1572,16 +1572,17 @@ mod tests {
 
         let app = "so.tilo.tube";
         let kind = "tube.watch-history";
+        // Each person's record of the kind, which only the grant the workspace gives that person
+        // reads.
         let private_for = |device: &tilo_identity::identity_store::DeviceIdentity| {
-            collab_types::OwnResource::new(kind, device.device_cert.user_public_key).unwrap()
+            tilo_action_policy::roles::member_record(
+                kind,
+                &hex::encode(device.device_cert.user_public_key),
+            )
+            .unwrap()
         };
-        let owner_record = private_for(&owner);
-        let member_record = private_for(&member);
-        for own in [&owner_record, &member_record] {
-            peer.keep_own_document(app, own);
-        }
-        let owner_route = owner_record.document_id();
-        let member_route = member_record.document_id();
+        let owner_route = private_for(&owner);
+        let member_route = private_for(&member);
         let history = |route: &str, body| {
             record_of(
                 FROM,
@@ -1630,8 +1631,7 @@ mod tests {
                 let doc = AutoCommit::load(&bytes).unwrap();
                 assert_eq!(ui::resource::workspace_scope(&doc).as_deref(), Some(TO));
                 if &copied_route == route {
-                    let written = admit_private_branch_record(device, (&app, route), &bytes, now);
-                    assert_eq!(written.own, Some(private_for(device)));
+                    admit_private_branch_record(device, (&app, route), &bytes, now);
                 }
                 contents.insert((app, copied_route), body(&doc));
             }
@@ -1750,10 +1750,6 @@ mod tests {
             Ok(self.0.keys().cloned().collect())
         }
 
-        fn own_records(&self, _: &str) -> BTreeMap<(String, String), [u8; 32]> {
-            BTreeMap::new()
-        }
-
         fn holds(&self, _: &str, app: &str, document: &str) -> bool {
             self.0.contains_key(&(app.to_owned(), document.to_owned()))
         }
@@ -1803,10 +1799,6 @@ mod tests {
 
         fn listing(&self, _: &str) -> Result<Vec<(String, String)>, String> {
             Ok(Vec::new())
-        }
-
-        fn own_records(&self, _: &str) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
-            std::collections::BTreeMap::new()
         }
 
         fn holds(&self, _: &str, _: &str, _: &str) -> bool {

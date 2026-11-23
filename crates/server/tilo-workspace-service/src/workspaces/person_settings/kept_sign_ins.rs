@@ -60,7 +60,7 @@ pub(in crate::workspaces) fn places_of(account: &accounts::Account) -> Result<Ve
 }
 
 /// The id the reference names.
-fn id_of(reference: &ItemRef) -> Result<ItemId, String> {
+pub(in crate::workspaces) fn id_of(reference: &ItemRef) -> Result<ItemId, String> {
     ItemId::parse(reference.id()).ok_or_else(|| GONE.to_owned())
 }
 
@@ -70,7 +70,7 @@ fn reference_of(id: &ItemId) -> Result<ItemRef, String> {
 }
 
 /// Words for an account's sign-in that the vault did not hand out.
-fn refused(error: &ItemError) -> String {
+pub(in crate::workspaces) fn refused(error: &ItemError) -> String {
     match error {
         ItemError::NotFound => GONE.to_owned(),
         ItemError::WrongPlace => ELSEWHERE.to_owned(),
@@ -282,23 +282,29 @@ impl Owner {
 /// store goes ([`Self::carry`]).
 pub(in crate::workspaces) struct HostSignIns {
     root: std::path::PathBuf,
+    /// The workspace's accounts whose sign-in the host kept, as they were read.
+    accounts: Vec<accounts::Account>,
     kept: Vec<SealedBefore>,
 }
 
 #[cfg(feature = "device-keys")]
 impl HostSignIns {
-    /// What the host kept under `root`: none where it keeps no store of its own there.
+    /// What the host kept under `root` for the workspace's `accounts`: none where it keeps no
+    /// store of its own there.
     ///
     /// # Errors
     /// The store is there and does not open: it stays, and nothing is carried.
-    pub(in crate::workspaces) fn under(root: &std::path::Path) -> Result<Option<Self>, String> {
+    pub(in crate::workspaces) fn under(
+        root: &std::path::Path,
+        accounts: &[accounts::Account],
+    ) -> Result<Option<Self>, String> {
         if !accounts::vault_dir_in(root).exists() {
             return Ok(None);
         }
         let credentials = accounts::AccountCredentials::open_in(root)?;
         let mut kept = Vec::new();
-        let store = accounts::AccountStore::load_in(root);
-        for account in store.all() {
+        let mut signed_in = Vec::new();
+        for account in accounts {
             if sign_in_of(&account.config).is_some() {
                 continue;
             }
@@ -335,6 +341,7 @@ impl HostSignIns {
                 .token
                 .clone()
                 .unwrap_or_else(|| secret.password.clone());
+            signed_in.push(account.clone());
             kept.push(SealedBefore {
                 owner: Owner::Account(account.id.clone()),
                 kind: ItemKind::Login,
@@ -372,6 +379,7 @@ impl HostSignIns {
         }
         Ok(Some(Self {
             root: root.to_owned(),
+            accounts: signed_in,
             kept,
         }))
     }
@@ -401,28 +409,38 @@ impl HostSignIns {
             .collect()
     }
 
-    /// Name each entry `kept` in its owner's settings, then take the host's own store away:
-    /// the workspace's vault keeps every sign-in now.
+    /// Name each entry `kept` in its owner's settings, the workspace's accounts in
+    /// `workspace`, then take the host's own store away: the workspace's vault keeps every
+    /// sign-in now.
     ///
     /// # Errors
     /// The settings or the store were not written: the store stays, so nothing is lost.
-    pub(in crate::workspaces) fn carry(self, kept: &[(Owner, ItemRef)]) -> Result<(), String> {
+    pub(in crate::workspaces) async fn carry(
+        self,
+        (workspaces, workspace): (&crate::workspaces::Workspaces, &str),
+        kept: &[(Owner, ItemRef)],
+    ) -> Result<(), String> {
         let root = &self.root;
-        let mut store = accounts::AccountStore::load_in(root);
         let mut config = super::provider_config(root);
-        let (mut accounts_named, mut providers_named) = (false, false);
+        let mut providers_named = false;
         for (owner, reference) in kept {
             match owner {
                 Owner::Account(id) => {
-                    let Some(mut account) = store.get(id).cloned() else {
+                    let Some(mut account) = self
+                        .accounts
+                        .iter()
+                        .find(|account| account.id == *id)
+                        .cloned()
+                    else {
                         continue;
                     };
                     accounts::email::set_password_item(
                         &mut account.config,
                         Some(&reference.to_string()),
                     );
-                    store.upsert(account);
-                    accounts_named = true;
+                    workspaces
+                        .keep_workspace_account(workspace, &account)
+                        .await?;
                 }
                 Owner::Provider(id) => {
                     if let Some(profile) =
@@ -433,9 +451,6 @@ impl HostSignIns {
                     }
                 }
             }
-        }
-        if accounts_named {
-            store.save_in(root).map_err(|error| error.to_string())?;
         }
         if providers_named {
             super::save_provider_config(root, &config)?;

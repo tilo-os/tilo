@@ -680,7 +680,7 @@ impl PermissionContext {
         read: impl FnOnce(&policy::Verdict<'_>) -> R,
     ) -> Result<R, String> {
         let now = self.policy_now()?;
-        let mut cx = policy::Context::at_secs(now.unwrap_or(0));
+        let cx = policy::Context::at_secs(now.unwrap_or(0));
         let sampled;
         let held = match &self.action_authority {
             Some(authority) if authority.matches(node) => {
@@ -689,28 +689,6 @@ impl PermissionContext {
             }
             _ => &self.access,
         };
-        let document = node
-            .id_at(policy::Level::App)
-            .zip(node.id_at(policy::Level::Resource));
-        // A read of anyone's own record follows its person, even when a different member
-        // (including the workspace's owner) is asking to read it.
-        let read_owner = (kind == ActionKind::Read)
-            .then_some(document)
-            .flatten()
-            .and_then(|(app, record)| {
-                collab_types::OwnResource::recognise_in(app, record, &held.policy)
-            })
-            .map(|own| own.person());
-        if let Some((app, record)) = document {
-            let owner = if kind == ActionKind::Read {
-                read_owner.as_deref()
-            } else {
-                self.own_person(app, record)
-            };
-            if let Some(owner) = owner {
-                cx = cx.with_own_resource(record, owner);
-            }
-        }
         let access = self.usable(held, once);
         let mut verdict = access.verdict(&access.node(node), kind, &cx);
         if privileged {
@@ -832,25 +810,18 @@ impl PermissionContext {
     /// API that runs it hands them to [`Self::spend_once`] first.
     pub fn invocation_verdict(
         &self,
-        (app_id, record): (&str, &str),
+        app_id: &str,
         resource: &tilo_actions::ResourceSpec,
         action: &tilo_actions::ActionSpec,
         json: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
     ) -> (Answer, Vec<policy::GrantId>) {
         let need = input_need(&resource.kind, action, action.need_for(json, argument));
-        // A window on a member's own record decides on that record
-        // ([`Self::action_decider_on`]).
-        let resource_id = if self.own_person(app_id, record).is_some() {
-            record
-        } else {
-            resource.id.as_str()
-        };
         let node = tilo_actions::action_node(
             &TreePath::root(),
             app_id,
             &resource.kind,
-            resource_id,
+            resource.id.as_str(),
             need.field.as_deref(),
             &action.id,
         );
@@ -902,26 +873,6 @@ impl PermissionContext {
         need: &tilo_actions::ActionNeed,
     ) -> bool {
         self.need_answer(app_id, resource_kind, resource_id, action_id, need) != Answer::Deny
-    }
-
-    /// [`Self::permitted_resource`] for a resource a window on the record
-    /// `record` publishes: on a member's own record every action of it is
-    /// decided on that record ([`Self::action_decider_on`]).
-    pub fn permitted_resource_on(
-        &self,
-        app_id: &str,
-        record: &str,
-        resource: tilo_actions::ResourceSpec,
-    ) -> Option<tilo_actions::ResourceSpec> {
-        if self.own_person(app_id, record).is_none() {
-            return self.permitted_resource(app_id, resource);
-        }
-        let decider = self.action_decider_on(app_id, record);
-        keep_permitted(
-            resource,
-            &|kind, id, action, need| decider.permits_need(kind, id, &action.id, need),
-            self.lists_refused(),
-        )
     }
 
     /// Whether what the actor is denied is listed to it as not allowed rather than left out: an
@@ -978,35 +929,8 @@ impl PermissionContext {
             permissions: self,
             app_id,
             answers,
-            own_resource: None,
             resource: std::cell::RefCell::new(None),
         }
-    }
-
-    /// [`Self::action_decider`] for the actions a window on the record
-    /// `record` publishes. The actor's own record
-    /// ([`collab_types::OwnResource`]) is theirs alone whatever their role, so
-    /// every action such a window publishes is decided on that record, where
-    /// the policy lets its person do anything and no one else anything.
-    pub fn action_decider_on<'a>(&'a self, app_id: &'a str, record: &'a str) -> ActionDecider<'a> {
-        let mut decider = self.action_decider(app_id);
-        if let Some(person) = self.own_person(app_id, record) {
-            decider.own_resource = Some(record);
-            if let Some(answers) = &mut decider.answers {
-                answers.cx = answers.cx.with_own_resource(record, person);
-            }
-        }
-        decider
-    }
-
-    /// The actor's person (the hex of their user root key) when `record` of
-    /// `app_id` is their own record, of a kind the app's manifest declares
-    /// each member's own ([`collab_types::OwnResource::recognise`]).
-    fn own_person(&self, app_id: &str, record: &str) -> Option<&str> {
-        let person = self.access.person_id()?;
-        let mut root = [0; 32];
-        hex::decode_to_slice(person, &mut root).ok()?;
-        collab_types::OwnResource::recognise(app_id, record, root).map(|_| person)
     }
 
     /// `decide` with one authority for the member access as it is, for answers
@@ -1034,9 +958,6 @@ pub struct ActionDecider<'a> {
     permissions: &'a PermissionContext,
     app_id: &'a str,
     answers: Option<PublishedAnswers<'a>>,
-    /// The member's own record the window shows, which every action it
-    /// publishes is decided on ([`PermissionContext::action_decider_on`]).
-    own_resource: Option<&'a str>,
     resource: std::cell::RefCell<Option<(String, String, TreePath)>>,
 }
 
@@ -1066,7 +987,6 @@ impl ActionDecider<'_> {
         action_id: &str,
         need: &tilo_actions::ActionNeed,
     ) -> bool {
-        let resource_id = self.own_resource.unwrap_or(resource_id);
         let Some(answers) = &self.answers else {
             return self.permissions.permits_need(
                 self.app_id,
@@ -1100,7 +1020,7 @@ struct PublishedAnswers<'s> {
 impl PublishedAnswers<'_> {
     /// The node of a published resource in this workspace.
     fn resource(&self, app_id: &str, kind: &str, id: &str) -> TreePath {
-        self.workspace.clone().app(app_id).kind(kind).resource(id)
+        tilo_actions::resource_node(&self.workspace, app_id, kind, id)
     }
 
     /// The answer for `action` (of `need`) on the resource `node` names, as
@@ -1596,62 +1516,9 @@ mod policy_time_tests;
 mod control_input_tests;
 
 #[cfg(test)]
-mod own_resource_tests {
+mod refused_listing_tests {
     use super::*;
     use tilo_actions::{ActionSpec, OperationKind};
-
-    /// A window on a member's own record decides what it publishes on that
-    /// record: its person changes it whatever their role, and no one else,
-    /// however much the workspace lets them do.
-    #[test]
-    fn a_window_on_a_members_own_record_is_its_persons_alone() {
-        let ada = "ad".repeat(32);
-        let own = collab_types::OwnResource::of_person(&ada, "mail.copies")
-            .unwrap()
-            .document_id();
-        let effect =
-            ActionSpec::operation("add", "Add", OperationKind::Effect, "t.add", &()).unwrap();
-        let mut edit =
-            ActionSpec::operation("edit", "Edit", OperationKind::Effect, "t.edit", &()).unwrap();
-        edit.type_mut().contract.kind = ActionKind::Undoable;
-        let viewer = PermissionContext::member(
-            &crate::permissions::MemberId::person(ada.clone()),
-            Role::Viewer,
-        );
-        for action in [&edit, &effect] {
-            assert!(
-                !viewer.permits_action("so.tilo.mail", "mail.copies", "mail.copies", action),
-                "a viewer changes nothing of the workspace's: {}",
-                action.id
-            );
-            assert!(
-                viewer.action_decider_on("so.tilo.mail", &own).permits(
-                    "mail.copies",
-                    "mail.copies",
-                    action
-                ),
-                "a viewer changes their own record: {}",
-                action.id
-            );
-        }
-        // Another member derives another id: Ada's record is not theirs to
-        // decide on as their own. What keeps them out of it is that its writes
-        // carry Ada as its person, which the workspace's hosts and every
-        // member's replica check, and that it reaches none of their devices.
-        let owner = PermissionContext::member(
-            &crate::permissions::MemberId::person("bb".repeat(32)),
-            Role::Owner,
-        );
-        assert!(owner.own_person("so.tilo.mail", &own).is_none());
-        let copies = tilo_actions::ResourceSpec::new("mail.copies", "mail.copies", "Copies")
-            .with_action(edit.clone());
-        assert!(
-            viewer
-                .permitted_resource_on("so.tilo.mail", &own, copies.clone())
-                .is_some()
-        );
-        assert!(viewer.permitted_resource("so.tilo.mail", copies).is_none());
-    }
 
     /// An agent is shown what it is denied as not allowed, beside what it may do on the same
     /// resource, so it hears that it is refused rather than that there is no such action, here by

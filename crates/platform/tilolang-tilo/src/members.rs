@@ -101,22 +101,17 @@ pub fn members_of(access: &MemberAccess, me: &PersonId) -> Vec<Member> {
 }
 
 /// Who of the members reads a resource, as `access`'s policy answers for each: the node of
-/// the resource under its app and kind, read. A resource of an app whose documents are each
-/// member's own is an item of the document of the person at the window, which only they read.
+/// the resource under its app and kind, read.
 #[must_use]
 pub fn reads_of(access: &MemberAccess, me: &PersonId, host: &Host) -> Rc<Reads> {
-    let kinds: HashMap<String, (String, String, Option<String>)> = host
+    let kinds: HashMap<String, (String, String)> = host
         .packages()
         .into_iter()
         .flat_map(|package| {
             let meta = &package.meta;
-            let own = crate::own_document(meta, access.person_id().unwrap_or_default());
             meta.types
                 .iter()
-                .map(|ty| {
-                    let at = (meta.app.clone(), meta.kind_of(&ty.name), own.clone());
-                    (ty.id.clone(), at)
-                })
+                .map(|ty| (ty.id.clone(), (meta.app.clone(), meta.kind_of(&ty.name))))
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -125,12 +120,7 @@ pub fn reads_of(access: &MemberAccess, me: &PersonId, host: &Host) -> Rc<Reads> 
     Rc::new(move |who: &Actor, target: &ResourceRef| {
         let workspace = TreePath::workspace(access.workspace());
         let node = match kinds.get(&target.ty) {
-            Some((app, kind, Some(own))) => workspace
-                .app(app)
-                .kind(kind)
-                .resource(own)
-                .item(target.id_string()),
-            Some((app, kind, None)) => workspace.app(app).kind(kind).resource(target.id_string()),
+            Some((app, kind)) => workspace.app(app).kind(kind).resource(target.id_string()),
             None => workspace,
         };
         reads_node(&access, &me, who, &node)

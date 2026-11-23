@@ -214,7 +214,7 @@ where
     // The person's record says this key of theirs is here now, and when it
     // was last: a device of theirs reading their devices sees it online.
     if let Some(admin) = &admin {
-        admin.session_opened(&peer.cert);
+        admin.session_opened(&peer.cert).await;
     }
 
     let grant = FetchGrant::open(&session, &peer, &tx);
@@ -272,7 +272,7 @@ where
     execution.close();
     if let Some(admin) = &admin {
         admin.agent_session_ended(&peer.device_public_key, &stop);
-        admin.session_ended(&peer.cert);
+        admin.session_ended(&peer.cert).await;
     }
 
     connection_live.end();

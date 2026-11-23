@@ -130,17 +130,20 @@ def children(workspace: str, path: str) -> list[str]:
     return sorted(str(child.get("name")) for child in read.get("children", []))
 
 
-def workspace_id(name: str) -> str | None:
-    listed = call("GET", "/v1/workspaces") or {}
-    for workspace in listed.get("workspaces", []):
-        if workspace.get("name") == name:
-            return workspace.get("id")
-    return None
+def made_workspace() -> str:
+    """A new workspace called WORKSPACE, made as the account's `workspaces#create`: its id. A
+    base build from before the account's actions made it with `POST /v1/workspaces`."""
+    try:
+        made = call("POST", "/v1/resources/account/workspaces/actions/create", {"name": WORKSPACE})
+        return made["result"]["workspace"]["id"]
+    except SystemExit as refused:
+        if ": 404 " not in str(refused):
+            raise
+    return call("POST", "/v1/workspaces", {"name": WORKSPACE})["id"]
 
 
 def fill() -> dict:
-    made = call("POST", "/v1/workspaces", {"name": WORKSPACE})
-    workspace = made.get("id") or workspace_id(WORKSPACE)
+    workspace = made_workspace()
     # A channel of Chat's own (apps/tl/chat app.tl `new_channel`), and messages sent in it.
     act(workspace, "chat#new_channel", name=CHAT_CHANNEL.rsplit("/", 1)[-1])
     messages = ["Before the upgrade: hello", "A second message, with a link https://example.org"]
@@ -199,7 +202,7 @@ def fill() -> dict:
          "label": message["subject"], "read": False, "starred": False}
         for message in fetched])
     return {
-        "workspace": WORKSPACE,
+        "workspace": workspace,
         CHAT_CHANNEL: messages,
         "tasks": [f"tasks/{title}" for title in tasks],
         "notes": ["notes/Upgrade note"],
@@ -217,9 +220,7 @@ def fill() -> dict:
 
 
 def check(expected: dict) -> list[str]:
-    workspace = workspace_id(expected["workspace"])
-    if workspace is None:
-        return [f"the workspace {expected['workspace']!r} is gone"]
+    workspace = expected["workspace"]
     missing = []
     for path in ("mail/Messages", "calendar/Calendar"):
         held = children(workspace, path)

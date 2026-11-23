@@ -44,7 +44,7 @@ impl ResourceApp for GoodApp {
     const TITLE: &'static str = "Counter";
 
     fn view(cx: &mut ViewCx<Counter>) -> Element {
-        let _prefs = cx.person::<Prefs>();
+        let _prefs = cx.profile_resource::<Prefs>();
         Box::new(cx.button("bump", Counter::BUMP.invoke()))
     }
 }
@@ -93,9 +93,9 @@ tilo_test_env::scenario! {
             report["resources"][1]["kind"], "test.counter-prefs",
             "the records the view opens beside its own are part of the surface: {report}"
         );
-        assert!(
-            report["resources"][1].get("person").is_none(),
-            "kept in the workspace the app is open in, like its own: {report}"
+        assert_eq!(
+            report["resources"][1]["person"], true,
+            "kept in the person's own scope, apart from the workspace's: {report}"
         );
         assert!(
             report["resources"][0].get("person").is_none(),

@@ -24,6 +24,8 @@ use migration_sources::service::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use accounts::person::PersonAccounts;
+
 use super::Lander;
 use super::state::{Item, Place, Review};
 
@@ -72,10 +74,16 @@ fn config_root() -> Result<std::path::PathBuf> {
     service::config_root().ok_or_else(|| anyhow!("this account has no Tilo config directory"))
 }
 
-/// The account a connected `source` is reached with: for mail, the account connected last.
-fn account(place: &Place, source: &str) -> Result<String> {
+/// The workspace's accounts, as this computer's held session reads them.
+fn record() -> Result<PersonAccounts> {
+    super::workspace::accounts(&mut super::workspace::Held::connect()?)
+}
+
+/// The account a connected `source` is reached with among the workspace's `record`: for mail,
+/// the account connected last.
+fn account(place: &Place, source: &str, record: &PersonAccounts) -> Result<String> {
     let kind = kind(source)?;
-    let connected = service::connected(&config_root()?);
+    let connected = service::connected(record);
     let last: Option<String> = if kind == ServiceKind::Mail {
         place.read(&place.path(source, "account.json"))?
     } else {
@@ -128,8 +136,11 @@ pub fn connect(
     if secret.is_empty() {
         bail!("nothing was typed");
     }
-    let account = service::connect(
+    let mut workspace = super::workspace::Held::connect()?;
+    let record = super::workspace::accounts(&mut workspace)?;
+    let (account, saving) = service::connect(
         &config_root()?,
+        &record,
         ServiceAddress {
             kind,
             server,
@@ -138,6 +149,7 @@ pub fn connect(
         },
     )
     .map_err(|error| anyhow!("{source}: {error}"))?;
+    super::workspace::change_accounts(&mut workspace, (&saving.address(), &saving.arguments))?;
     if kind == ServiceKind::Mail {
         place.keep(&place.path(source, "account.json"), &account.as_str())?;
     }
@@ -155,10 +167,9 @@ pub fn connect(
 
 /// The connected services, as `tilo migrate sources` lists them.
 pub fn sources() -> Vec<Value> {
-    let Some(root) = service::config_root() else {
-        return Vec::new();
-    };
-    let mut found: Vec<Value> = service::connected(&root)
+    // Without the workspace's accounts nothing reads as connected: each source says how to.
+    let record = record().unwrap_or_default();
+    let mut found: Vec<Value> = service::connected(&record)
         .into_iter()
         .map(|(_, kind, title)| {
             json!({"source": kind.key(), "title": title, "next": format!("tilo migrate review {}", kind.key())})
@@ -233,9 +244,10 @@ const NOTED: &str = "service:";
 
 /// Review the connected `source` now, keeping what was chosen and what already came over.
 pub fn review(place: &Place, source: &str) -> Result<Review> {
-    let account = account(place, source)?;
-    let mut fresh =
-        service::review(&config_root()?, &account).map_err(|error| anyhow!("{source}: {error}"))?;
+    let record = record()?;
+    let account = account(place, source, &record)?;
+    let mut fresh = service::review(&config_root()?, &record, &account)
+        .map_err(|error| anyhow!("{source}: {error}"))?;
     let journal = match service_journal(place, source)? {
         Some(mut journal) => {
             // A group the person left out stays left out.
@@ -344,8 +356,11 @@ pub fn land(review: &Review, lander: &mut Lander<'_>) -> Result<()> {
         return land_mail(review, lander);
     }
     let root = config_root()?;
+    let record = super::workspace::accounts(lander.workspace)?;
+    // A mail account lands as `land_mail` lands it: nothing else publishes one.
+    let mut publish = |account: &str| Err(format!("{account} is no source to publish"));
     land_with(&review.source, lander, |journal, landing, save, cancel| {
-        service::run(&root, journal, landing, save, cancel)
+        service::run(&root, &record, journal, landing, &mut publish, save, cancel)
     })
 }
 
@@ -417,7 +432,8 @@ fn land_mail(review: &Review, lander: &mut Lander<'_>) -> Result<()> {
     if !review.chosen().iter().any(|item| item.key == review.handle) {
         return Ok(());
     }
-    let (config, password) = service::mail_account(&config_root()?, &review.handle)
+    let record = super::workspace::accounts(lander.workspace)?;
+    let (config, password) = service::mail_account(&config_root()?, &record, &review.handle)
         .map_err(|error| anyhow!("mail: {error}"))?;
     let mut adding = json!({
         "address": config.email,

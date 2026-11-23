@@ -1,14 +1,14 @@
 //! The console endpoints the installer answers while it runs headless or unattended.
 
-use imager_backend::destination::console::{self as console_control, Request, catalog, wire};
+use imager_backend::destination::console::{self as console_control, ConsoleApp};
 use serde_json::{Value, json};
-use ui::tilo_resource::Effect as _;
+use ui::tilo_actions::{ActionAddress, ActionFailure, EncodedAction, Exports as _, ResourceSpec};
 
 use super::{
     FILESYSTEMS, InstallMethod, InstallerApp, RECOVERY_KEY_PREFIX, STEP_LABELS, Step,
     friendly_install_status, local_text, secret_copy, step_index,
 };
-use crate::setup::destination::effects::{DestinationEffect, PROVIDER};
+use crate::setup::destination::effects::PROVIDER;
 
 pub const CONSOLE_WAKE: &str = "\u{1}console";
 
@@ -53,42 +53,8 @@ impl InstallerApp {
         let Some(console) = self.console.clone() else {
             return;
         };
-        for pending in console.take_pending() {
-            let reply = self.answer_console(pending.line());
-            pending.respond(reply);
-        }
-    }
-
-    pub fn answer_console(&mut self, line: &str) -> String {
-        match wire::parse(line) {
-            Err(error) => wire::error("parse_error", &error.0),
-            Ok(Request::Unsupported { op }) => wire::unsupported(&op),
-            Ok(Request::StateDump) => wire::state(&self.console_state()),
-            Ok(Request::Enumerate { query }) => {
-                wire::answer(&catalog::enumerate(PROVIDER, &self.published(), &query))
-            }
-            Ok(Request::Invoke { provider, id, args }) => {
-                let resources = self.published();
-                match console_control::admit(PROVIDER, &resources, &provider, &id, &args) {
-                    Err(refusal) => wire::error(&refusal.code, &refusal.message),
-                    Ok(admitted) => {
-                        match DestinationEffect::from_payload(&admitted.encoded.payload)
-                            .map_err(|error| error.to_string())
-                            .and_then(|effect| self.apply(effect))
-                        {
-                            Ok(output) => wire::answer(&json!({
-                                "provider": PROVIDER,
-                                "id": id,
-                                "kind": "Actions",
-                                "title": admitted.label,
-                                "output": output.value,
-                                "step": self.step_id(),
-                            })),
-                            Err(message) => wire::error("action_failed", &message),
-                        }
-                    }
-                }
-            }
+        for asked in console.take_pending() {
+            asked.answer(&mut Console(self));
         }
     }
 
@@ -216,6 +182,43 @@ impl InstallerApp {
                 "error": self.unattended_error,
             },
         })
+    }
+}
+
+/// The installer as its console answers.
+pub struct Console<'a>(pub &'a mut InstallerApp);
+
+impl ConsoleApp for Console<'_> {
+    fn provider(&self) -> &'static str {
+        PROVIDER
+    }
+
+    fn published(&self) -> Vec<ResourceSpec> {
+        self.0
+            .published()
+            .iter()
+            .map(|row| row.exported().clone())
+            .collect()
+    }
+
+    fn run(
+        &mut self,
+        _address: &ActionAddress,
+        encoded: EncodedAction,
+    ) -> Result<Value, Box<ActionFailure>> {
+        let output = self.0.apply_encoded(&encoded).map_err(|message| {
+            Box::new(ActionFailure {
+                code: "action_failed".to_owned(),
+                message,
+                details: None,
+                retryable: false,
+            })
+        })?;
+        Ok(json!({ "output": output.value, "step": self.0.step_id() }))
+    }
+
+    fn state(&self) -> Value {
+        self.0.console_state()
     }
 }
 

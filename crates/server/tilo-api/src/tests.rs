@@ -1283,18 +1283,14 @@ fn a_workspace_refusal_is_read_by_its_case() {
         not_made,
         server::ServerError::RefusedWorkspace(Refusal::BranchNotMade { part: part.into() })
     );
-    let answered = account::answer(
-        true,
-        "account/workspaces#branch",
-        account::not_branched(&not_made).expect("a branch that was not made"),
-    );
-    let error = &answered["structuredContent"]["error"];
-    assert_eq!(error["code"], account::BRANCH_INCOMPLETE, "{answered}");
+    let Some(account::Outcome::Failed { code, message, .. }) = account::not_branched(&not_made)
+    else {
+        panic!("a branch that was not made");
+    };
+    assert_eq!(code, account::BRANCH_INCOMPLETE);
     assert!(
-        error["message"]
-            .as_str()
-            .is_some_and(|message| message.contains(part)),
-        "the caller reads which part did not come: {answered}"
+        message.contains(part),
+        "the caller reads which part did not come: {message}"
     );
 }
 
@@ -1308,13 +1304,13 @@ fn a_person_the_server_does_not_know_reads_why_and_what_to_do() {
         &tilo_actions::remote::not_on_this_server(&person),
     );
     let error = server::ServerError::from(refusal);
-    let answered = account::answer(true, "account/workspaces#list", account::refused(&error));
-    let error = &answered["structuredContent"]["error"];
-    assert_eq!(error["code"], "not_on_this_server", "{answered}");
-    let message = error["message"].as_str().unwrap_or_default();
+    let account::Outcome::Failed { code, message, .. } = account::refused(&error) else {
+        panic!("a refusal fails");
+    };
+    assert_eq!(code, "not_on_this_server");
     assert!(
         message.contains(&hex::encode(person)) && message.contains("owner"),
-        "{answered}"
+        "{message}"
     );
 }
 

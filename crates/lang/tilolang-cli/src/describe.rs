@@ -62,8 +62,6 @@ pub struct FleetEntry {
     pub resource_types: Vec<(String, String)>,
     /// The actions it offers while closed.
     pub offers: Vec<FleetOffer>,
-    /// The kinds each member keeps as their own.
-    pub own: Vec<String>,
     /// The kind of the record a window of it opens.
     pub window_kind: String,
     /// Whether a window of it is the person's own, never on a shared desktop.
@@ -144,13 +142,8 @@ pub fn fleet(dir: &Path, search: &[PathBuf]) -> Result<Option<FleetEntry>, Strin
         keywords: meta.keywords.clone(),
         resource_types,
         offers: offers(meta),
-        own: if meta.own_resources {
-            vec![format!("tl.{}", meta.app)]
-        } else {
-            Vec::new()
-        },
         window_kind: meta.resource_type(),
-        windows_personal: meta.own_resources || meta.profile_resources,
+        windows_personal: meta.profile_resources,
         window_documents: !meta.each_document.is_empty(),
         surface: String::from_utf8_lossy(&surface).into_owned(),
         previously: meta.previously.clone(),

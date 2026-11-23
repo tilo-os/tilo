@@ -36,83 +36,7 @@ pub fn round_trip(stream: &mut UnixStream, request: &str) -> io::Result<serde_js
     serde_json::from_str(answer.trim()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
-/// The `actions_invoke` request, carrying `device` and `wait_ms` only when
-/// they are given.
-#[must_use]
-pub fn invoke_wire(
-    provider: &str,
-    id: &str,
-    args: &serde_json::Value,
-    device: Option<&str>,
-    wait_ms: Option<u64>,
-) -> serde_json::Value {
-    let mut value = serde_json::json!({
-        "op": "actions_invoke", "provider": provider, "id": id, "args": args,
-    });
-    if let Some(object) = value.as_object_mut() {
-        if let Some(device) = device {
-            object.insert("device".to_string(), device.into());
-        }
-        if let Some(wait_ms) = wait_ms {
-            object.insert("wait_ms".to_string(), wait_ms.into());
-        }
-    }
-    value
-}
-
-/// `id` with every control character written as `\xHH`, so a terminal
-/// shows each part and a person can copy it back into an invocation.
-#[must_use]
-pub fn printable_id(id: &str) -> std::borrow::Cow<'_, str> {
-    use std::fmt::Write as _;
-    if !id.chars().any(char::is_control) {
-        return std::borrow::Cow::Borrowed(id);
-    }
-    let mut out = String::with_capacity(id.len().saturating_add(8));
-    for ch in id.chars() {
-        // Every control character is below U+0100, so two digits name it.
-        if ch.is_control() {
-            let _ = write!(out, "\\x{:02x}", u32::from(ch));
-        } else {
-            out.push(ch);
-        }
-    }
-    std::borrow::Cow::Owned(out)
-}
-
-/// [`printable_id`] undone: `\xHH` of a control character back to the
-/// character. Ids never hold such text themselves, so a raw id (from
-/// `--json`) passes through unchanged.
-#[must_use]
-pub fn id_from_printed(printed: &str) -> String {
-    let mut out = String::with_capacity(printed.len());
-    let mut chars = printed.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\\' {
-            let mut ahead = chars.clone();
-            let escaped = (ahead.next() == Some('x'))
-                .then(|| Some([ahead.next()?, ahead.next()?]))
-                .flatten()
-                .and_then(|[high, low]| {
-                    high.to_digit(16)?
-                        .checked_mul(16)?
-                        .checked_add(low.to_digit(16)?)
-                })
-                .and_then(char::from_u32)
-                .filter(|decoded| decoded.is_control());
-            if let Some(decoded) = escaped {
-                out.push(decoded);
-                chars = ahead;
-                continue;
-            }
-        }
-        out.push(ch);
-    }
-    out
-}
-
-/// A socket that answers the action model's semantic requests
-/// (`actions_enumerate`, `actions_invoke`, …).
+/// A socket that answers the action model's frames.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlSocket {
     /// Named by `$TILO_TEST_CONTROL` (a development session) or a caller.
@@ -370,13 +294,5 @@ mod tests {
             refusal_of_process(&ControlSocket::Named("/c".into()), &refused),
             None
         );
-    }
-
-    #[test]
-    fn printed_ids_round_trip() {
-        let id = "app\u{1f}notes\u{1f}rename";
-        assert_eq!(printable_id(id), "app\\x1fnotes\\x1frename");
-        assert_eq!(id_from_printed(&printable_id(id)), id);
-        assert_eq!(id_from_printed("plain\\xzz"), "plain\\xzz");
     }
 }

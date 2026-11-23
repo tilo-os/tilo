@@ -570,10 +570,7 @@ impl AuthorDirectory {
         // The workspace's roster names the agent, which every viewer is lent
         // ([`Self::register_roster`]): the name a connection gave itself is its session's title,
         // never the agent's.
-        let label = match crate::history_source::sentence::agent_tool_name(agent) {
-            Some(tool) if !known => tool.to_owned(),
-            _ => named.name.clone(),
-        };
+        let label = named.name.clone();
         // Painted as presence paints the member, unless the roster gave it its own colour.
         let rgb = if known {
             named.rgb()
@@ -1156,7 +1153,7 @@ mod tests {
         }
     }
 
-    /// A coding agent's session that acted for its person reads as the person with the agent
+    /// An agent's session that acted for its person reads as the person with the agent
     /// beside them, also when the agent is on the roster under its own key: as its writes to
     /// the person's files read.
     #[test]
@@ -1171,14 +1168,14 @@ mod tests {
         authors.register_agent(
             &device,
             HistoryAgent {
-                agent: tilo_actions::MemberId::agent("claude"),
+                agent: tilo_actions::MemberId::agent("scout"),
                 label: "Workspace folder".into(),
                 rgb: (10, 20, 30),
                 person: person.into(),
             },
         );
         let invoker = tilo_actions::ActionInvoker::admitted(
-            &tilo_actions::Acting::agent("claude")
+            &tilo_actions::Acting::agent("scout")
                 .in_session("s1")
                 .acting_for(tilo_actions::Acting::person(person)),
         )
@@ -1191,20 +1188,18 @@ mod tests {
             )
             .with_invoker(invoker);
         let author = authors.resolve_entry(&device, Some(&entry));
-        assert_eq!(author.name, "Claude Code");
+        assert_eq!(author.name, "Scout");
         assert_eq!(author.relation, AuthorRelation::Software);
-        assert_eq!(
-            crate::history_source::sentence::writer_badge(&author).as_deref(),
-            Some("Claude Code")
-        );
+        // The agent is the author itself, so no badge names a writer beside it.
+        assert_eq!(crate::history_source::sentence::writer_badge(&author), None);
         // The session's title is detail on the hover, never part of who did it.
         assert_eq!(author.task, None);
         let hover = crate::history_source::sentence::attribution_hover(&author).unwrap_or_default();
         assert!(hover.contains("Workspace folder"), "{hover}");
     }
 
-    /// An agent that acted for a person, with or without a session, reads as the agent: by the
-    /// tool's name when nothing names it, and its session's title is detail on the hover, never
+    /// An agent that acted for a person, with or without a session, reads as the agent: by its
+    /// own name when nothing names it, and its session's title is detail on the hover, never
     /// its name.
     #[test]
     fn an_agent_for_a_person_reads_as_the_agent_and_never_by_its_session_title() {
@@ -1215,16 +1210,16 @@ mod tests {
             HistoryAuthor::new("Ada", 0.0, "ada00000"),
         );
         let invoker = tilo_actions::ActionInvoker::admitted(
-            &tilo_actions::Acting::agent("claude").acting_for(tilo_actions::Acting::person(person)),
+            &tilo_actions::Acting::agent("scout").acting_for(tilo_actions::Acting::person(person)),
         )
         .named(Some("Workspace folder, sixth round".into()));
         let entry = tilo_actions::ActionContext::default().with_invoker(invoker);
         let author = authors.resolve_entry(&hex::encode([9_u8; 32]), Some(&entry));
-        assert_eq!(author.name, "Claude Code");
+        assert_eq!(author.name, "Scout");
         assert_eq!(author.relation, AuthorRelation::Software);
         let parts = crate::history_source::sentence::author_parts(&author);
         assert_eq!(parts.person, "Ada");
-        assert_eq!(parts.writer.as_deref(), Some("Claude Code"));
+        assert_eq!(parts.writer.as_deref(), Some("Scout"));
         let hover = crate::history_source::sentence::attribution_hover(&author).unwrap_or_default();
         assert!(hover.contains("Workspace folder, sixth round"), "{hover}");
         assert!(hover.contains("for Ada"), "{hover}");

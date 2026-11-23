@@ -857,17 +857,35 @@ impl InstallerApp {
         let _ = self.apply(effect);
     }
 
+    /// Run the published action `address` with `args`, admitted as a caller's invocation is.
+    ///
+    /// # Errors
+    ///
+    /// Why it was refused, or why it failed.
     pub fn invoke_published(
         &mut self,
-        id: &str,
+        address: &ui::tilo_actions::ActionAddress,
         args: &Map<String, Value>,
+        confirmation: Option<&ui::tilo_actions::remote::Confirmation>,
     ) -> Result<ActionOutput, String> {
-        use imager_backend::destination::console;
-        let resources = self.published();
-        let admitted = console::admit(PROVIDER, &resources, PROVIDER, id, args)
-            .map_err(|refusal| format!("{}: {}", refusal.code, refusal.message))?;
-        let effect = DestinationEffect::from_payload(&admitted.encoded.payload)
-            .map_err(|error| error.to_string())?;
+        let resources: Vec<_> = self
+            .published()
+            .iter()
+            .map(|row| ui::tilo_actions::Exports::exported(row).clone())
+            .collect();
+        let encoded = ui::tilo_actions::api::admit(&resources, address, args, confirmation)
+            .map_err(|refusal| format!("{}: {refusal}", refusal.code()))?;
+        self.apply_encoded(&encoded)
+    }
+
+    /// Run one admitted action, as its encoded form carries it.
+    ///
+    /// # Errors
+    ///
+    /// Why it failed.
+    pub fn apply_encoded(&mut self, encoded: &ui::tilo_actions::EncodedAction) -> Applied {
+        let effect =
+            DestinationEffect::from_payload(&encoded.payload).map_err(|error| error.to_string())?;
         self.apply(effect)
     }
 

@@ -18,20 +18,19 @@
 #      /dev/net/tun open to every uid (each VM's network uid opens it for pasta's
 #      tap, and a pod's /dev made without udev would refuse it), the VMs'
 #      cgroup, and the service's directories;
-#   3. the member identity: this host's own Tilo device, certified by the
-#      operator that runs the server, from TILO_VM_MEMBER_IDENTITIES (a
-#      directory holding <pod name>.tar, made with tilo-enroll device-key and
-#      install-cert), unpacked onto the state disk when the disk holds no
-#      identity or another one, so the device key stays with the host's disk as
-#      the host moves between nodes. It goes where the member's profile reads
-#      its identity (`tilo-runtime --profile` names its own TILO_IDENTITY_ROOT
-#      and XDG_CONFIG_HOME under the profile): the key and certificate under
-#      member/profile/identity, the person's record under
-#      member/profile/config/tilo/identity. A profile made under another
-#      identity is that device's, and is dropped with it;
-#   4. with TILO_TAKE_WORK_DEVICE, the member: `tilo-runtime --daemon`, as the
-#      service, under the member identity, which takes the server's runs for
-#      the workspaces whose VMs are here (restarted if it stops);
+#   3. the member identity: this host's own Tilo device, joining the person's
+#      devices once with the ticket an owner device printed for it
+#      (TILO_VM_TICKET), on the state disk it keeps, so the device key stays with
+#      the host's disk as the host moves between nodes. The login goes where the
+#      member's profile reads its identity (`tilo-runtime --profile` names its
+#      own TILO_IDENTITY_ROOT and XDG_* under the profile): the key and
+#      certificate under member/profile/identity, the login under
+#      member/profile/state. A host that already holds them ignores the ticket.
+#      A host given no ticket fails, unless TILO_VM_FOUND=1: then it founds its
+#      own identity, as a machine with no owner before it does.
+#   4. the member: `tilo-runtime --daemon`, as the service, under the member
+#      identity, which takes the server's runs for the workspaces whose VMs are
+#      here (the login names the server), restarted if it stops;
 #   5. tilo-hosted-serve, the start this image and the server OS share: the
 #      guest (the image the release key signed, fetched once per digest;
 #      TILO_VM_GUEST_REF overrides the one this build pins) and then
@@ -89,52 +88,61 @@ tilo-hosted-prepare
 member=$data/member
 pod=${HOSTNAME:-$(hostname)}
 profile=$member/profile
-if [ -n "${TILO_VM_MEMBER_IDENTITIES:-}" ]; then
-  identities=$TILO_VM_MEMBER_IDENTITIES/$pod.tar
-  [ -f "$identities" ] || { say "no member identity for $pod"; exit 1; }
-  installed=
-  key=$profile/identity/device-private/keypair.bin
-  if [ -f "$key" ]; then installed=$(sha256sum < "$key"); fi
-  if [ "$(tar -xOf "$identities" root/device-private/keypair.bin | sha256sum)" != "$installed" ]; then
-    say "installing the member identity of $pod"
-    rm -rf "$member.new"
-    mkdir -m 0700 "$member.new"
-    tar -xf "$identities" -C "$member.new" --no-same-owner
-    mkdir -m 0700 "$member.new/profile" "$member.new/profile/config" "$member.new/profile/config/tilo"
-    mv "$member.new/root" "$member.new/profile/identity"
-    mv "$member.new/person" "$member.new/profile/config/tilo/identity"
-    chown -R tilo-hosted:tilo-hosted "$member.new"
-    rm -rf "$member"
-    mv "$member.new" "$member"
-  fi
+if [ -s "$profile/identity/device/cert.bin" ]; then
+  : # this host is one of the person's devices already; a ticket beside it is left unspent
+elif [ -n "${TILO_VM_TICKET:-}" ]; then
+  say "joining the person's devices as $pod"
+  mkdir -p -m 0700 "$member" "$member/home" "$profile"
+  chown tilo-hosted:tilo-hosted "$member" "$member/home" "$profile"
+  chmod 0700 "$profile"
+  # The login reaches this host's own daemon, which founds no identity of its
+  # own while it does: it certifies the key with the ticket's issuer, keeps the
+  # login under the profile, and enters the person's workspace.
+  HOME=$member/home TILO_RUNTIME_PROFILE=$profile \
+    TILO_HOSTED_VM_SOCKET=$run/hosted.sock TILO_HOSTED_PLANS=${TILO_VM_PLANS:-} \
+    XDG_CONFIG_HOME=$profile/config XDG_DATA_HOME=$profile/data \
+    XDG_CACHE_HOME=$profile/cache XDG_STATE_HOME=$profile/state \
+    TILO_IDENTITY_ROOT=$profile/identity \
+    setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- \
+    tilo login "$TILO_VM_TICKET" \
+    || [ -s "$profile/identity/device/cert.bin" ] \
+    || { say "the ticket did not add this host: it may be used already, or have run out"; exit 1; }
+  # The login leaves the daemon it reached; the member's one daemon is the
+  # supervised one below, so the one login left is stopped here.
+  for proc in /proc/[0-9]*; do
+    grep -qz "TILO_RUNTIME_PROFILE=$profile" "$proc/environ" 2>/dev/null \
+      && kill "${proc#/proc/}" 2>/dev/null || true
+  done
+elif [ "${TILO_VM_FOUND:-0}" = 1 ]; then
+  say "this host founds its own identity, as a machine with no owner before it does"
+else
+  say "this host has no identity and no TILO_VM_TICKET: make a ticket with \`tilo device add\` on an owner device"
+  exit 1
 fi
 
 # 4. the member
-if [ -n "${TILO_TAKE_WORK_DEVICE:-}" ]; then
-  [ -e "$profile/identity/device-private/keypair.bin" ] || { say 'TILO_TAKE_WORK_DEVICE is set, but this host has no member identity'; exit 1; }
-  mkdir -p -m 0700 "$profile" "$member/home"
-  chown tilo-hosted:tilo-hosted "$profile" "$member/home"
-  chmod 0700 "$profile"
-  # The member's home, where it keeps its workspaces' files, is on the state
-  # disk, under /var/lib. A workspace's VM sees a folder shared with it at the
-  # path it has here, and /var/lib is the guest's own, so no folder under it is
-  # shared: the member reaches its home at /home/tilo-member instead.
-  home=/home/tilo-member
-  mkdir -p "$home"
-  mountpoint -q "$home" || mount --bind "$member/home" "$home" \
-    || { say "could not mount the member's home at $home"; exit 1; }
-  (
-    while :; do
-      # The profile names the member's identity and config itself.
-      HOME=$home \
-        TILO_RUNTIME_PROFILE=$profile TILO_HOSTED_VM_SOCKET=$run/hosted.sock \
-        TILO_HOSTED_PLANS=${TILO_VM_PLANS:-} \
-        setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- \
-        tilo-runtime --daemon --profile "$profile" || say "the member stopped ($?); starting it again"
-      sleep 5
-    done
-  ) &
-fi
+mkdir -p -m 0700 "$profile" "$member/home"
+chown tilo-hosted:tilo-hosted "$profile" "$member/home"
+chmod 0700 "$profile"
+# The member's home, where it keeps its workspaces' files, is on the state
+# disk, under /var/lib. A workspace's VM sees a folder shared with it at the
+# path it has here, and /var/lib is the guest's own, so no folder under it is
+# shared: the member reaches its home at /home/tilo-member instead.
+home=/home/tilo-member
+mkdir -p "$home"
+mountpoint -q "$home" || mount --bind "$member/home" "$home" \
+  || { say "could not mount the member's home at $home"; exit 1; }
+(
+  while :; do
+    # The profile names the member's identity and config itself.
+    HOME=$home \
+      TILO_RUNTIME_PROFILE=$profile TILO_HOSTED_VM_SOCKET=$run/hosted.sock \
+      TILO_HOSTED_PLANS=${TILO_VM_PLANS:-} \
+      setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- \
+      tilo-runtime --daemon --profile "$profile" || say "the member stopped ($?); starting it again"
+    sleep 5
+  done
+) &
 
 # 5. the guest and the service: tilo-hosted-serve, the start the server OS runs
 # too (it fetches the pinned guest, then serves the VMs as the service's own

@@ -1,6 +1,7 @@
 //! A workspace's mail account signs in with one entry of its vault on every member's device:
 //! two members' devices sign in to the same mail server with it, each from its own copy of the
-//! vault document; a member whose role leaves Passwords out is refused it in words; and a file
+//! vault document; a member whose role leaves Passwords out is refused it in words; one the rules
+//! ask first is asked by the workspace's host; and a file
 //! account the cloud service lists signs in by its entry the same way.
 
 #![allow(
@@ -13,24 +14,26 @@
     reason = "in a test these are the assertion, and each test keeps both devices to its end"
 )]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use accounts::person::PersonAccounts;
 use ed25519_dalek::SigningKey;
 use tilo_account_probe::AccountTester as _;
-use tilo_actions::remote::Caller;
+use tilo_actions::remote::person_accounts;
 use tilo_actions::remote::person_vault::ItemRef;
+use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_resource::{Id, Replica, Resource as _};
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use zeroize::Zeroizing;
 
 use super::account_logins::{
-    ASKS_FIRST, AccountLogin, MAY_NOT_USE_PASSWORDS, NOT_NAMED, NOT_ON_A_FOREIGN_DEVICE,
+    ASKS_FIRST, AccountLogin, DECLINED, MAY_NOT_USE_PASSWORDS, NOT_NAMED, NOT_ON_A_FOREIGN_DEVICE,
 };
 use super::fixtures::{
     TestGroupKeys, TestHost, device_cert, governor, signed_pre_admission, test_host_holding,
 };
-use super::{MemberDevice, PreAdmitRequest, Workspaces};
+use super::{AsksPeople, MemberDevice, PersonAnswer, PreAdmitRequest, Workspaces};
 
 /// The mail account both members read.
 const ADDRESS: &str = "team@example.test";
@@ -321,7 +324,7 @@ async fn released(
     workspaces: &Workspaces,
     workspace: &str,
     by: &Caller,
-    asking: (&str, bool),
+    app: &str,
     item: &ItemRef,
 ) -> Result<Zeroizing<String>, String> {
     tilo_test_env::within("the device's copy of the vault keeps the entry", async {
@@ -334,7 +337,7 @@ async fn released(
     })
     .await;
     workspaces
-        .account_secret(workspace, by, asking, item)
+        .account_secret(workspace, by, app, item)
         .await
         .map(|released| released.secret)
 }
@@ -360,7 +363,7 @@ async fn two_members_devices_sign_in_to_one_mail_account_with_the_one_vault_entr
             named, item,
             "every device reads the one entry the account names"
         );
-        let password = released(device, &workspace, &by, (MAIL, false), &named)
+        let password = released(device, &workspace, &by, MAIL, &named)
             .await
             .expect("a member who may use Passwords is released the account's password");
         let signing = Arc::clone(&server);
@@ -407,16 +410,122 @@ async fn two_members_devices_sign_in_to_one_mail_account_with_the_one_vault_entr
     assert_eq!(
         members
             .member
-            .account_secret(
-                &workspace,
-                &members.member_caller(),
-                (MAIL, false),
-                &unnamed
-            )
+            .account_secret(&workspace, &members.member_caller(), MAIL, &unnamed)
             .await
             .map(|released| released.secret),
         Err(NOT_NAMED.to_owned()),
         "only an account's own entry is released"
+    );
+}
+
+/// A calendar account added in Settings keeps its password in the workspace's one vault, and the
+/// Calendar's sign-in is released it by the sign-ins route: decided for the device, at the
+/// account's server alone, and written down in the entry. No device vault keeps one.
+#[cfg(feature = "agents")]
+#[tokio::test]
+async fn a_calendar_account_added_in_settings_signs_in_with_the_workspaces_vault() {
+    use accounts::vault_items::Place;
+    use tilo_account_probe::{FindingAccountTester, imap::Reach};
+
+    const USER: &str = "ada@example.test";
+    const CALENDAR: &str = tilo_app_id::apps::CALENDAR;
+
+    let server = Arc::new(
+        tokio::task::spawn_blocking(|| {
+            let server = crate::workspaces::person_settings::calendars::fake_caldav::Server::start(
+                USER, PASSWORD,
+            );
+            server.add_calendar("work", "Work");
+            server
+        })
+        .await
+        .unwrap(),
+    );
+    let members = Members::new().await;
+    let workspace = members.workspace.clone();
+
+    // Settings keeps the account in the workspace's accounts record, naming its server and its
+    // user name, as the account form builds one.
+    let mut account = accounts::Account::new(
+        accounts::AccountId::from("caldav:ada@example.test"),
+        "caldav",
+    );
+    account.display_name = "Mine".into();
+    account.config = serde_json::json!({
+        "server_url": server.url(),
+        "username": USER,
+    });
+    members.keep_account(&account).await;
+
+    // The typed password is kept in the workspace's vault, bound to the account's server, and
+    // the account names the entry.
+    let places: Vec<Place> = accounts::typed_for::servers_of(&account)
+        .iter()
+        .map(|server| Place::parse(server).unwrap())
+        .collect();
+    let item = members
+        .owner
+        .keep_account_password(
+            &workspace,
+            &members.owner_caller(),
+            None,
+            AccountLogin {
+                title: "Mine".into(),
+                username: USER.into(),
+                places,
+            },
+            Zeroizing::new(PASSWORD.into()),
+        )
+        .await
+        .unwrap();
+    members
+        .owner
+        .name_account_password(&workspace, "caldav:ada@example.test", &item)
+        .await
+        .unwrap();
+
+    // The password is the workspace's alone: the host keeps no vault of its own here.
+    assert!(
+        !accounts::vault_dir_in(&members.owner.workspace_root(&workspace)).exists(),
+        "the calendar password was written into a device vault"
+    );
+
+    // The Calendar's sign-in asks the route for the entry the account names: the release is
+    // decided for her own device, and it is the password her server takes.
+    let password = released(
+        &members.owner,
+        &workspace,
+        &members.owner_caller(),
+        CALENDAR,
+        &item,
+    )
+    .await
+    .expect("the workspace releases her calendar password");
+    let found = tokio::task::spawn_blocking(move || {
+        FindingAccountTester(Reach::any())
+            .discover_calendars(&account, &accounts::Secret::password(password.to_string()))
+    })
+    .await
+    .unwrap();
+    assert!(
+        matches!(&found, Ok(calendars) if !calendars.is_empty()),
+        "her calendar server did not take the released password: {found:?}"
+    );
+
+    // The release is written down in the entry, saying which app signed in to which account.
+    let opened = members.owner.open_vault(&workspace).await.unwrap();
+    let uses = opened
+        .entries()
+        .iter()
+        .find(|(entry, _)| entry.id.0 == item.id())
+        .map(|(_, uses)| uses.clone())
+        .unwrap();
+    assert!(
+        uses.iter().any(|used| {
+            used.using == "tilo.accounts/sign-in"
+                && used.what == format!("{CALENDAR} signed in to Mine")
+        }),
+        "the Calendar's release is written down with the app and the account: {uses:?}"
     );
 }
 
@@ -439,10 +548,7 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
     let by = members.member_caller();
     let refused = tilo_test_env::within("the member's device reads the rule", async {
         loop {
-            match member
-                .account_secret(&workspace, &by, (MAIL, false), &named)
-                .await
-            {
+            match member.account_secret(&workspace, &by, MAIL, &named).await {
                 Err(error) if error == MAY_NOT_USE_PASSWORDS => return error,
                 _ => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
             }
@@ -468,7 +574,7 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
     assert_eq!(
         members
             .owner
-            .account_secret(&workspace, &members.owner_caller(), (MAIL, false), &named)
+            .account_secret(&workspace, &members.owner_caller(), MAIL, &named)
             .await
             .unwrap()
             .secret
@@ -477,20 +583,83 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
     );
 }
 
+/// The editor at their approving devices, answering every question with `answer`, and what they
+/// were asked.
+struct Editor {
+    answer: ConfirmationAnswer,
+    asked: Mutex<Vec<PendingConfirmation>>,
+}
+
+impl Editor {
+    fn answering(answer: ConfirmationAnswer) -> Arc<Self> {
+        Arc::new(Self {
+            answer,
+            asked: Mutex::default(),
+        })
+    }
+
+    fn asked(&self) -> Vec<PendingConfirmation> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+impl AsksPeople for Editor {
+    fn ask(&self, _person: [u8; 32], question: PendingConfirmation) -> PersonAnswer {
+        self.asked.lock().unwrap().push(question);
+        let answer = self.answer.clone();
+        Box::pin(async move { Ok(answer) })
+    }
+}
+
+/// The sign-in Mail on the editor's device asks the workspace's host for.
+fn sign_in(item: &ItemRef) -> InvokeRequest {
+    let asked = serde_json::to_value(person_accounts::SignIn {
+        item: item.to_string(),
+        app: MAIL.into(),
+    })
+    .unwrap();
+    InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: person_accounts::target(person_accounts::SIGN_IN),
+        argument: InvokeArgument::Json(asked.as_object().unwrap().clone()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
+/// An owner sets the workspace's Passwords to ask an editor first. The editor's own device asks
+/// nobody, so its Mail asks the workspace's host, here the owner's device, which asks the editor
+/// on their approving devices: their yes releases the password Mail signs in with, written down
+/// as allowed once; their no refuses it in their words; and an agent of theirs is never asked
+/// for them.
 #[tokio::test]
-async fn a_rule_that_asks_first_waits_on_its_persons_yes_and_no_agents() {
+async fn an_editor_the_rules_ask_first_is_asked_by_the_host_and_their_yes_signs_mail_in() {
+    let server = Arc::new(
+        tokio::task::spawn_blocking(MailServer::start)
+            .await
+            .unwrap(),
+    );
     let members = Members::new().await;
     let workspace = members.workspace.clone();
+    let item = members.owner_keeps_the_password(&server).await;
     members
         .rule_passwords_for_the_member(tilo_action_policy::Answer::Ask)
         .await;
 
-    // Once the member's device reads the rule, the vault asks its person: it is not refused.
+    // Once the editor's device reads the rule, it releases nothing itself and asks nobody: its
+    // Mail is told the rules ask first.
     let member = members.member.clone();
     let by = members.member_caller();
-    tilo_test_env::within("the member's device reads the rule", async {
+    let named = named_entry(&member, &workspace).await;
+    assert_eq!(named, item);
+    tilo_test_env::within("the editor's device reads the rule", async {
         loop {
-            match member.using_vault(&workspace, &by, Some(MAIL), false).await {
+            match member.account_secret(&workspace, &by, MAIL, &named).await {
                 Err(error) if error == ASKS_FIRST => return,
                 _ => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
             }
@@ -498,20 +667,77 @@ async fn a_rule_that_asks_first_waits_on_its_persons_yes_and_no_agents() {
     })
     .await;
 
-    // Their yes is what the rule waits for.
+    // The host asks the editor what Mail would do, and their yes releases the password.
+    let host = &members.owner;
+    let in_workspace = Some(workspace.parse::<collab_types::WorkspaceId>().unwrap());
+    let yes = Editor::answering(ConfirmationAnswer::AllowOnce);
+    host.ask_people(yes.clone());
+    let answered = host
+        .account_sign_in_invoke(in_workspace, &by, &sign_in(&named))
+        .await
+        .expect("the editor's yes releases the password");
+    let signed: person_accounts::SignedIn = serde_json::from_value(answered).unwrap();
+    let signing = Arc::clone(&server);
+    let signed_in = tokio::task::spawn_blocking(move || signing.signs_in(&signed.secret))
+        .await
+        .unwrap();
+    assert!(signed_in.is_ok(), "Mail signs in: {signed_in:?}");
+    let asked = yes.asked();
+    assert_eq!(asked.len(), 1, "the editor is asked once: {asked:?}");
     assert_eq!(
-        member.using_vault(&workspace, &by, Some(MAIL), true).await,
-        Ok(())
+        (
+            asked[0].agent_label.as_str(),
+            asked[0].action_label.as_str()
+        ),
+        ("Mail", "sign in"),
+        "the question names the app and what it does"
+    );
+    assert_eq!(
+        asked[0].resource_label, "Team",
+        "and the account it signs in to"
+    );
+    let opened = host.open_vault(&workspace).await.unwrap();
+    let uses = opened
+        .entries()
+        .iter()
+        .find(|(entry, _)| entry.id.0 == item.id())
+        .map(|(_, uses)| uses.clone())
+        .unwrap();
+    assert!(
+        uses.iter()
+            .any(|used| used.what == format!("{MAIL} signed in to Team")
+                && used.allowed == Some(accounts::vault_items::Allowance::Once)),
+        "the release is written down as the editor allowed it: {uses:?}"
     );
 
-    // An agent's yes is not its person's: the rule still waits on them.
-    let agent = members.member_caller().delegated_to("agent:helper");
-    assert!(
-        member
-            .using_vault(&workspace, &agent, Some(MAIL), true)
+    // Their no refuses it, in their words.
+    host.ask_people(Editor::answering(ConfirmationAnswer::Deny));
+    assert_eq!(
+        host.account_sign_in_invoke(in_workspace, &by, &sign_in(&named))
+            .await,
+        Err(ActionCallError::Refused {
+            reason: DECLINED.to_owned()
+        })
+    );
+
+    // An agent of theirs is not asked for them, and is handed nothing.
+    let unasked = Editor::answering(ConfirmationAnswer::AllowOnce);
+    host.ask_people(unasked.clone());
+    let agent = by.clone().delegated_to("agent:helper");
+    assert_eq!(
+        host.account_secret(&workspace, &agent, MAIL, &named)
             .await
-            .is_err(),
-        "an agent says no yes for its person"
+            .map(|released| released.secret),
+        Err(ASKS_FIRST.to_owned())
+    );
+    assert_eq!(
+        host.account_sign_in_invoke(in_workspace, &agent, &sign_in(&named))
+            .await,
+        Err(ActionCallError::UnknownAction)
+    );
+    assert!(
+        unasked.asked().is_empty(),
+        "no agent's ask reaches its person"
     );
 }
 
@@ -531,7 +757,7 @@ async fn a_device_not_its_persons_own_is_not_released_the_password() {
     assert_eq!(
         members
             .owner
-            .account_secret(&workspace, &members.member_caller(), (MAIL, false), &named)
+            .account_secret(&workspace, &members.member_caller(), MAIL, &named)
             .await
             .map(|released| released.secret),
         Err(NOT_ON_A_FOREIGN_DEVICE.to_owned())
@@ -607,7 +833,7 @@ async fn a_file_accounts_password_signs_in_by_its_entry_on_a_members_device() {
                     .account_secret(
                         &workspace,
                         &members.member_caller(),
-                        (tilo_app_id::apps::FILE_EXPLORER, false),
+                        tilo_app_id::apps::FILE_EXPLORER,
                         &item,
                     )
                     .await
@@ -679,7 +905,7 @@ async fn an_account_a_providers_page_signed_in_is_released_its_access_token_alon
         &members.member,
         &workspace,
         &members.member_caller(),
-        (MAIL, false),
+        MAIL,
         &named,
     )
     .await

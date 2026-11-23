@@ -19,9 +19,6 @@ tilolang-suggestion-dismiss = Dismiss
 tilolang-suggestion-says = { $name } suggests:
 tilolang-suggested-by = suggested by { $name }
 tilolang-ask-always = Always allow
-# What the Ask bar asks about when the workspace's rules ask the person first before an
-# account's password is used ("Allow “Sign in to sam@example.com with its password”?").
-tilolang-ask-sign-in = Sign in to { $account } with its password
 tilolang-ask-denied = That change is not allowed here.
 tilolang-ask-needs-approval = That change needs approval first.
 tilolang-change-kept = Your change is kept on this device until the workspace takes it.

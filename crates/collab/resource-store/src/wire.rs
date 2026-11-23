@@ -104,6 +104,13 @@ pub enum Command {
     /// a reader taking a few fields of every resource of a kind (search, its titles) asks for,
     /// rather than each resource whole.
     Fields { query: Query, fields: Vec<String> },
+    /// The workspace's leases whose claim stands now, as the workspace's own document holds
+    /// them at the moment it is asked: answered as [`Reply::Content`] holding
+    /// `{"leases": {"<lease>": {"device": "<holder's device key in lowercase hex>"}}}`, the
+    /// reading code reads as `workspace.leases`. No store holds them, so the host of the
+    /// workspace answers it, never [`read`]; and it is asked afresh each time, since the device
+    /// that holds a lease can change at any moment.
+    Leases,
 }
 
 /// One edit of a resource's content.
@@ -301,12 +308,14 @@ fn write_into(
         | Command::Removed { .. }
         | Command::MadeFrom { .. }
         | Command::Contents { .. }
-        | Command::Fields { .. } => return Err(StoreError::NotAWrite),
+        | Command::Fields { .. }
+        | Command::Leases => return Err(StoreError::NotAWrite),
     }
     Ok(())
 }
 
-/// Answers the read `command` from `store`, of only what `may_read` admits; `None` for a write.
+/// Answers the read `command` from `store`, of only what `may_read` admits; `None` for a write,
+/// and for [`Command::Leases`], which no store holds.
 #[must_use]
 pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -> Option<Reply> {
     Some(match command {
@@ -392,7 +401,8 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
         | Command::Remove { .. }
         | Command::Undo { .. }
         | Command::Edit { .. }
-        | Command::Batch(_) => return None,
+        | Command::Batch(_)
+        | Command::Leases => return None,
     })
 }
 

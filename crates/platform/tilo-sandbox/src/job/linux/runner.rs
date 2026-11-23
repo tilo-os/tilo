@@ -6,7 +6,6 @@
 //! keep the copy-on-write pages the worker goes on changing, charged to the worker, for as long as
 //! its job runs.
 
-#[cfg(target_env = "gnu")]
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::io::{self, Read, Seek, Write};

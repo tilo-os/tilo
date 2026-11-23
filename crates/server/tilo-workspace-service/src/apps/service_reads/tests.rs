@@ -58,7 +58,6 @@ async fn a_resource_the_service_holds_reads_from_it() {
         ResourceRead::Sealed
     );
     assert!(reads.holds_resource(&workspace, APP, RESOURCE));
-    assert_eq!(reads.own_resource(&workspace, APP, RESOURCE), None);
     assert!(
         !reads.seals_documents("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
         "a workspace this service does not hold is the app's own"

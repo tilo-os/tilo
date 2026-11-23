@@ -125,19 +125,7 @@ pub(super) fn validate_signed_op(
             ch_state
                 .artifact_resources
                 .insert(artifact, route.document_id.clone());
-            // The person's own record is theirs to change whatever their role.
-            if let Some(person) = tilo_desktop_model::shared_resource::guard::own_person(
-                &route.app_id,
-                &route.document_id,
-                collab_types::OwnResource::recognise(
-                    &route.app_id,
-                    &route.document_id,
-                    verified_identity.verified.user_public_key,
-                )
-                .as_ref(),
-            ) {
-                ch_state.artifact_owners.insert(artifact, person);
-            }
+
             Some(validate_admitted_inbound_op(
                 envelope,
                 author,

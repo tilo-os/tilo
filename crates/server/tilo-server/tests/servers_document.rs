@@ -65,7 +65,7 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
     let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
     let workspaces = governor.host.workspaces();
-    servers::founded(workspaces).await.unwrap();
+    servers::found(workspaces).await.unwrap();
     let workspace = workspaces.create("Notes").await.unwrap();
     let nonce = hex::encode([0x5a_u8; 16]);
     let plan = plan_holding(&workspace.workspace, &nonce);
@@ -428,7 +428,7 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
 
     // One of the person's own devices makes it when it is first needed, and
     // the first server is entered in it: no server founds it.
-    servers::founded(first.host.workspaces()).await.unwrap();
+    servers::found(first.host.workspaces()).await.unwrap();
     servers::apply(
         first.host.workspaces(),
         Servers::ENROLL_SERVER.with((
@@ -556,7 +556,7 @@ async fn a_device_that_writes_before_the_document_arrives_keeps_every_entry() {
 
     // The person's own device makes the workspace when it is first needed, and
     // the first machine is planned in it.
-    servers::founded(holder.host.workspaces()).await.unwrap();
+    servers::found(holder.host.workspaces()).await.unwrap();
     servers::apply(
         holder.host.workspaces(),
         Servers::ENROLL_SERVER.with((
@@ -656,7 +656,7 @@ async fn a_servers_workspace_founded_in_its_persons_name_is_founded_again_under_
     let one = serve_on(&alice, &laptop, WorkSetting::own_person()).await;
     let other = serve_on(&alice, &desktop, WorkSetting::own_person()).await;
     let admin = person_workspace_id(&alice.user_pk);
-    servers::founded(one.host.workspaces()).await.unwrap();
+    servers::found(one.host.workspaces()).await.unwrap();
     for (device, hosted, label) in [(&laptop, &one, "laptop"), (&desktop, &other, "desktop")] {
         servers::apply(
             one.host.workspaces(),
@@ -741,7 +741,7 @@ async fn a_fresh_device_that_founds_the_servers_workspace_again_replaces_no_serv
     let admin = person_workspace_id(&alice.user_pk);
 
     // The laptop founds the workspace and names the person's servers in it.
-    servers::founded(holder.host.workspaces()).await.unwrap();
+    servers::found(holder.host.workspaces()).await.unwrap();
     for (device, label) in [(&laptop, "laptop"), (&tablet, "tablet")] {
         servers::apply(
             holder.host.workspaces(),
@@ -761,7 +761,7 @@ async fn a_fresh_device_that_founds_the_servers_workspace_again_replaces_no_serv
     );
 
     // The fresh device founds it again under the same id, and writes there.
-    servers::founded(fresh.host.workspaces()).await.unwrap();
+    servers::found(fresh.host.workspaces()).await.unwrap();
     servers::apply(
         fresh.host.workspaces(),
         Servers::ENROLL_SERVER.with((

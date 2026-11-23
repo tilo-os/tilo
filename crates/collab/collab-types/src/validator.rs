@@ -129,10 +129,6 @@ pub struct InboundState {
     /// The record kind each artifact is, if known: which of its app's
     /// resources the record's changes are decided against.
     pub artifact_kinds: HashMap<ArtifactId, String>,
-    /// The person (hex of their user root key) whose own record each artifact
-    /// is, as the write naming it said ([`crate::OwnResource`]): only they are
-    /// granted anything in it, whatever their role.
-    pub artifact_owners: HashMap<ArtifactId, String>,
 
     /// The workspace this state belongs to, as the tree names it.
     pub workspace: String,
@@ -180,7 +176,6 @@ impl Default for InboundState {
             artifact_apps: HashMap::new(),
             artifact_resources: HashMap::new(),
             artifact_kinds: HashMap::new(),
-            artifact_owners: HashMap::new(),
             workspace: DEFAULT_WORKSPACE.to_owned(),
             surfaces: crate::receipt::Surfaces::default(),
             grants: roles::workspace_role_grants(DEFAULT_WORKSPACE, &Grantee::role(Role::Owner)),
@@ -477,6 +472,11 @@ fn validate_authorized_op(
 pub fn document_node(workspace: &str, app: &str, document: &str) -> TreePath {
     use tilo_actions::document_sync::{DocumentSync, document_sync};
     let resource = |id| {
+        let id = if roles::is_workspace_moderation(app, id) {
+            ""
+        } else {
+            id
+        };
         let path = TreePath::workspace(workspace).app(app);
         let path = match tilo_action_policy::roles::protected_resource_kind(app, id) {
             Some(kind) => path.kind(kind),
@@ -517,6 +517,11 @@ pub fn document_access_target<'a>(app: &str, document: &'a str) -> Option<&'a st
         | DocumentSync::Chunk { base, .. }
         | DocumentSync::ChainHead { base } => base,
         DocumentSync::Eager | DocumentSync::OnDemand => document,
+    };
+    let document = if roles::is_workspace_moderation(app, document) {
+        ""
+    } else {
+        document
     };
     crate::workspace_document(app, document)
         .is_none()
@@ -768,10 +773,7 @@ fn check_op_permission(
             .get(&op.artifact)
             .map_or(artifact.as_str(), String::as_str),
     };
-    let mut cx = Context::at(0);
-    if let Some(person) = state.artifact_owners.get(&op.artifact) {
-        cx = cx.with_own_resource(document.document, person);
-    }
+    let cx = Context::at(0);
     let allows =
         |invoker: Option<&tilo_action_policy::Acting>,
          node: &tilo_action_policy::TreePath,

@@ -62,7 +62,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 18] = [
+pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 20] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -225,6 +225,16 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 18] = [
     ),
     (
         Verb {
+            id: LIST_SERVERS,
+            label: "List your servers",
+            check: LIST_SERVERS,
+            kind: ActionKind::Read,
+            params: Vec::new,
+        },
+        ServiceOperation::ListServers,
+    ),
+    (
+        Verb {
             id: ADMIT_MACHINE,
             label: "Take a planned machine in",
             check: ADMIT_MACHINE,
@@ -243,6 +253,16 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 18] = [
         },
         ServiceOperation::TakeInPersonDevice,
     ),
+    (
+        Verb {
+            id: ADMIT_SERVER,
+            label: "Take a server into your servers",
+            check: ADMIT_SERVER,
+            kind: roles::GOVERNANCE_KIND,
+            params: admit_server_params,
+        },
+        ServiceOperation::AdmitServer,
+    ),
 ];
 
 /// Plan a machine: the plan document the person's window or command wrote,
@@ -251,12 +271,32 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 18] = [
 pub(super) const PLAN_MACHINE: &str = "machine.plan";
 /// The machines the person planned and has not installed.
 pub(super) const LIST_MACHINES: &str = "machine.list";
+/// The person's servers, as their workspace's document names them.
+pub(super) const LIST_SERVERS: &str = "machine.servers";
 /// One of them, by its plan.
 pub(super) const SHOW_MACHINE: &str = "machine.show";
 /// Take a machine that enrolled with a plan's token into its entry under its
 /// device key.
 pub(super) const ADMIT_MACHINE: &str = "machine.admit";
+/// Take a server in among the person's servers, by the certificate its ticket's login answered
+/// with and where its endpoint is dialled.
+pub(super) const ADMIT_SERVER: &str = "server.admit";
 use tilo_server_session::workspaces::TAKE_IN_PERSON as TAKE_IN_PERSON_DEVICE;
+
+fn admit_server_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "cert",
+            ParamType::Text,
+            "The certificate the ticket's login answered with, in hex.",
+        ),
+        ActionParam::required(
+            "endpoint",
+            ParamType::Text,
+            "Where the server is dialled, as its endpoint advertises it (JSON).",
+        ),
+    ]
+}
 
 fn take_in_person_device_params() -> Vec<ActionParam> {
     vec![ActionParam::required(
@@ -719,13 +759,15 @@ impl Workspaces {
             operation if operation.decided_by_its_workspace() => {
                 Box::pin(self.serving_invoke(device, operation, &args, now)).await
             }
-            ServiceOperation::PlanMachine
-            | ServiceOperation::ListMachines
-            | ServiceOperation::ShowMachine
-            | ServiceOperation::AdmitMachine => {
+            operation if operation.of_machines() => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 Box::pin(machine::invoke(self, operation, &args)).await
+            }
+            ServiceOperation::AdmitServer => {
+                self.authorize(device, None, WorkspaceOp::Host(operation), now)
+                    .map_err(|error| refused(&error))?;
+                Box::pin(machine::admit_server(self, &args)).await
             }
             ServiceOperation::TakeInPersonDevice => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -885,6 +927,16 @@ impl Workspaces {
         if entering {
             return Ok(());
         }
+        // A machine's own record, written when the person certified the machine with their root:
+        // their device asks it as itself (the session's agent is that device's run), so no agent
+        // is asked on their behalf.
+        if matches!(verb.id, SHOW_MACHINE | ADMIT_MACHINE | ADMIT_SERVER)
+            && !device.capabilities.stand_in
+            && caller.user_public_key() == Some(&device.user_public_key)
+            && caller.device_public_key() == Some(&device.device_public_key)
+        {
+            return Ok(());
+        }
         self.admit_operation(
             workspace_id,
             caller,
@@ -903,11 +955,11 @@ impl Workspaces {
         args: &Args,
     ) -> Result<Value, ActionCallError> {
         if operation == ServiceOperation::ReadPersonalList {
-            self.note_own_device(device);
+            self.note_own_device(device).await;
             // A page names its browser's tab keys; one it can't name as the
             // contract says still reads the list.
             if let Ok(Some(browser)) = args.object("browser") {
-                self.note_browser(device, browser);
+                self.note_browser(device, browser).await;
             }
             // A backend finds its customer's workspace by its labels: only
             // the workspaces labelled so are read, however many it has.
@@ -917,7 +969,7 @@ impl Workspaces {
             };
             check_labels(&only.labels).map_err(invalid)?;
             let here = self.listed(device, &only).await;
-            let mut list = self.personal(device, &here, &only);
+            let mut list = self.personal(device, &here, &only).await;
             if only.workspace.is_some() {
                 self.sign_own_addresses(&mut list).await;
             }
@@ -927,6 +979,7 @@ impl Workspaces {
             let key = args.required_text("device")?;
             let name = args.required_text("name")?;
             self.name_device(device, key, name)
+                .await
                 .map_err(|error| refused(&error))?;
             return Ok(serde_json::json!({ "named": key }));
         }
@@ -935,8 +988,9 @@ impl Workspaces {
             .ok_or_else(|| invalid("`list` is required"))?;
         let kept = self
             .keep_personal(device, list)
+            .await
             .map_err(|error| refused(&error))?;
-        self.note_own_device(device);
+        self.note_own_device(device).await;
         Ok(serde_json::json!({ "kept": kept }))
     }
 
@@ -1025,7 +1079,7 @@ impl Workspaces {
     pub(in crate::workspaces) async fn personal_of(&self, device: &DeviceCert) -> PersonalList {
         let only = Listed::default();
         let here = self.listed(device, &only).await;
-        self.personal(device, &here, &only)
+        self.personal(device, &here, &only).await
     }
 
     async fn listed(&self, device: &DeviceCert, only: &Listed) -> Vec<WorkspaceListing> {

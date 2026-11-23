@@ -57,8 +57,8 @@ pub const PORT: u16 = 7703;
 /// takes that server's work.
 pub const SERVER_DEVICE_ENV: &str = "TILO_TAKE_WORK_DEVICE";
 /// The server's endpoint id, hex, when its endpoint is keyed apart from its
-/// device: a Tilo server's is (`tilo-enroll device-key` prints it as
-/// `server_node_id`). Without it the endpoint is the device key.
+/// device: a Tilo server's is, and the login this member joined with names it.
+/// Without it the endpoint is the device key.
 pub const SERVER_ENDPOINT_ENV: &str = "TILO_TAKE_WORK_ENDPOINT";
 
 /// What a member keeps of its shells, under the profile, and where each
@@ -124,6 +124,18 @@ impl Server {
             Ok(endpoint) => server.with_endpoint(&endpoint).map(Some),
             Err(_) => Ok(Some(server)),
         }
+    }
+
+    /// The server this computer's login names, for a member whose profile was joined with a
+    /// ticket: the device whose certificate the login carries, reached at the endpoint the
+    /// ticket's entry named. `None` without a login or an address.
+    #[must_use]
+    pub fn from_login(login: Option<&tilo_device_identity::login::Device>) -> Option<Self> {
+        let address = login?.server_address.as_ref()?;
+        let server = Self::new(&hex::encode(login?.server_cert.device_public_key)).ok()?;
+        server
+            .with_endpoint(&hex::encode(address.endpoint_addr.id.as_bytes()))
+            .ok()
     }
 
     /// The server's device key.
@@ -319,13 +331,14 @@ fn shell_runs(
             replicas
                 .as_ref()
                 .and_then(|slot| slot.get())
+                .and_then(std::sync::Weak::upgrade)
                 .zip(holder.upgrade())
                 .zip(tilo_desktop_model::WorkspaceId::parse(workspace))
                 .and_then(|((replicas, workspaces), id)| {
                     let name = workspaces
                         .workspace(id)
                         .map_or_else(|| "Workspace".to_owned(), |workspace| workspace.name);
-                    super::services::hold_files(replicas, &name, id)
+                    super::services::hold_files(&replicas, &name, id)
                 })
                 .unwrap_or_else(|| files(&member, workspace))
         })

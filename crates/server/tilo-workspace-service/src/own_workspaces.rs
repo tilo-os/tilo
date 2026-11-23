@@ -82,8 +82,11 @@ impl WorkspaceService {
         // person's list says another of theirs keeps it is handed it instead.
         if workspace == tilo_server_protocol::servers::person_workspace_id(&caller.user_public_key)
         {
-            crate::workspaces::servers::may_found(self.workspaces(), &caller.user_public_key)
-                .await?;
+            crate::workspaces::person_workspace::may_found(
+                self.workspaces(),
+                &caller.user_public_key,
+            )
+            .await?;
         }
         let mut arguments = Map::new();
         arguments.insert("name".into(), name.into());

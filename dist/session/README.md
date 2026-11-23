@@ -78,7 +78,7 @@ host-session issue and requires a live password-prompt check after login.
 ## VM test
 
 `dist/session/vm-e2e/run.py` runs the packaged session as a Fedora user does:
-the fedora-44 RPMs from Release / desktop installed with dnf on the Fedora 44
+the fedora-44 RPMs from `desktop-package-amd64` installed with dnf on the Fedora 44
 Cloud image under KVM, a gnome-keyring Secret Service unlocked on the user's
 bus, the identity provisioned there (`--provision-identity`, the same
 platform-storage minting the setup screen does), GNOME input sources seeded
@@ -125,10 +125,10 @@ repeats; `run.py test --rpms DIR --out OUT` then runs the test. `report.md`,
 
 ## Files workspace recovery before first initialization
 
-A remembered home peer is a recovery lead, not evidence that a local Files
-workspace is empty. `home-peers.json` stores certified relay identities and
-numeric collaboration workspace IDs; it does not contain the Files namespace UUID
-or its ticket. The authenticated relay content-discovery response supplies
+A server of the person's is a recovery lead, not evidence that a local Files
+workspace is empty. The document of the person's workspace names their servers
+and where they are dialled; it does not contain the Files namespace UUID or its
+ticket. The authenticated relay content-discovery response supplies
 that binding. An offline or unconfigured host must not be interpreted as
 "no existing files".
 

@@ -58,7 +58,7 @@ impl ResourceApp for PlayerApp {
     const TITLE: &'static str = "Player";
 
     fn view(cx: &mut ViewCx<Player>) -> Element {
-        let played = cx.person::<Played>();
+        let played = cx.profile_resource::<Played>();
         let shown = played.map_or_else(
             || "no history".to_owned(),
             |played| format!("{} played", played.with(|state| state.noted.len())),
@@ -93,9 +93,8 @@ fn offered(app: &mut TestApp<PlayerApp>) -> Vec<String> {
 
 #[test]
 fn the_api_offers_a_by_app_verb_to_nobody_and_takes_it_from_nobody() {
-    crate::own_kinds::declare("so.tilo.test-jukebox", &["test.jukebox-played"]);
     let mut app = TestApp::<PlayerApp>::for_person(&ada()).unwrap();
-    let played = app.person::<Played>().unwrap();
+    let played = app.profile_resource::<Played>().unwrap();
     app.harness().relayout();
 
     let offered = offered(&mut app);
@@ -154,9 +153,8 @@ fn the_api_offers_a_by_app_verb_to_nobody_and_takes_it_from_nobody() {
 
 #[test]
 fn the_apps_own_code_applies_a_by_app_verb_as_whoever_it_names() {
-    crate::own_kinds::declare("so.tilo.test-jukebox", &["test.jukebox-played"]);
     let mut app = TestApp::<PlayerApp>::for_person(&ada()).unwrap();
-    let played = app.person::<Played>().unwrap();
+    let played = app.profile_resource::<Played>().unwrap();
     played.invoke(&Played::NOTE.with("as ada")).unwrap();
     played
         .invoke_as(&her_agent(), &Played::NOTE.with("as her agent"))

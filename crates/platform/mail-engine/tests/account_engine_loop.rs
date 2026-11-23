@@ -1,15 +1,16 @@
 //! End-to-end proof of the account → Mail → engine loop, on the default
 //! (network-free) build.
 //!
-//! An email account kept in the workspace's accounts record is read back as
-//! Mail reads it, then driven through the real account engine:
-//! the same `EngineRequest`/`EngineEvent` channel the live UI posts to. The
-//! offline (stub) backend answers Connect/Fetch and builds a genuine MIME on
-//! Send, so this exercises the whole request/response plumbing plus the real
-//! parse (incoming) and build (outgoing) paths. The live IMAP/SMTP socket loop
-//! is proven separately by the `--features live` engine tests.
+//! An email account of the workspace's record, its password in the device's
+//! vault, is read back by Mail's own reader and then driven through the real
+//! account engine: the same `EngineRequest`/`EngineEvent` channel the live UI
+//! posts to. The offline (stub) backend answers Connect/Fetch and builds a
+//! genuine MIME on Send, so this exercises the whole request/response plumbing
+//! plus the real parse (incoming) and build (outgoing) paths. The live
+//! IMAP/SMTP socket loop is proven separately by the `--features live` engine
+//! tests.
 
-use mail_engine::account::AccountStore;
+use mail_engine::account::accounts_of;
 use mail_engine::engine::{EngineEvent, EngineRequest};
 use mail_engine::model::{AccountConfig, Addr, Draft, Folder};
 use mail_engine::transport::{build_mime, parse_eml, parse_fetched};
@@ -71,17 +72,24 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
         ..Default::default()
     };
     cfg.password = "app-password".into();
-    let mut record = ui::tilo_resource::Replica::<accounts::person::PersonAccounts>::new();
-    let (edits, _) = AccountStore::single(cfg).edits_for(&record.state().unwrap());
-    for edit in edits {
-        record.apply(edit).unwrap();
-    }
+    let account = mail_engine::account::Account::new(cfg);
+    let mut replica = ui::tilo_resource::Replica::<accounts::person::PersonAccounts>::new();
+    replica
+        .apply(accounts::person::PersonAccounts::saving(
+            &account.to_stored(),
+        ))
+        .expect("the record keeps the account");
 
-    // 2) Mail reads that exact account back from the record, without its password: the session
-    //    releases that to whoever signs in.
-    let store = AccountStore::from_shared(&record.state().unwrap().store());
-    assert_eq!(store.len(), 1, "Mail reads back the one configured account");
-    let mut loaded = store.active_config();
+    // 2) Mail reads that exact account back from the record, without its
+    //    password: the session releases that to whoever signs in.
+    let person = replica.state().unwrap();
+    let loaded = accounts_of(&person);
+    assert_eq!(
+        loaded.len(),
+        1,
+        "Mail reads back the one configured account"
+    );
+    let mut loaded = loaded[0].config.clone();
     assert_eq!(loaded.email, "ada@analytical.example");
     assert_eq!(loaded.imap_host, "imap.analytical.example");
     assert!(

@@ -6,6 +6,8 @@ import {
   signInOrigin, siteHome, startSignInPage,
 } from './sign-in.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
+import {personRecord, PERSON_KEY} from './device-key.mjs';
+import {unhex} from './identity.mjs';
 
 const NOW = 1_800_000_000_000;
 const CHALLENGE = 'a'.repeat(64);
@@ -274,6 +276,9 @@ function page({
   ownDeviceKeyStore = false, siteEntry = null, documentLang = 'en',
 } = {}) {
   const store = {kept};
+  // The person the store keeps, as the one store writes them: the identity
+  // store's record beside the tab's key, or nothing when there is nobody.
+  const personJson = () => JSON.stringify(personRecord({seed: new Uint8Array(32), publicKey: unhex(ROOT)}));
   const elements = Object.fromEntries(NAMES.map(name => [name, new Element()]));
   const posted = [];
   const formed = [];
@@ -312,7 +317,7 @@ function page({
   const mounted = startSignInPage({
     window,
     elements,
-    storage: {get: async () => store.kept, put: async () => {}},
+    storage: {get: async key => (key === PERSON_KEY && store.kept ? personJson() : undefined), put: async () => {}},
     signIn: async options => { await signIn(options); store.kept = {rootPublicKey: ROOT, held: 'browser'}; },
     hosts: async () => ['https://eu1.tilo.example'],
     local,

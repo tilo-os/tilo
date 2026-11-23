@@ -31,7 +31,6 @@ fn app_document_checkpoint(size: usize) -> Vec<u8> {
         cluster_id: "cluster".into(),
         document_id: "note-1".into(),
         envelope: Box::new(op),
-        own: None,
         readers: None,
     })
     .unwrap();

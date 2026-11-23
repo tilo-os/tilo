@@ -2350,7 +2350,6 @@ mod transfers_between_devices {
                 hosts: Vec::new(),
                 continuity: permitted(),
                 wake: Arc::new(|| {}),
-                personal: None,
                 relays: test_server::loopback(),
                 lan: None,
                 records: crate::platform::records::Changes::default(),

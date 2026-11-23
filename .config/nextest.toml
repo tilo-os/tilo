@@ -143,26 +143,6 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) and binary(it) and test(lounge_e2e::)"
 setup = "lounge-siblings"
 
-# A host holds a served run in its workspace's machine by starting the guest's own
-# agent program in its serving mode (`tilo-linux-vm-agent serve-run`): a program of
-# another package, which Cargo builds for no test of the packages that start it.
-[scripts.setup.machine-siblings]
-command = [
-    "bash", "tools/build-sibling-binaries.sh",
-    "linux-vm-agent:tilo-linux-vm-agent",
-]
-
-# `ush`'s served-run and environment-program tests.
-[[profile.default.scripts]]
-platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(ush) and (test(served_runs::) or test(environment_programs::))"
-setup = "machine-siblings"
-
-[[profile.ci.scripts]]
-platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(ush) and (test(served_runs::) or test(environment_programs::))"
-setup = "machine-siblings"
-
 # The browser peer's Lounge test starts the same workspace service the deployment
 # runs, so it is built the same way: a program of another package, with the
 # feature `agents` that gives it the `workspace` subcommand.
@@ -342,14 +322,10 @@ test-group = "gpu-golden"
 # it is written in (`cost`), which the filter has to name: a `test(=…)` names
 # the whole test, so the table was never printed. One override serves both
 # profiles: a profile that names no overrides of its own inherits these, so the
-# run the CI makes prints the table too. Seeding ten thousand tasks and driving
-# a window over them takes minutes on a machine busy with other work, so its
-# hang bound is eight minutes: a slow run reports the table rather than a
-# termination.
+# run the CI makes prints the table too.
 [[profile.default.overrides]]
 filter = 'package(tilolang-app) and binary(it) and test(=hosted::cost::what_the_interactions_a_person_feels_cost)'
 success-output = "final"
-slow-timeout = { period = "60s", terminate-after = 8 }
 
 # A company's workspace at real size: a thousand notes and five hundred issues
 # written through the API one at a time, then every call an agent makes most

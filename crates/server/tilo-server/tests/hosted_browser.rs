@@ -1001,9 +1001,16 @@ async fn a_listing_is_answered_while_another_window_is_placed() {
             .unwrap();
     }
     for _ in 0..2 {
-        let answer = tokio::time::timeout(Duration::from_secs(5), caller.recv())
-            .await
-            .expect("the listing is answered while the other window is placed");
+        // The person's list of workspaces is pushed to every session of theirs as it changes;
+        // it answers nothing asked here.
+        let answer = loop {
+            let answer = tokio::time::timeout(Duration::from_secs(5), caller.recv())
+                .await
+                .expect("the listing is answered while the other window is placed");
+            if !matches!(answer, Some(Envelope::PersonalList { .. })) {
+                break answer;
+            }
+        };
         assert!(
             matches!(answer, Some(Envelope::RemoteAction { .. })),
             "{answer:?}"
@@ -1853,7 +1860,6 @@ async fn an_environment_opens_its_own_record_and_no_other() {
         .send(Envelope::OpenDocument {
             workspace_id: WS,
             channel: notes_channel(),
-            own: None,
         })
         .unwrap();
     let refusal = next(&environment, "environment").await;
@@ -1865,7 +1871,6 @@ async fn an_environment_opens_its_own_record_and_no_other() {
         .send(Envelope::OpenDocument {
             workspace_id: WS,
             channel: window_channel(),
-            own: None,
         })
         .unwrap();
     let answer = next(&environment, "environment").await;

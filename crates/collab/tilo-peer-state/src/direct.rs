@@ -220,34 +220,10 @@ async fn read_link<R: tokio::io::AsyncRead + Unpin>(
 }
 
 impl LinkFrame {
-    /// Postcard variant index of [`LinkFrame::Frames`].
-    const FRAMES_TAG: u8 = 2;
-
-    /// The control frame `bytes` holds, whole. A device one peer version behind writes the
-    /// messages of [`LinkFrame::Frames`] as [`NeighbourMsg::decode`] reads them, a document
-    /// write ending before its reader set; nothing marks where one ends among the others, so
-    /// a frame that does not read as today's is read in that layout.
+    /// The control frame `bytes` holds, whole.
     fn decode(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        let today = postcard::take_from_bytes(bytes);
-        if let Ok((frame, [])) = today {
-            return Ok(frame);
-        }
-        let Some(mut rest) = bytes.strip_prefix(&[Self::FRAMES_TAG]) else {
-            return today.and(Err(postcard::Error::DeserializeBadEncoding));
-        };
-        let count;
-        (count, rest) = postcard::take_from_bytes::<usize>(rest)?;
-        let mut frames = Vec::with_capacity(count.min(rest.len()));
-        for _ in 0..count {
-            let (from, after) = rest
-                .split_first_chunk::<32>()
-                .ok_or(postcard::Error::DeserializeUnexpectedEnd)?;
-            let (message, after) = NeighbourMsg::take_before_reader_sets(after)?;
-            frames.push((*from, message));
-            rest = after;
-        }
-        match postcard::take_from_bytes::<bool>(rest)? {
-            (more, []) => Ok(Self::Frames { frames, more }),
+        match postcard::take_from_bytes(bytes)? {
+            (frame, []) => Ok(frame),
             _ => Err(postcard::Error::DeserializeBadEncoding),
         }
     }
@@ -1677,26 +1653,10 @@ impl DirectSync {
             NeighbourMsg::AppDocument {
                 app_id,
                 document_id,
-                own,
                 readers,
                 ..
             } => {
                 let replica = link.0.replica.lock();
-                let owner = own
-                    .as_ref()
-                    .filter(|own| own.names(document_id))
-                    .map(|own| own.owner)
-                    .or_else(|| {
-                        replica
-                            .own_resource(app_id, document_id)
-                            .map(|own| own.owner)
-                    });
-                let person_matches = owner.is_none_or(|owner| {
-                    replica.certificates().iter().any(|certificate| {
-                        certificate.device_public_key == device
-                            && certificate.user_public_key == owner
-                    })
-                });
                 let named_matches = readers.as_deref().is_none_or(|readers| {
                     let Some(collab_types::Readers::People(people)) =
                         collab_types::Readers::parse(readers)
@@ -1717,8 +1677,7 @@ impl DirectSync {
                     .keeping_devices()
                     .iter()
                     .any(|hint| hint.host.device_public_key == device);
-                person_matches
-                    && named_matches
+                named_matches
                     && (holder
                         || !replica.has_governance()
                         || replica
@@ -2047,13 +2006,7 @@ impl DirectSync {
                     app_id,
                     document_id,
                 );
-                // A member's own record is its person's to start whatever
-                // their role.
-                let person = replica.own_person(app_id, document_id, &remote);
-                let mut cx = tilo_action_policy::Context::at_time(now);
-                if let Some(person) = &person {
-                    cx = cx.with_own_resource(document_id, person);
-                }
+                let cx = tilo_action_policy::Context::at_time(now);
                 member.answer(&node, tilo_action_policy::ActionKind::Undoable, &cx)
                     == tilo_action_policy::Answer::Allow
             })

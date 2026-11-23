@@ -22,9 +22,7 @@ use ui::widget::{
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation};
 
 use crate::locales::CATALOG;
-use crate::resource::{
-    DiskUsage, DiskUsageEffect, Folders, RecentFolders, analyze, folder_row, recent_row,
-};
+use crate::resource::{DiskUsage, DiskUsageEffect, Folders, analyze, folder_row, recent_row};
 use crate::scan::{Entry, ScanCancellation, ScanResult};
 use ui::format::{count, size};
 use ui::framework::Setting;
@@ -204,29 +202,6 @@ impl Nav {
         } else {
             device_places()
         };
-        if let Some(settings) = &recents
-            && !settings
-                .get()
-                .analyzed_folders
-                .contains_key(workspace.as_ref())
-            && let Some(device) = cx.device()
-        {
-            let opener = cx.resource_opener::<RecentFolders>(OWNER_APP);
-            match opener.legacy_member_state() {
-                Ok(Some(legacy)) => {
-                    if let Err(error) = settings.update(|state| {
-                        state
-                            .analyzed_folders
-                            .entry(workspace.to_string())
-                            .or_insert_with(|| legacy.on(device));
-                    }) {
-                        tracing::warn!(%error, "could not restore earlier analyzed folders");
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => tracing::warn!(%error, "could not read earlier analyzed folders"),
-            }
-        }
         let recent = recents
             .as_ref()
             .map_or_else(|| LocalState::new(initial), Setting::state);

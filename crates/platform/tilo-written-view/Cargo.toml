@@ -18,7 +18,6 @@ tilolang-tilo = { path = "../tilolang-tilo" }
 tilo-app-window = { version = "0.1.0", path = "../tilo-app-window" }
 tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
-tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 # Every app's published surface, as its package ships it: what a view names an app by and reads
 # its record as. Compiled in here only, so a program that fetches this crate's code on first
 # use carries no surface at its start.

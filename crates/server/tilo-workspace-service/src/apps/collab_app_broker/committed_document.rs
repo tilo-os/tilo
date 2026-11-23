@@ -147,18 +147,6 @@ pub trait NativeDocumentReads: Send + Sync {
         let _ = workspace;
         false
     }
-    /// The member's own record `app`'s `record` in `workspace` is, as its writes
-    /// that reached this device name it ([`collab_types::OwnResource`]); `None` for
-    /// a record of the workspace's, or one this device holds nothing of.
-    fn own_resource(
-        &self,
-        workspace: &str,
-        app: &str,
-        record: &str,
-    ) -> Option<collab_types::OwnResource> {
-        let _ = (workspace, app, record);
-        None
-    }
     /// Who answers an app's read of `app`'s `record` in `workspace`.
     fn resource_read(&self, workspace: &str, app: &str, record: &str) -> ResourceRead {
         let _ = (workspace, app, record);
@@ -716,8 +704,9 @@ fn launch_holds(
     if local.keeps_documents_of(&route.app_id) {
         return Some(true);
     }
-    (read_only || collab_types::workspace_document(&route.app_id, &route.document_id).is_some())
-        .then_some(false)
+    (read_only
+        || collab_types::shared_workspace_document(&route.app_id, &route.document_id).is_some())
+    .then_some(false)
 }
 
 /// What an Open reads with: the channel's checked ownership and admission

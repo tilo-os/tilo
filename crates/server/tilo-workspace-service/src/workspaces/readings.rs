@@ -29,6 +29,30 @@ pub(super) struct Reading {
     pub(super) invitations: Invitations,
     /// Whether the workspace is a member copy, read as this device's member.
     pub(super) member: bool,
+    /// Whether this device has read the workspace's legacy Chat reports and decisions into its
+    /// moderation record yet ([`super::moderation_history`]).
+    pub(super) moderation_history_checked: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Reading {
+    /// Whether the workspace's legacy Chat reports and decisions have not been read into its
+    /// moderation record yet, so a read of that record waits for them.
+    pub(super) fn moderation_pending(&self, app: &str, resource: &str) -> bool {
+        if (app, resource) != (tilo_app_id::apps::CHAT, moderation_model::DOCUMENT)
+            || self.member
+            || self
+                .moderation_history_checked
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return false;
+        }
+        // What the workspace kept before its moderation record: Chat's one record of the
+        // workspace, which holds the reports and decisions until they are moved.
+        self.replica.read(|peer| {
+            peer.holds_document(tilo_app_id::apps::CHAT, "")
+                || peer.checkpoint_pending(tilo_app_id::apps::CHAT, "")
+        })
+    }
 }
 
 /// What a workspace's join log and entry say of the invitations it issued,
@@ -164,6 +188,7 @@ impl GovernedWorkspace {
             opened: std::sync::Arc::default(),
             invitations: self.invitations.clone(),
             member: self.member.is_some(),
+            moderation_history_checked: self.moderation_history_checked.clone(),
         }
     }
 }

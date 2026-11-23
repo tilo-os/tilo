@@ -57,11 +57,11 @@ fn serve_api(
                             let body = request.into_body().collect().await.unwrap().to_bytes();
                             let (sender, receiver) =
                                 tokio::sync::mpsc::channel::<bytes::Bytes>(512);
-                            if path == "/v1/workspaces" {
-                                let listed = serde_json::json!({"workspaces": [
+                            if path == "/v1/resources/account/workspaces/actions/list" {
+                                let listed = serde_json::json!({"result": {"workspaces": [
                                     {"id": "theirs", "role": "member"},
                                     {"id": "own", "role": "owner"},
-                                ]});
+                                ]}});
                                 sender.send(listed.to_string().into()).await.unwrap();
                             } else {
                                 assert_eq!(path, "/v1/workspaces/own/model/ask");

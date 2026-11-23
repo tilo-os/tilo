@@ -39,8 +39,8 @@ onboarding-create-local-identity = Create local identity
 onboarding-restore-backup = Restore identity
 onboarding-existing-title = Use your existing identity
 onboarding-existing-body = Choose how to bring the identity you already use to this computer.
-onboarding-choice-nearby = Connect a nearby device
-onboarding-choice-nearby-detail = Approve this computer from a device that already has your identity
+onboarding-choice-nearby = Use a code from another device
+onboarding-choice-nearby-detail = Run tilo device add on a device that already has your identity
 onboarding-choice-restore = Restore from a backup
 onboarding-choice-recovery-key = Enter your recovery key
 onboarding-choice-recovery-key-detail = Type the 24 words you wrote down
@@ -85,23 +85,13 @@ onboarding-connect-passphrase = Backup passphrase
 onboarding-connect-passphrase-placeholder = Passphrase (leave empty for legacy JSON)
 onboarding-picker-import-title = Choose a Tilo identity
 onboarding-picker-import-filter = Tilo identity
-onboarding-pairing-link-field = Device pairing link
-onboarding-pairing-link-submit = Use pairing link
-onboarding-pairing-link-title = Add this device
-onboarding-pairing-link-wait = Keep this screen open while you approve on your other device.
-onboarding-pairing-link-invalid = Paste the device pairing link from your other device.
-onboarding-pairing-link-cancelled = Pairing cancelled.
-onboarding-pairing-link-try-again = Go back to paste a pairing link.
-
-onboarding-nearby-title = Connect a nearby device
-onboarding-nearby-body = This computer is waiting for your other device to approve it. Keep both devices close together.
-onboarding-nearby-step-open = On your other device, open Settings and go to Sync between devices.
-onboarding-nearby-step-add = Under Add a personal device, choose Add device.
-onboarding-nearby-step-compare = Compare the six-digit code on both screens, then approve it on your other device.
-onboarding-nearby-waiting = Waiting for your other device.
-onboarding-nearby-code-label = Verification code
-onboarding-nearby-try-again = Try again
-onboarding-nearby-code = Check that your other device shows the same code, then approve it there.
+onboarding-nearby-title = Add this computer with a code
+onboarding-nearby-body = On a device that already has your identity, run tilo device add. It prints a code: type it here.
+onboarding-nearby-ticket-field = Code from your other device
+onboarding-nearby-ticket-placeholder = tilo1…
+onboarding-nearby-ticket-empty = Type the code your other device printed.
+onboarding-nearby-join = Join
+onboarding-nearby-joining = Waiting for your other device to add this computer…
 onboarding-backup-title = Back up your Tilo identity
 onboarding-backup-explanation = Or save an encrypted backup file and keep it apart from its passphrase.
 onboarding-backup-passphrase = New backup passphrase
@@ -233,28 +223,25 @@ onboarding-migration-cleanup-running = Your things are ready in Tilo. Removing t
 ## Actions setup offers
 
 
-# Pairing with a nearby device: what failed and what to do next
-onboarding-nearby-failed-title = Pairing did not finish
-onboarding-nearby-ended = The pairing window closed or approval was cancelled. Choose Try again.
-onboarding-nearby-unknown = Choose Try again.
+# Adding this computer with a code: what failed and what to do next
+onboarding-nearby-failed-title = This computer was not added
+onboarding-nearby-unknown = Try again, or make a new code with tilo device add on your other device.
 onboarding-nearby-detail = Details: { $detail }
-onboarding-nearby-permission-title = Permission denied: this computer was not allowed to save the pairing
-onboarding-nearby-permission = This computer's device identity couldn't be saved. Once that's fixed, choose Try again.
-onboarding-nearby-storage-full-title = This computer's disk is full
-onboarding-nearby-storage-full = The pairing could not be saved. Free up some space, then choose Try again.
-onboarding-nearby-read-only-title = This computer's storage is read-only
-onboarding-nearby-read-only = The pairing could not be saved. Choose Try again once the storage can be written to.
+onboarding-nearby-wrong-title = That code is not one this computer can use
+onboarding-nearby-wrong = Copy the whole line tilo device add printed on your other device, starting with tilo1.
+onboarding-nearby-used-title = That code was already used
+onboarding-nearby-used = Each code works once. Make a new one with tilo device add on your other device.
+onboarding-nearby-expired-title = That code has run out
+onboarding-nearby-expired = A code works for ten minutes. Make a new one with tilo device add on your other device.
 onboarding-nearby-unreachable-title = Your other device could not be reached
-onboarding-nearby-unreachable = Check that both devices are on the same network, then choose Try again.
-onboarding-nearby-timed-out-title = No trusted device approved this computer in time
-onboarding-nearby-timed-out = Choose Try again, then approve it on your other device.
-onboarding-nearby-invalid-identity-title = Your other device returned an invalid identity
-onboarding-nearby-invalid-identity = Choose Try again.
-onboarding-nearby-not-started-title = Nearby setup could not start
-onboarding-nearby-not-started = Choose Try again.
-onboarding-nearby-unavailable = Nearby setup is unavailable in this session
-onboarding-nearby-cancelled = Pairing cancelled. Choose Try again to start over.
-onboarding-nearby-connected = Connected. Your workspaces will appear automatically.
+onboarding-nearby-unreachable = Check that it is on and connected, then try again. If its tilo device add ended, make a new code.
+onboarding-nearby-storage-title = This computer could not save itself as a device
+onboarding-nearby-storage = This computer's device certificate could not be written. Free up space or fix its identity folder's permissions, then try again.
+onboarding-nearby-not-started-title = Tilo's background sync did not start
+onboarding-nearby-not-started = This computer joins through it. Try again; if it keeps failing, run tilo status in a terminal.
+onboarding-nearby-unavailable-title = Adding a computer is unavailable here
+onboarding-nearby-unavailable = Adding this computer with a code is unavailable in this session
+onboarding-nearby-cancelled = Adding this computer stopped. Choose Join to try again.
 
 # Setup on this computer: what failed and what to do next
 onboarding-progress-unreadable = The saved setup position could not be read ({ $error }). Your identity is safe; setup resumed at the completion step.

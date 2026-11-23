@@ -102,10 +102,6 @@ pub struct PackageMeta {
     /// its records, grants and windows under them as the app's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub previously: Vec<String>,
-    /// Each member keeps the app's resources in their own document (`resources: .own`), which only that
-    /// person's devices read.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub own_resources: bool,
     /// The app keeps its data in the person's profile (`resources: .profile`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub profile_resources: bool,
@@ -821,10 +817,9 @@ pub use tilo_words::{in_words, plural, singular};
 
 impl PackageMeta {
     /// Whether the package opens a document in the person's certified profile.
-    /// Older packages wrote the `.own` flag before profiles held app data.
     #[must_use]
     pub fn uses_personal_profile(&self) -> bool {
-        self.profile_resources || self.own_resources
+        self.profile_resources
     }
 
     /// The declared type named `name` (a qualified name's last segment), or whose id is `name`.

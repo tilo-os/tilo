@@ -60,11 +60,12 @@ use tilo_actions::remote::{
     CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_INVITATIONS,
-    WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBERS, WORKSPACE_SERVERS, WORKSPACE_WAITING, mcp_server,
-    person_accounts, person_asking, person_connections, person_formats, person_models,
-    person_telling, person_vault, server_account, workspace_governance_address,
-    workspace_governance_child, workspace_governance_operation, workspace_governance_resource,
-    workspace_member, workspace_person,
+    WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBER_PLACED,
+    WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, WORKSPACE_SERVERS, WORKSPACE_WAITING, formats,
+    mcp_server, person_accounts, person_asking, person_connections, person_models, person_telling,
+    person_vault, server_account, workspace_governance_address, workspace_governance_child,
+    workspace_governance_operation, workspace_governance_resource, workspace_member,
+    workspace_person,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
@@ -932,6 +933,25 @@ fn governance_request(request: &InvokeRequest, workspace: &str, operation: &str)
     asked
 }
 
+/// The operation `change` is granted by, and the action the tree publishes it at, for a device
+/// asking whether it is its to make: `add` and `role` are the `member.add` operation, and a
+/// removal is `remove-member`.
+fn admitted_change(change: &str) -> Option<(&'static str, &'static str)> {
+    let published = [
+        WORKSPACE_MEMBER_ADDED,
+        WORKSPACE_MEMBER_PLACED,
+        WORKSPACE_MEMBER_REMOVED,
+    ]
+    .into_iter()
+    .find(|action| *action == change)?;
+    let action = if published == WORKSPACE_MEMBER_REMOVED {
+        governance::REMOVE_MEMBER
+    } else {
+        ADD_MEMBER
+    };
+    Some((action, published))
+}
+
 /// The governance action `action` depends on, for one this provider names.
 fn check_of(action: &str) -> Option<&'static str> {
     VERBS
@@ -1369,6 +1389,151 @@ impl Workspaces {
         self.invoke(Some(workspace_id), caller, None, request).await
     }
 
+    /// Whether `caller` may invite into the workspace `workspace_id`, as its
+    /// governance decides: what a page asks before it offers inviting at all,
+    /// a link handed over or an address on the wait list invited.
+    pub async fn page_may_invite(&self, workspace_id: WorkspaceId, caller: &Caller) -> bool {
+        let Some(workspace) = self.workspace_identity(workspace_id).await else {
+            return false;
+        };
+        let wanted = workspace_governance_address(&workspace, governance::INVITE);
+        let query = CatalogueQuery {
+            needle: "invite".to_owned(),
+            provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.to_owned()),
+            max_results: 200,
+            ..CatalogueQuery::default()
+        };
+        self.catalogue(Some(workspace_id), caller, None, &query)
+            .await
+            .rows
+            .iter()
+            .any(|row| {
+                row.action
+                    .as_ref()
+                    .is_some_and(|action| action.address == wanted)
+            })
+    }
+
+    /// The addresses waiting at the entry of the workspace `workspace_id`, and
+    /// whether the entry mails an invitation to one, for whoever may invite:
+    /// what a page shows as the addresses waiting to join, and invites from.
+    ///
+    /// # Errors
+    ///
+    /// `caller` may not invite into the workspace.
+    pub async fn page_waiting_to_join(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+    ) -> Result<Value, ActionCallError> {
+        let workspace = self
+            .workspace_identity(workspace_id)
+            .await
+            .ok_or(ActionCallError::UnknownAction)?;
+        let request = Self::governance_ask(&workspace, WAIT_LIST, Map::new());
+        let listed = self.page_invoke(workspace_id, caller, &request).await?;
+        let entries: Vec<tilo_server_protocol::page::WaitingAddress> = listed
+            .get("entries")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| {
+                        Some(tilo_server_protocol::page::WaitingAddress {
+                            entry: entry.get("entry")?.as_str()?.to_owned(),
+                            contact: entry.get("contact")?.as_str()?.to_owned(),
+                            invited: entry.get("invited_at_ns").is_some_and(|at| !at.is_null()),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(json!({
+            "mails": listed.get("mails").and_then(Value::as_bool).unwrap_or(false),
+            "entries": entries,
+        }))
+    }
+
+    /// Invite the address `entry` waiting at the workspace `workspace_id`'s
+    /// entry, as whoever may invite does: the invitation is issued for it,
+    /// with the short link mailed to the address where the entry sends mail.
+    /// Answers what [`governance::INVITE`] answered.
+    ///
+    /// # Errors
+    ///
+    /// `caller` may not invite, or the address is no longer waiting.
+    pub async fn page_invite_waiting(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        entry: &str,
+    ) -> Result<Value, ActionCallError> {
+        let workspace = self
+            .workspace_identity(workspace_id)
+            .await
+            .ok_or(ActionCallError::UnknownAction)?;
+        let mut arguments = Map::new();
+        arguments.insert("role".to_owned(), Value::from("editor"));
+        arguments.insert("wait_list_entry".to_owned(), Value::from(entry));
+        let request = Self::governance_ask(&workspace, governance::INVITE, arguments);
+        self.page_invoke(workspace_id, caller, &request).await
+    }
+
+    /// A short invite link to the workspace `workspace_id`, for whoever may
+    /// invite into it: an editor's invitation, issued as the workspace issues
+    /// every one, sealed on the site's shelf. A page keeps one ready for a
+    /// press, since a clipboard write has to happen inside the press, and
+    /// asks for the next after each is handed over.
+    ///
+    /// # Errors
+    ///
+    /// `caller` may not invite into the workspace.
+    pub async fn page_invite_link(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+    ) -> Result<Value, ActionCallError> {
+        let workspace = self
+            .workspace_identity(workspace_id)
+            .await
+            .ok_or(ActionCallError::UnknownAction)?;
+        let mut arguments = Map::new();
+        arguments.insert("role".to_owned(), Value::from("editor"));
+        let request = Self::governance_ask(&workspace, governance::INVITE, arguments);
+        let issued = self.page_invoke(workspace_id, caller, &request).await?;
+        // The short link where the site keeps a shelf; the invitation's own
+        // where it does not, which joins just the same.
+        let link = ["short_link", "link"]
+            .into_iter()
+            .find_map(|key| issued.get(key).filter(|link| link.is_string()).cloned())
+            .unwrap_or(Value::Null);
+        Ok(json!({"link": link}))
+    }
+
+    /// The request `operation` of the workspace `workspace`'s governance,
+    /// asked by its tree's address, with `arguments`.
+    fn governance_ask(
+        workspace: &str,
+        operation: &str,
+        arguments: Map<String, Value>,
+    ) -> InvokeRequest {
+        InvokeRequest {
+            invocation: InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+                address: workspace_governance_address(workspace, operation),
+            },
+            argument: InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }
+    }
+
     /// What `caller`, on the device `certificate` when the transport named
     /// it, may do here about workspace `workspace_id` (`None` when asked of
     /// the serving device itself): the governance of the workspace it carries, their own
@@ -1536,13 +1701,12 @@ impl Workspaces {
             (WORKSPACE_GOVERNANCE_PROVIDER, Some(workspace_id)) => {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(asked) = mail::account_action(&request.target.address) {
-                    return self
-                        .mail_account_invoke(
-                            (Some(workspace_id), caller, certificate),
-                            asked,
-                            request,
-                        )
-                        .await;
+                    return Box::pin(self.mail_account_invoke(
+                        (Some(workspace_id), caller, certificate),
+                        asked,
+                        request,
+                    ))
+                    .await;
                 }
                 // The tree publishes each verb where a person looks for it
 
@@ -1556,7 +1720,11 @@ impl Workspaces {
                     self.unattended_invoke(workspace_id, caller, certificate, &asked)
                         .await
                 } else {
-                    self.governance_invoke(workspace_id, caller, certificate, &asked)
+                    // The action the tree publishes the operation at, which says more than
+                    // the operation does where one publishes several (`role` and `add` are
+                    // both `member.add`).
+                    let published = request.target.address.action.clone();
+                    self.governance_invoke(workspace_id, caller, certificate, &asked, &published)
                         .await
                 }
             }
@@ -1588,7 +1756,7 @@ impl Workspaces {
             // mail server and no vault of its own.
             #[cfg(not(target_arch = "wasm32"))]
             (person_accounts::PROVIDER, _) => {
-                self.person_accounts_invoke(workspace_id, caller, certificate, request)
+                Box::pin(self.person_accounts_invoke(workspace_id, caller, certificate, request))
                     .await
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -1600,11 +1768,17 @@ impl Workspaces {
             // nothing of it is read back, and no agent asks.
             // The same holds for what their agents no longer ask them, in
             // the same store: read and taken back by the person alone, and
-            // written by no request. The formats and zone the person reads dates in
-            // are theirs alone too.
+            // written by no request.
             #[cfg(not(target_arch = "wasm32"))]
-            (person_vault::PROVIDER | person_asking::PROVIDER | person_formats::PROVIDER, _) => {
+            (person_vault::PROVIDER | person_asking::PROVIDER, _) => {
                 self.person_alone_invoke(workspace_id, caller, certificate, request)
+                    .await
+            }
+            // The formats and zone the person reads dates in: theirs alone,
+            // kept in their own workspace on their own devices.
+            #[cfg(not(target_arch = "wasm32"))]
+            (formats::PROVIDER, _) => {
+                self.formats_invoke(workspace_id, caller, certificate, request)
                     .await
             }
             // What the person calls important, and what may interrupt
@@ -1679,6 +1853,7 @@ impl Workspaces {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
+        published: &str,
     ) -> Result<Value, ActionCallError> {
         let address = &request.target.address;
         if let Some(verb) = server::verb(&address.action) {
@@ -1693,14 +1868,12 @@ impl Workspaces {
         // `admit_invocation` over its synced grants, asking the person through the Confirm
         // frame, and that replaces this.
         let admitting = address.action == WORKSPACE_MEMBER_ADMIT;
-        let action = if admitting {
-            let change = args.required_text("change")?;
-            [ADD_MEMBER, governance::REMOVE_MEMBER]
-                .into_iter()
-                .find(|action| *action == change)
-                .ok_or(ActionCallError::UnknownAction)?
+        let (action, published) = if admitting {
+            let (action, published) = admitted_change(args.required_text("change")?)
+                .ok_or(ActionCallError::UnknownAction)?;
+            (action, published)
         } else {
-            address.action.as_str()
+            (address.action.as_str(), published)
         };
         let check = server::check_of(action).ok_or(ActionCallError::UnknownAction)?;
         // A key's own record is read by the key itself, whatever its grant may
@@ -1774,7 +1947,7 @@ impl Workspaces {
                 .chain(&OWNER_CONFIRMED)
                 .find(|verb| verb.id == action)
         {
-            self.check_governance(&device, &workspace, verb.id, &args, admitting)
+            self.check_governance(&device, &workspace, verb.id, &args, admitting, published)
                 .await?;
             self.admit_operation(
                 Some(workspace_id),
@@ -1808,20 +1981,25 @@ impl Workspaces {
         action: &str,
         args: &Args,
         signs: bool,
+        published: &str,
     ) -> Result<(), ActionCallError> {
         let change;
         let op = match action {
-            ADD_MEMBER => WorkspaceOp::Place(args.required_key("person")?, args.place_at("role")?),
+            ADD_MEMBER => {
+                let person = args.required_key("person")?;
+                let place = args.place_at("role")?;
+                // A role is changed on a member; `add` is what gives a person a place.
+                if published == WORKSPACE_MEMBER_PLACED {
+                    WorkspaceOp::Role(person, place)
+                } else {
+                    WorkspaceOp::Place(person, place)
+                }
+            }
             governance::INVITE => match args.place_at("role")? {
                 super::MemberPlace::Role(role) => WorkspaceOp::Invite(role),
                 super::MemberPlace::Administrator => WorkspaceOp::InviteAdministrator,
                 super::MemberPlace::Owner => WorkspaceOp::MakeOwner,
             },
-            governance::REMOVE_MEMBER
-                if args.required_key("person")? == self.inner.host.cert.user_public_key =>
-            {
-                return Err(refused(&"the owner cannot be removed"));
-            }
             governance::REMOVE_MEMBER | governance::BAN | governance::UNBAN => {
                 let membership = match action {
                     governance::REMOVE_MEMBER => super::collaboration::Membership::Remove,
@@ -2154,9 +2332,9 @@ impl Workspaces {
                 row.parent_resource.clone_from(&members);
                 if let Some(action) = row.action.as_mut() {
                     let (name, said) = if verb.id == ADD_MEMBER {
-                        ("role", "Change role")
+                        (WORKSPACE_MEMBER_PLACED, "Change role")
                     } else {
-                        ("remove", verb.label)
+                        (WORKSPACE_MEMBER_REMOVED, verb.label)
                     };
                     action.address = ActionAddress::new(resource.as_str(), name);
                     action.action_label = said.into();
@@ -2235,12 +2413,18 @@ impl Workspaces {
             &issued.signed_invitation,
             now,
         );
+        // The invitation's own link, as every build hands it over, and the
+        // short one the site keeps sealed where it keeps a shelf: what a
+        // person's page hands over in one press, and what the mail to an
+        // address carries.
         let link = self.invitation_link(workspace, &issued.signed_invitation);
+        let short_link = self.sealed_invitation_link(&issued.signed_invitation, expires_at_ns);
         let mut answered = json!({
             "workspace": workspace,
             "invite": hex::encode(issued.invite_id),
             "invitation": hex::encode(&issued.signed_invitation),
             "link": link,
+            "short_link": short_link.clone(),
             "native_link": native_link,
             "role": args.required_text("role")?,
             "administrator": makes_administrator,
@@ -2250,8 +2434,11 @@ impl Workspaces {
         // An invitation for an address on the wait list is mailed to it where the
         // entry sends mail; where it sends none, the link is handed over.
         if let (Some(entry), Some(fields)) = (wait_list_entry, answered.as_object_mut()) {
+            // The mail carries the short link where the site keeps one: the
+            // same link a person hands over.
+            let mailed_link = short_link.unwrap_or_else(|| link.clone());
             let mailed = self
-                .mail_invite(workspace, device, entry, link.clone(), now)
+                .mail_invite(workspace, device, entry, mailed_link, now)
                 .await;
             fields.insert("sent".into(), json!(mailed.is_ok()));
             if let Err(error) = mailed {
@@ -2750,7 +2937,7 @@ impl ServiceWorkspaceActions {
     /// read them, as invocation `request` asks ([`person_accounts::WATCH`]):
     /// the accounts now, as its first item; [`Self::accounts_moved`] moves it
     /// on.
-    fn follow_accounts(
+    async fn follow_accounts(
         &self,
         workspaces: &Workspaces,
         caller: &Caller,
@@ -2758,6 +2945,8 @@ impl ServiceWorkspaceActions {
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionCallError> {
         let invocation = request.invocation;
+        // Read before the log is taken: the log is never held across a wait.
+        let value = workspaces.accounts_listing(&workspace).await?;
         let mut log = self.log();
         if log.reserve(caller, request)? == tilo_actions::remote::Reservation::Admitted {
             return log
@@ -2770,7 +2959,7 @@ impl ServiceWorkspaceActions {
             InvocationUpdate::Item {
                 invocation,
                 sequence: 1,
-                value: workspaces.accounts_listing(&workspace)?,
+                value,
             },
         );
         let receipt = state.receipt();
@@ -2790,11 +2979,16 @@ impl ServiceWorkspaceActions {
 
     /// Read the person's accounts again for the follow `id`; whether they
     /// moved.
-    fn accounts_moved(&self, workspaces: &Workspaces, caller: &Caller, id: &InvocationId) -> bool {
+    async fn accounts_moved(
+        &self,
+        workspaces: &Workspaces,
+        caller: &Caller,
+        id: &InvocationId,
+    ) -> bool {
         let Some(workspace) = self.shared.account_follows.lock_recover().get(id).cloned() else {
             return false;
         };
-        let Ok(value) = workspaces.accounts_listing(&workspace) else {
+        let Ok(value) = workspaces.accounts_listing(&workspace).await else {
             return false;
         };
         let mut log = self.log();
@@ -2951,6 +3145,7 @@ impl ActionProvider for InWorkspace {
                     )
                     .await?;
                 host.follow_accounts(&workspaces, &caller, reach.workspace.to_string(), &request)
+                    .await
             });
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -3014,12 +3209,8 @@ impl ActionProvider for InWorkspace {
         {
             self.server.mcp_moved(workspaces, caller, id);
         }
-        // As does a follow of the person's accounts.
-        if self.server.follows_accounts(caller, id)
-            && let Some(workspaces) = self.server.shared.workspaces.get()
-        {
-            self.server.accounts_moved(workspaces, caller, id);
-        }
+        // A follow of the workspace's accounts is read again as they change
+        // ([`Self::next_change`]): reading the record waits on it.
         self.server.log().get(caller, id).cloned()
     }
 
@@ -3031,14 +3222,14 @@ impl ActionProvider for InWorkspace {
         if self.server.follows_accounts(caller, id) {
             let workspaces = self.server.shared.workspaces.get()?.clone();
             let mut changes = workspaces.person_settings_changes();
-            if self.server.accounts_moved(&workspaces, caller, id) {
-                return Some(Pending::ready(()));
-            }
             let (host, caller, id) = (self.server.clone(), caller.clone(), *id);
             return Some(self.server.spawn(async move {
+                if host.accounts_moved(&workspaces, &caller, &id).await {
+                    return;
+                }
                 // Bounded, as a waiter's deadline is only checked when woken.
                 let _ = tokio::time::timeout(FOLLOW_WAKE, changes.changed()).await;
-                host.accounts_moved(&workspaces, &caller, &id);
+                host.accounts_moved(&workspaces, &caller, &id).await;
             }));
         }
         if !self.server.follows_mcp(caller, id) {
@@ -3132,7 +3323,7 @@ const PROVIDERS: [&str; 11] = [
     // What the agents on this server learned about the person.
     LEARNED,
     // The formats and the zone the person reads dates in.
-    person_formats::PROVIDER,
+    formats::PROVIDER,
 ];
 
 /// What a server that governs workspaces answers remote actions addressed to it

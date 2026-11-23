@@ -45,22 +45,6 @@ serde_json.workspace = true
 wasm-bindgen = "=0.2.108"
 wasm-bindgen-futures = "=0.4.58"
 js-sys = "=0.3.85"
-web-sys = { version = "=0.3.85", features = [
-    "HtmlCanvasElement",
-    "HtmlMediaElement",
-    "HtmlVideoElement",
-    "console",
-    # The canvas frames drawn on the CPU are put on, over the mount's own
-    # (src/browser/software.rs).
-    "CanvasRenderingContext2d",
-    "CssStyleDeclaration",
-    "Document",
-    "Element",
-    "HtmlElement",
-    "ImageData",
-    "Node",
-    "Window",
-] }
 # The certified peer over WebTransport, its live session and the member's client.
 tilo-session-client = { version = "0.1.0", path = "../../session/client", features = ["toolkit"] }
 tilo-session-actions = { version = "0.1.0", path = "../../session/session-actions" }
@@ -80,8 +64,6 @@ ed25519-dalek.workspace = true
 hex.workspace = true
 # Request ids for the invitations the page asks its host to make.
 getrandom = { workspace = true, features = ["wasm_js"] }
-uuid.workspace = true
-url.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 tokio = { workspace = true, features = ["sync"] }
 
@@ -118,4 +100,3 @@ postcard = { workspace = true, features = ["use-std"] }
 # The device list's keys as text, as the page's own module writes them.
 hex.workspace = true
 
-settings = { path = "../../../apps/settings", default-features = false }

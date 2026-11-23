@@ -130,15 +130,20 @@ async fn tasks(workspaces: &Workspaces, workspace: &str, reader: Actor) -> Vec<s
                 .and_then(|record| record["item"].as_str())
                 .ok_or("the workspace has its Tasks")?
                 .to_owned();
-            let page = host.answer_read(&json!({ "item": root, "field": "items" }), &reader)?;
-            Ok(page["items"].as_array().cloned().unwrap_or_default())
+            // A read of one collection answers its resource, the collection's page under its
+            // fields.
+            let read = host.answer_read(&json!({ "item": root, "field": "items" }), &reader)?;
+            read["fields"]["items"]["items"]
+                .as_array()
+                .cloned()
+                .ok_or_else(|| format!("the read pages the tasks: {read}"))
         })
         .await
         .unwrap()
 }
 
-/// Each version of every resource of the workspace's Tasks, as the store keeps it: what it did
-/// and who did it.
+/// Each change of the workspace's Tasks, once, as the store keeps its resources' versions: what
+/// it did and who did it. A change that puts an item into a collection is a version of both.
 async fn changes(workspaces: &Workspaces, workspace: &str) -> Vec<(String, Option<Actor>)> {
     use tl_records::runtime::store::Store as _;
     let packages = tl_records::built_in(TASKS).unwrap().unwrap();
@@ -147,7 +152,7 @@ async fn changes(workspaces: &Workspaces, workspace: &str) -> Vec<(String, Optio
         .with_tl_record(workspace, &packages, viewer, |tasks| {
             let host = tasks.host();
             let meta = host.package(TASKS).ok_or("Tasks is not loaded")?.meta;
-            let mut changes = Vec::new();
+            let mut changes = std::collections::BTreeMap::new();
             for ty in &meta.types {
                 let ids = host
                     .store()
@@ -162,11 +167,11 @@ async fn changes(workspaces: &Workspaces, workspace: &str) -> Vec<(String, Optio
                     changes.extend(
                         versions
                             .into_iter()
-                            .map(|version| (version.action, version.who)),
+                            .map(|version| (version.change, (version.action, version.who))),
                     );
                 }
             }
-            Ok(changes)
+            Ok(changes.into_values().collect())
         })
         .await
         .unwrap()
@@ -256,7 +261,11 @@ async fn a_program_answers_a_tasks_change_reading_and_acting_as_the_bot() {
             .map(|task| task["created"]["who"]["actor"]["member"].clone())
             .collect::<Vec<_>>()
     };
-    assert_eq!(made_by("Call the landlord"), [json!({ "person": owner })]);
+    assert_eq!(
+        made_by("Call the landlord"),
+        [json!({ "person": owner })],
+        "the person's task: {listed:?}"
+    );
     assert_eq!(
         made_by("Triage the new task"),
         [json!({ "bot": TRIAGER })],

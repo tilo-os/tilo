@@ -182,7 +182,7 @@ mod device_continuity_service_boundary_tests;
 
 use tilo_peer_state::join::agent_cert::AgentCert;
 mod agent_cert;
-use agent_cert::{admit_agent_cert, admit_kept_agent, verify_agent_cert, verify_agent_join};
+use agent_cert::{admit_agent_cert, admit_listed_agent, verify_agent_cert, verify_agent_join};
 
 /// The node of opening the application `app` in `workspace`: launching it is
 /// an action of the app itself.

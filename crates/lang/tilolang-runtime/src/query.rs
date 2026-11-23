@@ -215,19 +215,6 @@ impl Order {
     }
 }
 
-/// `pred` (over the fields of `ty`, by id; `app` the package declaring `ty`) as a store reads
-/// it: each field with how it merges and what an unwritten one holds. `None` when it reads a
-/// field `ty` lacks, or one no filter reads.
-#[must_use]
-pub fn store_pred(pred: &Pred<String>, ty: &TypeMeta, app: &str) -> Option<crate::store::Pred> {
-    pred.resolve(&mut |id: &String| {
-        let field = ty.fields.iter().find(|f| f.id == **id)?;
-        let parsed = crate::meta::parse_ty(&field.ty, app).ok()?;
-        let kind = crate::meta::field_kind(field, &parsed);
-        crate::store::FieldRead::of(id, kind, &parsed, field.default.as_ref())
-    })
-}
-
 /// How finely a query reads the running clock where nothing it compares says when its answer
 /// changes (`now`, `-7d`): to the minute. A view's query reads its clock to the minute, so it
 /// reads the same throughout one; a view that read the instant runs again at the next minute.

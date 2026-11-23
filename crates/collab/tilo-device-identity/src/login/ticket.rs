@@ -260,6 +260,7 @@ pub fn approval_digest(
     device_public_key: &[u8; 32],
     label: &str,
     agent: &str,
+    capability: &tilo_user_identity::DeviceCapabilities,
     ticket: &[u8; 32],
 ) -> Result<[u8; 32], tilo_user_identity::canonical::CanonicalError> {
     #[derive(Serialize)]
@@ -268,6 +269,7 @@ pub fn approval_digest(
         device_public_key: &'a [u8; 32],
         label: &'a str,
         agent: &'a str,
+        capability: &'a tilo_user_identity::DeviceCapabilities,
         ticket: &'a [u8; 32],
     }
     tilo_user_identity::canonical::signing_digest(
@@ -277,6 +279,7 @@ pub fn approval_digest(
             device_public_key,
             label,
             agent,
+            capability,
             ticket,
         },
     )
@@ -293,11 +296,19 @@ pub fn asked(
     device_public_key: [u8; 32],
     label: &str,
     agent: &str,
+    capability: tilo_user_identity::DeviceCapabilities,
     secret: &[u8; 32],
     now_ns: u64,
 ) -> Result<Asked, tilo_user_identity::canonical::CanonicalError> {
     let ticket = ticket_hash(secret);
-    let digest = approval_digest(&user_public_key, &device_public_key, label, agent, &ticket)?;
+    let digest = approval_digest(
+        &user_public_key,
+        &device_public_key,
+        label,
+        agent,
+        &capability,
+        &ticket,
+    )?;
     Ok(Asked {
         user_public_key,
         device_public_key,
@@ -308,7 +319,7 @@ pub fn asked(
             user_public_key,
             device_public_key,
             device_label: label.to_owned(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            capabilities: capability,
             // A second back, so a computer whose clock is a little behind takes it at once.
             issued_at_ns: now_ns.saturating_sub(1_000_000_000),
             expires_at_ns: None,

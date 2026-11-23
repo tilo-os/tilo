@@ -19,7 +19,7 @@ pub const MAX_ARMED_RECORDS: usize = 64;
 /// Bytes the install inputs may take, serialized.
 pub const MAX_INPUT_BYTES: usize = 16 * 1024;
 
-/// An installation id: a lowercase hyphenated UUID, minted at install.
+/// An installation id: a lowercase hyphenated UUID or the built-in moderation bot's name.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct InstallationId(String);
@@ -27,9 +27,10 @@ pub struct InstallationId(String);
 impl InstallationId {
     /// Read an installation id.
     pub fn parse(value: &str) -> Result<Self, String> {
-        match uuid::Uuid::parse_str(value) {
-            Ok(id) if id.hyphenated().to_string() == value => Ok(Self(value.to_owned())),
-            _ => Err(format!("{value:?} is not an installation id")),
+        if collab_types::is_bot_installation_id(value) {
+            Ok(Self(value.to_owned()))
+        } else {
+            Err(format!("{value:?} is not an installation id"))
         }
     }
 

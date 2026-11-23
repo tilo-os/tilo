@@ -766,6 +766,7 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
 fn one_window_layout() -> LayoutReading {
     LayoutReading {
         person: "Pat".to_owned(),
+        front: String::new(),
         people: Vec::new(),
         queries: Vec::new(),
         workspaces: vec![LayoutWorkspaceReading {

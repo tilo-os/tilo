@@ -1,8 +1,6 @@
 //! Records an app holds beside the one it shows.
 //!
-//! An app's shared data has workspace records. An earlier version kept some of it in records
-//! derived from each member's identity. A migration can read those retained records through
-//! [`PersonResources::read_previous_member_resource`].
+//! An app's shared data has workspace records.
 //!
 //! The settings sections and the few records that are a person's alone — what the keyboard learned
 //! of their typing, the signature they sign with — belong to the person, not to any workspace: they
@@ -61,11 +59,6 @@ pub struct PersonResources {
     /// these: a host that holds them itself lends them to the apps it shows
     /// ([`Self::sharing`]).
     others: Option<ResourceOwners>,
-    /// These are the app's own records in a workspace, each the author's
-    /// own there ([`DocumentId::of_member`]).
-    member: bool,
-    #[cfg(any(test, feature = "test-support"))]
-    legacy_fixture: bool,
     /// The app these are the person's records of: `open`'s package, carried
     /// across [`Self::of_app`], which opens another app's.
     own_app: String,
@@ -87,9 +80,6 @@ impl PersonResources {
             replica: false,
             author,
             others: None,
-            member: false,
-            #[cfg(any(test, feature = "test-support"))]
-            legacy_fixture: false,
             own_app: app_id.to_owned(),
         })
     }
@@ -118,9 +108,6 @@ impl PersonResources {
             replica: true,
             author,
             others: None,
-            member: false,
-            #[cfg(any(test, feature = "test-support"))]
-            legacy_fixture: false,
             own_app: app_id.to_owned(),
         })
     }
@@ -146,123 +133,13 @@ impl PersonResources {
             replica: self.replica,
             author: self.author.clone(),
             others: None,
-            member: false,
-            #[cfg(any(test, feature = "test-support"))]
-            legacy_fixture: false,
             own_app: self.own_app.clone(),
         })
     }
 
-    /// The app's earlier records in `workspace`, one per kind and member
-    /// ([`DocumentId::of_member`]). The returned view is for reading the
-    /// legacy data during migration. An author without a root identity
-    /// used the local profile store for these records.
-    ///
-    /// # Errors
-    /// Rejects an invalid workspace.
-    pub fn in_workspace(&self, workspace: &str) -> Result<Self, ResourceOpenError> {
-        if self
-            .author
-            .person_id()
-            .and_then(|person| DocumentId::of_member(person, "kind"))
-            .is_none()
-        {
-            return Ok(Self {
-                others: None,
-                ..self.clone()
-            });
-        }
-        let (package, _) = self.store.app_and_home();
-        let records = if self.store.backend().is_none() {
-            Self::replica_in(&package, workspace, self.author.clone())?
-        } else {
-            let mut owners = self.owners.clone();
-            Self {
-                store: owners.open_person(&package, workspace)?,
-                owners,
-                replica: self.replica,
-                author: self.author.clone(),
-                others: None,
-                member: false,
-                #[cfg(any(test, feature = "test-support"))]
-                legacy_fixture: false,
-                own_app: self.own_app.clone(),
-            }
-        };
-        Ok(Self {
-            member: true,
-            #[cfg(any(test, feature = "test-support"))]
-            legacy_fixture: self.legacy_fixture,
-            ..records
-        })
-    }
-
-    /// Allow a test profile to construct records from the previous storage model.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn with_legacy_member_fixture(mut self) -> Self {
-        self.legacy_fixture = true;
-        self
-    }
-
-    fn member_archive(&self) -> bool {
-        #[cfg(any(test, feature = "test-support"))]
-        if self.legacy_fixture {
-            return false;
-        }
-        self.member
-    }
-
-    /// Read a retained member document and its associated local content store without
-    /// exposing a live record handle.
-    pub fn read_previous_member_resource<T>(
-        &self,
-        kind: ResourceType,
-        read: impl FnOnce(&AutoCommit, &DocumentCheckout, Option<tilo_content::ContentStore>) -> T,
-    ) -> Result<Option<T>, String> {
-        let id = self.id_of(&kind).map_err(|error| error.to_string())?;
-        let checkout = DocumentCheckout::new(id, kind);
-        let (package, home) = self.store.app_and_home();
-        let Some(doc) = self
-            .store
-            .retained_document(&checkout)
-            .map_err(|error| error.to_string())?
-        else {
-            return Ok(None);
-        };
-        Ok(Some(read(
-            &doc,
-            &checkout,
-            content_of(package, &home, &checkout.id),
-        )))
-    }
-
-    /// The id of the record of `kind` these keep: the author's own in the
-    /// workspace for an app's own records ([`Self::in_workspace`] keeps
-    /// them only for a root identity), else the one every device derives
-    /// alike.
-    ///
-    /// A member's own record is of a kind the app's manifest declares each
-    /// member's own (`[resources] own`): what its every write carries, so the
-    /// workspace's hosts send it to the author's devices alone. An undeclared
-    /// kind is refused rather than kept where every member would receive it.
-    fn id_of(&self, kind: &ResourceType) -> Result<DocumentId, ResourceOpenError> {
-        if !self.member {
-            return Ok(document_id(kind));
-        }
-        if !collab_types::own_kinds(&self.own_app)
-            .iter()
-            .any(|own| own == kind.as_str())
-        {
-            return Err(ResourceOpenError::UndeclaredOwnKind(
-                kind.as_str().to_owned(),
-            ));
-        }
-        Ok(self
-            .author
-            .person_id()
-            .and_then(|person| DocumentId::of_member(person, kind.as_str()))
-            .unwrap_or_else(|| document_id(kind)))
+    /// The id of the record of `kind` these keep: the one every device derives alike.
+    fn id_of(kind: &ResourceType) -> DocumentId {
+        document_id(kind)
     }
 
     /// These records, with the person's records of other apps
@@ -319,17 +196,13 @@ impl PersonResources {
         kind: ResourceType,
         initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<StoredResource, ResourceOpenError> {
-        if self.member_archive() {
-            return Err(ResourceOpenError::ArchivedMemberDocument);
-        }
-        let checkout = DocumentCheckout::new(self.id_of(&kind)?, kind);
+        let checkout = DocumentCheckout::new(Self::id_of(&kind), kind);
         match open_in(&self.store, &checkout, initialize) {
             Err(ResourceOpenError::Store(app_state::StoreError::WriterBusy { .. }))
                 if !self.replica =>
             {
                 let (package, home) = self.store.app_and_home();
                 let replica = Self {
-                    member: self.member,
                     // Whose records these are does not change with the
                     // store they could not be opened in.
                     own_app: self.own_app.clone(),
@@ -363,10 +236,7 @@ impl PersonResources {
         &self,
         kind: ResourceType,
     ) -> Result<Option<StoredResource>, ResourceOpenError> {
-        if self.member_archive() {
-            return Err(ResourceOpenError::ArchivedMemberDocument);
-        }
-        let checkout = DocumentCheckout::new(self.id_of(&kind)?, kind);
+        let checkout = DocumentCheckout::new(Self::id_of(&kind), kind);
         let store = match self.store.try_open_resource(&checkout) {
             Ok(_) => self.store.clone(),
             Err(ResourceOpenError::MissingResource) => return Ok(None),
@@ -375,7 +245,6 @@ impl PersonResources {
             {
                 let (package, home) = self.store.app_and_home();
                 let replica = Self {
-                    member: self.member,
                     own_app: self.own_app.clone(),
                     ..Self::replica_in(&package, &home, self.author.clone())?
                 };
@@ -403,13 +272,10 @@ impl PersonResources {
         kind: ResourceType,
         initialize: impl Fn(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<StoredResource, ResourceOpenError> {
-        if self.member_archive() {
-            return Err(ResourceOpenError::ArchivedMemberDocument);
-        }
         if self.replica {
             return Err(ResourceOpenError::IdentityMismatch);
         }
-        let checkout = DocumentCheckout::new(self.id_of(&kind)?, kind);
+        let checkout = DocumentCheckout::new(Self::id_of(&kind), kind);
         open_in(&self.store, &checkout, &initialize)?;
         Ok(StoredResource::new(
             self.store.clone(),

@@ -19,8 +19,8 @@
 //   4. agent signed in: a reload once it logged in shows what it did so far;
 //   5. entered: the tab lands in the person's own workspace, and a reload,
 //      back and forward land there again;
-//   6. agent finishes while the tab is closed: reopening says "Claude Code is
-//      in your workspace" and opens it;
+//   6. agent finishes while the tab is closed: reopening says "Reviewer is in
+//      your workspace" and opens it;
 //   7. code expiry: a code that ran out while the tab was closed shows a fresh
 //      one with a note, and copying it follows the fresh one;
 //   8. offline, then online: the screen says it is offline, then carries on;
@@ -32,7 +32,7 @@
 // Saves a capture of each resumed state and a JSON report to OUT_DIR; exits
 // non-zero when any case lands on the wrong screen.
 import {execFile} from 'node:child_process';
-import {chmodSync, mkdirSync, writeFileSync} from 'node:fs';
+import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {stepLimit, shellMetrics, machine} from './waits.mjs';
@@ -92,11 +92,13 @@ process.on('unhandledRejection', async error => { check(false, 'the run went on'
 
 // What the page showed at its first frame with its markup in: the step the
 // first screen opened on and what it drew, at the first animation frame
-// after the page's body is parsed past the screen (the page can paint no
-// sooner), before any module of the page has run.
+// after the page's body is parsed past the screen and the paint the entry
+// makes of it (its status line is the marker), before any module of the page
+// has run. The page the entry hands over has its own element where the
+// screen was.
 const FIRST_FRAME = `(() => {
   const look = () => {
-    if (!document.getElementById('surface')) { requestAnimationFrame(look); return; }
+    if (!document.getElementById('bar') && !document.getElementById('tilo-page')) { requestAnimationFrame(look); return; }
     const text = id => document.getElementById(id)?.textContent ?? null;
     const expired = document.querySelector('.fr-expired');
     globalThis.__firstFrame = {step: document.documentElement.dataset.firstScreen ?? null, offer: text('first-screen-offer'),
@@ -257,46 +259,34 @@ const copy = async (tab, id) => {
 const codeOf = prompt => prompt?.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})/)?.[1] ?? null;
 const steps = tab => tab.evaluate(`document.getElementById('first-screen-steps')?.innerText ?? ''`).catch(() => '');
 
-// The agent's computer, as agent-setup.mjs makes it: its own home, a
-// `claude` that records how it was asked, and Claude Code's marker.
+// The agent's computer, as agent-setup.mjs makes it: its own home, where the
+// agent keeps its MCP configuration.
 const computer = name => {
   const home = join(out, `computer-${name}`);
   mkdirSync(join(home, 'bin'), {recursive: true});
-  // As agent-setup.mjs's: `claude mcp add` writes the server into the user
-  // configuration (`~/.claude.json`), where `tilo login` confirms it.
-  writeFileSync(join(home, 'bin', 'claude'), `#!/bin/sh
-[ "$1 $2" = "mcp add" ] || exit 0
-shift 2
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --scope|-s) shift 2 ;;
-    --*) shift ;;
-    *) break ;;
-  esac
-done
-name=$1; shift
-[ "$1" = "--" ] && shift
-command=$1; shift
-args=
-for arg in "$@"; do args="$args\\"$arg\\","; done
-printf '{"mcpServers":{"%s":{"type":"stdio","command":"%s","args":[%s],"env":{}}}}\\n' \\
-  "$name" "$command" "\${args%,}" > "$HOME/.claude.json"
-`);
-  chmodSync(join(home, 'bin', 'claude'), 0o755);
   return {PATH: `${join(home, 'bin')}:${process.env.PATH}`, HOME: home, XDG_STATE_HOME: join(home, 'state'),
-    XDG_CONFIG_HOME: join(home, 'config'), CLAUDECODE: '1'};
+    XDG_CONFIG_HOME: join(home, 'config')};
 };
-// `tilo login CODE` on that computer: a promise of how it ended, and `asked`,
-// which resolves once it says it waits for the person's tab, the moment the
-// agent is installing in earnest.
+// `tilo login CODE --agent Reviewer` on that computer, then what its words ask
+// of the agent: Tilo's server added to the agent's own configuration and
+// confirmed with `tilo agent check --config`. A promise of how both ended, and
+// `asked`, which resolves once the login says it waits for the person's tab,
+// the moment the agent is installing in earnest.
 const login = (code, env) => {
   let saidWaiting;
   const asked = new Promise(resolve => { saidWaiting = resolve; });
-  const child = execFile(tiloBin, ['login', code, '--site', site], {env, timeout: 600_000, maxBuffer: 1 << 20});
+  const child = execFile(tiloBin, ['login', code, '--site', site, '--agent', 'Reviewer'], {env, timeout: 600_000, maxBuffer: 1 << 20});
   let stdout = '', stderr = '';
   child.stdout.on('data', chunk => { stdout += chunk; });
   child.stderr.on('data', chunk => { stderr += chunk; if (/Waiting for the person/.test(stderr)) saidWaiting(true); });
-  const ended = new Promise(resolve => child.on('close', code => { saidWaiting(false); resolve({code: code ?? 1, stdout, stderr}); }));
+  const loggedIn = new Promise(resolve => child.on('close', code => { saidWaiting(false); resolve({code: code ?? 1, stdout, stderr}); }));
+  const ended = loggedIn.then(ran => {
+    if (ran.code !== 0) return ran;
+    const configuration = join(env.HOME, 'agent-mcp.json');
+    writeFileSync(configuration, `${JSON.stringify({mcpServers: {tilo: {type: 'stdio', command: tiloBin, args: ['mcp'], env: {}}}})}\n`);
+    return new Promise(resolve => execFile(tiloBin, ['agent', 'check', '--config', configuration], {env, timeout: 180_000, maxBuffer: 1 << 20},
+      (error, out, err) => resolve({code: error ? (error.code ?? 1) : 0, stdout: `${ran.stdout}${out}`, stderr: `${ran.stderr}${err}`})));
+  });
   return Object.assign(ended, {asked});
 };
 
@@ -445,7 +435,7 @@ await tab.navigate(site);
 frame = await firstFrame(tab);
 check(['waiting', 'connected'].includes(frame.step), '6. reopened: the setup it was at, at the first frame', JSON.stringify(frame));
 const said = await until(tab, `document.documentElement.dataset.firstScreen === 'connected' && document.getElementById('first-screen-connected').textContent`, stepLimit(2));
-check(said === 'Claude Code is in your workspace', '6. reopened: "Claude Code is in your workspace"', said ?? await pageText(tab));
+check(said === 'Reviewer is in your workspace', '6. reopened: "Reviewer is in your workspace"', said ?? await pageText(tab));
 shot(tab, 'resume-6-agent-done-while-closed');
 check(await until(tab, OWN_WORKSPACE, stepLimit(3)),
   '6. reopened: the own workspace opens', JSON.stringify(await where(tab)));

@@ -412,7 +412,7 @@ impl Carrier {
         hex::decode_to_slice(ask.of_person(), &mut person).ok()?;
         self.workspaces.person_device(workspace_id, person).await?;
         let asker = self.agent_caller(workspace_id, &agent, person).await.ok()?;
-        let turn = AskedIn::read(ask.put_in()).turn_of(asker, person, &agent);
+        let turn = AskedIn::read(ask.put_in()).turn_of(asker, &agent);
         Some(Asker {
             workspace_id,
             agent,

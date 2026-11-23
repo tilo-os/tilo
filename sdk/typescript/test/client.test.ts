@@ -63,7 +63,7 @@ describe("the account", () => {
     expect(listing.named("jane-doe")?.id).toBe(WORKSPACE_ID);
     expect(listing.named(WORKSPACE_ID)?.host).toBe("eu1");
     expect(tilo.workspaces.named("JANE-DOE")?.id).toBe(WORKSPACE_ID);
-    expect(api.last()?.path).toBe("/v1/workspaces");
+    expect(api.last()?.path).toBe("/v1/resources/account/workspaces/actions/list");
   });
 
   it("makes a workspace and then lists it", async () => {
@@ -92,8 +92,10 @@ describe("the account", () => {
     expect(branch.labels).toEqual({ customer_id: "cus_8121" });
     const call = api.last();
     expect(call?.method).toBe("POST");
-    expect(call?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/branches`);
-    expect(call?.body).toBe('{"name":"jane-doe, second try","labels":{"customer_id":"cus_8121"}}');
+    expect(call?.path).toBe("/v1/resources/account/workspaces/actions/branch");
+    expect(call?.body).toBe(
+      `{"workspace":"${WORKSPACE_ID}","name":"jane-doe, second try","labels":{"customer_id":"cus_8121"}}`,
+    );
     expect(call?.headers["idempotency-key"]).toBe("cus_8121-retry");
     expect((await tilo.workspaces.list()).named(branch.id)).toBeDefined();
   });
@@ -108,7 +110,7 @@ describe("the account", () => {
 
     expect(again.id).toBe(first.id);
     expect(api.branches.size).toBe(1);
-    expect(api.last()?.path).toBe(`/v1/workspaces/${template.id}/branches`);
+    expect(JSON.parse(api.last()?.body ?? "{}").workspace).toBe(template.id);
   });
 
   it("branches a workspace from its own handle", async () => {
@@ -117,8 +119,7 @@ describe("the account", () => {
     const branch = await open(api).workspace("john-doe").branch("john-doe, audit");
 
     expect(branch.name).toBe("john-doe, audit");
-    expect(api.last()?.path).toBe(`/v1/workspaces/${OTHER_ID}/branches`);
-    expect(api.last()?.body).toBe('{"name":"john-doe, audit"}');
+    expect(api.last()?.body).toBe(`{"workspace":"${OTHER_ID}","name":"john-doe, audit"}`);
     expect(api.last()?.headers["idempotency-key"]).toBeTruthy();
   });
 
@@ -153,7 +154,7 @@ describe("the account", () => {
 
     expect(deleted.deleted).toBe(WORKSPACE_ID);
     expect(deleted.revoked_keys).toEqual(["g-minted"]);
-    expect(api.last()?.method).toBe("DELETE");
+    expect(api.last()?.path).toBe("/v1/resources/account/workspaces/actions/delete");
     expect((await tilo.workspaces.list()).named(WORKSPACE_ID)).toBeUndefined();
   });
 
@@ -164,7 +165,7 @@ describe("the account", () => {
     expect(usage.plan).toBe("alpha");
     expect(usage.vmSeconds).toBe(0);
     expect(usage.running).toEqual([]);
-    expect(api.last()?.path).toBe("/v1/account");
+    expect(api.last()?.path).toBe("/v1/resources/account/usage");
   });
 });
 
@@ -176,7 +177,7 @@ describe("keys", () => {
     expect(keys.map((key) => key.grant)).toEqual(["g-root"]);
     expect(keys[0]?.scope).toBe("all");
     expect(keys[0]?.browserPages).toBe(true);
-    expect(api.last()?.path).toBe("/v1/keys");
+    expect(api.last()?.path).toBe("/v1/resources/account/keys/actions/list");
   });
 
   it("mints a key for one workspace", async () => {
@@ -202,8 +203,8 @@ describe("keys", () => {
   it("revokes a key", async () => {
     const api = new FakeApi();
     expect(await open(api).keys.revoke("g-root")).toEqual({ revoked: "g-root" });
-    expect(api.last()?.method).toBe("DELETE");
-    expect(api.last()?.path).toBe("/v1/keys/g-root");
+    expect(api.last()?.path).toBe("/v1/resources/account/keys/actions/revoke");
+    expect(api.last()?.body).toBe('{"grant":"g-root"}');
   });
 
   it("asks the person for a key, and answers it once they approve", async () => {
@@ -265,7 +266,7 @@ describe("a workspace named by its name", () => {
 
     expect(await workspace.id()).toBe(WORKSPACE_ID);
     expect((await workspace.info()).role).toBe("owner");
-    expect(api.asked("GET", "/v1/workspaces")).toHaveLength(1);
+    expect(api.asked("POST", "/v1/resources/account/workspaces/actions/list")).toHaveLength(1);
   });
 
   it("throws Refused for a name the account does not list", async () => {

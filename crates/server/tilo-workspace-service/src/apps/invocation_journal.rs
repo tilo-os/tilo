@@ -323,6 +323,23 @@ impl Loaded {
         }
     }
 
+    /// Whether `file` is a store of an earlier version that holds no invocation. A later
+    /// version's is never replaced: it is a newer Tilo's.
+    fn is_earlier_and_empty(file: &File) -> bool {
+        #[derive(Deserialize)]
+        struct Head {
+            version: u32,
+            records: Vec<serde::de::IgnoredAny>,
+        }
+        let mut bytes = Vec::new();
+        let read = Read::by_ref(&mut &*file)
+            .take(InvocationJournal::MAX_BYTES)
+            .read_to_end(&mut bytes);
+        let mut values = serde_json::Deserializer::from_slice(&bytes).into_iter::<Head>();
+        read.is_ok()
+            && matches!(values.next(), Some(Ok(head)) if head.version < VERSION && head.records.is_empty())
+    }
+
     fn read(file: &mut File) -> Result<Self, String> {
         let len = file
             .metadata()
@@ -676,6 +693,9 @@ impl InvocationJournal {
                 Err(_) => return Err("invocation journal snapshot missing or unreadable".into()),
             }
         };
+        // An earlier Tilo's store that holds no invocation is replaced: there is nothing in it
+        // to keep, and refusing it stopped the daemon of every computer that Tilo set up.
+        let opened = opened.filter(|file| !Loaded::is_earlier_and_empty(file));
         let created = opened.is_none();
         let loaded = match opened {
             None => Loaded::empty(uuid::Uuid::new_v4()),
@@ -1438,6 +1458,31 @@ mod tests {
                     .len(),
                 1,
                 "and reads it back"
+            );
+        }
+
+        phase an_empty_store_an_earlier_tilo_wrote_is_replaced;
+        // A computer an earlier Tilo set up kept a store of an older version with nothing in it:
+        // it is replaced, where it stopped the daemon. One with invocations in it is still refused.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("journal");
+            drop(InvocationJournal::open(&root).unwrap());
+            let earlier = r#"{"version":1,"host":"00000000-0000-0000-0000-000000000063","records":[]}"#;
+            std::fs::write(root.join("records.json"), earlier).unwrap();
+            let journal = InvocationJournal::open(&root).expect("an empty earlier store is replaced");
+            assert!(journal.snapshot.records.is_empty());
+            assert_eq!(journal.snapshot.version, VERSION);
+            drop(journal);
+            let kept: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.join("records.json")).unwrap()).unwrap();
+            assert_eq!(kept["version"], VERSION, "the store on disk is the current one");
+
+            let full = PRIVATE_DOCUMENT.replacen(r#""version":7"#, r#""version":1"#, 1);
+            std::fs::write(root.join("records.json"), full).unwrap();
+            assert!(
+                InvocationJournal::open(&root).is_err(),
+                "an earlier store with invocations in it is not dropped"
             );
         }
 

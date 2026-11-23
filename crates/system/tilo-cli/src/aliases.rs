@@ -33,7 +33,6 @@ pub const MOVED: &[&str] = &[
     "tilo-crypto",
     "tilo-device-admin",
     "tilo-device-key-init",
-    "tilo-enroll",
     "tilo-greeter",
     "tilo-image-trust",
     "tilo-installer",

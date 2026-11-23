@@ -98,7 +98,6 @@ struct Payload {
     certificate: DeviceCert,
     public_record: Vec<u8>,
     fleet: DeviceFleet,
-    home_peers: Vec<tilo_server_protocol::HomePeerRegistration>,
 }
 impl Drop for Payload {
     fn drop(&mut self) {
@@ -126,7 +125,6 @@ impl Payload {
         verify_device_cert_at(&self.certificate, now).map_err(|_| invalid())?;
         validate_record(&self.public_record, root)?;
         validate_fleet(&self.fleet, &self.certificate)?;
-        validate_peers(&self.home_peers, root)?;
         Ok(())
     }
 }
@@ -185,31 +183,6 @@ fn validate_fleet(fleet: &DeviceFleet, cert: &DeviceCert) -> io::Result<()> {
     }
     if !found {
         return Err(invalid());
-    }
-    Ok(())
-}
-fn validate_peers(
-    peers: &[tilo_server_protocol::HomePeerRegistration],
-    root: [u8; 32],
-) -> io::Result<()> {
-    if peers.len() > 128 {
-        return Err(invalid());
-    }
-    for peer in peers {
-        let cert = peer.device_cert.as_ref().ok_or_else(invalid)?;
-        verify_device_cert(cert).map_err(|_| invalid())?;
-        if peer.schema_version != tilo_server_protocol::HomePeerRegistration::CURRENT_SCHEMA
-            || cert.user_public_key != root
-            || peer.user_public_key != hex::encode(root)
-            || peer.device_node_id != hex::encode(cert.device_public_key)
-            || !cert.capabilities.can_own_workspaces
-            || peer.server_workspace_ids.len() > 4096
-            || hex::decode(&peer.server_node_id).map_or(true, |bytes| bytes.len() != 32)
-            || peer.label.len() > 256
-            || peer.label.chars().any(char::is_control)
-        {
-            return Err(invalid());
-        }
     }
     Ok(())
 }
@@ -308,14 +281,6 @@ impl EnrolledDevice {
                 MAX_BYTES,
             )?)
             .map_err(|_| invalid())?,
-            home_peers: match system.child("peers", false) {
-                Ok(peers) => match peers.optional("home-peers.json", false, MAX_BYTES)? {
-                    Some(bytes) => serde_json::from_slice(&bytes).map_err(|_| invalid())?,
-                    None => Vec::new(),
-                },
-                Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-                Err(error) => return Err(error),
-            },
         };
         payload.validate(expected_root, expected_device, now_ns)?;
         system.validate()?;
@@ -664,12 +629,6 @@ impl AuthenticatedEnrolledDevice {
                 &format!("{root}.json"),
                 serde_json::to_vec(&self.payload.fleet).map_err(|_| invalid())?,
             ),
-            make(
-                true,
-                vec!["peers".into()],
-                "home-peers.json",
-                serde_json::to_vec(&self.payload.home_peers).map_err(|_| invalid())?,
-            ),
             // Publish default certification last, after all projection/key identity store.
             make(true, vec!["device".into()], "cert.bin", cert),
         ])
@@ -765,9 +724,6 @@ fn normalize_public_projection(system: &fs::Directory, root: [u8; 32]) -> io::Re
     certs.normalize_public_directory()?;
     device.normalize_public_file("cert.bin")?;
     device.normalize_public_directory()?;
-    let peers = system.child("peers", false)?;
-    peers.normalize_public_file("home-peers.json")?;
-    peers.normalize_public_directory()?;
     system.normalize_public_directory()
 }
 

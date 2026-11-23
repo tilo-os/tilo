@@ -116,10 +116,9 @@ tilo_test_env::scenario! {
 
     phase a_persons_record_that_stops_reading_says_why_instead_of_going_quiet;
     {
-        crate::own_kinds::declare("so.tilo.test-unreadable-person", &["test.learned"]);
         let mut app = TestApp::<LearnedApp>::for_person(&"ad".repeat(32)).unwrap();
         assert!(
-            app.person::<Learned>().is_some(),
+            app.profile_resource::<Learned>().is_some(),
             "the person's record is open"
         );
         app.settle();
@@ -133,7 +132,7 @@ tilo_test_env::scenario! {
 
         // A change the model cannot read arrives from another device, on the
         // route that carries the person's records.
-        app.person::<Learned>()
+        app.profile_resource::<Learned>()
             .expect("the person's record")
             .record()
             .edit(false, |doc| {
@@ -179,11 +178,11 @@ impl ResourceApp for LearnedApp {
     const TITLE: &'static str = "Memo";
 
     fn resources(resources: &mut Resources<'_>) {
-        resources.person::<Learned>();
+        resources.profile_resource::<Learned>();
     }
 
     fn view(cx: &mut ViewCx<Memo>) -> Element {
-        let learned = cx.person::<Learned>();
+        let learned = cx.profile_resource::<Learned>();
         Box::new(tilo_app::column![
             cx.input(cx.paths().title).with_id("title"),
             cx.text(move |_: &Memo| match &learned {

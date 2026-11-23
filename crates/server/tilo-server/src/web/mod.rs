@@ -45,6 +45,7 @@ use tilo_server_protocol::web::{
 
 use crate::daemon::{Server, ServerError, WebContext};
 use collab_types::WorkspaceId;
+use tilo_workspace_service::workspaces::SealedInvitations;
 
 /// Configuration of the browser listener.
 #[derive(Clone, Debug)]
@@ -225,8 +226,10 @@ struct Web {
     /// The page errors the entry logs.
     page_errors: page_errors::PageErrors,
     /// The sealed invitations this site keeps in place of their clerk: what a
-    /// short link names, in bytes the site has no key for.
-    shelf: shelf::Shelf,
+    /// short link names, in bytes the site has no key for. The workspaces
+    /// here seal onto it, so a link a member hands over and the one the mail
+    /// to an address carries are the same link.
+    shelf: Arc<shelf::Shelf>,
     /// The site this host belongs to, when it knows one: where a browser that
     /// opened a link at the host's own address is sent.
     site: Option<Site>,
@@ -545,6 +548,13 @@ impl Server {
             0o644,
         )
         .map_err(|error| failed(format!("keep this host's name: {error}")))?;
+        // A link is read days after it was made, so what it names waits on
+        // this host's disk: a restart, an upgrade or a deploy over this
+        // server leaves it there.
+        let invitation_shelf = Arc::new(shelf::Shelf::opening(
+            self.state_root().join("invitations"),
+            tilo_clock::unix_now_ns(),
+        ));
         let web = Arc::new(Web {
             context: context.clone(),
             server_info: server_info.clone(),
@@ -561,13 +571,7 @@ impl Server {
             content_links: self.content_links(),
             presence: live.authority(),
             page_errors: page_errors::PageErrors::default(),
-            // A link is read days after it was made, so what it names waits on
-            // this host's disk: a restart, an upgrade or a deploy over this
-            // server leaves it there.
-            shelf: shelf::Shelf::opening(
-                self.state_root().join("invitations"),
-                tilo_clock::unix_now_ns(),
-            ),
+            shelf: Arc::clone(&invitation_shelf),
             site: config.site.as_deref().and_then(Site::new),
             login_codes: Arc::new(kept_login_codes(
                 self.state_root(),
@@ -580,6 +584,10 @@ impl Server {
         // here name them by.
         if let Some(workspaces) = &web.workspaces {
             workspaces.person_names(web.profiles.clone());
+            // The invitations the workspaces issue are sealed onto this
+            // site's shelf, so the link a member hands over and the one the
+            // mail to an address carries name the same short link.
+            let _ = workspaces.shelve_invitations(invitation_shelf as Arc<dyn SealedInvitations>);
         }
         web.serve_code_requests();
         web.serve_pushes(
@@ -1127,7 +1135,7 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
             .address
             .as_ref()
             .and_then(|address| address.web.as_ref());
-        return page::answer(&address, link);
+        return page::answer(&address, link, web.server_info.origin.as_deref());
     }
     let origin = request.headers().get(header::ORIGIN).cloned();
     let public = public_directory_route(request.uri().path());

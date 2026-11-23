@@ -25,6 +25,16 @@ pub const WORKSPACE_MESSAGE_DRAFTS_DOCUMENT: &str = "uuid:fe64cba3-45c6-4e34-a3a
 /// The workspace's unsent channel messages.
 pub const WORKSPACE_CHAT_DRAFTS_DOCUMENT: &str = "uuid:6cafe9f7-825f-4016-b040-a37578d3152f";
 
+/// The workspace's moderation reports and decisions, kept by Chat.
+pub const WORKSPACE_MODERATION_DOCUMENT: &str = "derived:tilo.moderation@tab:0000000000000000";
+
+/// The policy address of a record whose storage moved out of Chat's primary.
+#[must_use]
+pub fn is_workspace_moderation(app: &str, document: &str) -> bool {
+    matches!(app, tilo_app_id::apps::CHAT | "dev.tilo.chat")
+        && document == WORKSPACE_MODERATION_DOCUMENT
+}
+
 /// The workspace's Terminal command history.
 pub const WORKSPACE_TERMINAL_HISTORY_DOCUMENT: &str = "uuid:8038f29a-fb3e-400a-adc5-f411efb63325";
 
@@ -47,30 +57,123 @@ pub fn lacks_private_record_owner(app: &str, document: &str) -> bool {
     )
 }
 
-/// These live record kinds have a single authenticated reader in their workspace.
+/// The kinds of record each person of a workspace keeps one of that only they read and change:
+/// what they watched, what they are writing and have not sent. Every role is denied them
+/// ([`role_rules`]) and the workspace's ownership does not reach them; each person reads and
+/// changes their own by a grant the workspace gives each of its people
+/// ([`private_record_grants`]), which an owner may widen like any other.
+const PRIVATE_RECORDS: [(&str, &str); 2] = [
+    ("so.tilo.tube", "tube.watch-history"),
+    (tilo_app_id::apps::MESSAGES, "messages.drafts"),
+];
+
+const PRIVATE_RECORD_GRANT_PREFIX: &str = "private-record:";
+
+/// Whether `app`'s records of `kind` are each one person's ([`PRIVATE_RECORDS`]).
 #[must_use]
 pub fn has_member_reader(app: &str, kind: &str) -> bool {
-    matches!(
-        (app, kind),
-        ("so.tilo.tube" | "dev.tilo.tube", "tube.watch-history")
-            | (
-                tilo_app_id::apps::MESSAGES | "dev.tilo.messages",
-                "messages.drafts"
-            )
-    )
+    PRIVATE_RECORDS.contains(&(app, kind))
 }
 
-pub(crate) fn lacks_private_record_owner_at(node: &TreePath, context: &Context<'_>) -> bool {
-    let Some(app) = node.id_at(Level::App) else {
-        return false;
-    };
-    node.id_at(Level::Resource)
-        .is_some_and(|record| lacks_private_record_owner(app, record))
-        || (node
-            .id_at(Level::Kind)
-            .is_some_and(|kind| has_member_reader(app, kind))
-            && node.id_at(Level::Resource).is_some()
-            && context.owner_of(node).is_none())
+/// The private record kind `app` keeps for each person, when it keeps one.
+fn private_kind_of(app: &str) -> Option<&'static str> {
+    PRIVATE_RECORDS
+        .iter()
+        .find(|(of, _)| *of == app)
+        .map(|(_, kind)| *kind)
+}
+
+/// The id of `person`'s record of `kind`: a version-8 uuid derived from both, the same on every
+/// device of theirs, naming neither. `None` when `person` is not a person id (the lowercase hex
+/// of their user root key).
+#[must_use]
+pub fn member_record(kind: &str, person: &str) -> Option<String> {
+    let mut root = [0; 32];
+    hex::decode_to_slice(person, &mut root).ok()?;
+    let mut hasher = blake3::Hasher::new_derive_key("tilo own record v1");
+    hasher.update(&root);
+    hasher.update(kind.as_bytes());
+    let mut bytes = [0; 16];
+    for (byte, derived) in bytes.iter_mut().zip(hasher.finalize().as_bytes()) {
+        *byte = *derived;
+    }
+    Some(format!(
+        "uuid:{}",
+        uuid::Builder::from_custom_bytes(bytes).into_uuid()
+    ))
+}
+
+/// The derived record `record` belongs to: itself, or the record a part, chunk or child of it
+/// names. Only [`member_record`] makes version-8 ids.
+fn derived_record_in(record: &str) -> Option<&str> {
+    record.match_indices("uuid:").find_map(|(at, _)| {
+        let id = record.get(at..)?.get(..41)?;
+        let uuid = uuid::Uuid::try_parse(id.strip_prefix("uuid:")?).ok()?;
+        (uuid.get_version_num() == 8).then_some(id)
+    })
+}
+
+/// Whether `app`'s `record` is one person's private record, or a part, chunk or child of one: only
+/// the grant its person holds reaches it ([`private_record_grants`]), never the workspace's
+/// ownership.
+#[must_use]
+pub fn is_private_record(app: &str, record: &str) -> bool {
+    private_kind_of(app).is_some() && derived_record_in(record).is_some()
+}
+
+/// The id of the grant that lets `person` read and change their own record of `kind`.
+#[must_use]
+pub fn private_record_grant_id(kind: &str, person: &str) -> GrantId {
+    GrantId(format!("{PRIVATE_RECORD_GRANT_PREFIX}{kind}:{person}"))
+}
+
+/// The grants by which `person` reads and changes their own private records of `workspace`
+/// ([`PRIVATE_RECORDS`]); none when `person` is not a person id.
+#[must_use]
+pub fn private_record_grants(workspace: &str, person: &str) -> Vec<Grant> {
+    PRIVATE_RECORDS
+        .iter()
+        .filter_map(|(app, kind)| {
+            Some(Grant {
+                id: private_record_grant_id(kind, person),
+                grantee: Grantee::person(person.to_owned()),
+                node: TreePath::workspace(workspace)
+                    .app(*app)
+                    .kind(*kind)
+                    .resource(member_record(kind, person)?),
+                kinds: KindSet::READ_UNDOABLE,
+                answer: Answer::Allow,
+                lifetime: Lifetime::UntilRevoked,
+                granted_by: Grantee::person(person.to_owned()),
+            })
+        })
+        .collect()
+}
+
+/// Every private record kind of `workspace` ([`PRIVATE_RECORDS`]), which no role reads or changes.
+fn private_record_rules(workspace: &str) -> impl Iterator<Item = Rule> + '_ {
+    PRIVATE_RECORDS.iter().map(move |(app, kind)| {
+        Rule::new(
+            TreePath::workspace(workspace).app(*app).kind(*kind),
+            KindSet::READ_UNDOABLE,
+            Answer::Deny,
+        )
+    })
+}
+
+/// Whether `node`, as [`decided_node`] reads it, is in one person's private record, which the
+/// workspace's ownership does not reach.
+pub(crate) fn in_private_record(node: &TreePath) -> bool {
+    node.id_at(Level::App)
+        .zip(node.id_at(Level::Kind))
+        .is_some_and(|(app, kind)| has_member_reader(app, kind))
+        && node.id_at(Level::Resource).is_some()
+}
+
+pub(crate) fn lacks_private_record_owner_at(node: &TreePath) -> bool {
+    node.id_at(Level::App)
+        .zip(node.id_at(Level::Resource))
+        .is_some_and(|(app, record)| lacks_private_record_owner(app, record))
 }
 
 /// The resource kind of a record that always uses independent document keys.
@@ -464,6 +567,131 @@ pub fn role_answered([writes, moderates, governs]: [bool; 3]) -> Role {
     }
 }
 
+/// The app whose records hold a workspace's layout and each person's view of it.
+pub const LAYOUT_APP: &str = "so.tilo.browser-desktop";
+
+/// The kind of a person's view of a workspace's layout ([`person_view_record`]).
+pub const PERSON_VIEW_KIND: &str = "desktop.person-view";
+
+const PERSON_VIEW_PREFIX: &str = "view-of-";
+const PERSON_VIEW_GRANT_PREFIX: &str = "person-view:";
+
+/// The record of [`LAYOUT_APP`] holding `person`'s view of a workspace's layout: the strip and
+/// window in front, the widths they chose. Every member reads every view, so the people they
+/// work with see where they are looking. No role changes one ([`editor_rules`]): each person
+/// changes their own by a grant the workspace gives each of its people
+/// ([`person_view_grant`]), which the workspace's owners may widen like any other.
+#[must_use]
+pub fn person_view_record(person: &str) -> String {
+    format!("{PERSON_VIEW_PREFIX}{person}")
+}
+
+/// The person whose view of the layout `app`'s `document` holds, when it is one.
+#[must_use]
+pub fn person_viewing<'a>(app: &str, document: &'a str) -> Option<&'a str> {
+    if app == LAYOUT_APP {
+        document
+            .strip_prefix(PERSON_VIEW_PREFIX)
+            .filter(|person| !person.is_empty())
+    } else {
+        None
+    }
+}
+
+/// Every person's view of `workspace`'s layout.
+#[must_use]
+pub fn person_views(workspace: &str) -> TreePath {
+    TreePath::workspace(workspace)
+        .app(LAYOUT_APP)
+        .kind(PERSON_VIEW_KIND)
+}
+
+/// `node` as a decision reads it: a node in a person's view of the layout is of
+/// [`PERSON_VIEW_KIND`], and a node in a person's private record is of its kind and in the record
+/// itself rather than a part of it ([`PRIVATE_RECORDS`]), whichever kind, if any, its caller
+/// named, so the rules on them decide it wherever it is asked from.
+#[must_use]
+pub fn decided_node(node: &TreePath) -> std::borrow::Cow<'_, TreePath> {
+    use crate::Segment;
+    let segments = node.segments();
+    let app = segments.iter().find_map(|segment| match segment {
+        Segment::Name(Level::App, app) => Some(app.as_str()),
+        _ => None,
+    });
+    let record = segments.iter().find_map(|segment| match segment {
+        Segment::Name(Level::Resource, record) => Some(record.as_str()),
+        _ => None,
+    });
+    let (Some(app), Some(record)) = (app, record) else {
+        return std::borrow::Cow::Borrowed(node);
+    };
+    let decided_as = if app == LAYOUT_APP && person_viewing(LAYOUT_APP, record).is_some() {
+        Some((PERSON_VIEW_KIND, record))
+    } else {
+        private_kind_of(app).zip(derived_record_in(record))
+    };
+    let Some((kind, as_record)) = decided_as else {
+        return std::borrow::Cow::Borrowed(node);
+    };
+    if node.id_at(Level::Kind) == Some(kind) && as_record == record {
+        return std::borrow::Cow::Borrowed(node);
+    }
+    let mut decided = TreePath::default();
+    for segment in segments {
+        match segment {
+            Segment::Name(Level::Kind, _) => {}
+            Segment::Name(Level::Resource, _) => {
+                decided.push_name(Level::Kind, kind);
+                decided.push_name(Level::Resource, as_record);
+            }
+            Segment::Name(level, id) => decided.push_name(*level, id.clone()),
+            Segment::Any(level) => decided = decided.any(*level),
+            Segment::Rest => decided = decided.rest(),
+        }
+    }
+    std::borrow::Cow::Owned(decided)
+}
+
+/// The id of the grant that lets `person` change their view of the layout.
+#[must_use]
+pub fn person_view_grant_id(person: &str) -> GrantId {
+    GrantId(format!("{PERSON_VIEW_GRANT_PREFIX}{person}"))
+}
+
+/// Whether `grant` is one of the grants the workspace gives each of its people for their own
+/// records: their view of the layout ([`person_view_grant`]) and their private records
+/// ([`private_record_grants`]).
+#[must_use]
+pub fn is_person_record_grant(grant: &Grant) -> bool {
+    grant.id.as_str().starts_with(PERSON_VIEW_GRANT_PREFIX)
+        || grant.id.as_str().starts_with(PRIVATE_RECORD_GRANT_PREFIX)
+}
+
+/// Every grant the workspace gives `person` for their own records
+/// ([`is_person_record_grant`]).
+#[must_use]
+pub fn person_record_grants(workspace: &str, person: &str) -> Vec<Grant> {
+    let mut grants = vec![person_view_grant(workspace, person)];
+    grants.extend(private_record_grants(workspace, person));
+    grants
+}
+
+/// The grant by which `person` changes their own view of `workspace`'s layout
+/// ([`person_view_record`]). The workspace holds one for each of its people
+/// ([`crate::WorkspacePolicy`]); a ban or restriction, which no grant lifts, stops it too.
+#[must_use]
+pub fn person_view_grant(workspace: &str, person: &str) -> Grant {
+    Grant {
+        id: person_view_grant_id(person),
+        grantee: Grantee::person(person.to_owned()),
+        node: person_views(workspace).resource(person_view_record(person)),
+        kinds: KindSet::UNDOABLE,
+        answer: Answer::Allow,
+        lifetime: Lifetime::UntilRevoked,
+        granted_by: Grantee::person(person.to_owned()),
+    }
+}
+
 /// The id of the grant that bans `person` from a workspace.
 #[must_use]
 pub fn block_grant_id(person: &str) -> GrantId {
@@ -647,7 +875,7 @@ impl Preset {
 /// |---|---|
 /// | Viewer | Read: Allow |
 /// | Commenter | Read: Allow; comments, reactions: Allow (Undoable) |
-/// | Editor | Read, Undoable: Allow; Outside: Ask; governance, moderation: Deny |
+/// | Editor | Read, Undoable: Allow; Outside: Ask; governance, moderation, people's views of the layout: Deny |
 /// | Moderator | as Editor; moderation: Allow; `remove-member`, `ban`, `unban`, `pause-bot`, `resume-bot`, `rename`: Allow |
 /// | Owner | everything: Allow |
 ///
@@ -656,6 +884,12 @@ impl Preset {
 /// target and not on the tree.
 #[must_use]
 pub fn role_rules(role: Role, workspace: &str) -> Vec<Rule> {
+    let mut rules = shown_role_rules(role, workspace);
+    rules.extend(private_record_rules(workspace));
+    rules
+}
+
+fn shown_role_rules(role: Role, workspace: &str) -> Vec<Rule> {
     let workspace_node = TreePath::workspace(workspace);
     match role {
         Role::Viewer => vec![Rule::new(workspace_node, KindSet::READ, Answer::Allow)],
@@ -699,6 +933,7 @@ fn editor_rules(workspace: &str, moderation_answer: Answer) -> Vec<Rule> {
             KindSet::UNDOABLE.union(KindSet::OUTSIDE),
             moderation_answer,
         ),
+        Rule::new(person_views(workspace), KindSet::UNDOABLE, Answer::Deny),
     ]
 }
 
@@ -915,12 +1150,19 @@ pub(crate) fn agent_preset(workspace: &str, agent: &str, person: &str) -> Vec<Gr
     let grantee = Grantee::agent(agent.to_owned());
     let granted_by = Grantee::person(person.to_owned());
     let prefix = format!("turn:agent:{agent}");
-    role_preset(agent_policy::ROLE_CAP, workspace).assign(
+    let mut grants = role_preset(agent_policy::ROLE_CAP, workspace).assign(
         &prefix,
         &grantee,
         &granted_by,
         &Lifetime::UntilRevoked,
-    )
+    );
+    // It changes its person's view of the layout as they do, and no one else's.
+    grants.push(Grant {
+        id: GrantId(format!("{prefix}:view")),
+        grantee,
+        ..person_view_grant(workspace, person)
+    });
+    grants
 }
 
 /// The rules of `agent`'s bound (`bound`; empty follows the default, which is

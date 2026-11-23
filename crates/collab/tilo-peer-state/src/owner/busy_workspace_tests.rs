@@ -110,7 +110,6 @@ fn message(
         cluster_id: WORKSPACE.into(),
         document_id: String::new(),
         envelope: Box::new(envelope),
-        own: None,
         readers: None,
     }
 }

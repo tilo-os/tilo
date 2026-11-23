@@ -4,10 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
-use ui::framework::{Setting, ViewCx};
-use ui::prelude::{Model, resource, tilo_resource};
 use ui::storage::{Scope, SettingsSchema};
-use ui::tilo_resource::Refusal;
 
 pub const RECENT_HISTORY_LIMIT: usize = 32;
 
@@ -54,73 +51,6 @@ impl ui::storage::SettingsSchema for PlayerSettings {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
 }
 
-/// The videos one device played lately, newest first; a malformed row is dropped
-/// alone.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeviceVideos {
-    #[serde(default)]
-    pub rows: RecentHistory,
-}
-
-tilo_resource::json_model!(DeviceVideos);
-
-/// The videos played lately and where each left off, by device. A row names a source on
-/// one device, so each device reads and writes only its own list.
-#[derive(Model, Clone, Debug, Default, PartialEq)]
-pub struct RecentVideos {
-    pub devices: BTreeMap<String, DeviceVideos>,
-}
-
-impl RecentVideos {
-    /// What the resource holds: the videos played on this device, newest first, and where
-    /// each was left off.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "video-player.recent",
-    read_content = RecentVideos::read_document
-)]
-impl RecentVideos {
-    #[action(housekeeping)]
-    pub fn keep(
-        &mut self,
-        device: String,
-        #[param("The recent videos, as the device stores them")] rows: Value,
-    ) -> Result<(), Refusal> {
-        let rows = serde_json::from_value(rows)
-            .map_err(|error| Refusal::new(format!("not a list of recent videos: {error}")))?;
-        self.devices.insert(device, DeviceVideos { rows });
-        Ok(())
-    }
-
-    #[action(housekeeping)]
-    pub fn stood(&mut self, device: String, id: String, position_ms: u64) {
-        if let Some(row) = self
-            .devices
-            .get_mut(&device)
-            .and_then(|kept| kept.rows.iter_mut().find(|row| row.id == id))
-        {
-            row.position_ms = position_ms;
-        }
-    }
-}
-
-impl RecentVideos {
-    #[must_use]
-    pub fn on(&self, device: &str) -> RecentHistory {
-        self.devices
-            .get(device)
-            .map(|kept| kept.rows.clone())
-            .unwrap_or_default()
-    }
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct VideoRecents {
     #[serde(default)]
@@ -129,32 +59,6 @@ pub(crate) struct VideoRecents {
 
 impl SettingsSchema for VideoRecents {
     const SCOPE: Scope = Scope::DeviceLocal;
-}
-
-impl VideoRecents {
-    pub(crate) fn open(cx: &ViewCx<crate::shared::Library>, workspace: &str) -> Setting<Self> {
-        let settings = cx.settings::<Self>();
-        if !settings.get().by_workspace.contains_key(workspace)
-            && let Some(device) = cx.device()
-        {
-            let opener = cx.resource_opener::<RecentVideos>(ui::apps::VIDEO_PLAYER);
-            match opener.legacy_member_state() {
-                Ok(Some(previous)) => {
-                    if let Err(error) = settings.update(|state| {
-                        state
-                            .by_workspace
-                            .entry(workspace.to_owned())
-                            .or_insert_with(|| previous.on(device));
-                    }) {
-                        tracing::warn!(%error, "could not restore recent videos");
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => tracing::warn!(%error, "could not read earlier recent videos"),
-            }
-        }
-        settings
-    }
 }
 
 fn autoplay<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
@@ -336,6 +240,13 @@ mod tests {
 
     fn read(json: &str) -> PlayerSettings {
         serde_json::from_str(json).unwrap_or_default()
+    }
+
+    /// The rows as a device kept them.
+    #[derive(Default, Serialize, Deserialize)]
+    struct DeviceVideos {
+        #[serde(default)]
+        rows: RecentHistory,
     }
 
     fn read_rows(json: &str) -> RecentHistory {

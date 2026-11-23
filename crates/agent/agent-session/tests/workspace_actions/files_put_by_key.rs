@@ -83,10 +83,17 @@ async fn put_and_list() {
     let token = approved_key(&on_server, &ada, &computer, "Ada's backend").await;
     let key = Key { api: &api, token };
     let (status, made) = key
-        .post("/v1/workspaces", &json!({"name": "Company"}), &[])
+        .post(
+            "/v1/resources/account/workspaces/actions/create",
+            &json!({"name": "Company"}),
+            &[],
+        )
         .await;
-    assert_eq!(status, 201, "{made}");
-    let workspace = made["id"].as_str().unwrap().to_owned();
+    assert_eq!(status, 200, "{made}");
+    let workspace = made["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let base = format!("/v1/workspaces/{workspace}");
 
     // The bytes go up, then the list of them into Files, as the command puts a
@@ -202,10 +209,17 @@ async fn a_folder_put_after_the_server_restarts_lands_beside_what_is_there() {
             token: token.clone(),
         };
         let (status, made) = key
-            .post("/v1/workspaces", &json!({"name": "Company"}), &[])
+            .post(
+                "/v1/resources/account/workspaces/actions/create",
+                &json!({"name": "Company"}),
+                &[],
+            )
             .await;
-        assert_eq!(status, 201, "{made}");
-        let workspace = made["id"].as_str().unwrap().to_owned();
+        assert_eq!(status, 200, "{made}");
+        let workspace = made["result"]["workspace"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         put_folder(&key, &workspace, &folder()).await;
         workspace
     };

@@ -132,9 +132,7 @@ pub use tilo_workspace_service::{
 use tilo_workspace_service::{authority_epoch, handshake, workspace_access};
 
 pub use tilo_server_client::frame;
-pub use tilo_server_protocol::{
-    auth, certify, config, home_peer, live, mesh, policy, process_lease,
-};
+pub use tilo_server_protocol::{auth, certify, config, devices, live, mesh, policy, process_lease};
 pub use tilo_server_session::{antientropy, client, coedit, position};
 
 /// The server wire messages ([`tilo_server_protocol::transport`]) together with
@@ -153,10 +151,7 @@ pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, Server
 pub use config::ServerConfig;
 #[cfg(not(target_arch = "wasm32"))]
 pub use daemon::{Server, ServerError, ServerHandle};
-pub use home_peer::{
-    HomePeerRegistration, checked_home_peers, home_peer_registry_path, read_home_peers,
-    valid_home_peer_label, write_home_peers,
-};
+pub use devices::valid_device_label;
 pub use mesh::{
     ComputeAccelerator, DeviceMeshProfile, PowerAvailability, ServerAdvertisement,
     ServiceCapabilities,

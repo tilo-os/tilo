@@ -195,45 +195,6 @@ fn a_held_ask_is_answered_once_the_workspace_keeps_a_file_account() {
     drop(served);
 }
 
-/// A connector whose person said yes to a sign-in hurries the ask for accounts the session holds:
-/// it is answered at once with the accounts as they are, and so is one asked just after a hurry
-/// that came first.
-#[test]
-fn a_hurry_lets_the_ask_for_accounts_go_at_once() {
-    let served = served();
-    let before = revision(&served.socket);
-    let quick = sign_ins::LONGEST_WAIT.checked_div(5).unwrap();
-    let client = connect(&served.socket);
-    let mut hurrier = client.hurrier().unwrap();
-    let (answered, answer) = mpsc::channel();
-    let after = before.clone();
-    let asking = std::thread::spawn(move || {
-        let mut client = client;
-        answered
-            .send(client.ask(&Ask::Accounts { after: Some(after) }))
-            .unwrap();
-        client
-    });
-    until_waiting(&served, 1);
-    hurrier.hurry().unwrap();
-    match answer.recv_timeout(quick).unwrap() {
-        Ok(Answer::Accounts { revision, .. }) => assert_eq!(revision, before),
-        other => panic!("the accounts, not {other:?}"),
-    }
-    let mut client = asking.join().unwrap();
-
-    hurrier.hurry().unwrap();
-    let started = Instant::now();
-    match client.ask(&Ask::Accounts {
-        after: Some(before.clone()),
-    }) {
-        Ok(Answer::Accounts { revision, .. }) => assert_eq!(revision, before),
-        other => panic!("the accounts, not {other:?}"),
-    }
-    assert!(started.elapsed() < quick, "let go as it came");
-    drop(served);
-}
-
 #[test]
 fn an_asker_that_goes_away_is_no_longer_waited_for() {
     let served = served();
@@ -312,7 +273,6 @@ fn a_connector_is_told_its_workspaces_accounts_and_asks_their_sign_ins_only() {
     match connector.ask(&Ask::SignIn {
         workspace: ELSEWHERE.into(),
         item: entry.clone(),
-        confirmed: false,
     }) {
         Ok(Answer::Refused { error }) => assert_eq!(error, super::OTHER_WORKSPACE),
         other => panic!("a refusal, not {other:?}"),
@@ -320,7 +280,6 @@ fn a_connector_is_told_its_workspaces_accounts_and_asks_their_sign_ins_only() {
     match connector.ask(&Ask::SignIn {
         workspace: WORKSPACE.into(),
         item: entry,
-        confirmed: false,
     }) {
         Ok(Answer::Refused { error }) => assert!(!error.is_empty(), "said in words"),
         other => panic!("a refusal, not {other:?}"),
@@ -353,7 +312,6 @@ fn whoever_may_not_read_the_app_asking_gets_no_password() {
         let ask = Ask::SignIn {
             workspace: WORKSPACE.into(),
             item,
-            confirmed: false,
         };
         served.runtime.block_on(async {
             let answering = refusing_at_once(super::Answering::here(workspaces, agent, changes));

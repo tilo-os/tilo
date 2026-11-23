@@ -523,7 +523,6 @@ mod tests {
                 cluster_id: route.cluster_id.clone(),
                 document_id: route.document,
                 envelope: Box::new(op),
-                own: None,
                 readers: None,
             })
             .unwrap();

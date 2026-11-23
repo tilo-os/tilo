@@ -85,9 +85,10 @@ An IP address is only a hint.
   the QUIC connection's two endpoint ids. The device admits only a device of
   its own identity whose certificate grants `can_administer_devices` and that
   is not revoked, bridges the session to a fresh `tilo-vmd rpc`, and logs each
-  session and request to its journal. A developer's machine is certified for
-  this with `tilo-enroll certify --capability admin` on the device that holds
-  the identity, which also lists it among the person's devices, where Settings
+  session and request to its journal. A developer's machine joins as one of
+  the person's devices with a ticket: `tilo device add --capability admin` on
+  the device that holds the identity prints it, and `tilo login` there spends
+  it, which also lists the machine among the person's devices, where Settings
   can remove it (`tilo device vm enrol-admin`).
 
 ## Updating what it runs
@@ -209,14 +210,13 @@ authenticated device-admin route, using its declared semantic resource:
 
 ```bash
 tilo device vm actions --device yoga list "disk unlock"
-tilo device vm actions --device yoga invoke device-unlock enroll@device-unlock --args-stdin
+tilo device vm actions --device yoga invoke device-unlock enroll@device-unlock --confirm --args-stdin
 ```
 
-The adapter carries the same `actions_enumerate` and `actions_invoke` operations
-as `tilo-control`. VMD publishes `ActionSpec`s and uses the shared console
-catalogue and admission code; it has no additional control socket. The invoke
-command reads a JSON object on private stdin, containing `passphrase`, optional
-saved `networks`, and `confirm: true`. Obtain that input from a private producer;
+The adapter carries the same action frames as the desktop's control socket.
+VMD publishes `ActionSpec`s and uses the shared catalogue and admission code;
+it has no additional control socket. The invoke command reads a JSON object on
+private stdin, containing `passphrase` and optional saved `networks`. Obtain that input from a private producer;
 never put the disk passphrase in command arguments or shell history. The
 passphrase is a `Secret` parameter and is absent from the encoded operation,
 resource catalogue, state and results.

@@ -93,12 +93,12 @@ pub use state::{
     OpenedHistory, OpenedWrite, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance,
     PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut,
     PeerPersonal, PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut,
-    PersonalStore, ReceiveOutcome, RequestedBot, Reseal, RowError, SETTINGS_KIND, SealCheckpoint,
-    SeedDocument, SeedState, Shortfall, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
-    WIFI_KIND, WORKSPACE_KEEPING_DEVICES_KEY, WORKSPACES_KIND, WaitingForUpdate,
-    committed_document_revision, decide_with_surfaces, default_surfaces, holder_role,
-    keeping_devices_of, peer_handle, seed_workspace, seed_workspace_at, trigger_mark, unranked,
-    work_delegations_of, workspace_grants_of, workspace_host_actor, workspace_seed,
+    PersonalStore, ReceiveOutcome, RequestedBot, Reseal, RowError, SealCheckpoint, SeedDocument,
+    SeedState, Shortfall, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite, WIFI_KIND,
+    WORKSPACE_KEEPING_DEVICES_KEY, WORKSPACES_KIND, WaitingForUpdate, committed_document_revision,
+    decide_with_surfaces, default_surfaces, holder_role, keeping_devices_of, peer_handle,
+    seed_workspace, seed_workspace_at, trigger_mark, unranked, work_delegations_of,
+    workspace_grants_of, workspace_host_actor, workspace_seed,
 };
 pub use state::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept, Refusal};
 pub use state::{changes_since, saved_whole};

@@ -1,92 +1,86 @@
-//! First-use pairing with a nearby trusted device.
+//! Adding this computer to the person's devices with the code another of
+//! their devices printed.
 //!
-//! Onboarding runs `tilo-enroll pair-device` as the person at the screen.
-//! Joining needs no administrator: the device-trust group the session user
-//! belongs to already owns every directory the join writes (see the image's
-//! `tmpfiles.d/tilo.conf`), exactly as when the person creates a new identity
-//! here. It stays a separate process so local cancellation can stop its
-//! whole group, including while the durable install is blocked in I/O. The
-//! shared enrollment client reads its progress from the identity directory.
+//! `tilo device add` on a device of the person's prints a one-use code for ten
+//! minutes. This computer's daemon answers that code with its `devices#logIn`
+//! action, the same action and the same call `tilo login` makes: the daemon
+//! dials the device that printed the code, that device's root certifies this
+//! computer's one device key, and the answer is kept as this computer's login.
+//! Setup then takes the login up as this account's identity, exactly as a
+//! daemon starting with one does, and hands off to the desktop.
 //!
-//! Every way pairing can end is reported: a joined identity, the error the
-//! process recorded, its exit without one, or the process outliving every
-//! window it has. None of them leaves onboarding waiting.
-//!
-//! The status file is read by a watcher thread when the identity directory
-//! changes, never by the compositor's loop, which only takes the reads in.
+//! The call waits on the network and on the person approving this computer on
+//! their other device, so it runs on a thread of its own; its outcome wakes
+//! the compositor's loop, which never reads the disk for it.
 
-use std::io::{Read as _, Write as _};
-use std::os::fd::OwnedFd;
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::identity::MintedIdentity;
-use tilo_enrollment::client::{PairingState, PairingStatus, pair_device_command};
+use serde_json::json;
+use tilo_api::client::{Client, Reach};
+use tilo_api::daemon::DaemonPlace;
+use tilo_device_identity::IdentityPaths;
+use tilo_device_identity::login::{LOG_IN, Place, Ticket};
 use tilo_onboarding::{t, t_args};
 
-pub use tilo_enrollment::client::PairingCause as NearbyCause;
+use crate::identity::MintedIdentity;
 
-/// The enrollment helper the image installs.
-const ENROLL: &str = "/usr/libexec/tilo/tilo-enroll";
+/// The resource the daemon's device actions act on.
+const RESOURCE: &str = "devices";
+/// The agent this computer logs in as. The desktop is the device itself, not
+/// an agent of the person's, so it does not borrow one of their agents' names.
+const AGENT: &str = "Tilo";
+/// How long this computer's daemon has to answer after it is asked to start.
+const DAEMON_START_WITHIN: Duration = Duration::from_secs(15);
 
-/// Each enrollment window the helper may wait through, in seconds.
-const PAIRING_WINDOW_SECS: u64 = 270;
-
-/// The helper waits through at most three windows (discovery, the request,
-/// and the approver's confirmation). A process still running after all of
-/// them and some slack is stuck, and is stopped.
-const PROCESS_BOUND: Duration = Duration::from_secs(3 * PAIRING_WINDOW_SECS + 30);
-
-/// What the helper last reported in its status file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NearbyProgress {
-    /// Nothing readable yet.
-    Starting,
-    /// Broadcasting; the trusted device shows the same code.
-    Waiting { code: String },
-    /// Joined `identity`, whose public record is `record_path`.
-    Complete {
-        identity: String,
-        record_path: PathBuf,
-    },
-    /// Ended without joining.
-    Failed(NearbyFailure),
+/// Why adding this computer stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NearbyCause {
+    /// The code is not one this computer can use: mistyped, or not a ticket.
+    Wrong,
+    /// The code was already spent.
+    Used,
+    /// The code is past its ten minutes.
+    Expired,
+    /// The device that printed the code could not be reached.
+    Unreached,
+    /// This computer could not save the login or the identity it brought.
+    Storage,
+    /// This computer's daemon did not start and answer.
+    NotStarted,
+    /// Setup here cannot add a computer at all.
+    Unavailable,
+    /// Nothing more is known.
+    Unknown,
 }
 
 fn cause_keys(cause: NearbyCause) -> (&'static str, &'static str) {
     match cause {
-        NearbyCause::PermissionDenied => (
-            "onboarding-nearby-permission-title",
-            "onboarding-nearby-permission",
+        NearbyCause::Wrong => ("onboarding-nearby-wrong-title", "onboarding-nearby-wrong"),
+        NearbyCause::Used => ("onboarding-nearby-used-title", "onboarding-nearby-used"),
+        NearbyCause::Expired => (
+            "onboarding-nearby-expired-title",
+            "onboarding-nearby-expired",
         ),
-        NearbyCause::StorageFull => (
-            "onboarding-nearby-storage-full-title",
-            "onboarding-nearby-storage-full",
-        ),
-        NearbyCause::ReadOnly => (
-            "onboarding-nearby-read-only-title",
-            "onboarding-nearby-read-only",
-        ),
-        NearbyCause::Unreachable => (
+        NearbyCause::Unreached => (
             "onboarding-nearby-unreachable-title",
             "onboarding-nearby-unreachable",
         ),
-        NearbyCause::TimedOut => (
-            "onboarding-nearby-timed-out-title",
-            "onboarding-nearby-timed-out",
-        ),
-        NearbyCause::InvalidIdentity => (
-            "onboarding-nearby-invalid-identity-title",
-            "onboarding-nearby-invalid-identity",
+        NearbyCause::Storage => (
+            "onboarding-nearby-storage-title",
+            "onboarding-nearby-storage",
         ),
         NearbyCause::NotStarted => (
             "onboarding-nearby-not-started-title",
             "onboarding-nearby-not-started",
         ),
-        NearbyCause::Ended => ("onboarding-nearby-failed-title", "onboarding-nearby-ended"),
+        NearbyCause::Unavailable => (
+            "onboarding-nearby-unavailable-title",
+            "onboarding-nearby-unavailable",
+        ),
         NearbyCause::Unknown => (
             "onboarding-nearby-failed-title",
             "onboarding-nearby-unknown",
@@ -94,7 +88,8 @@ fn cause_keys(cause: NearbyCause) -> (&'static str, &'static str) {
     }
 }
 
-/// Why a pairing attempt ended, and the helper's own words when it gave any.
+/// Why adding this computer stopped, and this computer's own words when it
+/// was not one of the reasons a person can act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NearbyFailure {
     pub cause: NearbyCause,
@@ -109,20 +104,13 @@ impl NearbyFailure {
         }
     }
 
-    /// A failure known only by its text; its cause is read from it.
-    pub fn from_detail(detail: String) -> Self {
-        Self {
-            cause: NearbyCause::from_text(&detail),
-            detail: Some(detail),
-        }
-    }
-
     /// What went wrong, in plain words: the banner's title.
     pub fn title(&self) -> String {
         t(cause_keys(self.cause).0)
     }
 
-    /// What to do next, followed by the helper's own words.
+    /// What to do next, followed by this computer's own words when it gave
+    /// any a person could act on.
     pub fn message(&self) -> String {
         let next = t(cause_keys(self.cause).1);
         match &self.detail {
@@ -137,1055 +125,676 @@ impl NearbyFailure {
         }
     }
 
-    /// Whether this says more than that the helper stopped.
-    fn is_informative(&self) -> bool {
-        self.detail.is_some() || !matches!(self.cause, NearbyCause::Unknown | NearbyCause::Ended)
+    fn unavailable(error: impl std::fmt::Display) -> Self {
+        Self {
+            cause: NearbyCause::Unavailable,
+            detail: Some(error.to_string()),
+        }
+    }
+
+    fn storage(error: impl std::fmt::Display) -> Self {
+        Self {
+            cause: NearbyCause::Storage,
+            detail: Some(error.to_string()),
+        }
+    }
+
+    fn not_started(error: impl std::fmt::Display) -> Self {
+        Self {
+            cause: NearbyCause::NotStarted,
+            detail: Some(error.to_string()),
+        }
     }
 }
 
-/// Parse the status file at `path`.
-pub fn read_progress(path: &Path) -> NearbyProgress {
-    let Some(status) = PairingStatus::read(path) else {
-        return NearbyProgress::Starting;
+/// The daemon's refusal, read as one of the reasons a person can act on. The
+/// details are kept only where nothing more is known: the designed reasons
+/// say what to do without the daemon's machinery.
+fn refused(error: &anyhow::Error) -> NearbyFailure {
+    let said = format!("{error:#}");
+    let cause = if said.contains("was used already") {
+        NearbyCause::Used
+    } else if said.contains("ran out") {
+        NearbyCause::Expired
+    } else if said.contains("is not the ticket's secret") || said.contains("not a Tilo ticket") {
+        NearbyCause::Wrong
+    } else if said.contains("can't be reached from here") {
+        NearbyCause::Unreached
+    } else if said.contains("reaching Tilo on this computer") || said.contains("didn't start") {
+        NearbyCause::NotStarted
+    } else if said.contains("serves no workspace") {
+        NearbyCause::Unavailable
+    } else {
+        NearbyCause::Unknown
     };
-    match status.state {
-        PairingState::Complete => {
-            match (status.identity, status.record_path.or(status.resource_path)) {
-                (Some(identity), Some(record_path)) => NearbyProgress::Complete {
-                    identity,
-                    record_path,
-                },
-                _ => NearbyProgress::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity)),
-            }
-        }
-        PairingState::Failed => {
-            let detail = status.error.filter(|error| !error.is_empty());
-            let cause = status
-                .cause
-                .or_else(|| detail.as_deref().map(NearbyCause::from_text))
-                .unwrap_or(NearbyCause::Unknown);
-            NearbyProgress::Failed(NearbyFailure { cause, detail })
-        }
-        _ => status
-            .verification_code
-            .map_or(NearbyProgress::Starting, |code| NearbyProgress::Waiting {
-                code,
-            }),
+    NearbyFailure {
+        cause,
+        detail: (cause == NearbyCause::Unknown).then_some(said),
     }
 }
 
-/// What onboarding should show after one [`NearbyPairing::poll`].
+/// What setup should show after one [`NearbyJoin::poll`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NearbyEvent {
     /// Nothing changed.
     Idle,
-    /// A verification code to show.
-    Code(String),
-    /// The device joined this identity. Pairing is over.
+    /// This computer joined the person's identity. Adding it is over.
     Joined(MintedIdentity),
-    /// Pairing ended without joining, and why. Pairing is over.
+    /// Adding this computer ended without joining, and why.
     Failed(NearbyFailure),
 }
 
-/// How long the status watcher waits for a change before reading the status
-/// file anyway, should no change notification reach it.
-const STATUS_FALLBACK: Duration = Duration::from_millis(250);
-
-/// Allow a late verified commit to arrive without waiting forever on disk I/O.
-const FINAL_LOOK_GRACE: Duration = Duration::from_secs(2);
-
-/// The status file as the watcher read it, with the identities it names
-/// already verified: the loop never reads the identity directory.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StatusRead {
-    progress: NearbyProgress,
-    /// For a completed join, its record, when that verifies.
-    joined: Option<MintedIdentity>,
-    /// Whether this is the final look, made once the helper ended or ran
-    /// out of time.
-    final_look: bool,
-    /// On the final look, the active identity, when one is selected and
-    /// verifies.
-    active: Option<MintedIdentity>,
+/// One code being redeemed. Dropping it stops setup from taking the result
+/// up; the call itself is bounded by the code's lifetime on the issuing
+/// device.
+pub struct NearbyJoin {
+    outcome: mpsc::Receiver<NearbyEvent>,
+    /// Set when setup gives the attempt up, so its login is not taken up here.
+    cancelled: Arc<AtomicBool>,
 }
 
-impl StatusRead {
-    const STARTING: Self = Self {
-        progress: NearbyProgress::Starting,
-        joined: None,
-        final_look: false,
-        active: None,
-    };
-}
-
-/// What wakes the status watcher.
-enum WatcherWake {
-    /// Something in the identity directory changed.
-    Changed,
-    /// The helper ended or ran out of time: look once more, including the
-    /// identity it may have selected.
-    Final,
-    /// The attempt is over.
-    Stop,
-}
-
-/// Reads the helper's status file on its own thread whenever the identity
-/// directory changes, and sends each new read back. The helper is another
-/// process and reports only through that file; reading it on the
-/// compositor's loop held a frame for the disk four times a second.
-struct StatusWatcher {
-    wakes: mpsc::Sender<WatcherWake>,
-    reads: mpsc::Receiver<StatusRead>,
-}
-
-impl StatusWatcher {
-    /// Start watching `status_path`. `None` when the thread cannot start.
-    fn start(status_path: PathBuf, identity_dir: PathBuf) -> Option<Self> {
-        let (wakes, woken) = mpsc::channel();
-        let (sent, reads) = mpsc::channel();
-        // Made on the loop's thread, so a new read wakes the loop it is for.
-        let wake = crate::services::loop_waker();
-        let changes = wakes.clone();
-        let spawned = std::thread::Builder::new()
-            .name("tilo-nearby-status".into())
-            .spawn(move || {
-                // Change notifications only hurry the next read; without
-                // them the fallback still reads.
-                let watcher = tilo_files::native::watch_changes(&identity_dir, |_| true, move || {
-                    let _ = changes.send(WatcherWake::Changed);
-                });
-                if let Err(error) = &watcher {
-                    tracing::debug!(%error, "pairing status changes are not notified; reading on a timer");
-                }
-                watch_status(&status_path, &identity_dir, &woken, &sent, &wake);
-                drop(watcher);
-            });
-        match spawned {
-            Ok(_) => Some(Self { wakes, reads }),
-            Err(error) => {
-                tracing::warn!(%error, "pairing status watcher did not start");
-                None
-            }
-        }
-    }
-}
-
-impl Drop for StatusWatcher {
-    fn drop(&mut self) {
-        let _ = self.wakes.send(WatcherWake::Stop);
-    }
-}
-
-/// The watcher thread: read the status, send it when it changed or a final
-/// look was asked for, and wait for the next change.
-fn watch_status(
-    status_path: &Path,
-    identity_dir: &Path,
-    woken: &mpsc::Receiver<WatcherWake>,
-    sent: &mpsc::Sender<StatusRead>,
-    wake: &std::task::Waker,
-) {
-    let mut last = None;
-    let mut final_look = false;
-    loop {
-        let read = read_status(status_path, identity_dir, final_look);
-        if final_look || last.as_ref() != Some(&read) {
-            if sent.send(read.clone()).is_err() {
-                return;
-            }
-            wake.wake_by_ref();
-            last = Some(read);
-        }
-        final_look = false;
-        let first = match woken.recv_timeout(STATUS_FALLBACK) {
-            Ok(signal) => Some(signal),
-            Err(mpsc::RecvTimeoutError::Timeout) => None,
-            Err(mpsc::RecvTimeoutError::Disconnected) => return,
-        };
-        // One read covers every change queued meanwhile.
-        for signal in first.into_iter().chain(woken.try_iter()) {
-            match signal {
-                WatcherWake::Changed => {}
-                WatcherWake::Final => final_look = true,
-                WatcherWake::Stop => return,
-            }
-        }
-    }
-}
-
-/// Read the status file at `status_path`, verifying the identity a
-/// completed join names, and on a `final_look` the active identity too.
-/// Reads the disk: never on the compositor's loop.
-fn read_status(status_path: &Path, identity_dir: &Path, final_look: bool) -> StatusRead {
-    let progress = read_progress(status_path);
-    let joined = match &progress {
-        NearbyProgress::Complete {
-            identity,
-            record_path,
-        } => verified(identity_dir, record_path, Some(identity.as_str())),
-        _ => None,
-    };
-    let active = final_look
-        .then(|| tilo_identity::store::resolve_active_identity(identity_dir))
-        .flatten()
-        .and_then(|path| verified(identity_dir, &path, None));
-    StatusRead {
-        progress,
-        joined,
-        final_look,
-        active,
-    }
-}
-
-/// `path` as a joined identity, when it is a valid record directly in
-/// `identity_dir` (and of `expected`, when given).
-fn verified(identity_dir: &Path, path: &Path, expected: Option<&str>) -> Option<MintedIdentity> {
-    if path.parent() != Some(identity_dir) {
-        return None;
-    }
-    let identity = crate::identity::existing_identity_at(path).ok()?;
-    expected
-        .is_none_or(|expected| identity.fingerprint == expected)
-        .then_some(identity)
-}
-
-/// One running pairing attempt. Dropping it stops the helper's whole process
-/// group.
-pub struct NearbyPairing {
-    child: Option<Child>,
-    deadline: Instant,
-    shown_code: Option<String>,
-    /// Reads the status file off the loop; `None` when disconnected.
-    watcher: Option<StatusWatcher>,
-    /// What the status file held when last read.
-    status: StatusRead,
-    /// When the final look was asked for, with its own bounded grace.
-    ending: Option<Instant>,
-}
-
-impl NearbyPairing {
-    /// Start pairing this device into an identity a nearby device approves.
+impl NearbyJoin {
+    /// Redeem `ticket` and take the login up as this account's identity.
     ///
     /// # Errors
-    ///
-    /// Why the helper cannot be started.
+    /// The thread that redeems it cannot be started.
     pub fn start(
-        identity_root: &Path,
+        ticket: String,
         identity_dir: &Path,
-        status_path: &Path,
+        paths: &IdentityPaths,
         label: &str,
     ) -> Result<Self, NearbyFailure> {
-        let lease =
-            tilo_server_protocol::ProcessLease::capture(std::process::id()).map_err(|error| {
-                NearbyFailure {
-                    cause: NearbyCause::NotStarted,
-                    detail: Some(error.to_string()),
-                }
-            })?;
-        let command = pair_device_command(
-            Path::new(ENROLL),
-            identity_root,
-            identity_dir,
-            label,
-            PAIRING_WINDOW_SECS,
-            status_path,
-            lease,
-        );
-        Self::spawn(command, identity_dir, status_path, PROCESS_BOUND)
+        let (sender, outcome) = mpsc::channel();
+        // Made on the loop's thread, so the outcome wakes the loop it is for.
+        let wake = crate::services::loop_waker();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&cancelled);
+        let identity_dir = identity_dir.to_path_buf();
+        let paths = paths.clone();
+        let label = label.to_owned();
+        std::thread::Builder::new()
+            .name("tilo-device-join".into())
+            .spawn(move || {
+                let event = match join(&ticket, &identity_dir, &paths, &label, &stop) {
+                    Ok(minted) => NearbyEvent::Joined(minted),
+                    Err(failure) => NearbyEvent::Failed(failure),
+                };
+                let _ = sender.send(event);
+                wake.wake_by_ref();
+            })
+            .map_err(NearbyFailure::not_started)?;
+        Ok(Self { outcome, cancelled })
     }
 
-    /// Start link pairing with the running session's executable. Only the
-    /// private stdin stream carries the link.
-    ///
-    /// # Errors
-    ///
-    /// The lease, private stream or requester could not be started.
-    pub fn start_link(
-        identity_root: &Path,
-        identity_dir: &Path,
-        status_path: &Path,
-        link: &str,
-    ) -> Result<Self, NearbyFailure> {
-        fn not_started(error: &std::io::Error) -> NearbyFailure {
-            NearbyFailure {
-                cause: NearbyCause::NotStarted,
-                detail: Some(error.to_string()),
+    /// Take in the thread's outcome. Never reads the disk: everything it needs
+    /// arrived through the channel.
+    pub fn poll(&mut self, _now: Instant) -> NearbyEvent {
+        match self.outcome.try_recv() {
+            Ok(event) => event,
+            Err(mpsc::TryRecvError::Empty) => NearbyEvent::Idle,
+            // The thread ended without an outcome, which only a panic does.
+            Err(mpsc::TryRecvError::Disconnected) => {
+                NearbyEvent::Failed(NearbyFailure::new(NearbyCause::Unknown))
             }
         }
-
-        let lease = tilo_server_protocol::ProcessLease::capture(std::process::id())
-            .map_err(|error| not_started(&error))?;
-        let (reader, mut writer) = UnixStream::pair().map_err(|error| not_started(&error))?;
-        // The input is bounded and written before the child starts. Keep the
-        // compositor loop nonblocking even if the socket cannot hold it.
-        writer
-            .set_nonblocking(true)
-            .map_err(|error| not_started(&error))?;
-        writer
-            .write_all(link.as_bytes())
-            .map_err(|error| not_started(&error))?;
-        drop(writer);
-        let mut command =
-            Command::new(std::env::current_exe().map_err(|error| not_started(&error))?);
-        command
-            .arg("--pair-device-link-stdin")
-            .arg(lease.pid().to_string())
-            .arg(lease.start_time().to_string())
-            .arg(status_path)
-            .env("TILO_IDENTITY_ROOT", identity_root);
-        Self::spawn_with_input(
-            command,
-            identity_dir,
-            status_path,
-            PROCESS_BOUND,
-            Stdio::from(OwnedFd::from(reader)),
-        )
     }
+}
 
-    pub fn spawn(
-        command: Command,
-        identity_dir: &Path,
-        status_path: &Path,
-        bound: Duration,
-    ) -> Result<Self, NearbyFailure> {
-        Self::spawn_with_input(command, identity_dir, status_path, bound, Stdio::null())
+impl Drop for NearbyJoin {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
     }
+}
 
-    fn spawn_with_input(
-        mut command: Command,
-        identity_dir: &Path,
-        status_path: &Path,
-        bound: Duration,
-        input: Stdio,
-    ) -> Result<Self, NearbyFailure> {
-        let _ = std::fs::remove_file(status_path);
-        let watcher = StatusWatcher::start(status_path.to_path_buf(), identity_dir.to_path_buf())
-            .ok_or_else(|| NearbyFailure::new(NearbyCause::NotStarted))?;
-        let child = bounded_command::own_process_tree(&mut command)
-            .stdin(input)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            // The helper and anything it starts share one revocable
-            // lifetime: Cancel, Back and compositor teardown stop the whole
-            // group instead of orphaning a descendant.
-            .spawn()
-            .map_err(|error| NearbyFailure {
-                cause: NearbyCause::from_io(error.kind()).unwrap_or(NearbyCause::NotStarted),
-                detail: Some(error.to_string()),
+/// Redeem `ticket` on this computer's daemon and take the login it answers up
+/// as the identity under `identity_dir`.
+fn join(
+    ticket: &str,
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    label: &str,
+    cancelled: &AtomicBool,
+) -> Result<MintedIdentity, NearbyFailure> {
+    let ticket = Ticket::parse(ticket).map_err(|_| NearbyFailure::new(NearbyCause::Wrong))?;
+    let (key, _) = tilo_device_identity::persist::load_or_create_device_key(paths)
+        .map_err(NearbyFailure::storage)?;
+    let place = Place::here(paths.clone()).map_err(NearbyFailure::unavailable)?;
+    make_login_dir(place.dir())?;
+    let daemon = DaemonPlace::of(place.dir(), &key.verifying_key().to_bytes())
+        .map_err(NearbyFailure::unavailable)?;
+    ensure_daemon(&daemon)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(NearbyFailure::not_started)?;
+    runtime
+        .block_on(async {
+            let client = Client::open(Reach {
+                api: None,
+                key_file: None,
+                json: false,
             })?;
-        Ok(Self {
-            child: Some(child),
-            deadline: Instant::now()
-                .checked_add(bound)
-                .unwrap_or_else(Instant::now),
-            shown_code: None,
-            watcher: Some(watcher),
-            status: StatusRead::STARTING,
-            ending: None,
+            let workspace = client.founded_workspace().await?;
+            client
+                .act(
+                    &workspace,
+                    RESOURCE,
+                    LOG_IN,
+                    &json!({"ticket": ticket.encode(), "agent": AGENT, "label": label}),
+                    "Log in",
+                )
+                .await?;
+            Ok::<(), anyhow::Error>(())
         })
+        .map_err(|error| refused(&error))?;
+    // Setup gave the attempt up: the login stays kept for a later daemon to
+    // take up, and nothing is written into this account's identity here.
+    if cancelled.load(Ordering::Acquire) {
+        return Err(NearbyFailure::new(NearbyCause::Unknown));
+    }
+    let device = tilo_device_identity::login::load(&place)
+        .map_err(NearbyFailure::storage)?
+        .ok_or_else(|| NearbyFailure::storage("the login was not kept"))?
+        .1;
+    // What a daemon starting with this login does for itself, done here so the
+    // identity is this account's before the desktop opens.
+    let now = tilo_clock::unix_now_ns();
+    tilo_device_identity::persist::install_device_cert(paths, &device.cert, now)
+        .map_err(NearbyFailure::storage)?;
+    tilo_identity::provisioning::complete_enrolled_device(identity_dir, paths, now)
+        .map_err(NearbyFailure::storage)?;
+    let active = tilo_identity::store::resolve_active_identity(identity_dir)
+        .ok_or_else(|| NearbyFailure::storage("the identity record was not written"))?;
+    crate::identity::existing_identity_at(&active).map_err(|why| NearbyFailure {
+        cause: NearbyCause::Unknown,
+        detail: Some(why),
+    })
+}
+
+/// The login directory the device's daemon and login live in, made private
+/// here when this computer has none yet: `holder_dir` reads it before
+/// anything else would make it.
+fn make_login_dir(dir: &Path) -> Result<(), NearbyFailure> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(NearbyFailure::storage)
+}
+
+/// Wait for this computer's daemon to serve its API, starting one when none
+/// does. The daemon ends by itself once the login changes, so nothing here
+/// leaves one behind that would cut the desktop's own session off.
+fn ensure_daemon(place: &DaemonPlace) -> Result<(), NearbyFailure> {
+    place
+        .wait_for_api(DAEMON_START_WITHIN, || place.start().map(drop))
+        .map_err(NearbyFailure::not_started)
+}
+
+#[cfg(test)]
+pub(crate) mod testing {
+    //! A stand-in for this computer's daemon at the one place setup reaches
+    //! it: the socket the real daemon serves Tilo's API on. It answers the two
+    //! calls `tilo login` makes, `GET /v1/workspaces` and the `devices#logIn`
+    //! action, and keeps a login the real daemon would keep.
+
+    use std::io::{Read as _, Write as _};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use ed25519_dalek::SigningKey;
+    use serde_json::json;
+    use tilo_device_identity::IdentityPaths;
+    use tilo_device_identity::login::{Device, Place};
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
+    use super::{DaemonPlace, make_login_dir};
+
+    pub(crate) const WORKSPACE: &str = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+
+    /// What the stand-in daemon answers the login with.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) enum Answer {
+        /// Certify this computer, as the device that printed the code does.
+        Certify,
+        /// Refuse it with `message`, as the device of a spent code does.
+        Refuse(&'static str),
+        /// Wait a while before certifying it, as a device a person has to
+        /// approve by hand does.
+        Hold,
     }
 
-    /// Advance from what the helper reported. After [`NearbyEvent::Joined`]
-    /// or [`NearbyEvent::Failed`] the caller drops this attempt. Never reads
-    /// the disk: the status comes from the watcher.
-    pub fn poll(&mut self, now: Instant) -> NearbyEvent {
-        let exited = self
-            .child
-            .as_mut()
-            .and_then(|child| child.try_wait().ok().flatten());
-        let ended = exited.is_some() || now >= self.deadline;
-        self.take_status(ended, now);
-        if matches!(self.status.progress, NearbyProgress::Complete { .. }) {
-            return match self.status.joined.clone() {
-                Some(joined) => NearbyEvent::Joined(joined),
-                None => self.fail(NearbyFailure::new(NearbyCause::InvalidIdentity)),
-            };
-        }
-        if ended {
-            // The join selects its identity as active once its commit has
-            // written everything else. A verified active identity is a
-            // completed join even when its status update was lost, but only
-            // once the helper has ended (or run out of time): ending this
-            // attempt stops the helper, and one still running is still
-            // finishing its commit and its status. The final look reads
-            // both after the end, so what is decided below is what the
-            // helper left.
-            if !self.status.final_look
-                && self.watcher.is_some()
-                && self.ending.is_some_and(|started| {
-                    now.saturating_duration_since(started) < FINAL_LOOK_GRACE
+    /// The stand-in daemon, listening where this computer's own would.
+    pub(crate) struct FakeDaemon {
+        api: PathBuf,
+        stop: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl FakeDaemon {
+        pub(crate) fn start(paths: &IdentityPaths, answer: Answer) -> Self {
+            let place = Place::here(paths.clone()).expect("this account's login place");
+            make_login_dir(place.dir()).expect("the login directory");
+            let key = tilo_device_identity::persist::load_device_key(paths).expect("a device key");
+            let daemon = DaemonPlace::of(place.dir(), &key.verifying_key().to_bytes())
+                .expect("the daemon's place");
+            // A daemon serving a computer with no login is this computer's
+            // own device already, certified as such: that certificate is
+            // what names the socket `tilo` commands reach it on.
+            let root = SigningKey::from_bytes(&[0x42; 32]);
+            let cert = cert_for(&root, &key, "this computer");
+            tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert)
+                .expect("the daemon's certificate");
+            let listener = UnixListener::bind(daemon.api()).expect("the daemon's socket");
+            listener
+                .set_nonblocking(true)
+                .expect("a socket that is looked at");
+            let stop = Arc::new(AtomicBool::new(false));
+            let running = Arc::clone(&stop);
+            let paths = paths.clone();
+            let thread = std::thread::Builder::new()
+                .name("fake-tilo-daemon".into())
+                .spawn(move || {
+                    while !running.load(Ordering::Acquire) {
+                        match listener.accept() {
+                            Ok((stream, _)) => serve(stream, &paths, answer),
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                std::thread::sleep(std::time::Duration::from_millis(5));
+                            }
+                            Err(_) => return,
+                        }
+                    }
                 })
-            {
-                return NearbyEvent::Idle;
+                .expect("the stand-in's thread");
+            Self {
+                api: daemon.api().to_path_buf(),
+                stop,
+                thread: Some(thread),
             }
-            if let Some(joined) = self.status.active.clone() {
-                return NearbyEvent::Joined(joined);
-            }
         }
-        if let Some(status) = exited {
-            let progress = self.status.progress.clone();
-            return self.exited(status, progress);
-        }
-        if now >= self.deadline {
-            return self.fail(NearbyFailure::new(NearbyCause::TimedOut));
-        }
-        if let NearbyProgress::Waiting { code } = &self.status.progress
-            && self.shown_code.as_ref() != Some(code)
-        {
-            self.shown_code = Some(code.clone());
-            return NearbyEvent::Code(code.clone());
-        }
-        NearbyEvent::Idle
     }
 
-    /// Take in the watcher's newest read, asking it for the final look once
-    /// the attempt has `ended`. A lost watcher never moves reads onto the loop.
-    fn take_status(&mut self, ended: bool, now: Instant) {
-        let Some(watcher) = &self.watcher else {
+    impl Drop for FakeDaemon {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+            let _ = std::fs::remove_file(&self.api);
+        }
+    }
+
+    /// One request of the client, answered.
+    fn serve(mut stream: UnixStream, paths: &IdentityPaths, answer: Answer) {
+        let Ok((head, body)) = request(&mut stream) else {
             return;
         };
-        loop {
-            match watcher.reads.try_recv() {
-                Ok(read) => {
-                    // A final look stands until the attempt is over.
-                    if !self.status.final_look || read.final_look {
-                        self.status = read;
-                    }
-                }
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.watcher = None;
-                    return;
-                }
+        let (status, answer) = if head.starts_with("GET /v1/workspaces") {
+            (
+                200,
+                json!({"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}),
+            )
+        } else if head.contains("/resources/devices/actions/logIn") {
+            if matches!(answer, Answer::Hold) {
+                std::thread::sleep(std::time::Duration::from_millis(750));
             }
-        }
-        if ended && self.ending.is_none() {
-            self.ending = Some(now);
-            if watcher.wakes.send(WatcherWake::Final).is_err() {
-                self.watcher = None;
-            }
-        }
-    }
-
-    fn exited(&mut self, status: ExitStatus, progress: NearbyProgress) -> NearbyEvent {
-        let stderr = self
-            .child
-            .as_mut()
-            .and_then(|child| child.stderr.as_mut())
-            .map(available_output)
-            .unwrap_or_default();
-        let failure = match progress {
-            _ if status.success() => NearbyFailure::new(NearbyCause::InvalidIdentity),
-            NearbyProgress::Failed(failure) if failure.is_informative() => failure,
-            _ => stderr
-                .lines()
-                .rev()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .map(|line| line.trim_start_matches("Error: ").to_owned())
-                .map_or_else(
-                    || NearbyFailure::new(NearbyCause::Ended),
-                    NearbyFailure::from_detail,
+            let asked: serde_json::Value =
+                serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+            match answer {
+                Answer::Certify | Answer::Hold => {
+                    let ticket = asked.get("ticket").and_then(|value| value.as_str());
+                    assert!(
+                        ticket.is_some_and(|ticket| ticket.starts_with("tilo1")),
+                        "the login carries the code: {asked}"
+                    );
+                    assert!(
+                        asked
+                            .get("agent")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|agent| !agent.is_empty()),
+                        "the login names the agent here: {asked}"
+                    );
+                    keep_login(paths);
+                    (200, json!({"result": {}}))
+                }
+                Answer::Refuse(message) => (
+                    409,
+                    json!({"error": {"code": "device-action", "message": message}}),
                 ),
+            }
+        } else {
+            (
+                404,
+                json!({"error": {"code": "not-found", "message": "no such route"}}),
+            )
         };
-        self.fail(failure)
+        let body = answer.to_string();
+        let _ = write!(
+            stream,
+            "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
     }
 
-    fn fail(&mut self, failure: NearbyFailure) -> NearbyEvent {
-        terminate(&mut self.child);
-        NearbyEvent::Failed(failure)
-    }
-}
-
-impl Drop for NearbyPairing {
-    fn drop(&mut self) {
-        terminate(&mut self.child);
-    }
-}
-
-/// What the helper wrote to `stream` so far, without waiting for more.
-///
-/// The helper has exited, but a worker it started may still hold the pipe
-/// open; reading to end of file would block the compositor until that worker
-/// is gone. The pipe is switched to non-blocking and drained of what is there.
-fn available_output(stream: &mut std::process::ChildStderr) -> String {
-    use std::os::fd::AsRawFd as _;
-
-    let fd = stream.as_raw_fd();
-    // SAFETY: `fd` is the open read end of this child's stderr pipe, owned by
-    // `stream` for the whole call; F_GETFL/F_SETFL only change its flags.
-    let nonblocking = unsafe {
-        let flags = libc::fcntl(fd, libc::F_GETFL);
-        flags >= 0 && libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) == 0
-    };
-    if !nonblocking {
-        return String::new();
-    }
-    let mut bytes = Vec::new();
-    let mut chunk = [0_u8; 4096];
-    while bytes.len() < 64 * 1024 {
-        match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
-            Ok(read) => bytes.extend_from_slice(chunk.get(..read).unwrap_or_default()),
+    /// The request line and headers, then its body.
+    fn request(stream: &mut UnixStream) -> std::io::Result<(String, Vec<u8>)> {
+        let mut data = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            let read = stream.read(&mut chunk)?;
+            if read == 0 {
+                return Err(std::io::Error::other("the client ended first"));
+            }
+            data.extend_from_slice(chunk.get(..read).unwrap_or_default());
+            let Some(end) = data.windows(4).position(|window| window == b"\r\n\r\n") else {
+                continue;
+            };
+            let head = String::from_utf8_lossy(&data[..end]).into_owned();
+            let length = head
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.trim()
+                        .eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())?
+                })
+                .unwrap_or(0);
+            let body = end.checked_add(4).unwrap_or(end);
+            while data.len() < body.saturating_add(length) {
+                let read = stream.read(&mut chunk)?;
+                if read == 0 {
+                    break;
+                }
+                data.extend_from_slice(chunk.get(..read).unwrap_or_default());
+            }
+            let body_bytes = data
+                .get(body..body.saturating_add(length))
+                .unwrap_or_default();
+            return Ok((head, body_bytes.to_vec()));
         }
     }
-    String::from_utf8_lossy(&bytes).into_owned()
-}
 
-/// Stop `child` and every process in its group, bounded.
-fn terminate(child: &mut Option<Child>) {
-    if let Some(mut child) = child.take() {
-        bounded_command::terminate_tree(&mut child, Duration::from_millis(750));
+    /// The login a real daemon would keep for the computer that asked.
+    fn keep_login(paths: &IdentityPaths) {
+        let root = SigningKey::from_bytes(&[0x42; 32]);
+        let key = tilo_device_identity::persist::load_device_key(paths).expect("a device key");
+        let cert = cert_for(&root, &key, "the kitchen computer");
+        let server_cert = cert_for(&root, &root, "the server");
+        let place = Place::here(paths.clone()).expect("a place");
+        let device = Device {
+            site: "https://tilo.test/".into(),
+            host_origin: "https://eu1.tilo.test".into(),
+            workspace: WORKSPACE.into(),
+            workspace_name: Some("Studio".into()),
+            agent: "Tilo".into(),
+            cert,
+            server_cert,
+            server_address: None,
+        };
+        tilo_device_identity::login::store(&place, &device).expect("the login kept");
+    }
+
+    /// A member certificate `root` signs for `key`.
+    fn cert_for(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: label.into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: tilo_clock::unix_now_ns().saturating_sub(60_000_000_000),
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, root).expect("the person's signature");
+        cert
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    use super::testing::{Answer, FakeDaemon, WORKSPACE};
     use super::*;
-    use std::os::unix::fs::PermissionsExt as _;
+    use ed25519_dalek::SigningKey;
+    use std::path::PathBuf;
 
-    struct Fixture {
-        _dir: tempfile::TempDir,
-        identity_dir: PathBuf,
-        status: PathBuf,
+    /// An account of its own, logged out: private runtime, state, config and
+    /// identity directories, and this computer's one device key, all under a
+    /// temporary home so nothing here reads or writes the real one.
+    pub(crate) struct Account {
+        pub dir: tempfile::TempDir,
+        pub paths: IdentityPaths,
+        /// Held for the test's whole run: the environment above is the
+        /// process's.
+        _env: tilo_test_env::ScopedEnv,
     }
 
-    fn fixture() -> Fixture {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let identity_dir = dir.path().join("identity");
-        std::fs::create_dir(&identity_dir).expect("identity dir");
-        std::fs::set_permissions(&identity_dir, std::fs::Permissions::from_mode(0o700))
-            .expect("private identity dir");
-        let status = identity_dir.join(".nearby-enrollment-status.json");
-        Fixture {
-            _dir: dir,
-            identity_dir,
-            status,
-        }
-    }
-
-    fn helper(fixture: &Fixture, script: &str, bound: Duration) -> NearbyPairing {
-        let mut command = Command::new("sh");
-        command
-            .args(["-c", script, "helper"])
-            .arg(&fixture.status)
-            .arg(&fixture.identity_dir);
-        NearbyPairing::spawn(command, &fixture.identity_dir, &fixture.status, bound)
-            .expect("spawn helper")
-    }
-
-    fn poll_until_over(pairing: &mut NearbyPairing) -> NearbyEvent {
-        poll_until_over_at(pairing, None)
-    }
-
-    fn poll_until_over_at(pairing: &mut NearbyPairing, now: Option<Instant>) -> NearbyEvent {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            match pairing.poll(now.unwrap_or_else(Instant::now)) {
-                NearbyEvent::Idle | NearbyEvent::Code(_) => {}
-                event => return event,
+    impl Account {
+        pub(crate) fn new() -> Self {
+            use std::os::unix::fs::PermissionsExt as _;
+            let dir = tempfile::tempdir().expect("tempdir");
+            let private = |name: &str| {
+                let path = dir.path().join(name);
+                std::fs::create_dir_all(&path).expect("a directory");
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                    .expect("a private directory");
+                path
+            };
+            let runtime = private("run");
+            let state = private("state");
+            let config = private("config");
+            let root = dir.path().join("identity-root");
+            std::fs::create_dir_all(&root).expect("an identity root");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("HOME", dir.path())
+                .set("XDG_RUNTIME_DIR", &runtime)
+                .set("XDG_STATE_HOME", &state)
+                .set("XDG_CONFIG_HOME", &config)
+                .set("TILO_IDENTITY_ROOT", &root);
+            let paths = tilo_identity::provisioning::collaboration_identity_paths();
+            let key = SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(getrandom::SysRng));
+            tilo_device_identity::persist::adopt_device_key(&paths, &key.to_bytes())
+                .expect("this computer's device key");
+            Self {
+                dir,
+                paths,
+                _env: env,
             }
-            assert!(Instant::now() < deadline, "pairing never ended");
-            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        /// The identity directory setup writes this account's identity into.
+        pub(crate) fn identity_dir(&self) -> PathBuf {
+            use std::os::unix::fs::PermissionsExt as _;
+            let dir = self.dir.path().join("config/tilo/identity");
+            std::fs::create_dir_all(&dir).expect("an identity directory");
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+                .expect("a private identity directory");
+            dir
         }
     }
 
-    fn joined_record(fixture: &Fixture, user: [u8; 32]) -> PathBuf {
-        let path = fixture.identity_dir.join("identity-joined.json");
-        let bytes =
-            tilo_identity::store::public_member_record("Member", [1, 2, 3], user).expect("record");
-        std::fs::write(&path, bytes).expect("write record");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            .expect("private record");
-        path
+    /// A code in the form `tilo device add` prints it.
+    fn code() -> String {
+        let issuer = tilo_device_identity::login::Reached {
+            endpoint: *SigningKey::from_bytes(&[9; 32]).verifying_key().as_bytes(),
+            relay: None,
+            direct: Vec::new(),
+        };
+        tilo_device_identity::login::Ticket::new(issuer).encode()
+    }
+
+    fn wait_for_outcome(join: &mut NearbyJoin) -> NearbyEvent {
+        tilo_test_env::wait_for("the code to be redeemed", || {
+            match join.poll(Instant::now()) {
+                NearbyEvent::Idle => None,
+                event => Some(event),
+            }
+        })
     }
 
     tilo_test_env::scenario! {
-        fn a_pairing_ends_as_its_helper_reports_and_names_why_it_failed;
+        fn a_code_another_of_the_persons_devices_printed_adds_this_computer;
 
-        phase a_complete_status_joins_without_waiting_for_the_helper_to_exit;
+        phase a_code_printed_elsewhere_certifies_this_computer_and_is_taken_up;
         {
-            let fixture = fixture();
-            let record = joined_record(&fixture, [7; 32]);
-            let status = serde_json::json!({
-                "state": "complete",
-                "verification_code": "123456",
-                "identity": hex::encode([7; 32]),
-                "resource_path": record,
-            });
-            // The helper keeps running after reporting: completion must not
-            // wait for its exit or parse anything it prints.
-            let script = format!("printf '%s' '{status}' > \"$1\"; exec sleep infinity");
-            let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
-            assert_eq!(
-                poll_until_over(&mut pairing),
-                NearbyEvent::Joined(MintedIdentity {
-                    fingerprint: hex::encode([7; 32]),
-                    path: record,
-                })
-            );
-        }
-
-        phase a_status_naming_another_identity_is_invalid;
-        {
-            let fixture = fixture();
-            let record = joined_record(&fixture, [7; 32]);
-            let status = serde_json::json!({
-                "state": "complete",
-                "identity": hex::encode([8; 32]),
-                "record_path": record,
-            });
-            let script = format!("printf '%s' '{status}' > \"$1\"");
-            let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
-            assert_eq!(
-                poll_until_over(&mut pairing),
-                NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
-            );
-        }
-
-        phase a_selected_identity_joins_without_a_status;
-        {
-            let fixture = fixture();
-            let record = joined_record(&fixture, [9; 32]);
-            tilo_identity::store::set_active_identity(&fixture.identity_dir, "identity-joined")
-                .expect("select joined identity");
-            let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
-            assert_eq!(
-                poll_until_over(&mut pairing),
-                NearbyEvent::Joined(MintedIdentity {
-                    fingerprint: hex::encode([9; 32]),
-                    path: record,
-                })
-            );
-        }
-
-        phase a_refused_commit_reports_permission_denied;
-        {
-            let fixture = fixture();
-            let script = r#"printf '%s' '{"state":"failed","error":"Permission denied (os error 13)","cause":"permission_denied"}' > "$1"; echo "Error: Permission denied (os error 13)" >&2; exit 1"#;
-            let mut pairing = helper(&fixture, script, PROCESS_BOUND);
-            let NearbyEvent::Failed(failure) = poll_until_over(&mut pairing) else {
-                panic!("the refused commit is a failure");
-            };
-            assert_eq!(
-                failure,
-                NearbyFailure {
-                    cause: NearbyCause::PermissionDenied,
-                    detail: Some("Permission denied (os error 13)".into()),
-                }
-            );
-            assert!(failure.title().contains("Permission denied"), "{failure:?}");
-        }
-
-        phase an_unparsed_error_is_reported_verbatim;
-        {
-            let fixture = fixture();
-            let script = r#"echo "Error: Not authorized" >&2; exit 127"#;
-            let mut pairing = helper(&fixture, script, PROCESS_BOUND);
-            let expected = NearbyFailure {
-                cause: NearbyCause::Unknown,
-                detail: Some("Not authorized".into()),
-            };
-            assert_eq!(
-                poll_until_over(&mut pairing),
-                NearbyEvent::Failed(expected)
-            );
-            assert_eq!(read_progress(&fixture.status), NearbyProgress::Starting);
-        }
-
-        phase a_worker_holding_stderr_does_not_delay_the_failure;
-        {
-            let fixture = fixture();
-            // The leader reports and exits while a worker it started keeps
-            // the inherited stderr open for longer than the test waits, so
-            // a report that waited on the pipe never comes.
-            let script = format!(
-                r#"(sleep {}) & echo "Error: Permission denied (os error 13)" >&2; exit 1"#,
-                tilo_test_env::hang_bound()
-                    .as_secs()
-                    .saturating_mul(2)
-                    .max(600)
-            );
-            let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
-            assert_eq!(
-                poll_until_over(&mut pairing),
-                NearbyEvent::Failed(NearbyFailure {
-                    cause: NearbyCause::PermissionDenied,
-                    detail: Some("Permission denied (os error 13)".into()),
-                })
-            );
-        }
-
-        phase a_helper_exiting_without_an_identity_is_invalid;
-        {
-            let fixture = fixture();
-            let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
-            assert_eq!(
-                poll_until_over(&mut pairing),
-                NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
-            );
-        }
-
-        phase each_failure_cause_reaches_the_screen_in_its_own_words;
-        {
-            // A reason known only as text still carries its operating-system
-            // error.
-            for (text, cause) in [
-                (
-                    "Permission denied (os error 13)",
-                    NearbyCause::PermissionDenied,
-                ),
-                (
-                    "write commit: Operation not permitted (os error 1)",
-                    NearbyCause::PermissionDenied,
-                ),
-                (
-                    "No space left on device (os error 28)",
-                    NearbyCause::StorageFull,
-                ),
-                ("Read-only file system (os error 30)", NearbyCause::ReadOnly),
-                (
-                    "Network is unreachable (os error 101)",
-                    NearbyCause::Unreachable,
-                ),
-                ("Not authorized", NearbyCause::Unknown),
-                ("Invalid argument (os error 22)", NearbyCause::Unknown),
-            ] {
-                assert_eq!(NearbyCause::from_text(text), cause, "{text}");
-            }
-            let fixture = fixture();
-            std::fs::write(
-                &fixture.status,
-                r#"{"state":"failed","error":"Permission denied (os error 13)"}"#,
+            let account = Account::new();
+            let identity_dir = account.identity_dir();
+            let _daemon = FakeDaemon::start(&account.paths, Answer::Certify);
+            let mut join = NearbyJoin::start(
+                code(),
+                &identity_dir,
+                &account.paths,
+                "the kitchen computer",
             )
-            .expect("status");
+            .expect("the join starts");
+            let NearbyEvent::Joined(minted) = wait_for_outcome(&mut join) else {
+                panic!("the stand-in daemon certified this computer");
+            };
+            // The login is kept, the device's certificate is this computer's,
+            // and the person is this account's identity, held as a public
+            // record: the root stayed on the device that printed the code.
+            let place = Place::here(account.paths.clone()).expect("a place");
+            let device = tilo_device_identity::login::load(&place)
+                .expect("the kept login reads")
+                .expect("a login is kept")
+                .1;
+            assert_eq!(device.workspace, WORKSPACE);
+            assert_eq!(device.label(), "the kitchen computer");
+            let kept = tilo_device_identity::persist::read_device_cert(&account.paths.device_cert)
+                .expect("this device's certificate");
+            assert_eq!(kept, device.cert);
+            assert_eq!(minted.fingerprint, hex::encode(device.cert.user_public_key));
+            assert!(
+                crate::identity::holds_no_identity_secret(&minted.path),
+                "the joined device holds no secret of the identity"
+            );
             assert_eq!(
-                read_progress(&fixture.status),
-                NearbyProgress::Failed(NearbyFailure {
-                    cause: NearbyCause::PermissionDenied,
-                    detail: Some("Permission denied (os error 13)".into()),
-                })
+                tilo_identity::store::resolve_active_identity(&identity_dir),
+                Some(minted.path),
+                "the joined identity is this account's"
             );
+        }
 
-            // Every cause the person can act on has its own title; only a reason
-            // nothing more is known about uses the general one.
-            let general = NearbyFailure::new(NearbyCause::Unknown).title();
-            let specific = [
-                NearbyCause::PermissionDenied,
-                NearbyCause::StorageFull,
-                NearbyCause::ReadOnly,
-                NearbyCause::Unreachable,
-                NearbyCause::TimedOut,
-                NearbyCause::InvalidIdentity,
-                NearbyCause::NotStarted,
-            ];
-            let mut titles = std::collections::BTreeSet::new();
-            for cause in specific {
-                let title = NearbyFailure::new(cause).title();
-                assert_ne!(title, general, "{cause:?} is reported generically");
-                assert!(
-                    titles.insert(title),
-                    "{cause:?} shares another cause's title"
-                );
-            }
-            let denied = NearbyFailure::from_detail("Permission denied (os error 13)".into());
+        phase a_code_that_was_used_says_to_make_a_new_one;
+        {
+            let account = Account::new();
+            let identity_dir = account.identity_dir();
+            let _daemon = FakeDaemon::start(
+                &account.paths,
+                Answer::Refuse("Your device didn't take this ticket: this ticket was used already: ask for a new one."),
+            );
+            let mut join = NearbyJoin::start(
+                code(),
+                &identity_dir,
+                &account.paths,
+                "the kitchen computer",
+            )
+            .expect("the join starts");
+            let NearbyEvent::Failed(failure) = wait_for_outcome(&mut join) else {
+                panic!("a spent code adds nothing");
+            };
+            assert_eq!(failure.cause, NearbyCause::Used);
             assert!(
-                denied.title().contains("Permission denied"),
-                "{}",
-                denied.title()
+                failure.title().contains("already used"),
+                "the title names the cause: {}",
+                failure.title()
             );
             assert!(
-                denied.message().contains("Permission denied (os error 13)"),
-                "the helper's words stay available: {}",
-                denied.message()
+                failure.message().contains("tilo device add"),
+                "the message says how to get a new code: {}",
+                failure.message()
             );
-            let unknown = NearbyFailure::from_detail("Not authorized".into());
-            assert_eq!(unknown.title(), general);
-            assert!(unknown.message().contains("Not authorized"));
+            assert!(
+                tilo_identity::store::resolve_active_identity(&identity_dir).is_none(),
+                "nothing is taken up when the code is refused"
+            );
+        }
+
+        phase a_device_that_cannot_be_reached_says_so;
+        {
+            let account = Account::new();
+            let identity_dir = account.identity_dir();
+            // The stand-in answers the action as a device that never heard of
+            // the code does when the network cannot carry it.
+            let _daemon = FakeDaemon::start(
+                &account.paths,
+                Answer::Refuse("The device that made this ticket can't be reached from here: it may be asleep."),
+            );
+            let mut join = NearbyJoin::start(
+                code(),
+                &identity_dir,
+                &account.paths,
+                "the kitchen computer",
+            )
+            .expect("the join starts");
+            let NearbyEvent::Failed(failure) = wait_for_outcome(&mut join) else {
+                panic!("an unreached code adds nothing");
+            };
+            assert_eq!(failure.cause, NearbyCause::Unreached);
+            assert!(failure.message().contains("connected"), "{}", failure.message());
         }
     }
 
-    /// The selection lands while the helper is still committing: the
-    /// attempt must not end, and stop the helper, before it has finished
-    /// and recorded its status.
     #[test]
-    fn a_selected_identity_lets_the_helper_finish_its_commit() {
-        let fixture = fixture();
-        let record = joined_record(&fixture, [10; 32]);
-        tilo_identity::store::set_active_identity(&fixture.identity_dir, "identity-joined")
-            .expect("select joined identity");
-        let finished = fixture.identity_dir.join("helper-finished");
-        let status = serde_json::json!({
-            "state": "complete",
-            "verification_code": "123456",
-            "identity": hex::encode([10; 32]),
-            "record_path": record,
-        });
-        let script = format!(
-            "sleep 1; : > '{}'; printf '%s' '{status}' > \"$1\"",
-            finished.display()
-        );
-        let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
-        assert_eq!(pairing.poll(Instant::now()), NearbyEvent::Idle);
+    fn a_code_this_computer_cannot_use_is_refused_before_any_device_is_called() {
+        let account = Account::new();
+        let identity_dir = account.identity_dir();
+        let mut join = NearbyJoin::start(
+            "tilo login made-up".to_owned(),
+            &identity_dir,
+            &account.paths,
+            "the kitchen computer",
+        )
+        .expect("the join starts");
         assert_eq!(
-            poll_until_over(&mut pairing),
-            NearbyEvent::Joined(MintedIdentity {
-                fingerprint: hex::encode([10; 32]),
-                path: record,
-            })
+            wait_for_outcome(&mut join),
+            NearbyEvent::Failed(NearbyFailure::new(NearbyCause::Wrong))
         );
+        let failure = NearbyFailure::new(NearbyCause::Wrong);
         assert!(
-            finished.exists(),
-            "the helper was stopped before it finished"
+            failure.message().contains("starting with tilo1"),
+            "the message says what a code looks like: {}",
+            failure.message()
         );
     }
 
     #[test]
-    fn a_stuck_helper_times_out_after_showing_its_code() {
-        let fixture = fixture();
-        let script = r#"printf '%s' '{"state":"waiting_for_approval","verification_code":"424242"}' > "$1"; trap '' TERM; while :; do sleep 1; done"#;
-        let mut pairing = helper(&fixture, script, PROCESS_BOUND);
-        tilo_test_env::wait_until("the verification code to be shown while waiting", || {
-            match pairing.poll(Instant::now()) {
-                NearbyEvent::Idle => false,
-                NearbyEvent::Code(code) => {
-                    assert_eq!(code, "424242");
-                    true
-                }
-                event => panic!("the pairing ended before its code: {event:?}"),
-            }
-        });
-        let over = pairing.deadline;
-        let event = poll_until_over_at(&mut pairing, Some(over));
-        let expected = NearbyFailure::new(NearbyCause::TimedOut);
-        assert_eq!(event, NearbyEvent::Failed(expected));
-        assert!(pairing.child.is_none(), "the stuck helper was stopped");
-        assert_eq!(
-            read_progress(&fixture.status),
-            NearbyProgress::Waiting {
-                code: "424242".into()
-            }
+    fn every_reason_a_person_can_act_on_has_its_own_words() {
+        let general = NearbyFailure::new(NearbyCause::Unknown).title();
+        let specific = [
+            NearbyCause::Wrong,
+            NearbyCause::Used,
+            NearbyCause::Expired,
+            NearbyCause::Unreached,
+            NearbyCause::Storage,
+            NearbyCause::NotStarted,
+            NearbyCause::Unavailable,
+        ];
+        let mut titles = std::collections::BTreeSet::new();
+        for cause in specific {
+            let title = NearbyFailure::new(cause).title();
+            assert_ne!(title, general, "{cause:?} is reported generically");
+            assert!(
+                titles.insert(title),
+                "{cause:?} shares another cause's title"
+            );
+        }
+        // The daemon's own words are kept only where nothing more is known.
+        let expired = refused(&anyhow::anyhow!(
+            "Your device didn't take this ticket: this ticket ran out: ask for a new one."
+        ));
+        assert_eq!(expired.cause, NearbyCause::Expired);
+        assert_eq!(expired.detail, None);
+        let unknown = refused(&anyhow::anyhow!("something else entirely"));
+        assert_eq!(unknown.cause, NearbyCause::Unknown);
+        assert_eq!(unknown.detail.as_deref(), Some("something else entirely"));
+        assert!(
+            unknown.message().contains("something else entirely"),
+            "the words stay available: {}",
+            unknown.message()
         );
-    }
-
-    tilo_test_env::scenario! {
-        #[cfg(target_os = "linux")]
-        fn a_pairing_polled_on_the_loop_never_waits_for_the_disk;
-
-        phase reporting_a_failed_pairing_never_waits_for_the_disk;
-        {
-            let fixture = fixture();
-            let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
-            let event = tilo_test_env::disk_sync::on_a_thread_that_cannot_sync(|| {
-                poll_until_over(&mut pairing)
-            });
-            assert_eq!(
-                event,
-                NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
-            );
-            assert_eq!(read_progress(&fixture.status), NearbyProgress::Starting);
-        }
-
-        phase polling_a_pairing_never_reads_its_status_file_on_the_loop;
-        // The onboarding view polls the pairing from the compositor's loop,
-        // four times a second; the helper's status file is read by the
-        // watcher, never by a poll. While the file holds every reader up (a
-        // FIFO nobody writes yet), each poll returns at once, and the code the
-        // helper then writes reaches the screen through the watcher.
-        {
-            let fixture = fixture();
-            let mut pairing = helper(&fixture, "exec sleep infinity", PROCESS_BOUND);
-            // Spawning removed any old status; the helper's file is now one
-            // whose bytes have not arrived.
-            let status = tilo_test_env::disk_sync::blocking_source(
-                &fixture.identity_dir,
-                ".nearby-enrollment-status.json",
-            );
-            assert_eq!(status, fixture.status);
-            for _ in 0..3 {
-                let (event, blocked) = std::thread::scope(|scope| {
-                    let poll = scope.spawn(|| pairing.poll(Instant::now()));
-                    let deadline = tilo_test_env::hang_deadline();
-                    while !poll.is_finished() && Instant::now() < deadline {
-                        std::thread::sleep(Duration::from_millis(1));
-                    }
-                    let blocked = !poll.is_finished();
-                    if blocked {
-                        // Let the stuck read go, so the test fails instead of
-                        // hanging.
-                        std::fs::write(&status, b"{}").expect("release the read");
-                    }
-                    (poll.join().expect("the poll finished"), blocked)
-                });
-                assert!(!blocked, "a poll read the status file on the loop");
-                assert_eq!(event, NearbyEvent::Idle);
-                std::thread::sleep(Duration::from_millis(20));
-            }
-
-            std::fs::write(
-                &status,
-                br#"{"state":"waiting_for_approval","verification_code":"424242"}"#,
-            )
-            .expect("the watcher reads the status");
-            let deadline = tilo_test_env::hang_deadline();
-            loop {
-                match pairing.poll(Instant::now()) {
-                    NearbyEvent::Idle => {}
-                    NearbyEvent::Code(code) => {
-                        assert_eq!(code, "424242");
-                        break;
-                    }
-                    event => panic!("the pairing ended: {event:?}"),
-                }
-                assert!(Instant::now() < deadline, "the code never arrived");
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-    }
-
-    /// Hold the real disk reader before its first read, without blocking
-    /// failure-status writes or requiring a FIFO to be released on failure.
-    fn check_status_watcher(
-        pairing: &mut NearbyPairing,
-        fixture: &Fixture,
-    ) -> (mpsc::Sender<()>, std::thread::JoinHandle<()>) {
-        let (wakes, woken) = mpsc::channel();
-        let (sent, reads) = mpsc::channel();
-        let (release, held) = mpsc::channel();
-        pairing.watcher = Some(StatusWatcher { wakes, reads });
-        let status = fixture.status.clone();
-        let identity_dir = fixture.identity_dir.clone();
-        let thread = std::thread::spawn(move || {
-            if held.recv().is_ok() {
-                watch_status(
-                    &status,
-                    &identity_dir,
-                    &woken,
-                    &sent,
-                    std::task::Waker::noop(),
-                );
-            }
-        });
-        (release, thread)
-    }
-
-    tilo_test_env::scenario! {
-        fn a_pairings_final_look_is_bounded_and_takes_only_what_its_watcher_verified;
-
-        phase pairing_final_look_has_a_bounded_grace;
-        {
-            for exited in [false, true] {
-                let fixture = fixture();
-                // A helper that is still running ends only when the attempt
-                // stops it: a fixed sleep can end by itself on a loaded machine,
-                // and then the attempt reads as one that exited.
-                let mut pairing = helper(
-                    &fixture,
-                    if exited {
-                        "exit 7"
-                    } else {
-                        "exec sleep infinity"
-                    },
-                    PROCESS_BOUND,
-                );
-                let (release, watcher) = check_status_watcher(&mut pairing, &fixture);
-                if exited {
-                    pairing.child.as_mut().expect("child").wait().expect("exit");
-                }
-                // Even an identity already on disk cannot be accepted until the
-                // watcher verifies it. The reader remains guarded throughout.
-                joined_record(&fixture, [7; 32]);
-                tilo_identity::store::set_active_identity(&fixture.identity_dir, "identity-joined")
-                    .expect("active identity");
-                let now = if exited {
-                    Instant::now()
-                } else {
-                    pairing.deadline
-                };
-                assert_eq!(pairing.poll(now), NearbyEvent::Idle);
-                assert_eq!(
-                    pairing.poll(
-                        (now + FINAL_LOOK_GRACE)
-                            .checked_sub(Duration::from_millis(1))
-                            .expect("instant before grace expires"),
-                    ),
-                    NearbyEvent::Idle
-                );
-                assert_eq!(
-                    pairing.poll(now + FINAL_LOOK_GRACE),
-                    NearbyEvent::Failed(NearbyFailure::new(if exited {
-                        NearbyCause::Ended
-                    } else {
-                        NearbyCause::TimedOut
-                    }))
-                );
-                drop(pairing);
-                drop(release);
-                watcher.join().expect("watcher stopped");
-            }
-        }
-
-        phase pairing_final_look_accepts_only_a_verified_late_active_identity;
-        {
-            for valid in [false, true] {
-                let fixture = fixture();
-                let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
-                let (release, watcher) = check_status_watcher(&mut pairing, &fixture);
-                pairing.child.as_mut().expect("child").wait().expect("exit");
-                // Hold the polling clock within grace while the real worker runs;
-                // scheduling delay is not the timeout behavior this test proves.
-                let now = Instant::now();
-                assert_eq!(pairing.poll(now), NearbyEvent::Idle);
-                let record = joined_record(&fixture, [7; 32]);
-                tilo_identity::store::set_active_identity(&fixture.identity_dir, "identity-joined")
-                    .expect("active identity");
-                if !valid {
-                    std::fs::write(&record, b"{}").expect("invalid record");
-                }
-                release.send(()).expect("release reader during grace");
-                assert_eq!(
-                    poll_until_over_at(&mut pairing, Some(now)),
-                    if valid {
-                        NearbyEvent::Joined(MintedIdentity {
-                            fingerprint: hex::encode([7; 32]),
-                            path: record,
-                        })
-                    } else {
-                        NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
-                    }
-                );
-                drop(pairing);
-                watcher.join().expect("watcher stopped");
-            }
-        }
-
-        phase pairing_lost_watcher_never_falls_back_to_disk_reads;
-        {
-            for lost in 0..3 {
-                let fixture = fixture();
-                let mut pairing = helper(&fixture, "exit 7", PROCESS_BOUND);
-                pairing.child.as_mut().expect("child").wait().expect("exit");
-                let (wakes, woken) = mpsc::channel();
-                let (sent, reads) = mpsc::channel();
-                pairing.watcher = Some(StatusWatcher { wakes, reads });
-                match lost {
-                    0 => pairing.watcher = None,
-                    1 => drop(sent),
-                    _ => drop(woken),
-                }
-                // A synchronous final read would incorrectly find and accept
-                // this identity instead of preserving the cached helper error.
-                joined_record(&fixture, [7; 32]);
-                tilo_identity::store::set_active_identity(&fixture.identity_dir, "identity-joined")
-                    .expect("active identity");
-                let failure = NearbyFailure::new(NearbyCause::PermissionDenied);
-                pairing.status.progress = NearbyProgress::Failed(failure.clone());
-                assert_eq!(
-                    pairing.poll(Instant::now()),
-                    NearbyEvent::Failed(failure),
-                    "lost watcher case {lost}"
-                );
-            }
-        }
     }
 }

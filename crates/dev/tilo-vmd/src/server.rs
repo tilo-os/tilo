@@ -145,8 +145,18 @@ mod tests {
             let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
             let hello = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":tilo_vm_protocol::PROTOCOL_VERSION,"client_version":"fixture"}});
             assert!(handle_line(&mut daemon, &hello.to_string()).error.is_none());
-            let args = serde_json::json!({"passphrase":"private-fixture-answer","confirm":true});
-            let line = serde_json::json!({"op":"actions_invoke","provider":"device-unlock","id":"enroll@device-unlock","args":args}).to_string();
+            let args = serde_json::json!({"passphrase":"private-fixture-answer"})
+                .as_object()
+                .unwrap()
+                .clone();
+            let (line, _) = tilo_vm::scenario::console::invoke_frame(
+                "device-unlock",
+                "device-unlock",
+                "enroll",
+                args,
+                Some(&tilo_vm::scenario::console::Confirmation::Confirmed),
+            );
+            let line = line.to_string();
             let envelope = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"device.actions","params":{"line":line}});
             let response = handle_line(&mut daemon, &envelope.to_string());
             assert!(response.error.is_some());

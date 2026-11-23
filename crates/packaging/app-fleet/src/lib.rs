@@ -126,32 +126,6 @@ pub fn surfaced() -> impl Iterator<Item = (&'static str, &'static str, &'static 
     })
 }
 
-/// Whose a record of `kind` kept by `package_id` is, as the app's manifest declares it
-/// (`[resources] own`): each member's own, or the workspace's. Read from a table apart from
-/// [`apps`], so a host that asks only this links none of the rest.
-#[must_use]
-pub fn scope(package_id: &str, kind: &str) -> Scope {
-    let app = canonical(package_id);
-    if generated::OWN_KINDS
-        .iter()
-        .any(|(own_app, own_kind)| *own_app == app && *own_kind == kind)
-    {
-        Scope::Member
-    } else {
-        Scope::Workspace
-    }
-}
-
-/// The kinds `package_id`'s manifest declares each member keeps as their own
-/// (`[resources] own`).
-pub fn own_kinds(package_id: &str) -> impl Iterator<Item = &'static str> {
-    let app = canonical(package_id).into_owned();
-    generated::OWN_KINDS
-        .iter()
-        .filter(move |(own_app, _)| *own_app == app)
-        .map(|(_, kind)| *kind)
-}
-
 /// Whether a window of `package_id` is the person's own, as the app declares it
 /// (`ResourceApp::WINDOWS_ARE_PERSONAL`): it shows what the person keeps for themselves, and
 /// never stands on a workspace's shared desktop.
@@ -172,16 +146,6 @@ pub fn windows_hold_documents(package_id: &str) -> bool {
     generated::DOCUMENT_WINDOWS
         .iter()
         .any(|held| held.eq_ignore_ascii_case(&app))
-}
-
-/// Whose a record of a kind is ([`scope`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Scope {
-    /// The workspace's: every member reads it as their role allows.
-    Workspace,
-    /// One member's own: only their devices receive it, and only they read or change it,
-    /// whatever their role.
-    Member,
 }
 
 /// `package_id` as the fleet names it: a development build's `dev.tilo.` app is its `so.tilo.` one,
@@ -216,11 +180,6 @@ mod tests {
             metadata("dev.tilo.sheets").map(|app| app.id),
             Some("so.tilo.sheets")
         );
-        assert_eq!(
-            scope("dev.tilo.settings", "settings.root"),
-            Scope::Workspace
-        );
-        assert_eq!(scope("so.tilo.sheets", "sheets.workbook"), Scope::Workspace);
         // Settings shows what the person keeps for themselves, so its windows are theirs.
         assert!(windows_are_own("dev.tilo.settings"));
         assert!(!windows_are_own("so.tilo.chat"));

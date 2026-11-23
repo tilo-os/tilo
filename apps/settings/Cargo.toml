@@ -158,7 +158,6 @@ hex.workspace = true
 runtime-fs = { package = "tilo-fs-client", path = "../../crates/runtime/tilo-fs-client" }
 account-credentials = { path = "../../crates/system/account-credentials" }
 # The platform adapter the native runner feeds, for the live-bus benchmark.
-accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 # Prove that discovered selections are consumed by Calendar, not just valid JSON.
@@ -176,7 +175,6 @@ tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 # read-only sandbox profile. The app itself never links the launcher.
 launcher = { path = "../../crates/packaging/launcher" }
 provider-settings-ui = { version = "0.1.0", path = "../../crates/sdk/provider-settings-ui", features = ["test-support"] }
-zip.workspace = true
 tilo-ntfs-mount = { path = "../../crates/system/ntfs-mount" }
 tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"] }
 

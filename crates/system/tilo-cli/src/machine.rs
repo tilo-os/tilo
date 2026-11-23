@@ -209,8 +209,7 @@ fn plan_and_mint(add: &AddArgs) -> Result<std::process::ExitCode> {
     let choices = choices(add)?;
     let dir = identity::dir()?;
     let paths = identity::paths();
-    let home_peers = tilo_server_protocol::home_peer_registry_path(&dir);
-    let (token, named) = install_plan::mint(&paths, &home_peers).map_err(anyhow::Error::msg)?;
+    let (token, named) = install_plan::mint(&paths).map_err(anyhow::Error::msg)?;
     let id = install_plan::new_id();
     let plan = choices.plan(&id, named).map_err(anyhow::Error::msg)?;
     let token_file = add

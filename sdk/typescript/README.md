@@ -41,7 +41,7 @@ for await (const event of ws.watch("pdf-viewer/visa-form.pdf")) {
 - **One key.** `new Tilo({ url, key })` reads `TILO_API_URL` and
   `TILO_API_KEY` (`https://api.tilo.sh` when neither says). The key goes with
   every call as `Authorization: Bearer`.
-- **One API.** Every call is a `/v1` route: `/v1/workspaces`,
+- **One API.** Every call is a `/v1` route: `/v1/resources/account/…`,
   `/v1/workspaces/{workspace}/resources/{path}`, `…/actions/{action}`,
   `…/invocations/{invocation}`, `…/events`. Nothing else is spoken.
 - **A host in process.** `await Tilo.host(origin, { keyFile })` (or

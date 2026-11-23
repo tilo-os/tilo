@@ -120,6 +120,37 @@ pub(crate) async fn open_with_groups(
     Ok(service)
 }
 
+/// Found the person's own workspace when this device made their root and has not founded it yet
+/// (the mark [`tilo_identity::provisioning::founds_person_workspace`] reads). The mark stays until
+/// this device holds the workspace, so a founding that fails is tried again on the next start.
+#[cfg(target_os = "linux")]
+pub(super) async fn found_person_workspace(engine: &Engine) {
+    let Ok(dir) = tilo_identity::store::identity_dir_from_env() else {
+        return;
+    };
+    if !tilo_identity::provisioning::founds_person_workspace(&dir) {
+        return;
+    }
+    let id = tilo_server_protocol::servers::person_workspace_id(
+        &engine.identity().device_cert.user_public_key,
+    );
+    let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&id) else {
+        tracing::error!(%id, "a person's workspace id does not read as a workspace id");
+        return;
+    };
+    let name = tilo_workspace_service::workspaces::person_workspace::NAME;
+    if let Err(error) = engine.found(workspace, name).await {
+        tracing::warn!(%error, "this device did not found its person's own workspace; it tries again on its next start");
+        return;
+    }
+    if !engine.holds(workspace) {
+        return;
+    }
+    if let Err(error) = tilo_identity::provisioning::clear_founding_mark(&dir) {
+        tracing::warn!(%error, "the mark that this device founds its person's workspace was not taken away");
+    }
+}
+
 /// Note the links out of the workspaces this device holds, as its own service lists them: they
 /// were made before this session, and whoever redeems one dials this device
 /// ([`Engine::invitations_open`]).

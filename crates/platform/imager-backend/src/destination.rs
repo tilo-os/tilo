@@ -31,8 +31,8 @@ pub mod probes;
 pub mod timezones;
 pub mod windows_hint_source;
 
-/// The installer's console: the `tilo-control` action protocol on the live
-/// medium's private socket and virtio port.
+/// The installer's console: action frames on the live medium's private socket
+/// and virtio port.
 pub use console_control as console;
 pub use disks::{Disk, DiskPartition, parse_lsblk, read_disks};
 /// The online accounts the installer hands to the installed system's first

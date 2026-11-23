@@ -408,6 +408,9 @@ d-trjwm3gb = Als ungelesen markieren
     .w-mark-as-read = Als gelesen markieren
     .w-mark-as-unread = Als ungelesen markieren
 
+d-hk43bpjp = Beim Öffnen lesen
+    .doc = Das Öffnen einer Unterhaltung liest sie, egal wo sie geöffnet wird: in der Liste, in der Suche, über einen Link oder durch einen Agenten.
+
 d-trjwm3gb-unread = Ungelesen
 
 d-7zk6ua6p = Senden von
@@ -564,7 +567,6 @@ d-oqpazwvc = Schreiben
     .w-subject = Betreff
     .w-write-your-message = Schreib deine Nachricht
     .w-send = Senden
-    .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
 
 d-ozukvva2 = Zur Seite gelegt
     .doc = Was die frühere Mail an diesem Entwurf hielt, wofür diese keinen Platz hat (Bcc, Anhänge, private Notizen), in Worten gesagt: nie mit ihm versendet.

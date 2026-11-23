@@ -457,8 +457,6 @@ pub(super) async fn enqueue_state_inner(
     } else {
         stage_fresh_checkpoint(&store, &envelope).await
     };
-    // The person whose own record the delta changes, retained or not.
-    let resource_owner = store.frame_owner(delta);
     drop(store);
     trace_native_publication("persistence_admission_wait", &envelope, None);
     let admission_trace = StateAdmissionTrace::new(&envelope);
@@ -470,7 +468,6 @@ pub(super) async fn enqueue_state_inner(
         author,
         delta_len,
         resource_of(&envelope),
-        resource_owner,
     );
     let mut turn = StateTurn {
         envelope: Some(envelope),
@@ -593,7 +590,6 @@ async fn prepare_admission(
     author: [u8; 32],
     delta_len: usize,
     channel: Option<[u8; 32]>,
-    owner: Option<[u8; 32]>,
 ) -> Result<AdmissionRecipients, crate::store::StoreError> {
     let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
     // What an attached host sent is not carried to another attached host.
@@ -628,34 +624,14 @@ async fn prepare_admission(
     // not the only signed-workspace authority supported by subscriptions.
     // A browser environment's device reaches its own record and nothing else
     // of the workspace: a frame of another record is no change of its own.
-    // A person's own record reaches their devices alone, and a host the
-    // workspace is attached to. Their devices that are not connected now are
-    // sent a retained change by their catch-up, which replays it; one the
-    // host does not retain is queued for each of them, known by the identity
-    // it retained.
-    let person_of = |device: &[u8; 32]| {
-        if let Some(session) = runtime.newest_state(device) {
-            return Some(session.peer.user_public_key);
-        }
-        if channel.is_some() {
-            return None;
-        }
-        runtime.store.device_person(device).unwrap_or_else(|error| {
-            tracing::warn!(%error, device = %hex::encode(device), "a member device's identity did not read");
-            None
-        })
-    };
     let outside = |device: &[u8; 32]| {
-        let environment = source
+        source
             .as_ref()
             .map(|source| &source.environments)
             .is_some_and(|environments| {
                 crate::environment::environment_of(environments, device)
                     .is_some_and(|environment| !environment.reaches(channel))
-            });
-        environment
-            || owner
-                .is_some_and(|owner| !runtime.attached(device) && person_of(device) != Some(owner))
+            })
     };
     let sessions = reached_sessions(&runtime, source.as_ref(), author, &|key| {
         (!from_attached || !runtime.attached(key)) && !outside(key)

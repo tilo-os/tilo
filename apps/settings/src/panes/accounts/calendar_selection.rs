@@ -331,59 +331,13 @@ impl AccountsPane {
         secret: Option<accounts::Secret>,
         round: u64,
     ) -> Step {
-        let Some(secret) = secret else {
-            return self.commit_then(
-                vec![(account, None)],
-                Box::new(move |pane, saved| pane.form_saved(round, saved)),
-            );
-        };
-        let root = &self.account_root;
-        if let Err(error) = root.begin_mutation(&root.store(), &root.statuses()) {
-            return self.form_saved(round, Err(error));
-        }
-        let expected = self
-            .calendar_baseline
-            .as_ref()
-            .and_then(|(_, secret)| secret.clone());
-        let id = account.id.clone();
-        let entered = account.clone();
-        Step::vault(
-            move |opener| {
-                let mut vault = opener.open();
-                if vault.recovery_error().is_some() || vault.get(&id) != expected {
-                    return Err(t("accounts-calendar-details-changed"));
-                }
-                vault.put_for(&entered, &secret);
-                vault
-                    .try_save()
-                    .map_err(|error| format!("could not save credential: {error}"))?;
-                Ok((id, expected))
-            },
-            move |pane, sealed| {
-                let (id, previous) = match sealed {
-                    Ok(previous) => previous,
-                    Err(error) => {
-                        let _ = pane.account_root.finish_mutation();
-                        return pane.form_saved(round, Err(error));
-                    }
-                };
-                if round == pane.form_round && pane.validate_calendar_review().is_ok() {
-                    return pane.commit_metadata(
-                        vec![account],
-                        vec![(id, previous)],
-                        Box::new(move |pane, saved| pane.form_saved(round, saved)),
-                    );
-                }
-                Step::vault(
-                    move |vault| super::restore_secret(vault.open(), &id, previous.as_ref()),
-                    move |pane, restored| {
-                        if restored.is_ok() {
-                            let _ = pane.account_root.finish_mutation();
-                        }
-                        pane.form_saved(round, Err(t("accounts-calendar-details-changed")))
-                    },
-                )
-            },
+        // A calendar account's password is the workspace's vault's, as an email account's: it
+        // goes there through the session, and this device's vault keeps nothing of it. An edit
+        // that typed none keeps the entry the account already names.
+        let secret = secret.filter(|secret| !secret.password.is_empty());
+        self.commit_then(
+            vec![(account, secret)],
+            Box::new(move |pane, saved| pane.form_saved(round, saved)),
         )
     }
 

@@ -15,7 +15,7 @@ use fs_protocol::files::{FileNodeKind, TreeChunk};
 use fs_protocol::tree::{self, TreeChunks, TreeEntry};
 use tilo_content::ContentStore;
 
-use super::tree_put::sealed::FileSealing;
+use super::tree::sealed::FileSealing;
 
 /// The most of one file read for its words: a larger one is still found by its name.
 const MOST_READ_BYTES: u64 = 1024 * 1024;

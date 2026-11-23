@@ -1175,11 +1175,11 @@ fn official_installable_request_preserves_real_handoff_and_disabled_writer_check
     env.set("TMP", &staging);
     let identity_dir = local_root.path().join("identity");
     let system = tilo_device_identity::IdentityPaths::under(local_root.path().join("system"));
-    let home_peers = local_root.path().join("home-peers.json");
+    let personal_devices = local_root.path().join("personal-device-peers.json");
     let local = crate::handoff::LocalIdentity {
         identity_dir: &identity_dir,
         system: &system,
-        home_peers: &home_peers,
+        personal_devices: &personal_devices,
     };
     let staged = crate::handoff::stage_setup_handoff(&app.profile, &app.wifi_psk, &local)
         .expect("official install profile must allow real Wi-Fi handoff")

@@ -136,9 +136,8 @@ that first-unlock layout; changing the signed initrd is a separate image operati
 
 The installer and the greeter run under `cage`, straight from greetd, before
 any Tilo compositor exists, so the compositor's control socket never sees them.
-They answer the **same** semantic half of the `tilo-control` protocol
-themselves — `actions list`, `actions invoke`, `state-dump` — on two local
-endpoints:
+They answer the **same** action frames as the desktop, and `state-dump`,
+themselves, on two local endpoints:
 
 - `$XDG_RUNTIME_DIR/tilo-console/<app>.sock` inside the guest (0700 directory,
   0600 socket): the local console and assistive tooling running as that user;
@@ -151,18 +150,18 @@ Drive a scenario VM yourself (with `--keep`, or while a run is in progress):
 
 ```sh
 TILO_VM_CYCLE=<cycle> ./os/dev/vm.sh console          # prints the socket path
-tilo-control --socket <that path> actions list        # the whole wizard, with why each step is or is not available
+tilo-control --socket <that path> raw \
+    '{"version":2,"message":{"CatalogueRequest":{"correlation":1,"query":{}}}}'   # its actions; "parent_resource" lists what one holds
 tilo-control --socket <that path> state-dump --pretty
-tilo-control --socket <that path> actions invoke installer next@installer
-tilo-control --socket <that path> actions invoke installer begin@installer.review \
-    --args-json '{"confirmation_phrase":"/dev/vdb"}'
+os/dev/installer-console.py --socket <that path> invoke next@installer
+os/dev/installer-console.py --socket <that path> invoke begin@installer.review --phrase /dev/vdb
 ```
 
-Action ids are `<action>@<resource>`. An action whose contract is destructive
-takes its confirmation as an argument — `confirmation_phrase` for a typed
-phrase, `confirm: true` for a plain confirmation — exactly like app actions
-through the compositor. A wrong or missing phrase is
-`action_confirmation_required`; a step the wizard is not on is
+The console answers action frames, the same ones the desktop answers. Action
+ids are `<action>@<resource>`. An action whose contract is destructive takes
+its confirmation beside its arguments, a typed phrase or a plain confirmation,
+exactly like app actions through the compositor. A wrong or missing phrase is
+`ConfirmationRequired`; a step the wizard is not on is
 `action_unavailable` with the reason the screen would give.
 
 ## Secrets

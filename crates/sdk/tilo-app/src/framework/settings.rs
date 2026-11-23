@@ -208,19 +208,9 @@ impl Hosted {
         Attached {
             workspace,
             emoji,
-            // Hold the earlier records so the app's migration can read them.
-            person: self.person.map(|records| {
-                let own = self.records.as_ref().and_then(|(store, _, _)| {
-                    let (_, workspace) = store.app_and_home();
-                    records
-                        .in_workspace(&workspace)
-                        .map_err(|error| {
-                            tracing::warn!(%error, "the app's records of a kind are unavailable");
-                        })
-                        .ok()
-                });
-                super::person::PersonState::new(records, own, app_id, app_title, wake)
-            }),
+            person: self
+                .person
+                .map(|records| super::person::PersonState::new(records, app_id, app_title, wake)),
             device: self.device,
             records: self.records.map(|(store, me, permissions)| {
                 super::chain::WorkspaceResources {
@@ -362,21 +352,15 @@ impl ViewStorage {
         self.device.as_deref()
     }
 
-    /// Open a fixture from the previous storage model.
-    #[cfg(feature = "test-support")]
-    pub(crate) fn person<P: tilo_resource::Resource>(
-        &self,
-    ) -> Option<super::person::PersonResource<P>> {
-        super::controls::opened_resource::<P>();
-        self.person.as_ref()?.open::<P>()
-    }
-
     /// Open the record `P` the person keeps for themselves, in their own scope
     /// rather than in a workspace: presentation data only they use on their own
     /// devices.
     pub(crate) fn profile_resource<P: tilo_resource::Resource>(
         &self,
     ) -> Option<super::person::PersonResource<P>> {
+        // It lives in the person's own scope, as a settings section does: a surface report
+        // lists it as the person's.
+        super::controls::opened_section::<P>();
         self.person.as_ref()?.open_profile::<P>()
     }
 
@@ -418,36 +402,6 @@ impl ViewStorage {
         owner: &'static str,
     ) -> Option<super::workspace::WorkspaceResource<P>> {
         self.workspace.as_ref()?.open_own::<P>(owner)
-    }
-
-    pub(crate) fn legacy_member_state<P: tilo_resource::Resource>(
-        &self,
-        owner: &str,
-    ) -> Result<Option<Rc<P::State>>, String> {
-        if let Some(person) = &self.person {
-            return person.legacy_state::<P>(owner);
-        }
-        Ok(None)
-    }
-
-    pub(crate) fn legacy_member_content<P: tilo_resource::Resource>(
-        &self,
-        owner: &str,
-    ) -> super::workspace::LegacyMemberContent<P> {
-        if let Some(person) = &self.person {
-            return person.legacy_content::<P>(owner);
-        }
-        Ok(None)
-    }
-
-    pub(crate) fn legacy_member_parts<C: super::Chained>(
-        &self,
-        owner: &str,
-    ) -> super::workspace::LegacyMemberParts<C> {
-        if let (Some(person), Some(store)) = (&self.person, self.workspace_store()) {
-            return person.legacy_parts::<C>(owner, store);
-        }
-        Ok(None)
     }
 
     /// The records other than the app's own the views opened — the
@@ -819,6 +773,7 @@ impl ViewStorage {
 
     /// Whether a document the views asked for is still on its way: the workspace had not
     /// delivered it, or its store was in use, when it was asked for.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn opening(&self) -> bool {
         self.workspace
             .as_ref()

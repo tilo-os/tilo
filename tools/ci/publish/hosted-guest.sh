@@ -77,14 +77,6 @@ chromium_runtime_version() {
   printf '%s' "$version"
 }
 
-# The version of Claude Code the guest ships (os/hosted-guest/base.env).
-claude_code_version() {
-  local version
-  version=$(. os/hosted-guest/base.env && printf '%s' "$HOSTED_GUEST_CLAUDE_CODE_VERSION")
-  [[ -n $version ]] || die 'os/hosted-guest/base.env names no Claude Code version'
-  printf '%s' "$version"
-}
-
 # The resolved kernel configuration must be the one this repository asks for:
 # a fragment that drifted from what a VM needs fails the build here rather than
 # in somebody's workspace.
@@ -228,7 +220,6 @@ case ${1:-} in
       --build-arg "FNM_ASSET=$fnm_asset" \
       --build-arg "RUSTUP_INIT_ASSET=$rustup_init_asset" \
       --build-arg "CHROMIUM_RUNTIME_VERSION=$(chromium_runtime_version)" \
-      --build-arg "CLAUDE_CODE_VERSION=$(claude_code_version)" \
       --build-arg "SOURCE_DATE_EPOCH=$(git show -s --format=%ct "${T_COMMIT:-HEAD}")" \
       --build-context "github-assets=$assets" \
       --build-context "session=$session" \
@@ -247,13 +238,9 @@ case ${1:-} in
     test -x "$root/usr/bin/tilo-session"
     test -x "$root/usr/libexec/tilo/browser-session"
     test -x "$root/usr/libexec/tilo/apps-session"
-    test -x "$root/usr/local/bin/t"
     test -x "$root/usr/libexec/tilo/git-credential-tilo"
     test -s "$root/etc/gitconfig"
     test -x "$root/usr/bin/Xwayland"
-    test -x "$root/home/tilo/.local/share/claude-code/$(claude_code_version)/bin/claude"
-    test -L "$root/usr/local/bin/claude"
-    grep -q '"DISABLE_AUTOUPDATER": "1"' "$root/etc/claude-code/managed-settings.json"
     grep -q 'so\.tilo\.browser' "$root/usr/share/tilo-apps/registry.toml"
     test -x "$root/usr/lib/tilo-runtime/$(chromium_runtime_version)/lib/chromium/tilo-chromium-host"
     wrap_guest "$root" "$kernel" "$out" hosted-guest-image

@@ -1,7 +1,7 @@
-//! Profile records and compatibility with archived member records.
+//! The person's own records and the routes they ride.
 
 use super::*;
-use crate::resource::person::{PERSONAL_SCOPE, PersonResources, StoredResource};
+use crate::resource::person::{PersonResources, StoredResource};
 use crate::resource::{ResourceOwners, ResourceType};
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex};
 
 const APP: &str = "so.tilo.test-person";
 const ROOT_KEY: [u8; 32] = [42; 32];
-const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000a5";
 
 fn person() -> crate::permissions::MemberId {
     crate::permissions::MemberId::person(hex::encode(ROOT_KEY))
@@ -20,28 +19,6 @@ fn person() -> crate::permissions::MemberId {
 fn personal_device() -> StoredResource {
     let mut owners = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
     PersonResources::open(&mut owners, APP, person())
-        .unwrap()
-        .open_resource(ResourceType::new("test.watched"), &|doc| {
-            doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        })
-        .unwrap()
-}
-
-/// One device's copy of the member's watched list in the workspace, the app's
-/// installed surface declaring it each member's own: an undeclared kind is
-/// refused.
-fn device() -> StoredResource {
-    crate::app_surface::register_package(
-        APP,
-        b"[[resources]]\nkind = \"test.watched\"\nlabel = \"Watched\"\nversion = 1\nown = true\n",
-    );
-    let mut owners = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
-    PersonResources::open(&mut owners, APP, person())
-        .unwrap()
-        .with_legacy_member_fixture()
-        .in_workspace(WORKSPACE)
         .unwrap()
         .open_resource(ResourceType::new("test.watched"), &|doc| {
             doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
@@ -163,75 +140,6 @@ fn from_device(
 tilo_test_env::scenario! {
     fn a_persons_records_ride_their_own_routes_and_converge;
 
-    phase a_members_record_rides_its_own_route_in_the_workspace_and_converges_across_devices;
-    {
-        let laptop = device();
-        let phone = device();
-        watch(&laptop, "on-the-laptop");
-        watch(&phone, "on-the-phone");
-        let mut laptop_app = app_holding(&laptop);
-        let mut phone_app = app_holding(&phone);
-
-        // Each device publishes its record on the record's own route, in the
-        // workspace, never on the route of the record it shows.
-        laptop_app.publish_owned_documents();
-        let sent = snapshots(&mut laptop_app);
-        assert_eq!(sent.len(), 1, "{sent:?}");
-        let (route, laptop_document) = sent.into_iter().next().unwrap();
-        assert_eq!(route.app_id, APP);
-        assert_eq!(route.cluster_id.to_string(), WORKSPACE);
-        assert_eq!(route.document.as_deref(), Some(laptop.checkout().id.as_str()));
-        assert_eq!(laptop.route(), Some(route.clone()));
-        phone_app.publish_owned_documents();
-        let (phone_route, _) = snapshots(&mut phone_app).into_iter().next().unwrap();
-        assert_eq!(phone_route, route, "both devices meet on one record");
-
-        // The phone receives the laptop's record: it merges, and having
-        // something the laptop lacks, answers with its own.
-        phone_app.apply_signed_document_envelope(&from_device(&route, laptop_document), None);
-        assert_eq!(watched(&phone), ["on-the-laptop", "on-the-phone"]);
-        phone_app.publish_owned_documents();
-        let answer = snapshots(&mut phone_app);
-        assert_eq!(
-            answer.len(),
-            1,
-            "the phone answers a snapshot it is ahead of"
-        );
-
-        // The laptop takes the answer and is then level: nothing more to send.
-        let (_, answer) = answer.into_iter().next().unwrap();
-        laptop_app.apply_signed_document_envelope(&from_device(&route, answer), None);
-        assert_eq!(watched(&laptop), watched(&phone));
-        laptop_app.publish_owned_documents();
-        assert!(
-            snapshots(&mut laptop_app).is_empty(),
-            "a device level with the snapshot it received does not answer it"
-        );
-
-        // The person's own undo reaches their edit, merged state and all.
-        watch(&laptop, "later");
-        assert!(laptop.undo());
-        assert_eq!(watched(&laptop), ["on-the-laptop", "on-the-phone"]);
-        assert!(laptop.redo());
-        assert!(watched(&laptop).contains(&"later".to_owned()));
-    }
-
-    phase a_members_record_route_joins_naming_the_records_kind;
-    // The owner's route names the kind its record holds, so a host that must
-    // create the record on this device's first write knows what it holds
-    // instead of answering that the app named no kind.
-    {
-        let laptop = device();
-        let app = app_holding(&laptop);
-        let route = laptop.route().expect("the laptop's record route");
-        assert_eq!(route.app_id, APP);
-        assert_eq!(
-            app.collaboration.manager.joined_resource_type(&route),
-            Some(ResourceType::new("test.watched")),
-            "the join names what the record holds"
-        );
-    }
-
     phase the_persons_records_ride_the_persons_own_cluster;
     // The person's own records — their accounts, their contacts, what they
     // watched — belong to them and to no workspace: their route names the
@@ -286,40 +194,10 @@ tilo_test_env::scenario! {
         assert!(app.document_routes.sent.is_empty());
     }
 
-    phase the_persons_records_are_not_the_workspaces;
-    // The person's own scope is theirs alone: an app's record of a kind kept
-    // for one person is not the one kept for the workspace.
-    {
-        let mut owners = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
-        let personal = PersonResources::open(&mut owners, APP, person())
-            .unwrap()
-            .open_resource(ResourceType::new("test.watched"), &|_| Ok(()))
-            .unwrap();
-        let in_workspace = PersonResources::open(&mut owners, APP, person())
-            .unwrap()
-            .with_legacy_member_fixture()
-            .in_workspace(WORKSPACE)
-            .unwrap()
-            .open_resource(ResourceType::new("test.watched"), &|_| Ok(()))
-            .unwrap();
-        assert_eq!(
-            personal
-                .read(|doc| crate::resource::home(doc))
-                .flatten()
-                .as_deref(),
-            Some(PERSONAL_SCOPE)
-        );
-        assert_ne!(
-            personal.checkout().id,
-            in_workspace.checkout().id,
-            "one id per kind and person, another in the workspace"
-        );
-    }
-
     phase a_device_that_was_away_catches_up_when_its_route_returns;
     {
-        let laptop = device();
-        let phone = device();
+        let laptop = personal_device();
+        let phone = personal_device();
         let mut laptop_app = app_holding(&laptop);
         let mut phone_app = app_holding(&phone);
         laptop_app.publish_owned_documents();
@@ -372,15 +250,12 @@ tilo_test_env::scenario! {
     // holds the stored record: the second keeps an in-memory copy on the very
     // same route, so what the person's host replays there — and what the first
     // window publishes — reaches it too. A route is what lets a copy follow a
-    // record, which a member's record in the workspace has.
+    // record, which the person's record has.
     {
         let store: Rc<dyn durable_store::DurableStore> = Rc::new(durable_store::MemoryStore::new());
         let open = |store: &Rc<dyn durable_store::DurableStore>| {
             let mut owners = ResourceOwners::with_store(Rc::clone(store));
             PersonResources::open(&mut owners, APP, person())
-                .unwrap()
-                .with_legacy_member_fixture()
-                .in_workspace(WORKSPACE)
                 .unwrap()
                 .open_resource(ResourceType::new("test.watched"), &|doc| {
                     doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
@@ -400,7 +275,7 @@ tilo_test_env::scenario! {
         let mut second_app = app_holding(&second);
 
         // What the person's host kept from another device arrives on the route.
-        let laptop = device();
+        let laptop = personal_device();
         watch(&laptop, "kept-by-the-host");
         second_app
             .apply_signed_document_envelope(&from_device(&route, laptop.document().unwrap()), None);
@@ -577,92 +452,13 @@ tilo_test_env::scenario! {
     // on: the rule is about who may sign a change on a route, not about the
     // route.
     {
-        let owned = device();
+        let owned = personal_device();
         let route = owned.route().expect("a route in the workspace");
         let (_app, recording) = recording_window(APP, &owned);
         assert_eq!(
             recording.lock().unwrap().writes.clone(),
             vec![route],
             "the keeper's whole record goes out once on its route"
-        );
-    }
-}
-
-#[test]
-fn a_member_record_of_a_kind_no_manifest_declares_own_is_refused() {
-    let mut owners = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
-    let refused = PersonResources::open(&mut owners, "so.tilo.test-undeclared", person())
-        .unwrap()
-        .with_legacy_member_fixture()
-        .in_workspace(WORKSPACE)
-        .unwrap()
-        .open_resource(ResourceType::new("test.watched"), &|_| Ok(()));
-    assert!(
-        matches!(
-            refused,
-            Err(crate::resource::ResourceOpenError::UndeclaredOwnKind(ref kind)) if kind == "test.watched"
-        ),
-        "a record no manifest declares a member's own would reach every member"
-    );
-}
-
-#[test]
-fn a_previous_member_document_is_readable_only_through_recovery() {
-    crate::app_surface::register_package(
-        APP,
-        b"[[resources]]\nkind = \"test.watched\"\nlabel = \"Watched\"\nversion = 1\nown = true\n",
-    );
-    let backend: Rc<dyn durable_store::DurableStore> = Rc::new(durable_store::MemoryStore::new());
-    let mut owners = ResourceOwners::with_store(Rc::clone(&backend));
-    let profile = PersonResources::open(&mut owners, APP, person()).unwrap();
-    let archive = profile.in_workspace(WORKSPACE).unwrap();
-    let kind = ResourceType::new("test.watched");
-    assert!(
-        archive
-            .read_previous_member_resource(kind.clone(), |_, _, _| ())
-            .unwrap()
-            .is_none()
-    );
-    let fixture = profile
-        .with_legacy_member_fixture()
-        .in_workspace(WORKSPACE)
-        .unwrap()
-        .open_resource(kind.clone(), &|doc| {
-            doc.put(automerge::ROOT, "retained", true)
-                .map_err(|error| error.to_string())
-        })
-        .unwrap();
-    assert!(matches!(
-        archive.open_resource(kind.clone(), &|_| panic!("no initialization")),
-        Err(crate::resource::ResourceOpenError::ArchivedMemberDocument)
-    ));
-    assert!(matches!(
-        archive.open_existing_resource(kind.clone()),
-        Err(crate::resource::ResourceOpenError::ArchivedMemberDocument)
-    ));
-    assert!(matches!(
-        archive.open_original_resource(kind.clone(), |_| panic!("no initialization")),
-        Err(crate::resource::ResourceOpenError::ArchivedMemberDocument)
-    ));
-    fixture.flush();
-    let mut restart = ResourceOwners::with_store(backend);
-    let cold = PersonResources::open(&mut restart, APP, person())
-        .unwrap()
-        .in_workspace(WORKSPACE)
-        .unwrap();
-    for records in [archive, cold] {
-        assert_eq!(
-            records
-                .read_previous_member_resource(kind.clone(), |doc, checkout, _| {
-                    assert_eq!(checkout.id, fixture.checkout().id);
-                    matches!(
-                        doc.get(automerge::ROOT, "retained").unwrap(),
-                        Some((automerge::Value::Scalar(value), _))
-                            if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
-                    )
-                })
-                .unwrap(),
-            Some(true)
         );
     }
 }

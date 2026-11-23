@@ -126,7 +126,7 @@ const SCENARIOS: &[&str] = &[
     "existing",
     "recovery",
     "nearby",
-    "nearby-code",
+    "nearby-joining",
     "nearby-failed",
     "restore",
     "restore-error",
@@ -250,30 +250,18 @@ fn scenario(name: &str) -> Page {
             screen: Screen::Existing,
             ..recovery
         },
-        "nearby" | "nearby-code" | "nearby-failed" => Page {
+        "nearby" | "nearby-joining" | "nearby-failed" => Page {
             screen: Screen::Nearby,
-            nearby: match name {
-                "nearby-code" => Nearby {
-                    from_link: false,
-                    active: true,
-                    status: Some(crate::t("onboarding-nearby-code")),
-                    code: Some("482913".to_owned()),
-                    failure: None,
-                },
-                "nearby-failed" => Nearby {
-                    failure: Some((
-                        crate::t("onboarding-connect-failed"),
-                        crate::t("onboarding-nearby-try-again"),
-                    )),
-                    ..Nearby::default()
-                },
-                _ => Nearby {
-                    active: true,
-                    status: Some(crate::t("onboarding-nearby-waiting")),
-                    ..Nearby::default()
-                },
+            nearby: Nearby {
+                active: name == "nearby-joining",
+                failure: (name == "nearby-failed").then(|| {
+                    (
+                        crate::t("onboarding-nearby-used-title"),
+                        crate::t("onboarding-nearby-used"),
+                    )
+                }),
             },
-            error: (name == "nearby-failed").then(|| crate::t("onboarding-nearby-try-again")),
+            error: (name == "nearby-failed").then(|| crate::t("onboarding-nearby-used")),
             ..base
         },
         "restore" | "restore-error" => Page {

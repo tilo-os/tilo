@@ -172,33 +172,6 @@ pub fn open_stored(mut store: DocStore) -> (AutoCommit, DocWriter) {
     (doc, autosave)
 }
 
-/// [`open_stored`] for a member's own record of an app ([`collab_types::OwnResource`]),
-/// which may have kept its records in the workspace's record before: when this
-/// device holds no copy of the person's record yet and holds the workspace's
-/// record of the app (`workspace`), the person's record starts as that copy,
-/// its history and ids with it, so what they saw there is theirs from then on.
-/// The workspace's record is only read: nothing in it changes or goes. Once the
-/// person's record has a copy, it is opened as it is.
-pub fn open_stored_adopting(
-    mut store: DocStore,
-    workspace: Option<DocStore>,
-) -> (AutoCommit, DocWriter) {
-    // A record this device holds no copy of, complete and readable: a store
-    // that cannot read its copy says so in the load itself.
-    let fresh = matches!(store.load_complete(), Ok(None));
-    if fresh
-        && let Some(mut workspace) = workspace
-        && let Ok(Some(mut doc)) = workspace.load_complete()
-    {
-        doc.set_actor(store.actor());
-        let mut writer = store.writer();
-        // Nothing of it is on disk under the person's record yet: the first write keeps it.
-        writer.request(&doc);
-        return (doc, writer);
-    }
-    open_stored(store)
-}
-
 /// Open the document `store` holds, as a workspace another host governs reads it:
 /// the broker's committed read of the workspace (`read`) merged into the on-disk
 /// copy, which keeps the merged graph from then on.

@@ -89,12 +89,6 @@ impl tilo_actions::remote::ResourceReads for ServiceRecords {
         caller: &Caller,
         address: &tilo_actions::remote::ResourceAddress,
     ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
-        let app = address.app.clone();
-        if let Some(record) = self.on_pass(&address.app, |done| ApiAsk::Record { app, done })? {
-            return Ok(tilo_actions::remote::ResourceCopy::Document(
-                record.document,
-            ));
-        }
         self.workspace_reads()?.read(caller, address)
     }
 

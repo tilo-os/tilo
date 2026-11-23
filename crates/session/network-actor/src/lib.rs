@@ -195,12 +195,10 @@ pub enum NetCmd {
     /// Ask the holders of `ws` for the record on `channel` (a retained route's
     /// channel, `neighbour_wire::app_document_group`): what they hold of it,
     /// and their changes to it from then on. A workspace that sends records
-    /// when they are opened sends nothing of a record before this. `own` names it this device's
-    /// person's own record, which the hosts answer as theirs even before anything of it is written.
+    /// when they are opened sends nothing of a record before this.
     OpenDocument {
         ws: WorkspaceId,
         channel: [u8; 32],
-        own: Option<tilo_server_protocol::OwnedGroup>,
     },
     /// Hold an enrolled workspace's relay session over the iroh endpoint its
     /// hint names.
@@ -1232,7 +1230,7 @@ impl ActorState {
             // Every host of the workspace that retains records opens this one
             // for this device: what it holds of it, then its changes. Asking
             // a session that already opened it asks nothing again.
-            Some(NetCmd::OpenDocument { ws, channel, own }) => {
+            Some(NetCmd::OpenDocument { ws, channel }) => {
                 let sessions: Vec<_> = self
                     .host_sessions
                     .iter()
@@ -1246,11 +1244,7 @@ impl ActorState {
                     );
                 }
                 for session in sessions {
-                    let opened = match &own {
-                        Some(own) => session.open_own_record(own.clone()),
-                        None => session.open_resource(channel),
-                    };
-                    if let Err(error) = opened {
+                    if let Err(error) = session.open_resource(channel) {
                         tracing::debug!(ws = %ws, %error, "could not ask a host for a record");
                     }
                 }

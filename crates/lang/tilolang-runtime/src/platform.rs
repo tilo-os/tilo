@@ -2555,6 +2555,13 @@ impl Core {
         )
     }
 
+    /// Why the invocation `run` would be refused now, as its action's `require` says it in
+    /// `viewer`'s words: what a control bound to it says while it stands dimmed.
+    pub(crate) fn unmet(&self, run: &ActionRef, viewer: &Actor) -> HResult<Option<String>> {
+        self.decided(&run.action, &run.args, viewer, Decides::Requirement)
+            .map(|(reason, _)| reason)
+    }
+
     /// Why the action `action` cannot apply to `target` where a view offers it, as its
     /// `applies` conditions say: the first that does not hold, in `viewer`'s words, or `None`
     /// when it can.

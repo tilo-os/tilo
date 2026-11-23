@@ -225,12 +225,25 @@ fn load_identity(
     state_root: &std::path::Path,
 ) -> anyhow::Result<ServerIdentity> {
     let paths = IdentityPaths::under(root);
-    let user_public_key = persist::read_public_key(&paths.user_pubkey)
-        .with_context(|| format!("read user pubkey {}", paths.user_pubkey.display()))?;
     let device_signing_key = persist::read_device_key(&paths.device_privkey)
         .with_context(|| format!("read device secret {}", paths.device_privkey.display()))?;
-    let device_cert = persist::read_device_cert(&paths.device_cert)
-        .with_context(|| format!("read device cert {}", paths.device_cert.display()))?;
+    // A volume that joined with a ticket keeps the certificate the ticket's login answered with,
+    // and the person it names, with the login; a volume that founded its own identity keeps them
+    // in the identity root.
+    let joined = tilo_device_identity::login::Place::here(IdentityPaths::under(root))
+        .and_then(|place| tilo_device_identity::login::load(&place))
+        .ok()
+        .flatten()
+        .filter(|(key, _)| key.verifying_key() == device_signing_key.verifying_key());
+    let (user_public_key, device_cert) = match joined {
+        Some((_, device)) => (device.cert.user_public_key, device.cert),
+        None => (
+            persist::read_public_key(&paths.user_pubkey)
+                .with_context(|| format!("read user pubkey {}", paths.user_pubkey.display()))?,
+            persist::read_device_cert(&paths.device_cert)
+                .with_context(|| format!("read device cert {}", paths.device_cert.display()))?,
+        ),
+    };
     tilo_server::daemon::with_persisted_revocations(
         ServerIdentity {
             user_public_key,

@@ -49,34 +49,10 @@ impl DeviceChoices {
                     .map(|workspace| (cx.settings::<ClockDeviceSettings>(), workspace))
             })
             .flatten();
-        let choices = Self {
+        Self {
             settings,
             held: Rc::default(),
-        };
-        if let Some((settings, workspace)) = &choices.settings
-            && !settings.get().clocks_on_this_device.contains_key(workspace)
-            && let Some(device) = cx.device()
-        {
-            let opener = cx.resource_opener::<ClocksOnDevices>(ui::apps::CLOCKS);
-            match opener.legacy_member_state() {
-                Ok(Some(legacy)) => {
-                    let kept = legacy.on(device);
-                    *choices.held.borrow_mut() = kept.clone();
-                    if let Err(error) = settings.update(|all| {
-                        all.clocks_on_this_device
-                            .entry(workspace.clone())
-                            .or_insert(kept);
-                    }) {
-                        tracing::warn!(%error, "clocks: earlier device choices could not be saved");
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    tracing::warn!(%error, "clocks: earlier device choices could not be read");
-                }
-            }
         }
-        choices
     }
 
     pub(crate) fn get(&self) -> OnThisDevice {

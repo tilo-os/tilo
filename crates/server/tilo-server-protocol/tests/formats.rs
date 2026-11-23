@@ -20,8 +20,8 @@ use collab_types::WorkspaceId;
 use tilo_server_protocol::metrics::WorkspaceEgress;
 use tilo_server_protocol::sealed_invitations as SealedInvitations;
 use tilo_server_protocol::{
-    ComputeAccelerator, DeviceMeshProfile, HomePeerRegistration, MetricsSnapshot,
-    PowerAvailability, ProcessLease, ServerConfig, ServiceCapabilities, TrustPolicy, WorkSetting,
+    ComputeAccelerator, DeviceMeshProfile, MetricsSnapshot, PowerAvailability, ProcessLease,
+    ServerConfig, ServiceCapabilities, TrustPolicy, WorkSetting,
 };
 
 fn postcard_hex<T: serde::Serialize>(value: &T) -> String {
@@ -85,27 +85,6 @@ fn json_encodings_are_pinned() {
         ),
     );
 
-    // Home peer registration.
-    assert_json(
-        &HomePeerRegistration {
-            schema_version: HomePeerRegistration::CURRENT_SCHEMA,
-            device_node_id: "11".repeat(32),
-            server_node_id: "22".repeat(32),
-            server_endpoint: None,
-            label: "Attic server".to_string(),
-            user_public_key: "33".repeat(32),
-            device_cert: None,
-            server_workspace_ids: vec![WorkspaceId::from_u128(7), WorkspaceId::from_u128(8)],
-        },
-        concat!(
-            r#"{"schema_version":3,"#,
-            r#""device_node_id":"1111111111111111111111111111111111111111111111111111111111111111","#,
-            r#""server_node_id":"2222222222222222222222222222222222222222222222222222222222222222","#,
-            r#""server_endpoint":null,"label":"Attic server","#,
-            r#""user_public_key":"3333333333333333333333333333333333333333333333333333333333333333","#,
-            r#""device_cert":null,"server_workspace_ids":["00000000-0000-0000-0000-000000000007","00000000-0000-0000-0000-000000000008"]}"#,
-        ),
-    );
     // Metrics snapshot, written pretty-printed.
     let snapshot = MetricsSnapshot {
         conns_accepted: 1,
@@ -294,6 +273,7 @@ users = ["abababababababababababababababababababababababababababababababab"]
 
 [work]
 from = "own_devices"
+agents = false
 
 [work.kinds]
 actions = true

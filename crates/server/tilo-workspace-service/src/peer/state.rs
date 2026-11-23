@@ -533,29 +533,21 @@ async fn change_refusal(
     // The change itself must say what it does and stay inside what its app
     // publishes, before the server keeps or forwards it.
     let payloads = ws.lock().await.store.payloads().clone();
-    let signed_person = (claimed == peer.device_public_key).then_some(peer.user_public_key);
     let named = crate::surfaces::governance_named(&*payloads, delta);
     let decision = Box::pin(crate::workspace::access_deciding(
         ws,
         claimed,
         &named,
         |device_access, payloads| {
-            crate::surfaces::refusal(payloads, delta, device_access, signed_person).is_some()
+            crate::surfaces::refusal(payloads, delta, device_access).is_some()
                 || crate::surfaces::role_refusal(delta, device_access, claimed).is_some()
         },
     ))
     .await;
     let device_access = decision.device_access.as_deref();
-    let store = ws.lock().await.store.clone();
-    let refused =
-        crate::surfaces::refusal(&*decision.payloads, delta, device_access, signed_person)
-            .or_else(|| crate::surfaces::role_refusal(delta, device_access, claimed))
-            .map(|refusal| behind_governance(decision.governance_behind, refusal))
-            .or_else(|| {
-                (!attached)
-                    .then(|| crate::surfaces::own_refusal(&store, &peer.user_public_key, delta))
-                    .flatten()
-            });
+    let refused = crate::surfaces::refusal(&*decision.payloads, delta, device_access)
+        .or_else(|| crate::surfaces::role_refusal(delta, device_access, claimed))
+        .map(|refusal| behind_governance(decision.governance_behind, refusal));
     if let Some(refusal) = refused {
         tracing::warn!(%refusal, device = %hex::encode(peer.device_public_key), "refused a document change");
         file_refusal_of(ws, env, &refusal.to_string()).await;

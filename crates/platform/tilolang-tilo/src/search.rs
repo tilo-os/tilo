@@ -350,9 +350,9 @@ pub fn hits(host: &Host, meta: &Meta, doc: &str) -> Vec<Hit> {
                     .get(&at.ty)
                     .and_then(|entry| entry.fields.get(&field.id))
                     .filter(|entry| entry.kind == FieldKind::Collection)
-                    .and_then(|entry| entry.items.first().cloned())
+                    .map(|entry| entry.items.clone())
             };
-            let Some(item_ty) = collection else {
+            let Some(item_types) = collection else {
                 continue;
             };
             let spec = FieldSpec {
@@ -362,7 +362,11 @@ pub fn hits(host: &Host, meta: &Meta, doc: &str) -> Vec<Hit> {
             let Ok(listing) = store.listing(&at, &spec) else {
                 continue;
             };
-            items.extend(listing.iter().map(|id| at.item(&id, item_ty.clone())));
+            items.extend(
+                listing
+                    .iter()
+                    .filter_map(|id| crate::publish::item_of(store, &at, &id, &item_types)),
+            );
         }
         pending.extend(items.into_iter().rev());
     }

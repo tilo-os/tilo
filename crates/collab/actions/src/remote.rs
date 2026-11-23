@@ -56,15 +56,14 @@ pub mod crash_reports;
 pub mod downloaded_apps;
 pub mod environment_commands;
 pub mod environment_machines;
-pub mod environment_programs;
 pub mod environment_terminals;
+pub mod formats;
 mod nodes;
 pub mod own_device;
 mod pending;
 pub mod person_accounts;
 pub mod person_asking;
 pub mod person_connections;
-pub mod person_formats;
 pub mod person_models;
 pub mod person_telling;
 pub mod person_vault;
@@ -130,7 +129,9 @@ pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
 mod execution_lease;
+mod line;
 pub use execution_lease::ExecutionLease;
+pub use line::{answer_line, answer_message, frame_line, line_refusal};
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use readings::Readings;
 pub use resource_read::{
@@ -221,9 +222,21 @@ pub const WORKSPACE_MEMBERS: &str = "members";
 /// in hex): what changes their role and removes them is published on them.
 pub const WORKSPACE_MEMBER: &str = "members/*";
 /// The question a device of a person's asks the workspace's host before it signs a change to
-/// who is in the workspace: `{change, ...the change's arguments}`, where `change` is `member.add`
-/// or `remove-member`. Answered `{}` when the change is the device's to make.
+/// who is in the workspace: `{change, ...the change's arguments}`, where `change` is the action
+/// the tree publishes the change at ([`WORKSPACE_MEMBER_ADDED`],
+/// [`WORKSPACE_MEMBER_PLACED`] or [`WORKSPACE_MEMBER_REMOVED`]). Answered `{}` when the change
+/// is the device's to make, and refused when it is not.
 pub const WORKSPACE_MEMBER_ADMIT: &str = "member.admit";
+/// The action `workspace/members#add` publishes: give a person a place in the workspace,
+/// whether or not they held one, as [`WORKSPACE_MEMBER_PLACED`] would a member's.
+pub const WORKSPACE_MEMBER_ADDED: &str = "add";
+/// The action `workspace/members/<person>#role` publishes: change the place of a person the
+/// workspace holds. A person it does not hold is added by [`WORKSPACE_MEMBER_ADDED`], never
+/// given a place here.
+pub const WORKSPACE_MEMBER_PLACED: &str = "role";
+/// The action `workspace/members/<person>#remove` publishes: remove the person, ranked below
+/// whoever removes them or themselves.
+pub const WORKSPACE_MEMBER_REMOVED: &str = "remove";
 /// The invitations a workspace has open, under its governance root
 /// (`workspace/invitations`).
 pub const WORKSPACE_INVITATIONS: &str = "invitations";
@@ -239,9 +252,21 @@ pub const WORKSPACE_WAITING: &str = "waiting";
 /// is its `person`.
 pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 22] = [
     ("member.list", Some(WORKSPACE_MEMBERS), "list"),
-    ("member.add", Some(WORKSPACE_MEMBERS), "add"),
-    ("member.add", Some(WORKSPACE_MEMBER), "role"),
-    ("remove-member", Some(WORKSPACE_MEMBER), "remove"),
+    (
+        "member.add",
+        Some(WORKSPACE_MEMBERS),
+        WORKSPACE_MEMBER_ADDED,
+    ),
+    (
+        "member.add",
+        Some(WORKSPACE_MEMBER),
+        WORKSPACE_MEMBER_PLACED,
+    ),
+    (
+        "remove-member",
+        Some(WORKSPACE_MEMBER),
+        WORKSPACE_MEMBER_REMOVED,
+    ),
     ("member.name", Some(WORKSPACE_MEMBERS), "name"),
     ("invite", Some(WORKSPACE_INVITATIONS), "invite"),
     ("invitation.list", Some(WORKSPACE_INVITATIONS), "list"),
@@ -922,6 +947,30 @@ pub enum ActionCallError {
 }
 
 impl ActionCallError {
+    /// A refusal of the action API ([`crate::api`]) as the action wire says it: the API's own
+    /// code, so a caller tells "no such action" apart from "not now" and "not shaped like that"
+    /// without reading prose. An API that refused for a reason of its own says it in words, its
+    /// code leading them.
+    #[must_use]
+    pub fn from_api(error: &crate::ApiError) -> Self {
+        use crate::ApiError;
+        match error {
+            ApiError::Unknown(_) | ApiError::UnregisteredType(_) => Self::UnknownAction,
+            ApiError::MissingArgument(_)
+            | ApiError::UnexpectedArgument(_)
+            | ApiError::InvalidArguments(_)
+            | ApiError::ArgumentOutOfRange { .. } => Self::InvalidRequest {
+                reason: error.to_string(),
+            },
+            ApiError::ConfirmationRequired => Self::confirmation_required(),
+            ApiError::Unavailable { .. } | ApiError::Refused { .. } | ApiError::Failed(_) => {
+                Self::Refused {
+                    reason: error.to_string(),
+                }
+            }
+        }
+    }
+
     /// The refusal for want of the person's answer, for an action that
     /// reached no page departure to name.
     #[must_use]

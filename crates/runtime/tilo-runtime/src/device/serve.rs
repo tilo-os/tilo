@@ -287,8 +287,8 @@ fn take_lock(
     loop {
         // A lock that is not this user's own private file (a link to another file, one others
         // may write) is refused rather than taken: whoever holds it serves the person.
-        let file =
-            crate::unix::private_file(path).with_context(|| format!("open {}", path.display()))?;
+        // Its error names the file and why it is refused.
+        let file = crate::unix::private_file(path)?;
         match FileLock::try_exclusive(file) {
             Ok(lock) => {
                 // Who holds it, for a daemon starting beside this one to name.
@@ -1571,12 +1571,12 @@ mod tests {
     }
 
     /// On a logged-in computer, a workspace command (`tilo do`, `ls`, `read`, `workspace`) is a
-    /// call to the one holder of the device's session: every call reaches it, and none enters the
-    /// workspace as the device on its own, which would cut that session off at the server. A key
-    /// someone handed over (`--key-file`) still acts as that key, in process, and never reaches
-    /// the holder.
+    /// call to the one process with the device's session: every call reaches it, and none enters
+    /// the workspace as the device on its own, which would cut that session off at the server. A
+    /// key someone handed over (`--key-file`) still acts as that key, in process, and never
+    /// reaches that process.
     #[test]
-    fn a_logged_in_computers_workspace_commands_are_calls_to_its_one_holder() {
+    fn a_logged_in_computers_workspace_commands_are_calls_to_its_one_session() {
         let state = tempfile::tempdir().unwrap();
         let runtime_dir = tempfile::tempdir().unwrap();
         let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -1637,7 +1637,7 @@ mod tests {
         };
         for _ in 0..3 {
             let refused = runtime
-                .block_on(as_login().get("/v1/workspaces"))
+                .block_on(as_login().workspaces())
                 .expect_err("this device is not in the workspace");
             let refusal = tilo_api::client::Refusal::of(&refused).expect("the holder's answer");
             assert_eq!(refusal.code(), "not_in_workspace", "{refused}");
@@ -1658,7 +1658,7 @@ mod tests {
                     json: false,
                 })
                 .unwrap()
-                .get("/v1/workspaces"),
+                .workspaces(),
             )
             .expect_err("this device is not in the workspace");
         assert_eq!(
@@ -1684,38 +1684,57 @@ mod tests {
         drop(env);
     }
 
-    /// Whether a call with a key file `root` certified (`--key-file`) asked the key's own server.
+    /// Whether a call with a key file `root` certified (`--key-file`) dials the host it names.
     fn a_key_file_asks_its_own_server(
         dir: &Path,
         root: &ed25519_dalek::SigningKey,
         runtime: &tokio::runtime::Runtime,
     ) -> bool {
-        let server = test_http::Responder::handle(|_| Some(test_http::Reply::status(404)));
-        let key_file = dir.join("script.json");
         let script = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
-        std::fs::write(
-            &key_file,
-            serde_json::to_vec(&tilo_api::direct::KeyFile::new(
-                &server.url(),
-                None,
-                "Nightly build",
-                &script,
-                &certified(root, &script),
-            ))
-            .unwrap(),
-        )
-        .unwrap();
-        let as_key = tilo_api::client::Client::open(tilo_api::client::Reach {
-            api: None,
-            key_file: Some(&key_file),
-            json: false,
+        runtime.block_on(async {
+            let server = test_server::direct_endpoint().await;
+            let host = ed25519_dalek::SigningKey::from_bytes(&server.secret_key().to_bytes());
+            let origin = "https://eu1.tilo.test";
+            let key_file = dir.join("script.json");
+            std::fs::write(
+                &key_file,
+                serde_json::to_vec(
+                    &tilo_api::direct::KeyFile::new(
+                        origin,
+                        None,
+                        "Nightly build",
+                        &script,
+                        &certified(root, &script),
+                    )
+                    .reaching_at(tilo_server_protocol::web::ServerInfo {
+                        server_cert: certified(root, &host),
+                        address: Some(tilo_server_protocol::web::ServerAddress {
+                            endpoint_addr: server.addr(),
+                            relay_url: None,
+                            web: None,
+                        }),
+                        origin: Some(origin.to_owned()),
+                    }),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let as_key = tilo_api::client::Client::open(tilo_api::client::Reach {
+                api: None,
+                key_file: Some(&key_file),
+                json: false,
+            })
+            .unwrap();
+            // The server takes no session, so the call keeps asking: what counts is that it
+            // dialled there.
+            tilo_test_env::within("the key's call dials its server or ends", async {
+                tokio::select! {
+                    dialled = server.accept() => dialled.is_some(),
+                    _ = as_key.workspaces() => false,
+                }
+            })
+            .await
         })
-        .unwrap();
-        // Its server answers nothing useful, so the call keeps asking: it is not waited out.
-        let _ = runtime.block_on(async {
-            tokio::time::timeout(Duration::from_secs(2), as_key.get("/v1/workspaces")).await
-        });
-        !server.drain_requests().is_empty()
     }
 
     /// This computer logged in under `dir`, as `env` names it, as a device `root` certified: its

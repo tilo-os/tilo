@@ -178,10 +178,11 @@ impl FrameHarness {
             }
         }
         for _ in 0..presses {
-            if !self.window_bar_controls().0 {
+            if self.window_bar_controls().0 {
+                self.click_window_sidebar_button()?;
+            } else if !self.pick_the_bars_sidebar_menu() {
                 break;
             }
-            self.click_window_sidebar_button()?;
             self.relayout_until_still()
                 .map_err(|error| format!("after click {}: {error}", states.len()))?;
             states.push(read(self)?);
@@ -247,15 +248,32 @@ impl FrameHarness {
         if sidebar {
             return Ok(());
         }
+        if self.pick_the_bars_sidebar_menu() {
+            return Ok(());
+        }
         if !back {
             return Err(format!(
-                "the bar shows no sidebar button at {width} px and no way back to the screen that \
-                 holds it; the shell now: {}",
+                "the bar shows no sidebar button at {width} px, folds none into its menu and has \
+                 no way back; the shell now: {}",
                 self.sidebar_diagnosis()
             ));
         }
-        self.press_the_bars_back()?;
-        Ok(())
+        self.press_the_bars_back()
+    }
+
+    /// Pick the sidebar's row in the bar's overflow menu, as a click on that row does.
+    fn pick_the_bars_sidebar_menu(&mut self) -> bool {
+        let width = f64::from(self.viewport.0);
+        let mut bar = self.painted_window_bar(width);
+        bar.toolbar_row_mut().pick_folded_sidebar()
+            && bar
+                .toolbar_row_mut()
+                .take_events()
+                .pop()
+                .is_some_and(|(_, event)| {
+                    self.press_window_part(event);
+                    true
+                })
     }
 
     /// Click the window bar's sidebar button up to three times and check that each click flipped the

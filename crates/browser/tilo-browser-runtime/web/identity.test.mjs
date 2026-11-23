@@ -8,6 +8,7 @@ import {
   fetchEnvelope, fetchProfile, fitDisplayName, hex, IdentityError, installNodeCertificate, MAX_DISPLAY_NAME_BYTES,
   keptIdentity, nodeInstallInfo, publishProfile, REFUSED_WITHIN_MS, signInWithPasskey, unhex,
 } from './identity.mjs';
+import {personRecord, PERSON_KEY} from './device-key.mjs';
 
 /** What resolved a promise: its value, or the error it refused with. */
 const settled = promise => promise.then(value => ({value}), error => ({error}));
@@ -184,12 +185,20 @@ test('a node is asked what it runs, and only a session its own key vouches for i
 /** A browser's IndexedDB store, in memory. */
 function memoryStorage(entries = {}) {
   const kept = new Map(Object.entries(entries));
-  return {get: async key => kept.get(key), put: async (key, value) => { kept.set(key, value); }};
+  return {
+    get: async key => kept.get(key),
+    put: async (key, value) => { kept.set(key, value); },
+    delete: async key => { kept.delete(key); },
+  };
 }
+
+/** What the one store keeps for the person whose root is `rootHex`: the
+ * identity store's record, as the page writes it. */
+const storedPerson = rootHex => ({[PERSON_KEY]: JSON.stringify(personRecord({seed: new Uint8Array(32).fill(1), publicKey: unhex(rootHex)}))});
 
 test('a place that refuses a passkey at once is told apart from a person who closes the sheet', async () => {
   const refusal = () => Object.assign(new Error('The request is not allowed'), {name: 'NotAllowedError'});
-  const stored = memoryStorage({identity: {rootPublicKey: 'ef'.repeat(32), held: 'held-before', envelope: {wraps: []}}});
+  const stored = memoryStorage(storedPerson('ef'.repeat(32)));
   let clock = 1000;
   // `took` milliseconds pass before the browser answers with `error`.
   const signIn = (took, error = refusal()) => signInWithPasskey({rpId: 'tilo.test', fetchEnvelope: async () => null, storage: stored,
@@ -213,19 +222,19 @@ test('a place that refuses a passkey at once is told apart from a person who clo
   } finally {
     delete globalThis.document;
   }
-  assert.deepEqual(await keptIdentity({storage: stored}), {rootPublicKey: 'ef'.repeat(32), held: 'held-before'},
+  assert.deepEqual(await keptIdentity({storage: stored}), {rootPublicKey: 'ef'.repeat(32)},
     'a refusal leaves whoever this browser was');
 });
 
 test('a person signed in with a passkey is the person this browser keeps, replacing whoever it was', async () => {
   const root = 'cd'.repeat(32);
   // The browser was someone else first: a visitor it made at the entry.
-  const storage = memoryStorage({identity: {rootPublicKey: 'ef'.repeat(32), held: 'held-before', envelope: {wraps: []}}});
-  const envelope = {root: root, wraps: [{kind: 'passkey'}]};
+  const storage = memoryStorage(storedPerson('ef'.repeat(32)));
+  const envelope = {root, wraps: [{kind: 'passkey'}]};
   const runtime = {
     rootEnvelopePublicKey: () => root,
-    rootOpenPasskey: async () => ({userPublicKey: root, held: 'held-by-this-browser'}),
-    rootHeld: async (publicKey, held) => ({userPublicKey: publicKey, held, lock() {}}),
+    rootOpenPasskey: async () => ({seed: new Uint8Array(32).fill(5), publicKey: unhex(root)}),
+    rootHeld: async (seed, publicKey) => ({userPublicKey: publicKey, seed, lock() {}}),
     rootEnvelopeKept: () => true,
   };
   const credentials = {get: async () => ({
@@ -236,6 +245,6 @@ test('a person signed in with a passkey is the person this browser keeps, replac
   const signedIn = await signInWithPasskey({rpId: 'tilo.test', fetchEnvelope: async () => envelope, storage, credentials,
     persist: null, runtime});
   assert.equal(signedIn.userPublicKey, root);
-  assert.deepEqual(await keptIdentity({storage}), {rootPublicKey: root, held: 'held-by-this-browser'},
+  assert.deepEqual(await keptIdentity({storage}), {rootPublicKey: root},
     'the next load opens the person who signed in, not the visitor the browser was');
 });

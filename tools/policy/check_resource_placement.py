@@ -2,20 +2,15 @@
 """Where an app keeps a resource kind moves only with a conversion.
 
 Where an app keeps a kind is written down, not derived from bytes. An app's
-``surface.toml`` describes each resource kind it keeps under ``[[resources]]``,
-and ``tilo-app.toml`` lists under ``[resources] own`` the kinds each member
-keeps as their own, which reach no one else's devices. Moving a kind out of an
-app, or out of that list, moves what a person kept without converting it: a
+``surface.toml`` describes each resource kind it keeps under ``[[resources]]``.
+Moving a kind out of an app moves what a person kept without converting it: a
 window naming the kind opens an empty one, and the data is still on disk where
 the new app does not look.
 
-``against BASE`` fails when, between ``BASE`` and this tree:
-
-- a kind is gone from an app's ``surface.toml`` ``[[resources]]`` and no other
-  app declares it (``removed``), or another app declares it now (``moved``,
-  named by the app it left);
-- a kind joins (``joined-own``) or leaves (``left-own``) an app's
-  ``tilo-app.toml`` ``[resources] own`` list.
+``against BASE`` fails when, between ``BASE`` and this tree, a kind is gone
+from an app's ``surface.toml`` ``[[resources]]`` and no other app declares it
+(``removed``), or another app declares it now (``moved``, named by the app it
+left).
 
 Each such change passes when a ``[[change]]`` entry in
 ``tools/policy/record_conversions.toml`` names it by ``kind``, ``app`` and
@@ -43,7 +38,7 @@ from check_format_migrations import item_definition  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 CONVERSIONS = Path("tools/policy/record_conversions.toml")
-CHANGES = ("moved", "removed", "joined-own", "left-own")
+CHANGES = ("moved", "removed")
 
 
 def surface_kinds(text: str) -> set[str]:
@@ -55,24 +50,16 @@ def surface_kinds(text: str) -> set[str]:
     }
 
 
-def own_kinds(text: str) -> set[str]:
-    """The kinds an app's ``tilo-app.toml`` has each member keep as their own."""
-    return set(tomllib.loads(text).get("resources", {}).get("own", []))
+def read_tree(root: Path) -> dict[str, set[str]]:
+    """Each app's surface kinds, in the working tree."""
+    return {
+        file.parent.name: surface_kinds(file.read_text(errors="replace"))
+        for file in sorted(root.glob("apps/*/surface.toml"))
+    }
 
 
-def read_tree(root: Path) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """Each app's surface kinds and own kinds, in the working tree."""
-    surfaces: dict[str, set[str]] = {}
-    own: dict[str, set[str]] = {}
-    for file in sorted(root.glob("apps/*/surface.toml")):
-        surfaces[file.parent.name] = surface_kinds(file.read_text(errors="replace"))
-    for file in sorted(root.glob("apps/*/tilo-app.toml")):
-        own[file.parent.name] = own_kinds(file.read_text(errors="replace"))
-    return surfaces, own
-
-
-def read_revision(root: Path, revision: str) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """Each app's surface kinds and own kinds, at `revision`."""
+def read_revision(root: Path, revision: str) -> dict[str, set[str]]:
+    """Each app's surface kinds, at `revision`."""
     listed = subprocess.run(
         ["git", "ls-tree", "-r", "--name-only", revision, "--", "apps"],
         cwd=root,
@@ -81,46 +68,27 @@ def read_revision(root: Path, revision: str) -> tuple[dict[str, set[str]], dict[
         check=True,
     ).stdout
     surfaces: dict[str, set[str]] = {}
-    own: dict[str, set[str]] = {}
     for path in listed.splitlines():
         parts = path.split("/")
-        if len(parts) != 3:
-            continue
-        app, name = parts[1], parts[2]
-        if name not in ("surface.toml", "tilo-app.toml"):
+        if len(parts) != 3 or parts[2] != "surface.toml":
             continue
         shown = subprocess.run(
             ["git", "show", f"{revision}:{path}"], cwd=root, capture_output=True, text=True
         )
-        if shown.returncode != 0:
-            continue
-        if name == "surface.toml":
-            surfaces[app] = surface_kinds(shown.stdout)
-        else:
-            own[app] = own_kinds(shown.stdout)
-    return surfaces, own
+        if shown.returncode == 0:
+            surfaces[parts[1]] = surface_kinds(shown.stdout)
+    return surfaces
 
 
 def changes(
-    then: tuple[dict[str, set[str]], dict[str, set[str]]],
-    now: tuple[dict[str, set[str]], dict[str, set[str]]],
+    then: dict[str, set[str]], now: dict[str, set[str]]
 ) -> list[tuple[str, str, str]]:
     """(kind, app, change) for each placement change between `then` and `now`."""
-    then_surfaces, then_own = then
-    now_surfaces, now_own = now
     found = []
-    for app, kinds in sorted(then_surfaces.items()):
-        for kind in sorted(kinds - now_surfaces.get(app, set())):
-            elsewhere = any(
-                kind in other for name, other in now_surfaces.items() if name != app
-            )
+    for app, kinds in sorted(then.items()):
+        for kind in sorted(kinds - now.get(app, set())):
+            elsewhere = any(kind in other for name, other in now.items() if name != app)
             found.append((kind, app, "moved" if elsewhere else "removed"))
-    for app in sorted(set(then_own) | set(now_own)):
-        before, after = then_own.get(app, set()), now_own.get(app, set())
-        for kind in sorted(after - before):
-            found.append((kind, app, "joined-own"))
-        for kind in sorted(before - after):
-            found.append((kind, app, "left-own"))
     return found
 
 

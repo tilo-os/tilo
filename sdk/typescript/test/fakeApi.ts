@@ -262,29 +262,22 @@ export class FakeApi {
     if (v1 !== "v1") {
       return this.json({ error: { code: "not_found", message: "the API has no such route" } }, 404);
     }
-    if (rest[0] === "account") {
-      return this.json({
-        host: "eu1.tilo.sh",
-        subscription: { plan: "alpha", account: "ada", usage: { workspaces: [] } },
-      });
+    if (rest[0] === "resources" && rest[1] === "account") {
+      if (rest[2] === "usage" && method === "GET") {
+        return this.json({
+          path: "account/usage",
+          fields: {
+            host: "eu1.tilo.sh",
+            subscription: { plan: "alpha", account: "ada", usage: { workspaces: [] } },
+          },
+        });
+      }
+      if (rest.length === 5 && rest[3] === "actions" && method === "POST") {
+        return this.account(rest[2] as string, rest[4] as string, call);
+      }
     }
-    if (rest[0] === "workspaces") {
-      if (rest.length === 1) {
-        return method === "POST" ? this.json(this.createWorkspace(call), 201) : this.json({ workspaces: this.workspaces });
-      }
-      if (rest.length === 2) {
-        return this.deleteWorkspace(rest[1] as string);
-      }
-      if (rest.length === 3 && rest[2] === "branches") {
-        return this.branchWorkspace(rest[1] as string, call);
-      }
+    if (rest[0] === "workspaces" && rest.length > 2) {
       return this.workspaceRoute(method, rest[1] as string, rest.slice(2), call);
-    }
-    if (rest[0] === "keys") {
-      if (rest.length === 1) {
-        return method === "POST" ? this.mintKey(call) : this.json({ keys: this.keys });
-      }
-      return this.revokeKey(rest[1] as string);
     }
     return this.json({ error: { code: "not_found", message: "the API has no such route" } }, 404);
   }
@@ -299,6 +292,9 @@ export class FakeApi {
         if (tail.length === 0) {
           return this.listing(call);
         }
+        if (tail.join("/") === "account/workspaces/actions/unattended") {
+          return this.unattended(String((JSON.parse(call.body || "{}") as Answer).workspace), call);
+        }
         const action = tail[tail.length - 2] === "actions" ? (tail[tail.length - 1] ?? "") : null;
         const path = (action === null ? tail : tail.slice(0, -2)).join("/");
         if (action === null) {
@@ -308,8 +304,6 @@ export class FakeApi {
       }
       case "invocations":
         return this.invocation(tail, method, call);
-      case "unattended":
-        return method === "PUT" ? this.unattended(workspace, call) : this.refuse("method_not_allowed", 405);
       case "search":
         return this.json({
           query: call.query.q ?? "",
@@ -685,6 +679,39 @@ export class FakeApi {
     }
   }
 
+  /** An action of the account (`workspaces`, `create`), answered as every action is. */
+  private account(resource: string, action: string, call: Recorded): Response {
+    const asked = JSON.parse(call.body || "{}") as Answer;
+    const ok = (result: unknown) =>
+      this.json({ status: "ok", path: `account/${resource}#${action}`, result });
+    switch (`${resource}#${action}`) {
+      case "workspaces#list": {
+        const labels = (asked.labels ?? {}) as Record<string, string>;
+        return ok({
+          workspaces: this.workspaces.filter((row) =>
+            Object.entries(labels).every(
+              ([name, value]) => ((row.labels ?? {}) as Record<string, string>)[name] === value,
+            ),
+          ),
+        });
+      }
+      case "workspaces#create":
+        return ok({ workspace: this.createWorkspace(call) });
+      case "workspaces#branch":
+        return this.branchWorkspace(String(asked.workspace), call);
+      case "workspaces#delete":
+        return this.deleteWorkspace(String(asked.workspace));
+      case "keys#list":
+        return ok({ keys: this.keys });
+      case "keys#mint":
+        return this.mintKey(call);
+      case "keys#revoke":
+        return ok({ revoked: asked.grant });
+      default:
+        return this.refuse("not_found", 404, `the account has no ${resource}#${action}`);
+    }
+  }
+
   private createWorkspace(call: Recorded): Answer {
     const asked = JSON.parse(call.body || "{}") as Answer;
     const created = {
@@ -708,7 +735,7 @@ export class FakeApi {
     const key = call.headers["idempotency-key"] ?? "";
     const retried = this.branches.get(key);
     if (retried !== undefined) {
-      return this.json(retried, 201);
+      return this.json({ status: "ok", path: "account/workspaces#branch", result: { workspace: retried } });
     }
     const asked = JSON.parse(call.body || "{}") as Answer;
     const made: Answer = {
@@ -720,7 +747,7 @@ export class FakeApi {
     };
     this.workspaces.push(made);
     this.branches.set(key, made);
-    return this.json(made, 201);
+    return this.json({ status: "ok", path: "account/workspaces#branch", result: { workspace: made } });
   }
 
   /** Running commands unattended in `workspace`: off at once, on only once the person allows it. */
@@ -742,13 +769,19 @@ export class FakeApi {
       return this.refuse("not_found", 404, "no such workspace of yours");
     }
     this.workspaces = this.workspaces.filter((row) => row.id !== workspace);
-    return this.json({ deleted: workspace, revoked_keys: ["g-minted"] });
+    return this.json({
+      status: "ok",
+      path: "account/workspaces#delete",
+      result: { deleted: workspace, revoked_keys: ["g-minted"] },
+    });
   }
 
   private mintKey(call: Recorded): Response {
     const asked = JSON.parse(call.body || "{}") as Answer;
-    return this.json(
-      {
+    return this.json({
+      status: "ok",
+      path: "account/keys#mint",
+      result: {
         grant: "g-minted",
         name: asked.name ?? "minted",
         token: "tilo_sk_minted",
@@ -756,12 +789,7 @@ export class FakeApi {
         mcp_url: `https://api.test/w/${String(asked.workspace)}/mcp`,
         expires_at_ms: 9_000_000_000_000,
       },
-      201,
-    );
-  }
-
-  private revokeKey(grant: string): Response {
-    return this.json({ revoked: grant });
+    });
   }
 
   private refuse(code: string, status: number, message = "no"): Response {

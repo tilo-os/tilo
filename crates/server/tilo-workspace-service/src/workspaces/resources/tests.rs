@@ -169,7 +169,6 @@ impl Writer {
             cluster_id: workspace.into(),
             document_id: doc.into(),
             envelope: Box::new(envelope),
-            own: None,
             readers: None,
         })
         .unwrap()

@@ -1,4 +1,4 @@
-//! The environment's own MCP server: where a coding agent inside the guest reaches
+//! The environment's own MCP server: where an agent or program inside the guest reaches
 //! the desktop's actions (`tilo-runtime --connect`).
 //!
 //! The session's own server serves only programs outside every sandbox, so the

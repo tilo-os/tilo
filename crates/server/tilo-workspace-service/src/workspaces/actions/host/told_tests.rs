@@ -44,7 +44,7 @@ const HIRING: &str = "A new customer is important only while we are hiring";
 /// A line that always counts.
 const LANDLORD: &str = "My landlord is always important";
 
-/// The one assistant a person keeps, with the limit its keeper set it.
+/// The workspace's one assistant, with the limit the workspace set it.
 struct OneAssistant {
     limit: Option<u64>,
 }

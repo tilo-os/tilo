@@ -338,7 +338,7 @@ def actions_matching(one: Person, query: str) -> list[dict]:
 def stand_in(one: Person, workspace: str) -> None:
     current = front(one)
     if current is None or current.get("id") != workspace:
-        one.session.invoke(SHELL, f"{CHROME}\u001fswitch-workspace", {"workspace": workspace})
+        one.session.invoke(SHELL, CHROME, "switch-workspace", {"workspace": workspace})
     until(f"{one.name}'s shell to stand in the workspace",
           lambda: (front(one) or {}).get("id") == workspace, 60, 0.25)
 

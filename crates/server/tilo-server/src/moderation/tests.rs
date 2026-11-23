@@ -15,7 +15,7 @@ const OWNER: &str = "owner";
 const ADA: &str = "ada";
 const MALLORY: &str = "mallory";
 
-/// Restricts for half an hour and takes back what the person did.
+/// Restricts for half an hour and takes back what the person did, were it the agent's to do.
 struct FakeJudge(Mutex<Vec<Case>>);
 
 impl Judge for FakeJudge {
@@ -104,15 +104,10 @@ fn a_report_is_about_who_wrote_the_message() {
 }
 
 #[tokio::test]
-async fn a_report_restricts_through_the_workspace_and_takes_the_flood_back_as_the_bot() {
+async fn a_restriction_the_bot_may_not_enforce_settles_the_report_and_takes_nothing_back() {
     let mut chat = flooded_workspace();
     let agent = ModerationAgent::new(FakeJudge(Mutex::new(Vec::new())));
-    let mut governed = Vec::new();
-    let mut govern = |change: Change| {
-        governed.push(change);
-        Ok(())
-    };
-    let mut api = ChatApi::new(&mut chat, &mut govern, tilo_clock::unix_now_ms_i64());
+    let mut api = ChatApi::new(&mut chat, tilo_clock::unix_now_ms_i64());
     let filed = api.moderation().unwrap();
     let mallory = MemberId::person(MALLORY);
     let look = ModerationAgent::<FakeJudge>::look(&mut api, &filed, &mallory);
@@ -122,25 +117,14 @@ async fn a_report_restricts_through_the_workspace_and_takes_the_flood_back_as_th
     assert!(enforced.failures.is_empty(), "{:?}", enforced.failures);
     drop(api);
 
-    assert!(matches!(
-        governed.as_slice(),
-        [Change::Restrict { person, .. }] if person == MALLORY
-    ));
-    // Her posts are gone; Ada's stays.
-    assert!(texts_by(&chat, MALLORY).is_empty());
+    // Restricting is a person's to do: her posts stay, and so do Ada's.
+    assert_eq!(texts_by(&chat, MALLORY).len(), 3);
     assert_eq!(texts_by(&chat, ADA), ["hello everyone"]);
-    // The report is settled, saying what was decided and why.
+    // The report is settled, saying what the model thought and why it was not enforced.
     let after = moderation(&chat).unwrap();
     assert_eq!(after.open_reports().count(), 0);
-    // The report outlives the message it is about: who wrote it, what it said and what was
-    // decided stay readable, as the person's history the next look reads.
-    let kept = after
-        .reports
-        .iter()
-        .next()
-        .expect("the report outlives the message");
+    let kept = after.reports.iter().next().expect("the report is kept");
     assert_eq!(kept.person, mallory);
-    assert_eq!(kept.item, None, "the message is deleted");
     assert!(
         kept.reason.contains("buy at spam.example"),
         "{}",
@@ -149,7 +133,10 @@ async fn a_report_restricts_through_the_workspace_and_takes_the_flood_back_as_th
     assert!(
         kept.decision
             .as_deref()
-            .is_some_and(|said| said.starts_with("Restricted until")),
+            .is_some_and(|said| said.starts_with("No action")
+                && said.contains(
+                    "Workspace membership changes require a person with moderation authority"
+                )),
         "{:?}",
         kept.decision
     );
@@ -159,11 +146,10 @@ async fn a_report_restricts_through_the_workspace_and_takes_the_flood_back_as_th
 #[test]
 fn a_decision_reads_on_the_reports_it_settles() {
     let mut chat = flooded_workspace();
-    let mut govern = |_: Change| Ok(());
-    let mut api = ChatApi::new(&mut chat, &mut govern, tilo_clock::unix_now_ms_i64());
+    let mut api = ChatApi::new(&mut chat, tilo_clock::unix_now_ms_i64());
     let filed = api.moderation().unwrap();
     let report = filed.open_reports().next().unwrap().clone();
-    api.decide(Decide {
+    api.decide(DecideReports {
         id: "mallory@1".into(),
         person: report.person.clone(),
         reports: vec![report.id.clone()],

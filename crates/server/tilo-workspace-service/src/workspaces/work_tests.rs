@@ -362,3 +362,74 @@ async fn a_member_device_asks_and_the_host_runs_its_turn() {
     }
     host.shutdown().await;
 }
+
+/// The workspace's leases as an app reads them (`workspace.leases`): the device whose claim
+/// stands, by its key in hex, until the claim lapses or is let go, after which the lease names
+/// no device and is left out.
+#[cfg(feature = "apps")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_app_reads_a_leases_live_holder_until_its_claim_lapses() {
+    use tilo_resource_store::wire::{Command, Reply};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_host(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces();
+    // The service answers an app's reads as this device, as a desktop's does.
+    workspaces.set_member_device(Arc::new(MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    let workspace = workspaces.create("Desk").await.unwrap().workspace;
+    let leases = || async {
+        let reply = workspaces
+            .own_resource_command(&workspace, "so.tilo.lang.desk", Command::Leases)
+            .await
+            .expect("the host answers the workspace's leases");
+        let Reply::Content(Some(state)) = reply else {
+            panic!("the leases are answered as the workspace's state: {reply:?}");
+        };
+        state
+    };
+    assert_eq!(
+        leases().await,
+        serde_json::json!({ "leases": {} }),
+        "a workspace nobody claimed anything in holds no lease"
+    );
+
+    let lease = "ask/1";
+    let ttl_ms = 30_000;
+    workspaces
+        .write_lease(&workspace, lease, ttl_ms)
+        .await
+        .unwrap();
+    let holder = hex::encode(cert.device_public_key);
+    assert_eq!(
+        leases().await,
+        serde_json::json!({ "leases": { lease: { "device": holder } } }),
+        "the claim that stands names its device, as `invoker.device()` names one"
+    );
+
+    // Read past the claim's deadline and the clock skew devices allow, the claim has lapsed:
+    // the lease names nobody, though the claim is still written.
+    let lapsed = tilo_clock::unix_now_ns()
+        .saturating_add(ttl_ms.saturating_mul(1_000_000))
+        .saturating_add(tilo_peer_state::CLOCK_SKEW_NS)
+        .saturating_add(1_000_000_000);
+    let state = workspaces.workspace(&workspace).await.unwrap();
+    let read_then =
+        super::resources::leases_reading(&state.lock().await.peer(), super::system_time(lapsed));
+    assert_eq!(
+        read_then,
+        serde_json::json!({ "leases": {} }),
+        "a lapsed claim names no device"
+    );
+
+    workspaces.write_lease(&workspace, lease, 0).await.unwrap();
+    assert_eq!(
+        leases().await,
+        serde_json::json!({ "leases": {} }),
+        "a claim let go names no device either"
+    );
+    host.shutdown().await;
+}

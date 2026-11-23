@@ -4,7 +4,7 @@
 # The live installer is driven through the actions it publishes — the same
 # addresses its own buttons invoke — over its console channel: a virtio-serial
 # port that only this VM's command line attaches (os/dev/vm.sh console;
-# crates/session/console-control), speaking the tilo-control action protocol.
+# crates/session/console-control), speaking action frames.
 # Its state, never including the recovery key, is the completion oracle. The
 # installed target has no such channel yet, so its unlock prompt, first-login
 # OOBE and desktop are driven with QEMU keyboard events and observed from the
@@ -588,10 +588,10 @@ confirmation=/dev/vdb
   || die "Review names a different destructive target than this layout formats"
 ic invoke set-recovery-promise@installer '{"acknowledged":true}' \
   || die "installer refused the recovery-key promise"
-if ic invoke begin@installer.review '{"confirmation_phrase":"/dev/vda"}' 2>/dev/null; then
+if ic invoke begin@installer.review --phrase /dev/vda 2>/dev/null; then
   die "installer began an install confirmed with the wrong device"
 fi
-ic invoke begin@installer.review "{\"confirmation_phrase\":\"$confirmation\"}" \
+ic invoke begin@installer.review --phrase "$confirmation" \
   || die "installer refused the confirmed install"
 
 # Completion is read from the installer's own state. That state never holds

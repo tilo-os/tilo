@@ -52,7 +52,6 @@ sha2.workspace = true
 tilo-paths.workspace = true
 tilo-device-identity = { path = "../../collab/tilo-device-identity" }
 tilo-identity = { path = "../../runtime/tilo-identity" }
-postcard.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
 # The lock that keeps one daemon per device, which a command reads to see whether one is there.

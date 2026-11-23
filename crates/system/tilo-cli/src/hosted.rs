@@ -762,12 +762,17 @@ fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
                     .map(|(name, value)| (name, Value::String(value)))
                     .collect();
                 let made = client
-                    .post(
-                        "/v1/workspaces",
+                    .account(
+                        "account/workspaces",
+                        "create",
                         &serde_json::json!({"name": name, "labels": labels}),
                     )
                     .await?;
-                Ok(show(reach.json, &made, &lines::workspace(&made)))
+                Ok(show(
+                    reach.json,
+                    &made,
+                    &lines::workspace(made.get("workspace").unwrap_or(&Value::Null)),
+                ))
             }
             WorkspaceCmd::Rename {
                 workspace: named,
@@ -775,12 +780,17 @@ fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
             } => {
                 let id = client.workspace_id(&named).await?;
                 let renamed = client
-                    .put(
-                        &format!("/v1/workspaces/{id}/name"),
-                        &serde_json::json!({ "name": name }),
+                    .account(
+                        "account/workspaces",
+                        "rename",
+                        &serde_json::json!({"workspace": id, "name": name}),
                     )
                     .await?;
-                Ok(show(reach.json, &renamed, &lines::workspace(&renamed)))
+                Ok(show(
+                    reach.json,
+                    &renamed,
+                    &lines::workspace(renamed.get("workspace").unwrap_or(&Value::Null)),
+                ))
             }
             WorkspaceCmd::Branch {
                 source,
@@ -793,12 +803,17 @@ fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
                     .map(|(name, value)| (name, Value::String(value)))
                     .collect();
                 let made = client
-                    .post(
-                        &format!("/v1/workspaces/{id}/branches"),
-                        &serde_json::json!({"name": name, "labels": labels}),
+                    .account(
+                        "account/workspaces",
+                        "branch",
+                        &serde_json::json!({"workspace": id, "name": name, "labels": labels}),
                     )
                     .await?;
-                Ok(show(reach.json, &made, &lines::workspace(&made)))
+                Ok(show(
+                    reach.json,
+                    &made,
+                    &lines::workspace(made.get("workspace").unwrap_or(&Value::Null)),
+                ))
             }
             WorkspaceCmd::Unattended {
                 workspace: named,
@@ -806,7 +821,13 @@ fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
             } => unattended(&client, reach.json, &named, off).await,
             WorkspaceCmd::Rm { workspace: named } => {
                 let id = client.workspace_id(&named).await?;
-                let deleted = client.delete(&format!("/v1/workspaces/{id}")).await?;
+                let deleted = client
+                    .account(
+                        "account/workspaces",
+                        "delete",
+                        &serde_json::json!({ "workspace": id }),
+                    )
+                    .await?;
                 let mut said = format!("deleted {}", text(&deleted, "deleted"));
                 let revoked: Vec<&str> = deleted
                     .get("revoked_keys")
@@ -834,22 +855,17 @@ async fn list_workspaces(
     json: bool,
     labels: &[(String, String)],
 ) -> Result<ExitCode> {
-    let query: Vec<String> = labels
+    let labels: serde_json::Map<String, Value> = labels
         .iter()
-        .map(|(name, value)| {
-            let encode = |text: &str| {
-                percent_encoding::utf8_percent_encode(text, percent_encoding::NON_ALPHANUMERIC)
-                    .to_string()
-            };
-            format!("label%5B{}%5D={}", encode(name), encode(value))
-        })
+        .map(|(name, value)| (name.clone(), Value::String(value.clone())))
         .collect();
-    let path = if query.is_empty() {
-        "/v1/workspaces".to_owned()
-    } else {
-        format!("/v1/workspaces?{}", query.join("&"))
-    };
-    let listed = client.get(&path).await?;
+    let listed = client
+        .account(
+            "account/workspaces",
+            "list",
+            &serde_json::json!({ "labels": labels }),
+        )
+        .await?;
     Ok(show(json, &listed, &lines::workspaces(&listed)))
 }
 
@@ -858,9 +874,12 @@ async fn list_workspaces(
 async fn unattended(client: &Client, json: bool, named: &str, off: bool) -> Result<ExitCode> {
     let id = client.workspace_id(named).await?;
     let answer = client
-        .put_asking(
-            &format!("/v1/workspaces/{id}/unattended"),
-            &serde_json::json!({"on": !off}),
+        .act(
+            &id,
+            "account/workspaces",
+            "unattended",
+            &serde_json::json!({"workspace": id, "on": !off}),
+            "account/workspaces#unattended",
         )
         .await?;
     let said = match (
@@ -1828,7 +1847,9 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                 export(&asked, &out, reach.json).await
             }
             KeysCmd::Ls => {
-                let listed = Client::open(reach)?.get("/v1/keys").await?;
+                let listed = Client::open(reach)?
+                    .account("account/keys", "list", &serde_json::json!({}))
+                    .await?;
                 Ok(show(reach.json, &listed, &lines::keys(&listed)))
             }
             KeysCmd::Mint { name, expires_in } => {
@@ -1844,7 +1865,7 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                 if let (Some(fields), Some(expires_in)) = (body.as_object_mut(), expires_in) {
                     fields.insert("expires_in".into(), serde_json::json!(expires_in));
                 }
-                let minted = client.post("/v1/keys", &body).await?;
+                let minted = client.account("account/keys", "mint", &body).await?;
                 let said = lines::minted_key(&minted);
                 Ok(show(reach.json, &minted, &said))
             }
@@ -1857,10 +1878,16 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
 /// revoked, with every key it minted.
 async fn revoke_key(reach: Reach<'_>, named: &str) -> Result<ExitCode> {
     let client = Client::open(reach)?;
-    let listed = client.get("/v1/keys").await?;
+    let listed = client
+        .account("account/keys", "list", &serde_json::json!({}))
+        .await?;
     let grant = key_api::key_named(&listed, named)?;
     let revoked = client
-        .delete(&format!("/v1/keys/{}", api::encode_path(&grant)))
+        .account(
+            "account/keys",
+            "revoke",
+            &serde_json::json!({ "grant": grant }),
+        )
         .await?;
     Ok(show(
         reach.json,
@@ -2211,9 +2238,10 @@ mod tests {
             .set(api::KEY_ENV, "tilo_sk_test");
         let api_server = test_http::Responder::handle(|request: &test_http::Request| {
             let (status, body) = match (request.method.as_str(), request.target.as_str()) {
-                ("GET", "/v1/workspaces") => (
+                ("POST", "/v1/resources/account/workspaces/actions/list") => (
                     200,
-                    serde_json::json!({"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}),
+                    serde_json::json!({"status": "ok", "result":
+                        {"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}}),
                 ),
                 _ => (
                     400,
@@ -2298,26 +2326,26 @@ mod tests {
         };
         let route = request.target.as_str();
         match (request.method.as_str(), route) {
-            ("GET", "/v1/workspaces") => json_reply(
+            ("POST", "/v1/resources/account/workspaces/actions/list") => json_reply(
                 200,
-                json!({"workspaces": [{"id": WORKSPACE, "name": "Applicant: Jane Doe",
-                    "host": "eu1.tilo.sh", "role": "owner"}]}),
+                json!({"status": "ok", "result": {"workspaces": [{"id": WORKSPACE,
+                    "name": "Applicant: Jane Doe", "host": "eu1.tilo.sh", "role": "owner"}]}}),
             ),
-            ("POST", "/v1/workspaces") => json_reply(
-                201,
-                json!({"id": WORKSPACE, "name": "Applicant: Jane Doe", "host": "eu1.tilo.sh",
-                    "role": "owner"}),
+            ("POST", "/v1/resources/account/workspaces/actions/create") => json_reply(
+                200,
+                json!({"status": "ok", "result": {"workspace": {"id": WORKSPACE,
+                    "name": "Applicant: Jane Doe", "host": "eu1.tilo.sh", "role": "owner"}}}),
             ),
-            ("PUT", route) if route.ends_with("/unattended") => json_reply(
+            ("POST", route) if route.ends_with("/actions/unattended") => json_reply(
                 200,
                 json!({"status": "ok", "path": "workspace/unattended#set",
                     "result": {"workspace": WORKSPACE, "unattended": true}}),
             ),
-            ("POST", route) if route.ends_with("/branches") => json_reply(
-                201,
-                json!({"id": BRANCH, "name": "Applicant: Jane Doe, second try",
-                    "host": "eu1.tilo.sh", "role": "owner",
-                    "labels": {"customer_id": "cus_8121"}}),
+            ("POST", "/v1/resources/account/workspaces/actions/branch") => json_reply(
+                200,
+                json!({"status": "ok", "result": {"workspace": {"id": BRANCH,
+                    "name": "Applicant: Jane Doe, second try", "host": "eu1.tilo.sh",
+                    "role": "owner", "labels": {"customer_id": "cus_8121"}}}}),
             ),
             ("POST", route) if route.ends_with("/contents/have") => {
                 let asked: Value = serde_json::from_slice(&request.body).unwrap_or_default();
@@ -2398,7 +2426,7 @@ mod tests {
                 json: false,
             };
 
-            // A workspace is made as `POST /v1/workspaces`, once per idempotency key.
+            // A workspace is made as the account's `workspaces#create`, once per idempotency key.
             workspace(
                 reach,
                 None,
@@ -2410,7 +2438,10 @@ mod tests {
             let made = api_server.drain_requests();
             assert_eq!(made.len(), 1);
             assert_eq!(made[0].method, "POST");
-            assert_eq!(made[0].target, "/v1/workspaces");
+            assert_eq!(
+                made[0].target,
+                "/v1/resources/account/workspaces/actions/create"
+            );
             assert_eq!(made[0].header("authorization"), Some("Bearer tilo_sk_test"));
             assert!(
                 made[0].header("idempotency-key").is_some(),
@@ -2420,8 +2451,8 @@ mod tests {
                 serde_json::from_slice::<Value>(&made[0].body).unwrap(),
                 json!({"name": "Applicant: Jane Doe", "labels": {"customer_id": "cus_8121"}})
             );
-            // A branch is `POST /v1/workspaces/{source}/branches`, its source
-            // named by a read of the list, its labels as create takes them.
+            // A branch is the account's `workspaces#branch`, its source named
+            // by a read of the list, its labels as create takes them.
             workspace(
                 reach,
                 None,
@@ -2435,18 +2466,21 @@ mod tests {
             assert_eq!(branched.len(), 2, "the source is named by the list first");
             let branch = branched.last().expect("the branch");
             assert_eq!(branch.method, "POST");
-            assert_eq!(branch.target, format!("/v1/workspaces/{WORKSPACE}/branches"));
+            assert_eq!(
+                branch.target,
+                "/v1/resources/account/workspaces/actions/branch"
+            );
             assert!(
                 branch.header("idempotency-key").is_some(),
                 "a call that makes something names its invocation"
             );
             assert_eq!(
                 serde_json::from_slice::<Value>(&branch.body).unwrap(),
-                json!({"name": "Applicant: Jane Doe, second try",
+                json!({"workspace": WORKSPACE, "name": "Applicant: Jane Doe, second try",
                     "labels": {"customer_id": "cus_8121"}})
             );
-            // Running commands unattended is `PUT /v1/workspaces/{id}/unattended`,
-            // held while the person decides.
+            // Running commands unattended is the account's `workspaces#unattended`,
+            // run in the workspace and held while the person decides.
             workspace(
                 reach,
                 None,
@@ -2457,14 +2491,17 @@ mod tests {
             );
             let unattended = api_server.drain_requests();
             let asked = unattended.last().expect("the setting");
-            assert_eq!(asked.method, "PUT");
-            assert_eq!(asked.target, format!("/v1/workspaces/{WORKSPACE}/unattended"));
+            assert_eq!(asked.method, "POST");
+            assert_eq!(
+                asked.target,
+                format!("/v1/workspaces/{WORKSPACE}/resources/account/workspaces/actions/unattended")
+            );
             assert_eq!(asked.header("prefer"), Some("wait=60"));
             assert_eq!(
                 serde_json::from_slice::<Value>(&asked.body).unwrap(),
-                json!({"on": true})
+                json!({"workspace": WORKSPACE, "on": true})
             );
-            // Listing by a label is `GET /v1/workspaces?label[name]=value`.
+            // Listing by a label names the labels as `workspaces#list` takes them.
             workspace(
                 reach,
                 None,
@@ -2473,9 +2510,14 @@ mod tests {
                 },
             );
             let listed = api_server.drain_requests();
+            let listed = listed.last().expect("the list");
             assert_eq!(
-                listed.last().map(|request| request.target.as_str()),
-                Some("/v1/workspaces?label%5Bcustomer%5Fid%5D=cus%5F8121")
+                listed.target,
+                "/v1/resources/account/workspaces/actions/list"
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&listed.body).unwrap(),
+                json!({"labels": {"customer_id": "cus_8121"}})
             );
 
             // A file goes in as one upload, and the reference it answers is what
@@ -2731,7 +2773,7 @@ mod tests {
                 json!({})
             );
 
-            // A workspace is named again with `PUT …/name`.
+            // A workspace is named again with the account's `workspaces#rename`.
             workspace(
                 reach,
                 None,
@@ -2742,11 +2784,14 @@ mod tests {
             );
             let renamed = api_server.drain_requests();
             let renamed = renamed.last().expect("the rename");
-            assert_eq!(renamed.method, "PUT");
-            assert_eq!(renamed.target, format!("/v1/workspaces/{WORKSPACE}/name"));
+            assert_eq!(renamed.method, "POST");
+            assert_eq!(
+                renamed.target,
+                "/v1/resources/account/workspaces/actions/rename"
+            );
             assert_eq!(
                 serde_json::from_slice::<Value>(&renamed.body).unwrap(),
-                json!({"name": "Jane Doe"})
+                json!({"workspace": WORKSPACE, "name": "Jane Doe"})
             );
         }
 
@@ -2812,8 +2857,12 @@ mod tests {
                     )
                 };
                 // The key is named as `tilo keys ls` lists it first.
-                if request.method == "GET" {
-                    return reply(200, json!({"keys": [{"grant": "grant-1", "name": "Nightly"}]}));
+                if request.target.ends_with("/list") {
+                    return reply(
+                        200,
+                        json!({"status": "ok", "result":
+                            {"keys": [{"grant": "grant-1", "name": "Nightly"}]}}),
+                    );
                 }
                 let first = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
                 if first {
@@ -2822,7 +2871,7 @@ mod tests {
                         json!({"error": {"code": "unavailable", "message": "still running"}}),
                     )
                 } else {
-                    reply(200, json!({"revoked": "grant-1"}))
+                    reply(200, json!({"status": "ok", "result": {"revoked": "grant-1"}}))
                 }
             });
             let url = api_server.url();
@@ -2840,14 +2889,17 @@ mod tests {
             let sent: Vec<_> = api_server
                 .drain_requests()
                 .into_iter()
-                .filter(|sent| sent.method == "DELETE")
+                .filter(|sent| sent.target.ends_with("/revoke"))
                 .collect();
             assert_eq!(
                 sent.len(),
                 2,
                 "the unavailable answer is retried, not reported"
             );
-            assert_eq!(sent[1].target, "/v1/keys/grant-1");
+            assert_eq!(
+                sent[1].target,
+                "/v1/resources/account/keys/actions/revoke"
+            );
             assert_eq!(
                 sent[0].header("idempotency-key"),
                 sent[1].header("idempotency-key")

@@ -13,60 +13,18 @@
 use std::collections::BTreeSet;
 
 use tilo_action_policy::bot::{MODERATION_GRANT, moderation_grant};
-use tilo_action_policy::{Change, Grant};
+use tilo_action_policy::{Context, Grant};
 use tilo_moderation::{Judge, ModerationAgent};
-use tilo_server_session::workspaces::RemoveMemberRequest;
-use tilo_user_identity::DeviceCert;
 
 use crate::moderation::ChatApi;
 use crate::tl_chat;
 use crate::workspaces::{ResourceWrite, Workspaces};
-
-/// Enforces one of the moderation agent's governance changes on `workspace` as
-/// the workspace's root, held to the workspace's policy like a Moderator's own.
-pub async fn govern(
-    workspaces: &Workspaces,
-    workspace: &str,
-    host: &DeviceCert,
-    change: &Change,
-) -> Result<(), String> {
-    let person = match change {
-        Change::Restrict { person, .. }
-        | Change::Unrestrict { person }
-        | Change::Ban { person }
-        | Change::Unban { person } => person,
-        other => return Err(format!("the moderation agent does not {}", other.action())),
-    };
-    let user_public_key: [u8; 32] = hex::decode(person)
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| format!("{person} is not a person"))?;
-    let request = RemoveMemberRequest {
-        request_id: *blake3::hash(
-            &serde_json::to_vec(&(change, tilo_clock::unix_now_ns())).unwrap_or_default(),
-        )
-        .as_bytes(),
-        user_public_key,
-    };
-    let done = match change {
-        Change::Restrict { until_ms, .. } => {
-            workspaces
-                .restrict_member(workspace, host, request, *until_ms)
-                .await
-        }
-        Change::Unrestrict { .. } => workspaces.unrestrict_member(workspace, host, request).await,
-        Change::Ban { .. } => workspaces.ban_member(workspace, host, request).await,
-        _ => workspaces.unban_member(workspace, host, request).await,
-    };
-    done.map(drop).map_err(|error| error.to_string())
-}
 
 /// The workspace's moderation agent, installed by the workspace's root and woken by
 /// reports filed in the workspace's Chat.
 pub struct ModerationBot<J> {
     workspaces: Workspaces,
     workspace: String,
-    host: DeviceCert,
     agent: std::sync::Arc<ModerationAgent<J>>,
     /// The reports it has looked at, by id: one the model gave no verdict on waits for a
     /// human Moderator instead of being put to the model again on every write.
@@ -74,33 +32,35 @@ pub struct ModerationBot<J> {
 }
 
 impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
-    /// The agent for `workspace`, governed here by `host` on the root's behalf.
+    /// The agent for `workspace`, governed here.
     #[must_use]
-    pub fn new(
-        workspaces: Workspaces,
-        workspace: String,
-        host: DeviceCert,
-        agent: ModerationAgent<J>,
-    ) -> Self {
+    pub fn new(workspaces: Workspaces, workspace: String, agent: ModerationAgent<J>) -> Self {
         Self {
             workspaces,
             workspace,
-            host,
             agent: std::sync::Arc::new(agent),
             looked: BTreeSet::new(),
         }
     }
 
     /// Answer the workspace's reports at start, then each time a write to its Chat
-    /// arrives, until the workspace is no longer governed here.
+    /// arrives, and every half minute for a person turning it on, until the workspace is no
+    /// longer governed here.
     pub async fn run(mut self) {
         let mut writes = self.workspaces.document_writes();
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+        // The first tick is now; the first pass waits a whole period, as later ones do.
+        tick.tick().await;
         loop {
             if let Err(error) = self.wake().await {
                 tracing::warn!(workspace = %self.workspace, %error, "moderation agent did not finish a look");
             }
             loop {
-                match writes.recv().await {
+                let next = tokio::select! {
+                    _ = tick.tick() => break,
+                    next = writes.recv() => next,
+                };
+                match next {
                     Ok(write) if self.watches(&write) => break,
                     Ok(_) => {}
                     // Missed writes are read from the record itself.
@@ -123,10 +83,7 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
     pub async fn wake(&mut self) -> Result<(), String> {
         // Turned off, it looks at nothing: the reports wait until a person turns it on
         // again.
-        if installed_moderation_grant(&self.workspaces, &self.workspace)
-            .await?
-            .is_none()
-        {
+        if !enabled(&self.workspaces, &self.workspace).await? {
             return Ok(());
         }
         let packages = tl_chat::packages()?;
@@ -151,25 +108,18 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
             .collect();
         people.sort();
         people.dedup();
-        let (workspaces, governed, host) = (
-            self.workspaces.clone(),
-            self.workspace.clone(),
-            self.host.clone(),
-        );
+        let (workspaces, governed) = (self.workspaces.clone(), self.workspace.clone());
         let agent = std::sync::Arc::clone(&self.agent);
         let handle = tokio::runtime::Handle::current();
         // The record is changed on a blocking thread, so the model's answer and the
-        // workspace's governance are waited for there.
+        // workspace's grants are waited for there.
         self.workspaces
             .with_tl_record(
                 &self.workspace,
                 &packages,
                 tl_chat::viewer(),
                 move |opened| {
-                    let mut govern = |change: Change| {
-                        handle.block_on(govern(&workspaces, &governed, &host, &change))
-                    };
-                    let mut api = ChatApi::new(opened, &mut govern, tilo_clock::unix_now_ms_i64());
+                    let mut api = ChatApi::new(opened, tilo_clock::unix_now_ms_i64());
                     let moderation = api.moderation()?;
                     for person in people {
                         let look = ModerationAgent::<J>::look(&mut api, &moderation, &person);
@@ -182,6 +132,11 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
                                 continue;
                             }
                         };
+                        // A person who turned it off while the model was thinking has the
+                        // last word: nothing is enforced on what it decided.
+                        if !handle.block_on(enabled(&workspaces, &governed))? {
+                            return Ok(());
+                        }
                         let enforced =
                             ModerationAgent::<J>::enforce(&mut api, look, verdict, model);
                         for failure in enforced.failures {
@@ -205,7 +160,6 @@ fn is_moderation_grant(recorded: &Grant, expected: &Grant, node: bool) -> bool {
         && (!node || recorded.node == expected.node)
         && recorded.kinds == expected.kinds
         && recorded.answer == expected.answer
-        && recorded.lifetime == expected.lifetime
 }
 
 /// Give `workspace` its moderation grant as the workspace's own person. A grant already
@@ -254,26 +208,17 @@ pub async fn enable(workspaces: &Workspaces, workspace: &str) -> Result<(), Stri
 /// # Errors
 /// The workspace is not governed here.
 pub async fn enabled(workspaces: &Workspaces, workspace: &str) -> Result<bool, String> {
-    Ok(installed_moderation_grant(workspaces, workspace)
-        .await?
-        .is_some())
-}
-
-async fn installed_moderation_grant(
-    workspaces: &Workspaces,
-    workspace: &str,
-) -> Result<Option<Grant>, String> {
     let expected = moderation_grant(
         workspace,
         &hex::encode(workspaces.governor().user_public_key),
     );
-    let grants = workspaces
+    let now = Context::at_time(tilo_clock::wall());
+    Ok(workspaces
         .workspace_grants(workspace)
         .await
-        .map_err(|error| error.to_string())?;
-    Ok(grants
-        .into_iter()
-        .find(|grant| is_moderation_grant(grant, &expected, true)))
+        .map_err(|error| error.to_string())?
+        .iter()
+        .any(|grant| is_moderation_grant(grant, &expected, true) && grant.is_live(&now)))
 }
 
 pub mod discord;

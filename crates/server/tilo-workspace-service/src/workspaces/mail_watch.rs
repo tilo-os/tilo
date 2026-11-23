@@ -328,7 +328,7 @@ impl Workspaces {
         }
         let root = self.workspace_root(workspace);
         let vault = self.vault_at(workspace);
-        let Some(wanted) = self.wanted_watches(&root, vault).await else {
+        let Some(wanted) = Self::wanted_watches(vault).await else {
             return;
         };
         // The watches that run with what is kept now stay, and only the others are started.
@@ -408,16 +408,18 @@ impl Workspaces {
     /// The accounts `workspace` keeps here whose inboxes are watched now, with
     /// the sign-in each runs with: none where a sign-in could not be read,
     /// which stops the watches being brought in line.
-    async fn wanted_watches(
-        &self,
-        root: &Path,
-        vault: VaultAt<'_>,
-    ) -> Option<HashMap<String, WatchedAccount>> {
+    async fn wanted_watches(vault: VaultAt<'_>) -> Option<HashMap<String, WatchedAccount>> {
         use super::person_settings::kept_sign_ins::sign_in_of;
 
-        let store = accounts::AccountStore::load_in(root);
+        let held = match vault.accounts().await {
+            Ok(held) => held,
+            Err(reason) => {
+                tracing::warn!(%reason, "mail: a workspace's accounts could not be read, so its inboxes are not watched");
+                return None;
+            }
+        };
         let mut wanted = HashMap::new();
-        for account in store.list(&accounts::AccountTypeId::from(accounts::email::TYPE_ID)) {
+        for account in &held.of_type(accounts::email::TYPE_ID) {
             let setting = |name: &str| account.config.get(name);
             let waits =
                 setting("import_pending").and_then(serde_json::Value::as_bool) == Some(true);
@@ -828,7 +830,7 @@ pub(crate) mod testing {
         }
     }
 
-    /// `address` kept in `workspace`'s store with its sign-in, an entry of the workspace's
+    /// `address` kept in `workspace`'s accounts with its sign-in, an entry of the workspace's
     /// vault, as adding it from a window keeps one: kept again, it signs in with the new
     /// password under the same entry.
     pub(crate) async fn keep(
@@ -839,7 +841,6 @@ pub(crate) mod testing {
     ) {
         use crate::workspaces::person_settings::kept_sign_ins::{places_of, sign_in_of};
 
-        let root = workspaces.workspace_root(workspace);
         let id = accounts::AccountId::from(address.to_owned());
         let mut account = accounts::Account::new(id, accounts::email::TYPE_ID);
         account.config = serde_json::json!({
@@ -850,9 +851,11 @@ pub(crate) mod testing {
             "smtp_host": "smtp.example.test",
             "smtp_port": 465,
         });
-        let mut store = accounts::AccountStore::load_in(&root);
-        let before = store
-            .get(&account.id)
+        let before = workspaces
+            .workspace_accounts(workspace)
+            .await
+            .unwrap()
+            .account(address)
             .and_then(|kept| sign_in_of(&kept.config));
         // Added with its password: bound to the servers it names.
         let reference = workspaces
@@ -870,8 +873,10 @@ pub(crate) mod testing {
             .await
             .unwrap();
         accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
-        store.upsert(account);
-        store.save_in(&root).unwrap();
+        workspaces
+            .keep_workspace_account(workspace, &account)
+            .await
+            .unwrap();
     }
 
     /// One message as a watch tells it.
@@ -1097,7 +1102,6 @@ mod tests {
         let (ada, _) = two(workspaces).await;
         let servers = Arc::new(Watched::default());
         workspaces.carry_mail_through(servers.clone());
-        let root = workspaces.workspace_root(&ada);
         keep(workspaces, &ada, "ada@example.test", "first-password").await;
         let _listening = workspaces.listen_for_mail(&ada);
         workspaces.mail_watches_settled().await;
@@ -1131,11 +1135,12 @@ mod tests {
             .collect();
         assert_eq!(passwords, ["second-password"]);
 
-        let mut store = accounts::AccountStore::load_in(&root);
-        assert!(store.remove(&accounts::AccountId::from(
-            "ada@work.example.test".to_owned()
-        )));
-        store.save_in(&root).unwrap();
+        assert!(
+            workspaces
+                .remove_workspace_account(&ada, "ada@work.example.test")
+                .await
+                .unwrap()
+        );
         workspaces.person_settings_changed();
         workspaces.mail_watches_settled().await;
         assert_eq!(

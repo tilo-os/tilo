@@ -98,6 +98,10 @@ pub struct LayoutPlaceReading {
 pub struct LayoutReading {
     /// The person at this device, by their name.
     pub person: String,
+    /// The strip the keyboard is in, by its key: the window this device has in front. Empty for
+    /// none. It is this device's own, read off its shell, never a change of the layout.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub front: String,
     /// The others here in the workspace in front.
     pub people: Vec<LayoutPersonReading>,
     pub workspaces: Vec<LayoutWorkspaceReading>,
@@ -253,7 +257,12 @@ pub(super) fn reading_of(
     catalog: &Catalog,
     names: &Names,
 ) -> Reading {
-    let mut reading = Reading::default();
+    let mut reading = Reading {
+        front: tilo_desktop_surface::navigation::active_route(tree)
+            .map(|route| route.group.to_string())
+            .unwrap_or_default(),
+        ..Reading::default()
+    };
     for workspace in &tree.workspaces {
         reading.workspaces.push(WorkspaceReading {
             key: workspace.id().to_string(),

@@ -7,11 +7,10 @@ pub(crate) fn filter_resource(
     binding: &CallbackBinding,
     resource: ResourceSpec,
 ) -> Option<ResourceSpec> {
-    binding.permissions.borrow().permitted_resource_on(
-        &binding.app_id,
-        binding.checkout.id.as_str(),
-        resource,
-    )
+    binding
+        .permissions
+        .borrow()
+        .permitted_resource(&binding.app_id, resource)
 }
 
 /// [`filter_resource`] of a shared tree, for the permission context `token` names: a subtree whose
@@ -69,7 +68,7 @@ fn filter_shared_node(
     let _phase = tilo_resource::profiling::Phase::start("ui.filtered_resource");
     let head = resource.head();
     let permissions = binding.permissions.borrow();
-    let decider = permissions.action_decider_on(&binding.app_id, binding.checkout.id.as_str());
+    let decider = permissions.action_decider(&binding.app_id);
     let every_action = head
         .actions
         .iter()
@@ -140,7 +139,7 @@ pub(super) fn insert_available_permitted(
     allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
 ) {
     let permissions = binding.permissions.borrow();
-    let decider = permissions.action_decider_on(&binding.app_id, binding.checkout.id.as_str());
+    let decider = permissions.action_decider(&binding.app_id);
     insert_available(&decider, resources, allowed);
 }
 

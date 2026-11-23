@@ -8,13 +8,10 @@
 //! went. The host can stop a run it started, which ends the command as Ctrl+C does
 //! ([`CommandRan::cancelled`]). It also branches a workspace's machine from another's and
 //! deletes one ([`tilo_actions::remote::environment_machines`]), on the hosted-VM service's own
-//! socket. And it starts a program in a workspace's machine that the workspace's server serves
-//! from afar, and holds it for that server ([`tilo_actions::remote::environment_programs`],
-//! [`crate::environment_programs`]). And it opens a Terminal session's shell on a terminal
+//! socket. And it opens a Terminal session's shell on a terminal
 //! ([`tilo_actions::remote::environment_terminals`]), whose stream it hands the server that
 //! asked, to take on [`crate::environment_terminals::ALPN`] ([`EnvironmentCommands::serve_terminal`]).
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
@@ -22,7 +19,6 @@ use std::time::Duration;
 use tilo_actions::remote::browser::{self, OpenBrowser};
 use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRan, CommandRequest};
 use tilo_actions::remote::environment_machines::{self, BranchMachine, MachineBranched};
-use tilo_actions::remote::environment_programs::{self, ServeProgram, TellProgram};
 use tilo_actions::remote::environment_terminals::{self, OpenTerminal, TerminalOpened};
 use tilo_actions::remote::linux_apps::{self, OpenApp};
 use tilo_actions::remote::{
@@ -32,7 +28,6 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 
 use crate::environment_browsers::{AppRefused, BrowserHost};
-use crate::environment_programs::{Held, LEFT_AFTER, Starts};
 use crate::environment_terminals::{Ended, EnvironmentTerminals, RanQueue, TerminalAsk};
 use crate::workspace_shell::{Payer, RunWith, ShellRun, WorkspaceShells};
 
@@ -58,13 +53,6 @@ struct Inner {
     browsers: Option<BrowserHost>,
     operator: [u8; 32],
     log: Mutex<InvocationLog<Run>>,
-    /// The served programs held for their servers, each under the invocation that started
-    /// it: found here also once the log has forgotten that invocation.
-    programs: Mutex<HashMap<InvocationId, Program>>,
-    /// What starts a served program, when it is not the machine the shells name.
-    starts: Option<Box<Starts>>,
-    /// How long a served program is kept when its server no longer asks after it.
-    left_after: Duration,
     moved: Condvar,
     /// How many times a run moved, so a waiter tells a change from a wake.
     moves: Mutex<u64>,
@@ -75,9 +63,6 @@ struct Run {
     state: Arc<Mutex<InvocationState>>,
     stop: Arc<AtomicBool>,
 }
-
-/// A served program this member holds, with the invocation that started it.
-type Program = (Run, Arc<Held>);
 
 impl Run {
     fn state(&self) -> InvocationState {
@@ -102,31 +87,9 @@ impl EnvironmentCommands {
             browsers,
             operator,
             log: Mutex::new(InvocationLog::with_capacity(REMEMBERED)),
-            programs: Mutex::new(HashMap::new()),
-            starts: None,
-            left_after: LEFT_AFTER,
             moved: Condvar::new(),
             moves: Mutex::new(0),
         }))
-    }
-
-    /// These, starting a served program by `starts` instead of in the machine the shells
-    /// name: for a member whose machines are stood in.
-    #[must_use]
-    pub fn starting_programs_by(mut self, starts: Box<Starts>) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.0) {
-            inner.starts = Some(starts);
-        }
-        self
-    }
-
-    /// These, ending a served program whose server has not asked after it for `after`.
-    #[must_use]
-    pub fn leaving_programs_after(mut self, after: Duration) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.0) {
-            inner.left_after = after;
-        }
-        self
     }
 }
 
@@ -415,84 +378,6 @@ impl Inner {
 }
 
 impl Inner {
-    /// The served program `id`, when `caller` is the server it is held for: a device of this
-    /// member's operator, asking as the program's own workspace.
-    fn program(&self, caller: &Caller, id: &InvocationId) -> Option<Program> {
-        if caller.user_public_key() != Some(&self.operator) {
-            return None;
-        }
-        let workspace = caller.workspace()?;
-        let programs = self.programs.lock().unwrap_or_else(PoisonError::into_inner);
-        let found = programs
-            .get(id)
-            .filter(|(_, held)| held.of(workspace))
-            .cloned();
-        drop(programs);
-        found
-    }
-
-    /// Hold `program` under `invocation`, letting go of the programs that are over.
-    fn hold(&self, invocation: InvocationId, program: Program) {
-        let mut programs = self.programs.lock().unwrap_or_else(PoisonError::into_inner);
-        programs.retain(|_, (over, _)| !over.state().update.is_terminal());
-        programs.insert(invocation, program);
-    }
-
-    /// Answer `going` by starting what `asked` names in `workspace`'s machine and holding it
-    /// for the workspace's server until it is over: each update shows what the program sent
-    /// that the server has not taken, and the answer says how it ended.
-    fn start_program(self: &Arc<Self>, going: Run, workspace: String, asked: ServeProgram) {
-        let inner = Arc::clone(self);
-        let invocation = going.state().invocation();
-        std::thread::spawn(move || {
-            let started = Held::start(
-                &inner.shells,
-                inner.starts.as_deref(),
-                &workspace,
-                asked,
-                inner.left_after,
-            );
-            let update = match started {
-                Ok(held) => {
-                    let held = Arc::new(held);
-                    inner.hold(invocation, (going.clone(), Arc::clone(&held)));
-                    let sequence = std::sync::atomic::AtomicU64::new(0);
-                    let ended = held.follow(&going.stop, &|frames| {
-                        let sequence = sequence.fetch_add(1, Ordering::Relaxed);
-                        let value = serde_json::to_value(frames).unwrap_or_default();
-                        inner.set(
-                            &going,
-                            InvocationUpdate::Item {
-                                invocation,
-                                sequence,
-                                value,
-                            },
-                        );
-                    });
-                    InvocationUpdate::Succeeded {
-                        invocation,
-                        output: ActionOutput {
-                            value: serde_json::to_value(ended).ok(),
-                            resources: Vec::new(),
-                        },
-                    }
-                }
-                Err(message) => InvocationUpdate::Failed {
-                    invocation,
-                    error: ActionFailure {
-                        code: "unavailable".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            };
-            inner.set(&going, update);
-        });
-    }
-}
-
-impl Inner {
     /// Answer `run` by making `workspace`'s machine a branch of the one `asked` names, or by
     /// deleting it, on this host's hosted-VM service.
     fn start_machine(self: &Arc<Self>, run: Run, workspace: String, asked: Option<BranchMachine>) {
@@ -623,27 +508,18 @@ impl ActionProvider for EnvironmentCommands {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        // A served program's server asks after it by looking at it: that is what keeps it.
-        let held = self.0.program(caller, id);
-        if let Some((_, held)) = &held {
-            held.asked_after();
-        }
         let log = self.0.log.lock().unwrap_or_else(PoisonError::into_inner);
         let known = log.get(caller, id).map(Run::state);
         drop(log);
-        known.or_else(|| held.map(|(going, _)| going.state()))
+        known
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
         self.observe(caller, id)?;
-        // A served program's server waiting for its next change asks after it until the wait
-        // is answered, however long the program stays quiet.
-        let waiting = self.0.program(caller, id).map(|(_, held)| held.waited_on());
         let (changed, change) = tilo_actions::remote::pending();
         let inner = Arc::clone(&self.0);
         std::thread::spawn(move || {
             inner.wait_for_a_move();
-            drop(waiting);
             changed.complete(());
         });
         Some(change)
@@ -656,8 +532,7 @@ impl ActionProvider for EnvironmentCommands {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(caller, id)
-            .cloned()
-            .or_else(|| self.0.program(caller, id).map(|(going, _)| going));
+            .cloned();
         let Some(run) = run else {
             return Pending::ready(Err(ActionCallError::UnknownInvocation));
         };
@@ -710,9 +585,6 @@ impl EnvironmentCommands {
             .workspace()
             .ok_or(ActionCallError::NotPermitted)?
             .to_owned();
-        if action == environment_programs::TELL {
-            return self.tell(caller, request);
-        }
         let asked = match action {
             environment_commands::RUN => Asked::Command(argument(request)?),
             environment_terminals::OPEN => {
@@ -720,9 +592,6 @@ impl EnvironmentCommands {
                     .device_public_key()
                     .ok_or(ActionCallError::NotPermitted)?;
                 Asked::Terminal(program_argument(request, "a terminal to open")?, device)
-            }
-            environment_programs::SERVE => {
-                Asked::Program(program_argument(request, "a program to serve")?)
             }
             browser::OPEN => Asked::Browser(Some(open_argument(request, "Browser")?)),
             browser::STOP => Asked::Browser(None),
@@ -761,7 +630,6 @@ impl EnvironmentCommands {
                         self.0.start_app(run, workspace, asked, browsers);
                     }
                     Asked::Machine(asked) => self.0.start_machine(run, workspace, asked),
-                    Asked::Program(asked) => self.0.start_program(run, workspace, asked),
                     Asked::Terminal(asked, device) => {
                         self.0.start_terminal(&run, &workspace, &asked, device);
                     }
@@ -769,33 +637,6 @@ impl EnvironmentCommands {
                 Ok(receipt)
             }
         }
-    }
-
-    /// Hand a served program what its server tells it, at once: nothing of it is kept in the
-    /// log, since a frame is handed on once by its number however often it is sent.
-    fn tell(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionCallError> {
-        let told: TellProgram = program_argument(request, "what a served program is told")?;
-        let (_, held) = self
-            .0
-            .program(caller, &told.program)
-            .ok_or(ActionCallError::UnknownInvocation)?;
-        held.tell(&told)?;
-        let invocation = request.invocation;
-        Ok(InvocationState::new(
-            invocation,
-            InvocationUpdate::Succeeded {
-                invocation,
-                output: ActionOutput {
-                    value: None,
-                    resources: Vec::new(),
-                },
-            },
-        )
-        .receipt())
     }
 }
 
@@ -805,8 +646,6 @@ enum Asked {
     App(Option<OpenApp>),
     /// A branch of the workspace's machine from another's, or its deletion.
     Machine(Option<BranchMachine>),
-    /// A program to start in the workspace's machine and hold for the workspace's server.
-    Program(ServeProgram),
     /// A session's shell to open on a terminal, for the server's device that asked.
     Terminal(OpenTerminal, [u8; 32]),
 }

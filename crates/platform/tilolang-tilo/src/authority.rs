@@ -32,16 +32,6 @@ use crate::meta::{MetaExt as _, action_kind};
 /// Where the host reads the person's access in the workspace, each time it decides.
 pub type AccessSource = dyn Fn() -> Option<MemberAccess>;
 
-/// The access of `person` holding nothing: for a host that only reads, so that nothing its
-/// runtime might invoke runs.
-pub fn holding_nothing(person: &str) -> impl Fn() -> Option<MemberAccess> + 'static {
-    let access = MemberAccess::person(
-        tilo_action_policy::WorkspacePolicy::new(NO_WORKSPACE, format!("{person}'s owner")),
-        person,
-    );
-    move || Some(access.clone())
-}
-
 /// The workspace a host without an access decides in.
 const NO_WORKSPACE: &str = "local";
 
@@ -59,8 +49,6 @@ struct State {
     names: HashMap<String, String>,
     /// The actors the API admitted as software acting for a person, with that person.
     agents: HashMap<Actor, Option<String>>,
-    /// The packages whose documents are each member's own (`resources: .own`), by app id.
-    own: HashSet<String>,
     /// The hosts each app's package declares its `uses web` requests may reach, as installed.
     web: HashMap<String, Vec<String>>,
     /// The `(app, host)` the workspace took away: a request to one answers as a value.
@@ -91,9 +79,6 @@ impl TiloAuthority {
         let mut state = self.state.borrow_mut();
         state.trusted.insert(module.clone());
         state.apps.insert(module.clone(), meta.app.clone());
-        if meta.own_resources || meta.profile_resources {
-            state.own.insert(meta.app.clone());
-        }
         if !meta.web.is_empty() {
             state.web.insert(meta.app.clone(), meta.web.clone());
         }
@@ -220,7 +205,7 @@ enum Author {
 
 /// What a package's code holds of its own app's documents, trusted or not: it reads and changes
 /// what the app keeps as `runner`, the person using it, and reaches nothing outside it.
-fn own_resources(workspace: &str, app: &str, runner: &Grantee) -> Grant {
+fn package_records(workspace: &str, app: &str, runner: &Grantee) -> Grant {
     Grant::new(
         format!("package-records:{app}"),
         runner.clone(),
@@ -288,28 +273,14 @@ impl Authority for TiloAuthority {
         let node = TreePath::workspace(workspace)
             .app(action.app.to_string())
             .kind(kind);
-        // An app whose documents are each member's own acts on the document of the person at the
-        // window: whoever else invokes is decided as on anyone's own document, refused.
-        let own_document = access
-            .as_ref()
-            .filter(|_| state.own.contains(action.app.as_str()))
-            .and_then(|access| {
-                let person = access.person_id()?.to_owned();
-                Some((crate::member_document_of(&action.app, &person)?, person))
-            });
-        let node = match (&own_document, &action.target) {
-            (Some((record, _)), _) => node.resource(record.clone()),
-            (None, Some(target)) => node.resource(target.resource.clone()),
-            (None, None)
-                if access.is_some()
-                    && tilo_action_policy::roles::requires_document_keys(
-                        action.app.as_str(),
-                        "",
-                    ) =>
+        let node = match &action.target {
+            Some(target) => node.resource(target.resource.clone()),
+            None if access.is_some()
+                && tilo_action_policy::roles::requires_document_keys(action.app.as_str(), "") =>
             {
                 node.resource("")
             }
-            (None, None) => node,
+            None => node,
         }
         .action(
             state
@@ -374,7 +345,7 @@ impl Authority for TiloAuthority {
                     .unwrap_or_else(|| format!("tl-module:{}", module.0));
                 let mut own = authorship::code_grants(workspace, &runner, trusted);
                 if action.own && *module == action.module {
-                    own.push(own_resources(workspace, &app, &runner));
+                    own.push(package_records(workspace, &app, &runner));
                 }
                 (Author::Package(app), own)
             };
@@ -400,10 +371,7 @@ impl Authority for TiloAuthority {
                 Author::Package(_) => authorship::code_party(&runner, own, workspace_grants),
             });
         }
-        let mut cx = Context::at_time(tilo_clock::wall()).with_earlier_ids(&earlier);
-        if let Some((record, person)) = &own_document {
-            cx = cx.with_own_resource(record, person);
-        }
+        let cx = Context::at_time(tilo_clock::wall()).with_earlier_ids(&earlier);
         decision(policy.decide(&node, action_kind(action.class), &cx).answer)
     }
 }
@@ -460,41 +428,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn a_persons_access_and_the_workspaces_denials_decide;
-
-        phase a_package_whose_documents_are_each_members_own_is_its_persons_alone;
-        {
-            let ada = "ab".repeat(32);
-            let owner = "ef".repeat(32);
-            let mut policy = WorkspacePolicy::new(WORKSPACE, owner.clone());
-            policy
-                .members
-                .insert(ada.clone(), tilo_action_policy::Role::Editor);
-            let access = MemberAccess::person(policy, ada.clone());
-            let authority =
-                TiloAuthority::new(Actor::from(MemberId::person(ada.clone())), move || Some(access.clone()));
-            {
-                let mut state = authority.state.borrow_mut();
-                state.trusted.insert(module());
-                state.apps.insert(module(), APP.to_owned());
-            }
-            let change = info(EffectClass::Undoable, true);
-            let workspace_owner = Actor::from(MemberId::person(owner));
-            // Shared, the workspace's owner may change what the package holds.
-            assert_eq!(
-                authority.decide(&workspace_owner, &[module()], &change),
-                Decision::Allow
-            );
-            // Each member's own, it is Ada's document: only she acts on it, not even the workspace's owner.
-            authority.state.borrow_mut().own.insert(APP.to_owned());
-            assert_eq!(
-                authority.decide(&Actor::from(MemberId::person(ada)), &[module()], &change),
-                Decision::Allow
-            );
-            assert_eq!(
-                authority.decide(&workspace_owner, &[module()], &change),
-                Decision::Deny
-            );
-        }
 
         phase the_persons_agent_answer_denies_the_agent;
         {

@@ -34,7 +34,6 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [dev-dependencies]
 getrandom.workspace = true
-postcard = { workspace = true, features = ["alloc"] }
 
 [lints]
 workspace = true

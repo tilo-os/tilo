@@ -6,7 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tilo_actions::surface::{FieldType, NamedType, RESOURCE_UNIT, Surface};
+use tilo_actions::CREATE_ACTION;
+use tilo_actions::surface::{FieldType, NamedType, RESOURCE_UNIT, Surface, TypeField};
 
 /// The verb a change that sets a resource's field names: the field edit any editable field
 /// takes, which writes only fields that are not read-only.
@@ -20,11 +21,16 @@ pub struct Schema {
     pub verbs: Vec<Verb>,
 }
 
-/// What one verb writes: each kind it writes resources of.
+/// What one verb writes: each kind it writes resources of, and the kinds it may write that
+/// another surface declares.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Verb {
     pub name: String,
     pub writes: BTreeMap<String, Writes>,
+    /// The kinds nested in the verb's own record that this surface does not type — a tilolang
+    /// package publishes a surface per type, so a list's items are another surface's kind. The
+    /// verb may make, move and remove them, and their own surface declares their fields.
+    pub nested: BTreeSet<String>,
 }
 
 /// What a verb writes in a resource of one kind.
@@ -136,7 +142,9 @@ fn scalar(ty: &FieldType, enums: &dyn Fn(&str) -> bool) -> bool {
 
 impl Schema {
     /// The resource types `surface` declares: each resource type it names, with its fields, and
-    /// the types nested in it as collections of them.
+    /// the types nested in it as collections of them. A surface that names no type of its own
+    /// kind — a tilolang package describes its record by the fields it lists — declares that
+    /// record too, so its own kind and what its verbs write are known to the store.
     #[must_use]
     pub fn from_surface(surface: &Surface) -> Self {
         let enums = |name: &str| {
@@ -153,8 +161,22 @@ impl Schema {
                 .find(|ty| ty.name == name && ty.is_enum())
                 .map(|ty| ty.cases.iter().map(|case| case.name.clone()).collect())
         };
-        let types = surface
-            .types
+        let mut declared: Vec<NamedType> = surface.types.clone();
+        // The surface's own record: the type named by its kind, else by its label, else the
+        // record it describes in its fields (a tilolang package names no type of its own).
+        let own_name = if declared.iter().any(|ty| ty.name == surface.kind) {
+            surface.kind.clone()
+        } else if declared.iter().any(|ty| ty.name == surface.label) {
+            surface.label.clone()
+        } else {
+            declared.push(own_type(surface));
+            surface.kind.clone()
+        };
+        let own = declared
+            .iter()
+            .find(|ty| ty.name == own_name)
+            .or_else(|| declared.first());
+        let types = declared
             .iter()
             .filter(|ty| !ty.is_enum())
             .map(|ty| Type::of(ty, &enums, &cases))
@@ -163,21 +185,31 @@ impl Schema {
             .verbs
             .iter()
             .map(|verb| {
-                let mut declared: BTreeSet<&str> = verb
+                let mut units: BTreeSet<&str> = verb
                     .writes
                     .iter()
                     .filter(|unit| unit.as_str() != RESOURCE_UNIT)
                     .map(|unit| unit.strip_suffix(".*").unwrap_or(unit))
                     .collect();
-                declared.extend(verb.field.as_deref());
+                units.extend(verb.field.as_deref());
+                let mut nested = nested_kinds(surface);
+                // A verb that answers a record it makes (`answer(a: Ask) -> Reply`) makes one
+                // of that kind, wherever the app nests it.
+                if let Some(FieldType::Resource(kind)) =
+                    verb.returns.as_ref().map(|returns| &returns.ty)
+                {
+                    nested.insert(kind.clone());
+                }
                 Verb {
                     name: verb.id.clone(),
-                    writes: writes_of(surface, &|_, field| declared.contains(field), false),
+                    writes: writes_of(surface, own, &|_, field| units.contains(field), false),
+                    nested,
                 }
             })
             .chain(std::iter::once(Verb {
                 name: FIELD_EDIT.to_owned(),
-                writes: writes_of(surface, &|_, _| true, true),
+                writes: writes_of(surface, own, &|_, _| true, true),
+                nested: BTreeSet::new(),
             }))
             .collect();
         Self { types, verbs }
@@ -196,11 +228,75 @@ impl Schema {
     }
 }
 
-/// The kinds and fields a verb of `surface` writes: everything its first type holds outside a
-/// storage unit of its own, and the units `declared` names, wherever they sit. A field edit
-/// (`editing`) writes any unit and no read-only field.
+/// The kinds the surface's own record holds records of that no surface here types: each
+/// collection of resources, by its kind.
+fn nested_kinds(surface: &Surface) -> BTreeSet<String> {
+    let mut kinds = BTreeSet::new();
+    for field in surface
+        .fields
+        .iter()
+        .filter(|field| !field.path.contains('.'))
+    {
+        let mut ty = &field.ty;
+        while let FieldType::Option(inner) | FieldType::Set(inner) | FieldType::List(inner) = ty {
+            ty = inner;
+        }
+        if let FieldType::Collection(item) = ty {
+            kinds.extend(collected(item).filter_map(|case| match case {
+                FieldType::Resource(kind) => Some(kind.clone()),
+                _ => None,
+            }));
+        }
+    }
+    kinds
+}
+
+/// What a collection of `item` holds: that one type, or each case of a union of them
+/// (`Collection<Category | TextChannel>`).
+fn collected(item: &FieldType) -> impl Iterator<Item = &FieldType> {
+    match item {
+        FieldType::Union(cases) => cases.as_slice(),
+        item => std::slice::from_ref(item),
+    }
+    .iter()
+}
+
+/// The surface's own record, as a type: the fields it lists at its root (a dotted path names a
+/// field of a type nested in it, which declares its own). Its name is the kind its resources are.
+///
+/// A tilolang package — one whose surface declares `$create`, the host's own verb for a
+/// package's root — names a field's path by the id the runtime keeps it under and stores it
+/// under its title, so the record's fields are the titles there; any other surface stores the
+/// field its path names.
+fn own_type(surface: &Surface) -> NamedType {
+    let by_title = surface.verbs.iter().any(|verb| verb.id == CREATE_ACTION);
+    NamedType {
+        name: surface.kind.clone(),
+        doc: String::new(),
+        fields: surface
+            .fields
+            .iter()
+            .filter(|field| !field.path.contains('.'))
+            .map(|field| TypeField {
+                name: if by_title && !field.title.is_empty() {
+                    field.title.clone()
+                } else {
+                    field.path.clone()
+                },
+                ty: field.ty.clone(),
+                title: field.title.clone(),
+            })
+            .collect(),
+        cases: Vec::new(),
+    }
+}
+
+/// The kinds and fields a verb of `surface` writes: everything `own`, the surface's type, holds
+/// outside a storage unit of its own, and the units `declared` names, wherever they sit. A field
+/// edit (`editing`) writes any unit and no read-only field.
 fn writes_of(
     surface: &Surface,
+    own: Option<&NamedType>,
     declared: &dyn Fn(&str, &str) -> bool,
     editing: bool,
 ) -> BTreeMap<String, Writes> {
@@ -213,10 +309,16 @@ fn writes_of(
         })
     };
     let declared_types: Vec<&NamedType> = surface.types.iter().filter(|ty| !ty.is_enum()).collect();
-    let named = |name: &str| declared_types.iter().copied().find(|ty| ty.name == name);
+    let named = |name: &str| {
+        declared_types
+            .iter()
+            .copied()
+            .find(|ty| ty.name == name)
+            .or_else(|| own.filter(|own| own.name == name))
+    };
     let mut writes: BTreeMap<String, Writes> = BTreeMap::new();
     let mut reached: Vec<&NamedType> = Vec::new();
-    // Every type a declared unit nests, and the first type, the verb's own.
+    // Every type a declared unit nests, and the verb's own: the surface's.
     for ty in &declared_types {
         for field in &ty.fields {
             if declared(&ty.name, &field.name)
@@ -228,7 +330,7 @@ fn writes_of(
             }
         }
     }
-    reached.extend(declared_types.first().copied());
+    reached.extend(own.or_else(|| declared_types.first().copied()));
     while let Some(ty) = reached.pop() {
         if writes.contains_key(&ty.name) {
             continue;
@@ -286,8 +388,12 @@ impl Type {
         for field in &declared.fields {
             match &field.ty {
                 FieldType::Collection(item) => {
-                    if let FieldType::Named(name) = item.as_ref() {
-                        nested.push((field.name.clone(), name.clone()));
+                    // A type names what it nests by name (a Rust resource) or by kind (a
+                    // tilolang package, whose records are kinds of their own).
+                    for case in collected(item) {
+                        if let FieldType::Named(kind) | FieldType::Resource(kind) = case {
+                            nested.push((field.name.clone(), kind.clone()));
+                        }
                     }
                 }
                 ty => {

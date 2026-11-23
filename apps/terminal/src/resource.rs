@@ -527,15 +527,6 @@ pub(crate) struct Link;
 #[derive(Clone, PartialEq, Eq, Effect)]
 #[effect(operation = "terminal.effects")]
 pub enum TerminalEffect {
-    /// Import earlier workspace commands.
-    #[effect(
-        kind = "undoable",
-        attended,
-        privileged,
-        returns,
-        label = "terminal-import-previous-history"
-    )]
-    ImportPreviousHistory,
     /// Inspect session
     ///
     /// Read this member's actual process lifecycle and startup cause.
@@ -856,12 +847,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
                 cx.me(),
             )
         {
-            self.remember_in(
-                history,
-                cx.resource_opener(ui::apps::TERMINAL),
-                record.uri(),
-                me.clone(),
-            );
+            self.remember_in(history, record.uri(), me.clone());
         }
         if cx.mode().is_live() {
             self.recent_in(crate::target::RecentTarget::open(&cx));
@@ -881,9 +867,6 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
         cx: &mut EffectCx<Terminal, Self>,
     ) -> EffectAnswer {
         match effect {
-            TerminalEffect::ImportPreviousHistory => {
-                Ok(Effected::value(self.import_previous_history()?))
-            }
             TerminalEffect::InspectSession => Ok(Effected::value(self.inspect_session())),
             TerminalEffect::ReadScreen => Ok(Effected::value(self.read_session())),
             TerminalEffect::InspectEditor => Ok(Effected::value(self.inspect_editor())),
@@ -959,12 +942,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
                 cx.me(),
             )
         {
-            self.remember_in(
-                history,
-                cx.resource_opener(ui::apps::TERMINAL),
-                record.uri(),
-                me.clone(),
-            );
+            self.remember_in(history, record.uri(), me.clone());
         }
         if cx.mode().is_live() {
             self.recent_in(crate::target::RecentTarget::open(&cx));
@@ -985,9 +963,6 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
         cx: &mut EffectCx<Terminal, Self>,
     ) -> EffectAnswer {
         match effect {
-            TerminalEffect::ImportPreviousHistory => Ok(Effected::value(
-                self.terminal_mut().import_previous_history()?,
-            )),
             TerminalEffect::InspectSession => Ok(Effected::value(self.inspect_session())),
             TerminalEffect::ReadScreen => Ok(Effected::value(self.read_session())),
             TerminalEffect::InspectEditor => {

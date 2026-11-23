@@ -332,9 +332,11 @@ fn binding() -> LiveBinding {
         state: LinkState::Linked,
     }
 }
-fn accounts() -> accounts::AccountStore {
-    let mut accounts = accounts::AccountStore::new();
-    accounts.upsert(accounts::Account::new("fixture-sim", "sms"));
+fn accounts() -> accounts::person::PersonAccounts {
+    let mut accounts = accounts::person::PersonAccounts::default();
+    accounts
+        .keep(&accounts::Account::new("fixture-sim", "sms"))
+        .unwrap();
     accounts
 }
 fn route() -> Route {

@@ -49,9 +49,8 @@ use tilo_actions::remote::{
     CataloguePage, CatalogueQuery, Completer, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, Pending, ReceiptStatus,
     SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, application_provider, application_provider_resource,
-    identity_admin, mcp_server, pending, person_accounts, person_formats, person_models,
-    person_telling, person_vault, provider_workspace, server_account, session_actions,
-    workspace_activity as wire,
+    formats, identity_admin, mcp_server, pending, person_accounts, person_models, person_telling,
+    person_vault, provider_workspace, server_account, session_actions, workspace_activity as wire,
 };
 
 use tilo_lock::MutexRecover as _;
@@ -220,16 +219,17 @@ pub const PERSON_PROVIDERS: [&str; 2] = [mcp_server::PROVIDER, identity_admin::P
 /// they sign in with (a protected field in a window hands what was typed
 /// there), and what its people call important and were told (the server tells
 /// while no device is on), and the person's own account with that server (its
-/// plan and what they used), and the formats and zone they read dates in. The
-/// server stores and serves all of it, so a page manages it with none of the
-/// person's own devices online.
+/// plan and what they used), and the formats and zone they read dates in, which
+/// a server of the person's keeps in their own workspace. The server stores and
+/// serves all of it, so a page manages it with none of the person's other
+/// devices online.
 pub const WORKSPACE_SERVER_PROVIDERS: [&str; 6] = [
     person_accounts::PROVIDER,
     person_models::PROVIDER,
     person_vault::PROVIDER,
     person_telling::PROVIDER,
     server_account::PROVIDER,
-    person_formats::PROVIDER,
+    formats::PROVIDER,
 ];
 
 /// The session handed to the windows a desktop hosts in process, for the workspace `workspace` . It

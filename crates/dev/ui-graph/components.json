@@ -6099,6 +6099,13 @@
           "default": true
         }
       ],
+      "events": [
+        {
+          "name": "press",
+          "doc": "A press on the window's bar, where nothing on it took the press: the person reaching for the window, which the shell answers by bringing it forward with the keyboard in it.",
+          "press": true
+        }
+      ],
       "semantics": {
         "role": "Group",
         "label": "name"

@@ -623,7 +623,7 @@ impl PersonModel {
     /// provider, switched on, and it offers that model, so the person's own
     /// key pays either way. A name that names nothing here changes nothing
     /// and the choice for the kind answers as before: an agent's model chosen
-    /// on a device of its keeper names a provider of that device's settings,
+    /// on a member's device names a provider of that device's settings,
     /// which this server may not hold.
     #[must_use]
     pub fn naming(mut self, named: Option<&str>) -> Self {
@@ -644,7 +644,7 @@ impl PersonModel {
         self
     }
 
-    /// This model, asked for `spender`: an agent whose keeper bounds what
+    /// This model, asked for `spender`: an agent whose workspace bounds what
     /// it may spend in a day. Every answer's cost is counted on that day,
     /// also when many calls run at once, and a call that starts once the
     /// limit is reached is refused before the provider is asked.

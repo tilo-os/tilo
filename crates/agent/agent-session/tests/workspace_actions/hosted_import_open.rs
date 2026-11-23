@@ -108,7 +108,7 @@ async fn opening_tasks_after_an_import_costs_what_opening_it_empty_did() {
     let (status, workspace) = json_of(
         Box::pin(api.dispatch(
             &hyper::Method::POST,
-            "/v1/workspaces",
+            "/v1/resources/account/workspaces/actions/create",
             "",
             &key.headers(),
             json!({"name": "Company"}).to_string().as_bytes(),
@@ -116,8 +116,11 @@ async fn opening_tasks_after_an_import_costs_what_opening_it_empty_did() {
         .await,
     )
     .await;
-    assert_eq!(status, 201, "{workspace}");
-    let base = format!("/v1/workspaces/{}", workspace["id"].as_str().unwrap());
+    assert_eq!(status, 200, "{workspace}");
+    let base = format!(
+        "/v1/workspaces/{}",
+        workspace["result"]["workspace"]["id"].as_str().unwrap()
+    );
 
     let mut took = Vec::new();
     let (_, first_open) = key.act(&base, "tasks", "open", &json!({})).await;

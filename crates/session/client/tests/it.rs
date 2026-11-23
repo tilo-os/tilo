@@ -76,6 +76,8 @@ mod invitation_entry;
 mod kept_after_kill;
 #[path = "late_join.rs"]
 mod late_join;
+#[path = "layout_views.rs"]
+mod layout_views;
 #[path = "lifecycle_states.rs"]
 mod lifecycle_states;
 #[path = "login_codes.rs"]
@@ -96,8 +98,6 @@ mod on_demand_records;
 mod one_write_path;
 #[path = "outbox_replay.rs"]
 mod outbox_replay;
-#[path = "own_record_open.rs"]
-mod own_record_open;
 #[path = "own_workspace.rs"]
 mod own_workspace;
 #[path = "pairing.rs"]

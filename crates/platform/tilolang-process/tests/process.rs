@@ -1711,6 +1711,22 @@ fn running_with_no_view(
     Inbox,
     Rc<tilolang_process::testing::Workspace>,
 ) {
+    running_with_no_view_as(person, app, bundle, access, |spec| spec)
+}
+
+/// [`running_with_no_view`], the instance's [`Spec`] as `shape` makes it: the device it runs on.
+fn running_with_no_view_as(
+    person: &str,
+    app: &str,
+    bundle: Bundle,
+    access: Option<tilo_action_policy::MemberAccess>,
+    shape: impl FnOnce(Spec) -> Spec,
+) -> (
+    TilolangProcess,
+    Sent,
+    Inbox,
+    Rc<tilolang_process::testing::Workspace>,
+) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let route = RouteSpec::app(app, uuid::Uuid::new_v4());
     let broker = Broker::new(route.clone());
@@ -1731,6 +1747,7 @@ fn running_with_no_view(
     if let Some(access) = access {
         spec = spec.access(access);
     }
+    let spec = shape(spec);
     let hosted = Hosted::new(
         spec,
         connection,
@@ -1911,6 +1928,139 @@ tilo_test_env::scenario! {
             "the cancelled step wrote nothing in the workspace"
         );
     }
+}
+
+/// A package whose one action only the device holding the workspace's lease `desk` may run: the
+/// workspace's leases, read as any record is, beside the device that signed the invocation.
+const DESK: &str = "so.tilo.lang.desk";
+const DESK_SOURCE: &str = r#"app so.tilo.lang.desk "Desk" (icon: .hash, category: .utility)
+
+/// Work one device does at a time.
+type Desk {
+    /// How many times it was done.
+    done: Int merge counter
+}
+
+root Desk
+
+default view desk for Desk
+
+view desk(d: Desk) {
+    std.page(d) {
+        section("Desk") {
+            ui.Text("{d.done}")
+        }
+    }
+}
+
+/// Do the desk's work, as the device holding its lease.
+action work(d: Desk) {
+    require invoker.device() == workspace.leases.get("desk")?.device "Only the device holding the desk does its work"
+    d.done += 1
+}
+"#;
+
+/// The desk package, compiled from [`DESK_SOURCE`].
+fn desk() -> Bundle {
+    let compiled = tilolang::compile_package(DESK_SOURCE, &tilolang::IdsLock::new(), &[])
+        .unwrap_or_else(|diagnostics| panic!("the desk package compiles: {diagnostics:?}"));
+    Bundle::new(&compiled, [])
+}
+
+/// Two devices of one person, by their public keys: the one the instance runs on, and a laptop
+/// the person also signs in on.
+const STUDIO: [u8; 32] = [0x11; 32];
+const LAPTOP: [u8; 32] = [0x22; 32];
+
+/// A device's key in lowercase hex, as a lease and `invoker.device()` name it.
+fn hex_of(key: [u8; 32]) -> String {
+    tilo_actions::InvokerDevice::certified(key, "").id
+}
+
+/// Ada's invocation of `work`, as the workspace service admits it: from the instance's own
+/// device when `from` is `None`, else signed by the device `from` names, as the workspace
+/// service's certificate check names it on the invoker.
+fn work_as_ada(
+    host: &mut TilolangProcess,
+    inbox: &Inbox,
+    sent: &Sent,
+    id: u64,
+    from: Option<[u8; 32]>,
+) -> tilo_actions::InvocationUpdate {
+    let work = published_as(host, "Work");
+    let actor = tilo_actions::Actor::Member(tilo_actions::MemberId::person("ada"));
+    let context = from.map(|key| {
+        Box::new(tilo_actions::ActionContext {
+            invoker: Some(
+                tilo_actions::ActionInvoker::person("ada")
+                    .from_device(Some(tilo_actions::InvokerDevice::certified(key, "Laptop"))),
+            ),
+            ..tilo_actions::ActionContext::default()
+        })
+    });
+    deliver_as(
+        inbox,
+        id,
+        tilo_actions::InvocationId::new(),
+        &work,
+        actor,
+        context,
+    );
+    settle_with_no_view(host);
+    answered(sent, id).expect("the workspace service hears how the invocation ended")
+}
+
+/// The device whose claim on the workspace's lease stands does the work; another device of the
+/// same person is refused with the action's own reason, until the lease moves to it, which the
+/// next invocation sees at once.
+#[test]
+fn only_the_device_holding_a_lease_runs_an_action_that_requires_it() {
+    let (mut host, sent, inbox, workspace) =
+        running_with_no_view_as("ada", DESK, desk(), None, |spec| Spec {
+            device: Some(hex_of(STUDIO)),
+            ..spec
+        });
+    settle_with_no_view(&mut host);
+    workspace.lease("desk", Some(&hex_of(STUDIO)));
+    let done = |update: &tilo_actions::InvocationUpdate| {
+        matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. })
+    };
+    let refused = |update: &tilo_actions::InvocationUpdate| {
+        !done(update)
+            && format!("{update:?}").contains("Only the device holding the desk does its work")
+    };
+
+    let studio = work_as_ada(&mut host, &inbox, &sent, 1, None);
+    assert!(
+        done(&studio),
+        "the studio holds the desk and does its work: {studio:?}"
+    );
+    let named = work_as_ada(&mut host, &inbox, &sent, 2, Some(STUDIO));
+    assert!(
+        done(&named),
+        "named by the workspace service, the studio is still the holder: {named:?}"
+    );
+    let laptop = work_as_ada(&mut host, &inbox, &sent, 3, Some(LAPTOP));
+    assert!(
+        refused(&laptop),
+        "the same person's laptop holds no lease and is refused with the action's reason: {laptop:?}"
+    );
+
+    // The studio went silent and the laptop took the desk over: the next invocation reads the
+    // lease as it stands now, not as it stood at the last one.
+    workspace.lease("desk", Some(&hex_of(LAPTOP)));
+    let laptop = work_as_ada(&mut host, &inbox, &sent, 4, Some(LAPTOP));
+    assert!(done(&laptop), "the laptop holds the desk now: {laptop:?}");
+    let studio = work_as_ada(&mut host, &inbox, &sent, 5, None);
+    assert!(refused(&studio), "the studio holds it no more: {studio:?}");
+
+    // A lease whose claims all lapsed names no device, and nobody does the work.
+    workspace.lease("desk", None);
+    let nobody = work_as_ada(&mut host, &inbox, &sent, 6, Some(LAPTOP));
+    assert!(
+        refused(&nobody),
+        "a lapsed lease lets no device act: {nobody:?}"
+    );
 }
 
 /// A package whose window writes when something was fetched, as Mail's does: the clock the

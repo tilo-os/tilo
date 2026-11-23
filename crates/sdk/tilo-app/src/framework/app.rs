@@ -812,13 +812,10 @@ pub(crate) enum Editing {
 }
 
 /// The permission that makes the record `run` opened editable: writing the
-/// app's records of the workspace, or, for a record of a kind the app's
-/// manifest declares each member's own, writing that record, which the policy
-/// leaves to its person whatever their role.
+/// app's records of the workspace, or, for a record of a kind each person keeps
+/// their own of, writing that record, which the workspace grants its person.
 fn write_scope(app: &AppHooks, run: &Run) -> PermissionScope {
-    let own_kind = collab_types::own_kinds(app.id())
-        .iter()
-        .any(|kind| kind == app.kind);
+    let own_kind = tilo_actions::policy::roles::has_member_reader(app.id(), app.kind);
     match run
         .launched
         .record

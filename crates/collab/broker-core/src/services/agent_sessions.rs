@@ -70,6 +70,10 @@ pub trait AgentRoster: Send + Sync {
             .find(|listed| listed.id == agent)
             .map(|listed| listed.keeper)
     }
+    /// Whether the workspace's record names `agent` active in `workspace`.
+    fn lists(&self, workspace: &str, agent: &str) -> bool {
+        self.keeper(workspace, agent).is_some()
+    }
     /// The active agents the workspace's record names: its agent members.
     fn listed(&self, workspace: &str) -> Vec<ListedAgent>;
     /// What `agent` may spend on the day its keeper counts: the limit its

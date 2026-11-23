@@ -380,6 +380,12 @@ pub enum ClientError {
     /// way is a [`Self::NoHandshakeAnswer`].
     #[error("the server refused this device: {0}")]
     Refused(crate::auth::HelloRefusal),
+    /// As [`Self::Refused`] for [`crate::auth::HelloRefusal::DeviceRevoked`],
+    /// where the server handed over the revocation of this device's key its
+    /// person's root signed when they retired it: verified here, so this
+    /// device can do what being retired asks of it.
+    #[error("the server refused this device: its person retired it")]
+    Retired(Box<tilo_user_identity::RevocationEntry>),
 }
 
 impl ClientError {

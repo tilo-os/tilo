@@ -833,7 +833,7 @@ tilo_test_env::scenario! {
         step(
             &mut doc,
             "agents",
-            ActionInvoker::agent("claude")
+            ActionInvoker::agent("scout")
                 .acting_for("kai"),
         );
         let mut authors = AuthorDirectory::new();
@@ -848,7 +848,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             rows,
             [
-                ("Claude Code".to_owned(), AuthorRelation::Software),
+                ("Scout".to_owned(), AuthorRelation::Software),
                 ("ada".to_owned(), AuthorRelation::Person),
                 ("You".to_owned(), AuthorRelation::Reader),
             ]
@@ -894,7 +894,7 @@ tilo_test_env::scenario! {
                 [],
             )))
             .with_invoker(
-                ActionInvoker::agent("claude")
+                ActionInvoker::agent("scout")
                     .acting_for("ada"),
             );
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
@@ -903,19 +903,19 @@ tilo_test_env::scenario! {
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
         // The agent, for the person it acted for.
         let author = &entries.last().unwrap().author;
-        assert_eq!(author.name, "Claude Code");
+        assert_eq!(author.name, "Scout");
         assert_eq!(author.relation, AuthorRelation::Software);
         let parts = crate::history_source::sentence::author_parts(author);
         assert_eq!(parts.person, "ada");
-        assert_eq!(parts.writer.as_deref(), Some("Claude Code"));
+        assert_eq!(parts.writer.as_deref(), Some("Scout"));
         assert_eq!(
             author.attribution,
             Some(HistoryAttribution {
-                acting: tilo_actions::Acting::agent("claude")
+                acting: tilo_actions::Acting::agent("scout")
                     .acting_for(tilo_actions::Acting::person("ada")),
                 on_behalf_of_name: Some("ada".into()),
                 writer: Some(fs_protocol::AttributedWriter::Agent {
-                    agent: "claude".into(),
+                    agent: "scout".into(),
                     session: None,
                 }),
                 writer_label: None,
@@ -995,20 +995,20 @@ tilo_test_env::scenario! {
                 "Prepare Q3 financials",
                 "task",
             )
-            .with_invoker(ActionInvoker::agent("claude").acting_for("ada"));
+            .with_invoker(ActionInvoker::agent("scout").acting_for("ada"));
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
         let mut authors = AuthorDirectory::new();
         authors.set_reader(crate::permissions::MemberId::person("kai"));
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
         let entry = entries.last().expect("the change");
-        assert_eq!(entry.author.name, "Claude Code");
-        assert_eq!(crate::author_line(&entry.author), "Claude Code");
+        assert_eq!(entry.author.name, "Scout");
+        assert_eq!(crate::author_line(&entry.author), "Scout");
         assert_eq!(entry.author.relation, AuthorRelation::Software);
         assert_eq!(
             crate::history_source::sentence::author_parts(&entry.author)
                 .writer
                 .as_deref(),
-            Some("Claude Code")
+            Some("Scout")
         );
         let group = entry
             .context

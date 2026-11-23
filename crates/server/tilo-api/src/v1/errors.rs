@@ -95,7 +95,7 @@ impl From<crate::server::ServerError> for ApiError {
         use crate::server::ServerError;
         match error {
             ServerError::NotFound => Self::new("not_found", "no such workspace of yours")
-                .next("GET /v1/workspaces names them"),
+                .next("account/workspaces#list names them"),
             // The host's own wording stays in the log; the caller reads
             // what it can do about the refusal.
             ServerError::Refused(_) | ServerError::RefusedWorkspace(_) => {

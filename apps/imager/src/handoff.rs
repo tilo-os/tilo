@@ -18,7 +18,8 @@ pub const SETUP_HANDOFF_MAGIC: &str = "TILO_SETUP_HANDOFF_V1";
 pub struct LocalIdentity<'a> {
     pub identity_dir: &'a Path,
     pub system: &'a tilo_device_identity::IdentityPaths,
-    pub home_peers: &'a Path,
+    /// This machine's list of the person's devices, which gains the image's.
+    pub personal_devices: &'a Path,
 }
 
 #[derive(Clone, Debug)]
@@ -276,7 +277,7 @@ fn enroll_local_identity(
             username: profile.user.username.trim(),
             local_identity_dir: local.identity_dir,
             local_system: local.system,
-            local_home_peers: local.home_peers,
+            local_personal_devices: local.personal_devices,
         },
         &profile.user.full_name,
         label,
@@ -608,7 +609,7 @@ pub fn local_identity_from_env() -> Result<LocalIdentity<'static>, String> {
     use std::sync::OnceLock;
     static SYSTEM: OnceLock<tilo_device_identity::IdentityPaths> = OnceLock::new();
     static IDENTITY_DIR: OnceLock<PathBuf> = OnceLock::new();
-    static HOME_PEERS: OnceLock<PathBuf> = OnceLock::new();
+    static PERSONAL_DEVICES: OnceLock<PathBuf> = OnceLock::new();
     let system = SYSTEM.get_or_init(tilo_identity::provisioning::collaboration_identity_paths);
     let identity_dir = IDENTITY_DIR.get_or_init(|| {
         tilo_identity::store::IdentityRegistryStore::from_env().map_or_else(
@@ -616,8 +617,8 @@ pub fn local_identity_from_env() -> Result<LocalIdentity<'static>, String> {
             |store| store.identity_dir().to_path_buf(),
         )
     });
-    let home_peers = HOME_PEERS.get_or_init(|| {
-        tilo_server_protocol::home_peer_registry_path(
+    let personal_devices = PERSONAL_DEVICES.get_or_init(|| {
+        tilo_server_protocol::personal_device_peer_path(
             system
                 .user_pubkey
                 .parent()
@@ -628,7 +629,7 @@ pub fn local_identity_from_env() -> Result<LocalIdentity<'static>, String> {
     Ok(LocalIdentity {
         identity_dir,
         system,
-        home_peers,
+        personal_devices,
     })
 }
 
@@ -669,26 +670,11 @@ mod tests {
         )
         .unwrap();
         let identity_id = hex::encode(local_cert.user_public_key);
-        let home_peers = local_dir.path().join("home-peers.json");
-        let peer = tilo_server_protocol::HomePeerRegistration {
-            schema_version: tilo_server_protocol::HomePeerRegistration::CURRENT_SCHEMA,
-            device_node_id: hex::encode(local_cert.device_public_key),
-            server_node_id: hex::encode([4_u8; 32]),
-            server_endpoint: None,
-            label: "setup".into(),
-            user_public_key: identity_id.clone(),
-            device_cert: Some(local_cert.clone()),
-            server_workspace_ids: vec![tilo_server_protocol::WorkspaceId::from_u128(7)],
-        };
-        fs::write(
-            &home_peers,
-            serde_json::to_vec_pretty(&vec![peer.clone()]).unwrap(),
-        )
-        .unwrap();
+        let personal_devices = local_dir.path().join("personal-device-peers.json");
         let local = LocalIdentity {
             identity_dir: &identity_dir,
             system: &local_system,
-            home_peers: &home_peers,
+            personal_devices: &personal_devices,
         };
         let dir = tempfile::tempdir().unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -760,19 +746,18 @@ mod tests {
         assert_eq!(cert.device_label, "orange-pi");
         assert!(!installed.join("var/lib/tilo/enrollment-commits").exists());
         assert!(!installed.join("var/lib/tilo/enrollment-staging").exists());
-        let copied: Vec<tilo_server_protocol::HomePeerRegistration> = serde_json::from_slice(
-            &fs::read(tilo_server_protocol::home_peer_registry_path(
+        // The image asks the setup machine into the person's workspace.
+        let introducer = tilo_server_protocol::servers::read_introducer(
+            &installed.join("var/lib/tilo"),
+            &local_cert.user_public_key,
+        )
+        .unwrap()
+        .expect("the image keeps the setup machine as its introducer");
+        assert_eq!(introducer.device, local_cert);
+        let direct: Vec<String> = serde_json::from_slice(
+            &fs::read(tilo_server_protocol::personal_device_peer_path(
                 &installed.join("var/lib/tilo"),
             ))
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(copied, vec![peer]);
-        let direct: Vec<String> = serde_json::from_slice(
-            &fs::read(
-                tilo_server_protocol::home_peer_registry_path(&installed.join("var/lib/tilo"))
-                    .with_file_name("personal-device-peers.json"),
-            )
             .unwrap(),
         )
         .unwrap();
@@ -818,10 +803,8 @@ mod tests {
                 .iter()
                 .any(|item| item.device_public_key == cert.device_public_key)
         );
-        let local_direct: Vec<String> = serde_json::from_slice(
-            &fs::read(home_peers.with_file_name("personal-device-peers.json")).unwrap(),
-        )
-        .unwrap();
+        let local_direct: Vec<String> =
+            serde_json::from_slice(&fs::read(&personal_devices).unwrap()).unwrap();
         assert_eq!(local_direct, vec![hex::encode(cert.device_public_key)]);
 
         let other_identity = local_dir.path().join("other-identity");
@@ -855,11 +838,11 @@ mod tests {
             let identity_dir = local_dir.path().join("identity");
             let local_system =
                 tilo_device_identity::IdentityPaths::under(local_dir.path().join("system"));
-            let home_peers = local_dir.path().join("home-peers.json");
+            let personal_devices = local_dir.path().join("personal-device-peers.json");
             let local = LocalIdentity {
                 identity_dir: &identity_dir,
                 system: &local_system,
-                home_peers: &home_peers,
+                personal_devices: &personal_devices,
             };
             let profile = InstallProfile {
                 wifi_ssid: "studio".into(),

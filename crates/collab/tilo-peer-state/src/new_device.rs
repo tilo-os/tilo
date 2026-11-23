@@ -45,6 +45,8 @@ struct Inner {
     /// Where the certified computer enters.
     enter: Entry,
     approver: Arc<dyn Approver>,
+    /// What the computer becomes: a member device, or one that administers the person's others.
+    capability: tilo_user_identity::DeviceCapabilities,
     revocations: RevocationList,
     /// Each call taken, by invocation: the device that made it, and where it is.
     calls: Mutex<HashMap<InvocationId, ([u8; 32], InvocationState)>>,
@@ -83,6 +85,7 @@ impl ServedTicket {
         ticket: Ticket,
         user_public_key: [u8; 32],
         enter: Entry,
+        capability: tilo_user_identity::DeviceCapabilities,
         approver: Arc<dyn Approver>,
         revocations: RevocationList,
     ) -> Self {
@@ -93,6 +96,7 @@ impl ServedTicket {
             user_public_key,
             enter,
             approver,
+            capability,
             revocations,
             calls: Mutex::default(),
             certified: watch::Sender::new(None),
@@ -181,6 +185,7 @@ impl ServedTicket {
             device,
             &label,
             agent,
+            self.0.capability.clone(),
             &self.0.ticket.secret,
             now,
         )

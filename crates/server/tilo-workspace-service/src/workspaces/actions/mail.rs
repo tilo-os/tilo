@@ -284,7 +284,7 @@ fn connect_params() -> Vec<ActionParam> {
 }
 
 impl super::super::Workspaces {
-    /// The row a turn this holder carries out for its agent's keeper is offered for signing
+    /// The row a turn this holder carries out for the person who asked its agent is offered for signing
     /// a mail account in from its address alone
     /// ([`crate::workspaces::person_settings::mail_connect`]). It is for agents alone: a
     /// person signs in by saying so, and types nothing but the password, where no agent
@@ -467,7 +467,6 @@ impl crate::workspaces::Workspaces {
         }
         let mut asking = request.clone();
         asking.target = person_accounts::target(action);
-        self.person_accounts_invoke(workspace_id, caller, certificate, &asking)
-            .await
+        Box::pin(self.person_accounts_invoke(workspace_id, caller, certificate, &asking)).await
     }
 }

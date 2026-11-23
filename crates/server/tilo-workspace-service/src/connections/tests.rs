@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use accounts::vault_items::{ItemError, ItemId, ItemKind, Place, VaultItems};
+use accounts::vault_items::{ItemError, ItemId, ItemKind, Place};
 
 use crate::workspaces::vault::VaultAt;
 use serde_json::{Value, json};
@@ -771,9 +771,9 @@ fn came_back_with(returned: &str, name: &str) -> String {
 }
 
 /// The vault of the person at `root`, as the workspace's vault stands in for them here.
-fn held(root: &Path) -> &'static std::sync::Mutex<VaultItems> {
+fn held(root: &Path) -> &'static crate::workspaces::vault::TestStores {
     static HELD: std::sync::Mutex<
-        std::collections::BTreeMap<PathBuf, &'static std::sync::Mutex<VaultItems>>,
+        std::collections::BTreeMap<PathBuf, &'static crate::workspaces::vault::TestStores>,
     > = std::sync::Mutex::new(std::collections::BTreeMap::new());
     HELD.lock()
         .unwrap()

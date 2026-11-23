@@ -20,7 +20,6 @@ use tilo_user_identity::{
 
 const PROJECTION_SCHEMA: u32 = 1;
 const MAX_PROJECTION: u64 = 1024 * 1024;
-const MAX_HOME_PEERS: usize = 128;
 const ISSUANCE_CLOCK_ALLOWANCE_NS: u64 = 60 * 1_000_000_000;
 const RECORD_ID_HEX_CHARS: usize = 55;
 
@@ -33,7 +32,6 @@ pub struct SourceIdentity {
     pub identity_public_key: [u8; 32],
     pub identity_record: Vec<u8>,
     pub certificates: Vec<DeviceCert>,
-    pub home_peers: Vec<u8>,
     pub signer: SourceSigner,
 }
 
@@ -55,9 +53,6 @@ impl SourceIdentity {
             })
         {
             return Err(invalid("The preparing identity export is invalid"));
-        }
-        if !self.home_peers.is_empty() {
-            home_peer_array(&self.home_peers)?;
         }
         Ok(())
     }
@@ -188,7 +183,6 @@ pub(crate) struct BootstrapProjection {
     identity_record: String,
     certificate: String,
     fleet: String,
-    home_peers: String,
 }
 
 impl BootstrapProjection {
@@ -302,12 +296,6 @@ pub(crate) fn issue(
     };
     let fleet = serde_json::to_vec_pretty(&fleet)
         .map_err(|_| invalid("The person's device fleet is invalid"))?;
-    let home_peers = if source.home_peers.is_empty() {
-        b"[]".to_vec()
-    } else {
-        home_peer_array(&source.home_peers)?;
-        source.home_peers.clone()
-    };
     let projection = BootstrapProjection {
         schema: PROJECTION_SCHEMA,
         identity_record: base64::Engine::encode(
@@ -320,7 +308,6 @@ pub(crate) fn issue(
                 .map_err(|_| invalid("The device certificate is invalid"))?,
         ),
         fleet: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &fleet),
-        home_peers: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &home_peers),
     };
     Ok((cert, projection))
 }
@@ -381,10 +368,6 @@ pub(crate) fn install(
             return Err(invalid("The device fleet is invalid"));
         }
     }
-    let peers = decode_b64(&projection.home_peers)?;
-    home_peer_array(&peers)?;
-    let peers: serde_json::Value =
-        serde_json::from_slice(&peers).map_err(|_| invalid("The home peers are invalid"))?;
     let (device, _) = tilo_device_identity::persist::load_or_create_device_key(&paths)
         .map_err(|_| invalid("The destination device key is unavailable"))?;
     if device.verifying_key().to_bytes() != certificate.device_public_key {
@@ -414,15 +397,6 @@ pub(crate) fn install(
             .remember_certificate(&fleet.identity_id, known)
             .map_err(|_| invalid("The device fleet could not be installed"))?;
     }
-    if peers.as_array().is_some_and(|entries| !entries.is_empty()) {
-        let path = tilo_user_identity::home_peer_registry_path(identity_root);
-        tilo_files::native::atomic::write_creating_parent_with_mode(
-            &path,
-            &serde_json::to_vec_pretty(&peers)
-                .map_err(|_| invalid("The home peers are invalid"))?,
-            0o644,
-        )?;
-    }
     Ok(())
 }
 
@@ -437,21 +411,6 @@ fn identity_dir_empty(directory: &Path) -> io::Result<bool> {
 fn decode_b64(value: &str) -> io::Result<Vec<u8>> {
     base64::Engine::decode(&base64::engine::general_purpose::STANDARD, value)
         .map_err(|_| invalid("The identity export is invalid"))
-}
-
-fn home_peer_array(bytes: &[u8]) -> io::Result<()> {
-    if usize::try_from(MAX_PROJECTION).is_ok_and(|limit| bytes.len() > limit) {
-        return Err(invalid("The home peers are too large"));
-    }
-    let value: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|_| invalid("The home peers are invalid"))?;
-    let Some(entries) = value.as_array() else {
-        return Err(invalid("The home peers are invalid"));
-    };
-    if entries.len() > MAX_HOME_PEERS {
-        return Err(invalid("The home peers are invalid"));
-    }
-    Ok(())
 }
 
 fn now_ns() -> u64 {

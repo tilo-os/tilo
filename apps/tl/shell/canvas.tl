@@ -402,6 +402,8 @@ view framed_place(a: Layout, p: LayoutPlace, lists: Bool) {
         lists_actions: lists_the_place(p),
         fill,
     ) {
+        // A press on the window's bar brings it forward, the keyboard in it.
+        on press: session.activate(place: the_place(p.key))
         controls: {
             place_controls(a, p, lists)
         }

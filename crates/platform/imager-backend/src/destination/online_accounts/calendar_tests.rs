@@ -8,6 +8,7 @@
 )]
 
 use super::*;
+use crate::account_store::Accounts;
 use std::os::unix::fs::PermissionsExt;
 
 #[derive(Default)]
@@ -79,15 +80,15 @@ tilo_test_env::scenario! {
         assert_eq!(controller.calendars().len(), 1);
         assert!(controller.selected().is_empty());
         assert!(controller.connected().is_empty());
-        assert!(AccountStore::load_in(&controller.root).is_empty());
+        assert!(Accounts::read(&controller.root).unwrap().is_empty().unwrap());
         let id = controller.calendars()[0].0.clone();
         controller
             .command(AccountsCommand::SelectCalendars(vec![id.clone()]))
             .unwrap();
         assert!(controller.status() == AccountsStatus::Added);
         assert_eq!(controller.selected().len(), 1);
-        let store = AccountStore::load_in(&controller.root);
-        let account = store.get(&controller.selected()[0]).unwrap();
+        let store = Accounts::read(&controller.root).unwrap();
+        let account = store.get(controller.selected()[0].as_str()).unwrap().unwrap();
         assert_eq!(account.type_id.as_str(), "nextcloud");
         assert_eq!(account.config["use_files"], true);
         assert_eq!(account.config["calendar"]["calendars"][0]["id"], id);
@@ -138,9 +139,12 @@ tilo_test_env::scenario! {
                 .unwrap(),
             selected
         );
-        assert!(connected_accounts(destination.path(), &selected) == controller.connected());
-        let store = AccountStore::load_in(destination.path());
-        let account = store.get(&selected[0]).unwrap();
+        assert!(
+            connected_accounts(&Accounts::read(destination.path()).unwrap(), &selected)
+                == controller.connected()
+        );
+        let store = Accounts::read(destination.path()).unwrap();
+        let account = store.get(selected[0].as_str()).unwrap().unwrap();
         assert_eq!(account.config["calendar"]["calendars"][0]["id"], id);
         assert_eq!(account.config["use_files"], true);
         let vault = SecretVault::open_in(destination.path());

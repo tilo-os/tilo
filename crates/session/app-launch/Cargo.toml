@@ -31,7 +31,6 @@ tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["watch"] }
 blake3.workspace = true
 # A record's id: what one is, and the URI that asks an app to open it.
-collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
 # The extended attributes a workspace mount answers a record's path on.
 host-fs = { path = "../../system/host-fs" }
 fs-protocol = { path = "../../system/fs-protocol" }
@@ -68,7 +67,6 @@ launcher = { path = "../../packaging/launcher" }
 package-store = { path = "../../packaging/package-store", features = ["store"] }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 tilo-app-state = { path = "../../system/app-state" }
-hex.workspace = true
 # The window request the channel carries, as the app reads it.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 
@@ -88,8 +86,6 @@ tilo-app-keeper = { path = "../app-keeper" }
 tempfile = { workspace = true }
 # A record a window kept, written as its own process writes it, read back
 # where its host keeps it.
-automerge.workspace = true
-durable-store = { path = "../../system/durable-store" }
 # The subscriber a test reads what an app wrote back through.
 tracing-subscriber = { workspace = true }
 tilo-test-env = { path = "../../dev/test-env" }

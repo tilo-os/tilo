@@ -560,14 +560,13 @@ impl Ceremony {
                         &t("onboarding-cancel"),
                         OnboardingEffect::Cancel,
                     )));
-                } else if !self.page.nearby.from_link {
+                } else {
                     actions.push(Box::new(
                         self.button(
                             "onboarding.connect.nearby.button",
-                            &t("onboarding-nearby-try-again"),
+                            &t("onboarding-nearby-join"),
                             OnboardingEffect::Retry,
                         )
-                        .with_icon(ui::icons::Icon::Refresh)
                         .role(ui::widget::ButtonRole::Primary),
                     ));
                 }
@@ -956,27 +955,9 @@ impl Ceremony {
                 ));
             }
         } else {
-            let label = t("onboarding-pairing-link-field");
             body = body
                 .push(heading(&t("onboarding-existing-title"), theme))
-                .push(paragraph(&t("onboarding-existing-body"), theme))
-                .push(Box::new(Section::new(vec![
-                    labelled_secret_field(
-                        "onboarding.existing.pairing-link",
-                        &label,
-                        &self.secrets.pairing_link,
-                        &label,
-                        "",
-                    ),
-                    Box::new(
-                        self.button(
-                            "onboarding.existing.pairing-link.button",
-                            &t("onboarding-pairing-link-submit"),
-                            OnboardingEffect::choose("pairing-link"),
-                        )
-                        .role(ui::widget::ButtonRole::Primary),
-                    ),
-                ])));
+                .push(paragraph(&t("onboarding-existing-body"), theme));
         }
         if let Some(error) = &self.page.error {
             body = body.push(spaced_banner(
@@ -987,101 +968,57 @@ impl Ceremony {
         Box::new(body)
     }
 
-    /// Receive the identity from a trusted device: what to do on the other
-    /// device, then the shared verification code once it appears.
+    /// Add this computer with the code another of the person's devices
+    /// printed: the field it is typed into, and the wait while that device
+    /// approves this one.
     fn nearby(&self, theme: &Theme) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
-        let mut steps = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(spacing.s3);
-        for (number, key) in (1_usize..).zip([
-            "onboarding-nearby-step-open",
-            "onboarding-nearby-step-add",
-            "onboarding-nearby-step-compare",
-        ]) {
-            steps = steps.push(numbered_step(number, &t(key), theme));
-        }
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(spacing.s4)
-            .push(heading(
-                &t(if self.page.nearby.from_link {
-                    "onboarding-pairing-link-title"
-                } else {
-                    "onboarding-nearby-title"
-                }),
-                theme,
-            ));
-        if self.page.nearby.from_link {
-            if self.page.nearby.active {
-                body = body.push(paragraph(&t("onboarding-pairing-link-wait"), theme));
-            }
-        } else {
-            body = body.push(paragraph(&t("onboarding-nearby-body"), theme));
-        }
+            .push(heading(&t("onboarding-nearby-title"), theme))
+            .push(paragraph(&t("onboarding-nearby-body"), theme));
         if let Some(error) = &self.page.error {
             // The banner's title is what went wrong; a screen reader speaks
             // it first, so it names the cause rather than only the outcome.
-            let banner = if self.page.nearby.from_link {
-                Banner::error(t("onboarding-nearby-failed-title"))
-                    .with_message(t("onboarding-pairing-link-try-again"))
-            } else {
-                match &self.page.nearby.failure {
-                    Some((title, message)) => {
-                        Banner::error(title.clone()).with_message(message.clone())
-                    }
-                    None => {
-                        Banner::error(t("onboarding-connect-failed")).with_message(error.clone())
-                    }
+            let banner = match &self.page.nearby.failure {
+                Some((title, message)) => {
+                    Banner::error(title.clone()).with_message(message.clone())
+                }
+                None => {
+                    Banner::error(t("onboarding-nearby-failed-title")).with_message(error.clone())
                 }
             };
             body = body.push(spaced_banner(banner, theme));
         }
-        let mut status = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(spacing.s2);
-        if let Some(code) = &self.page.nearby.code {
-            status = status
-                .push(Box::new(
-                    Text::new(&t("onboarding-nearby-code-label"))
-                        .with_role(ui::tokens::typography::TextRole::Label)
-                        .with_color(theme.text_dim),
-                ))
-                .push(Box::new(
-                    Text::new(&grouped_code(code))
-                        .with_id("onboarding.nearby.code")
-                        .with_role(ui::tokens::typography::TextRole::Display)
-                        .numeric(),
-                ));
+        let label = t("onboarding-nearby-ticket-field");
+        body = body.push(Box::new(Section::new(vec![labelled_field(
+            "onboarding.nearby.ticket.field",
+            &label,
+            &self.secrets.ticket,
+            &label,
+            &t("onboarding-nearby-ticket-placeholder"),
+            self.page.nearby.active,
+        )])));
+        if self.page.nearby.active {
+            body = body.push(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .with_gap(spacing.s2)
+                    .push(Box::new(Spinner::with_size(theme.tokens.metrics.icon_md)))
+                    .push(Box::new(
+                        Text::new(&t("onboarding-nearby-joining"))
+                            // One status region across composition rebuilds,
+                            // so its updates are spoken as they come.
+                            .with_id("onboarding.nearby.status")
+                            .with_role(ui::tokens::typography::TextRole::Body)
+                            .with_color(theme.text_dim)
+                            .with_live(ui::a11y::Politeness::Polite),
+                    )),
+            ));
         }
-        if let Some(message) = &self.page.nearby.status {
-            let text = Text::new(message)
-                // A stable semantic address lets the accessibility host
-                // recognise verification-code and completion updates as
-                // changes to one status region across composition rebuilds.
-                .with_id("onboarding.nearby.status")
-                .with_role(ui::tokens::typography::TextRole::Body)
-                .with_color(theme.text_dim)
-                .with_live(ui::a11y::Politeness::Polite);
-            status = if self.page.nearby.active && self.page.nearby.code.is_none() {
-                status.push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .with_gap(theme.tokens.spacing.s2)
-                        .push(Box::new(Spinner::with_size(theme.tokens.metrics.icon_md)))
-                        .push(Box::new(text)),
-                ))
-            } else {
-                status.push(Box::new(text))
-            };
-        }
-        if !self.page.nearby.from_link {
-            body = body.push(Box::new(Section::new(vec![Box::new(steps)])));
-        }
-        Box::new(body.push(Box::new(status)))
+        Box::new(body)
     }
 
     /// Restore the identity from an encrypted backup file.
@@ -1949,43 +1886,6 @@ fn fact_list(
     Box::new(list)
 }
 
-/// One step of a real sequence: its number in quiet ink, then the
-/// instruction.
-fn numbered_step(number: usize, text: &str, theme: &Theme) -> Box<dyn Widget> {
-    Box::new(
-        Row::new()
-            .no_wrap()
-            .align_start()
-            .with_gap(theme.tokens.spacing.s3)
-            .push(Box::new(
-                Text::new(&number.to_string())
-                    .with_role(ui::tokens::typography::TextRole::Body)
-                    .strong()
-                    .numeric()
-                    .with_color(theme.text_dim),
-            ))
-            .push(Box::new(
-                Text::new(text).with_role(ui::tokens::typography::TextRole::Body),
-            )),
-    )
-}
-
-/// A six-digit verification code in two groups of three, the way people
-/// read a code aloud and compare it between two screens.
-fn grouped_code(code: &str) -> String {
-    let digits: Vec<char> = code.chars().filter(|c| !c.is_whitespace()).collect();
-    if digits.len() == 6 {
-        let (head, tail) = digits.split_at(3);
-        format!(
-            "{} {}",
-            head.iter().collect::<String>(),
-            tail.iter().collect::<String>()
-        )
-    } else {
-        digits.into_iter().collect()
-    }
-}
-
 /// A right-aligned action row, so the primary button lands where the eye finishes reading.
 fn actions(buttons: Vec<Box<dyn Widget>>) -> Box<dyn Widget> {
     let mut row = Row::new().push(Box::new(Spacer::new()));
@@ -2075,6 +1975,42 @@ fn labelled_secret_field(
                 accessible_name,
                 placeholder,
             ))),
+    )
+}
+
+/// A labelled text field whose value is shown as typed, for what a person
+/// reads back or checks against another screen (a code, a path). Read-only
+/// while what it holds is under way.
+fn labelled_field(
+    id: &str,
+    label: &str,
+    buffer: &Arc<Mutex<String>>,
+    accessible_name: &str,
+    placeholder: &str,
+    read_only: bool,
+) -> Box<dyn Widget> {
+    let label_id = format!("{id}.label");
+    let input = TextInput::local()
+        .with_id(id)
+        .with_external_buffer(Arc::clone(buffer))
+        .with_accessible_name(accessible_name)
+        .with_placeholder(placeholder)
+        .with_read_only(read_only);
+    let input = match buffer.lock() {
+        Ok(value) => input.with_initial_value(&value),
+        Err(_) => input,
+    };
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(4.0)
+            .push(Box::new(
+                Text::new(label)
+                    .with_id(label_id)
+                    .with_role(ui::tokens::typography::TextRole::Label),
+            ))
+            .push(Box::new(input)),
     )
 }
 
@@ -2424,13 +2360,6 @@ mod tests {
                 "passphrases must be exposed as protected"
             );
         }
-    }
-
-    #[test]
-    fn codes_are_grouped_for_comparison() {
-        assert_eq!(grouped_code("123456"), "123 456");
-        assert_eq!(grouped_code("12 34 56"), "123 456");
-        assert_eq!(grouped_code("1234"), "1234");
     }
 
     #[test]

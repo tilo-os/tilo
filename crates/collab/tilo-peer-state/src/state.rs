@@ -109,8 +109,8 @@ pub use personal::link::{AdmittedFrame, PERSONAL_ALPN, PersonalSync, update_pers
 pub use personal::machines::{self as machines, MachineRecovery};
 pub use personal::scopes::{device_resource, resource_owner};
 pub use personal::{
-    DEVICE_FACTS, ENROLLMENT_KIND, PeerPersonal, PersonalStore, SETTINGS_KIND, WIFI_KIND,
-    WORKSPACES_KIND, store_path,
+    DEVICE_FACTS, ENROLLMENT_KIND, PeerPersonal, PersonalStore, WIFI_KIND, WORKSPACES_KIND,
+    store_path,
 };
 pub use seed::{seed_workspace, seed_workspace_at, workspace_seed};
 mod compaction_set;
@@ -133,8 +133,6 @@ mod written_under;
 pub use durable::DURABLE_VERSION;
 #[cfg(test)]
 pub(crate) use durable::Durable;
-#[cfg(test)]
-use durable::brought_up;
 pub(crate) use durable::{DocumentParts, DurableParts};
 mod receiving;
 mod records;
@@ -330,9 +328,6 @@ struct DurableDocument {
     encryption_required: bool,
     covered: BTreeMap<String, u64>,
     covered_snapshot: Option<Vec<u8>>,
-    /// The member's own record this is, as its writes named it: kept with the
-    /// record, so a restored replica sends and refuses its writes as before.
-    own: Option<collab_types::OwnResource>,
 }
 /// Each encrypted record's sealed writes, in admission order.
 type SealedHistory = Vec<(Route, Vec<SignedOp>)>;

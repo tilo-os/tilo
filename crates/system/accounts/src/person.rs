@@ -82,6 +82,12 @@ pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError
 }
 
 impl PersonAccounts {
+    /// The kind its record is of, for a crate that names the record without the resource model.
+    #[must_use]
+    pub fn kind() -> &'static str {
+        <Self as tilo_resource::Resource>::KIND
+    }
+
     /// What the record holds: the accounts the workspace has, without their secrets.
     pub fn read_document(
         &self,
@@ -242,6 +248,21 @@ impl PersonAccounts {
         Ok(())
     }
 
+    /// Keep `account` as [`Self::keep_account`] does.
+    ///
+    /// # Errors
+    /// The account names no id or no kind.
+    pub fn keep(&mut self, account: &Account) -> Result<(), Refusal> {
+        self.keep_account(
+            account.id.to_string(),
+            account.type_id.to_string(),
+            account.display_name.clone(),
+            account.config.clone(),
+            account.enabled,
+            account.tint,
+        )
+    }
+
     /// Remove account.
     #[action]
     pub fn remove_account(&mut self, account: Id) -> Result<(), Refusal> {
@@ -249,6 +270,19 @@ impl PersonAccounts {
             .remove(&account)
             .map(|_| ())
             .ok_or_else(|| Refusal::from("there is no such account"))
+    }
+}
+
+/// The account the record keeps as `id`, in the shape every account type reads.
+fn account_of(id: &Id, account: &PersonAccount) -> Account {
+    Account {
+        id: AccountId::new(id.as_str()),
+        type_id: AccountTypeId::new(account.type_id.clone()),
+        display_name: account.display_name.clone(),
+        config: account.config.clone(),
+        enabled: account.enabled,
+        tint: account.tint,
+        owner: None,
     }
 }
 
@@ -262,18 +296,83 @@ impl PersonAccounts {
     #[must_use]
     pub fn store(&self) -> AccountStore {
         let mut store = AccountStore::new();
-        for (id, account) in self.accounts.iter() {
-            store.upsert(Account {
-                id: AccountId::new(id.as_str()),
-                type_id: AccountTypeId::new(account.type_id.clone()),
-                display_name: account.display_name.clone(),
-                config: account.config.clone(),
-                enabled: account.enabled,
-                tint: account.tint,
-                owner: None,
-            });
+        for account in self.all() {
+            store.upsert(account);
         }
         store
+    }
+
+    /// Every account, in the order the record keeps them.
+    #[must_use]
+    pub fn all(&self) -> Vec<Account> {
+        self.accounts
+            .iter()
+            .map(|(id, account)| account_of(id, account))
+            .collect()
+    }
+
+    /// The account `id`, when the record keeps it.
+    #[must_use]
+    pub fn account(&self, id: &str) -> Option<Account> {
+        let key = Id::from_raw(id.to_owned());
+        self.accounts
+            .get(&key)
+            .map(|account| account_of(&key, account))
+    }
+
+    /// Every account of the kind `type_id`.
+    #[must_use]
+    pub fn of_type(&self, type_id: &str) -> Vec<Account> {
+        self.accounts
+            .iter()
+            .filter(|(_, account)| account.type_id == type_id)
+            .map(|(id, account)| account_of(id, account))
+            .collect()
+    }
+
+    /// The accounts in `value`, the record as any reader of the workspace reads it
+    /// (`record:<app>:<id>`): each account by its id.
+    ///
+    /// # Errors
+    /// `value` does not read as the workspace's accounts.
+    pub fn from_readable(value: &serde_json::Value) -> Result<Self, String> {
+        let mut record = Self::default();
+        let Some(accounts) = value.get("accounts") else {
+            return Ok(record);
+        };
+        let accounts = accounts
+            .as_object()
+            .ok_or("the workspace's accounts do not read as accounts")?;
+        for (id, entry) in accounts {
+            let fields = entry
+                .get(tilo_resource::collection::VALUE)
+                .ok_or_else(|| format!("the workspace's account {id} reads as no account"))?;
+            let text = |field: &str| {
+                fields
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            record
+                .keep_account(
+                    id.clone(),
+                    text("type_id"),
+                    text("display_name"),
+                    fields.get("config").cloned().unwrap_or_default(),
+                    fields
+                        .get("enabled")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or_default(),
+                    fields
+                        .get("tint")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|tint| u8::try_from(tint).ok())
+                        .unwrap_or_default(),
+                )
+                .map_err(|refusal| format!("the workspace's account {id}: {refusal}"))?;
+        }
+        Ok(record)
     }
 
     /// The edit that saves `account` as it is.

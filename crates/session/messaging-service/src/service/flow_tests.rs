@@ -26,7 +26,9 @@ impl Handler<session::Call, session::Reply, session::Event> for Compositor {
     ) {
         reply.send(match call {
             session::Call::Person => session::Reply::Person {
-                accounts: accounts::AccountStore::default(),
+                accounts: tilo_resource::Model::to_json(
+                    &accounts::person::PersonAccounts::default(),
+                ),
                 directory: tilo_resource::Model::to_json(
                     &tilo_contact_directory::ContactDirectory::default(),
                 ),

@@ -100,6 +100,10 @@ pub struct Spec {
     /// instance that shows nothing draws no window, offers no window verb, and runs the app's
     /// actions on its document alone.
     pub shows: Shows,
+    /// The device the instance runs on, by its public key in lowercase hex
+    /// (`InstanceRequest::device`): what signs for the person at its window, which an action's
+    /// `invoker.device()` reads.
+    pub device: Option<String>,
 }
 
 impl Spec {
@@ -121,6 +125,7 @@ impl Spec {
             language: String::new(),
             access: None,
             shows: Shows::View,
+            device: None,
         }
     }
 
@@ -1001,7 +1006,7 @@ impl Hosted {
                 app: spec.app.clone(),
                 me: spec.person.as_str().into(),
                 mode: Mode::Live,
-                device: None,
+                device: spec.device.clone(),
                 store: store.clone(),
                 root: tilolang_tilo::host::RootView::default(),
                 sink: None,
@@ -1940,11 +1945,8 @@ impl Hosted {
             .document
             .as_deref()
             .and_then(collab_types::person_document_context);
-        let reaches = if profile_record.is_some() {
-            person.and_then(collab_types::personal_cluster_of) == Some(route.cluster_id)
-        } else {
-            tilolang_tilo::reaches(&route.app_id, route.document.as_deref(), person)
-        };
+        let reaches = profile_record.is_none()
+            || person.and_then(collab_types::personal_cluster_of) == Some(route.cluster_id);
         if !reaches {
             let update = failed(
                 invocation,

@@ -313,13 +313,6 @@ pub(crate) fn listing(peer: &StatePeer) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The members' own records `peer` knows, by app and route, each with whose it is.
-pub(crate) fn own_records(
-    peer: &StatePeer,
-) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
-    peer.own_resources()
-}
-
 /// Whether `peer` holds anything of `app`'s `resource`, committed or sealed alike.
 pub(crate) fn holds(peer: &StatePeer, app: &str, resource: &str) -> bool {
     peer.holds_document(app, resource)

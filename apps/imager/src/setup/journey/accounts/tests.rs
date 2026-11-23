@@ -413,9 +413,14 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
         .import_sealed_accounts(&sealed, &key, b"prepared-operation-1")
         .unwrap();
     assert_eq!(imported.len(), 1);
-    let transported = accounts::AccountStore::load_in(&portable_target);
-    assert_eq!(transported.len(), 1);
-    assert!(transported.get(&unselected_stage).is_none());
+    let transported = imager_backend::account_store::Accounts::read(&portable_target).unwrap();
+    assert_eq!(transported.all().unwrap().len(), 1);
+    assert!(
+        transported
+            .get(unselected_stage.as_str())
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         account_credentials::password_credential(
             &SecretVault::open_in(&portable_target)
@@ -461,15 +466,16 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
     prepared.merge_into(&target_home).unwrap();
     prepared.merge_into(&target_home).unwrap();
     let root = target_home.join(".config/tilo");
-    let store = accounts::AccountStore::load_in(&root);
-    assert_eq!(store.len(), 2);
-    assert!(store.get(&other).is_some());
+    let store = imager_backend::account_store::Accounts::read(&root).unwrap();
+    assert_eq!(store.all().unwrap().len(), 2);
+    assert!(store.get(other.as_str()).unwrap().is_some());
     let vault = accounts::SecretVault::open_in(&root);
     assert_eq!(
         account_credentials::password_credential(&vault.get(&other).unwrap()).to_string(),
         "other-app-password"
     );
-    let entry = store.all().iter().find(|entry| entry.id != other).unwrap();
+    let all = store.all().unwrap();
+    let entry = all.iter().find(|entry| entry.id != other).unwrap();
     assert_eq!(
         account_credentials::password_credential(
             &SecretVault::open_in(&root).get(&entry.id).unwrap()
@@ -617,8 +623,10 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
             .unwrap();
         assert_eq!(ids.len(), 1);
         assert!(
-            accounts::AccountStore::load_in(&transport_target)
-                .get(&unselected_stage)
+            imager_backend::account_store::Accounts::read(&transport_target)
+                .unwrap()
+                .get(unselected_stage.as_str())
+                .unwrap()
                 .is_none()
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
@@ -735,7 +743,12 @@ fn cancelling_unapproved_sign_in_stops_wait_and_does_not_prepare_an_account() {
     assert!(accounts.prepared.is_empty());
     assert!(accounts.can_continue());
     let stage = accounts.stage.as_ref().unwrap();
-    assert!(accounts::AccountStore::load_in(&stage.path().join(".config/tilo")).is_empty());
+    assert!(
+        imager_backend::account_store::Accounts::read(&stage.path().join(".config/tilo"))
+            .unwrap()
+            .is_empty()
+            .unwrap()
+    );
 }
 
 #[test]
@@ -763,7 +776,12 @@ fn cancellation_racing_completed_sign_in_removes_staged_connection() {
     assert!(accounts.prepared.is_empty());
     assert!(accounts.can_continue());
     let stage = accounts.stage.as_ref().unwrap();
-    assert!(accounts::AccountStore::load_in(&stage.path().join(".config/tilo")).is_empty());
+    assert!(
+        imager_backend::account_store::Accounts::read(&stage.path().join(".config/tilo"))
+            .unwrap()
+            .is_empty()
+            .unwrap()
+    );
 }
 
 #[test]
@@ -797,7 +815,12 @@ fn dropping_during_token_exchange_removes_the_staged_grant_and_preserves_origina
     loop {
         let root = stage.path().join(".config/tilo");
         if Arc::strong_count(&stage) == 1 {
-            assert!(accounts::AccountStore::load_in(&root).is_empty());
+            assert!(
+                imager_backend::account_store::Accounts::read(&root)
+                    .unwrap()
+                    .is_empty()
+                    .unwrap()
+            );
             assert!(accounts::SecretVault::open_in(&root).is_empty());
             break;
         }
@@ -887,8 +910,8 @@ tilo_test_env::scenario! {
             assert!(browser.opened.lock().unwrap().is_empty());
             let prepared = preview.accounts.prepared_handle().unwrap();
             let id = accounts::AccountId::new(prepared.entries()[0].id.clone());
-            let store = accounts::AccountStore::load_in(&prepared.config_root());
-            let account = store.get(&id).unwrap();
+            let store = imager_backend::account_store::Accounts::read(&prepared.config_root()).unwrap();
+            let account = store.get(id.as_str()).unwrap().unwrap();
             assert_eq!(account.type_id.as_str(), account_type);
             assert_ne!(account.config["app_password"].as_bool(), Some(true));
             assert_eq!(account.config["username"], "ada");
@@ -962,8 +985,8 @@ tilo_test_env::scenario! {
         assert_eq!(cloud.revoked.load(Ordering::SeqCst), 0);
         let handle = accounts.prepared_handle().unwrap();
         let id = accounts::AccountId::new(handle.entries()[0].id.clone());
-        let store = accounts::AccountStore::load_in(&handle.config_root());
-        let account = store.get(&id).unwrap();
+        let store = imager_backend::account_store::Accounts::read(&handle.config_root()).unwrap();
+        let account = store.get(id.as_str()).unwrap().unwrap();
         assert_eq!(account.type_id.as_str(), accounts::cloud_types::NEXTCLOUD);
         assert_eq!(account.config["app_password"].as_bool(), Some(true));
         assert_eq!(account.config["username"], "ada");
@@ -1161,7 +1184,7 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(accounts.projection()["state"], "confirm-removal");
         assert!(!accounts.can_continue());
-        assert_eq!(accounts::AccountStore::load_in(&stage_root).len(), 1);
+        assert_eq!(imager_backend::account_store::Accounts::read(&stage_root).unwrap().all().unwrap().len(), 1);
         accounts.apply(AccountRequest::Back).unwrap();
         assert_eq!(accounts.prepared.len(), 1);
         accounts.apply(AccountRequest::Remove(staged_id)).unwrap();
@@ -1174,7 +1197,7 @@ tilo_test_env::scenario! {
             0,
             "explicit empty selection remains transferable"
         );
-        assert!(accounts::AccountStore::load_in(&stage_root).is_empty());
+        assert!(imager_backend::account_store::Accounts::read(&stage_root).unwrap().is_empty().unwrap());
         assert_eq!(std::fs::read_to_string(&source_config).unwrap(), original);
         accounts
             .apply(AccountRequest::Source(candidate_id))
@@ -1259,12 +1282,12 @@ tilo_test_env::scenario! {
                 .unwrap();
             accounts.apply(AccountRequest::Source(selected)).unwrap();
             if change_metadata {
-                let mut store = accounts::AccountStore::load_in(&root);
-                let mut changed = store.get(&source.id).unwrap().clone();
+                let record = imager_backend::account_store::Accounts::read(&root).unwrap();
+                let mut changed = record.get(source.id.as_str()).unwrap().unwrap();
                 changed.type_id = "nextcloud".into();
                 changed.config = serde_json::json!({"provider":"nextcloud"});
-                store.upsert(changed);
-                store.save_in(&root).unwrap();
+                record.keep(&changed).unwrap();
+                record.project(&root).unwrap();
             }
             let original = std::fs::read(accounts::store_path_in(&root)).unwrap();
             accounts.apply(AccountRequest::Confirm).unwrap();
@@ -1281,7 +1304,7 @@ tilo_test_env::scenario! {
             assert!(accounts.prepared_handle().is_none());
             assert!(accounts.prepared.is_empty());
             let staged = accounts.stage.as_ref().unwrap().path().join(".config/tilo");
-            assert!(accounts::AccountStore::load_in(&staged).all().is_empty());
+            assert!(imager_backend::account_store::Accounts::read(&staged).unwrap().all().unwrap().is_empty());
             assert!(
                 accounts::SecretVault::open_in(&staged)
                     .get(&source.id)
@@ -1331,12 +1354,12 @@ fn tilo_source(with_grant: bool) -> TiloSource {
     let mut account = accounts::Account::new(id.clone(), "spotify");
     account.display_name = "My Spotify library".into();
     account.config = serde_json::json!({"provider":"spotify"});
-    let mut store = accounts::AccountStore::new();
-    store.upsert(account);
+    let record = imager_backend::account_store::Accounts::empty();
+    record.keep(&account).unwrap();
     let mut foreign = accounts::Account::new(accounts::AccountId::new("someone-else"), "nextcloud");
     foreign.owner = Some("another-person".into());
-    store.upsert(foreign);
-    store.save_in(&source).unwrap();
+    record.keep(&foreign).unwrap();
+    record.project(&source).unwrap();
     if with_grant {
         account_credentials::CredentialStore::for_root(Some(source))
             .seal_oauth(
@@ -1540,12 +1563,12 @@ fn checkpoint_grants(root: &Path) -> CheckpointFixture {
         .import_tilo(&source, &copied)
         .unwrap();
     let oauth_id = accounts::AccountId::new("music.spotify");
-    let mut store = accounts::AccountStore::load_in(&config);
+    let record = imager_backend::account_store::Accounts::read(&config).unwrap();
     let mut account = accounts::Account::new(oauth_id.clone(), "spotify");
     account.display_name = "Spotify".into();
     account.config = serde_json::json!({"provider":"spotify"});
-    store.upsert(account);
-    store.save_in(&config).unwrap();
+    record.keep(&account).unwrap();
+    record.project(&config).unwrap();
     CredentialStore::for_root(Some(config))
         .seal_oauth(
             &oauth_id,
@@ -1753,10 +1776,11 @@ music = ["user-read-private", "user-library-read"]
             })
         ));
         let prepared = accounts.prepared_handle().unwrap();
-        let store = accounts::AccountStore::load_in(&prepared.config_root());
+        let store = imager_backend::account_store::Accounts::read(&prepared.config_root()).unwrap();
         assert_eq!(
             store
-                .get(&accounts::AccountId::new("music.spotify"))
+                .get("music.spotify")
+                .unwrap()
                 .unwrap()
                 .type_id
                 .as_str(),
@@ -1764,21 +1788,24 @@ music = ["user-read-private", "user-library-read"]
         );
         assert_eq!(
             store
-                .get(&accounts::AccountId::new("music.spotify"))
+                .get("music.spotify")
+                .unwrap()
                 .unwrap()
                 .config["spotify_user_id"],
             "ada-spotify"
         );
         assert_eq!(
             store
-                .get(&accounts::AccountId::new("music.spotify"))
+                .get("music.spotify")
+                .unwrap()
                 .unwrap()
                 .config["spotify_account_id"],
             "stable-ada"
         );
         assert!(
             store
-                .get(&accounts::AccountId::new("music.spotify.streaming"))
+                .get("music.spotify.streaming")
+                .unwrap()
                 .is_none()
         );
         assert_eq!(
@@ -2187,17 +2214,12 @@ tilo_test_env::scenario! {
                 .all(|entry| !entry.revoke_on_remove)
         );
         let staged = fixture.accounts.prepared_handle().unwrap();
-        let store = accounts::AccountStore::load_in(&staged.config_root());
-        assert_eq!(store.len(), 2);
+        let store = imager_backend::account_store::Accounts::read(&staged.config_root()).unwrap();
+        let all = store.all().unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(store.get(&fixture.canonical_id).unwrap().is_some());
         assert!(
-            store
-                .get(&accounts::AccountId::new(&fixture.canonical_id))
-                .is_some()
-        );
-        assert!(
-            store
-                .all()
-                .iter()
+            all.iter()
                 .any(|account| account.config["server_url"] == "https://team.example.test/dav")
         );
         assert_eq!(
@@ -2238,7 +2260,7 @@ tilo_test_env::scenario! {
         fixture.accounts.apply(AccountRequest::ImportSaved).unwrap();
         settle(&mut fixture.accounts);
         assert_eq!(
-            accounts::AccountStore::load_in(&staged.config_root()).len(),
+            imager_backend::account_store::Accounts::read(&staged.config_root()).unwrap().all().unwrap().len(),
             2
         );
         fixture.assert_sources_unchanged();

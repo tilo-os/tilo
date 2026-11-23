@@ -206,8 +206,7 @@ impl Journey {
         });
         self.transfer = match kind {
             IdentityKind::New => None,
-            IdentityKind::Backup => Some("backup".into()),
-            IdentityKind::Enrolled => Some("device".into()),
+            IdentityKind::Backup | IdentityKind::RetiredEnrolled => Some("backup".into()),
             IdentityKind::CurrentDevice => Some("current".into()),
         };
         self.page = if choices.deferred {
@@ -328,7 +327,7 @@ impl Journey {
             {
                 self.transfer = Some(choice.to_string())
             }
-            (Page::Connect, "device" | "backup") => self.transfer = Some(choice.to_string()),
+            (Page::Connect, "backup") => self.transfer = Some(choice.to_string()),
             _ => return Err("installer-preview-invalid-choice"),
         }
         Ok(())

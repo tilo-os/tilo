@@ -210,7 +210,6 @@ mod tests {
     use super::*;
 
     use crate::model::{Category, LatLon, Place, TravelMode};
-    use crate::offline_areas::OfflineAreas;
     use ui::framework::testing::TestApp;
 
     fn actions_on(app: &mut TestApp<MapsShell>, resource: &str) -> Vec<String> {
@@ -299,14 +298,17 @@ mod tests {
 
     #[test]
     fn offline_areas_stay_on_this_device() {
-        let mut app = TestApp::<MapsShell>::for_person(&"e5".repeat(32)).unwrap();
+        let app = TestApp::<MapsShell>::for_person(&"e5".repeat(32)).unwrap();
         let area = crate::sample::regions().remove(0);
-        let previous = app.person::<OfflineAreas>().unwrap();
-        previous
-            .invoke(&OfflineAreas::REMEMBER.with(("test-device".to_owned(), area.clone())))
+        app.settings::<crate::app::offline::DownloadedAreas>()
+            .update(|downloaded| {
+                downloaded
+                    .by_workspace
+                    .entry(ui::framework::testing::TEST_WORKSPACE.to_owned())
+                    .or_default()
+                    .push(area.clone());
+            })
             .unwrap();
-        previous.record().flush();
-        drop(previous);
         let mut app = app.reopen().unwrap();
         let row = format!("maps.region:{}", area.id);
         assert_eq!(actions_on(&mut app, &row), ["delete-offline-area"]);

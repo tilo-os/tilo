@@ -267,7 +267,10 @@ fn official_electron_source_seals_and_imports_enrolled_receiver_ownership() {
     let mut extra = [0];
     assert!(input.read(&mut extra).unwrap() == 0 && identity != [0; 32]);
     assert!(
-        accounts::AccountStore::load_in(&target).is_empty(),
+        crate::account_store::Accounts::read(&target)
+            .unwrap()
+            .is_empty()
+            .unwrap(),
         "receiving account store must be fresh"
     );
     let application = source::slack_linux::SlackApplication::at(Path::new("/fixture/slack"))
@@ -315,7 +318,12 @@ fn official_electron_source_seals_and_imports_enrolled_receiver_ownership() {
         )
         .is_err()
     );
-    assert!(accounts::AccountStore::load_in(&target).is_empty());
+    assert!(
+        crate::account_store::Accounts::read(&target)
+            .unwrap()
+            .is_empty()
+            .unwrap()
+    );
     import(
         &sealed,
         &declaration,
@@ -325,8 +333,8 @@ fn official_electron_source_seals_and_imports_enrolled_receiver_ownership() {
         &target,
     )
     .expect("canonical enrolled receiver account import refused");
-    let store = accounts::AccountStore::load_in(&target);
-    assert_eq!(store.len(), 2);
+    let store = crate::account_store::Accounts::read(&target).unwrap();
+    assert_eq!(store.all().unwrap().len(), 2);
     let credential_store = account_credentials::CredentialStore::for_root(Some(target.clone()));
     for selected in &declaration.sessions {
         let session = credential_store

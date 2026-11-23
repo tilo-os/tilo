@@ -24,73 +24,6 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def engine_mode(environment, head):
-    requested = environment.get('ENGINE_RUNTIME_ONLY', '')
-    require(requested in ('', 'false', 'true'), 'invalid engine-only flag')
-    if requested != 'true':
-        return False
-    require(environment.get('GITHUB_EVENT_NAME') == 'workflow_dispatch'
-            and environment.get('GITHUB_REF') == 'refs/heads/main',
-            'engine-only releases require an explicit main dispatch')
-    require(re.fullmatch('[0-9a-f]{40}', head)
-            and environment.get('GITHUB_SHA') == head, 'engine source must be the exact event commit')
-    for name in ('COORDINATOR_INTENT', 'REQUESTED_BUILDER', 'BASELINE_SHA',
-                 'BASELINE_RUN_ID', 'BASELINE_EVIDENCE', 'BASELINE_RECEIPT_SHA256',
-                 'COORDINATOR_POLICY_SHA256'):
-        require(not environment.get(name), 'engine-only release conflicts with ' + name)
-    require(environment.get('VERIFY_FINAL_RECEIPT', '') in ('', 'false'),
-            'collection receipt qualification is not an engine-only mode')
-    require(environment.get('REQUESTED_COLLECTION', '') in ('', 'default'),
-            'engine-only release does not select an app collection')
-    require(environment.get('REQUESTED_APPS', '') in ('', 'browser'),
-            'engine-only release does not select other apps')
-    return True
-
-
-def engine_dependency(environment, root=ROOT):
-    """Normal publication carries the engines pinned by selected or reused apps.
-
-    Qualification never grants catalog authority. A complete collection can reuse
-    Browser's tapp, but must still make its exact engine available before release.
-    """
-    if environment.get('REQUESTED_PUBLISH') != 'true' or not environment.get('SELECTED_APPS', '').split():
-        return False
-    if environment.get('ENGINE_RUNTIME_ONLY') == 'true' or environment.get('SIGNAL_PROVIDER_ONLY') == 'true':
-        return False
-    selected = environment['SELECTED_APPS'].split()
-    if environment.get('COMPLETE') == 'true':
-        selected = [path.parent.name for path in (root / 'apps').glob('*/tilo-app.toml')]
-    reference = 'tilo-runtime/' + runtime_version(root)
-    for name in selected:
-        require(re.fullmatch('[a-z0-9][a-z0-9-]*', name), 'invalid selected app')
-        manifest = tomllib.loads((root / 'apps' / name / 'tilo-app.toml').read_text())
-        if reference in manifest['package'].get('optional-runtimes', []):
-            return True
-    return False
-
-
-def signal_mode(environment, head):
-    requested = environment.get('SIGNAL_PROVIDER_ONLY', '')
-    require(requested in ('', 'false', 'true'), 'invalid Signal-only flag')
-    if requested != 'true':
-        return False
-    require(environment.get('GITHUB_EVENT_NAME') == 'workflow_dispatch'
-            and environment.get('GITHUB_REF') == 'refs/heads/main'
-            and environment.get('GITHUB_SHA') == head
-            and re.fullmatch('[0-9a-f]{40}', head), 'Signal release requires exact main dispatch')
-    require(environment.get('REQUESTED_PUBLISH') == 'true', 'Signal release requires existing publishing authority')
-    require(environment.get('ENGINE_RUNTIME_ONLY', '') in ('', 'false'), 'conflicting runtime modes')
-    require(environment.get('REQUESTED_APPS', '') in ('', 'messages')
-            and environment.get('REQUESTED_ARCHITECTURES', '') == 'x86_64'
-            and environment.get('REQUESTED_COLLECTION', '') in ('', 'default'),
-            'Signal release selects only Messages dependencies on x86_64')
-    for name in ('COORDINATOR_INTENT', 'REQUESTED_BUILDER', 'BASELINE_SHA', 'BASELINE_RUN_ID',
-                 'BASELINE_EVIDENCE', 'BASELINE_RECEIPT_SHA256', 'COORDINATOR_POLICY_SHA256'):
-        require(not environment.get(name), 'Signal release conflicts with ' + name)
-    require(environment.get('VERIFY_FINAL_RECEIPT', '') in ('', 'false'), 'Signal release is not collection qualification')
-    return True
-
-
 def t_checkout():
     """The commit these sources were checked out at, when they carry no Git repository.
 
@@ -386,7 +319,7 @@ def verify_package(out, architecture, source, sequence, trusted_key):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('plan', 'dependencies', 'compile', 'seal', 'verify', 'native-proof', 'source-proof', 'proof-cargo'))
+    parser.add_argument('mode', choices=('compile', 'seal', 'verify', 'native-proof', 'source-proof', 'proof-cargo'))
     parser.add_argument('--cargo-command', default=os.environ.get('CARGO', 'cargo'),
                         help='Cargo-compatible executable for proof-cargo; defaults to CARGO or cargo')
     parser.add_argument('--cargo-argument', action='append', default=[],
@@ -400,7 +333,7 @@ def main():
     arguments = parser.parse_args()
     require(not arguments.source_commit or arguments.mode == 'native-proof',
             'snapshot commits are exclusive to the nonpublishing native proof')
-    if arguments.mode not in ('plan', 'dependencies', 'source-proof', 'proof-cargo'):
+    if arguments.mode not in ('source-proof', 'proof-cargo'):
         require(arguments.arch and arguments.source, 'architecture and source are required')
         if arguments.mode in ('seal', 'verify'):
             require(arguments.sequence and re.fullmatch('[1-9][0-9]*', arguments.sequence),
@@ -424,18 +357,6 @@ def main():
         verify_source(source)  # Verify bytes, modes and symlinks before compiler children.
         compile_engine(arguments.out, arguments.arch, source)
         seal_engine(arguments.out, arguments.arch, source, '1')
-    elif arguments.mode == 'plan':
-        enabled = engine_mode(os.environ, head())
-        if enabled:
-            runtime_version()
-        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-            output.write('engine_runtime_only=' + str(enabled).lower() + '\n')
-            if 'SIGNAL_PROVIDER_ONLY' in os.environ:
-                output.write('signal_provider_only=' + str(signal_mode(os.environ, head())).lower() + '\n')
-    elif arguments.mode == 'dependencies':
-        enabled = engine_dependency(os.environ)
-        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-            output.write('engine_runtime_required=' + str(enabled).lower() + '\n')
     elif arguments.mode == 'compile':
         compile_engine(arguments.out, arguments.arch, arguments.source)
     elif arguments.mode == 'seal':

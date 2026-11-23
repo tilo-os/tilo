@@ -11,7 +11,11 @@ use super::*;
 use serde_json::{Value, json};
 use tilo_api::client::Client;
 
-/// The ids of the workspaces a `GET /v1/workspaces` answer lists.
+/// Where a key makes a workspace and lists them: the account's actions.
+const CREATE: &str = "/v1/resources/account/workspaces/actions/create";
+const LIST: &str = "/v1/resources/account/workspaces/actions/list";
+
+/// The ids of the workspaces an `account/workspaces#list` answer lists.
 fn ids(listed: &Value) -> Vec<String> {
     listed["workspaces"]
         .as_array()
@@ -55,13 +59,16 @@ async fn one_list(on_server: &OnServer, token: &str, who: &str, computer: &Clien
         on_server,
         token,
         hyper::Method::POST,
-        "/v1/workspaces",
+        CREATE,
         &json!({"name": format!("Made by the backend beside {who}")}),
     )
     .await;
-    assert_eq!(status, 201, "{made_by_key}");
-    let by_key = made_by_key["id"].as_str().unwrap().to_owned();
-    let listed = computer.get("/v1/workspaces").await;
+    assert_eq!(status, 200, "{made_by_key}");
+    let by_key = made_by_key["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let listed = computer.workspaces().await;
     assert!(
         listed
             .as_ref()
@@ -74,32 +81,29 @@ async fn one_list(on_server: &OnServer, token: &str, who: &str, computer: &Clien
     assert!(read.is_ok(), "{who} reads the key's workspace: {read:?}");
 
     let made_here = computer
-        .post("/v1/workspaces", &json!({"name": format!("Made by {who}")}))
+        .account(
+            "account/workspaces",
+            "create",
+            &json!({"name": format!("Made by {who}")}),
+        )
         .await;
     let here = made_here
         .as_ref()
         .ok()
-        .and_then(|made| made["id"].as_str())
+        .and_then(|made| made["workspace"]["id"].as_str())
         .unwrap_or_else(|| panic!("{who} makes a workspace: {made_here:?}"))
         .to_owned();
-    let listed = computer.get("/v1/workspaces").await;
+    let listed = computer.workspaces().await;
     assert!(
         listed
             .as_ref()
             .is_ok_and(|listed| ids(listed).contains(&here)),
         "{who} lists its own {here}: {listed:?}"
     );
-    let (status, key_lists) = as_key(
-        on_server,
-        token,
-        hyper::Method::GET,
-        "/v1/workspaces",
-        &json!({}),
-    )
-    .await;
+    let (status, key_lists) = as_key(on_server, token, hyper::Method::POST, LIST, &json!({})).await;
     assert_eq!(status, 200, "{key_lists}");
     assert!(
-        ids(&key_lists).contains(&here),
+        ids(&key_lists["result"]).contains(&here),
         "the key lists {who}'s {here}: {key_lists}"
     );
     let (status, read) = as_key(
@@ -193,12 +197,12 @@ async fn a_computer_and_a_key_share_the_persons_workspace_list() {
         &on_server,
         &token,
         hyper::Method::POST,
-        "/v1/workspaces",
+        CREATE,
         &json!({"name": "Ada's letters"}),
     )
     .await;
-    assert_eq!(status, 201, "{made}");
-    let letters = made["id"].as_str().unwrap();
+    assert_eq!(status, 200, "{made}");
+    let letters = made["result"]["workspace"]["id"].as_str().unwrap();
     let invited = mac
         .command()
         .post(
@@ -218,16 +222,12 @@ async fn a_computer_and_a_key_share_the_persons_workspace_list() {
 
 /// The first workspace the key `token` lists.
 async fn first_workspace(on_server: &OnServer, token: &str) -> String {
-    let (status, listed) = as_key(
-        on_server,
-        token,
-        hyper::Method::GET,
-        "/v1/workspaces",
-        &json!({}),
-    )
-    .await;
+    let (status, listed) = as_key(on_server, token, hyper::Method::POST, LIST, &json!({})).await;
     assert_eq!(status, 200, "{listed}");
-    ids(&listed).first().cloned().expect("a workspace of Ada's")
+    ids(&listed["result"])
+        .first()
+        .cloned()
+        .expect("a workspace of Ada's")
 }
 
 /// The person's root, held on the computer, answering what `agent` asks them, allowing each, as
@@ -298,8 +298,9 @@ async fn a_computer_without_the_root_says_it_waits_for_the_persons_approval() {
 
     let waiting = mac
         .command()
-        .post(
-            "/v1/workspaces",
+        .account(
+            "account/workspaces",
+            "create",
             &json!({"name": "Made while Ada was away"}),
         )
         .await
@@ -317,14 +318,7 @@ async fn a_computer_without_the_root_says_it_waits_for_the_persons_approval() {
     let approving = approve_as_root(&on_server, &ada, &agent_of(&mac));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
-        let (_, listed) = as_key(
-            &on_server,
-            &token,
-            hyper::Method::GET,
-            "/v1/workspaces",
-            &json!({}),
-        )
-        .await;
+        let (_, listed) = as_key(&on_server, &token, hyper::Method::POST, LIST, &json!({})).await;
         if listed.to_string().contains("Made while Ada was away") {
             break;
         }

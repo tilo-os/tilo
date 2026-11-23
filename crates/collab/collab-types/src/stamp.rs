@@ -80,6 +80,27 @@ impl Stamp {
         serde_json::from_str(message).ok()
     }
 
+    /// Who invoked it: the actor the writer named, or the person the workspace's resource route
+    /// stamped on a person's own write (their person id alone). Nobody for a stamp naming
+    /// neither.
+    #[must_use]
+    pub fn invoked_by(&self) -> Option<tilo_action_policy::Actor> {
+        if let Ok(actor) = tilo_failure::ignored!(
+            "a stamp the route wrote holds a person id, which is read next",
+            serde_json::from_str::<tilo_action_policy::Actor>(&self.invoker)
+        ) {
+            return Some(actor);
+        }
+        tilo_failure::ignored!(
+            "a stamp naming neither an actor nor a person names nobody",
+            tilo_action_policy::PersonId::parse(&self.invoker)
+        )
+        .ok()
+        .map(|person| {
+            tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person(person))
+        })
+    }
+
     /// The stamp `change` carries; `None` for a change that carries none.
     #[must_use]
     pub fn of(change: &automerge::Change) -> Option<Self> {

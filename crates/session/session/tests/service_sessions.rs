@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use accounts::{AccountId, AccountStore, SecretVault};
+use accounts::{AccountId, SecretVault};
 use browser_continuity::sessions::{Cookie, SameSite, Service, SessionCookies};
 use runtime_collab::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply, CollabClient,
@@ -26,8 +26,7 @@ use runtime_collab::{
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
-use tilo_peer_state::TransportOrigin;
-use tilo_peer_state::owner::{self, testing};
+use tilo_peer_state::owner;
 use tilo_service::LoopWake;
 use tilo_session::{AppSocket, Launches, Lists, Options, Session};
 use tilo_user_identity::DeviceCert;
@@ -145,7 +144,7 @@ fn fixture(keyring: Keyring) -> Fixture {
         phone,
         phone_cert,
     };
-    hold_workspace(&state, &keys);
+    hold_workspace(&state, &keys, &selected_account());
     Fixture {
         keys,
         state,
@@ -155,81 +154,62 @@ fn fixture(keyring: Keyring) -> Fixture {
     }
 }
 
-/// The workspace's host admits `certificate` 's device as an editor, redeeming the invitation it
-/// issues for it: what pairing another of the person's devices does.
-fn admit(
-    governor: &mut testing::governor::TestGovernor,
-    key: &ed25519_dalek::SigningKey,
-    certificate: &DeviceCert,
-) -> Result<(), String> {
-    use tilo_peer_state::join;
-    let now = std::time::SystemTime::now();
-    let ns = testing::ns(now)?;
-    let hint = governor.hint(iroh::EndpointAddr::new(
-        iroh::EndpointId::from_bytes(&governor.workspace_host().device_public_key)
-            .map_err(|error| error.to_string())?,
-    ));
-    let invitation = governor.issue(
-        vec![hint],
-        join::Role::Editor,
-        Some(certificate.user_public_key),
-        Some(certificate.device_label.clone()),
-        ns.saturating_add(60_000_000_000),
-    );
-    let mut request_id = [0_u8; 32];
-    request_id[..8].copy_from_slice(&certificate.device_public_key[..8]);
-    let answered = governor.handle(
-        certificate.device_public_key,
-        join::JoinTransportRequest::Challenge(join::JoinChallengeRequest {
-            signed_invitation: invitation,
-            device_cert: certificate.clone(),
-            request_id,
-        }),
-    );
-    let join::JoinTransportResponse::Challenge(challenge) = answered else {
-        return Err(format!("the host refuses the invitation: {answered:?}"));
-    };
-    let answered = governor.handle(
-        certificate.device_public_key,
-        join::JoinTransportRequest::Complete(join::JoinCompleteRequest {
-            proof: join::sign_join_proof(challenge.challenge, key)?,
-        }),
-    );
-    if !matches!(answered, join::JoinTransportResponse::Complete(_)) {
-        return Err(format!("the host refuses the proof: {answered:?}"));
-    }
-    Ok(())
-}
-
-/// The workspace's owner, as this device holds it in `state` , with the person's other device
-/// admitted: what the session opens when it starts.
-fn hold_workspace(state: &Path, keys: &Keys) {
-    let owner = owner::open_file(
-        &tilo_session_client::engine::owner_path(state).expect("this device's state directory"),
-    )
-    .expect("an owner for this device's workspace");
+/// The workspace, founded on this device's own workspace service in `state` as the person makes
+/// one here, with the person's website session `selected` among its accounts and their other
+/// device admitted as an editor: what pairing another of the person's devices does.
+fn hold_workspace(state: &Path, keys: &Keys, selected: &accounts::Account) {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    let mut governor =
-        testing::enroll_interactive_governor_in(&owner, &keys.device, &keys.cert, WORKSPACE)
-            .expect("this device governs the workspace it hosts");
-    admit(&mut governor, &keys.phone, &keys.phone_cert).expect("the person's other device joins");
-    // The governor's checkpoint now names both of them: the host admits it as the publication a
-    // host's own workspace makes.
-    let host = governor.workspace_host().device_public_key;
-    let frames: Vec<Vec<u8>> = governor
-        .outgoing()
-        .map(|(bytes, _)| bytes.to_vec())
-        .collect();
-    for frame in frames {
-        owner
-            .receive(
+    let phone_state = tempfile::tempdir().expect("the phone's own state");
+    crate::common::held::workspace_founded_on_this_device_then(
+        state,
+        WORKSPACE,
+        "Shell",
+        &keys.cert,
+        &keys.device,
+        async |service| {
+            service
+                .workspaces()
+                .keep_workspace_account(WORKSPACE, selected)
+                .await
+                .expect("the workspace keeps the selected website session");
+            let mut request_id = [0_u8; 32];
+            request_id[..8].copy_from_slice(&keys.phone_cert.device_public_key[..8]);
+            let issued = service
+                .workspaces()
+                .issue(
+                    WORKSPACE,
+                    &keys.cert,
+                    tilo_server_session::workspaces::IssueInvitationRequest {
+                        request_id,
+                        role: tilo_workspace_join::Role::Editor,
+                        recipient_user_public_key: Some(keys.phone_cert.user_public_key),
+                        invitee_name: None,
+                        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(60_000_000_000),
+                        inviter_name: None,
+                    },
+                )
+                .await
+                .expect("the workspace invites the person's other device");
+            let phone_owner =
+                owner::open_file(&phone_state.path().join("owner")).expect("the phone's own owner");
+            tilo_peer_state::owner::enroll::prepare_and_complete(
+                tilo_peer_state::join_transport::WorkspaceJoinClient::local(
+                    service.join_service(),
+                    keys.phone_cert.device_public_key,
+                ),
+                tilo_identity::identity_store::DeviceIdentity::kept(
+                    keys.phone_cert.clone(),
+                    keys.phone.clone(),
+                ),
                 workspace,
-                TransportOrigin::RetainedServerDelta(host),
-                postcard::from_bytes(&frame).expect("a publication is a message"),
-                std::time::SystemTime::now(),
+                None,
+                tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation),
+                phone_owner,
             )
-            .expect("the host admits the workspace's people");
-    }
+            .await
+            .expect("the person's other device joins");
+        },
+    );
 }
 
 /// A shell showing the workspace, known by its id, owned by the person.
@@ -318,8 +298,18 @@ fn config_root() -> PathBuf {
     accounts::config_root().expect("this session's config root")
 }
 
-/// A person's selected website session, sealed in `root` as selection leaves it: its account entry,
-/// and its cookies held under the person's key.
+/// The workspace's account of the person's selected website session.
+fn selected_account() -> accounts::Account {
+    let mut account = accounts::Account::new(
+        AccountId::from("selected-slack"),
+        account_credentials::service_sessions::SERVICE_SESSION_TYPE,
+    );
+    account.config = serde_json::json!({"service": "slack", "setup_binding": "prepared-operation"});
+    account
+}
+
+/// A person's selected website session, its cookies sealed in `root` under the person's key as
+/// selection leaves it; the workspace keeps its account ([`selected_account`]).
 fn select_in(root: &Path, identity: [u8; 32]) -> SessionCookies {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::create_dir_all(root).expect("the person's accounts directory");
@@ -347,14 +337,6 @@ fn select_in(root: &Path, identity: [u8; 32]) -> SessionCookies {
         origin_storage: Vec::new(),
     };
     let id = AccountId::from(session.session_id.clone());
-    let mut account = accounts::Account::new(
-        id.clone(),
-        account_credentials::service_sessions::SERVICE_SESSION_TYPE,
-    );
-    account.config = serde_json::json!({"service": "slack", "setup_binding": "prepared-operation"});
-    let mut store = AccountStore::load_in(root);
-    store.upsert(account);
-    store.save_in(root).expect("the person's accounts");
     let mut vault = SecretVault::open_person(Some(root));
     vault.put(
         &id,

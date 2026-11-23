@@ -2075,7 +2075,7 @@ async fn a_kept_own_workspace_lists_as_this_hosts_whatever_a_devices_list_said()
         }],
         devices: Vec::new(),
     };
-    workspaces.keep_personal(&device, named).unwrap();
+    workspaces.keep_personal(&device, named).await.unwrap();
 
     let listed = workspaces.personal_of(&device).await;
     let entry = listed

@@ -7,7 +7,7 @@
 //! and the files are the rows beneath it, each the resource [`fs_protocol::tree::file_resource`]
 //! names by its path, and the folders the resources
 //! [`fs_protocol::tree::folder_resource`] names. Reading a file is the read of the tree by that
-//! path ([`super::tree_put`]), answered by whoever holds the tree: the file's content, the one
+//! path ([`super::tree`]), answered by whoever holds the tree: the file's content, the one
 //! place a file of the workspace is kept. A folder's row holds what is in it, so a listing goes
 //! into a folder the way a person does.
 

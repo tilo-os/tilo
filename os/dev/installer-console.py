@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """Drive a VM's installer or greeter through its console channel.
 
-The installer and the greeter answer the tilo-control action protocol
-(actions_enumerate / actions_invoke / state_dump; crates/session/console-control)
-on the virtio-serial port os/dev/vm.sh attaches, whose host end is the Unix
-socket `vm.sh console` prints. Windows WHPX uses a loopback `tcp://host:port`
-socket instead. `tilo-control --socket <path> ...` speaks the
-same protocol; this stdlib-only client exists for release jobs that do not
-build the compositor's CLI, and adds what a long boot needs: waiting, a `seq`
-field so an answer to an abandoned request is never mistaken for the current
-one, and secrets taken from the environment so they never reach argv.
+The installer and the greeter answer action frames, and `state_dump` for their
+state (crates/session/console-control), on the virtio-serial port os/dev/vm.sh
+attaches, whose host end is the Unix socket `vm.sh console` prints. Windows WHPX
+uses a loopback `tcp://host:port` socket instead. `tilo-control --socket <path>
+raw` sends the same lines; this stdlib-only client exists for release jobs that
+do not build the compositor's CLI, and adds what a long boot needs: waiting, an
+answer matched to its own request (a state's `seq`, an invocation's id) so an
+answer to an abandoned request is never mistaken for the current one, and
+secrets taken from the environment so they never reach argv.
 
   installer-console.py --socket S wait APP [--timeout N] [--save FILE]
   installer-console.py --socket S wait-step STEP [--timeout N] [--save FILE]
   installer-console.py --socket S state [--save FILE]
   installer-console.py --socket S check APP [/json/pointer] [--timeout N]
   installer-console.py --socket S invoke ACTION@RESOURCE [ARGS_JSON]
-                         [--secret NAME=ENVVAR ...] [--provider P]
+                         [--secret NAME=ENVVAR ...] [--provider P] [--phrase TEXT]
   installer-console.py --socket S wait-install [--timeout N] [--save FILE]
   installer-console.py field FILE /json/pointer
 
@@ -36,6 +36,7 @@ import os
 import socket
 import sys
 import time
+import uuid
 from urllib.parse import urlsplit
 
 _SEQ = itertools.count(1)
@@ -52,9 +53,12 @@ class Refused(Exception):
         self.code = code
 
 
-def request(path: str, payload: dict, timeout: float = 15.0) -> dict:
-    seq = f"cycle-{os.getpid()}-{next(_SEQ)}"
-    payload = dict(payload, seq=seq)
+def request(path: str, payload: dict, timeout: float = 15.0, answers=None) -> dict:
+    """The reply to `payload`: the line `answers` accepts, by default the one with its `seq`."""
+    if answers is None:
+        seq = f"cycle-{os.getpid()}-{next(_SEQ)}"
+        payload = dict(payload, seq=seq)
+        answers = lambda reply: reply.get("seq") == seq  # noqa: E731
     if not math.isfinite(timeout) or timeout <= 0:
         raise Unreachable("request timeout must be positive and finite")
     deadline = time.monotonic() + timeout
@@ -86,7 +90,7 @@ def request(path: str, payload: dict, timeout: float = 15.0) -> dict:
                     reply = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(reply, dict) and reply.get("seq") == seq:
+                if isinstance(reply, dict) and answers(reply):
                     return reply
             if len(buffer) > MAX_REPLY_BYTES:
                 raise Unreachable("console response is too large")
@@ -105,6 +109,35 @@ def unwrap(reply: dict, key: str) -> object:
     if not isinstance(err, dict):
         raise Unreachable("invalid console error response")
     raise Refused(err.get("code", "unknown"), err.get("message", ""))
+
+
+def invoke(path: str, provider: str, action: str, arguments: dict, phrase: str | None = None,
+           timeout: float = 60) -> object:
+    """Invoke `action` (ACTION@RESOURCE) of `provider` as an action frame; its output value."""
+    name, at, resource = action.partition("@")
+    if not at:
+        raise Refused("invalid_arguments", f"{action}: name the action as ACTION@RESOURCE")
+    invocation = str(uuid.uuid4())
+    frame = {"version": 2, "message": {"Invoke": {
+        "invocation": invocation,
+        "target": {"provider": provider, "address": {"resource": resource, "action": name}},
+        "argument": {"Json": arguments},
+        "confirmation": None if phrase is None else {"Phrase": phrase},
+    }}}
+    reply = request(path, frame, timeout, lambda reply: (
+        (reply.get("message") or {}).get("Receipt") or {}).get("invocation") == invocation
+        or "err" in reply)
+    if "err" in reply:
+        unwrap(reply, "answer")
+    status = reply["message"]["Receipt"]["status"]
+    if isinstance(status, dict) and "Completed" in status:
+        return (status["Completed"].get("output") or {}).get("value")
+    if isinstance(status, dict) and ("Failed" in status or "Rejected" in status):
+        error = status.get("Failed") or status.get("Rejected")
+        error = error.get("error", error) if isinstance(error, dict) else error
+        code = (error.get("code") or next(iter(error), "refused")) if isinstance(error, dict) else str(error)
+        raise Refused(code, json.dumps(error))
+    raise Refused("unanswered", json.dumps(status))
 
 
 def state(path: str, timeout: float = 15.0) -> dict:
@@ -171,12 +204,13 @@ def main(argv: list[str]) -> int:
     check.add_argument("app")
     check.add_argument("pointer", nargs="?")
     check.add_argument("--timeout", type=float, default=15)
-    invoke = sub.add_parser("invoke")
-    invoke.add_argument("id")
-    invoke.add_argument("args", nargs="?", default="{}")
-    invoke.add_argument("--secret", action="append", default=[],
+    invoking = sub.add_parser("invoke")
+    invoking.add_argument("id")
+    invoking.add_argument("args", nargs="?", default="{}")
+    invoking.add_argument("--secret", action="append", default=[],
                         help="NAME=ENVVAR: argument NAME from environment variable ENVVAR")
-    invoke.add_argument("--provider", default="installer")
+    invoking.add_argument("--provider", default="installer")
+    invoking.add_argument("--phrase", help="the confirmation phrase the action asks for")
     install = sub.add_parser("wait-install")
     install.add_argument("--timeout", type=float, default=3600)
     install.add_argument("--save")
@@ -218,8 +252,7 @@ def main(argv: list[str]) -> int:
                 if not name or variable not in os.environ:
                     parser.error(f"--secret {name}=... names an unset variable")
                 arguments[name] = os.environ[variable]
-            answer = unwrap(request(path, {"op": "actions_invoke", "provider": options.provider,
-                                           "id": options.id, "args": arguments}, 60), "answer")
+            answer = invoke(path, options.provider, options.id, arguments, options.phrase)
             print(json.dumps({"id": options.id, "step": (answer or {}).get("step")}))
         elif options.command == "wait-install":
             started = time.monotonic()

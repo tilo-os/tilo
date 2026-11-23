@@ -66,11 +66,7 @@ pub struct ServerCoeditSession {
     last_heard_ns: std::sync::atomic::AtomicU64,
     /// The on-demand records this session opened, by retained channel:
     /// opened again with every resubscription.
-    /// A member's own record among them is opened as one, with its kind and
-    /// person.
-    opened: std::sync::Mutex<
-        std::collections::BTreeMap<[u8; 32], Option<tilo_server_protocol::OwnedGroup>>,
-    >,
+    opened: std::sync::Mutex<std::collections::BTreeSet<[u8; 32]>>,
     /// Whether the host said this workspace sends a device only its
     /// governance, its shared desktop and the heads of its chains, and every
     /// other record once the device opens it (its `Ready`): what a device
@@ -123,45 +119,18 @@ impl ServerCoeditSession {
     ///
     /// Returns [`CoeditError::Disconnected`] if the connection is gone.
     pub fn open_resource(&self, channel: [u8; 32]) -> Result<(), CoeditError> {
-        self.open(channel, None)
-    }
-
-    /// [`Self::open_resource`] for a member's own record, named with its kind
-    /// and person: the host answers another person's
-    /// [`tilo_server_protocol::DocumentAnswer::NotYours`] even before anything
-    /// of it was written.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
-    pub fn open_own_record(
-        &self,
-        own: tilo_server_protocol::OwnedGroup,
-    ) -> Result<(), CoeditError> {
-        let channel = neighbour_wire::app_document_group(&own.app_id, &own.record.document_id());
-        self.open(channel, Some(own))
-    }
-
-    fn open(
-        &self,
-        channel: [u8; 32],
-        own: Option<tilo_server_protocol::OwnedGroup>,
-    ) -> Result<(), CoeditError> {
+        if !self
+            .opened
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(channel)
         {
-            let mut opened = self
-                .opened
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if opened.contains_key(&channel) {
-                return Ok(());
-            }
-            opened.insert(channel, own.clone());
+            return Ok(());
         }
         self.client
             .send(Envelope::OpenDocument {
                 workspace_id: self.workspace_id,
                 channel,
-                own,
             })
             .map_err(|_| CoeditError::Disconnected)
     }
@@ -185,7 +154,7 @@ impl ServerCoeditSession {
         self.opened
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(channel)
+            .contains(channel)
     }
 
     /// Ask the host to replay the workspace's retained state again, as it
@@ -206,12 +175,11 @@ impl ServerCoeditSession {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        for (channel, own) in opened {
+        for channel in opened {
             self.client
                 .send(Envelope::OpenDocument {
                     workspace_id: self.workspace_id,
                     channel,
-                    own,
                 })
                 .map_err(|_| CoeditError::Disconnected)?;
         }

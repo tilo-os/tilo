@@ -178,11 +178,12 @@ pub fn claim_node(
     surface: &dyn ReceiptSurface,
     action: &ClaimedAction,
 ) -> TreePath {
-    let kind = surface.kind();
-    let resource = TreePath::workspace(document.workspace)
-        .app(document.app)
-        .kind(kind)
-        .resource(published_resource(document.document));
+    let resource = tilo_actions::resource_node(
+        &TreePath::workspace(document.workspace),
+        document.app,
+        surface.kind(),
+        &published_resource(document.document),
+    );
     match action {
         ClaimedAction::Verb { action, item } => {
             let node = match item {
@@ -557,7 +558,13 @@ pub fn published_resource(document: &str) -> String {
 pub fn written_node(document: &WrittenDocument<'_>) -> TreePath {
     TreePath::workspace(document.workspace)
         .app(document.app)
-        .resource(published_resource(document.document))
+        .resource(
+            if tilo_action_policy::roles::is_workspace_moderation(document.app, document.document) {
+                String::new()
+            } else {
+                published_resource(document.document)
+            },
+        )
 }
 
 /// Decide a received op on `record`: a compaction as a write of the record
@@ -795,12 +802,15 @@ pub fn decide_op_pinned(
         crate::role::OpKind::Change => {
             // An op of an app that publishes no surface (and of a record that
             // names none) is decided as an edit of the record; one naming a
-            // surface is decided against it, and held until it is here.
-            let Some(source) = surfaces
-                .0
-                .as_ref()
-                .filter(|_| op.surface.is_some() || pinned.is_some())
-            else {
+            // surface is decided against it, and held until it is here. A
+            // resource store's document holds resources of every kind its app
+            // declares, and each of its changes names its verb in a stamp the
+            // store judges against that verb's declared write-set: the
+            // receipt decides it as an edit of the document.
+            let Some(source) = surfaces.0.as_ref().filter(|_| {
+                (op.surface.is_some() || pinned.is_some())
+                    && !crate::is_store_document(document.document)
+            }) else {
                 return decide_as_document_edit(op, document, allows);
             };
             let surface_for =

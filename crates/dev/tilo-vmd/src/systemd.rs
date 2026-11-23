@@ -1010,56 +1010,6 @@ impl Apply for SystemdApply {
         })
     }
 
-    fn private_control(
-        &mut self,
-        session: &Session,
-        args: &[String],
-        input: &str,
-    ) -> Result<ControlResult, DaemonError> {
-        use std::io::Write as _;
-        use std::process::Stdio;
-        let pid = self
-            .session_pid(session)
-            .ok_or_else(|| DaemonError::InvalidParams("account session is not running".into()))?;
-        let env = self.session_environment(session);
-        let mut child = control_command(pid, &session.user, &session.control_socket, env, args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|_| {
-                DaemonError::InvalidParams("could not start private control client".into())
-            })?;
-        let sent = child
-            .stdin
-            .take()
-            .ok_or_else(|| {
-                DaemonError::InvalidParams("private control stdin is unavailable".into())
-            })?
-            .write_all(input.as_bytes());
-        if sent.is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(DaemonError::InvalidParams(
-                "could not send private control arguments".into(),
-            ));
-        }
-        let output = child
-            .wait_with_output()
-            .map_err(|_| DaemonError::InvalidParams("private control client failed".into()))?;
-        if !output.status.success() {
-            return Err(DaemonError::InvalidParams(
-                "private action was refused; inspect its declared parameters and ownership state"
-                    .into(),
-            ));
-        }
-        Ok(ControlResult {
-            exit_code: 0,
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::new(),
-        })
-    }
-
     fn wait_session_ready(&mut self, session: &Session) -> Result<(), String> {
         // `Restart=always` turns a failing start into active/activating flapping, so the unit has
         // to stay active under one main process for a while.
@@ -1946,7 +1896,7 @@ mod tests {
                 "you",
                 std::path::Path::new("/run/user/1002/tilo-session/test-control.sock"),
                 vec![("TILO_TEST_CONTROL".into(), "/elsewhere.sock".into())],
-                &["actions".into(), "list".into()],
+                &["state-dump".into()],
             );
             assert_eq!(command.get_program(), "nsenter");
             let args: Vec<_> = command
@@ -1965,8 +1915,8 @@ mod tests {
             );
             assert!(!args.contains(&"TILO_TEST_CONTROL=/elsewhere.sock".into()));
             assert_eq!(
-                &args[args.len() - 3..],
-                [super::TILO_CONTROL, "actions", "list"]
+                &args[args.len() - 2..],
+                [super::TILO_CONTROL, "state-dump"]
             );
         }
 

@@ -88,7 +88,7 @@
 # serves at /releases, else target/{debug,release}/tilo. VISA_APPLICANTS
 # sets how many workspaces the run makes (25 here). The questions put to the
 # startup person are answered by TILO_SH_TILO_APPROVE (tilo-approve, built by
-# the t check beside tilo-enroll), from the root of theirs kept in
+# the t check), from the root of theirs kept in
 # WORK/startup/root, through the server address the VM host names.
 # TILO_SH_ONLY names the steps to run (`1`, `2-6`, `7`, `10,13-18`, comma
 # separated) to chase one of them without the rest; the stack is brought up
@@ -476,19 +476,11 @@ if [[ $hosted == 1 ]]; then
       sudo -n podman logs --tail 80 tilo-sh-vm-host-0 >&2 2>/dev/null || true
       # The server dials the host's member by the device key the members file
       # names; a member answering with another key fails the handshake.
-      echo '--- the members file the server reads, and the keys on either side:' >&2
+      echo '--- the members file the server reads, and the key the host joined with:' >&2
       cat "$state/secrets/vm-host-members.json" >&2 2>/dev/null || true
-      keys=$(mktemp -d)
-      mkdir -p "$keys/certified/device-private" "$keys/member/device-private"
-      sudo -n cat /var/lib/tilo-sh-local-vm/vm/member/root/device-private/keypair.bin \
-        > "$keys/certified/device-private/keypair.bin" 2>/dev/null || true
-      sudo -n podman exec tilo-sh-vm-host-0 cat /var/lib/tilo-hosted/member/profile/identity/device-private/keypair.bin \
-        > "$keys/member/device-private/keypair.bin" 2>/dev/null || true
-      chmod 0600 "$keys"/*/device-private/keypair.bin
-      for side in certified member; do
-        echo "$side: $("${TILO_SH_TILO_ENROLL:-tilo-enroll}" device-key --identity-root "$keys/$side" 2>&1)" >&2
-      done
-      rm -rf "$keys"
+      sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 \
+        --init-groups --inh-caps=-all tilo-device-admin key \
+        --identity-root /var/lib/tilo-hosted/member/profile/identity >&2 2>/dev/null || true
       sudo -n podman exec tilo-sh-vm-host-0 sh -c \
         'ls -la --time-style=full-iso /var/lib/tilo-hosted/member/profile/identity/device-private /var/lib/tilo-hosted/member/profile/identity/device' >&2 2>/dev/null || true
       echo '--- the member, from its start:' >&2

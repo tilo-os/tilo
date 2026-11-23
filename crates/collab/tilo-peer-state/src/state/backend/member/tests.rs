@@ -307,153 +307,72 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase another_member_neither_reads_nor_writes_a_members_own_record;
-    // A member's own record in the workspace is theirs alone: another member,
-    // even the workspace's owner, neither reads nor changes it, and a steward
-    // withholds its channel from every device but that person's, while the
-    // person reads and changes their own whatever their role.
+    phase each_person_writes_their_own_view_of_the_layout_and_no_one_elses;
+    // Each person's view of the workspace's layout is an ordinary record of the workspace that
+    // every member reads; the workspace's policy lets its person change it whatever their role,
+    // and nobody else, an agent acting for them as far as its person may.
     {
         let (mut peer, source, now) = fixture();
         let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
-        let workspace = peer.core.workspace_doc.as_mut().unwrap();
-        workspace.put(ROOT, "owner", person.as_str()).unwrap();
-        workspace.commit();
-        let workspace_id = peer.workspace_id().to_owned();
-        // Another member's own record is known by what its writes say.
-        let theirs_own = collab_types::OwnResource::of_person(&"ad".repeat(32), "chat.drafts").unwrap();
-        peer.keep_own_document("so.tilo.chat", &theirs_own);
-        let theirs = theirs_own.document_id();
-        let own = collab_types::OwnResource::of_person(&person, "chat.drafts")
-            .unwrap()
-            .document_id();
-        assert_eq!(
-            peer.role(&source, now).unwrap(),
-            Role::Owner,
-            "the owner, who reads everything else"
-        );
-        for (record, theirs_alone) in [(&theirs, false), (&own, true)] {
-            assert_eq!(
-                peer.check_document_read(source, "so.tilo.chat", record, now)
-                    .is_ok(),
-                theirs_alone,
-                "{record}"
-            );
-        }
-        assert!(
-            peer.check_document_read(source, "so.tilo.chat", "tab:0000000000000001", now)
-                .is_ok()
-        );
-
-        // Their role does not decide their own record: a viewer still writes it.
-        let workspace = peer.core.workspace_doc.as_mut().unwrap();
-        workspace
-            .put(ROOT, "owner", hex::encode(owner().1.user_public_key))
-            .unwrap();
-        workspace.commit();
-        put_member(&mut peer, &person, Role::Viewer);
-        let viewer = peer.permissions(source, now).unwrap();
-        assert_eq!(peer.role(&source, now).unwrap(), Role::Viewer);
-        let own_node = collab_types::document_node(&workspace_id, "so.tilo.chat", &own);
-        assert!(
-            viewer.answer(
-                &own_node,
-                ActionKind::Undoable,
-                &tilo_action_policy::Context::at_time(now).with_own_resource(&own, &person)
-            ) == tilo_action_policy::Answer::Allow
-        );
-    }
-
-    phase what_a_persons_agents_learned_about_them_is_theirs_alone;
-    // What a person's agents learned about them is that person's own record of the workspace
-    // (Chat's `chat.learned`): the person reads and changes it and so does software acting for
-    // them, while another member's list is refused to them, the workspace's owner included, and
-    // with it to every agent that acts for them.
-    {
-        let (mut peer, source, now) = fixture();
-        let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
-        let workspace = peer.core.workspace_doc.as_mut().unwrap();
-        workspace.put(ROOT, "owner", person.as_str()).unwrap();
-        workspace.commit();
-        let workspace_id = peer.workspace_id().to_owned();
         let other = "ad".repeat(32);
-        let theirs_own = collab_types::OwnResource::of_person(&other, "chat.learned").unwrap();
-        peer.keep_own_document("so.tilo.chat", &theirs_own);
-        let theirs = theirs_own.document_id();
-        let mine_own = collab_types::OwnResource::of_person(&person, "chat.learned").unwrap();
-        peer.keep_own_document("so.tilo.chat", &mine_own);
-        let mine = mine_own.document_id();
-        assert_ne!(mine, theirs, "each person's list is a record of its own");
-        assert!(
-            peer.check_document_read(source, "so.tilo.chat", &mine, now)
-                .is_ok(),
-            "a person reads what was learned about them"
-        );
-        assert!(
-            peer.check_document_read(source, "so.tilo.chat", &theirs, now)
-                .is_err(),
-            "nobody else does, the workspace's owner included"
-        );
-        let mine_node = collab_types::document_node(&workspace_id, "so.tilo.chat", &mine);
-        let theirs_node = collab_types::document_node(&workspace_id, "so.tilo.chat", &theirs);
-        let me = peer.permissions(source, now).unwrap();
-        for kind in [ActionKind::Read, ActionKind::Undoable] {
-            assert!(
-                me.answer(
-                    &mine_node,
-                    kind,
-                    &tilo_action_policy::Context::at_time(now).with_own_resource(&mine, &person)
-                ) == Answer::Allow,
-                "the person, on their own list"
+        put_member(&mut peer, &other, Role::Editor);
+        let workspace_id = peer.workspace_id().to_owned();
+        let view = |of: &str| {
+            collab_types::document_node(
+                &workspace_id,
+                roles::LAYOUT_APP,
+                &roles::person_view_record(of),
+            )
+        };
+        let layout = collab_types::document_node(&workspace_id, roles::LAYOUT_APP, "desktop");
+        let cx = tilo_action_policy::Context::at_time(now);
+        for role in [Role::Editor, Role::Viewer] {
+            put_member(&mut peer, &person, role);
+            let me = peer.permissions(source, now).unwrap();
+            assert_eq!(
+                me.answer(&view(&person), ActionKind::Undoable, &cx),
+                Answer::Allow,
+                "{role:?}, on their own view"
+            );
+            assert_eq!(
+                me.answer(&view(&other), ActionKind::Undoable, &cx),
+                Answer::Deny,
+                "{role:?}, on another member's view"
             );
             assert!(
-                me.answer(
-                    &theirs_node,
-                    kind,
-                    &tilo_action_policy::Context::at_time(now).with_own_resource(&theirs, &other)
-                ) == Answer::Deny,
-                "the person, on another member's list"
+                peer.check_document_read(
+                    source,
+                    roles::LAYOUT_APP,
+                    &roles::person_view_record(&other),
+                    now
+                )
+                .is_ok(),
+                "every member reads every view"
             );
         }
-        // An agent acting for the person reaches the person's list and never another member's:
-        // what it may do is what its person may, narrowed, never widened. It is the agent the
-        // workspace admits, with the grants every agent of it has; one nobody granted anything
-        // reaches no record at all, its person's own included.
+        put_member(&mut peer, &person, Role::Editor);
+        let me = peer.permissions(source, now).unwrap();
+        assert_eq!(
+            me.answer(&layout, ActionKind::Undoable, &cx),
+            Answer::Allow,
+            "the layout itself is every Editor's"
+        );
         let granted = tilo_action_policy::Acting::handed_agent("assistant", person.as_str())
             .handed_preset(&workspace_id);
         let agent = peer.permissions(source, now).unwrap().acting_as(
             tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::agent("assistant")),
             granted,
         );
-        let ungranted = peer.permissions(source, now).unwrap().acting_as(
-            tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::agent("stranger")),
-            [],
+        assert_ne!(
+            agent.answer(&view(&person), ActionKind::Undoable, &cx),
+            Answer::Deny,
+            "the person's agent, on its person's view"
         );
-        assert!(
-            ungranted.answer(
-                &mine_node,
-                ActionKind::Read,
-                &tilo_action_policy::Context::at_time(now).with_own_resource(&mine, &person)
-            ) == Answer::Deny,
-            "an agent nobody granted anything, on the list of the person it claims to act for"
+        assert_eq!(
+            agent.answer(&view(&other), ActionKind::Undoable, &cx),
+            Answer::Deny,
+            "the person's agent, on another member's view"
         );
-        for kind in [ActionKind::Read, ActionKind::Undoable] {
-            assert!(
-                agent.answer(
-                    &mine_node,
-                    kind,
-                    &tilo_action_policy::Context::at_time(now).with_own_resource(&mine, &person)
-                ) != Answer::Deny,
-                "the person's agent, on its person's list"
-            );
-            assert!(
-                agent.answer(
-                    &theirs_node,
-                    kind,
-                    &tilo_action_policy::Context::at_time(now).with_own_resource(&theirs, &other)
-                ) == Answer::Deny,
-                "the person's agent, on another member's list"
-            );
-        }
     }
 }
 
@@ -486,7 +405,7 @@ fn unseal_with(
 #[test]
 fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
     use crate::state::document_capture::{KeptDocument, PeerDocumentReadError};
-    use collab_types::{ContentRetention, DocumentMutation, OwnResource};
+    use collab_types::{ContentRetention, DocumentMutation};
 
     const APP: &str = "so.tilo.tube";
     let (mut peer, owner_key, member_key, member, second, now) =
@@ -496,9 +415,10 @@ fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
     peer.select_exact_admissions().unwrap();
     let owner = owner_key.verifying_key().to_bytes();
     let device = member.device_public_key;
-    let history = OwnResource::new("tube.watch-history", member.user_public_key)
+    let history = collab_types::document::DocumentId::of_member(&person, "tube.watch-history")
         .unwrap()
-        .document_id();
+        .as_str()
+        .to_owned();
     let route = (APP, history.as_str());
     let workspace = collab_types::WorkspaceId::parse(peer.workspace_id()).unwrap();
     let group = neighbour_wire::KeyScope::document(workspace, route.0, route.1, None)

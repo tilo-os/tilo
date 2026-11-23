@@ -2,7 +2,7 @@ use super::*;
 #[cfg(target_os = "linux")]
 use crate::public_identity_document;
 #[cfg(target_os = "linux")]
-use tilo_server_protocol::{HomePeerRegistration, WorkspaceId, personal_device_peer_path};
+use tilo_server_protocol::personal_device_peer_path;
 #[cfg(target_os = "linux")]
 use tilo_test_env::SpawnUnderEnvLock as _;
 #[cfg(target_os = "linux")]
@@ -81,7 +81,7 @@ fn personal_payload(
         cert,
         public_identity_json: Some(public_identity_document(user, "My Tilo identity")?),
         fleet_json: Some(serde_json::to_vec_pretty(&fleet)?),
-        home_peers_json: Some(b"[]".to_vec()),
+        introducer: None,
     })
 }
 
@@ -259,7 +259,7 @@ tilo_test_env::scenario! {
                 fleet.certificates.push(cert);
                 serde_json::to_vec_pretty(&fleet).unwrap()
             }),
-            home_peers_json: Some(b"[]".to_vec()),
+            introducer: None,
         };
         let identity_root = tempfile::tempdir().unwrap();
         let identity_dir = tempfile::tempdir().unwrap();
@@ -276,10 +276,6 @@ tilo_test_env::scenario! {
         assert_eq!(loaded.group_public_key(), user);
         assert!(!loaded.is_single_device());
         assert!(loaded.sign(b"root-only operation").is_err());
-        assert_eq!(
-            std::fs::read(tilo_server_protocol::home_peer_registry_path(identity_root.path())).unwrap(),
-            b"[]"
-        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt as _;
@@ -294,96 +290,6 @@ tilo_test_env::scenario! {
                 uid
             );
         }
-    }
-    phase personal_projection_merges_and_preserves_unrelated_home_peers;
-    {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
-        let member = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
-        let other_root = ed25519_dalek::SigningKey::from_bytes(&[63; 32]);
-        let other_device = ed25519_dalek::SigningKey::from_bytes(&[64; 32]);
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_dir = tempfile::tempdir().unwrap();
-        let mut other_cert = DeviceCert {
-            user_public_key: other_root.verifying_key().to_bytes(),
-            device_public_key: other_device.verifying_key().to_bytes(),
-            device_label: "Other identity home".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut other_cert, &other_root).unwrap();
-        let other = HomePeerRegistration {
-            schema_version: HomePeerRegistration::CURRENT_SCHEMA,
-            device_node_id: hex::encode(other_cert.device_public_key),
-            server_node_id: hex::encode([65; 32]),
-            server_endpoint: None,
-            label: other_cert.device_label.clone(),
-            user_public_key: hex::encode(other_cert.user_public_key),
-            device_cert: Some(other_cert),
-            server_workspace_ids: vec![WorkspaceId::from_u128(7)],
-        };
-        tilo_files::native::atomic::write_creating_parent(
-            &tilo_server_protocol::home_peer_registry_path(identity_root.path()),
-            &serde_json::to_vec_pretty(&vec![other.clone()]).unwrap(),
-        )
-        .unwrap();
-        PersonalInstall::new(identity_root.path(), identity_dir.path(), None)
-            .install(&personal_payload(&root, &member, [10; 16]).unwrap(), None, || Ok(()))
-            .unwrap();
-        let peers: Vec<HomePeerRegistration> = serde_json::from_slice(
-            &std::fs::read(tilo_server_protocol::home_peer_registry_path(identity_root.path())).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(peers, vec![other]);
-    }
-    phase home_peer_projection_rejects_future_schemas_and_forged_device_ids;
-    {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Verified home peer".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
-        let mut registration = HomePeerRegistration {
-            schema_version: HomePeerRegistration::CURRENT_SCHEMA,
-            device_node_id: hex::encode(cert.device_public_key),
-            server_node_id: hex::encode([83; 32]),
-            server_endpoint: None,
-            label: cert.device_label.clone(),
-            user_public_key: hex::encode(cert.user_public_key),
-            device_cert: Some(cert),
-            server_workspace_ids: vec![WorkspaceId::from_u128(7)],
-        };
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_dir = tempfile::tempdir().unwrap();
-        let install = PersonalInstall::new(identity_root.path(), identity_dir.path(), None);
-        let mut payload = personal_payload(&root, &device, [11; 16]).unwrap();
-        payload.home_peers_json = Some(serde_json::to_vec(&[&registration]).unwrap());
-        install.install(&payload, None, || Ok(())).unwrap();
-        let mut rejected = |registration: &HomePeerRegistration| {
-            payload.home_peers_json = Some(serde_json::to_vec(&[registration]).unwrap());
-            let error = install.install(&payload, None, || panic!("invalid projection reached confirmation")).unwrap_err();
-            assert_eq!(
-                error.to_string(),
-                "the approval's home peers are not a registry this build accepts"
-            );
-        };
-
-        registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA.saturating_add(1);
-        rejected(&registration);
-
-        registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA;
-        registration.device_node_id = hex::encode([84; 32]);
-        rejected(&registration);
     }
     phase expired_requester_lease_blocks_personal_identity_publication;
     {

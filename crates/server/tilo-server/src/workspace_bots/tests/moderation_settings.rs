@@ -1,7 +1,9 @@
 //! Turning the workspace's moderation bot on and off: a person's decision, and
 //! the grant it reaches.
 
-use super::{ADA, FakeJudge, MALLORY, MemberId, ModerationAgent, ModerationBot, bot_server};
+use super::{
+    ADA, FakeJudge, MALLORY, MemberId, ModerationAgent, ModerationBot, Outcome, bot_server,
+};
 use crate::tl_chat;
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::{governor, restricted_until};
@@ -168,7 +170,16 @@ async fn open_reports(workspaces: &Workspaces, workspace: &str) -> usize {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_report_filed_in_the_workspace_restricts_and_takes_the_flood_back_as_the_bot() {
+async fn a_bot_declines_a_restriction_and_leaves_the_roles_untouched() {
+    assert_membership_verdict_declined(Outcome::Restrict).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_declines_a_ban_and_leaves_the_roles_untouched() {
+    assert_membership_verdict_declined(Outcome::Ban).await;
+}
+
+async fn assert_membership_verdict_declined(outcome: Outcome) {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
@@ -179,8 +190,7 @@ async fn a_report_filed_in_the_workspace_restricts_and_takes_the_flood_back_as_t
     let mut bot = ModerationBot::new(
         workspaces.clone(),
         workspace.clone(),
-        cert.clone(),
-        ModerationAgent::new(FakeJudge),
+        ModerationAgent::new(FakeJudge(outcome)),
     );
     // A grant id alone carries no authority. A grant with the same name and
     // scope that only permits reading must not start the bot.
@@ -212,11 +222,14 @@ async fn a_report_filed_in_the_workspace_restricts_and_takes_the_flood_back_as_t
     // A person who governs the workspace turns it on, and it answers the
     // report left open.
     turn_moderation(&workspaces, &workspace, &cert, true).await;
+    let grants = workspaces.workspace_grants(&workspace).await.unwrap();
+    let summary = workspaces.summary(&workspace).await.unwrap();
     bot.wake().await.unwrap();
 
-    assert!(
-        texts_by(&workspaces, &workspace, MALLORY).await.is_empty(),
-        "the flood is taken back"
+    assert_eq!(
+        texts_by(&workspaces, &workspace, MALLORY).await.len(),
+        3,
+        "a verdict the bot may not enforce takes nothing back"
     );
     assert_eq!(
         texts_by(&workspaces, &workspace, ADA).await,
@@ -227,14 +240,48 @@ async fn a_report_filed_in_the_workspace_restricts_and_takes_the_flood_back_as_t
         0,
         "the report is settled"
     );
+    let settled = decisions(&workspaces, &workspace).await;
+    let [decision] = settled.as_slice() else {
+        panic!("one decision on the one report, not {settled:?}")
+    };
+    assert!(decision.starts_with("No action"), "{decision}");
     assert!(
-        restricted_until(&workspaces, &workspace, &cert, MALLORY)
-            .await
-            .is_some(),
-        "Mallory is restricted through the workspace's governance"
+        decision
+            .contains("Workspace membership changes require a person with moderation authority")
     );
+    assert_eq!(
+        restricted_until(&workspaces, &workspace, &cert, MALLORY).await,
+        None
+    );
+    assert_eq!(
+        workspaces.workspace_grants(&workspace).await.unwrap(),
+        grants
+    );
+    let after_summary = workspaces.summary(&workspace).await.unwrap();
+    assert_eq!(after_summary.members, summary.members);
+    assert_eq!(after_summary.devices, summary.devices);
     assert_eq!(bot.looked.len(), 1);
     // Its own changes leave nothing new to look at.
     bot.wake().await.unwrap();
     assert_eq!(bot.looked.len(), 1);
+    assert_eq!(decisions(&workspaces, &workspace).await.len(), 1);
+}
+
+/// The decisions written on the workspace's reports, as Chat holds them.
+async fn decisions(workspaces: &Workspaces, workspace: &str) -> Vec<String> {
+    workspaces
+        .with_tl_record(
+            workspace,
+            &tl_chat::packages().unwrap(),
+            tl_chat::viewer(),
+            |chat| {
+                Ok(tl_chat::reports(chat)?
+                    .into_iter()
+                    .map(|report| report.decision)
+                    .filter(|decision| !decision.is_empty())
+                    .collect())
+            },
+        )
+        .await
+        .unwrap()
 }

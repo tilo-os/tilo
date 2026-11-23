@@ -152,19 +152,7 @@ fn held_devices(sync: &PersonalSync) -> Vec<[u8; 32]> {
 /// session keeps it, carried by hand.
 #[cfg(test)]
 pub(crate) mod linked {
-    use std::sync::Arc;
-
-    use collab_types::signer::DeviceSigner;
-    use tilo_peer_state::{PeerPersonal, PersonalStore, PersonalSync};
-    use tilo_user_identity::DeviceCert;
-
-    /// The person's own store on the device `cert` names, which `signer` signs for, as the session
-    /// opens it.
-    pub(crate) fn store_of(cert: &DeviceCert, signer: Arc<dyn DeviceSigner>) -> PersonalSync {
-        let store = PersonalStore::open(cert.user_public_key, cert.clone(), tilo_clock::wall())
-            .expect("a store for one of the person's devices");
-        PersonalSync::over(PeerPersonal::new(store), signer)
-    }
+    use tilo_peer_state::{PersonalStore, PersonalSync};
 
     /// `to` takes what `from` hands it on a link between the two: who `from` is, then every
     /// resource of the person's it holds, each admitted as the link admits it.

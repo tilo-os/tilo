@@ -160,7 +160,7 @@ async fn furnished(
 }
 
 /// The person writes `text` to their assistant in their direct conversation with it, as its
-/// composer sends it: the message, and an ask of the assistant made from the conversation.
+/// composer sends it: the message, and the ask of the assistant its sending makes from it.
 /// Answers the ask.
 pub(crate) async fn writes_to_assistant(
     workspaces: &Workspaces,
@@ -186,28 +186,24 @@ pub(crate) async fn writes_to_assistant(
                 None,
             )?;
             let said = Value::Rich(RichValue::from_text(&text));
-            opened.invoke(
+            let sent = opened.invoke(
                 &me,
                 (&chat, "send"),
-                vec![direct.clone(), said.clone(), Value::Opt(None)],
+                vec![direct, said, Value::Opt(None)],
                 None,
             )?;
-            let Value::Ref(direct) = direct else {
-                return Err(format!("Chat opened no conversation: {direct:?}"));
+            let Value::Ref(sent) = sent else {
+                return Err(format!("Chat sent no message: {sent:?}"));
             };
-            let agents = opened
-                .host()
-                .root_of(asks::AGENT_APP)
-                .map_err(|error| error.to_string())?;
-            match opened.invoke(
-                &me,
-                (asks::AGENT_APP, "ask"),
-                vec![Value::resource(&agents), Value::Actor(assistant), said],
-                Some(&*direct.target),
-            )? {
-                Value::Ref(ask) => Ok((*ask.target).clone()),
-                other => Err(format!("the ask made nothing: {other:?}")),
-            }
+            // Writing to the assistant asked it, made from the message.
+            asks::asks(opened)?
+                .into_iter()
+                .rev()
+                .find(|ask| {
+                    ask.from.as_ref() == Some(&*sent.target) && ask.agent == MemberId::agent(SCOUT)
+                })
+                .map(|ask| ask.at)
+                .ok_or_else(|| "writing to the assistant asked it nothing".to_owned())
         })
         .await
         .expect("the person writes to their assistant")

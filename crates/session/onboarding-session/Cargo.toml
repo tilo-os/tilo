@@ -1,6 +1,6 @@
 [package]
 name = "tilo-onboarding-session"
-description = "The session side of first use: the identity ceremony and its storage, first-boot provisioning, nearby pairing, prepared setups and the transfers they carry over, and the ownership of their secrets."
+description = "The session side of first use: the identity ceremony and its storage, first-boot provisioning, adding this computer with a code, prepared setups and the transfers they carry over, and the ownership of their secrets."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -14,11 +14,14 @@ test-support = []
 native-current-device-qualification = []
 
 [dependencies]
+anyhow.workspace = true
 automerge.workspace = true
 durable-store = { path = "../../system/durable-store" }
 os-actions = { path = "../../system/os-actions" }
 taffy.workspace = true
 tilo-actions = { path = "../../collab/actions" }
+# Adding this computer with a code calls this computer's daemon, as `tilo login` does.
+tilo-api = { path = "../../server/tilo-api" }
 tilo-desktop = { path = "../desktop" }
 tilo-app-state = { path = "../../system/app-state" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
@@ -39,6 +42,8 @@ sha2.workspace = true
 tempfile.workspace = true
 threshold-identity = { path = "../../collab/threshold-identity" }
 tilo-clock = { path = "../../platform/tilo-clock" }
+# The daemon's action is called from a thread of its own, inside a runtime.
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }
 tilo-handoff = { path = "../../platform/tilo-handoff" }

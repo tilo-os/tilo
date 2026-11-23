@@ -1655,11 +1655,48 @@ impl Layout {
                 .report_drawn(workspace, group, clamp_side(*height));
             return Ok(());
         }
+        // Bringing a place to the front gives its window the keyboard: the window in front is this
+        // device's, never a change of the layout. A place already shown in its window only comes
+        // forward, and the layout records nothing: pressing the window in front again is nothing.
+        let brought = match action {
+            LayoutAction::Activate { place } => Some(*place),
+            _ => None,
+        };
+        if let Some(place) = brought {
+            let (shown, in_front) = self.handle.read(|tree| {
+                let shown = tree
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.strips)
+                    .flat_map(|strip| &strip.window_groups)
+                    .any(|group| group.active_tab == place);
+                let in_front = tilo_desktop_surface::navigation::active_route(tree)
+                    .is_some_and(|route| route.tab == place);
+                (shown, in_front)
+            });
+            if shown {
+                if !in_front {
+                    self.handle.focus_tab(place);
+                }
+                return Ok(());
+            }
+        }
         let mut tree = before.clone();
         if !change(&mut tree, action, by_the_person, &catalog)? {
             return Ok(());
         }
+        // A place the person puts on the layout comes to the front in the same change, so the shell
+        // shows what just arrived; one an agent puts beside its turn leaves the keyboard where the
+        // person has it.
+        if let LayoutAction::Place { place, .. } = action
+            && by_the_person
+        {
+            bring_to_front(&mut tree, *place);
+        }
         self.handle.replace_tree(tree.clone());
+        if let Some(place) = brought {
+            self.handle.focus_tab(place);
+        }
         // The place a resource was put on shows that resource from now on,
         // and the layout keeps it beside the window it came with.
         // A place that shows another resource from now on says so in the layout's own record map,
@@ -1693,6 +1730,35 @@ pub fn step_context(asked: &Actor, action: &LayoutAction) -> tilo_actions::Actio
         // A step of its own, and when it was made beside the person's steps of other records.
         gesture: Some(tilo_actions::ActionId::new()),
         ..tilo_actions::ActionContext::default()
+    }
+}
+
+/// Make the place `place` the one in front of `tree`: its workspace, its strip, its window and
+/// its tab, as a focus of it would.
+fn bring_to_front(tree: &mut Tree, place: TabId) {
+    let found = tree.workspaces.iter().find_map(|workspace| {
+        workspace.strips.iter().find_map(|strip| {
+            strip
+                .window_groups
+                .iter()
+                .find(|group| group.tabs.iter().any(|tab| tab.id == place))
+                .map(|group| (workspace.id(), strip.id, group.id))
+        })
+    });
+    let Some((workspace, strip, group)) = found else {
+        return;
+    };
+    tree.active = workspace;
+    tree.active_strip.insert(workspace, strip);
+    tree.set_active_group(strip, group);
+    if let Some(held) = tree
+        .workspaces
+        .iter_mut()
+        .flat_map(|workspace| &mut workspace.strips)
+        .flat_map(|strip| &mut strip.window_groups)
+        .find(|held| held.id == group)
+    {
+        held.activate_tab(place);
     }
 }
 

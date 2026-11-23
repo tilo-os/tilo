@@ -206,7 +206,6 @@ impl StatePeer {
             cluster_id: self.core.workspace.clone(),
             document_id: record.into(),
             envelope: Box::new(op),
-            own: self.core.own_write(app, record, author.as_bytes()),
             readers: None,
         };
         let coverage = if let DocumentMutation::Snapshot(bytes) = &mutation {

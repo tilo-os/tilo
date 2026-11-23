@@ -17,7 +17,8 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_server_protocol::page::{
-    OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal, encode_part,
+    COPY_INVITE_LINK, DEVICES_AND_ACCESS, OpenedPage, PAGE_ACTIONS_PROVIDER, PageAction,
+    PageAddress, PagePatch, PageRefusal, WAITING_TO_JOIN, WaitingAddress, encode_part,
 };
 
 /// The app name a page address carries for the workspace's search
@@ -104,6 +105,32 @@ pub(super) enum HeldPage {
         /// The row whose action asks for what it needs, and what the person
         /// has typed into its fields so far.
         asking: Option<Asking>,
+        /// What one of the host's own actions opened on the page (the
+        /// addresses waiting at the workspace's entry), and what the person
+        /// does with it.
+        card: Option<Card>,
+    },
+}
+
+/// What one of the host's own actions opened on the search page, under the
+/// rows: what the person does there, one press each.
+pub(super) enum Card {
+    /// The addresses waiting at the workspace's entry, each one an Invite
+    /// button that mails it an invitation.
+    Waiting {
+        /// Whether the workspace's entry mails an invitation to an address.
+        mails: bool,
+        addresses: Vec<WaitingAddress>,
+        /// The address whose invitation was mailed, as the page says it.
+        sent: Option<String>,
+        /// Why an invitation was not mailed, when the host said why.
+        refused: Option<String>,
+    },
+    /// The person's own devices, and where one more is set up: the site's
+    /// setup screen, which makes the code an agent on another computer runs.
+    Devices {
+        /// The page that sets one up.
+        setup: String,
     },
 }
 
@@ -126,8 +153,65 @@ pub(super) struct SearchRow {
     href: Option<String>,
     /// The action the row runs, when it runs one.
     run: Option<RowRun>,
+    /// The link the row hands over on its press, made ahead of it: a
+    /// clipboard write happens inside the press, and the host's answer comes
+    /// after it.
+    copy: Option<String>,
+    /// The action the page runs in the person's own browser, when it runs
+    /// one: its key material never reaches this host.
+    browser: Option<BrowserAction>,
     /// Whether the row stands under the apps.
     app: bool,
+}
+
+/// An action only the browser can take: the person's root lives there alone
+/// (`identity.mjs`), so keeping it with a passkey, or signing in with one,
+/// happens in the page, inside the person's press, and the host keeps no
+/// part of it.
+#[derive(Clone, Copy)]
+enum BrowserAction {
+    /// Add a passkey that wraps this browser's person, and have this host
+    /// keep the envelope their next browser fetches.
+    KeepWithPasskey,
+    /// Become, in this browser, the person a passkey kept elsewhere.
+    SignInWithPasskey,
+}
+
+impl BrowserAction {
+    /// What the page names it by (`data-browser`).
+    const fn name(self) -> &'static str {
+        match self {
+            Self::KeepWithPasskey => "keep-with-passkey",
+            Self::SignInWithPasskey => "sign-in-with-passkey",
+        }
+    }
+
+    /// What the row says, in the words the person's own actions use.
+    const fn label(self) -> &'static str {
+        match self {
+            Self::KeepWithPasskey => "Keep your name and work with a passkey",
+            Self::SignInWithPasskey => "Sign in with a passkey",
+        }
+    }
+
+    /// What the row is for, after its name.
+    const fn hint(self) -> &'static str {
+        match self {
+            Self::KeepWithPasskey => "So you come back as yourself on any browser",
+            Self::SignInWithPasskey => "Be the person you kept on another browser",
+        }
+    }
+
+    /// Whether what the person typed is about this action: its own words
+    /// hold what was typed, so the row appears as the word is typed on
+    /// (`pass`, `passkey`, `sign in`).
+    fn found_by(self, typed: &str) -> bool {
+        let typed = typed.trim().to_lowercase();
+        !typed.is_empty()
+            && format!("{} {}", self.label(), self.hint())
+                .to_lowercase()
+                .contains(&typed)
+    }
 }
 
 /// The action a search row runs: the target a caller invokes, as the
@@ -154,6 +238,22 @@ struct RowField {
     name: String,
     hint: String,
     number: bool,
+}
+
+impl RowRun {
+    /// The host's own page action this row runs, when it runs one
+    /// (`tilo.page`): the two whose press opens something on the page.
+    fn runs_page_action(&self, action: &str) -> bool {
+        self.provider == PAGE_ACTIONS_PROVIDER && self.action == action
+    }
+
+    /// Whether `other` runs the same action as this row: what a row handing a
+    /// link over finds the row it stands on again by.
+    fn same_action(&self, other: &Self) -> bool {
+        self.provider == other.provider
+            && self.resource == other.resource
+            && self.action == other.action
+    }
 }
 
 impl RowField {
@@ -623,6 +723,7 @@ impl Worker {
                 pending: None,
                 notice: None,
                 asking: None,
+                card: None,
             },
         );
         Ok(OpenedPage {
@@ -676,6 +777,8 @@ impl Worker {
                 secondary: String::new(),
                 href: Some(format!("/w/{workspace_id}/{name}")),
                 run: None,
+                copy: None,
+                browser: None,
                 app: true,
             });
         }
@@ -716,6 +819,8 @@ impl Worker {
                         secondary: app.title().to_owned(),
                         href: Some(href),
                         run: None,
+                        copy: None,
+                        browser: None,
                         app: false,
                     });
                 }
@@ -740,6 +845,28 @@ impl Worker {
         typed: &str,
         rows: &mut Vec<SearchRow>,
     ) -> bool {
+        // The person's own identity, which only their browser holds: what
+        // keeps it with a passkey, and what signs in with one, run in the
+        // page (`page.mjs`), inside the person's press, and never here.
+        for action in [
+            BrowserAction::KeepWithPasskey,
+            BrowserAction::SignInWithPasskey,
+        ] {
+            if !action.found_by(typed) {
+                continue;
+            }
+            let id = SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default());
+            rows.push(SearchRow {
+                id,
+                label: action.label().to_owned(),
+                secondary: action.hint().to_owned(),
+                href: None,
+                run: None,
+                copy: None,
+                browser: Some(action),
+                app: false,
+            });
+        }
         // The actions the workspace's records offer, which the row runs: the
         // same invocation an agent or a script makes, decided for this person
         // by the same admission, and answered as the action alone answers.
@@ -768,6 +895,8 @@ impl Worker {
                             fields,
                             host: false,
                         }),
+                        copy: None,
+                        browser: None,
                         app: false,
                     });
                 }
@@ -784,6 +913,13 @@ impl Worker {
             let Some(fields) = RowField::of(&action.params) else {
                 continue;
             };
+            // A row whose press hands a link over carries one made ahead of
+            // it: the press copies it, and the row takes the next from the
+            // host's answer.
+            let copy = (row.provider == PAGE_ACTIONS_PROVIDER
+                && action.address.action == COPY_INVITE_LINK)
+                .then(|| link.ready_invite_link(workspace_id, caller))
+                .flatten();
             let id = SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default());
             rows.push(SearchRow {
                 id,
@@ -798,6 +934,8 @@ impl Worker {
                     fields,
                     host: true,
                 }),
+                copy,
+                browser: None,
                 app: false,
             });
         }
@@ -842,6 +980,9 @@ impl Worker {
             }
             PageAction::Activate if id == SEARCH_FORM_RUN => {
                 self.run_asked(page, workspace_id, &caller)
+            }
+            PageAction::Activate if id == SEARCH_CARD_CLOSE || id >= SEARCH_CARD_FIRST => {
+                self.act_on_card(page, workspace_id, &caller, id)
             }
             PageAction::Value(text) => {
                 // Typing narrows the page; what it was showing (a row's
@@ -986,6 +1127,10 @@ impl Worker {
         argument: tilo_actions::remote::InvokeArgument,
     ) -> Result<Vec<PagePatch>, PageRefusal> {
         let host = run.host;
+        let opens_a_card =
+            run.runs_page_action(WAITING_TO_JOIN) || run.runs_page_action(DEVICES_AND_ACCESS);
+        let hands_a_link_over = run.runs_page_action(COPY_INVITE_LINK);
+        let named = run.clone();
         let request = InvokeRequest {
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
@@ -1006,14 +1151,36 @@ impl Worker {
             let Some(link) = self.shared.link.get().cloned() else {
                 return Err(unavailable("the host is not here"));
             };
-            let notice = match link.run_own_action(workspace_id, caller, &request) {
-                Ok(value) => said_of(
-                    &label,
-                    &ActionOutput {
-                        value: Some(value),
-                        ..ActionOutput::default()
-                    },
-                ),
+            let answered = link.run_own_action(workspace_id, caller, &request);
+            // One of the host's own actions may open a card on the page
+            // rather than saying a line: the addresses waiting at the entry,
+            // or the person's own devices.
+            if opens_a_card {
+                self.answered_card(page, &label, answered);
+                return self.patch_search(page);
+            }
+            let notice = match answered {
+                Ok(value) => {
+                    if hands_a_link_over
+                        && let Some(next) = value.get("link").and_then(serde_json::Value::as_str)
+                        && let Some(HeldPage::Search { rows, .. }) = self.pages.held.get_mut(&page)
+                    {
+                        for row in rows.iter_mut().filter(|row| {
+                            row.run
+                                .as_ref()
+                                .is_some_and(|row_run| row_run.same_action(&named))
+                        }) {
+                            row.copy = Some(next.to_owned());
+                        }
+                    }
+                    said_of(
+                        &label,
+                        &ActionOutput {
+                            value: Some(value),
+                            ..ActionOutput::default()
+                        },
+                    )
+                }
                 Err(error) => format!("{label}: {error}"),
             };
             if let Some(HeldPage::Search {
@@ -1055,6 +1222,160 @@ impl Worker {
             *held = Some(notice);
             *held_pending = pending;
             *asking = None;
+        }
+        self.patch_search(page)
+    }
+
+    /// What the host answered one of its own actions that opens a card on the
+    /// page: what it opened, under the rows; or why it could not.
+    fn answered_card(
+        &mut self,
+        page: u64,
+        label: &str,
+        answered: Result<serde_json::Value, ActionCallError>,
+    ) {
+        let Some(HeldPage::Search {
+            card,
+            notice,
+            asking,
+            ..
+        }) = self.pages.held.get_mut(&page)
+        else {
+            return;
+        };
+        *asking = None;
+        let answered = answered.map(|value| {
+            serde_json::from_value::<tilo_server_protocol::page::PageActionAnswer>(value)
+        });
+        match answered {
+            Ok(Ok(tilo_server_protocol::page::PageActionAnswer::WaitList { mails, entries })) => {
+                *notice = None;
+                *card = Some(Card::Waiting {
+                    mails,
+                    addresses: entries,
+                    sent: None,
+                    refused: None,
+                });
+            }
+            Ok(Ok(tilo_server_protocol::page::PageActionAnswer::Devices { setup })) => {
+                *notice = None;
+                *card = Some(Card::Devices { setup });
+            }
+            Ok(Ok(tilo_server_protocol::page::PageActionAnswer::Link { .. }) | Err(_)) => {
+                *notice = Some(format!("{label}: the host answered unexpectedly."));
+            }
+            Err(error) => *notice = Some(format!("{label}: {error}")),
+        }
+    }
+
+    /// Press `id` on the card under the rows: Close puts it away, and an
+    /// address's Invite issues that address's invitation and has it mailed,
+    /// where the entry sends mail.
+    fn act_on_card(
+        &mut self,
+        page: u64,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        id: u32,
+    ) -> Result<Vec<PagePatch>, PageRefusal> {
+        if id == SEARCH_CARD_CLOSE {
+            if let Some(HeldPage::Search { card, .. }) = self.pages.held.get_mut(&page) {
+                *card = None;
+            }
+            return self.patch_search(page);
+        }
+        let Some(address) = id
+            .checked_sub(SEARCH_CARD_FIRST)
+            .and_then(|at| usize::try_from(at).ok())
+            .and_then(|at| match self.pages.held.get(&page) {
+                Some(HeldPage::Search {
+                    card: Some(Card::Waiting { addresses, .. }),
+                    ..
+                }) => addresses.get(at).cloned(),
+                _ => None,
+            })
+        else {
+            return self.patch_search(page);
+        };
+        let Some(link) = self.shared.link.get().cloned() else {
+            return Err(unavailable("the host is not here"));
+        };
+        // The same invocation an agent makes inviting the address: the
+        // workspace issues the invitation, and the entry mails it to the
+        // address where it sends mail.
+        let request = InvokeRequest {
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+                address: tilo_actions::remote::workspace_governance_address(
+                    &workspace_id.to_string(),
+                    tilo_actions::policy::roles::governance::INVITE,
+                ),
+            },
+            argument: tilo_actions::remote::InvokeArgument::Json(serde_json::Map::from_iter([
+                ("role".to_owned(), serde_json::Value::from("editor")),
+                (
+                    "wait_list_entry".to_owned(),
+                    serde_json::Value::from(address.entry.clone()),
+                ),
+            ])),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let answered = link.run_own_action(workspace_id, caller, &request);
+        if let Some(HeldPage::Search {
+            card:
+                Some(Card::Waiting {
+                    addresses,
+                    sent: card_sent,
+                    refused: card_refused,
+                    ..
+                }),
+            ..
+        }) = self.pages.held.get_mut(&page)
+        {
+            match answered {
+                Ok(value) => {
+                    let mailed = value
+                        .get("sent")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    if mailed {
+                        *card_sent = Some(format!(
+                            "The invitation was emailed to {}.",
+                            address.contact
+                        ));
+                        *card_refused = None;
+                    } else {
+                        let next = value
+                            .get("next")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or(
+                                "The entry sends no mail: hand the invitation over yourself.",
+                            );
+                        *card_refused = Some(format!(
+                            "The invitation for {} was not mailed: {next}",
+                            address.contact
+                        ));
+                    }
+                    for waiting in addresses.iter_mut() {
+                        if waiting.entry == address.entry {
+                            waiting.invited = true;
+                        }
+                    }
+                }
+                Err(error) => {
+                    *card_refused = Some(format!(
+                        "The invitation for {} was not made: {error}",
+                        address.contact
+                    ));
+                }
+            }
         }
         self.patch_search(page)
     }
@@ -1113,12 +1434,16 @@ impl Worker {
             notes,
             notice,
             asking,
+            card,
             ..
         }) = self.pages.held.get(&page)
         else {
             return Err(unavailable("the page was closed"));
         };
         let mut html = results_html(rows, notice.as_deref(), notes.as_deref());
+        if let Some(card) = card {
+            html = card_html(card) + &html;
+        }
         if let Some(asking) = asking {
             html = asking_html(&asking.label, &asking.run.fields, &asking.values) + &html;
         }
@@ -1315,6 +1640,11 @@ const SEARCH_FIRST_ROW: u32 = 10;
 const SEARCH_FORM_RUN: u32 = 3;
 const SEARCH_FORM_CANCEL: u32 = 4;
 
+/// The element number of the card's Close button, and of its first address's
+/// Invite button: past every row and the form's own.
+const SEARCH_CARD_CLOSE: u32 = 5;
+const SEARCH_CARD_FIRST: u32 = 1 << 21;
+
 /// The element number of that action's first field: past every row.
 const SEARCH_FIRST_FIELD: u32 = 1 << 20;
 
@@ -1403,27 +1733,57 @@ fn results_html(rows: &[SearchRow], notice: Option<&str>, notes: Option<&str>) -
                     escape(&row.secondary)
                 )
             };
-            match &row.href {
-                Some(href) => {
+            match (&row.href, row.browser) {
+                (Some(href), _) => {
                     let _ = write!(
                         out,
                         "<li><a class=\"tilo-search-row\" href=\"{}\">\
-                         <span class=\"tilo-search-row-label\">{}</span>{secondary}</a></li>",
+                         <span class=\"tilo-search-row-label\">{}</span>{secondary}</a>",
                         escape(href),
                         escape(&row.label)
                     );
                 }
-                None => {
+                // A browser's own action: the page runs it, so it is drawn
+                // now and offered once the page can (`page.mjs`, the rows it
+                // arms).
+                (None, Some(browser)) => {
                     let _ = write!(
                         out,
-                        "<li><button class=\"tilo-search-row\" type=\"button\" data-a=\"activate\" \
-                         data-p=\"{}\"><span class=\"tilo-search-row-label\">{}</span>{secondary}\
-                         </button></li>",
-                        row.id,
+                        "<li><button class=\"tilo-search-row\" type=\"button\" data-a=\"browser\" \
+                         data-browser=\"{}\" disabled><span class=\"tilo-search-row-label\">{}</span>\
+                         {secondary}</button>",
+                        browser.name(),
                         escape(&row.label)
                     );
                 }
+                (None, None) => {
+                    // A row that hands a link over carries it on the element:
+                    // the press copies it inside the gesture, and the handover
+                    // beside it holds it for a browser that would not.
+                    let copy = row
+                        .copy
+                        .as_ref()
+                        .map(|link| format!(" data-copy=\"{}\"", escape(link)))
+                        .unwrap_or_default();
+                    let _ = write!(
+                        out,
+                        "<li><button class=\"tilo-search-row\" type=\"button\" data-a=\"activate\" \
+                         data-p=\"{}\"{copy}><span class=\"tilo-search-row-label\">{}</span>{secondary}\
+                         </button>",
+                        row.id,
+                        escape(&row.label)
+                    );
+                    if let Some(link) = &row.copy {
+                        let _ = write!(
+                            out,
+                            "<p class=\"tilo-search-handover\" hidden>Copy this link: \
+                             <code>{}</code></p>",
+                            escape(link)
+                        );
+                    }
+                }
             }
+            out.push_str("</li>");
         }
         out.push_str("</ul></section>");
     }
@@ -1434,6 +1794,102 @@ fn results_html(rows: &[SearchRow], notice: Option<&str>, notes: Option<&str>) -
 /// patches.
 fn results_div(contents: &str) -> String {
     format!("<div class=\"tilo-search-results\" data-p=\"{SEARCH_RESULTS}\">{contents}</div>")
+}
+
+/// The card one of the host's own actions opened, as the page shows it: the
+/// addresses waiting at the workspace's entry, each one an Invite button, and
+/// what the page says once one went out; or the person's own devices, and the
+/// press that sets one more up.
+fn card_html(card: &Card) -> String {
+    match card {
+        Card::Waiting {
+            mails,
+            addresses,
+            sent,
+            refused,
+        } => {
+            let mut out = String::from(
+                "<section class=\"tilo-waiting\" aria-label=\"Waiting to join\">\
+                 <h2>Waiting to join</h2>",
+            );
+            if addresses.is_empty() {
+                out.push_str("<p class=\"tilo-waiting-none\">No one is waiting.</p>");
+            } else {
+                out.push_str("<ul>");
+                for (at, address) in addresses.iter().enumerate() {
+                    let id =
+                        SEARCH_CARD_FIRST.saturating_add(u32::try_from(at).unwrap_or_default());
+                    let _ = write!(
+                        out,
+                        "<li><span class=\"tilo-waiting-contact\">{contact}</span>",
+                        contact = escape(&address.contact)
+                    );
+                    if address.invited {
+                        let _ = write!(
+                            out,
+                            "<span class=\"tilo-waiting-invited\">Invited</span>\
+                             <button type=\"button\" data-a=\"activate\" data-p=\"{id}\">\
+                             Invite again</button>"
+                        );
+                    } else {
+                        let _ = write!(
+                            out,
+                            "<button type=\"button\" data-a=\"activate\" data-p=\"{id}\">\
+                             Invite</button>"
+                        );
+                    }
+                    out.push_str("</li>");
+                }
+                out.push_str("</ul>");
+            }
+            if !mails {
+                out.push_str(
+                    "<p class=\"tilo-waiting-note\">This entry sends no mail: an invitation \
+                     made here is handed over by you.</p>",
+                );
+            }
+            let _ = write!(
+                out,
+                "<p class=\"tilo-waiting-sent\" role=\"status\"{hidden}>{said}</p>",
+                hidden = if sent.is_some() { "" } else { " hidden" },
+                said = escape(sent.as_deref().unwrap_or_default()),
+            );
+            let _ = write!(
+                out,
+                "<p class=\"tilo-entry-error\" role=\"alert\"{hidden}>{said}</p>",
+                hidden = if refused.is_some() { "" } else { " hidden" },
+                said = escape(refused.as_deref().unwrap_or_default()),
+            );
+            close_button(&mut out);
+            out
+        }
+        Card::Devices { setup } => {
+            let mut out = String::from(
+                "<section class=\"tilo-devices\" aria-label=\"Devices and access\">\
+                 <h2>Devices and access</h2>\
+                 <p>This workspace is on every device you sign in on, and your agent reaches \
+                 it from the computer you set up.</p>",
+            );
+            let _ = write!(
+                out,
+                "<button class=\"tilo-devices-connect\" type=\"button\" data-setup=\"{setup}\">\
+                 Connect an agent or computer</button>",
+                setup = escape(setup),
+            );
+            close_button(&mut out);
+            out
+        }
+    }
+}
+
+/// The Close button every card ends with: what puts it away.
+fn close_button(out: &mut String) {
+    let _ = write!(
+        out,
+        "<div class=\"tilo-card-actions\">\
+         <button type=\"button\" data-a=\"activate\" data-p=\"{SEARCH_CARD_CLOSE}\">Close</button>\
+         </div></section>"
+    );
 }
 
 /// What the action `label` answered, as a person reads it: the value it
@@ -1547,9 +2003,12 @@ color:var(--tilo-text);text-decoration:none;font-size:14px;}\
 .tilo-search-row:hover{background:var(--tilo-hover);}\
 .tilo-search-row:active{background:var(--tilo-press);}\
 .tilo-search-row:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:-2px;}\
+.tilo-search-row:disabled{opacity:.55;cursor:default;}\
+.tilo-search-row:disabled:hover{background:none;}\
 .tilo-search-row-label{font-weight:500;}\
 .tilo-search-row-kind{margin-left:auto;font-size:12px;color:var(--tilo-text-tertiary);}\
 .tilo-search-note{margin:0;font-size:14px;color:var(--tilo-text-dim);}\
+.tilo-search-notice{margin:0;font-size:14px;color:var(--tilo-text);}\
 .tilo-search-form{display:flex;flex-direction:column;gap:12px;padding:16px;border-radius:12px;\
 background:var(--tilo-raised);}\
 .tilo-search-form h2{margin:0;font-size:15px;font-weight:600;}\
@@ -1561,7 +2020,34 @@ border-radius:8px;background:var(--tilo-ground);color:var(--tilo-text);font:inhe
 .tilo-search-form-actions{display:flex;justify-content:flex-end;gap:8px;}\
 .tilo-search-form-actions button{padding:7px 14px;border:0;border-radius:8px;font:inherit;font-size:14px;\
 background:var(--tilo-hover);color:var(--tilo-text);}\
-.tilo-search-form-actions button[type=submit]{background:var(--tilo-accent);color:var(--tilo-on-accent);}";
+.tilo-search-form-actions button[type=submit]{background:var(--tilo-accent);color:var(--tilo-on-accent);}\
+.tilo-search-handover{margin:4px 0 8px;font-size:13px;color:var(--tilo-text-dim);}\
+.tilo-search-handover code{font-size:13px;user-select:all;color:var(--tilo-text);}\
+.tilo-waiting{display:flex;flex-direction:column;gap:10px;padding:16px;border-radius:12px;\
+background:var(--tilo-raised);}\
+.tilo-waiting h2{margin:0;font-size:15px;font-weight:600;}\
+.tilo-waiting ul{display:flex;flex-direction:column;gap:6px;margin:0;padding:0;list-style:none;}\
+.tilo-waiting li{display:flex;align-items:center;gap:10px;font-size:14px;}\
+.tilo-waiting-contact{font-weight:500;}\
+.tilo-waiting-invited{margin-left:auto;font-size:12px;color:var(--tilo-text-tertiary);}\
+.tilo-waiting li button{margin-left:auto;padding:6px 12px;border:0;border-radius:8px;font:inherit;\
+font-size:13px;background:var(--tilo-accent);color:var(--tilo-on-accent);cursor:pointer;}\
+.tilo-waiting li button:hover{filter:brightness(1.08);}\
+.tilo-waiting li button:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:2px;}\
+.tilo-waiting p{margin:0;font-size:13px;color:var(--tilo-text-dim);}\
+.tilo-waiting-sent,.tilo-entry-error{color:var(--tilo-text);}\
+.tilo-card-actions{display:flex;justify-content:flex-end;}\
+.tilo-card-actions button{padding:7px 14px;border:0;border-radius:8px;font:inherit;\
+font-size:14px;background:var(--tilo-hover);color:var(--tilo-text);cursor:pointer;}\
+.tilo-devices{display:flex;flex-direction:column;gap:10px;padding:16px;border-radius:12px;\
+background:var(--tilo-raised);}\
+.tilo-devices h2{margin:0;font-size:15px;font-weight:600;}\
+.tilo-devices p{margin:0;font-size:13px;color:var(--tilo-text-dim);}\
+.tilo-devices-connect{align-self:flex-start;padding:8px 14px;border:0;border-radius:8px;\
+font:inherit;font-size:14px;font-weight:500;background:var(--tilo-accent);\
+color:var(--tilo-on-accent);cursor:pointer;}\
+.tilo-devices-connect:hover{filter:brightness(1.08);}\
+.tilo-devices-connect:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:2px;}";
 /// `text` as HTML shows it.
 fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());

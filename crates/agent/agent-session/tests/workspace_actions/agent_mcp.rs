@@ -366,7 +366,7 @@ async fn an_agents_open_of_a_running_app_shows_its_window_on_the_persons_layout(
     let (started, failed) = tool(&guest.server, "tilo_do", json!({"path": "sheets#start"})).await;
     assert!(!failed, "{started}");
     assert_eq!(
-        layout_windows(&mut guest.browser, ""),
+        windows_showing(&mut guest.browser, |_| true),
         0,
         "a started app has no window"
     );
@@ -377,7 +377,7 @@ async fn an_agents_open_of_a_running_app_shows_its_window_on_the_persons_layout(
         "Sheets ran already: {opened}"
     );
     let deadline = tilo_test_env::hang_deadline();
-    while layout_windows(&mut guest.browser, "") == 0 {
+    while windows_showing(&mut guest.browser, |_| true) == 0 {
         assert!(
             Instant::now() < deadline,
             "the open answered ({opened}) but no Sheets window reached the person's layout"
@@ -385,7 +385,7 @@ async fn an_agents_open_of_a_running_app_shows_its_window_on_the_persons_layout(
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(
-        layout_windows(&mut guest.browser, ""),
+        windows_showing(&mut guest.browser, |_| true),
         1,
         "one Sheets window"
     );
@@ -897,14 +897,27 @@ async fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
     }
 }
 
-/// How many windows of the workspace's layout show `record`, as the page has
-/// received it: each says the agent's run opened it.
+/// How many Sheets windows of the workspace's layout show `record`, as the page
+/// has received it: each says the agent's run opened it.
 fn layout_windows(browser: &mut Browser, record: &str) -> usize {
+    windows_showing(browser, |shown| shown == record)
+}
+
+/// How many Sheets windows of the workspace's layout show a record `shows` takes, as
+/// the page has received it: each says the agent's run opened it. A window of any
+/// other app is not one of them, whatever it shows.
+fn windows_showing(browser: &mut Browser, shows: impl Fn(&str) -> bool) -> usize {
     browser.layout().map_or(0, |desktop| {
         desktop
             .records
             .iter()
-            .filter(|(tab, shown)| shown == record && desktop.tree.tab(*tab).is_some())
+            .filter(|(tab, shown)| {
+                shows(shown)
+                    && desktop.tree.tab(*tab).is_some_and(|tab| {
+                        tilo_desktop_model::apps::canonical_app_id(&tab.tile)
+                            .is_some_and(|app| app.as_str() == SHEETS)
+                    })
+            })
             .inspect(|(tab, _)| {
                 let run = desktop.opened_by.get(tab);
                 assert!(

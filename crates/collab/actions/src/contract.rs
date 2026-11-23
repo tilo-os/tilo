@@ -434,6 +434,19 @@ pub fn resource_node(
     resource_kind: &str,
     resource: &str,
 ) -> tilo_action_policy::TreePath {
+    let (resource_kind, resource) =
+        if tilo_action_policy::roles::is_workspace_moderation(app, resource)
+            || (resource_kind == "tilo.moderation"
+                && resource == resource_kind
+                && tilo_action_policy::roles::is_workspace_moderation(
+                    app,
+                    tilo_action_policy::roles::WORKSPACE_MODERATION_DOCUMENT,
+                ))
+        {
+            ("chat.workspace", "")
+        } else {
+            (resource_kind, resource)
+        };
     base.clone().app(app).kind(resource_kind).resource(resource)
 }
 
@@ -745,16 +758,6 @@ pub const SCREEN_PLACE_TAG: &str = "tilo.screen.place";
 /// this scope.
 pub const OWN_DEVICE_SCOPE: &str = "tilo.scope.own-device";
 
-/// The contract tag of an action that changes a record of the invoking
-/// person's own (their contact directory, a settings section of theirs),
-/// carried out on that record rather than on the workspace's document. Only the
-/// host of that person changes it, and only for them, so a workspace's grants
-/// and roles have nothing to decide: it needs only what reading needs
-/// ([`ActionContract::need`]). What it does stays its
-/// [`kind`](ActionContract::kind): a change Undo takes back is still
-/// [`Undoable`](ActionKind::Undoable), and asks nothing before it runs.
-pub const OWN_RESOURCE_SCOPE: &str = "tilo.scope.own-record";
-
 /// Complete operational contract copied into every inert descriptor.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionContract {
@@ -926,15 +929,13 @@ impl ActionContract {
     /// The authority `need` asks of a workspace once this action's scope is
     /// accounted for. The kind says what the action does (whether Undo takes
     /// it back, whether it asks first); the need says what a grant must
-    /// allow, and the scope is where they part: a change of the person's own
-    /// record ([`OWN_RESOURCE_SCOPE`]) and an outside effect on the person's
-    /// own device ([`OWN_DEVICE_SCOPE`], [`ATTENDED_TAG`]) reach nothing a
-    /// workspace's grants govern, so they need only what reading needs.
+    /// allow, and the scope is where they part: an outside effect on the
+    /// person's own device ([`OWN_DEVICE_SCOPE`], [`ATTENDED_TAG`]) reaches
+    /// nothing a workspace's grants govern, so it needs only what reading
+    /// needs. Every change of a record is the workspace's to decide.
     #[must_use]
     pub fn scoped(&self, mut need: ActionNeed) -> ActionNeed {
-        if self.is_own_resource()
-            || (need.kind == ActionKind::Outside && self.runs_on_invokers_device())
-        {
+        if need.kind == ActionKind::Outside && self.runs_on_invokers_device() {
             need.kind = ActionKind::Read;
         }
         need
@@ -983,21 +984,6 @@ impl ActionContract {
     /// nothing shared. See [`OWN_DEVICE_SCOPE`].
     pub fn is_own_device(&self) -> bool {
         self.tags.iter().any(|tag| tag == OWN_DEVICE_SCOPE)
-    }
-
-    /// Whether the action changes a record of the invoking person's own.
-    /// See [`OWN_RESOURCE_SCOPE`].
-    pub fn is_own_resource(&self) -> bool {
-        self.tags.iter().any(|tag| tag == OWN_RESOURCE_SCOPE)
-    }
-
-    /// Mark the action as carried out on a record of the invoking person's
-    /// own: it keeps its kind and needs only what reading needs. See
-    /// [`OWN_RESOURCE_SCOPE`].
-    pub fn set_own_resource(&mut self) {
-        if !self.is_own_resource() {
-            self.tags.push(OWN_RESOURCE_SCOPE.to_owned());
-        }
     }
 
     /// Whether the action needs its person attending. See [`ATTENDED_TAG`].

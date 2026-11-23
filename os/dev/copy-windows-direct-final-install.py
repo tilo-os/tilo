@@ -46,10 +46,6 @@ _provenance_path = Path(__file__).with_name("windows-direct-provenance.py")
 _provenance_spec = importlib.util.spec_from_file_location("tilo_windows_direct_provenance", _provenance_path)
 provenance = importlib.util.module_from_spec(_provenance_spec)
 _provenance_spec.loader.exec_module(provenance)
-_dev_spec = importlib.util.spec_from_file_location(
-    "tilo_windows_direct_dev_admission", Path(__file__).with_name("windows-direct-dev-admission.py"))
-development = importlib.util.module_from_spec(_dev_spec)
-_dev_spec.loader.exec_module(development)
 
 
 def require(condition, message):
@@ -373,31 +369,25 @@ def run(args):
         require(re.fullmatch(r".+@sha256:[0-9a-f]{64}", args.ci_image or "") is not None
                 and source_receipt.get("ci_image") == args.ci_image,
                 "VM source receipt does not bind the digest-pinned CI image")
-        if getattr(args, "development", False):
-            ci_provenance, checked, dual_check = development.verify(args)
-            index_digest = child_digest = args.ci_image.split("@", 1)[1]
-            require(source_receipt.get("ci_verification_key_sha256") is None,
-                    "development source receipt must not claim a release verification key")
-        else:
-            key = args.verify_key
-            require(key is not None and key.is_file() and not key.is_symlink()
-                    and args.ci_index_manifest is not None
-                    and source_receipt.get("ci_verification_key_sha256")
-                    == hashlib.sha256(key.read_bytes()).hexdigest(),
-                    "VM source receipt does not bind the CI verification key")
-            index_digest, child_digest, children, kind = provenance.signed_ci_child(
-                args.ci_image, args.ci_index_manifest, args.ci_child_manifest)
-            require(kind == "lenovo-83ed",
-                    "physical install requires the signed Lenovo ARM64 CI image")
-            ci_provenance = provenance.verify_ci_image(
-                args.ci_image, key, children, kind,
-                args.cosign_command_json, args.cosign_key_arg)
-            checked = provenance.checked_guest_proof(
-                args.vm_proof_checked, child_digest, args.ci_image, ci_provenance)
-            require(checked["schema"] == provenance.PROOF_SCHEMA_V2,
-                    "physical install requires backend-derived signed target proof v2")
-            dual_check = provenance.dual_ci_medium_check(
-                args, checked, child_digest, ci_provenance["source_revision"])
+        key = args.verify_key
+        require(key is not None and key.is_file() and not key.is_symlink()
+                and args.ci_index_manifest is not None
+                and source_receipt.get("ci_verification_key_sha256")
+                == hashlib.sha256(key.read_bytes()).hexdigest(),
+                "VM source receipt does not bind the CI verification key")
+        index_digest, child_digest, children, kind = provenance.signed_ci_child(
+            args.ci_image, args.ci_index_manifest, args.ci_child_manifest)
+        require(kind == "lenovo-83ed",
+                "physical install requires the signed Lenovo ARM64 CI image")
+        ci_provenance = provenance.verify_ci_image(
+            args.ci_image, key, children, kind,
+            args.cosign_command_json, args.cosign_key_arg)
+        checked = provenance.checked_guest_proof(
+            args.vm_proof_checked, child_digest, args.ci_image, ci_provenance)
+        require(checked["schema"] == provenance.PROOF_SCHEMA_V2,
+                "physical install requires backend-derived signed target proof v2")
+        dual_check = provenance.dual_ci_medium_check(
+            args, checked, child_digest, ci_provenance["source_revision"])
         guest = checked["guest_proof"]
         require(source_receipt.get("ci_index_digest") == index_digest
                 and source_receipt.get("ci_child_digest") == child_digest
@@ -468,8 +458,6 @@ def run(args):
         output["final_esp_partuuid"] = final_rows[0]["partuuid"]
         output["loader_path"] = loader_path
         output["loader_sha256"] = loader_hash
-        if getattr(args, "development", False):
-            output["development_admission"] = dual_check["development_admission"]
         require(args.output is not None, "execute requires --output")
         stage.atomic_json(args.output, output)
     print(json.dumps(output, indent=2))
@@ -492,7 +480,6 @@ def main(argv=None):
         command.add_argument("--ci-index-manifest", type=Path)
         command.add_argument("--ci-child-manifest", type=Path)
         command.add_argument("--vm-proof-checked", type=Path)
-        development.add_arguments(command)
         for field in ("generic-ci-image", "generic-index-manifest",
                       "generic-child-manifest", "generic-vm-proof-checked",
                       "generic-medium-identity", "generic-ci-guest-proof",

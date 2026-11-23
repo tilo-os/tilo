@@ -72,21 +72,16 @@ impl TaskReads {
     }
 
     /// Where the app `app` keeps the resources a task reads: the id they are under and the
-    /// record, the person's own for an app whose resources are each member's own.
+    /// workspace's record of the app.
     #[must_use]
     pub fn address(&self, app: &str) -> Option<(String, String)> {
-        let bundle = self.bundles.get(app)?;
+        self.bundles.get(app)?;
         let under = self
             .documents_under
             .get(app)
             .cloned()
             .unwrap_or_else(|| app.to_owned());
-        let record = self
-            .person
-            .as_deref()
-            .and_then(|person| crate::own_document(&bundle.meta, person))
-            .unwrap_or_default();
-        Some((under, record))
+        Some((under, String::new()))
     }
 
     /// Forget everything read: a new program asks the store again.

@@ -140,12 +140,13 @@ async fn a_moment_before_each_entry_of_a_category_fires_once_and_follows_the_cal
                    DTSTART;VALUE=DATE:20261023\r\nDTEND;VALUE=DATE:20261024\r\n\
                    CATEGORIES:Board\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
         .to_owned();
-    let keep = |entries: Vec<String>| {
+    let keep = async |entries: Vec<String>| {
         workspaces
             .keep_calendar_as_pulled(&workspace, &entries)
+            .await
             .unwrap();
     };
-    keep(vec![standup.clone(), lunch.clone(), offsite.clone()]);
+    keep(vec![standup.clone(), lunch.clone(), offsite.clone()]).await;
 
     let manual = Arc::new(tilo_clock::ManualClock::new(at("2026-10-19T06:00:00Z")));
     let mut runner = waiting(set, &assistant, &manual, state.clone()).await;
@@ -220,7 +221,8 @@ async fn a_moment_before_each_entry_of_a_category_fires_once_and_follows_the_cal
         moved(&standup, "20261026", "110000"),
         lunch.clone(),
         offsite.clone(),
-    ]);
+    ])
+    .await;
     pass(&mut runner, &manual, "2026-10-26T08:20:00Z").await;
     assert_eq!(handed(&assistant), expected);
     pass(&mut runner, &manual, "2026-10-26T09:45:00Z").await;
@@ -229,7 +231,7 @@ async fn a_moment_before_each_entry_of_a_category_fires_once_and_follows_the_cal
 
     // The series is taken off the calendar before Tuesday's moment: nothing
     // is held any more, and nothing fires.
-    keep(vec![lunch, offsite]);
+    keep(vec![lunch, offsite]).await;
     pass(&mut runner, &manual, "2026-10-27T08:15:00Z").await;
     pass(&mut runner, &manual, "2026-10-27T09:00:00Z").await;
     assert_eq!(handed(&assistant), expected);

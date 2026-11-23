@@ -10,7 +10,6 @@ homepage.workspace = true
 description = "A workspace's agents: one record Chat keeps, holding each agent's name, keeper and model"
 
 [dependencies]
-automerge.workspace = true
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 serde.workspace = true
 serde_json.workspace = true

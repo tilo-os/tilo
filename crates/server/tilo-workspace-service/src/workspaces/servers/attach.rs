@@ -32,7 +32,7 @@ use crate::workspaces::Workspaces;
 /// changes its watches hear: a change another holder wrote reaches this copy
 /// without its write watch, and a machine's own enrollment arrives the same
 /// way.
-const NAMED_TICK: Duration = Duration::from_secs(2);
+pub const NAMED_TICK: Duration = Duration::from_secs(2);
 
 /// The workspaces this device handed to a server, and the ones it detached it
 /// from, by workspace id.

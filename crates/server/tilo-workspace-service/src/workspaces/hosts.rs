@@ -32,7 +32,6 @@ use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_net::proxy::host::{Destinations, check_destination, guarded_client, system_lookup};
 use tilo_peer_state::CopyRole;
 use tilo_peer_state::join::{Role, TransportHint};
-use tilo_server_protocol::web::PageHost;
 use tilo_server_protocol::workspaces::WorkspaceHolder;
 use tilo_server_session::client::ServerClient;
 use tilo_server_session::workspaces::{
@@ -1262,13 +1261,11 @@ async fn host_at(
     }
     let entry: Value = serde_json::from_slice(&body)
         .map_err(|error| format!("{origin} did not say which holder it is: {error}"))?;
-    let info: PageHost = serde_json::from_value(
-        entry
-            .pointer("/home/host/info")
-            .cloned()
-            .ok_or_else(|| format!("{origin} names no host certificate and address"))?,
-    )
-    .map_err(|error| format!("{origin} did not say which holder it is: {error}"))?;
+    // The site publishes who its host is and where it is dialled (`home.host.info`): the host's
+    // `web-host.json` as one JSON object, written as a string the page reads by parsing it
+    // (`entry.json`, the web entry's `TILO_WEB_HOME_HOST_INFO`).
+    let info = tilo_server_client::login::entry_host(&entry)
+        .ok_or_else(|| format!("{origin} names no host certificate and address"))?;
     let address = info
         .address
         .ok_or_else(|| format!("{origin} names no address to reach its host at"))?;

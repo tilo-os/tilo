@@ -18,7 +18,9 @@ fixture = []
 test-support = []
 
 [dependencies]
-accounts = { path = "../../system/accounts" }
+accounts = { path = "../../system/accounts", features = ["person"] }
+# What a typo-free edit to the workspace's accounts record is.
+tilo-resource = { path = "../../sdk/tilo-resource" }
 base64.workspace = true
 blake3.workspace = true
 # Calendar's wall-time formats and dates.

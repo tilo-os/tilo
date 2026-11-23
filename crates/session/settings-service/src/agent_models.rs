@@ -14,7 +14,7 @@
 //! provider and the provider the one agents answer with, and both provider
 //! sections are written under one change ([`SettingsDocument::update_sections`]),
 //! so it is one step the person takes back whole ([`AgentModelsEffect::UndoModel`],
-//! over both documents at once). No endpoint, credential or key is read: the
+//! over both sections at once). No endpoint, credential or key is read: the
 //! reading names providers, models and what agents answer with, nothing more.
 
 use agent_provider_config::{HOSTED_SECTION, ModelDescriptor, ProviderConfig, SETTINGS_SECTION};
@@ -298,7 +298,7 @@ impl Served {
                 ))
                 .by(&actor);
                 document
-                    .edit_documents(&origin, |doc, _holder| {
+                    .edit_documents(&origin, |doc| {
                         let taken = if undo {
                             ui::history_source::steps::undo_where(
                                 doc,

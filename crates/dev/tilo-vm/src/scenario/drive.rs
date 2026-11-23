@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use super::console::{Console, ConsoleError};
+use super::console::{Confirmation, Console, ConsoleError};
 use super::{Layout, Secret, Unlock};
 use serde_json::{Map, Value, json};
 
@@ -121,8 +121,18 @@ fn invoke(
     action: &str,
     arguments: Value,
 ) -> Result<Value, DriveError> {
+    invoke_confirmed(console, resource, action, arguments, None)
+}
+
+fn invoke_confirmed(
+    console: &mut dyn Console,
+    resource: &str,
+    action: &str,
+    arguments: Value,
+    confirmation: Option<&Confirmation>,
+) -> Result<Value, DriveError> {
     console
-        .invoke(INSTALLER, resource, action, args(arguments))
+        .invoke(INSTALLER, resource, action, args(arguments), confirmation)
         .map_err(|error| match error {
             ConsoleError::Refused { code, message } => DriveError::Refused {
                 action: format!("{action}@{resource}"),
@@ -331,11 +341,12 @@ pub fn install(
                         detail: "the installer names no confirmation target".into(),
                     })?;
                 progress(&format!("installer: begin, confirming {target}"));
-                invoke(
+                invoke_confirmed(
                     console,
                     "installer.review",
                     "begin",
-                    json!({ "confirmation_phrase": target }),
+                    json!({}),
+                    Some(&Confirmation::Phrase(target.clone())),
                 )?;
                 installed.target = target;
             }
@@ -569,7 +580,7 @@ mod tests {
             json!({"err": {"code": code, "message": "refused by the fake"}})
         }
 
-        fn invoke(&mut self, id: &str, args: &Value) -> Value {
+        fn answer(&mut self, id: &str, args: &Value, phrase: Option<&str>) -> Value {
             self.calls.push(id.to_owned());
             let ok = json!({"answer": {"id": id}});
             match (self.step, id) {
@@ -614,9 +625,7 @@ mod tests {
                     if !self.promise {
                         return Self::refuse("action_unavailable");
                     }
-                    if args.get("confirmation_phrase").and_then(Value::as_str)
-                        != self.selected.as_deref()
-                    {
+                    if phrase != self.selected.as_deref() {
                         return Self::refuse("action_confirmation_required");
                     }
                     self.step = "install";
@@ -630,14 +639,38 @@ mod tests {
     }
 
     impl Console for FakeInstaller {
-        fn request(&mut self, request: Value) -> Result<Value, ConsoleError> {
-            match request["op"].as_str() {
-                Some("state_dump") => Ok(json!({ "state": self.state() })),
-                Some("actions_invoke") => {
-                    let id = request["id"].as_str().unwrap().to_owned();
-                    Ok(self.invoke(&id, &request["args"]))
-                }
-                _ => Err(ConsoleError::Protocol("unexpected op".into())),
+        fn state(&mut self) -> Result<Value, ConsoleError> {
+            Ok(FakeInstaller::state(self))
+        }
+
+        fn invoke(
+            &mut self,
+            provider: &str,
+            resource: &str,
+            action: &str,
+            args: Map<String, Value>,
+            confirmation: Option<&Confirmation>,
+        ) -> Result<Value, ConsoleError> {
+            if provider != INSTALLER {
+                return Err(ConsoleError::Protocol(format!(
+                    "{provider} is not the installer"
+                )));
+            }
+            let phrase = match confirmation {
+                Some(Confirmation::Phrase(phrase)) => Some(phrase.as_str()),
+                _ => None,
+            };
+            let reply = self.answer(
+                &format!("{action}@{resource}"),
+                &Value::Object(args),
+                phrase,
+            );
+            match reply.get("err") {
+                Some(err) => Err(ConsoleError::Refused {
+                    code: err["code"].as_str().unwrap_or_default().to_owned(),
+                    message: err["message"].as_str().unwrap_or_default().to_owned(),
+                }),
+                None => Ok(reply["answer"].clone()),
             }
         }
     }

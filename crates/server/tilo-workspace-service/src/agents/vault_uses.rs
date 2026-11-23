@@ -680,7 +680,7 @@ impl ServerAgents {
             self.workspaces.use_not_asked(&claimed);
             return;
         };
-        let turn = AskedIn::read(&claimed.asked_in).turn_of(asker, person, agent);
+        let turn = AskedIn::read(&claimed.asked_in).turn_of(asker, agent);
         let narrowed = narrowing(agent, workspace);
         let hosted = HostedTurn {
             workspace: workspace_id,

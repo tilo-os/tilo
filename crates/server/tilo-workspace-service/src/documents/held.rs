@@ -200,16 +200,6 @@ impl DeviceDocuments for HeldDocuments {
         Ok(self.replica.read(super::listing))
     }
 
-    fn own_records(
-        &self,
-        workspace: &str,
-    ) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
-        if !self.holds_workspace(workspace) {
-            return std::collections::BTreeMap::new();
-        }
-        self.replica.read(super::own_records)
-    }
-
     fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
         self.holds_workspace(workspace)
             && self.replica.read(|peer| super::holds(peer, app, resource))
@@ -359,7 +349,6 @@ mod tests {
                 cluster_id: WORKSPACE.into(),
                 document_id: DESKTOP_DOCUMENT.into(),
                 envelope: Box::new(envelope),
-                own: None,
                 readers: None,
             },
             *author.as_bytes(),

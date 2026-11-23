@@ -26,7 +26,7 @@ use tilo_server_protocol::WorkSetting;
 use tilo_server_protocol::transport::ServerOperationResult;
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, serve_on};
+use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, serve_in, serve_on};
 
 /// Stand in for the root helper that carries out what changes the
 /// machine: answer every request written under `state_root` at the same files
@@ -225,7 +225,7 @@ async fn person_with_a_server() -> Fixture {
     // The person's own device makes the Servers workspace when it is first
     // needed, enters the server among their servers there, and hands it the
     // workspace as it hands a server any workspace its entry names.
-    servers::founded(desktop.host.workspaces()).await.unwrap();
+    servers::found(desktop.host.workspaces()).await.unwrap();
     servers::admit(
         desktop.host.workspaces(),
         &nas.cert,
@@ -534,6 +534,10 @@ async fn a_persons_device_renames_and_retires_a_server() {
     .await
     .unwrap();
     assert_eq!(retired["retired"], true);
+    assert_eq!(
+        retired["answered"], true,
+        "the server took its retirement itself"
+    );
     let servers = servers::read(fixture.workspaces()).await.unwrap();
     assert!(servers.active(&nas).is_none(), "its entry is retired");
     assert!(
@@ -560,4 +564,111 @@ async fn a_persons_device_renames_and_retires_a_server() {
     )
     .await;
     client.close().await;
+}
+
+/// A server the person retires while it is away, so the retire is not
+/// answered: their device retires its entry itself and refuses its key. Once
+/// the server is back it finds out by itself, does what an answered retire
+/// does, and is not started again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_retired_while_away_retires_itself_once_back() {
+    let Fixture {
+        root,
+        nas,
+        laptop: _laptop,
+        desktop,
+        admin: _admin,
+        server,
+        state,
+        _policy: policy,
+        _helper,
+        _following: mut following,
+    } = person_with_a_server().await;
+    following.remove(0).abort();
+    let kept = server.stop_keeping().await;
+    // What the person's device does when the server does not answer in time.
+    let id = servers::device_id(&nas.device_pubkey());
+    servers::apply(
+        desktop.host.workspaces(),
+        servers::Servers::ASK_RETIREMENT.with((id.clone(), revocation(&root, nas.device_pubkey()))),
+    )
+    .await
+    .unwrap();
+    servers::apply(
+        desktop.host.workspaces(),
+        servers::Servers::RETIRE_SERVER.with(id),
+    )
+    .await
+    .unwrap();
+    tilo_test_env::within("the person's device refuses the server's key", async {
+        while !desktop.host.workspaces().revocations().refuses(&nas.cert) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    let user = TestUser {
+        user_pk: root.verifying_key().to_bytes(),
+        user_sk: root,
+    };
+    let back = serve_in(&user, &nas, WorkSetting::own_person(), kept).await;
+    let _follow = applied::follow(
+        back.host.workspaces(),
+        applied::Requests::at(policy.path().join("nas.request")),
+        None,
+        state.path().to_path_buf(),
+    );
+    let back = back.host.workspaces();
+    let noted = state.path().join("decommissioned");
+    tilo_test_env::within(
+        "the server back finds out it was retired, lets go and notes it",
+        async {
+            while !(back.list().await.is_empty()
+                && back.revocations().refuses(&nas.cert)
+                && noted.exists())
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
+}
+
+/// A server its person's device cannot be reached from, then refuses for a
+/// reason other than a revocation of its key (the device was set up again and
+/// holds none of the person's workspaces), stays in service: only its root's
+/// signed revocation retires it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_refused_without_a_revocation_stays_in_service() {
+    let Fixture {
+        root,
+        nas,
+        laptop,
+        desktop,
+        server,
+        state,
+        _following: following,
+        ..
+    } = person_with_a_server().await;
+    let user = TestUser {
+        user_pk: root.verifying_key().to_bytes(),
+        user_sk: root,
+    };
+    desktop.stop().await;
+    // Unreachable, then reachable and refusing: several of the server's
+    // dials over each.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let _again = serve_on(&user, &laptop, WorkSetting::own_person()).await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let kept = server.host.workspaces();
+    assert!(
+        !kept.revocations().refuses(&nas.cert),
+        "the server still takes its own key"
+    );
+    assert!(!kept.list().await.is_empty(), "it keeps its workspaces");
+    assert!(
+        !state.path().join("decommissioned").exists(),
+        "its machine starts it again"
+    );
+    drop(following);
 }

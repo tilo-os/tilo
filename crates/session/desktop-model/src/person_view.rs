@@ -23,13 +23,13 @@ use crate::width::WindowWidth;
 /// layout.
 #[must_use]
 pub fn resource_of(person: &str) -> String {
-    format!("view-of-{person}")
+    tilo_action_policy::roles::person_view_record(person)
 }
 
 /// The person whose view of the layout record `record` holds, on [`crate::ownership::DESKTOP_APP`].
 #[must_use]
 pub fn person_of(record: &str) -> Option<&str> {
-    record.strip_prefix("view-of-")
+    tilo_action_policy::roles::person_viewing(crate::ownership::DESKTOP_APP, record)
 }
 
 /// The keys a view is kept under.

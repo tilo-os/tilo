@@ -70,11 +70,11 @@ async fn a_join_is_answered_while_its_access_write_is_held() {
     server.shutdown().await;
 }
 
-/// A host stopped after governance committed an admission and before its
-/// access reached the file starts again admitting exactly what governance
-/// does.
+/// A host stopped after the signed member list committed an admission and
+/// before its access reached the file starts again admitting exactly what that
+/// list says.
 #[tokio::test]
-async fn a_restart_between_the_commit_and_the_access_write_admits_what_governance_does() {
+async fn a_restart_between_the_commit_and_the_access_write_admits_what_the_member_list_says() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = test_host(dir.path(), &key, &cert).await;

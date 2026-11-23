@@ -1055,13 +1055,22 @@ class AppResourceActionContractTests(unittest.TestCase):
             self.assertTrue(any("direct ui-core dependency" in item.reason for item in violations))
         with self.subTest(phase='target specific facades are checked'):
             root = self.fixture(
-                "fn resources() {}\nstruct ActionDescriptor;\n"
-                "RemoteActionMessage::CatalogueRequest; RemoteActionMessage::Invoke(request);\n"
-                "RemoteActionMessage::Observe;\n",
+                "struct Sample;\n"
+                "impl ResourceApp for Sample { type Resource = Note; }\n"
+                "impl ResourceSurface<Note, Show> for View {\n"
+                " fn effect(&mut self, effect: Show, cx: &mut EffectCx<Note, Self>) -> EffectAnswer { todo() } }\n"
+                "fn check(spec: &ActionSpec) -> bool { spec.kind == OperationKind::View }\n",
                 dependencies="",
-                app_name="agent",
             )
-            manifest = root / "apps" / "agent" / "Cargo.toml"
+            # A compute package publishes nothing of its own, so the forms below
+            # are the only thing this app is judged by.
+            (root / "apps" / "sample" / "tilo-app.toml").write_text(
+                '[package]\nid = "so.tilo.sample"\nname = "Sample"\n'
+                'kind = "service"\n\n[entrypoint]\ntype = "cli"\n\n'
+                '[[cli.commands]]\nname = "run"\n',
+                encoding="utf-8",
+            )
+            manifest = root / "apps" / "sample" / "Cargo.toml"
             manifest.write_text(
                 manifest.read_text(encoding="utf-8")
                 + "\n[target.'cfg(unix)'.dependencies]\n"

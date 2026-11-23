@@ -31,7 +31,26 @@ use tilo_resource_store::{Admit, Received, Refusal, Store};
 use super::{GovernedWorkspace, Workspaces};
 
 #[cfg(feature = "agents")]
+mod bot_writes;
+#[cfg(feature = "agents")]
 mod packaged;
+
+/// Why [`Workspaces::record_command`] did not carry a command out.
+#[cfg(feature = "agents")]
+#[derive(Debug)]
+pub enum RecordFailure {
+    /// The workspace refused the write: whoever invoked it may not do what it names.
+    Refused(String),
+    /// It could not be carried out: the workspace is not held here, or the store refused it.
+    Failed(String),
+}
+
+#[cfg(feature = "agents")]
+impl From<String> for RecordFailure {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
 
 /// Where a workspace's store keeps its documents, under the workspace's directory.
 const STORE: &str = "store";
@@ -841,10 +860,7 @@ impl Workspaces {
             .draft_resource_document(candidate, device, app, write)
             .await?;
         let CommitOperation::Document {
-            envelope,
-            own,
-            readers,
-            ..
+            envelope, readers, ..
         } = &request.operation
         else {
             return Err("a resource write must name its document".into());
@@ -855,7 +871,6 @@ impl Workspaces {
             cluster_id: governed.workspace().to_owned(),
             document_id: document.clone(),
             envelope: envelope.clone(),
-            own: own.clone(),
             readers: readers.clone(),
         };
         let device_keys = governed
@@ -954,6 +969,10 @@ impl Workspaces {
     ) -> Result<tilo_resource_store::wire::Reply, String> {
         use tilo_resource_store::wire::{Command, Reply, read};
         let mut governed = state.lock().await;
+        if matches!(command, Command::Leases) {
+            let now = super::system_time(tilo_clock::unix_now_ns());
+            return Ok(Reply::Content(Some(leases_reading(&governed.peer(), now))));
+        }
         let store = governed.store_with_surfaces(&self.inner.host.surfaces);
         let answer = match command {
             Command::Versions { kind, id } if store.get(kind, id, &may_read).is_some() => {
@@ -1181,30 +1200,44 @@ impl Workspaces {
     /// A read answers everything the device holds, as the role's own runtime then decides what
     /// each member it reads for may see. A write is signed by the device the service signs its
     /// own roles' writes as, and keeps the invoker the role's runtime stamped on it: the member
-    /// whose action wrote it (an agent, a bot, a person whose event ran), decided under that
-    /// member's own grants before it reached here. Only code in this process reaches this; a
-    /// caller from outside comes through [`Self::resource_command`], which stamps who it is.
+    /// whose action wrote it (an agent, a bot, a person whose event ran). A bot's write is
+    /// decided here under the grants the workspace holds for that bot, as every member decides
+    /// a bot's change to a record it signs itself. Only code in this process
+    /// reaches this; a caller from outside comes through [`Self::resource_command`], which
+    /// stamps who it is.
     ///
     /// # Errors
-    /// The workspace is not held here, the store refused the write, or the workspace refused a
-    /// document's write.
+    /// [`RecordFailure::Refused`] when the workspace refused a bot's write;
+    /// [`RecordFailure::Failed`] when the workspace is not held here, the store refused the
+    /// write, or the workspace refused a document's write.
     #[cfg(feature = "agents")]
     pub async fn record_command(
         &self,
         workspace: &str,
         app: &str,
         command: tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, String> {
+    ) -> Result<tilo_resource_store::wire::Reply, RecordFailure> {
         let state = self
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
         if !command.writes() {
-            return self.resource_read(&state, &|_| true, &command).await;
+            return Ok(self.resource_read(&state, &|_| true, &command).await?);
         }
-        let governed = state.lock_owned().await;
-        self.write_resources(governed, self.signing_device(), app, command)
-            .await
+        let mut governed = state.lock_owned().await;
+        bot_writes::decide(
+            &mut governed,
+            (
+                &self.inner.host.surfaces,
+                self.inner.host.cert.device_public_key,
+            ),
+            app,
+            &command,
+        )
+        .map_err(RecordFailure::Refused)?;
+        Ok(self
+            .write_resources(governed, self.signing_device(), app, command)
+            .await?)
     }
 }
 
@@ -1231,6 +1264,40 @@ impl Workspaces {
         Ok(documents
             .iter()
             .filter_map(|doc| governed.resources.document(doc))
+            .collect())
+    }
+
+    /// The sealed writes of each store document of `app` that `workspace` holds, oldest first,
+    /// by document: what a member is sent of the resources a tilolang app's actions wrote.
+    ///
+    /// # Errors
+    /// The workspace is not held here.
+    #[cfg(feature = "test-support")]
+    pub async fn store_writes(
+        &self,
+        workspace: &str,
+        app: &str,
+    ) -> Result<BTreeMap<String, Vec<collab_types::SignedOp>>, String> {
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut governed = state.lock().await;
+        let documents: Vec<String> = governed
+            .resources
+            .store_mut()
+            .index()
+            .documents()
+            .map(str::to_owned)
+            .collect();
+        let peer = governed.peer();
+        Ok(documents
+            .into_iter()
+            .map(|document| {
+                let writes = peer.publication().sealed_history(app, &document);
+                (document, writes)
+            })
+            .filter(|(_, writes)| !writes.is_empty())
             .collect())
     }
 
@@ -1283,8 +1350,34 @@ fn stamp_resource_invoker(command: &mut tilo_resource_store::wire::Command, invo
         | Command::Position { .. }
         | Command::PageAt { .. }
         | Command::Contents { .. }
-        | Command::Fields { .. } => {}
+        | Command::Fields { .. }
+        | Command::Leases => {}
     }
+}
+
+/// The leases whose claim stands at `now` in the workspace `peer` holds, as
+/// [`tilo_resource_store::wire::Command::Leases`] answers them: each by its id, naming the
+/// device that holds it by its public key in lowercase hex, the way `invoker.device()` names
+/// the device that signed an invocation. A lease whose claims have all lapsed names no device,
+/// so it is left out.
+#[cfg(feature = "apps")]
+pub(crate) fn leases_reading(
+    peer: &tilo_peer_state::StatePeer,
+    now: std::time::SystemTime,
+) -> serde_json::Value {
+    let leases: serde_json::Map<String, serde_json::Value> = peer
+        .workspace()
+        .leases(now)
+        .into_iter()
+        .filter_map(|lease| {
+            let holder = lease.holder?;
+            Some((
+                lease.id,
+                serde_json::json!({ "device": hex::encode(holder.device) }),
+            ))
+        })
+        .collect();
+    serde_json::json!({ "leases": leases })
 }
 
 /// Whether the reader set `readers` names `reader`: `*` names everyone.

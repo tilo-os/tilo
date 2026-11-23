@@ -35,6 +35,10 @@ use crate::Account;
 pub const RUNTIME_DIR_NAME: &str = "tilo-account-sign-ins";
 const SOCKET_NAME: &str = "socket";
 
+/// What a client is told when the session no longer answers its sign-in, or answered another
+/// ask than its own.
+pub const NOT_ANSWERED: &str = "The session no longer answers this account's sign-in";
+
 /// The longest a line of either side may be: the accounts of every workspace held here.
 pub const MAX_LINE: usize = 4 * 1024 * 1024;
 
@@ -63,17 +67,8 @@ pub enum Ask {
     /// [`LONGEST_WAIT`] passed.
     Accounts { after: Option<String> },
     /// The sign-in kept in the vault entry `item` (`vault.item:<id>`), which an account of
-    /// `workspace` names; `confirmed` once its person said yes to a sign-in the session answered
-    /// with [`Answer::Asks`].
-    SignIn {
-        workspace: String,
-        item: String,
-        #[serde(default)]
-        confirmed: bool,
-    },
-    /// Let the ask for accounts the session holds go now, answered with the accounts as they
-    /// are: the asker has a sign-in to ask. Answered nothing itself.
-    Hurry,
+    /// `workspace` names.
+    SignIn { workspace: String, item: String },
 }
 
 /// A file account and the workspace whose accounts record it is in.
@@ -96,9 +91,6 @@ pub enum Answer {
     SignIn { secret: Zeroizing<String> },
     /// What the ask was refused with, in words a person reads.
     Refused { error: String },
-    /// The workspace's rules ask the person first: `question` is what they are asked, and the
-    /// sign-in is asked again, `confirmed`, once they say yes.
-    Asks { question: String },
 }
 
 impl std::fmt::Debug for Answer {
@@ -111,7 +103,6 @@ impl std::fmt::Debug for Answer {
                 .finish(),
             Self::SignIn { .. } => f.debug_struct("SignIn").finish_non_exhaustive(),
             Self::Refused { error } => f.debug_struct("Refused").field("error", error).finish(),
-            Self::Asks { question } => f.debug_struct("Asks").field("question", question).finish(),
         }
     }
 }
@@ -175,15 +166,6 @@ impl Client {
         })
     }
 
-    /// What hurries this connection's held ask for accounts from another thread
-    /// ([`Ask::Hurry`]).
-    ///
-    /// # Errors
-    /// The connection cannot be shared.
-    pub fn hurrier(&self) -> std::io::Result<Hurrier> {
-        Ok(Hurrier(self.reader.get_ref().try_clone()?))
-    }
-
     /// Ask `ask` and read its answer.
     ///
     /// # Errors
@@ -195,22 +177,6 @@ impl Client {
         read_line(&mut self.reader)?
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))
             .and_then(|line| serde_json::from_slice(&line).map_err(std::io::Error::other))
-    }
-}
-
-/// A connection's other end for [`Ask::Hurry`], which is answered nothing: the ask it lets go
-/// is answered to whoever asked it.
-pub struct Hurrier(UnixStream);
-
-impl Hurrier {
-    /// Let the session answer the ask for accounts it holds now.
-    ///
-    /// # Errors
-    /// The connection broke.
-    pub fn hurry(&mut self) -> std::io::Result<()> {
-        let mut line = serde_json::to_vec(&Ask::Hurry).map_err(std::io::Error::other)?;
-        line.push(b'\n');
-        self.0.write_all(&line)
     }
 }
 
@@ -252,15 +218,14 @@ pub fn answer_line(answer: &Answer) -> std::io::Result<Zeroizing<Vec<u8>>> {
     Ok(line)
 }
 
-/// A stand-in for the session on its socket, for the cloud service's tests: the accounts are an
-/// account store's
-/// under a config root, read on every ask, and the sign-ins are the passwords kept with
+/// A stand-in for the session on its socket, for the cloud service's tests: the accounts are the
+/// ones kept with [`Fixture::keep_account`], and the sign-ins are the passwords kept with
 /// [`Fixture::keep`].
 #[cfg(any(test, feature = "sign-ins-fixture"))]
 pub mod fixture {
     use super::{Answer, Ask, Held};
-    use crate::AccountStore;
-    use std::collections::HashMap;
+    use crate::Account;
+    use std::collections::{BTreeMap, HashMap};
     use std::io::{BufReader, Write as _};
     use std::path::Path;
     use std::path::PathBuf;
@@ -285,6 +250,7 @@ pub mod fixture {
 
     #[derive(Default)]
     struct Kept {
+        accounts: BTreeMap<String, Account>,
         passwords: HashMap<String, String>,
         released: Vec<String>,
     }
@@ -297,7 +263,7 @@ pub mod fixture {
     }
 
     impl Fixture {
-        /// Serve the accounts `config_root`'s store keeps on a socket in `dir`.
+        /// Serve the accounts kept with it on a socket in `dir`.
         ///
         /// # Panics
         /// The socket cannot be bound.
@@ -308,7 +274,7 @@ pub mod fixture {
             reason = "a test's stand-in session answers on threads of its own, and a test without \
                       one stops there"
         )]
-        pub fn serve(dir: &Path, config_root: &Path) -> Self {
+        pub fn serve(dir: &Path) -> Self {
             let socket = dir.join("sign-ins.sock");
             let listener = match tilo_files::native::socket::bind(&socket) {
                 Ok(listener) => listener,
@@ -316,7 +282,6 @@ pub mod fixture {
             };
             let kept: Arc<Mutex<Kept>> = Arc::default();
             let stop = Arc::new(AtomicBool::new(false));
-            let root = config_root.to_path_buf();
             let (serving, stopped) = (Arc::clone(&kept), Arc::clone(&stop));
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
@@ -324,9 +289,8 @@ pub mod fixture {
                         return;
                     }
                     let Ok(stream) = stream else { continue };
-                    let (root, kept, stopped) =
-                        (root.clone(), Arc::clone(&serving), Arc::clone(&stopped));
-                    std::thread::spawn(move || answer(stream, &root, &kept, &stopped));
+                    let (kept, stopped) = (Arc::clone(&serving), Arc::clone(&stopped));
+                    std::thread::spawn(move || answer(stream, &kept, &stopped));
                 }
             });
             Self { socket, kept, stop }
@@ -335,6 +299,24 @@ pub mod fixture {
         #[must_use]
         pub fn socket(&self) -> PathBuf {
             self.socket.clone()
+        }
+
+        /// Keep `account`, added or in place of the one with its id.
+        pub fn keep_account(&self, account: Account) {
+            self.kept
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .accounts
+                .insert(account.id.to_string(), account);
+        }
+
+        /// Keep the account `id` no more.
+        pub fn remove_account(&self, id: &str) {
+            self.kept
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .accounts
+                .remove(id);
         }
 
         /// Keep `password` as the sign-in of account `id`.
@@ -373,10 +355,11 @@ pub mod fixture {
         }
     }
 
-    fn listed(root: &Path) -> Vec<Held> {
-        AccountStore::load_in(root)
-            .all()
-            .iter()
+    fn listed(kept: &Mutex<Kept>) -> Vec<Held> {
+        kept.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .accounts
+            .values()
             .filter(|account| super::is_file_account(account))
             .map(|account| {
                 let mut account = account.clone();
@@ -394,12 +377,7 @@ pub mod fixture {
             .collect()
     }
 
-    fn answer(
-        stream: std::os::unix::net::UnixStream,
-        root: &Path,
-        kept: &Mutex<Kept>,
-        stop: &AtomicBool,
-    ) {
+    fn answer(stream: std::os::unix::net::UnixStream, kept: &Mutex<Kept>, stop: &AtomicBool) {
         let Ok(mut write) = stream.try_clone() else {
             return;
         };
@@ -409,11 +387,10 @@ pub mod fixture {
                 return;
             };
             let answer = match ask {
-                Ask::Hurry => continue,
                 Ask::Accounts { after } => {
                     let mut waited = Duration::ZERO;
                     loop {
-                        let accounts = listed(root);
+                        let accounts = listed(kept);
                         let revision = super::revision_of(&accounts);
                         if after.as_deref() != Some(revision.as_str())
                             || waited >= Duration::from_secs(2)

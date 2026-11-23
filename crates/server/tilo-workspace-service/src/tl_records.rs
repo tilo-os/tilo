@@ -34,12 +34,15 @@
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
+use tilo_lock::MutexRecover as _;
+
 use serde_json::{Map, Value as Json};
 use tilo_actions::remote::CatalogueRow;
 use tilo_actions::{
     ActionAddress, ActionContext, ActionInvoker, ActionOutput, ApiError, ResourceSpec,
 };
 use tilo_agent_session::bot::held::TilolangRecord;
+use tilo_automation::dispatch::DocumentEvent;
 use tilo_resource_store::wire::{Command, Reply};
 use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::host::Host;
@@ -105,6 +108,27 @@ impl Packages {
         Some(package.meta.action_published_as(name)?.id.clone())
     }
 
+    /// The action whose declaration id is `id`, of whichever of the packages declares it: what a
+    /// change it made is decided as.
+    #[must_use]
+    pub fn declared(&self, id: &str) -> Option<Declared> {
+        self.0.iter().find_map(|package| {
+            let meta = &package.meta;
+            let action = meta.actions.iter().find(|declared| declared.id == id)?;
+            Some(Declared {
+                app: meta.app.clone(),
+                name: action.name.clone(),
+                kind: tilolang_tilo::meta::action_kind(action.class),
+                targets: meta
+                    .targets_of(&action.params)
+                    .into_iter()
+                    .map(|ty| meta.kind_of(&ty.name))
+                    .collect(),
+                package: meta.package_kind(),
+            })
+        })
+    }
+
     /// The name the app publishes the action whose declaration id is `id`: what a change it made
     /// is read as, since history keeps the id a rename does not disturb.
     #[must_use]
@@ -117,6 +141,22 @@ impl Packages {
             .find(|declared| declared.id == id)
             .map(|declared| declared.name.clone())
     }
+}
+
+/// An action a package declares, as a change it made is decided: at the resource it was invoked
+/// on, under the name it is published by.
+pub struct Declared {
+    /// The app whose package declares it.
+    pub app: String,
+    /// The name it is published by.
+    pub name: String,
+    /// What it does: reads, changes what can be taken back, or reaches outside.
+    pub kind: tilo_actions::ActionKind,
+    /// The kinds of the resources it is invoked on, each type its first parameter takes; none
+    /// for an action invoked on no resource.
+    pub targets: Vec<String>,
+    /// The kind it is published under when it is invoked on no resource: its package's.
+    pub package: String,
 }
 
 /// The sources of the packages built into this build, each app after those it uses.
@@ -185,6 +225,9 @@ pub struct Record {
     /// The reactor a command waits on. A record without one only reads, waiting as a search
     /// does.
     runtime: Option<tokio::runtime::Handle>,
+    /// The first write the workspace refused, as it said why: shared by every copy, so a
+    /// program that ran on one learns its run was refused ([`Self::refused`]).
+    refused: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl Record {
@@ -193,6 +236,33 @@ impl Record {
     #[must_use]
     pub fn store(&self) -> ResourceStore {
         ResourceStore::new(Rc::new(self.clone()))
+    }
+
+    /// Why the workspace refused the first write it refused through this record, when it
+    /// refused one: what was written before it stands, and nothing after it was sent.
+    #[must_use]
+    pub fn refused(&self) -> Option<String> {
+        self.refused.lock_recover().clone()
+    }
+
+    /// `command` carried out by the workspace service, a refusal kept as [`Self::refused`].
+    async fn carry(
+        workspaces: crate::workspaces::Workspaces,
+        (workspace, app): (String, String),
+        command: Command,
+        refused: Arc<std::sync::Mutex<Option<String>>>,
+    ) -> Result<Reply, String> {
+        use crate::workspaces::RecordFailure;
+        workspaces
+            .record_command(&workspace, &app, command)
+            .await
+            .map_err(|failure| match failure {
+                RecordFailure::Refused(why) => {
+                    refused.lock_recover().get_or_insert_with(|| why.clone());
+                    why
+                }
+                RecordFailure::Failed(error) => error,
+            })
     }
 }
 
@@ -206,11 +276,19 @@ impl tilolang_tilo::resources::Port for Record {
                     "{app}'s record was opened to be read, and takes no write"
                 ));
             }
-            return crate::device_documents::on_its_own(async move {
-                workspaces.record_command(&workspace, &app, command).await
-            });
+            return crate::device_documents::on_its_own(Self::carry(
+                workspaces,
+                (workspace, app),
+                command,
+                Arc::clone(&self.refused),
+            ));
         };
-        let carried = async move { workspaces.record_command(&workspace, &app, command).await };
+        let carried = Self::carry(
+            workspaces,
+            (workspace, app),
+            command,
+            Arc::clone(&self.refused),
+        );
         // A first write can wait for this device's group keys on the reactor. A thread already
         // inside the reactor (a bot's run is driven by it) waits from a thread of its own.
         if tokio::runtime::Handle::try_current().is_err() {
@@ -415,6 +493,9 @@ impl Opened {
             store.set_run(None);
         }
         let answer = answer?;
+        // The agents what the viewer wrote mentions are asked, as their device's window asks
+        // them each frame.
+        self.host.ask_from_mentions();
         match store.take_refusal() {
             Some(refused) => Err(refused),
             None => Ok(answer),
@@ -501,6 +582,133 @@ impl Opened {
             }
         }
         out
+    }
+
+    /// The events the changes of `doc`, the record's document `record` of `workspace`, made after
+    /// `since` (hex heads) are, in causal order, each with the heads after it: what a program
+    /// following the record answers. Each change an action stamped is one event, read from the
+    /// store's versions: the stamp names the action and who invoked it, and the resource it acted
+    /// on is one the change changed, or the one it put a new resource in, of a type the action
+    /// targets.
+    ///
+    /// Changes no action stamped, and steps taken back, yield no event but still advance the
+    /// heads, so a cursor set from the last heads never reads them again.
+    #[must_use]
+    pub fn events_since(
+        &self,
+        workspace: &str,
+        record: &str,
+        doc: &automerge::Automerge,
+        since: &[String],
+    ) -> Vec<(DocumentEvent, Vec<String>)> {
+        use tilolang_tilo::meta::MetaExt as _;
+        // The heads are this server's own, written as hashes it read: one that does not parse
+        // is a broken store, and reading every change since nothing is the safe answer.
+        let since: Vec<automerge::ChangeHash> = since
+            .iter()
+            .filter_map(|hex| {
+                tilo_failure::ignored!(
+                    "a head that is no change hash reads every change since nothing",
+                    hex.parse::<automerge::ChangeHash>()
+                )
+                .ok()
+            })
+            .collect();
+        let mut heads = since.clone();
+        let package = self.host.package(&self.app);
+        let store = self.host.store();
+        let mut events = Vec::new();
+        for change in doc.get_changes(&since) {
+            heads.retain(|head| !change.deps().contains(head));
+            heads.push(change.hash());
+            let Some(stamp) = tilo_resource_store::Stamp::of(&change) else {
+                continue;
+            };
+            if stamp.verb.is_empty() || stamp.undoes.is_some() {
+                continue;
+            }
+            let Some(touched) = tilo_resource_store::touched_by(doc, record, &change) else {
+                continue;
+            };
+            let action = package.as_ref().and_then(|package| {
+                package
+                    .meta
+                    .actions
+                    .iter()
+                    .find(|declared| declared.id == stamp.verb)
+                    .map(|declared| (&package.meta, declared))
+            });
+            let targets: Vec<String> = action
+                .map(|(meta, declared)| {
+                    meta.targets_of(&declared.params)
+                        .into_iter()
+                        .map(|ty| meta.kind_of(&ty.name))
+                        .collect()
+                })
+                .unwrap_or_default();
+            // What each touched resource says the action acted on: a resource it made stands in
+            // the one it was put in, a resource it changed for itself.
+            let acted: Vec<String> = touched
+                .resources
+                .iter()
+                .filter_map(|(id, touch)| {
+                    if touch.made {
+                        touch
+                            .parent
+                            .as_deref()
+                            .and_then(|parent| store.kind_of_id(parent))
+                    } else {
+                        touch.kind.clone().or_else(|| store.kind_of_id(id))
+                    }
+                })
+                .collect();
+            let Some(kind) = acted
+                .iter()
+                .find(|kind| targets.contains(kind))
+                .or_else(|| acted.first())
+                .cloned()
+            else {
+                continue;
+            };
+            let name =
+                action.map_or_else(|| stamp.verb.clone(), |(_, declared)| declared.name.clone());
+            let item = touched
+                .resources
+                .iter()
+                .find(|(_, touch)| touch.made)
+                .map(|(id, touch)| tilo_automation::dispatch::ItemRef {
+                    kind: touch.kind.clone().unwrap_or_default(),
+                    id: id.clone(),
+                    label: String::new(),
+                });
+            let actor = stamp
+                .invoked_by()
+                .map_or_else(|| tilo_actions::Acting::person(String::new()), Into::into);
+            events.push((
+                DocumentEvent {
+                    workspace: workspace.to_owned(),
+                    record: record.to_owned(),
+                    did: tilo_actions::entry::Did::verb(
+                        tilo_actions::ActionKey::new(&self.app, &kind, &name),
+                        [],
+                    ),
+                    kind,
+                    change: change.hash().to_string(),
+                    actor,
+                    arguments: Map::new(),
+                    item,
+                    before: None,
+                    after: None,
+                    caused_by: None,
+                    incoming_message: false,
+                    housekeeping: false,
+                    shortcut: None,
+                    invocation: stamp.group.map(|group| group.id),
+                },
+                heads.iter().map(ToString::to_string).collect(),
+            ));
+        }
+        events
     }
 
     /// Every action the record's resources publish, each in the row of the resource holding it,
@@ -791,6 +999,7 @@ impl crate::workspaces::Workspaces {
             workspace: workspace.to_owned(),
             app: app.to_owned(),
             runtime: Some(runtime),
+            refused: Arc::default(),
         })
     }
 
@@ -899,6 +1108,7 @@ impl crate::workspaces::Workspaces {
             workspace: workspace.to_owned(),
             app: app.to_owned(),
             runtime: None,
+            refused: Arc::default(),
         }
     }
 

@@ -262,10 +262,10 @@ other resources:
 
 ```bash
 sock="$XDG_RUNTIME_DIR/tilo-session/admin-control.sock"
-tilo-control --socket "$sock" actions invoke so.tilo.session 'session-diagnostics\x1fprofile-start' --args-json '{"seconds":30}'
+TILO_TEST_CONTROL="$sock" tilo do session-diagnostics#profile-start seconds=30
 # ... reproduce the problem ...
-tilo-control --socket "$sock" actions invoke so.tilo.session 'session-diagnostics\x1fprofile-stop'
-tilo-control --socket "$sock" actions invoke so.tilo.session 'session-diagnostics\x1fprofile-status'   # the profiler's state and last path, and the heap trims owed and run
+TILO_TEST_CONTROL="$sock" tilo do session-diagnostics#profile-stop
+TILO_TEST_CONTROL="$sock" tilo do session-diagnostics#profile-status   # the profiler's state and last path, and the heap trims owed and run
 tilo-control --socket "$sock" raw '{"op":"process_memory"}'   # where the session's memory is
 ```
 

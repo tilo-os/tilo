@@ -12,7 +12,7 @@ pub mod folders;
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -181,6 +181,62 @@ impl DaemonPlace {
             Err(TryLockError::WouldBlock) => true,
             // A lock that cannot even be opened is no daemon to wait for: starting one says more.
             Err(TryLockError::Error(_)) => false,
+        }
+    }
+
+    /// Start this device's daemon (`tilo-runtime --hold`) as a process of its own, in a process
+    /// group of its own so the command that started it ending does not end it, adding what it
+    /// says to its log.
+    ///
+    /// # Errors
+    /// The program is not there, or it did not start.
+    pub fn start(&self) -> std::io::Result<std::process::Child> {
+        use std::os::unix::process::CommandExt as _;
+        // Added to, never emptied: a daemon started while another holds the device ends at once,
+        // and emptying the log the one holding writes to would lose what it said.
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.log)?;
+        std::process::Command::new(runtime_program()?)
+            .arg("--hold")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(log)
+            .process_group(0)
+            .spawn()
+    }
+
+    /// Wait until this device's daemon serves Tilo's API at [`Self::api`], starting one with
+    /// `start` when none answers: what a client of this daemon needs before its first call.
+    ///
+    /// # Errors
+    /// No daemon answered in `within`, or starting one failed.
+    pub fn wait_for_api(
+        &self,
+        within: Duration,
+        start: impl FnOnce() -> std::io::Result<()>,
+    ) -> Result<(), String> {
+        let deadline = Instant::now()
+            .checked_add(within)
+            .unwrap_or_else(Instant::now);
+        let mut start = Some(start);
+        loop {
+            if tilo_files::native::socket::connect(&self.api).is_ok() {
+                return Ok(());
+            }
+            if let Some(start) = start.take() {
+                start().map_err(|error| error.to_string())?;
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "this computer's daemon did not answer at {} in time: run `tilo status` to \
+                     see how it stands, then try again (its log is {})",
+                    self.api.display(),
+                    self.log.display()
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
 

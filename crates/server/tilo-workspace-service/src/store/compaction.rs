@@ -217,49 +217,6 @@ pub(crate) fn hello_channel(device: &[u8; 32]) -> [u8; 32] {
 }
 
 impl WorkspaceStore {
-    /// Take `person` (their user root key) as the person whose device `device`
-    /// is, as a session the device authenticated says.
-    pub(crate) fn remember_person(&self, device: [u8; 32], person: [u8; 32]) {
-        self.classes().people.insert(device, person);
-    }
-
-    /// The person (their user root key) whose device `device` is, as a session
-    /// of it said ([`Self::remember_person`]) or the certificate its retained
-    /// identity carries: what a member device that is not connected is known
-    /// by, so a person's own record still reaches it. `None` for a device that
-    /// introduced itself to none of the workspace's hosts.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the device's lineage cannot be read.
-    pub(crate) fn device_person(&self, device: &[u8; 32]) -> Result<Option<[u8; 32]>, StoreError> {
-        if let Some(person) = self.classes().people.get(device) {
-            return Ok(Some(*person));
-        }
-        let channel = hello_channel(device);
-        let lineage = self
-            .root
-            .join(RETAINED_DIR)
-            .join("v2")
-            .join(lineage_name(device, &channel));
-        let Some(active) = current(&lineage)? else {
-            return Ok(None);
-        };
-        for name in document_names(&active)? {
-            let bytes = fs::read(active.join(name))?;
-            if let Some((cert, _)) = super::retained::body_of(&bytes, self.workspace_id)
-                .and_then(|body| self.payloads.identity(&body))
-                && cert.device_public_key == *device
-            {
-                self.classes().people.insert(*device, cert.user_public_key);
-                return Ok(Some(cert.user_public_key));
-            }
-        }
-        Ok(None)
-    }
-}
-
-impl WorkspaceStore {
     /// Forget the identity hello each of `devices` retained here: devices
     /// the workspace no longer admits, whose hello a replay no longer sends
     /// anyone. A workspace many people pass through would otherwise keep one

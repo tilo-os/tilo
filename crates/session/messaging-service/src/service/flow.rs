@@ -828,7 +828,7 @@ impl<P: Provider> Flow<P> {
     }
 
     /// Start the accounts the person published and granted earlier.
-    pub(crate) async fn restore(self: Arc<Self>, store: accounts::AccountStore) {
+    pub(crate) async fn restore(self: Arc<Self>, store: accounts::person::PersonAccounts) {
         let Ok(service) = self.service() else {
             return;
         };
@@ -836,11 +836,10 @@ impl<P: Provider> Flow<P> {
             return;
         };
         let rows: Vec<accounts::Account> = store
-            .all()
-            .iter()
-            .filter(|row| row.enabled && row.type_id.as_str() == Self::name())
+            .of_type(Self::name())
+            .into_iter()
+            .filter(|row| row.enabled)
             .take(32)
-            .cloned()
             .collect();
         if !P::restorable(rows.len()) {
             return;

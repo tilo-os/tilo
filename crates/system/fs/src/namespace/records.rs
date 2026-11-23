@@ -321,6 +321,12 @@ impl Namespace {
         Ok(holders)
     }
 
+    /// Where each record of the tree stands before a change: what [`Self::document_writes`]
+    /// answers the change against.
+    pub fn before_change(&mut self) -> BTreeMap<TreeChunk, Vec<automerge::ChangeHash>> {
+        self.document_heads()
+    }
+
     /// What each record holds beyond `known`, the heads its holder has of each record (none of
     /// a record it holds nothing of): one write per record that changed, with the heads it
     /// carries the record to.

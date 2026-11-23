@@ -627,17 +627,14 @@ impl DispatchCore {
     /// shared to edit) lets it be changed here too; else the app's.
     fn node(&self) -> TreePath {
         let app = TreePath::root().app(self.app_id);
-        // A record of a kind the app's manifest declares each member's own is
-        // its person's whatever their role: its changes are decided on that
-        // record, which the policy leaves to its person.
+        // A record of a kind each person keeps their own of is decided on that
+        // record, which the workspace grants its person.
         let kind = self.applied_as.map_or(self.kind, |(kind, _)| kind);
         if tilo_actions::policy::roles::requires_document_keys(self.app_id, &self.record) {
             return app.kind(kind).resource(&*self.record);
         }
         if !self.record.is_empty()
-            && collab_types::own_kinds(self.app_id)
-                .iter()
-                .any(|own| own == kind)
+            && tilo_actions::policy::roles::has_member_reader(self.app_id, kind)
         {
             return app.kind(kind).resource(&*self.record);
         }

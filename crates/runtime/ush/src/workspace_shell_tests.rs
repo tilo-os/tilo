@@ -177,7 +177,7 @@ fn a_runs_secrets_reach_its_programs_in_the_vm_and_nothing_else() {
         }),
     );
     let secret = VmSecret {
-        variable: "CLAUDE_CODE_OAUTH_TOKEN".into(),
+        variable: "GITHUB_TOKEN".into(),
         value: VALUE.into(),
     };
     let with = RunWith {
@@ -188,9 +188,7 @@ fn a_runs_secrets_reach_its_programs_in_the_vm_and_nothing_else() {
         .run_for(
             "ws-1",
             "s1",
-            &format!(
-                "CLAUDE_CODE_OAUTH_TOKEN=typed sh -c 'test \"$CLAUDE_CODE_OAUTH_TOKEN\" = {VALUE} && echo given'"
-            ),
+            &format!("GITHUB_TOKEN=typed sh -c 'test \"$GITHUB_TOKEN\" = {VALUE} && echo given'"),
             true,
             with,
         )
@@ -199,23 +197,12 @@ fn a_runs_secrets_reach_its_programs_in_the_vm_and_nothing_else() {
     assert_eq!(text(&given), "given\n");
 
     let shell_sees = shells
-        .run_for(
-            "ws-1",
-            "s1",
-            "echo \"[$CLAUDE_CODE_OAUTH_TOKEN]\"",
-            true,
-            with,
-        )
+        .run_for("ws-1", "s1", "echo \"[$GITHUB_TOKEN]\"", true, with)
         .unwrap();
     assert_eq!(text(&shell_sees), "[]\n", "the shell itself never holds it");
 
     let next = shells
-        .run(
-            "ws-1",
-            "s1",
-            "sh -c 'echo \"[$CLAUDE_CODE_OAUTH_TOKEN]\"'",
-            true,
-        )
+        .run("ws-1", "s1", "sh -c 'echo \"[$GITHUB_TOKEN]\"'", true)
         .unwrap();
     assert_eq!(next.exit, 0, "{}", text(&next));
     assert_eq!(

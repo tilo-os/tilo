@@ -291,11 +291,10 @@ impl Carries for Answers {
             let caller =
                 super::agent_caller(&self.roster, &self.workspaces, workspace, &agent, person)
                     .await?
-                    .on_roster_turn(
-                        tilo_action_policy::turn::Turn::new(String::new(), ask.ask.clone()),
-                        agent.created_at,
-                        person,
-                    );
+                    .on_roster_turn(tilo_action_policy::turn::Turn::new(
+                        String::new(),
+                        ask.ask.clone(),
+                    ));
             let narrowed = narrowing(&agent, &ask.workspace);
             let hosted = HostedTurn {
                 workspace,

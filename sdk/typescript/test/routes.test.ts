@@ -22,9 +22,9 @@ describe("a path into a route", () => {
   });
 
   it("encodes a workspace and an invocation", () => {
-    expect(routes.workspace("a b")).toBe("/v1/workspaces/a%20b");
-    expect(routes.branches("a b")).toBe("/v1/workspaces/a%20b/branches");
-    expect(routes.unattended("a b")).toBe("/v1/workspaces/a%20b/unattended");
+    expect(routes.accountAction("account/workspaces", "create")).toBe(
+      "/v1/resources/account/workspaces/actions/create",
+    );
     expect(routes.invocation("ws-1", "run/1")).toBe("/v1/workspaces/ws-1/invocations/run%2F1");
     expect(routes.content("ws-1", "tilo.content:abc")).toBe(
       "/v1/workspaces/ws-1/content/tilo.content%3Aabc",

@@ -664,7 +664,16 @@ impl SessionOrigin {
         let person = ty
             .field("person")
             .map(|field| (field.to_owned(), text(&reading.person)));
-        let mut writes: Vec<OriginWrite> = self.mirror.set(root, person).into_iter().collect();
+        // The window in front is this device's, read off its shell: the shell frames that one as
+        // focused, and a press on another asks the session to bring it forward.
+        let front = ty
+            .field("front")
+            .map(|field| (field.to_owned(), text(&reading.front)));
+        let mut writes: Vec<OriginWrite> = self
+            .mirror
+            .set(root, person.into_iter().chain(front))
+            .into_iter()
+            .collect();
         // Each collection of the root, from the reading's items of its kind.
         macro_rules! sync {
             ($items:expr, $field:literal, $kind:literal, $fields:ident) => {

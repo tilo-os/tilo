@@ -19,8 +19,10 @@
 import {isInvitedServer} from './site-host.mjs';
 
 const PRF_LABEL = new TextEncoder().encode('tilo-seal/v1/user-root-prf');
-/** Where this browser keeps its person (`{get, put, delete}`). */
-const BROWSER_RECORD = 'identity';
+/** The one store the page keeps its person in: `device-key.mjs`, which holds
+ * the tab's device key beside the person's root as the identity store's
+ * `IdentityRecord`. */
+const store = () => import('./device-key.mjs');
 let current;
 
 /** The identity this page created or unlocked last, unless locked. */
@@ -268,46 +270,52 @@ export function askToKeepStorage(storage = globalThis.navigator?.storage) {
 }
 
 /**
- * The person `record` keeps, unlocked and made this page's current identity.
- * `record` is what this browser stores (`{rootPublicKey, held, envelope,
- * revocations}`): the root wrapped under the browser's own key, what may
- * travel (the passkey and recovery wraps; empty until the person keeps it),
- * and the revocations the root signed. Adds `envelope`/`kept` (following what
- * is kept), the two ways to keep it, and `revocations`/`revokeDevice`, each
- * saved to `storage` as it lands. Keeping it asks the browser to keep
- * this site's storage through `persist` (`askToKeepStorage`).
+ * The person `kept` keeps, unlocked and made this page's current identity.
+ * `kept` is what the one store hands back (`readPerson`): an `IdentityRecord`
+ * whose seed is the root (the bytes a computer reads for the same person), the
+ * envelope that opens it elsewhere, and the revocations its root signed. Adds
+ * `envelope`/`kept` (following what is kept), the two ways to keep it, and
+ * `revocations`/`revokeDevice`, each saved beside the record as it lands.
+ * Keeping it asks the browser to keep this site's storage through `persist`
+ * (`askToKeepStorage`).
  */
-async function openKept(storage, record, persist, runtime) {
+async function openKept(storage, kept, persist, runtime) {
   runtime ??= await pageRuntime();
-  const identity = await runtime.rootHeld(record.rootPublicKey, record.held);
-  const save = async envelope => {
-    record = {...record, envelope};
-    await storage.put(BROWSER_RECORD, record);
+  const {readPerson, writePerson, rootOfPerson} = await store();
+  let {record, envelope, revocations} = kept;
+  const {seed, publicKey} = rootOfPerson(record);
+  const identity = await runtime.rootHeld(seed, hex(publicKey));
+  // A person made before any envelope existed opens with an empty one, kept
+  // here once they keep it elsewhere.
+  envelope ??= documentOf(runtime.rootEnvelopeEmpty(publicKey));
+  const save = async next => {
+    envelope = next;
+    await writePerson(storage, {record, envelope, revocations});
     askToKeepStorage(persist);
-    return envelope;
+    return next;
   };
   return Object.defineProperties(identity, Object.getOwnPropertyDescriptors({
-    get envelope() { return record.envelope; },
-    get kept() { return runtime.rootEnvelopeKept(sealed(record.envelope)); },
+    get envelope() { return envelope; },
+    get kept() { return runtime.rootEnvelopeKept(sealed(envelope)); },
     /** Add a passkey for `rpId` (default this page's host) that opens this
      * person; `userName` is what the authenticator lists it as. Resolves to
      * the new envelope, also kept here. */
     async keepWithPasskey({rpId = globalThis.location?.hostname, userName, displayName, credentials, now} = {}) {
       const options = {rpId, prfSalt: await browserPrfSalt(), credentials, now};
       if (userName) Object.assign(options, {userName, displayName: displayName ?? userName});
-      return save(await withPasskey(identity, record.envelope, options));
+      return save(await withPasskey(identity, envelope, options));
     },
     /** A new recovery key, replacing any earlier one; resolves to the key
      * as the person writes it down (shown once, never stored here). */
     async createRecoveryKey() {
-      const {envelope, recoveryKey} = await identity.wrapRecoveryKey(sealed(record.envelope));
-      await save(documentOf(envelope));
-      return recoveryKey;
+      const sealedEnvelope = await identity.wrapRecoveryKey(sealed(envelope));
+      await save(documentOf(sealedEnvelope.envelope));
+      return sealedEnvelope.recoveryKey;
     },
     /** The revocations this person's root signed, as they were kept here:
      * one per key it no longer trusts, which every session of theirs
      * announces to its host. */
-    get revocations() { return record.revocations ?? []; },
+    get revocations() { return revocations ?? []; },
     /** The root revokes `keyHex` — one of this person's devices, or the
      * stand-in approver a host holds for them — from now on: resolves to the
      * entry it signed, which is kept here beside the person and reaches
@@ -315,19 +323,18 @@ async function openKept(storage, record, persist, runtime) {
      * start. */
     async revokeDevice(keyHex, reason = 'retired') {
       const entry = JSON.parse(await runtime.revokeDevice(identity, keyHex, reason));
-      const kept = (await storage.get(BROWSER_RECORD)) ?? record;
-      record = {...kept, revocations: [...(kept.revocations ?? []), entry]};
-      await storage.put(BROWSER_RECORD, record);
+      revocations = [...(revocations ?? []), entry];
+      await writePerson(storage, {record, envelope, revocations});
       return entry;
     },
   }));
 }
 
 /**
- * The person this browser is. The first call creates one: a user root,
- * never in the clear, held wrapped under a non-extractable key kept in
- * IndexedDB (the CryptoKey itself, which never leaves the browser). It is a
- * real identity from the start: it joins and owns workspaces like any
+ * The person this browser is. The first call creates one: a user root kept as
+ * the identity store's `IdentityRecord` beside the tab's device key
+ * (`device-key.mjs`), the same record a computer reads for the same person. It
+ * is a real identity from the start: it joins and owns workspaces like any
  * other, and keeping it (`keepWithPasskey`, `createRecoveryKey`) only adds
  * ways to open the same root elsewhere. Creating one asks the browser
  * for nothing: a page that loads never waits on a permission prompt; the
@@ -339,18 +346,20 @@ async function openKept(storage, record, persist, runtime) {
  * `create: false` and none kept.
  */
 export async function browserIdentity({storage, create = true, persist = globalThis.navigator?.storage} = {}) {
-  storage ??= (await import('./device-key.mjs')).idbStorage();
+  const {idbStorage, readPerson, writePerson, personRecord} = await store();
+  storage ??= idbStorage();
   const runtime = await pageRuntime();
-  let record = await storage.get(BROWSER_RECORD);
-  if (!record) {
+  let kept = await readPerson(storage);
+  if (!kept) {
     if (!create) return null;
     const identity = await runtime.rootNew();
-    record = {rootPublicKey: identity.userPublicKey, held: identity.held, envelope: documentOf(runtime.rootEnvelopeEmpty(identity.publicKey))};
+    const record = personRecord({seed: identity.seed, publicKey: identity.publicKey});
+    kept = {record, envelope: documentOf(runtime.rootEnvelopeEmpty(identity.publicKey)), revocations: []};
     // Kept from the start: the same person on the next load, and in every
     // other tab of this site.
-    await storage.put(BROWSER_RECORD, record);
+    await writePerson(storage, kept);
   }
-  const identity = await openKept(storage, record, persist);
+  const identity = await openKept(storage, kept, persist);
   current = identity;
   return identity;
 }
@@ -362,9 +371,10 @@ export async function browserIdentity({storage, create = true, persist = globalT
  * the person agrees to anything) asks this instead.
  */
 export async function keptIdentity({storage} = {}) {
-  storage ??= (await import('./device-key.mjs')).idbStorage();
-  const record = await storage.get(BROWSER_RECORD);
-  return record ? {rootPublicKey: record.rootPublicKey, held: record.held} : null;
+  const {idbStorage, readPerson} = await store();
+  storage ??= idbStorage();
+  const kept = await readPerson(storage);
+  return kept ? {rootPublicKey: hex(kept.record.threshold_identity.group_public_key)} : null;
 }
 
 /**
@@ -393,7 +403,8 @@ export async function storagePersisted(storage = globalThis.navigator?.storage) 
  */
 export async function signInWithPasskey({rpId = globalThis.location?.hostname, fetchEnvelope: find, storage, credentials, persist = globalThis.navigator?.storage, runtime, now} = {}) {
   if (typeof find !== 'function') throw new TypeError('signInWithPasskey needs fetchEnvelope');
-  storage ??= (await import('./device-key.mjs')).idbStorage();
+  const {idbStorage, writePerson, personRecord} = await store();
+  storage ??= idbStorage();
   runtime ??= await pageRuntime();
   credentials = credentialsOf({credentials});
   if (!credentials?.get) throw new IdentityError('passkeys-unavailable', 'Passkeys are unavailable here');
@@ -411,13 +422,13 @@ export async function signInWithPasskey({rpId = globalThis.location?.hostname, f
     const envelope = await find(rootHex);
     if (!envelope) throw new IdentityError('no-envelope', 'No host this browser knows keeps this identity');
     if (runtime.rootEnvelopePublicKey(sealed(envelope)) !== rootHex) throw new IdentityError('wrong-identity', 'The host answered with another identity');
-    const identity = await runtime.rootOpenPasskey(sealed(envelope), new Uint8Array(credential.rawId), output);
+    const root = await runtime.rootOpenPasskey(sealed(envelope), new Uint8Array(credential.rawId), output);
     currentIdentity()?.lock();
-    const record = {rootPublicKey: rootHex, held: identity.held, envelope};
-    // Kept, replacing whoever this browser was: the page loads again as this
-    // person, and every other tab of the site is them too.
-    await storage.put(BROWSER_RECORD, record);
-    const signedIn = await openKept(storage, record, persist, runtime);
+    // Kept as this browser's person, replacing whoever it was: the page loads
+    // again as this person, and every other tab of the site is them too.
+    const kept = {record: personRecord({seed: root.seed, publicKey: unhex(rootHex)}), envelope, revocations: []};
+    await writePerson(storage, kept);
+    const signedIn = await openKept(storage, kept, persist, runtime);
     current = signedIn;
     askToKeepStorage(persist);
     return signedIn;

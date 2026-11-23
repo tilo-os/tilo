@@ -901,8 +901,8 @@ impl Machine {
             args.extend(["-device".into(), "virtio-serial-pci".into()]);
         }
         if self.console {
-            // The installer and the greeter answer the tilo-control action
-            // protocol on this port; its host end is reachable only by the
+            // The installer and the greeter answer action frames on this
+            // port; its host end is reachable only by the
             // user running QEMU. Physical machines have no virtio-serial bus.
             args.extend([
                 "-chardev".into(),

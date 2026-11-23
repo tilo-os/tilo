@@ -165,5 +165,31 @@ class Launch(unittest.TestCase):
             self.session(desktop).launch("notes")
 
 
+class Invocation(unittest.TestCase):
+    """The frame an action is invoked with: its resource and action apart, its arguments typed."""
+
+    def test_arguments_go_as_the_typed_object(self):
+        sent = real_apps.invocation("session", "desktop:chrome", "new-workspace", {"name": "Q"})
+        request = sent["message"]["Invoke"]
+        self.assertEqual(request["target"]["address"],
+                         {"resource": "desktop:chrome", "action": "new-workspace"})
+        self.assertEqual(request["argument"], {"Json": {"name": "Q"}})
+
+    def test_a_resource_and_action_joined_in_one_id_is_refused_before_it_is_sent(self):
+        with self.assertRaises(TypeError):
+            real_apps.invocation("session", "desktop:chrome\x1fnew-workspace", {"name": "Q"})
+        with self.assertRaises(TypeError):
+            real_apps.invocation("session", "desktop:chrome\x1fnew-workspace", "new-workspace")
+
+    def test_reading_a_status_as_the_old_receipt_fails_saying_so(self):
+        answer = real_apps.frame({"Receipt": {"status": {"Completed": {"value": 1}}}})
+        status = real_apps.receipt(answer)
+        self.assertEqual(status["Completed"], {"value": 1})
+        with self.assertRaises(KeyError):
+            status.get("receipt")
+        with self.assertRaises(KeyError):
+            status["update"]
+
+
 if __name__ == "__main__":
     unittest.main()

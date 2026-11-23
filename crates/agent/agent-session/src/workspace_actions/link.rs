@@ -329,6 +329,13 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     ) -> Result<serde_json::Value, ActionCallError> {
         Err(ActionCallError::UnknownAction)
     }
+    /// A short invite link to `workspace`, made now and kept for the page's
+    /// next press of the row that hands one over: a clipboard write happens
+    /// inside a press, and the host's answer comes after it. The action makes
+    /// the next one. `None` where the host makes none ahead.
+    fn ready_invite_link(&self, _workspace: WorkspaceId, _caller: &Caller) -> Option<String> {
+        None
+    }
     /// The listener-owned public locator; absence cannot mint a browser link.
     fn view_locator(
         &self,
@@ -359,6 +366,31 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     /// workers without one and refuses uploads.
     fn workspace_content(&self, _workspace: WorkspaceId) -> Option<tilo_content::ContentStore> {
         None
+    }
+    /// Change `workspace`'s tree where this host keeps it: `change` makes the change in the tree
+    /// the tree's sync holds, as `acting`, and this answers what it answered once the
+    /// workspace's records carry it ([`tilo_fs::tree_sync::TreeSync::change`]). Absence refuses
+    /// the change.
+    fn change_tree(
+        &self,
+        _workspace: WorkspaceId,
+        _acting: Option<tilo_actions::ActionContext>,
+        _change: &mut dyn FnMut(
+            &mut tilo_fs::namespace::Namespace,
+        ) -> Result<serde_json::Value, String>,
+    ) -> Result<serde_json::Value, String> {
+        Err("this host changes no workspace's tree".to_owned())
+    }
+    /// What `read` answers of `workspace`'s tree where this host keeps it, as the workspace has
+    /// it now ([`tilo_fs::tree_sync::TreeSync::read`]). Absence refuses the read.
+    fn read_tree(
+        &self,
+        _workspace: WorkspaceId,
+        _read: &mut dyn FnMut(
+            &mut tilo_fs::namespace::Namespace,
+        ) -> Result<serde_json::Value, String>,
+    ) -> Result<serde_json::Value, String> {
+        Err("this host reads no workspace's tree".to_owned())
     }
     /// A link the host's web origin serves `link`'s files at, out of
     /// `store` (`workspace`'s), for a little while

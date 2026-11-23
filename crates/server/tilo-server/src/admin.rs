@@ -39,6 +39,13 @@ enum Cmd {
     },
     /// Print daemon status (config + on-disk state summary).
     Status,
+    /// Print the endpoint id a server's device key answers on, from the key file it keeps
+    /// (`host-device.key`), as `server_node_id` derives it.
+    NodeId {
+        /// The server's raw 32-byte device key.
+        #[arg(long)]
+        key_file: PathBuf,
+    },
     /// Ask the running daemon about an OS update, as the update service does.
     /// Exits 0 when it may go ahead, 75 when it has to wait.
     Rollout {
@@ -196,6 +203,15 @@ fn command(config: &std::path::Path, cmd: Cmd) -> anyhow::Result<()> {
     match cmd {
         Cmd::FilesWorkspaceCheck { identity_root } => files_setup::check(&identity_root),
         Cmd::Status => cmd_status(config),
+        Cmd::NodeId { key_file } => {
+            let bytes = std::fs::read(&key_file)
+                .map_err(|error| anyhow::anyhow!("read {}: {error}", key_file.display()))?;
+            let key = <[u8; 32]>::try_from(bytes.as_slice())
+                .map_err(|_| anyhow::anyhow!("{}: a device key is 32 bytes", key_file.display()))?;
+            let key = ed25519_dalek::SigningKey::from_bytes(&key);
+            println!("{}", hex::encode(tilo_server::daemon::server_node_id(&key)));
+            Ok(())
+        }
         Cmd::RevokeDevice {
             device_pubkey_hex,
             reason,

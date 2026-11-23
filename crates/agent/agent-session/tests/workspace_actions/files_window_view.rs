@@ -122,6 +122,15 @@ async fn agent_viewing_files(
         Options::offering(crate::common::catalogue),
     )
     .await;
+    // tilo.sh made her root here, so it founds her own workspace, where her region is kept.
+    tilo_server::servers::found(
+        hosted
+            .server
+            .workspaces()
+            .expect("the host holds workspaces"),
+    )
+    .await
+    .unwrap();
     let mut page = Browser::open(&hosted, &browser_device, &home).await;
     let _files = page.create(FILES);
     page.put_layout();
@@ -191,7 +200,7 @@ async fn page_tells(
     let invocation = InvocationId::new();
     let request = InvokeRequest {
         invocation,
-        target: tilo_actions::remote::person_formats::target(action),
+        target: tilo_actions::remote::formats::target(action),
         argument: InvokeArgument::Json(argument),
         context: None,
         confirmation: None,
@@ -238,7 +247,7 @@ async fn an_agents_view_of_files_reads_times_on_the_persons_clock_in_their_zone(
         &page,
         hosted.device,
         &person,
-        tilo_actions::remote::person_formats::SET,
+        tilo_actions::remote::formats::SET,
         json!({"formats": {"time_format": "H24"}}),
     )
     .await;
@@ -246,7 +255,7 @@ async fn an_agents_view_of_files_reads_times_on_the_persons_clock_in_their_zone(
         &page,
         hosted.device,
         &person,
-        tilo_actions::remote::person_formats::BROWSER_ZONE,
+        tilo_actions::remote::formats::BROWSER_ZONE,
         json!({"zone": ZONE}),
     )
     .await;
@@ -307,10 +316,7 @@ async fn agent_reads(server: &McpServer<SessionActions>, wanted: &str) -> String
 
 /// What Files on the person's page shows for `changed` once the page read what the server keeps
 /// of them: their formats, and the zone they chose, else the browser's own.
-fn on_the_page(
-    kept: &tilo_actions::remote::person_formats::PersonFormats,
-    changed: jiff::Timestamp,
-) -> String {
+fn on_the_page(kept: &tilo_actions::remote::formats::Formats, changed: jiff::Timestamp) -> String {
     let formats =
         ui::format::region::RegionFormats::from_section(kept.formats.clone().unwrap_or_default());
     ui::format::region::install_here(
@@ -326,9 +332,7 @@ fn on_the_page(
 /// their agent read times in; back on Automatic, both read the browser's again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_zone_the_person_chooses_is_the_one_their_page_and_their_agent_read() {
-    use tilo_actions::remote::person_formats::{
-        BROWSER_ZONE, CHOOSE_ZONE, PersonFormats, READ, SET,
-    };
+    use tilo_actions::remote::formats::{BROWSER_ZONE, CHOOSE_ZONE, Formats, READ, SET};
     const BROWSER: &str = "Pacific/Auckland";
     const CHOSEN: &str = "Europe/Vienna";
     let (Ok(auckland), Ok(vienna)) = (
@@ -366,7 +370,7 @@ async fn a_zone_the_person_chooses_is_the_one_their_page_and_their_agent_read() 
 
     // She chooses Vienna, and her page reads what the server keeps, as it does on choosing.
     tell(CHOOSE_ZONE, json!({"zone": CHOSEN})).await;
-    let kept: PersonFormats = serde_json::from_value(tell(READ, json!({})).await).unwrap();
+    let kept: Formats = serde_json::from_value(tell(READ, json!({})).await).unwrap();
     assert_eq!(kept.chosen_zone.as_deref(), Some(CHOSEN));
     let hers_shows = on_the_page(&kept, changed);
     assert_eq!(hers_shows, in_vienna, "her page reads Vienna's clock");
@@ -378,7 +382,7 @@ async fn a_zone_the_person_chooses_is_the_one_their_page_and_their_agent_read() 
 
     // Back to Automatic: the page reads the browser's own zone again, and so does the agent.
     tell(CHOOSE_ZONE, json!({"zone": null})).await;
-    let kept: PersonFormats = serde_json::from_value(tell(READ, json!({})).await).unwrap();
+    let kept: Formats = serde_json::from_value(tell(READ, json!({})).await).unwrap();
     assert_eq!(kept.chosen_zone, None);
     assert!(
         ui::format::region::chosen_zone(kept.chosen_zone.as_deref()).is_none(),

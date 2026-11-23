@@ -1,6 +1,6 @@
 use super::*;
 use crate::account_sources::{Inventory, SourceRoots};
-use accounts::AccountStore;
+use crate::account_store::Accounts;
 
 fn write(path: &Path, bytes: impl AsRef<[u8]>) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -107,9 +107,9 @@ fn local_account(receipt: &ThunderbirdImportReceipt) -> &ThunderbirdAccountRecei
 /// The kept-mail file stem for a receipt account. Receipts carry no address,
 /// so the canonical store is what names the account.
 fn cache_stem(target: &Path, receipt: &ThunderbirdAccountReceipt) -> String {
-    let store = AccountStore::load_in(&target.join(".config/tilo"));
-    let account = store
-        .all()
+    let store = Accounts::read(&target.join(".config/tilo")).unwrap();
+    let all = store.all().unwrap();
+    let account = all
         .iter()
         .find(|account| {
             account
@@ -308,9 +308,10 @@ tilo_test_env::scenario! {
             2
         );
         let root = target.path().join(".config/tilo");
-        let store = AccountStore::load_in(&root);
+        let store = Accounts::read(&root).unwrap();
         let account = store
-            .get(&AccountId::new("person@example.test"))
+            .get("person@example.test")
+            .unwrap()
             .expect("the IMAP account");
         assert_eq!(
             account.type_id.as_str(),
@@ -383,7 +384,7 @@ tilo_test_env::scenario! {
 
         let again = import_selected(target.path(), &sealed, &key, BINDING, &selection).unwrap();
         assert!(again.accounts.iter().all(|account| !account.created));
-        assert_eq!(AccountStore::load_in(&root).len(), 2);
+        assert_eq!(Accounts::read(&root).unwrap().all().unwrap().len(), 2);
     }
 
     phase excluding_a_folder_removes_its_messages_from_the_capture_and_the_destination;
@@ -573,7 +574,7 @@ tilo_test_env::scenario! {
         let selection = ThunderbirdSelection::all(&reviewed);
         let target = tempfile::tempdir().unwrap();
         let root = target.path().join(".config/tilo");
-        let mut store = AccountStore::new();
+        let record = Accounts::empty();
         let id = accounts::AccountId::new("person@example.test");
         let mut existing = accounts::Account::new(id.clone(), "email");
         existing.display_name = "Existing mailbox".into();
@@ -590,8 +591,8 @@ tilo_test_env::scenario! {
             "auth": "OAuth",
             "import_pending": false,
         });
-        store.upsert(existing);
-        store.save_in(&root).unwrap();
+        record.keep(&existing).unwrap();
+        record.project(&root).unwrap();
         let key = key();
         let sealed = seal_selected(&reviewed, &selection, &key, BINDING).unwrap();
         let receipt = import_selected(target.path(), &sealed, &key, BINDING, &selection).unwrap();
@@ -601,8 +602,8 @@ tilo_test_env::scenario! {
             .find(|account| account.source_id == reviewed.accounts[0].inventory.source_id)
             .unwrap();
         assert!(!imported.created);
-        let store = AccountStore::load_in(&root);
-        let account = store.get(&id).expect("the existing mailbox");
+        let store = Accounts::read(&root).unwrap();
+        let account = store.get(id.as_str()).unwrap().expect("the existing mailbox");
         assert_eq!(account.type_id.as_str(), "email");
         assert_eq!(account.config["imap_host"], "mail.example.test");
         assert_eq!(account.config["auth"], "OAuth");
@@ -622,13 +623,13 @@ tilo_test_env::scenario! {
         let sealed = seal_selected(&reviewed, &selection, &key, BINDING).unwrap();
         let target = tempfile::tempdir().unwrap();
         let root = target.path().join(".config/tilo");
-        let mut store = AccountStore::new();
+        let record = Accounts::empty();
         let mut existing = Account::new(AccountId::new("person@example.test"), "email");
         existing.display_name = "Existing owner label".into();
         existing.config =
             serde_json::json!({"email":"person@example.test","owner_extension":"preserve-me"});
-        store.upsert(existing.clone());
-        store.save_in(&root).unwrap();
+        record.keep(&existing).unwrap();
+        record.project(&root).unwrap();
         let receipt = import_selected(target.path(), &sealed, &key, BINDING, &selection).unwrap();
         assert!(
             receipt
@@ -637,10 +638,7 @@ tilo_test_env::scenario! {
                 .find(|account| account.needs_reconnect)
                 .is_some_and(|account| !account.created)
         );
-        let stored = AccountStore::load_in(&root)
-            .get(&existing.id)
-            .unwrap()
-            .clone();
+        let stored = Accounts::read(&root).unwrap().get(existing.id.as_str()).unwrap().unwrap();
         assert_eq!(stored.type_id.as_str(), "email");
         assert_eq!(stored.config["owner_extension"], "preserve-me");
         assert_eq!(
@@ -802,7 +800,11 @@ tilo_test_env::scenario! {
             2
         );
         assert_eq!(
-            AccountStore::load_in(&target.path().join(".config/tilo")).len(),
+            Accounts::read(&target.path().join(".config/tilo"))
+                .unwrap()
+                .all()
+                .unwrap()
+                .len(),
             2
         );
         let before = std::fs::read(cache_path_for(target.path(), &local_stem)).unwrap();

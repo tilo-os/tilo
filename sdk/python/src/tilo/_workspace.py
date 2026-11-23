@@ -447,7 +447,10 @@ class Workspace:
     async def _unattended(self, on: bool) -> Any:
         endpoint = await self._endpoint()
         answer = await endpoint.json(
-            "PUT", endpoint.path("unattended"), json={"on": on}, grouped=False
+            "POST",
+            endpoint.path("resources", "account", "workspaces", "actions", "unattended"),
+            json={"workspace": endpoint.workspace, "on": on},
+            grouped=False,
         )
         try:
             return endpoint.follow(answer)

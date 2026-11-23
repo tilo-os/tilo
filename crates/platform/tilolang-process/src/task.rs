@@ -678,6 +678,8 @@ fn program(message: &Json) -> Result<(String, bool, tilolang_tilo::publish::Call
             .get("on_behalf_of")
             .and_then(Json::as_str)
             .map(str::to_owned),
+        // A program runs on this device, which signs what it does.
+        device: None,
     };
     Ok((source.to_owned(), confirm, author))
 }

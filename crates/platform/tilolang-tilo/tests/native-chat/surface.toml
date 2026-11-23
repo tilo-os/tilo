@@ -53,31 +53,6 @@ fields = [
   { path = "feedback.*.triage.*.ts", type = "int", readonly = true },
   { path = "feedback.*.triage.*.update", type = { option = { named = "TriageUpdate" } }, readonly = true },
   { path = "feedback.*.reactions", type = "reactions", readonly = true },
-  { path = "moderation", type = { named = "Moderation" }, readonly = true, stored = "record" },
-  { path = "moderation.reports", type = { collection = { named = "Report" } }, readonly = true, stored = "keyed" },
-  { path = "moderation.reports.*.id", type = "text", readonly = true },
-  { path = "moderation.reports.*.reporter", type = "actor" },
-  { path = "moderation.reports.*.person", type = "actor" },
-  { path = "moderation.reports.*.app", type = { option = "text" } },
-  { path = "moderation.reports.*.record", type = { option = "text" } },
-  { path = "moderation.reports.*.item", type = { option = "text" } },
-  { path = "moderation.reports.*.reason", type = "text" },
-  { path = "moderation.reports.*.at_ms", type = "int" },
-  { path = "moderation.reports.*.decision", type = { option = "text" } },
-  { path = "moderation.decisions", type = { collection = { named = "Decision" } }, readonly = true, stored = "keyed" },
-  { path = "moderation.decisions.*.id", type = "text", readonly = true },
-  { path = "moderation.decisions.*.person", type = "actor" },
-  { path = "moderation.decisions.*.reports", type = { list = "text" } },
-  { path = "moderation.decisions.*.outcome", type = { named = "Outcome2" } },
-  { path = "moderation.decisions.*.until_ms", type = { option = "int" } },
-  { path = "moderation.decisions.*.reasoning", type = "text" },
-  { path = "moderation.decisions.*.model", type = "text" },
-  { path = "moderation.decisions.*.reverted", type = { list = { named = "Reverted" } } },
-  { path = "moderation.decisions.*.by", type = "actor" },
-  { path = "moderation.decisions.*.at_ms", type = "int" },
-  { path = "moderation.decisions.*.overturned_by", type = { option = "actor" } },
-  { path = "moderation.decisions.*.overturn_note", type = { option = "text" } },
-  { path = "moderation.decisions.*.overturned_at_ms", type = { option = "int" } },
   { path = "files", type = { named = "WorkspaceFiles" }, readonly = true, stored = "record" },
   { path = "files.largest", type = "int" },
   { path = "files.member_hourly", type = "int" },
@@ -211,43 +186,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "report-message"
-kind = "undoable"
-params = [
-  { name = "message", type = "text", required = true, schema = { type = "string" } },
-  { name = "author", required = true, schema = { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "string" } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] } },
-  { name = "reason", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-]
-
-[[resources.verbs]]
-id = "report-person"
-kind = "undoable"
-params = [
-  { name = "person", required = true, schema = { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "string" } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] } },
-  { name = "reason", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-]
-
-[[resources.verbs]]
-id = "decide-reports"
-field = "moderation"
-kind = "undoable"
-params = [
-  { name = "id", type = "text", required = true, schema = { type = "string" } },
-  { name = "person", required = true, schema = { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "string" } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] } },
-  { name = "reports", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
-  { name = "ruling", type = { named = "Ruling" }, required = true, schema = { type = "object", additionalProperties = false, properties = { model = { type = "string" }, outcome = { type = "string", enum = ["no-action", "restrict", "ban"] }, reasoning = { type = "string" }, reverted = { type = "array", items = { type = "object", additionalProperties = false, properties = { app = { type = "string" }, changes = { type = "integer", maximum = 4294967295, minimum = 0 }, record = { type = "string" }, run = { type = "string" } }, required = ["app", "record", "run", "changes"] } }, until_ms = { type = ["integer", "null"] } }, required = ["outcome", "reasoning"] } },
-]
-
-[[resources.verbs]]
-id = "overturn-decision"
-field = "moderation"
-kind = "undoable"
-params = [
-  { name = "decision", type = "text", required = true, schema = { type = "string" } },
-  { name = "note", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
 id = "mark-read"
 kind = "undoable"
 params = [
@@ -351,24 +289,6 @@ fields = [
 ]
 
 [[resources.types]]
-name = "Decision"
-fields = [
-  { name = "id", type = "text" },
-  { name = "person", type = "actor" },
-  { name = "reports", type = { list = "text" } },
-  { name = "outcome", type = { named = "Outcome2" } },
-  { name = "until_ms", type = { option = "int" } },
-  { name = "reasoning", type = "text" },
-  { name = "model", type = "text" },
-  { name = "reverted", type = { list = { named = "Reverted" } } },
-  { name = "by", type = "actor" },
-  { name = "at_ms", type = "int" },
-  { name = "overturned_by", type = { option = "actor" } },
-  { name = "overturn_note", type = { option = "text" } },
-  { name = "overturned_at_ms", type = { option = "int" } },
-]
-
-[[resources.types]]
 name = "Destination"
 fields = [
   { name = "workspace", type = "text" },
@@ -417,26 +337,11 @@ fields = [
 ]
 
 [[resources.types]]
-name = "Moderation"
-fields = [
-  { name = "reports", type = { collection = { named = "Report" } } },
-  { name = "decisions", type = { collection = { named = "Decision" } } },
-]
-
-[[resources.types]]
 name = "Outcome"
 cases = [
   { name = "done" },
   { name = "refused" },
   { name = "failed" },
-]
-
-[[resources.types]]
-name = "Outcome2"
-cases = [
-  { name = "no-action" },
-  { name = "restrict" },
-  { name = "ban" },
 ]
 
 [[resources.types]]
@@ -467,35 +372,12 @@ fields = [
 ]
 
 [[resources.types]]
-name = "Report"
-fields = [
-  { name = "id", type = "text" },
-  { name = "reporter", type = "actor" },
-  { name = "person", type = "actor" },
-  { name = "app", type = { option = "text" } },
-  { name = "record", type = { option = "text" } },
-  { name = "item", type = { option = "text" } },
-  { name = "reason", type = "text" },
-  { name = "at_ms", type = "int" },
-  { name = "decision", type = { option = "text" } },
-]
-
-[[resources.types]]
 name = "ResourceRef"
 fields = [
   { name = "kind", type = "text" },
   { name = "id", type = "text" },
   { name = "label", type = "text" },
   { name = "span", type = { option = { named = "Span" } } },
-]
-
-[[resources.types]]
-name = "Reverted"
-fields = [
-  { name = "app", type = "text" },
-  { name = "record", type = "text" },
-  { name = "run", type = "text" },
-  { name = "changes", type = "int" },
 ]
 
 [[resources.types]]
@@ -531,16 +413,6 @@ name = "ReviewedText"
 fields = [
   { name = "kind", type = { named = "TextKind" } },
   { name = "parts", type = { list = { named = "Part" } } },
-]
-
-[[resources.types]]
-name = "Ruling"
-fields = [
-  { name = "outcome", type = { named = "Outcome2" } },
-  { name = "until_ms", type = { option = "int" } },
-  { name = "reasoning", type = "text" },
-  { name = "model", type = "text" },
-  { name = "reverted", type = { list = { named = "Reverted" } } },
 ]
 
 [[resources.types]]
@@ -1379,6 +1251,133 @@ params = [
   { name = "receipt", type = "text", required = true, schema = { type = "string" } },
   { name = "key", type = "text", required = true, schema = { type = "string" } },
   { name = "markdown", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "tilo.moderation"
+label = "Moderation"
+version = 2
+fields = [
+  { path = "reports", type = { collection = { named = "Report" } }, readonly = true, stored = "keyed" },
+  { path = "reports.*.id", type = "text", readonly = true },
+  { path = "reports.*.reporter", type = "actor" },
+  { path = "reports.*.person", type = "actor" },
+  { path = "reports.*.app", type = { option = "text" } },
+  { path = "reports.*.record", type = { option = "text" } },
+  { path = "reports.*.item", type = { option = "text" } },
+  { path = "reports.*.reason", type = "text" },
+  { path = "reports.*.at_ms", type = "int" },
+  { path = "reports.*.decision", type = { option = "text" } },
+  { path = "decisions", type = { collection = { named = "Decision" } }, readonly = true, stored = "keyed" },
+  { path = "decisions.*.id", type = "text", readonly = true },
+  { path = "decisions.*.person", type = "actor" },
+  { path = "decisions.*.reports", type = { list = "text" } },
+  { path = "decisions.*.outcome", type = { named = "Outcome" } },
+  { path = "decisions.*.until_ms", type = { option = "int" } },
+  { path = "decisions.*.reasoning", type = "text" },
+  { path = "decisions.*.model", type = "text" },
+  { path = "decisions.*.reverted", type = { list = { named = "Reverted" } } },
+  { path = "decisions.*.by", type = "actor" },
+  { path = "decisions.*.at_ms", type = "int" },
+  { path = "decisions.*.overturned_by", type = { option = "actor" } },
+  { path = "decisions.*.overturn_note", type = { option = "text" } },
+  { path = "decisions.*.overturned_at_ms", type = { option = "int" } },
+]
+
+[[resources.verbs]]
+id = "report-message"
+kind = "undoable"
+params = [
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
+  { name = "author", required = true, schema = { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "string" } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] } },
+  { name = "reason", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+]
+
+[[resources.verbs]]
+id = "report-person"
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "string" } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] } },
+  { name = "reason", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+]
+
+[[resources.verbs]]
+id = "decide-reports"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+  { name = "person", required = true, schema = { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "string" } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] } },
+  { name = "reports", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "ruling", type = { named = "Ruling" }, required = true, schema = { type = "object", additionalProperties = false, properties = { model = { type = "string" }, outcome = { type = "string", enum = ["no-action", "restrict", "ban"] }, reasoning = { type = "string" }, reverted = { type = "array", items = { type = "object", additionalProperties = false, properties = { app = { type = "string" }, changes = { type = "integer", maximum = 4294967295, minimum = 0 }, record = { type = "string" }, run = { type = "string" } }, required = ["app", "record", "run", "changes"] } }, until_ms = { type = ["integer", "null"] } }, required = ["outcome", "reasoning"] } },
+]
+
+[[resources.verbs]]
+id = "overturn-decision"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "decision", type = "text", required = true, schema = { type = "string" } },
+  { name = "note", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "Decision"
+fields = [
+  { name = "id", type = "text" },
+  { name = "person", type = "actor" },
+  { name = "reports", type = { list = "text" } },
+  { name = "outcome", type = { named = "Outcome" } },
+  { name = "until_ms", type = { option = "int" } },
+  { name = "reasoning", type = "text" },
+  { name = "model", type = "text" },
+  { name = "reverted", type = { list = { named = "Reverted" } } },
+  { name = "by", type = "actor" },
+  { name = "at_ms", type = "int" },
+  { name = "overturned_by", type = { option = "actor" } },
+  { name = "overturn_note", type = { option = "text" } },
+  { name = "overturned_at_ms", type = { option = "int" } },
+]
+
+[[resources.types]]
+name = "Outcome"
+cases = [
+  { name = "no-action" },
+  { name = "restrict" },
+  { name = "ban" },
+]
+
+[[resources.types]]
+name = "Report"
+fields = [
+  { name = "id", type = "text" },
+  { name = "reporter", type = "actor" },
+  { name = "person", type = "actor" },
+  { name = "app", type = { option = "text" } },
+  { name = "record", type = { option = "text" } },
+  { name = "item", type = { option = "text" } },
+  { name = "reason", type = "text" },
+  { name = "at_ms", type = "int" },
+  { name = "decision", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "Reverted"
+fields = [
+  { name = "app", type = "text" },
+  { name = "record", type = "text" },
+  { name = "run", type = "text" },
+  { name = "changes", type = "int" },
+]
+
+[[resources.types]]
+name = "Ruling"
+fields = [
+  { name = "outcome", type = { named = "Outcome" } },
+  { name = "until_ms", type = { option = "int" } },
+  { name = "reasoning", type = "text" },
+  { name = "model", type = "text" },
+  { name = "reverted", type = { list = { named = "Reverted" } } },
 ]
 
 [[resources]]

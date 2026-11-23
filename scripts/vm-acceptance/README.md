@@ -282,10 +282,9 @@ run here on every full run instead, on the dev disk under KVM:
 - R07 runs `tilo-session-report --render-check` in the account's session with the KVM
   budgets (`render_frame_ms` 1000, `render_frame_work_ms` 100).
 - A15 opens Files, Notes and Settings once unmeasured and then ten times each. Every
-  open is requested from inside the session (`date +%s%3N; tilo-control actions invoke
-  applications <app>`) and timed to the app's own `first-frame-presented` startup mark,
-  so the time holds the compositor's dispatch, the launcher and the sandbox as well as
-  the app's start; it waits for the app's processes to exit before the next open. The
+  open is requested from inside the session (`date +%s%3N; tilo open <app>`) and
+  timed to the app's own `first-frame-presented` startup mark, so the time holds the
+  compositor's dispatch, the launcher and the sandbox as well as the app's start; it waits for the app's processes to exit before the next open. The
   median is held to the app's warm-open budget on the session's renderer
   (`app_startup.warm_open_budget_ms`: 1.5 s on a CPU rasterizer, tighter than a launch's
   3 s, otherwise the app's budget); on a GPU the p95 is also held to the KPI's

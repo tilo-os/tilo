@@ -1,18 +1,21 @@
 //! The page's user root: the person's Tilo identity with no other device.
 //!
-//! The root is an Ed25519 key generated here and held only wrapped: as the
-//! person's root envelope (a JSON document anyone may keep) and, in this
-//! browser, under a non-extractable `AES-GCM` key kept beside it in the
-//! page's storage. The envelope's format and rules are
-//! [`tilo_user_identity::root_envelope`]'s, and the statements its root
-//! signs are [`tilo_user_identity::root_statement`]'s; this module makes the
-//! `WebCrypto` calls those rules need, so the page seals and opens exactly
-//! what a native device does. The ceremonies that mint and use passkeys are
-//! the page's (`web/identity.mjs`), which hands the PRF output over.
+//! The root is an Ed25519 key. The page keeps it as the identity store's
+//! record (`tilo_identity::store`'s `IdentityRecord`, its 32-byte seed in
+//! `secret_bytes`), which `web/device-key.mjs` writes from the seed this module
+//! hands out and opens the root back from: a computer reads the same record as
+//! its own identity, so a root the tab founds and a root a computer imports are
+//! one record. What opens it elsewhere is the person's root envelope (a JSON
+//! document anyone may keep); its format and rules are
+//! [`tilo_user_identity::root_envelope`]'s, and the statements its root signs
+//! are [`tilo_user_identity::root_statement`]'s. This module makes the
+//! `WebCrypto` calls those rules need, so the page seals and opens exactly what
+//! a native device does. The ceremonies that mint and use passkeys are the
+//! page's (`web/identity.mjs`), which hands the PRF output over.
 //!
-//! Unlocking unwraps the root into a non-extractable `WebCrypto` key that
-//! lives in this page's memory only; [`Root::lock`] drops it. Requires
-//! `WebCrypto` Ed25519.
+//! Opening imports the seed into a non-extractable `WebCrypto` key that lives
+//! in this page's memory only; [`Root::lock`] drops it. Requires `WebCrypto`
+//! Ed25519.
 
 use std::cell::Cell;
 
@@ -145,6 +148,48 @@ fn random(length: usize) -> Result<Vec<u8>, JsValue> {
     let drawn = Uint8Array::new_with_length(u32::try_from(length).map_err(|_| unavailable())?);
     invoke(&crypto()?, "getRandomValues", &[drawn.clone().into()])?;
     Ok(drawn.to_vec())
+}
+
+/// The PKCS#8 v2 encoding of an Ed25519 private key from its 32-byte seed:
+/// `WebCrypto` imports a private Ed25519 key only as PKCS#8, and this is the
+/// fixed prefix a seed follows.
+fn pkcs8_from_seed(seed: &[u8; 32]) -> Vec<u8> {
+    const PREFIX: [u8; 16] = [
+        0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04,
+        0x20,
+    ];
+    let mut der = PREFIX.to_vec();
+    der.extend_from_slice(seed);
+    der
+}
+
+/// The 32-byte seed a PKCS#8 Ed25519 private key ends with.
+fn seed_of_pkcs8(der: &[u8]) -> Result<[u8; 32], JsValue> {
+    der.get(der.len().saturating_sub(32)..)
+        .and_then(|seed| seed.try_into().ok())
+        .ok_or_else(|| error_with("malformed", "the root's key does not read"))
+}
+
+/// The Ed25519 signing key `der` (`PKCS#8`) holds, extractable only to seal it
+/// anew for a wrap.
+async fn import_pkcs8(der: &[u8], extractable: bool) -> Result<JsValue, JsValue> {
+    awaited(
+        &subtle()?,
+        "importKey",
+        &[
+            JsValue::from_str("pkcs8"),
+            view(der),
+            algorithm("Ed25519")?,
+            if extractable {
+                JsValue::TRUE
+            } else {
+                JsValue::FALSE
+            },
+            names(&["sign"]),
+        ],
+    )
+    .await
+    .map_err(|_| error_with("rejected", "This browser cannot open the identity it keeps"))
 }
 
 /// The key a wrap seals the root under: `HKDF-SHA256(ikm, salt, info = the
@@ -283,72 +328,6 @@ async fn proves_root(private_key: &JsValue, public_key: &[u8; 32]) -> Result<(),
         .ok_or_else(|| error_with("wrong-root", "The envelope holds another key than its root"))
 }
 
-/// How this browser keeps the root: the non-extractable `AES-GCM` key that
-/// wraps it (so the root never leaves the page), the nonce and the wrapped
-/// root. `IndexedDB` stores the key itself, structured-cloned.
-async fn hold_root(private_key: &JsValue) -> Result<JsValue, JsValue> {
-    let subtle = subtle()?;
-    let key = awaited(
-        &subtle,
-        "generateKey",
-        &[
-            object(&[
-                ("name", JsValue::from_str("AES-GCM")),
-                ("length", JsValue::from_f64(256.0)),
-            ])?,
-            JsValue::FALSE,
-            names(&["wrapKey", "unwrapKey"]),
-        ],
-    )
-    .await
-    .map_err(|_| unavailable())?;
-    let nonce = random(NONCE_LEN)?;
-    let wrapped = awaited(
-        &subtle,
-        "wrapKey",
-        &[
-            JsValue::from_str("pkcs8"),
-            private_key.clone(),
-            key.clone(),
-            object(&[("name", JsValue::from_str("AES-GCM")), ("iv", view(&nonce))])?,
-        ],
-    )
-    .await
-    .map_err(|_| error_with("seal", "keeping the root failed"))?;
-    object(&[
-        ("key", key),
-        ("nonce", view(&nonce)),
-        ("wrapped", view(&bytes(&wrapped))),
-    ])
-}
-
-/// The root `held` wraps, unwrapped from the record: non-extractable to
-/// sign with, extractable only to seal it anew.
-async fn release(held: &JsValue, extractable: bool) -> Result<JsValue, JsValue> {
-    awaited(
-        &subtle()?,
-        "unwrapKey",
-        &[
-            JsValue::from_str("pkcs8"),
-            property(held, "wrapped")?,
-            property(held, "key")?,
-            object(&[
-                ("name", JsValue::from_str("AES-GCM")),
-                ("iv", property(held, "nonce")?),
-            ])?,
-            algorithm("Ed25519")?,
-            if extractable {
-                JsValue::TRUE
-            } else {
-                JsValue::FALSE
-            },
-            names(&["sign"]),
-        ],
-    )
-    .await
-    .map_err(|_| error_with("rejected", "This browser cannot open the identity it keeps"))
-}
-
 fn parse(json: &str) -> Result<RootEnvelope, JsValue> {
     serde_json::from_str(json).map_err(|_| error_with("malformed", "not a root envelope"))
 }
@@ -375,11 +354,11 @@ fn aad_of(envelope: &RootEnvelope, wrap: &RootWrap) -> Result<Vec<u8>, JsValue> 
 
 /// The unlocked root: what this module signs with while it stays unlocked
 /// (`{publicKey, sign}` is the signer every native certificate call takes),
-/// and how this browser keeps it.
+/// the seed the page keeps it by, and its public key.
 #[wasm_bindgen]
 pub struct Root {
     public_key: [u8; 32],
-    held: JsValue,
+    seed: [u8; 32],
     signer: Option<JsValue>,
     locked: Cell<bool>,
 }
@@ -387,11 +366,20 @@ pub struct Root {
 impl Root {
     async fn opened(public_key: [u8; 32], root: &JsValue) -> Result<Self, JsValue> {
         proves_root(root, &public_key).await?;
-        let held = hold_root(root).await?;
-        let signer = release(&held, false).await?;
+        let der = bytes(
+            &awaited(
+                &subtle()?,
+                "exportKey",
+                &[JsValue::from_str("pkcs8"), root.clone()],
+            )
+            .await
+            .map_err(|_| unavailable())?,
+        );
+        let seed = seed_of_pkcs8(&der)?;
+        let signer = import_pkcs8(&der, false).await?;
         Ok(Self {
             public_key,
-            held,
+            seed,
             signer: Some(signer),
             locked: Cell::new(false),
         })
@@ -406,11 +394,11 @@ impl Root {
             .ok_or_else(|| error_with("locked", "The identity is locked"))
     }
 
-    /// The root to seal anew: extractable, so it can wrap for one more key.
-    /// Dropped as soon as the wrap exists.
+    /// The root to seal anew for a wrap, extractable from its seed: dropped as
+    /// soon as the wrap exists.
     async fn extractable(&self) -> Result<JsValue, JsValue> {
         self.signer()?;
-        release(&self.held, true).await
+        import_pkcs8(&pkcs8_from_seed(&self.seed), true).await
     }
 
     fn envelope_of(&self, json: &str) -> Result<RootEnvelope, JsValue> {
@@ -445,11 +433,11 @@ impl Root {
         self.locked.get()
     }
 
-    /// How this browser keeps the root: `{key, nonce, wrapped}`, for the
-    /// page's storage. The key in it never leaves the browser.
+    /// The root's 32-byte seed, for the page to keep in its identity record
+    /// (`web/device-key.mjs`'s `personRecord`).
     #[wasm_bindgen(getter)]
-    pub fn held(&self) -> JsValue {
-        self.held.clone()
+    pub fn seed(&self) -> Uint8Array {
+        Uint8Array::from(&self.seed[..])
     }
 
     /// The Ed25519 signature of `message`, by the unlocked root.
@@ -571,8 +559,9 @@ impl Root {
     }
 }
 
-/// A fresh user root, kept the way this browser keeps one: generate it, wrap
-/// it, hold it. The page makes its envelope with [`root_envelope_empty`].
+/// A fresh user root: generated, its seed handed out ([`Root::seed`]) for the
+/// page to keep as the identity store's record, and its signer held here. The
+/// page makes its envelope with [`root_envelope_empty`].
 ///
 /// # Errors
 ///
@@ -605,23 +594,28 @@ pub async fn root_new() -> Result<Root, JsValue> {
     Root::opened(public, &property(&pair, "privateKey")?).await
 }
 
-/// The root a browser kept under `held` (`{key, nonce, wrapped}`), unlocked
-/// as `public_key` (hex) names it.
+/// The root a browser kept as `seed` (its 32 bytes), unlocked as
+/// `public_key` (hex) names it: the identity store's `IdentityRecord` hands
+/// both back.
 ///
 /// # Errors
 ///
-/// `rejected` when this browser cannot open what it keeps, `malformed` for a
-/// public key that is not 32 hex bytes.
+/// `rejected` when this seed does not open to `public_key`, `malformed` for a
+/// seed that is not 32 bytes or a public key that is not 32 hex bytes.
 #[wasm_bindgen(js_name = rootHeld)]
-pub async fn root_held(public_key: String, held: JsValue) -> Result<Root, JsValue> {
+pub async fn root_held(seed: Vec<u8>, public_key: String) -> Result<Root, JsValue> {
+    let seed: [u8; 32] = seed
+        .try_into()
+        .map_err(|_| error_with("malformed", "a root seed is 32 bytes"))?;
     let public_key: [u8; 32] = hex::decode(&public_key)
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or_else(|| error_with("malformed", "root_public_key must be 32 bytes"))?;
-    let signer = release(&held, false).await?;
+    let signer = import_pkcs8(&pkcs8_from_seed(&seed), false).await?;
+    proves_root(&signer, &public_key).await?;
     Ok(Root {
         public_key,
-        held,
+        seed,
         signer: Some(signer),
         locked: Cell::new(false),
     })

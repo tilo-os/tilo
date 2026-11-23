@@ -13,6 +13,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 
+use imager_backend::account_store;
 use imager_backend::migration_store::MigrationStore;
 use imager_backend::service_sources::{
     self, InboxLanding, JournalState, ServiceAddress, ServiceError, ServiceJournal, ServiceKind,
@@ -78,7 +79,7 @@ impl Services {
             .unwrap_or_default();
         let connected = config_root
             .as_deref()
-            .map(service_sources::connected)
+            .map(|root| service_sources::connected(&account_store::person_accounts(root)))
             .unwrap_or_default()
             .into_iter()
             .map(|(id, kind, title)| (id.0, kind, title))
@@ -222,8 +223,19 @@ impl Services {
                 self.fields[2].set(String::new());
                 let (send, receive) = mpsc::channel();
                 std::thread::spawn(move || {
-                    let connected = service_sources::connect(&config_root, address);
-                    let _ = send.send(Done::Connected(connected.map(|id| id.0)));
+                    let result = (|| {
+                        let mut record = account_store::replica_in(&config_root)
+                            .map_err(|_| ServiceError::Storage)?;
+                        let state = record.state().map_err(|_| ServiceError::Storage)?;
+                        let (id, edit) = service_sources::connect(&config_root, &state, address)?;
+                        record
+                            .apply_confirmed(edit)
+                            .map_err(|_| ServiceError::Storage)?;
+                        account_store::project(&config_root, &mut record)
+                            .map_err(|_| ServiceError::Storage)?;
+                        Ok(id.0)
+                    })();
+                    let _ = send.send(Done::Connected(result));
                 });
                 self.work = Some(receive);
                 self.status = Some((t("imager-services-connecting"), false));
@@ -236,8 +248,10 @@ impl Services {
                     .ok_or_else(|| t("imager-services-unknown-source"))?;
                 let (send, receive) = mpsc::channel();
                 std::thread::spawn(move || {
+                    let record = account_store::person_accounts(&config_root);
                     let _ = send.send(Done::Reviewed(service_sources::review(
                         &config_root,
+                        &record,
                         &account,
                     )));
                 });
@@ -277,18 +291,38 @@ impl Services {
                 let cancel = Arc::clone(&self.cancel);
                 let (send, receive) = mpsc::channel();
                 std::thread::spawn(move || {
+                    let Ok(mut record) = account_store::replica_in(&config_root) else {
+                        let _ = send.send(Done::Ran(journal, Err(ServiceError::Storage)));
+                        return;
+                    };
+                    let Ok(state) = record.state() else {
+                        let _ = send.send(Done::Ran(journal, Err(ServiceError::Storage)));
+                        return;
+                    };
                     let mut landing = InboxLanding::new(&home);
                     let progress = send.clone();
+                    let mut publish = |account: &str| {
+                        let state = record.state().map_err(|_| "storage".to_owned())?;
+                        let edit = service_sources::publish_mail(&state, account)?;
+                        record
+                            .apply_confirmed(edit)
+                            .map_err(|error| error.to_string())?;
+                        Ok(())
+                    };
                     let result = service_sources::run(
                         &config_root,
+                        &state,
                         &mut journal,
                         &mut landing,
+                        &mut publish,
                         &mut |journal| {
                             let _ = progress.send(Done::Progress(journal.clone()));
                             store.save_service(journal)
                         },
                         &cancel,
                     );
+                    drop(publish);
+                    let _ = account_store::project(&config_root, &mut record);
                     let _ = send.send(Done::Ran(journal, result));
                 });
                 self.work = Some(receive);
@@ -356,7 +390,7 @@ impl Services {
         self.connected = self
             .config_root
             .as_deref()
-            .map(service_sources::connected)
+            .map(|root| service_sources::connected(&account_store::person_accounts(root)))
             .unwrap_or_default()
             .into_iter()
             .map(|(id, kind, title)| (id.0, kind, title))

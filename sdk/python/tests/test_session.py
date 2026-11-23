@@ -42,7 +42,7 @@ async def tilo(api: FakeApi):
 async def test_every_call_carries_the_key_and_asks_for_json_or_events(tilo, api):
     await tilo.workspaces.list()
 
-    call = api.asked("GET", "/v1/workspaces")[-1]
+    call = api.asked("POST", "/workspaces/actions/list")[-1]
     assert call["headers"]["authorization"] == f"Bearer {api.key}"
     assert call["headers"]["accept"] == "application/json, text/event-stream"
 
@@ -80,7 +80,7 @@ async def test_a_transient_refusal_is_asked_again_with_the_same_idempotency_key(
     assert created.role == "owner"
     assert api.busy == 0
     assert api.ran["workspaces#create"] == 1
-    keys = [call["headers"]["idempotency-key"] for call in api.asked("POST", "/v1/workspaces")]
+    keys = [call["headers"]["idempotency-key"] for call in api.asked("POST", "/workspaces/actions/create")]
     assert len(keys) == 3
     assert len(set(keys)) == 1
 
@@ -126,15 +126,15 @@ async def test_a_new_logical_call_names_an_idempotency_key_of_its_own(tilo, api)
     await tilo.workspaces.create("One")
     await tilo.workspaces.create("Two")
 
-    keys = [call["headers"].get("idempotency-key") for call in api.asked("POST", "/v1/workspaces")]
+    keys = [call["headers"].get("idempotency-key") for call in api.asked("POST", "/workspaces/actions/create")]
     assert all(keys)
     assert keys[0] != keys[1]
 
 
 async def test_reads_name_no_idempotency_key(tilo, api):
-    await tilo.workspaces.list()
+    await tilo.workspace("jane-doe").ls()
 
-    assert "idempotency-key" not in api.asked("GET", "/v1/workspaces")[-1]["headers"]
+    assert "idempotency-key" not in api.asked("GET", "/resources")[-1]["headers"]
 
 
 async def test_a_refusal_raises_with_the_api_s_words(tilo, api):

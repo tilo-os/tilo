@@ -172,7 +172,7 @@ async fn a_pass_goes_by() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_message_that_arrives_starts_its_persons_event_once_with_what_arrived_as_data() {
     let scratch = tempfile::tempdir().unwrap();
-    let (hers, _holder) = Hers::on(scratch.path()).await;
+    let (hers, _holder) = Box::pin(Hers::on(scratch.path())).await;
     let assistant = Assistant::answering(vec![]);
     let events = hers.events(&assistant);
 
@@ -284,7 +284,7 @@ async fn a_message_that_arrives_starts_its_persons_event_once_with_what_arrived_
 #[tokio::test(flavor = "multi_thread")]
 async fn nothing_new_asks_nobody_and_its_persons_model_says_what_is_handed_over() {
     let scratch = tempfile::tempdir().unwrap();
-    let (hers, _holder) = Hers::on(scratch.path()).await;
+    let (hers, _holder) = Box::pin(Hers::on(scratch.path())).await;
     let assistant = Assistant::judging(vec![Ok(Value::Bool(false)), Ok(Value::Bool(true))]);
     let events = hers.events(&assistant);
     hers.sets_up(
@@ -331,7 +331,7 @@ async fn nothing_new_asks_nobody_and_its_persons_model_says_what_is_handed_over(
 #[tokio::test(flavor = "multi_thread")]
 async fn mail_the_workspace_keeps_is_handed_over_and_another_workspaces_mail_is_not() {
     let scratch = tempfile::tempdir().unwrap();
-    let (hers, _holder) = Hers::on(scratch.path()).await;
+    let (hers, _holder) = Box::pin(Hers::on(scratch.path())).await;
     let assistant = Assistant::answering(vec![]);
     let events = hers.events(&assistant);
 
@@ -381,7 +381,7 @@ async fn mail_the_workspace_keeps_is_handed_over_and_another_workspaces_mail_is_
 #[tokio::test(flavor = "multi_thread")]
 async fn an_event_keeps_to_the_account_and_sender_it_names_and_to_nothing_that_came_while_paused() {
     let scratch = tempfile::tempdir().unwrap();
-    let (hers, _holder) = Hers::on(scratch.path()).await;
+    let (hers, _holder) = Box::pin(Hers::on(scratch.path())).await;
     let assistant = Assistant::answering(vec![]);
     let events = hers.events(&assistant);
     hers.keeps(HOME).await;

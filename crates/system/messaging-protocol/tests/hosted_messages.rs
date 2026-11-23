@@ -73,8 +73,10 @@ impl SignalAuthority for Authority {
         if self.revoked.load(Ordering::SeqCst) || *requested != route() {
             return Err(SendError::Revoked);
         }
-        let mut accounts = accounts::AccountStore::new();
-        accounts.upsert(accounts::Account::new("fixture-signal", "signal"));
+        let mut accounts = accounts::person::PersonAccounts::default();
+        accounts
+            .keep(&accounts::Account::new("fixture-signal", "signal"))
+            .map_err(|_| SendError::Revoked)?;
         let mut directory = tilo_contact_directory::ContactDirectory::default();
         directory
             .project_contact(Id::from_raw(PERSON), "Fixture person".into())

@@ -263,7 +263,7 @@ so run it as root (`sudo`).\nThe directory holds one `<component>.tar` and `<com
     },
     /// Run the VM's tilo-control against an account's session (the one driving story).
     #[command(
-        after_help = "Examples:\n  tilo-vm control actions list\n  tilo-vm control actions invoke notes new-note\n  tilo-vm control --account review-a state-dump --pretty"
+        after_help = "Examples:\n  tilo-vm control actions list       (tilo action list, in the session)\n  tilo-vm control --account review-a state-dump --pretty\n\nTo do an action: tilo-vm account exec -- tilo do NAME"
     )]
     Control {
         /// The account whose session tilo-control drives (default: your account).
@@ -423,7 +423,7 @@ pub enum FlightCommand {
 pub enum ScenarioCommand {
     /// Boot an installer medium, install through its published actions, cold-boot the result and verify first boot.
     #[command(
-        after_help = "Examples:\n  tilo-vm scenario install\n  tilo-vm scenario install --medium os/output/installer/qcow2/disk.qcow2\n  tilo-vm scenario install --layout guided-alongside\n  tilo-vm scenario install --layout guided-alongside --target-disk C:\\VMs\\tilo-source.raw --graphics software\n  tilo-vm scenario install --layout prepared-alongside --graphics software\n  TILO_SECBOOT_KEYS=/path/to/release-vars tilo-vm scenario install --encrypt tpm-pin\n  tilo-vm scenario install --dry-run --json\n\nNo account and no dev VM: the scenario boots its own throwaway QEMU VM with\nos/dev/vm.sh, reaches the installer on its console channel (the tilo-control\naction protocol over a virtio-serial port only this VM has), installs, powers\noff through the installer's Finish action, cold-boots the target, types the\nunlock secret at its boot prompt, and verifies the greeter runs the image the\ninstaller wrote. Build a medium first: ./os/build.sh --local, then\n./os/dev/build-custom-installer.sh. Details: tilo-vm guide scenarios."
+        after_help = "Examples:\n  tilo-vm scenario install\n  tilo-vm scenario install --medium os/output/installer/qcow2/disk.qcow2\n  tilo-vm scenario install --layout guided-alongside\n  tilo-vm scenario install --layout guided-alongside --target-disk C:\\VMs\\tilo-source.raw --graphics software\n  tilo-vm scenario install --layout prepared-alongside --graphics software\n  TILO_SECBOOT_KEYS=/path/to/release-vars tilo-vm scenario install --encrypt tpm-pin\n  tilo-vm scenario install --dry-run --json\n\nNo account and no dev VM: the scenario boots its own throwaway QEMU VM with\nos/dev/vm.sh, reaches the installer on its console channel (action frames\nover a virtio-serial port only this VM has), installs, powers\noff through the installer's Finish action, cold-boots the target, types the\nunlock secret at its boot prompt, and verifies the greeter runs the image the\ninstaller wrote. Build a medium first: ./os/build.sh --local, then\n./os/dev/build-custom-installer.sh. Details: tilo-vm guide scenarios."
     )]
     Install(InstallScenarioArgs),
 }
@@ -954,20 +954,14 @@ pub enum VmCommand {
         #[arg(long)]
         off: bool,
     },
-    /// Enrol this machine as one of the owner's devices, so tilo-vm reaches their devices over the peer network when they are not on this network.
+    /// Join this machine as one of the owner's devices, so tilo-vm reaches their devices over the peer network when they are not on this network.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm enrol-admin --via yoga   # yoga holds the owner's identity: it certifies this machine over SSH\n  tilo-vm vm enrol-admin              # this machine's key, and how to certify it by hand\n  tilo-vm vm enrol-admin --cert admin.cert\n\nBeyond the LAN, tilo-vm dials a device's device-admin route over the peer\nnetwork (hole-punched, relayed when it must be) once SSH and the device's\nname do not answer. The device admits only a device of its owner's identity\nwhose certificate grants administration, so this machine enrols once, like\nany other device: the owner's root certifies its key with `tilo-enroll\ncertify --capability admin`, on the device where they approve new devices,\nwhich also lists it among their devices (Settings can remove it). With --via\ntilo-vm runs that over SSH as the account it logs in with; that account must\nown the identity (an owner-account device: vm add --ssh <owner>@...).\nNeeds tilo-device-admin beside tilo-vm. Details: tilo-vm guide devices."
+        after_help = "Examples:\n  tilo-vm vm enrol-admin --via yoga   # yoga holds the owner's identity: it prints the ticket this machine logs in with\n  tilo-vm vm enrol-admin              # this machine's key, and the two commands that join it\n\nBeyond the LAN, tilo-vm dials a device's device-admin route over the peer\nnetwork (hole-punched, relayed when it must be) once SSH and the device's\nname do not answer. The device admits only a device of its owner's identity\nwhose certificate grants administration, so this machine joins once, like\nany other device: on the device where the owner adds new devices,\n`tilo device add --capability admin` prints a one-use ticket, and `tilo login`\nhere spends it. That also lists the machine among their devices (Settings\ncan remove it). With --via tilo-vm runs both over SSH on the device it logs in\nwith; that account must own the identity (an owner-account device: vm add\n--ssh <owner>@...). Needs tilo-device-admin beside tilo-vm, and the tilo\ncommand here. Details: tilo-vm guide devices."
     )]
     EnrolAdmin {
-        /// A registered device that holds the owner's identity: it certifies this machine over SSH.
-        #[arg(long, conflicts_with = "cert")]
+        /// A registered device that holds the owner's identity: it prints the ticket this machine logs in with.
+        #[arg(long)]
         via: Option<String>,
-        /// A certificate the owner made for this machine's key (tilo-enroll certify --capability admin).
-        #[arg(long)]
-        cert: Option<std::path::PathBuf>,
-        /// This machine's name in the owner's device list (default: its hostname).
-        #[arg(long)]
-        label: Option<String>,
     },
     /// Boot the VM and wait until SSH answers.
     #[command(after_help = "Examples:\n  tilo-vm vm start")]
@@ -1080,13 +1074,16 @@ pub enum DeviceActionCommand {
     },
     /// Invoke a declared action; private arguments come only from stdin.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm actions invoke device-unlock enroll --args-stdin < private-args.json\n\nRead the action's declared JSON arguments with vm actions list. Private\narguments are read from stdin and never placed in the command line."
+        after_help = "Examples:\n  tilo-vm vm actions invoke device-unlock enroll@device-unlock --confirm --args-stdin < private-args.json\n\nRead the action's declared JSON arguments with vm actions list. Private\narguments are read from stdin and never placed in the command line."
     )]
     Invoke {
         /// The provider returned by vm actions list.
         provider: String,
-        /// The declared action ID returned by vm actions list.
+        /// The action as ACTION@RESOURCE, from vm actions list.
         id: String,
+        /// Confirm an action whose contract asks for confirmation.
+        #[arg(long)]
+        confirm: bool,
         /// Read the action's JSON arguments from stdin, including private fields.
         #[arg(long, required = true)]
         args_stdin: bool,
@@ -1682,7 +1679,7 @@ mod tests {
             for args in [
                 &["tilo-vm", "swap", "--account", "a", "tilo-session"][..],
                 &["tilo-vm", "input", "--account", "a", "key", "super"],
-                &["tilo-vm", "control", "--account", "a", "actions", "list"],
+                &["tilo-vm", "control", "--account", "a", "state-dump"],
                 &["tilo-vm", "status", "--account", "a"],
             ] {
                 Cli::try_parse_from(args).unwrap();

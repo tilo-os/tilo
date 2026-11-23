@@ -247,10 +247,10 @@ class FakeApi:
         path = call["path"]
         if path == "/v1":
             return self.answer(200, {"api_version": "1", "server": "fake-api"})
-        if path == "/v1/account":
+        if path == "/v1/resources/account/usage":
             return self.answer(
                 200,
-                {
+                {"path": "account/usage", "fields": {
                     "host": "api.test",
                     "subscription": {
                         "plan": "free",
@@ -267,27 +267,15 @@ class FakeApi:
                             ]
                         },
                     },
-                },
+                }},
             )
-        if path == "/v1/workspaces":
-            if request.method == "GET":
-                return self.answer(200, {"workspaces": self.reached()})
-            return self.create_workspace(call)
-        if path == "/v1/keys":
-            if request.method == "GET":
-                return self.answer(200, {"keys": self.keys})
-            return self.mint_key(call)
-        if path.startswith("/v1/keys/"):
-            return self.revoke_key(unquote(path.removeprefix("/v1/keys/")))
+        if path.startswith("/v1/resources/account/") and request.method == "POST":
+            return self.account(call, path.removeprefix("/v1/resources/account/"))
         if not path.startswith("/v1/workspaces/"):
             return self.refuse(404, "not_found", "the API has no such route")
         rest = path.removeprefix("/v1/workspaces/")
         workspace, _, after = rest.partition("/")
         workspace = unquote(workspace)
-        if not after:
-            return self.delete_workspace(workspace)
-        if after == "branches":
-            return self.branch_workspace(call, workspace)
         if workspace != WORKSPACE_ID and self.scope == "workspace":
             return self.refuse(403, "beyond_scope", "this key does not reach that workspace")
         if workspace not in [row["id"] for row in self.workspaces]:
@@ -297,6 +285,8 @@ class FakeApi:
     def workspace_route(
         self, request: httpx.Request, call: dict[str, Any], workspace: str, after: str
     ) -> httpx.Response:
+        if after == "resources/account/workspaces/actions/unattended":
+            return self.unattended(call, json.loads(call["body"] or b"{}").get("workspace"))
         if after == "resources" and request.method == "GET":
             return self.listing(call)
         if after.startswith("resources/"):
@@ -307,8 +297,6 @@ class FakeApi:
             return self.link(call)
         if after == "views":
             return self.view(call)
-        if after == "unattended" and request.method == "PUT":
-            return self.unattended(call, workspace)
         if after == "programs":
             return self.program(call)
         if after == "uploads":
@@ -334,6 +322,37 @@ class FakeApi:
 
     # -- what a test drives -------------------------------------------------
 
+    def account(self, call: dict[str, Any], route: str) -> httpx.Response:
+        """An action of the account (`workspaces/actions/create`), answered as
+        every action is."""
+        resource, _, action = route.partition("/actions/")
+        asked = json.loads(call["body"] or b"{}")
+        if (resource, action) == ("workspaces", "list"):
+            labels = asked.get("labels") or {}
+            return self.ok(call, {"workspaces": [
+                row for row in self.reached()
+                if all((row.get("labels") or {}).get(name) == value for name, value in labels.items())
+            ]})
+        if (resource, action) == ("workspaces", "create"):
+            return self.create_workspace(call)
+        if (resource, action) == ("workspaces", "branch"):
+            return self.branch_workspace(call, asked.get("workspace", ""))
+        if (resource, action) == ("workspaces", "delete"):
+            return self.delete_workspace(call, asked.get("workspace", ""))
+        if (resource, action) == ("keys", "list"):
+            return self.ok(call, {"keys": self.keys})
+        if (resource, action) == ("keys", "mint"):
+            return self.mint_key(call)
+        if (resource, action) == ("keys", "revoke"):
+            return self.revoke_key(call, asked.get("grant", ""))
+        return self.refuse(404, "not_found", f"the account has no {resource}#{action}")
+
+    def ok(self, call: dict[str, Any], result: dict[str, Any]) -> httpx.Response:
+        """`result`, as a finished action answers it."""
+        route = call["path"].removeprefix("/v1/resources/")
+        resource, _, action = route.partition("/actions/")
+        return self.answer(200, {"status": "ok", "path": f"{resource}#{action}", "result": result})
+
     def reached(self) -> list[dict[str, Any]]:
         """The workspaces the key reaches: its own, or the one it was made for."""
         if self.scope == "workspace":
@@ -352,7 +371,7 @@ class FakeApi:
         }
         self.workspaces.append(made)
         self.ran["workspaces#create"] = self.ran.get("workspaces#create", 0) + 1
-        return self.answer(201, made)
+        return self.ok(call, {"workspace": made})
 
     def branch_workspace(self, call: dict[str, Any], source: str) -> httpx.Response:
         """A branch of `source`, one of the person's own; the same branch
@@ -367,11 +386,11 @@ class FakeApi:
             )
         if not any(row["id"] == source and row["role"] == "owner" for row in self.workspaces):
             return self.refuse(
-                404, "not_found", "no such workspace of yours", ["GET /v1/workspaces names them"]
+                404, "not_found", "no such workspace of yours", ["account/workspaces#list names them"]
             )
         retried = self.branches.get(call["headers"].get("idempotency-key", ""))
         if retried is not None:
-            return self.answer(201, retried)
+            return self.ok(call, {"workspace": retried})
         made: dict[str, Any] = {
             "id": f"bbbbbbbb-0000-0000-0000-{len(self.branches) + 1:012d}",
             "name": asked.get("name", ""),
@@ -383,7 +402,7 @@ class FakeApi:
         self.workspaces.append(made)
         self.branches[call["headers"].get("idempotency-key", "")] = made
         self.ran["workspaces#branch"] = self.ran.get("workspaces#branch", 0) + 1
-        return self.answer(201, made)
+        return self.ok(call, {"workspace": made})
 
     def unattended(self, call: dict[str, Any], workspace: str) -> httpx.Response:
         """Running commands unattended in `workspace`: off at once, on only
@@ -407,7 +426,7 @@ class FakeApi:
             {"status": "pending", "invocation": invocation, "path": "workspace/unattended#set", "ask": {}},
         )
 
-    def delete_workspace(self, workspace: str) -> httpx.Response:
+    def delete_workspace(self, call: dict[str, Any], workspace: str) -> httpx.Response:
         own = [
             row
             for row in self.workspaces
@@ -415,10 +434,10 @@ class FakeApi:
         ]
         if not own:
             return self.refuse(
-                404, "not_found", "no such workspace of yours", ["GET /v1/workspaces names them"]
+                404, "not_found", "no such workspace of yours", ["account/workspaces#list names them"]
             )
         self.workspaces = [row for row in self.workspaces if row["id"] != workspace]
-        return self.answer(200, {"deleted": workspace, "revoked_keys": ["g-minted"]})
+        return self.ok(call, {"deleted": workspace, "revoked_keys": ["g-minted"]})
 
     def mint_key(self, call: dict[str, Any]) -> httpx.Response:
         asked = json.loads(call["body"] or b"{}")
@@ -427,8 +446,8 @@ class FakeApi:
             return self.refuse(400, "invalid_arguments", "`workspace` is required")
         if self.scope == "workspace":
             return self.refuse(403, "beyond_scope", "this key reaches one workspace")
-        return self.answer(
-            201,
+        return self.ok(
+            call,
             {
                 "grant": "g-minted",
                 "name": asked.get("name") or "minted",
@@ -439,9 +458,9 @@ class FakeApi:
             },
         )
 
-    def revoke_key(self, grant: str) -> httpx.Response:
+    def revoke_key(self, call: dict[str, Any], grant: str) -> httpx.Response:
         self.keys = [key for key in self.keys if key["grant"] != grant]
-        return self.answer(200, {"revoked": grant})
+        return self.ok(call, {"revoked": grant})
 
     def listing(self, call: dict[str, Any]) -> httpx.Response:
         query = call["query"]

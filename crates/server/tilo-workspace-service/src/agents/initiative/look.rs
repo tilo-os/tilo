@@ -158,7 +158,15 @@ pub(super) async fn gather(
             None => None,
         };
         if let Some(since) = since.filter(|since| *since != heads.as_slice())
-            && let Some(named) = changes_in(workspace, (&app, &document), &mut doc, since, own)
+            && let Some(named) = changes_in(
+                workspaces,
+                workspace,
+                (&app, &document),
+                &mut doc,
+                since,
+                own,
+            )
+            .await
         {
             found.changed = found.changed.saturating_add(1);
             if changed.len() < MAX_NAMED {
@@ -217,23 +225,61 @@ pub(super) async fn gather(
 /// What the changes of one document since `since` say, where anybody but the
 /// assistant made one: where it changed, how often and by whom, never what
 /// the change says.
-fn changes_in(
+async fn changes_in(
+    workspaces: &Workspaces,
     workspace: &str,
     (app, document): (&str, &str),
     doc: &mut AutoCommit,
     since: &[String],
     own: &Own,
 ) -> Option<Value> {
-    let kind = collaboration::resource::identity(doc)
-        .map(|checkout| checkout.kind.as_str().to_owned())
-        .unwrap_or_default();
-    let events = tilo_agent_session::bot::events_since(
-        workspace,
-        document,
-        Some(&kind),
-        doc.document(),
-        since,
-    );
+    let (kind, events) = match crate::tl_records::built_in(app) {
+        // A tilolang record is a document of the workspace's resource store: what changed in
+        // it is read from the store's versions, through its app's package.
+        Ok(Some(packages)) => {
+            let (at, record) = (workspace.to_owned(), document.to_owned());
+            let since = since.to_vec();
+            let mut held = doc.clone();
+            let viewer = crate::tl_records::runtime::Actor::App(app.into());
+            let events = workspaces
+                .with_tl_record(workspace, &packages, viewer, move |opened| {
+                    Ok(opened.events_since(&at, &record, held.document(), &since))
+                })
+                .await;
+            let events = tilo_failure::ignored!(
+                "a record its app's package cannot open is left out, as one not read here is",
+                events
+            )
+            .ok()?;
+            // What it is, is what its changes were of.
+            let kind = events
+                .first()
+                .map(|(event, _)| event.kind.clone())
+                .unwrap_or_default();
+            (kind, events)
+        }
+        Err(error) => {
+            tracing::warn!(
+                app,
+                %error,
+                "the app's package does not compile; its record is left out"
+            );
+            return None;
+        }
+        Ok(None) => {
+            let kind = collaboration::resource::identity(doc)
+                .map(|checkout| checkout.kind.as_str().to_owned())
+                .unwrap_or_default();
+            let events = tilo_agent_session::bot::events_since(
+                workspace,
+                document,
+                &kind,
+                doc.document(),
+                since,
+            );
+            (kind, events)
+        }
+    };
     let theirs: Vec<&DocumentEvent> = events
         .iter()
         .map(|(event, _)| event)

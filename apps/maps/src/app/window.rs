@@ -83,10 +83,7 @@ pub(crate) fn window(cx: &ViewCx<Workspace>, mut app: MapsApp) -> Element {
     // A live window keeps this device's offline areas; a capture shows what it was staged with.
     let offline_areas = cx.mode().is_live().then(|| {
         let workspace = cx.workspace().unwrap_or_default();
-        (
-            super::offline::DownloadedAreas::open(cx, &workspace),
-            workspace,
-        )
+        (cx.settings::<super::offline::DownloadedAreas>(), workspace)
     });
     app.attach_framework(cx.dispatcher(), offline_areas);
     let mut presented = None;

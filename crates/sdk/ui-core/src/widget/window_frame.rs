@@ -29,7 +29,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::chrome::HeaderRowMetrics;
-use crate::component::{Component, Described, PartViews};
+use crate::component::{Component, Described, Event, PartViews};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -74,6 +74,10 @@ pub struct WindowFrameProps {
     /// its own bar ([`ui.DragSource`](super::drag_source::DragSource), `shell.md` §8.1). Empty
     /// leaves the bar no source, as a foreign window's bar has nothing to carry.
     pub carries: Option<String>,
+    /// A press on the window's bar, where nothing on it took the press: the person reaching for
+    /// the window, which the shell answers by bringing it forward with the keyboard in it.
+    #[component(event(press))]
+    pub press: Event,
     /// The window's content, filling the window.
     #[component(part(default))]
     pub body: Option<Element>,
@@ -141,6 +145,8 @@ pub struct WindowFrame {
     carries: Option<String>,
     /// A press on the bar that may become a drag.
     lift: Option<Lift>,
+    /// What a press on the bar does.
+    press: crate::widget::Press,
     /// Where the pointer last was, in the frame's logical coordinates.
     cursor: Point,
 }
@@ -231,6 +237,7 @@ impl Described for WindowFrame {
             controls,
             tabs,
             carries,
+            press,
             body,
         } = props;
         let tabbed = tabs.as_deref().is_some_and(holds_tabs);
@@ -283,6 +290,7 @@ impl Described for WindowFrame {
             },
             carries,
             lift: None,
+            press: crate::widget::Press::of(press),
             cursor: Point::ZERO,
         }
     }
@@ -299,6 +307,7 @@ impl Described for WindowFrame {
         self.focused = props.focused;
         self.lists_actions = props.lists_actions;
         self.carries = props.carries;
+        self.press = crate::widget::Press::of(props.press);
         true
     }
 
@@ -658,7 +667,23 @@ impl Decorator for WindowFrame {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if self.carries.is_none() {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.cursor = ctx.logical(position);
+            }
             self.layers.handle_event(event, ctx);
+            if !*ctx.handled
+                && matches!(
+                    event,
+                    WindowEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                        ..
+                    }
+                )
+                && self.bar.contains(self.cursor)
+            {
+                self.press.run();
+            }
             return;
         }
         match event {
@@ -695,6 +720,7 @@ impl Decorator for WindowFrame {
                 });
                 *ctx.focus_target = Some(ctx.node_id);
                 *ctx.handled = true;
+                self.press.run();
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -1265,19 +1291,22 @@ mod tests {
         }
     }
 
-    /// The window's bar is its handle: a press on the bar's empty area that travels publishes
-    /// the resource the frame carries on the drag bus, and letting go over a drop target hands
-    /// it there. A press inside the body is the content's, never the bar's.
+    /// The window's bar is its handle: a press on it reaches for the window (its `press`, which
+    /// the shell answers by bringing it forward), and one on the bar's empty area that travels
+    /// publishes the resource the frame carries on the drag bus, and letting go over a drop
+    /// target hands it there. A press inside the body is the content's, never the bar's.
     #[test]
     fn a_drag_on_the_window_bar_carries_the_resource_it_holds() {
         use crate::widget::drag_bus;
         use taffy::TaffyTree;
+        let queue = crate::Intents::default();
         let mut frame = Box::new(WindowFrame::from_props(
             "w",
             WindowFrameProps {
                 key: "w".to_owned(),
                 name: Some("Design crit".to_owned()),
                 carries: Some("chat.workspace/channels/c_crit".to_owned()),
+                press: Event::View(crate::component::Intent::new(&queue, "w", "press")),
                 body: Some(Box::new(Spacer::new())),
                 ..WindowFrameProps::default()
             },
@@ -1313,6 +1342,15 @@ mod tests {
         let (from_x, from_y) = (bar.x0 + bar.width() / 2.0, bar.center().y);
         send(&crate::synthetic_input::cursor_moved(from_x, from_y));
         send(&crate::synthetic_input::mouse_press());
+        assert_eq!(
+            queue
+                .take()
+                .iter()
+                .map(|fired| fired.event.as_str())
+                .collect::<Vec<_>>(),
+            ["press"],
+            "a press on the bar reaches for the window"
+        );
         for step in 1..=4 {
             let dy = 12.0 * f64::from(step);
             send(&crate::synthetic_input::cursor_moved(from_x, from_y + dy));
@@ -1356,6 +1394,10 @@ mod tests {
         drag_bus::end(None);
         assert!(
             body_drag.is_none(),
+            "a press on the body is the content's, never the bar's"
+        );
+        assert!(
+            queue.take().is_empty(),
             "a press on the body is the content's, never the bar's"
         );
     }

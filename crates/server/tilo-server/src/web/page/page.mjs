@@ -292,6 +292,36 @@ async function session(config, device) {
   };
 }
 
+// ---- The person this browser is ----
+
+/** The site that handed this browser over, from the page's own address
+ * (`<entry>w/<workspace>[/<app>]`): the entry serves its modules and
+ * `version.json` above it. */
+function entryBase() {
+  const at = location.pathname.indexOf('/w/');
+  return at < 0 ? '/' : location.pathname.slice(0, at + 1);
+}
+
+/** This build's `identity.mjs`, the very module the entry loaded before it
+ * handed this browser over: served under the site's own version directory,
+ * `version.json` naming the version it serves now. A page pressed before it
+ * is in waits on it, so no read is made twice and a failed one is tried
+ * again on the next press. */
+let identityLoading = null;
+function identityModule() {
+  identityLoading ??= (async () => {
+    const base = new URL(entryBase(), location.href);
+    const response = await fetch(new URL('version.json', base), {cache: 'no-store'});
+    if (!response.ok) throw new Error(`the site answered ${response.status}`);
+    const {version} = await response.json();
+    return import(new URL(`v/${version}/identity.mjs`, base).href);
+  })().catch((error) => {
+    identityLoading = null;
+    throw error;
+  });
+  return identityLoading;
+}
+
 // ---- The page ----
 
 function start() {
@@ -299,6 +329,10 @@ function start() {
   const page = document.getElementById('tilo-page');
   const style = document.getElementById('tilo-page-css');
   const base = `/w/${config.address.workspace}` + (config.address.app ? `/${config.address.app}` : '');
+  // Where this host's own routes are reached over HTTP, which the page hands
+  // the browser's person to: the envelope a passkey opens is kept there, so
+  // a browser that keeps nothing fetches it from the same place.
+  const peer = typeof config.peer === 'string' && config.peer ? config.peer : null;
   // The workspace this page is, as the entry that handed the browser over
   // named it: an address carries no name.
   let workspaceName = null;
@@ -326,6 +360,89 @@ function start() {
   const say = (state, words) => {
     page.dataset.state = state;
     page.textContent = words ?? '';
+  };
+
+  // The person's own actions, which only this browser can run: the root lives
+  // here (`identity.mjs`), so the passkey ceremony happens in the page,
+  // inside the person's press, and the host keeps no part of it. A row is
+  // drawn disabled and offered once the page's own module and runtime are in,
+  // so the passkey sheet follows the press at once.
+  let browserKept = null;
+  const browserKeptNow = () => (browserKept ??= identityModule().then(async (id) => {
+    const person = await id.browserIdentity({create: false});
+    const wraps = person?.envelope?.wraps ?? [];
+    return {passkey: wraps.some(wrap => wrap.kind === 'passkey'), kept: wraps.length > 0};
+  }).catch((error) => { browserKept = null; throw error; }));
+  // What the page says of the browser's own actions: under the search bar,
+  // where a person reads it.
+  const sayOnPage = (words, state) => {
+    let said = page.querySelector('[data-browser-status]');
+    if (!said) {
+      said = document.createElement('p');
+      said.dataset.browserStatus = '';
+      said.className = 'tilo-search-notice';
+      said.setAttribute('role', 'status');
+      const anchor = page.querySelector('.tilo-search-bar') ?? page.firstElementChild;
+      if (anchor) anchor.after(said); else page.prepend(said);
+    }
+    said.textContent = words ?? '';
+    if (state) said.dataset.state = state; else delete said.dataset.state;
+  };
+  // Offer the browser's rows once the page can run them: a person already
+  // kept with a passkey has nothing to keep, and one kept at all has no
+  // reason to be signed in as somebody else here.
+  const armBrowserRows = () => {
+    if (!page.querySelector('[data-a=browser]')) { delete page.dataset.browser; return; }
+    if (!peer) {
+      for (const row of page.querySelectorAll('[data-a=browser]')) row.remove();
+      page.dataset.browser = 'no-peer';
+      sayOnPage('This page cannot keep you on another browser.');
+      return;
+    }
+    browserKeptNow().then(({passkey, kept}) => {
+      page.dataset.browser = kept ? 'kept' : 'ready';
+      for (const row of [...page.querySelectorAll('[data-a=browser]')]) {
+        const answered = row.dataset.browser === 'keep-with-passkey' ? passkey : kept;
+        if (answered) row.remove(); else row.disabled = false;
+      }
+    }, (error) => {
+      page.dataset.browser = 'unavailable';
+      sayOnPage('This page cannot keep you on another browser: the site’s own modules did not load.');
+      console.warn('identity: the page’s modules did not load', error);
+    });
+  };
+  // What a browser row's press runs, here: the ceremony is asked straight
+  // from the press, so the person's answer may follow it.
+  const browserAction = async (action) => {
+    for (const row of page.querySelectorAll('[data-a=browser]')) row.disabled = true;
+    try {
+      const id = await identityModule();
+      if (action === 'keep-with-passkey') {
+        const person = await id.browserIdentity();
+        sayOnPage('Waiting for your passkey…');
+        await person.keepWithPasskey({});
+        // The host keeps the envelope a browser that keeps nothing fetches:
+        // the passkey alone opens nothing without it.
+        await id.publishEnvelope({origin: peer, identity: person});
+        browserKept = null;
+        sayOnPage('A passkey now opens you on any browser.', 'kept');
+        armBrowserRows();
+      } else if (action === 'sign-in-with-passkey') {
+        sayOnPage('Waiting for your passkey…');
+        await id.signInWithPasskey({fetchEnvelope: root => id.fetchEnvelope(root, [peer])});
+        // The person the passkey named is this browser's from now on: the
+        // site's entry lets them in as themselves, in a workspace of theirs.
+        location.assign(new URL(entryBase(), location.href).href);
+      } else {
+        sayOnPage('This page cannot do that.');
+        armBrowserRows();
+      }
+    } catch (error) {
+      sayOnPage(error?.code ? error.message : 'That did not work. Try again.', 'failed');
+      console.warn('identity:', error);
+      browserKept = null;
+      armBrowserRows();
+    }
   };
 
   const addressOf = () => {
@@ -455,6 +572,7 @@ function start() {
     reconcile();
     focusAsked();
     follow();
+    armBrowserRows();
   };
 
   // Where the view puts the focus (a new note's title), the page does too.
@@ -543,9 +661,13 @@ function start() {
     const kept = held && page.querySelector(held.key);
     if (kept && (kept.dataset.a === 'value' || kept.dataset.a === 'edit')) act(kept, {value: held.value});
     follow();
+    armBrowserRows();
     // The page says it arrived, as the entry it came from did: what a tool
-    // waits for is the same marker on either.
+    // waits for is the same marker on either. An entry that opened the
+    // workspace this page is says so too, as the entry page's own marker
+    // names it.
     document.documentElement.dataset.arrival = 'done';
+    document.documentElement.dataset.entry = 'open';
     if (!performance.getEntriesByName('tilo-page-shown').length) performance.mark('tilo-page-shown');
   };
 
@@ -581,8 +703,46 @@ function start() {
     }
   };
 
+  // A row that hands a link over: the link it carries was made before the
+  // press, because a browser takes a clipboard write only inside the press
+  // itself, and the host's answer comes after it. A browser that refuses the
+  // write shows the link beside the row, to select.
+  const handOver = element => {
+    const text = element.dataset.copy;
+    if (!text) return;
+    const fallback = element.parentElement?.querySelector('.tilo-search-handover');
+    const show = () => {
+      if (!fallback) return;
+      fallback.hidden = false;
+      const code = fallback.querySelector('code');
+      if (!code) return;
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      const selection = getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const writing = navigator.clipboard?.writeText?.(text);
+    if (writing) writing.then(() => { if (fallback) fallback.hidden = true; }, show);
+    else show();
+  };
+
   // What the person does.
   page.addEventListener('click', event => {
+    // A press that sets another device up hands the tab to the site's own
+    // setup screen: it needs the person's identity, which the site's page
+    // holds, not this one. The screen is the entry's and shows when this
+    // browser's setup asks for it (`first-screen.mjs`'s `SETUP`), so the
+    // press says the person is starting it now, and goes where it is served.
+    const setup = event.target.closest('[data-setup]');
+    if (setup && page.contains(setup)) {
+      event.preventDefault();
+      try {
+        localStorage.setItem('tilo-setup', JSON.stringify({step: 'start', at: Date.now()}));
+      } catch { /* No storage: the site's screen starts from its own state. */ }
+      location.assign(setup.dataset.setup);
+      return;
+    }
     const element = event.target.closest('[data-a]');
     if (!element || !page.contains(element)) return;
     const action = element.dataset.a;
@@ -591,9 +751,14 @@ function start() {
       // What is typed next is not for the field the person clicked away from.
       const active = document.activeElement;
       if (editing(active) && !element.contains(active)) active.blur();
+      handOver(element);
       act(element, 'activate');
     } else if (action === 'value' && element.dataset.v !== undefined) {
       act(element, {value: element.dataset.v});
+    } else if (action === 'browser') {
+      // The person's own actions run here, in this press (`browserAction`).
+      event.preventDefault();
+      browserAction(element.dataset.browser);
     } else if (action === 'back') {
       event.preventDefault();
       // The column behind the one in front comes to the front, as a narrow

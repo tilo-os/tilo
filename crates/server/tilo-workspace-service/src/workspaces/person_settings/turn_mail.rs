@@ -194,9 +194,11 @@ impl Workspaces {
         {
             return Err(ActionCallError::UnknownAction);
         }
-        let root = self.workspace_root(&workspace);
-        let accounts: BTreeSet<String> = accounts::AccountStore::load_in(&root)
-            .list(&accounts::AccountTypeId::from(accounts::email::TYPE_ID))
+        let accounts: BTreeSet<String> = self
+            .workspace_accounts(&workspace)
+            .await
+            .map_err(|reason| ActionCallError::Refused { reason })?
+            .of_type(accounts::email::TYPE_ID)
             .iter()
             .map(|account| account.id.as_str().to_owned())
             .collect();

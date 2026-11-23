@@ -120,10 +120,6 @@ impl<'a> PersonalInstall<'a> {
                     .fleet_json
                     .as_deref()
                     .context("approval omitted the fleet")?,
-                peers: payload
-                    .home_peers_json
-                    .as_deref()
-                    .context("approval omitted home peers")?,
             },
             requester_lease,
             confirm,
@@ -229,15 +225,6 @@ impl<'a> PersonalInstall<'a> {
         })?;
         before_publish(PersonalCommitCheckpoint::Fleet)?;
         let fleet = self.install_staged_fleet(marker, &stage_dir)?;
-        before_publish(PersonalCommitCheckpoint::HomePeers)?;
-        let staged_peers = tilo_server_protocol::checked_home_peers(&std::fs::read(
-            stage_dir.join("home-peers.json"),
-        )?)
-        .context("the staged home peers are not a registry this build accepts")?;
-        tilo_server_protocol::write_home_peers(
-            &tilo_server_protocol::home_peer_registry_path(self.identity_root),
-            &staged_peers,
-        )?;
         before_publish(PersonalCommitCheckpoint::Registry)?;
         before_publish(PersonalCommitCheckpoint::UserPublicKey)?;
         // The public key and certificates are public, whatever the umask this
@@ -264,9 +251,8 @@ impl<'a> PersonalInstall<'a> {
         // This device and the approver become each other's personal devices. The
         // approver's certificate comes from the root-signed fleet staged with this
         // enrollment, which the fleet just adopted, and must verify under the
-        // identity this device joins. A device the home-peer registry names is a
-        // home peer, reached through that registry, not one of the person's
-        // personal devices.
+        // identity this device joins. The person's servers are among their
+        // devices.
         before_publish(PersonalCommitCheckpoint::PersonalPeers)?;
         let personal_devices = match self.image_source {
             // The imager pairs the target directly with the setup machine.
@@ -275,7 +261,6 @@ impl<'a> PersonalInstall<'a> {
                 marker.device_public_key,
                 marker.user_public_key,
                 &fleet,
-                &staged_peers,
                 now_ns()?,
             ),
         };
@@ -304,7 +289,6 @@ impl<'a> PersonalInstall<'a> {
         // is cleared, so recovery repeats this step if it is interrupted. Parents
         // come before their children.
         for path in [
-            tilo_server_protocol::home_peer_registry_path(self.identity_root),
             personal_peers,
             paths.user_pubkey.clone(),
             per_user_cert
@@ -367,7 +351,6 @@ const PERSONAL_ENROLLMENT_SCHEMA: u32 = 2;
 enum PersonalCommitCheckpoint {
     Record,
     Fleet,
-    HomePeers,
     Registry,
     UserPublicKey,
     PerUserCert,
@@ -455,7 +438,6 @@ struct PersonalProjection<'a> {
     cert: &'a DeviceCert,
     identity: &'a [u8],
     fleet: &'a [u8],
-    peers: &'a [u8],
 }
 
 fn identity_record_path(identity_dir: &Path, user: [u8; 32]) -> PathBuf {
@@ -483,41 +465,13 @@ fn validate_public_identity(bytes: &[u8], user: [u8; 32]) -> anyhow::Result<()> 
 fn checked_personal_projection(
     install: &PersonalInstall<'_>,
     projection: &PersonalProjection<'_>,
-) -> anyhow::Result<(DeviceFleet, Vec<tilo_server_protocol::HomePeerRegistration>)> {
+) -> anyhow::Result<DeviceFleet> {
     let user = projection.cert.user_public_key;
-    let identity_id = hex::encode(user);
     let fleet = install
         .checked_fleet(projection.fleet, user, projection.cert.device_public_key)
         .context("approval returned an invalid device fleet")?;
     validate_public_identity(projection.identity, user)?;
-
-    let incoming = tilo_server_protocol::checked_home_peers(projection.peers)
-        .context("the approval's home peers are not a registry this build accepts")?;
-    if incoming
-        .iter()
-        .any(|entry| entry.user_public_key != identity_id)
-    {
-        bail!("approval returned an invalid home-peer registry");
-    }
-
-    let mut existing = tilo_server_protocol::read_home_peers(
-        &tilo_server_protocol::home_peer_registry_path(install.identity_root),
-    )
-    .context("the existing home-peer registry is not one this build accepts")?;
-
-    // A response projects routes for one identity. Do not use it as a global
-    // snapshot and erase other identities' independently verified routes.
-    existing.retain(|entry| entry.user_public_key != identity_id);
-    existing.extend(incoming);
-    if existing.len() > 128 {
-        bail!("merged home-peer registry is full");
-    }
-    existing.sort_by(|left, right| {
-        left.user_public_key
-            .cmp(&right.user_public_key)
-            .then_with(|| left.device_node_id.cmp(&right.device_node_id))
-    });
-    Ok((fleet, existing))
+    Ok(fleet)
 }
 
 fn stage_personal_enrollment(
@@ -525,7 +479,7 @@ fn stage_personal_enrollment(
     projection: &PersonalProjection<'_>,
     requester_lease: Option<ProcessLease>,
 ) -> anyhow::Result<(PathBuf, PersonalEnrollmentMarker)> {
-    let (fleet, peers) = checked_personal_projection(install, projection)?;
+    let fleet = checked_personal_projection(install, projection)?;
     let identity_root = install.identity_root;
     let (stage_name, stage_dir) = create_stage_dir(identity_root, random_stage_name)?;
     let cert = tilo_user_identity::canonical::canonical_bytes(projection.cert)?;
@@ -537,11 +491,6 @@ fn stage_personal_enrollment(
     tilo_files::native::atomic::write(
         &stage_dir.join("fleet.json"),
         &serde_json::to_vec_pretty(&fleet)?,
-    )?;
-    tilo_files::native::atomic::write_with_mode(
-        &stage_dir.join("home-peers.json"),
-        &serde_json::to_vec_pretty(&peers)?,
-        0o644,
     )?;
     tilo_files::native::atomic::write(
         &stage_dir.join("user-pubkey.bin"),

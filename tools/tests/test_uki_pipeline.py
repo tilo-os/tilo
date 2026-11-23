@@ -26,7 +26,6 @@ FILES = (
     "os/Containerfile.dev-installer-base",
     "os/dev/uki-tools.packages",
     "os/dev/derive-rpm-package-set.py",
-    ".forgejo/workflows/os-dev-installer.yml",
     # derive-rpm-package-set.py's other sources, so the fixture's snapshot is the real one.
     "os/Containerfile.dev",
     "os/Containerfile.host",
@@ -155,10 +154,8 @@ class UkiPipelineTests(unittest.TestCase):
     def test_hand_assembled_contexts_must_carry_the_package_list(self):
         root = self.fixture()
         self.edit(root / "os/Containerfile.board.dockerignore", "!os/dev/uki-tools.packages\n", "")
-        self.edit(root / ".forgejo/workflows/os-dev-installer.yml", "cp os/dev/uki-tools.packages ", "cp ")
         found = self.findings(root)
         self.assertIn("board's sparse context does not include `os/dev/uki-tools.packages`", found)
-        self.assertIn("adapter context does not copy `os/dev/uki-tools.packages`", found)
 
     def test_the_package_list_feeds_the_snapshot(self):
         root = self.fixture()

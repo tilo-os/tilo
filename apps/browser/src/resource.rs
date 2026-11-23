@@ -370,24 +370,20 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     }
     if !cx.is_private()
         && let Some(bookmarks) =
-            open_record::<crate::personal_bookmarks::PersonalBookmarks>(cx, |state| {
-                crate::personal_bookmarks::PersonalBookmarks::RESTORE_PREVIOUS.with(state)
-            })
+            cx.shared_workspace::<crate::personal_bookmarks::PersonalBookmarks>(BrowserShell::ID)
     {
         window.attach_personal_bookmarks(bookmarks);
     }
     if !cx.is_private()
-        && let Some(history) = open_record::<crate::history::BrowsingHistory>(cx, |state| {
-            crate::history::BrowsingHistory::RESTORE_PREVIOUS.with(state)
-        })
+        && let Some(history) =
+            cx.shared_workspace::<crate::history::BrowsingHistory>(BrowserShell::ID)
     {
         window.attach_history(history);
     }
     // Page recordings belong to the profile. A private window keeps none.
     if !cx.is_private()
-        && let Some(record) = open_record::<crate::page_resource::PageResource>(cx, |state| {
-            crate::page_resource::PageResource::RESTORE_PREVIOUS.with(state)
-        })
+        && let Some(record) =
+            cx.shared_workspace::<crate::page_resource::PageResource>(BrowserShell::ID)
     {
         window
             .page_mut()
@@ -399,9 +395,7 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
             .attach_continuity(person, cx.storage().files(), cx.waker());
     }
     if ownership
-        && let Some(book) = open_record::<crate::autofill::AddressBook>(cx, |state| {
-            crate::autofill::AddressBook::RESTORE_PREVIOUS.with(state)
-        })
+        && let Some(book) = cx.shared_workspace::<crate::autofill::AddressBook>(BrowserShell::ID)
     {
         window.attach_address_book(book);
     }
@@ -412,36 +406,6 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     window
         .engine_handle()
         .set_waker(Box::new(move || waker.wake()));
-}
-
-/// The workspace's record `P` that Browser keeps ([`crate::BrowserShell`]), opened on
-/// first use: the window's history, bookmarks, addresses and page recordings, the same
-/// record for every member of the workspace. What the person kept of it on this device
-/// before it became the workspace's is restored into it once.
-fn open_record<P>(
-    cx: &ViewCx<Browser>,
-    restore: impl FnOnce(serde_json::Value) -> Invoke<P>,
-) -> Option<ui::framework::WorkspaceResource<P>>
-where
-    P: ui::tilo_resource::Resource,
-    P::State: ui::tilo_resource::Model + Default + PartialEq,
-{
-    let record = cx.shared_workspace::<P>(BrowserShell::ID)?;
-    if *record.get() == P::State::default() {
-        let opener = cx.resource_opener::<P>(BrowserShell::ID);
-        let result = opener.legacy_member_state().and_then(|previous| {
-            if let Some(previous) = previous.filter(|previous| **previous != P::State::default()) {
-                record
-                    .invoke(&restore(ui::tilo_resource::Model::to_json(&*previous)))
-                    .map_err(|error| error.to_string())?;
-            }
-            Ok(())
-        });
-        if let Err(error) = result {
-            tracing::warn!(kind = P::KIND, %error, "could not restore the previous browser record");
-        }
-    }
-    Some(record)
 }
 
 #[cfg(test)]

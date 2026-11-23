@@ -12,11 +12,12 @@ use serde_json::{Map, Value};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::setup::destination::installer_app::{InstallerApp, validate_startup_secret_for};
-use crate::setup::destination::{InstallState, Step};
+use crate::setup::destination::{InstallState, Step, installer_app};
 use imager_backend::destination::disks::Disk;
 use imager_backend::destination::private_io;
 use imager_backend::destination::probes::{ProtectionReport, SystemProtection};
 use install_profile_model::plan::Plan;
+use ui::tilo_actions::remote::Confirmation;
 
 pub const SCHEMA: u32 = 1;
 
@@ -287,11 +288,7 @@ fn drive_plan(app: &mut InstallerApp, plan: &Plan) -> Result<(), String> {
                     .and_then(Value::as_str)
                     .map(str::to_owned)
                     .ok_or_else(|| "The installer names no reviewed target".to_string())?;
-                invoke(
-                    app,
-                    "begin@installer.review",
-                    serde_json::json!({"confirmation_phrase": target}),
-                )?;
+                begin(app, target)?;
                 return Ok(());
             }
             Step::Install => {
@@ -360,7 +357,7 @@ impl Console {
             .iter()
             .map(|endpoint| match endpoint {
                 imager_backend::destination::console::Endpoint::Socket(path) => {
-                    format!("tilo-control --socket {} actions list", path.display())
+                    format!("TILO_TEST_CONTROL={} tilo action list", path.display())
                 }
                 imager_backend::destination::console::Endpoint::Port(path) => {
                     format!("the console channel at {}", path.display())
@@ -378,20 +375,20 @@ fn endpoint_path(endpoint: &imager_backend::destination::console::Endpoint) -> &
 }
 
 fn start_console(
-    app: &str,
+    app: &'static str,
     discovered: Vec<imager_backend::destination::console::Endpoint>,
     terminal_available: bool,
     fallback_root: Option<PathBuf>,
 ) -> Result<Console, String> {
-    let console = imager_backend::destination::console::ConsoleServer::new();
+    let console = imager_backend::destination::console::ConsoleServer::new(app);
     let (wake_tx, wake) = mpsc::channel();
-    let waker: imager_backend::destination::console::server::Waker = Arc::new(move || {
+    console.set_waker(Arc::new(move || {
         let _ = wake_tx.send(());
-    });
+    }));
     let mut endpoints = Vec::new();
     let mut failures = Vec::new();
     for endpoint in discovered {
-        match console.serve(&endpoint, Arc::clone(&waker)) {
+        match console.serve(&endpoint) {
             Ok(()) => endpoints.push(endpoint),
             Err(error) => failures.push(format!("{}: {error}", endpoint_path(&endpoint).display())),
         }
@@ -431,15 +428,13 @@ fn start_console(
         let endpoint = imager_backend::destination::console::Endpoint::Socket(
             directory.path().join(format!("{app}.sock")),
         );
-        console
-            .serve(&endpoint, Arc::clone(&waker))
-            .map_err(|error| {
-                format!(
-                    "No console endpoint could be bound and the fallback socket {} could not be \
+        console.serve(&endpoint).map_err(|error| {
+            format!(
+                "No console endpoint could be bound and the fallback socket {} could not be \
                      opened: {error}",
-                    endpoint_path(&endpoint).display()
-                )
-            })?;
+                endpoint_path(&endpoint).display()
+            )
+        })?;
         endpoints.push(endpoint);
         fallback = Some(directory);
     }
@@ -457,9 +452,8 @@ fn drain_console(
 ) -> usize {
     let pending = console.take_pending();
     let answered = pending.len();
-    for pending in pending {
-        let reply = app.answer_console(pending.line());
-        pending.respond(reply);
+    for asked in pending {
+        asked.answer(&mut installer_app::Console(app));
     }
     answered
 }
@@ -1088,11 +1082,7 @@ fn drive(app: &mut InstallerApp, recipe: &Recipe) -> Result<(), String> {
                     .and_then(Value::as_str)
                     .map(str::to_owned)
                     .ok_or_else(|| "The installer names no reviewed target".to_string())?;
-                invoke(
-                    app,
-                    "begin@installer.review",
-                    serde_json::json!({"confirmation_phrase": target}),
-                )?;
+                begin(app, target)?;
                 return Ok(());
             }
             Step::Install => {
@@ -1135,12 +1125,41 @@ fn step_label(step: Step) -> &'static str {
     }
 }
 
+/// Invoke the installer's `action@resource` with `args`, as its console admits it.
 fn invoke(app: &mut InstallerApp, id: &str, args: Value) -> Result<(), String> {
+    invoke_confirmed(app, id, args, None)
+}
+
+/// Begin the install onto `target`, typing the reviewed target as the phrase its contract asks.
+fn begin(app: &mut InstallerApp, target: String) -> Result<(), String> {
+    invoke_confirmed(
+        app,
+        "begin@installer.review",
+        serde_json::json!({}),
+        Some(Confirmation::Phrase(target)),
+    )
+}
+
+fn invoke_confirmed(
+    app: &mut InstallerApp,
+    id: &str,
+    args: Value,
+    confirmation: Option<Confirmation>,
+) -> Result<(), String> {
     let args: Map<String, Value> = match args {
         Value::Object(args) => args,
         _ => Map::new(),
     };
-    app.invoke_published(id, &args).map(|_| ())
+    let (action, resource) = id.split_once('@').unwrap_or((id, ""));
+    let published: Vec<_> = app
+        .published()
+        .iter()
+        .map(|row| ui::tilo_actions::Exports::exported(row).clone())
+        .collect();
+    let address = ui::tilo_actions::api::published(&published, resource, action)
+        .ok_or_else(|| format!("{resource} publishes no {action}"))?;
+    app.invoke_published(&address, &args, confirmation.as_ref())
+        .map(|_| ())
 }
 
 #[allow(
@@ -1608,16 +1627,29 @@ mod tests {
                 "the actual TPM2 did not answer"
             );
             assert_eq!(state["step"], "keyboard");
-            let dump: Value =
-                serde_json::from_str(&app.answer_console(r#"{"op":"state_dump"}"#)).unwrap();
+            let console = imager_backend::destination::console::ConsoleServer::new(
+                crate::setup::destination::effects::PROVIDER,
+            );
+            let dump: Value = serde_json::from_str(
+                &console.exchange(&mut installer_app::Console(&mut app), r#"{"op":"state_dump"}"#),
+            )
+            .unwrap();
             assert_eq!(
                 dump["state"]["unattended"]["error"],
                 "the actual TPM2 did not answer"
             );
+            let asked = ui::tilo_actions::remote::frame_line(
+                ui::tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+                    correlation: 1,
+                    query: ui::tilo_actions::remote::CatalogueQuery::default(),
+                },
+            );
             let listed: Value =
-                serde_json::from_str(&app.answer_console(r#"{"op":"actions_enumerate"}"#)).unwrap();
+                serde_json::from_str(&console.exchange(&mut installer_app::Console(&mut app), &asked)).unwrap();
             assert!(
-                listed.get("answer").is_some(),
+                listed["message"]["CatalogueResponse"]["result"]["Ok"]["rows"]
+                    .as_array()
+                    .is_some_and(|rows| !rows.is_empty()),
                 "the recoverable console stays live: {listed}"
             );
         }

@@ -785,6 +785,39 @@ pub fn encode_json(
     Ok(encoded)
 }
 
+/// Admit one invocation of `address` with `arguments` against the tree `resources` publishes, as
+/// a provider serving that tree answers a caller: resolved, available, confirmed as its contract
+/// asks of these arguments by `confirmation` (the caller's own word or the phrase it names; a
+/// token naming a person's answer is not this provider's to spend), and bound strictly into the
+/// action's own encoded form.
+///
+/// # Errors
+///
+/// [`ApiError::Unknown`] for an address the tree does not offer, [`ApiError::Unavailable`] for an
+/// action that cannot run now, [`ApiError::ConfirmationRequired`] when the confirmation is missing
+/// or wrong, and any error [`encode_json`] documents for the arguments.
+pub fn admit(
+    resources: &[ResourceSpec],
+    address: &ActionAddress,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    confirmation: Option<&crate::remote::Confirmation>,
+) -> Result<EncodedAction, ApiError> {
+    use crate::remote::Confirmation;
+    let spec = resolve(resources, address).ok_or_else(|| ApiError::Unknown(address.clone()))?;
+    ensure_available(spec)?;
+    let confirmed = match spec.confirmation_for_json(arguments) {
+        crate::ConfirmationPolicy::None => true,
+        crate::ConfirmationPolicy::Phrase { phrase } => {
+            matches!(confirmation, Some(Confirmation::Phrase(given)) if *given == phrase)
+        }
+        crate::ConfirmationPolicy::Confirm => matches!(confirmation, Some(Confirmation::Confirmed)),
+    };
+    if !confirmed {
+        return Err(ApiError::ConfirmationRequired);
+    }
+    encode_json(resources, address, arguments)
+}
+
 fn ensure_available(spec: &ActionSpec) -> Result<(), ApiError> {
     match &spec.contract.availability {
         crate::Availability::Available => Ok(()),
@@ -1977,5 +2010,166 @@ mod tests {
             ActionAddress::checked("notes.note:1", format!("edit{KEY_SEP}title")),
             None
         );
+    }
+
+    const OP: &str = "test.operation";
+
+    /// A session with a renamable name, a step it cannot take now, a disk erased only by its
+    /// typed name and a power switch that asks to be confirmed.
+    fn published_tree() -> Vec<ResourceSpec> {
+        use crate::{ActionContract, ConfirmationPolicy, ParamType, RiskLevel};
+        let encode =
+            |value: serde_json::Value| EncodedAction::encode_operation(OP, &value).unwrap();
+        vec![
+            ResourceSpec::new("session", "test.session", "Session")
+                .with_action(ActionSpec::typed_operation(
+                    "rename",
+                    "Rename",
+                    "name",
+                    OperationKind::Effect,
+                    OP,
+                    vec![crate::ActionParam::required(
+                        "name",
+                        ParamType::Text,
+                        "New name",
+                    )],
+                    move |args| encode(serde_json::json!({"rename": args.text("name")})),
+                ))
+                .with_action(
+                    ActionSpec::operation("reset", "Reset", OperationKind::Effect, OP, &"reset")
+                        .unwrap()
+                        .unavailable("not_now", "Finish the current step first"),
+                )
+                .with_child(
+                    ResourceSpec::new("disk:/dev/vdb", "test.disk", "vdb").with_action(
+                        ActionSpec::operation(
+                            "erase",
+                            "Erase",
+                            OperationKind::Effect,
+                            OP,
+                            &"erase",
+                        )
+                        .unwrap()
+                        .destructive()
+                        .with_contract(ActionContract {
+                            risk: RiskLevel::Destructive,
+                            confirmation: ConfirmationPolicy::Phrase {
+                                phrase: "/dev/vdb".into(),
+                            },
+                            ..ActionContract::default()
+                        }),
+                    ),
+                )
+                .with_child(
+                    ResourceSpec::new("power", "test.power", "Power").with_action(
+                        ActionSpec::operation(
+                            "off",
+                            "Power off",
+                            OperationKind::Effect,
+                            OP,
+                            &"off",
+                        )
+                        .unwrap()
+                        .privileged(),
+                    ),
+                ),
+        ]
+    }
+
+    #[test]
+    fn a_published_tree_is_listed_and_admits_only_exact_confirmed_bindings() {
+        use crate::remote::{CataloguePage, CatalogueQuery, Confirmation};
+        let tree = published_tree();
+        let page = CataloguePage::published("test", &tree, &CatalogueQuery::default());
+        // A listing is one level: the session's own actions, then what it holds.
+        assert_eq!(page.rows.len(), 2);
+        assert!(page.rows.iter().all(|row| row.provider == "test"));
+        let held = CatalogueQuery {
+            parent_resource: Some("session".into()),
+            ..CatalogueQuery::default()
+        };
+        let held = CataloguePage::published("test", &tree, &held);
+        assert_eq!(held.rows.len(), 2);
+        let erase = held
+            .rows
+            .iter()
+            .find_map(|row| row.action.as_ref().filter(|a| a.address.action == "erase"))
+            .unwrap();
+        assert_eq!(erase.address.resource, "disk:/dev/vdb");
+        let narrowed = CatalogueQuery {
+            needle: "power".into(),
+            parent_resource: Some("session".into()),
+            ..CatalogueQuery::default()
+        };
+        assert_eq!(
+            CataloguePage::published("test", &tree, &narrowed)
+                .rows
+                .len(),
+            1
+        );
+
+        let args = |value: serde_json::Value| value.as_object().unwrap().clone();
+        let admitted = |resource: &str, action: &str, value, confirmation: Option<Confirmation>| {
+            admit(
+                &tree,
+                &ActionAddress::new(resource, action),
+                &args(value),
+                confirmation.as_ref(),
+            )
+        };
+        assert_eq!(
+            admitted("session", "rename", serde_json::json!({"name": "x"}), None)
+                .unwrap()
+                .type_id,
+            OP
+        );
+        for (resource, action, value, refusal) in [
+            ("session", "nope", serde_json::json!({}), "unknown"),
+            ("session", "rename", serde_json::json!({}), "argument"),
+            (
+                "session",
+                "rename",
+                serde_json::json!({"name": 3}),
+                "argument",
+            ),
+            (
+                "session",
+                "rename",
+                serde_json::json!({"name": "x", "extra": 1}),
+                "argument",
+            ),
+            ("session", "reset", serde_json::json!({}), "unavailable"),
+        ] {
+            let error = admitted(resource, action, value, None).unwrap_err();
+            let kind = match error {
+                ApiError::Unknown(_) => "unknown",
+                ApiError::Unavailable { .. } => "unavailable",
+                ApiError::MissingArgument(_)
+                | ApiError::UnexpectedArgument(_)
+                | ApiError::InvalidArguments(_) => "argument",
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(kind, refusal, "{action}");
+        }
+        let erase = |confirmation| {
+            admitted(
+                "disk:/dev/vdb",
+                "erase",
+                serde_json::json!({}),
+                confirmation,
+            )
+        };
+        for wrong in [
+            None,
+            Some(Confirmation::Phrase("/dev/vda".into())),
+            Some(Confirmation::Confirmed),
+            Some(Confirmation::Approved("token".into())),
+        ] {
+            assert!(matches!(erase(wrong), Err(ApiError::ConfirmationRequired)));
+        }
+        assert!(erase(Some(Confirmation::Phrase("/dev/vdb".into()))).is_ok());
+        let off = |confirmation| admitted("power", "off", serde_json::json!({}), confirmation);
+        assert!(matches!(off(None), Err(ApiError::ConfirmationRequired)));
+        assert!(off(Some(Confirmation::Confirmed)).is_ok());
     }
 }

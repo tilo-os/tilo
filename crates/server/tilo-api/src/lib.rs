@@ -2,7 +2,7 @@
 //! connects to with nothing configured but its URL, as in
 //!
 //! ```text
-//! claude mcp add --transport http tilo https://mcp.tilo.sh
+//! https://mcp.tilo.sh
 //! ```
 //!
 //! The agent finds out how to authorize from the server itself (the MCP
@@ -385,7 +385,7 @@ impl Server {
                 StatusCode::FORBIDDEN,
                 &json!({"error": {"code": "beyond_scope",
                                   "message": "this key does not reach that workspace",
-                                  "next_steps": ["GET /v1/workspaces names the workspaces it reaches"]}}),
+                                  "next_steps": ["account/workspaces#list names the workspaces it reaches"]}}),
             );
         }
         let session = match self.api_session(&grant).await {
@@ -1554,7 +1554,7 @@ impl Server {
             session::Reach::Forwarded(connection)
         };
         Ok(Session::new(
-            grant.id.clone(),
+            grant,
             scope,
             label,
             key.cert(),

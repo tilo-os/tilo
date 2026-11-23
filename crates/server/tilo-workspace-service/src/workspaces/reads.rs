@@ -7,7 +7,6 @@
 //! device whose certificate asks.
 
 #[cfg(feature = "apps")]
-use collab_types::OwnResource;
 #[cfg(feature = "apps")]
 use tilo_peer_state::PeerDocumentCapture;
 #[cfg(feature = "apps")]
@@ -36,12 +35,19 @@ impl Workspaces {
         since: &[[u8; 32]],
         maximum: usize,
     ) -> Result<DocumentRead, String> {
+        let moderation_pending = self.moderation_history_pending(workspace, app, resource);
         let (peer, device) = self
             .replica(workspace)
             .ok_or("this service does not hold the workspace")?;
         let reader = self
             .own_reader(workspace)
             .ok_or("this service acts as no device here")?;
+        if moderation_pending {
+            // The read is decided as any other is, and waits for the history rather than
+            // answering with a record the workspace has but this device has not read whole.
+            peer.check_document_read(reader, app, resource, tilo_clock::wall())?;
+            return Ok(DocumentRead::Pending);
+        }
         let prepared =
             crate::documents::prepare(&peer, device.as_ref(), workspace, (app, resource), reader)
                 .await?;
@@ -82,6 +88,9 @@ impl Workspaces {
         workspace: &str,
         (app, resource): (&str, &str),
     ) -> bool {
+        if self.moderation_history_pending(workspace, app, resource) {
+            return false;
+        }
         let Some((peer, device)) = self.replica(workspace) else {
             return false;
         };
@@ -126,18 +135,6 @@ impl Workspaces {
         Ok(held.replica.read(crate::documents::listing))
     }
 
-    /// The members' own records `workspace`'s copy here knows, by app and route, each with whose
-    /// it is: none for a workspace this service does not hold.
-    pub(crate) fn own_records(
-        &self,
-        workspace: &str,
-    ) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
-        let Some(held) = self.inner.readings.held(workspace) else {
-            return std::collections::BTreeMap::new();
-        };
-        held.replica.read(crate::documents::own_records)
-    }
-
     /// The workspaces this service holds, by their ids.
     pub(crate) fn held_workspaces(&self) -> Vec<String> {
         self.inner.readings.workspaces()
@@ -162,24 +159,14 @@ impl Workspaces {
             .is_some_and(|held| held.device.is_some())
     }
 
-    /// The member's own resource `app`'s `resource` in `workspace` is, when it is one.
-    #[cfg(feature = "apps")]
-    pub(crate) fn own_resource(
-        &self,
-        workspace: &str,
-        app: &str,
-        resource: &str,
-    ) -> Option<OwnResource> {
-        let held = self.inner.readings.held(workspace)?;
-        held.replica.read(|peer| peer.own_resource(app, resource))
-    }
-
     /// Whether this service holds anything of `app`'s `resource` in `workspace`, committed or
     /// sealed alike.
     pub(crate) fn holds_resource(&self, workspace: &str, app: &str, resource: &str) -> bool {
         self.inner.readings.held(workspace).is_some_and(|held| {
-            held.replica
-                .read(|peer| crate::documents::holds(peer, app, resource))
+            held.moderation_pending(app, resource)
+                || held
+                    .replica
+                    .read(|peer| crate::documents::holds(peer, app, resource))
         })
     }
 
@@ -198,6 +185,9 @@ impl Workspaces {
         (app, resource): (&str, &str),
         reader: [u8; 32],
     ) -> Result<Option<[u8; 32]>, String> {
+        if self.moderation_history_pending(workspace, app, resource) {
+            return Ok(None);
+        }
         let (peer, device) = self
             .replica(workspace)
             .ok_or("this service does not hold the workspace")?;
@@ -217,9 +207,29 @@ impl Workspaces {
     #[cfg(feature = "apps")]
     pub(crate) fn resource_arriving(&self, workspace: &str, app: &str, resource: &str) -> bool {
         self.inner.readings.held(workspace).is_some_and(|held| {
-            held.replica
-                .read(|peer| peer.checkpoint_pending(app, resource))
+            held.moderation_pending(app, resource)
+                || held
+                    .replica
+                    .read(|peer| peer.checkpoint_pending(app, resource))
         })
+    }
+
+    /// Whether the workspace's legacy Chat reports and decisions have not been read into its
+    /// moderation record yet: a read of that record waits for them rather than answering with
+    /// what this device has not imported.
+    pub(super) fn moderation_history_pending(
+        &self,
+        workspace: &str,
+        app: &str,
+        resource: &str,
+    ) -> bool {
+        if (app, resource) != (tilo_app_id::apps::CHAT, moderation_model::DOCUMENT) {
+            return false;
+        }
+        self.inner
+            .readings
+            .held(workspace)
+            .is_some_and(|held| held.moderation_pending(app, resource))
     }
 
     /// Whether `certificate`'s device may read `app`'s `resource` of `workspace` now: a device the

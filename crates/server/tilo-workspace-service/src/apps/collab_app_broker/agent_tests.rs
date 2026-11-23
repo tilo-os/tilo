@@ -61,26 +61,23 @@ impl crate::apps::services::AgentRoster for Native {
         self.listed.lock().unwrap().clone()
     }
 
-    fn keeper(&self, workspace: &str, agent: &str) -> Option<String> {
-        let mut kept = None;
-        self.with_tree(&mut |tree| {
-            if let Some(held) = crate::apps::services::workspace_in(tree, workspace)
-                && held.policy.grants.iter().any(|grant| {
+    fn lists(&self, workspace: &str, agent: &str) -> bool {
+        let mut granted = false;
+        let read = self.with_tree(&mut |tree| {
+            granted = crate::apps::services::workspace_in(tree, workspace).is_some_and(|held| {
+                held.policy.grants.iter().any(|grant| {
                     grant.node == held.node()
                         && grant.answer == Answer::Allow
                         && grant.grantee.agent_id() == Some(agent)
                 })
-            {
-                kept = held.owner().cloned();
-            }
-        })
-        .ok()?;
-        kept.or_else(|| {
-            self.listed(workspace)
-                .into_iter()
-                .find(|listed| listed.id == agent)
-                .map(|listed| listed.keeper)
-        })
+            });
+        });
+        read.is_ok()
+            && (granted
+                || self
+                    .listed(workspace)
+                    .iter()
+                    .any(|listed| listed.id == agent))
     }
 }
 
@@ -457,7 +454,7 @@ impl Fixture {
             listed.push(crate::apps::services::ListedAgent {
                 id: "scribe".into(),
                 name: "Scribe".into(),
-                keeper: hex::encode(self.native.certificate.user_public_key),
+                keeper: String::new(),
             });
         }
     }
@@ -488,12 +485,9 @@ impl Fixture {
             .admitted;
         let route = CrdtRoute::record(app, workspace, "main");
         if agent {
-            let kept = crate::apps::test_support::KeptAgents::default().keeping(
-                &route.cluster_id,
-                "scribe",
-                &admitted.actor_key,
-            );
-            admit_kept_agent(&kept, &route.cluster_id, &mut admitted, "scribe").unwrap();
+            let kept = crate::apps::test_support::KeptAgents::default()
+                .listing(&route.cluster_id, "scribe");
+            admit_listed_agent(&kept, &route.cluster_id, &mut admitted, "scribe").unwrap();
         }
         self.admitted_handle(peer, &route, admitted)
     }

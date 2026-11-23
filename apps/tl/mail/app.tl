@@ -1362,17 +1362,11 @@ view editor(d: Draft) {
         input(bind: d.subject, placeholder: "Subject")
         ui.BlockEditor(bind: d.body, placeholder: "Write your message")
         // The message's own Send: a composer sends from where it is written, and the window's
-        // bar keeps it once for the draft it shows.
-        // With no account to send it from, Send stands unavailable where a person looks for it,
-        // saying why in the words `send` refuses it with.
+        // bar keeps it once for the draft it shows. While `send` would refuse, it stands dimmed
+        // where a person looks for it, saying why in the words of its `require`.
         row {
             spacer()
-            ui.Button(
-                "Send",
-                icon: .send,
-                enabled: sender != .none,
-                description: "Add a mail account in Settings first",
-            ) {
+            ui.Button("Send", icon: .send) {
                 on press: send(d)
             }
         }

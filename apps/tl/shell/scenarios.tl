@@ -1688,7 +1688,7 @@ action a_style_settings(style: Text) -> Layout {
     let row = a_workspace(a, "Main")
     let one = a_strip(a, row, "Note", 667)
     a_note_place(a, one, 0)
-    v.focused = one
+    a.front = one
     let sh = root Shell
     sh.settings_open = true
     a
@@ -1739,7 +1739,7 @@ scenario "a layout of places" -> Layout {
         )
         i += 1
     }
-    v.focused = narrow
+    a.front = narrow
     a
 }
 
@@ -1757,7 +1757,7 @@ scenario "a window of several places" -> Layout {
     a_note_place(a, group, 2)
     let single = a_strip(a, row, "Terminal", 667)
     a_foreign_place(a, single, 3, "A terminal")
-    v.focused = group
+    a.front = group
     a
 }
 
@@ -1770,7 +1770,7 @@ scenario "a window alone in the shell" -> Layout {
     let row = a_workspace(a, "Main")
     let one = a_strip(a, row, "Note", 1000)
     a_note_place(a, one, 0)
-    v.focused = one
+    a.front = one
     a
 }
 
@@ -1798,7 +1798,7 @@ scenario "a place finding what to show" -> Layout {
     a_query_place(a, found, "release")
     let beside = a_strip(a, row, "Note", 667)
     a_note_place(a, beside, 0)
-    v.focused = found
+    a.front = found
     a
 }
 
@@ -1851,7 +1851,7 @@ scenario "a reference lands beside its place" -> Layout {
     if let strip = a.strips.find(s -> s.key == talks) {
         strip.active = "ch"
     }
-    v.focused = talks
+    a.front = talks
     a
 }
 
@@ -2088,7 +2088,7 @@ scenario "the traditional desktop" {
     if let strip = a.strips.find(st -> st.key == main) {
         strip.active = "p1"
     }
-    v.focused = main
+    a.front = main
 }
 
 /// The traditional desktop with a terminal in front: a window the shell has no document for, so
@@ -2136,7 +2136,7 @@ scenario "the traditional desktop, a terminal in front" {
         held.placed = true
     }
     a_foreign_place(a, main, 1, "A terminal")
-    v.focused = main
+    a.front = main
 }
 
 /// The default shell with the agents on the bar: the person showed the Agents part, and the

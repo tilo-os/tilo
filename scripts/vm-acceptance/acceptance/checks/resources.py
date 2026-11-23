@@ -1461,7 +1461,11 @@ now() { awk '/^now at/ { printf "%.3f", $3 / 1e9; exit }' /proc/timer_list; }
 [ -S "$gsock" ] || { echo "SIGNIN error=no-greeter-socket"; exit 0; }
 rm -f "$log"
 t0=$(now)
-printf '%s' __SECRET__ | tilo-control --socket "$gsock" actions invoke greeter sign-in@greeter --args-stdin >/tmp/acc-signin.out 2>&1
+printf '%s' __SECRET__ | jq -c --arg invocation "$(cat /proc/sys/kernel/random/uuid)" \
+  '{version: 2, message: {Invoke: {invocation: $invocation,
+    target: {provider: "greeter", address: {resource: "greeter", action: "sign-in"}},
+    argument: {Json: .}}}}' \
+  | tilo-control --socket "$gsock" raw - >/tmp/acc-signin.out 2>&1
 um= sess= shell= frame= usable=
 i=0
 while [ $i -lt 1500 ]; do

@@ -26,7 +26,7 @@ use tilo_actions::remote::{
 };
 
 use super::{
-    Account, Asking, ENTRIES, FREE, FRESH_MS, LIST, Listed, RESOURCE, accounts_at, answer,
+    Account, Asking, ENTRIES, FREE, FRESH_MS, LIST, Listed, RESOURCE, accounts_in, answer,
     argument, entries, free, off_thread, view,
 };
 use crate::workspaces::Workspaces;
@@ -62,7 +62,12 @@ impl Workspaces {
             return Err(ActionError::UnknownAction);
         }
         let root = self.workspace_root(&using.workspace);
-        let accounts = accounts_at(&root);
+        let accounts = accounts_in(
+            &self
+                .workspace_accounts(&using.workspace)
+                .await
+                .map_err(|reason| ActionError::Refused { reason })?,
+        );
         if accounts.is_empty() {
             return Err(ActionError::UnknownAction);
         }

@@ -309,7 +309,6 @@ fn control_identity_from_spec(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn control_draft_identity(
     root: &dyn Widget,
     doc: &AutoCommit,

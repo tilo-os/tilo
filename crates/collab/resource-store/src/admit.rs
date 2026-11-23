@@ -295,6 +295,11 @@ pub(crate) fn declared(
         }
     }
     for (id, field, value) in writes {
+        // The platform's own fields, which no declared type has: what a resource stands in, and
+        // the times and fields a version reflects (`$created`, `$updated`, `$changed.<field>`).
+        if field.starts_with('$') {
+            continue;
+        }
         let Some(kind) = touched
             .resources
             .get(id)
@@ -335,6 +340,24 @@ pub(crate) fn within_verb(
             continue;
         };
         let Some(writes) = verb.writes.get(kind) else {
+            // A record's verb writes the kinds its type nests that another surface declares, and
+            // their fields are the ones that surface declares: a tilolang package publishes a
+            // surface per type, so a list's items are another surface's kind.
+            if nested_kind(schema, &verb.nested, kind) {
+                continue;
+            }
+            // A tilolang action's code writes the records of its own package it reaches, as an
+            // answer settles the ask it answers: the package's code bounds what its verb writes
+            // there, and a surface lists no write a reference leads to. Another package's
+            // records stay out of its reach.
+            if let Some(package) = tilolang_package(kind)
+                && verb
+                    .writes
+                    .keys()
+                    .any(|own| tilolang_package(own) == Some(package))
+            {
+                continue;
+            }
             return Err(format!("`{}` writes no `{kind}`", verb.name));
         };
         if writes.sets_only && (touch.made || touch.removed || touch.placed || touch.content) {
@@ -343,12 +366,37 @@ pub(crate) fn within_verb(
         if let Some(field) = touch
             .fields
             .iter()
+            .filter(|field| !field.starts_with('$'))
             .find(|field| !writes.fields.contains(*field))
         {
             return Err(format!("`{}` writes no `{kind}.{field}`", verb.name));
         }
     }
     Ok(())
+}
+
+/// Whether `kind` stands among `nested` or among the kinds the types between them nest.
+/// The tilolang package a kind of one (`tl.<app>.<Type>`) is of: none for another kind.
+fn tilolang_package(kind: &str) -> Option<&str> {
+    let (package, _) = kind.strip_prefix("tl.")?.rsplit_once('.')?;
+    Some(package)
+}
+
+fn nested_kind(schema: &Schema, nested: &BTreeSet<String>, kind: &str) -> bool {
+    let mut reached: Vec<&str> = nested.iter().map(String::as_str).collect();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    while let Some(at) = reached.pop() {
+        if at == kind {
+            return true;
+        }
+        if !seen.insert(at) {
+            continue;
+        }
+        if let Some(ty) = schema.get(at) {
+            reached.extend(ty.nested.iter().map(|(_, nested)| nested.as_str()));
+        }
+    }
+    false
 }
 
 impl Expected {

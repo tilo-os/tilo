@@ -10,8 +10,10 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use account_credentials::portable::{self, PasswordSealedAccounts, PortableBinding};
 use account_credentials::{CredentialStore, LoopbackCancel, OAuthCloud, OAuthIssuer, OAuthUse};
-use accounts::{Account, AccountId, AccountStore, Secret, SecretVault};
+use accounts::{Account, AccountId, Secret, SecretVault};
 use zeroize::Zeroize;
+
+use crate::account_store::Accounts;
 
 pub use account_credentials::hints::{self, AccountHint, Provider};
 use browser::{BrowserOpener, LiveBrowserOpener};
@@ -316,7 +318,10 @@ impl AccountsController {
     }
 
     pub fn connected(&self) -> Vec<ConnectedAccount> {
-        connected_accounts(&self.root, &self.selected)
+        connected_accounts(
+            &Accounts::read(&self.root).unwrap_or_default(),
+            &self.selected,
+        )
     }
 
     pub fn command(&mut self, command: AccountsCommand) -> Result<(), AccountsError> {
@@ -427,7 +432,7 @@ impl AccountsController {
     }
 
     fn save(&mut self, verified: &Verified) -> Result<(), AccountsError> {
-        let mut store = AccountStore::load_in(&self.root);
+        let accounts = Accounts::read(&self.root).map_err(|_| AccountsError::Storage)?;
         let mut vault = SecretVault::open_in(&self.root);
         if vault.recovery_error().is_some() {
             return Err(AccountsError::Storage);
@@ -439,11 +444,11 @@ impl AccountsController {
                     pending.stage(&account.id, &mut vault);
                 }
             }
-            store.upsert(account.clone());
+            accounts.keep(account).map_err(|_| AccountsError::Storage)?;
         }
         vault.try_save().map_err(|_| AccountsError::Storage)?;
-        store
-            .save_in(&self.root)
+        accounts
+            .project(&self.root)
             .map_err(|_| AccountsError::Storage)?;
         self.selected.extend(
             verified
@@ -470,6 +475,9 @@ impl AccountsController {
         if selected.is_empty() || selected.iter().any(|id| !self.selected.contains(id)) {
             return Err(AccountsError::InvalidRequest);
         }
+        Accounts::read(&self.root)
+            .and_then(|accounts| accounts.project(&self.root))
+            .map_err(|_| AccountsError::Storage)?;
         portable::seal_selected_accounts_with_password(
             &self.root,
             selected,
@@ -495,6 +503,9 @@ impl AccountsController {
         if selected.is_empty() || selected.iter().any(|id| !self.selected.contains(id)) {
             return Err(AccountsError::InvalidRequest);
         }
+        Accounts::read(&self.root)
+            .and_then(|accounts| accounts.project(&self.root))
+            .map_err(|_| AccountsError::Storage)?;
         portable::seal_selected_accounts(&self.root, selected, key, binding.as_bytes())
             .map_err(|_| AccountsError::Storage)
     }
@@ -517,12 +528,12 @@ impl Drop for AccountsController {
     }
 }
 
-fn connected_accounts(root: &Path, selected: &[AccountId]) -> Vec<ConnectedAccount> {
+fn connected_accounts(accounts: &Accounts, selected: &[AccountId]) -> Vec<ConnectedAccount> {
     use accounts::cloud_types::NEXTCLOUD;
-    let store = AccountStore::load_in(root);
+    let store = accounts.state().unwrap_or_default();
     let mut connected: Vec<ConnectedAccount> = Vec::new();
     for id in selected {
-        let Some(account) = store.get(id) else {
+        let Some(account) = store.account(id.as_str()) else {
             continue;
         };
         let config = &account.config;

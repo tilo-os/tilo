@@ -1,6 +1,7 @@
 //! Each source's rows show as soon as that source has them: a source that is slow, or one that
-//! fails, holds back and hides nothing of the others, and the card says "Searching…" only while no
-//! row has come.
+//! fails, holds back and hides nothing of the others. While a typed query has no row yet, the card
+//! keeps the rows of the query before it, dimmed as stale, rather than collapsing between keys;
+//! it says "Searching…" only when there were no rows to keep.
 //!
 //! On the page, a search over a hosted workspace said "Searching…" for 56 s and then "No results"
 //! for text a file held: the rows that switch sources off were asked on the frame, a frame after
@@ -224,7 +225,8 @@ tilo_test_env::scenario! {
         // source has not answered and the files source failed.
         let frames = frames_until(&mut search, |search| {
             let shown = titles(search);
-            shown.iter().any(|title| title == "Mail")
+            !search.palette().is_stale()
+                && shown.iter().any(|title| title == "Mail")
                 && shown.iter().any(|title| title == "Mail accounts")
         });
         assert!(
@@ -261,17 +263,26 @@ tilo_test_env::scenario! {
     {
         let (mut search, release) = shell();
         frames_until(&mut search, |search| !search.results().is_empty());
+        let before = titles(&search);
         search.set_query("net 30");
         search.refresh();
         // Every source but the slow one answered with nothing it shows: the card still waits for
-        // a row, and says so.
-        frames_until(&mut search, |search| {
-            search.palette().is_searching() && search.results().is_empty()
-        });
+        // a row, and keeps the rows it showed, dimmed, rather than collapsing to "Searching…".
+        for _ in 0..50 {
+            search.refresh();
+            assert!(
+                search.palette().is_stale() && search.palette().is_searching(),
+                "the rows shown are the query before, kept while the typed one is answered"
+            );
+            assert_eq!(titles(&search), before, "the card never collapses between keys");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(!search.settled(), "rows of another query are no answer to it");
         release.send(()).expect("the records source waits");
         frames_until(&mut search, |search| {
             titles(search).iter().any(|title| title.contains("net 30"))
         });
+        assert!(!search.palette().is_stale(), "the typed query's rows replace them");
         frames_until(&mut search, |search| !search.answering());
         assert!(!search.palette().is_searching(), "the search is over");
     }
@@ -289,7 +300,7 @@ tilo_test_env::scenario! {
         frames_until(&mut search, |search| !search.answering());
         frames_until(&mut search, |search| !search.palette().is_searching());
         assert!(
-            search.results().is_empty(),
+            search.results().is_empty() && !search.palette().is_stale(),
             "nothing matched: {:?}",
             titles(&search)
         );
@@ -316,18 +327,22 @@ tilo_test_env::scenario! {
         search.open(data);
         search.set_room(600.0, 400.0);
         frames_until(&mut search, |search| !search.results().is_empty());
+        let before = titles(&search);
         search.set_query("net 30");
         search.refresh();
         frames_until(&mut search, |search| !search.answering());
         assert!(
-            search.palette().is_searching() && search.results().is_empty(),
-            "only the host's answer is coming: {:?}",
+            search.palette().is_searching()
+                && search.palette().is_stale()
+                && titles(&search) == before,
+            "only the host's answer is coming, and the rows before it stay: {:?}",
             titles(&search)
         );
         host.answer("net 30");
         frames_until(&mut search, |search| {
             titles(search).iter().any(|title| title == "Supplier contract")
         });
+        assert!(!search.palette().is_stale(), "the host's row replaced them");
         assert!(!search.palette().is_searching(), "the search is over");
     }
 
@@ -351,13 +366,19 @@ tilo_test_env::scenario! {
         frames_until(&mut search, |search| !search.results().is_empty());
         search.set_query("xqzvwk");
         search.refresh();
-        // Nothing matched and the host is still being waited for: the card says it is searching.
+        // Nothing matched and the host is still being waited for: the card says it is searching,
+        // over the rows of the query before.
         frames_until(&mut search, |search| {
-            search.palette().is_searching() && search.results().is_empty()
+            search.palette().is_searching() && search.palette().is_stale()
         });
         // The wait ends, and the frames after it draw a card that says nothing matched.
         frames_until(&mut search, |search| !search.waiting());
         frames_until(&mut search, |search| !search.palette().is_searching());
+        assert!(
+            search.results().is_empty() && !search.palette().is_stale(),
+            "the kept rows go once nothing is left to come: {:?}",
+            titles(&search)
+        );
         assert!(
             search.palette().empty_text().contains("xqzvwk"),
             "the card says nothing matched: {:?}",

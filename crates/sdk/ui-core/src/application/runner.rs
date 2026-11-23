@@ -1185,7 +1185,6 @@ impl ApplicationOwner {
         const MAX_SUCCESSORS: usize = 64;
         let mut successors = 0;
         let target = loop {
-            definition.refuse_archived_document(&records, &self.author, &checkout.id)?;
             match records.try_open_resource(&checkout) {
                 Ok(_) => {
                     break LaunchTarget::Record {

@@ -275,7 +275,7 @@ async fn management_alpn_rejects_member_admitted_by_live_policy() {
             cert,
             sk,
             RevocationList::new(),
-            tilo_server::transport::HomePeerManagementRequest::HoldAdmin {
+            tilo_server::transport::HomePeerManagementRequest::AdmitServer {
                 endpoint: endpoint.addr(),
             },
         )

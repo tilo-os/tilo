@@ -85,15 +85,19 @@ pub fn serve() -> Result<ExitCode> {
 /// reach it: they are calls to its API ([`held`]), never a session of their own, which would cut
 /// that one off. Nothing, when this computer did not log in.
 ///
+/// The daemon is named by the login's certificate, not its device key: this process hands the
+/// daemon its calls, and one that read the key would be undumpable, which the daemon's admission
+/// refuses.
+///
 /// # Errors
 /// The login is damaged, or the daemon did not start.
 pub(crate) fn ensure_held() -> Result<()> {
     let login = crate::login::Place::here(crate::identity::paths())?;
-    let Some((key, _)) = crate::login::load(&login)? else {
+    let Some(device) = crate::login::load_public(&login)? else {
         return Ok(());
     };
-    let place = DaemonPlace::of(login.dir(), &key.verifying_key().to_bytes())
-        .map_err(anyhow::Error::msg)?;
+    let place =
+        DaemonPlace::of(login.dir(), &device.cert.device_public_key).map_err(anyhow::Error::msg)?;
     held::ensure(&place).map_err(anyhow::Error::msg)
 }
 

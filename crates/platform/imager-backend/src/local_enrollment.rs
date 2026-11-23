@@ -13,7 +13,7 @@ pub struct LocalEnrollment<'a> {
     pub username: &'a str,
     pub local_identity_dir: &'a Path,
     pub local_system: &'a IdentityPaths,
-    pub local_home_peers: &'a Path,
+    pub local_personal_devices: &'a Path,
 }
 
 /// Enroll the image `enrollment` names for the person called `display_name`,
@@ -34,7 +34,7 @@ pub fn enroll(
             username: enrollment.username,
             local_identity_dir: enrollment.local_identity_dir,
             local_system: enrollment.local_system,
-            local_home_peers: enrollment.local_home_peers,
+            local_personal_devices: enrollment.local_personal_devices,
         },
         display_name,
         device_label,

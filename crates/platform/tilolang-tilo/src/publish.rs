@@ -62,6 +62,9 @@ pub struct Caller {
     pub agent: bool,
     /// The person an agent acts for.
     pub on_behalf_of: Option<String>,
+    /// The device that signed for the caller, by its public key in lowercase hex, when the API
+    /// admitted it from another device than this host's.
+    pub device: Option<String>,
 }
 
 impl Caller {
@@ -87,6 +90,7 @@ impl From<&tilo_actions::ActionInvoker> for Caller {
             actor: invoker.acting.by.clone(),
             agent: !invoker.acting.is_person(),
             on_behalf_of: invoker.acting.acted_for_person().map(str::to_owned),
+            device: invoker.device.as_ref().map(|device| device.id.clone()),
         }
     }
 }
@@ -726,10 +730,14 @@ fn named(store: &ResourceStore, at: &ResourceRef) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The collections of the type `ty`, each with the type of its items: in the order `meta`
+/// The collections of the type `ty`, each with the types of its items: in the order `meta`
 /// declares the type's fields when it declares the type, which is the order a resource's
 /// children are published in.
-fn collections_of(store: &ResourceStore, meta: Option<&Meta>, ty: &str) -> Vec<(String, String)> {
+fn collections_of(
+    store: &ResourceStore,
+    meta: Option<&Meta>,
+    ty: &str,
+) -> Vec<(String, Vec<String>)> {
     let kinds = store.kinds();
     let Some(entry) = kinds.get(ty) else {
         return Vec::new();
@@ -752,9 +760,26 @@ fn collections_of(store: &ResourceStore, meta: Option<&Meta>, ty: &str) -> Vec<(
             if field.kind != FieldKind::Collection {
                 return None;
             }
-            Some((id.to_owned(), field.items.first().cloned()?))
+            (!field.items.is_empty()).then(|| (id.to_owned(), field.items.clone()))
         })
         .collect()
+}
+
+/// The item `id` of a collection of `at` holding `items`: of its one type, or, in a collection
+/// of several (`Collection<Category | TextChannel>`), of the type the store holds it as.
+pub(crate) fn item_of(
+    store: &ResourceStore,
+    at: &ResourceRef,
+    id: &str,
+    items: &[String],
+) -> Option<ResourceRef> {
+    match items {
+        [ty] => Some(at.item(id, ty.clone())),
+        _ => {
+            let ty = store.type_of_id(&at.item(id, String::new()).id_string())?;
+            Some(at.item(id, ty))
+        }
+    }
 }
 
 /// Reads what a document publishes from the store: the document, and its items down to what a
@@ -809,7 +834,9 @@ impl Reader<'_> {
                 continue;
             };
             for id in listing.iter() {
-                out.extend(self.item(&at.item(&id, items.clone()), None));
+                if let Some(item) = item_of(self.store, at, &id, &items) {
+                    out.extend(self.item(&item, None));
+                }
             }
         }
         out
@@ -971,7 +998,9 @@ fn every_item(store: &ResourceStore, at: &ResourceRef, out: &mut BTreeSet<String
             continue;
         };
         for id in listing.iter() {
-            let item = at.item(&id, items.clone());
+            let Some(item) = item_of(store, at, &id, &items) else {
+                continue;
+            };
             if out.insert(item.id_string()) {
                 every_item(store, &item, out);
             }

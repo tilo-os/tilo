@@ -18,11 +18,15 @@ pub struct CalDavConfig {
     pub display_name: String,
     pub server_url: String,
     pub username: String,
-    /// Held only in memory here and hydrated from the [`accounts::AccountCredentials`]
-    /// on load; the sync layer uses it at connect time. Never written to the
-    /// plaintext store (hence `serde(skip)`) — it lives only in the vault.
+    /// Held only in memory here, filled from the session when the account signs in. Never
+    /// written to the plaintext store (hence `serde(skip)`): the password is the workspace's
+    /// vault's.
     #[serde(skip)]
     pub password: String,
+    /// The entry of the workspace's vault the password is in, as Settings names it: the app asks
+    /// the session for it when it signs in, and holds it in memory only.
+    #[serde(skip)]
+    pub password_item: Option<String>,
     #[serde(skip)]
     pub oauth_account_id: Option<String>,
 }
@@ -186,6 +190,7 @@ impl AccountStore {
                         server_url: "https://caldav.fastmail.com/dav/calendars".into(),
                         username: "work@fastmail.example".into(),
                         password: String::new(),
+                        password_item: None,
                         oauth_account_id: None,
                     },
                     calendars: vec![
@@ -214,6 +219,7 @@ impl AccountStore {
                         server_url: "https://caldav.icloud.com".into(),
                         username: "me@icloud.example".into(),
                         password: String::new(),
+                        password_item: None,
                         oauth_account_id: None,
                     },
                     calendars: vec![

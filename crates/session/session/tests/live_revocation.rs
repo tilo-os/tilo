@@ -1,78 +1,53 @@
-//! The running shell's file access list, as the Files daemon reads it: the session writes it as it
-//! starts and again when it changes, so taking a folder or a member's role away reaches the app at
-//! its next open instead of waiting for the next login. The daemon re-reads the file on change and
-//! signs it into the workspace authority every mount enforces.
+//! The running shell's file access list, as the Files daemon mounting a workspace is told it: the
+//! session tells it on the daemon's connection as the daemon connects and again when it changes,
+//! so taking a folder or a member's role away reaches the mount at its next open instead of
+//! waiting for the next login. The daemon signs what it is told into the workspace authority every
+//! mount enforces.
 
 #![cfg(target_os = "linux")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::significant_drop_tightening,
+    reason = "test fixtures: a failed step is the assertion, and the session lives until the \
+              mount it serves is done"
+)]
 
-use std::path::Path;
-use std::time::Duration;
+use crate::common::files::{Mount, mount_on};
+use crate::common::people::{Device, Site, waited};
+use tilo_server_protocol::workspaces::Role;
 
-use tilo_session::Session;
-
-/// The private home the session runs in. A session keeps the list where the environment it starts
-/// in names, and the shared device state every session is handed sets a home of its own: it is made
-/// first, so this home is the one the session starts in.
-fn session_env(root: &Path) -> tilo_test_env::ScopedEnv {
-    let _ = crate::common::device_state();
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("HOME", root)
-        .set("XDG_CONFIG_HOME", root.join("config"))
-        .set("XDG_RUNTIME_DIR", root.join("runtime"))
-        .set("TILO_IDENTITY_ROOT", root.join("identity"));
-    env
+/// A runtime the mount's sync runs on, entered for as long as the test holds it.
+fn mounts_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a runtime for the mount")
 }
 
-/// Where the session writes the list the daemon reads.
-fn acl_path(root: &Path) -> std::path::PathBuf {
-    root.join("config/tilo/fs-capabilities.json")
+/// The list the mount was last told, once it was told one.
+fn access_list(mount: &Mount) -> Option<collab_types::FsAuthority> {
+    let told = mount.service().access().borrow().clone()?;
+    Some(serde_json::from_str(&told).expect("the list the mount is told reads"))
 }
 
-/// The list the daemon reads, once the session has written one.
-fn access_list(acl: &Path) -> Option<collab_types::FsAuthority> {
-    serde_json::from_slice(&std::fs::read(acl).ok()?).ok()
+/// Wait until the list `mount` was told holds `arrived`, and answer it.
+fn told_until(
+    what: &str,
+    (site, device): (&Site, &Device),
+    mount: &Mount,
+    arrived: impl Fn(&collab_types::FsAuthority) -> bool,
+) -> collab_types::FsAuthority {
+    waited(what, site, &[device], || {
+        access_list(mount).is_some_and(|list| arrived(&list))
+    });
+    access_list(mount).expect("the list the mount was told")
 }
 
-#[test]
-fn the_session_writes_its_file_access_list_for_the_files_daemon() {
-    let root = crate::common::private_home();
-    let _env = session_env(root.path());
-    let acl = acl_path(root.path());
-    let mut session = crate::common::seeded_session(root.path());
-    crate::common::until(&mut session, "the file access list", |_| acl.is_file());
-    access_list(&acl).expect("the list is readable");
-    // A shell change that grants nothing new does not rewrite the list: the daemon signs every list
-    // it reads into a new revision.
-    let before = std::fs::read(&acl).unwrap();
-    crate::common::show_preset(&mut session, "so.tilo.shell:frames");
-    for _ in 0..5 {
-        session.step(Duration::from_millis(1)).unwrap();
-    }
-    assert_eq!(
-        std::fs::read(&acl).unwrap(),
-        before,
-        "an unchanged list is not written again"
-    );
-}
-
-/// Someone the person admits to the workspace in front, as their person id (the hex of the key
-/// their devices act under).
-const MEMBER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
-
-fn member_key() -> [u8; 32] {
-    hex::decode(MEMBER).unwrap().try_into().unwrap()
-}
-
-/// A file of the workspace in front, under the tree the device's files keep that workspace's own
-/// in: the paths its roles' access ranges over.
-fn note(session: &Session) -> String {
-    let workspace = session
-        .handle()
-        .read(|tree| {
-            tree.active_workspace()
-                .map(tilo_desktop_model::Workspace::id)
-        })
-        .expect("a workspace in front");
+/// A file of `workspace`, under the tree the device's files keep that workspace's own in: the
+/// paths its roles' access ranges over.
+fn note(workspace: &str) -> String {
     format!(
         "{}/{}/{workspace}/brief/plan.md",
         tilo_paths::WORKSPACE_MOUNT,
@@ -80,15 +55,16 @@ fn note(session: &Session) -> String {
     )
 }
 
-/// Can `MEMBER` reach `path` with `access` in the list the daemon reads? This is
-/// [`collab_types::decide_capability`], the decision every Files open asks, over the written bytes
-/// rather than a session-side copy.
-fn member_may(
+/// Can `person` reach `path` with `access` in the list the mount was told? This is
+/// [`collab_types::decide_capability`], the decision every Files open asks, over the list the
+/// daemon holds rather than a session-side copy.
+fn may(
     list: &collab_types::FsAuthority,
+    person: [u8; 32],
     path: &str,
     access: collab_types::caps::Access,
 ) -> bool {
-    let actor = tilo_action_policy::Acting::person(hex::encode(member_key()));
+    let actor = tilo_action_policy::Acting::person(hex::encode(person));
     collab_types::decide_capability(
         &actor,
         &collab_types::ResourceRef::FsPath(path.into()),
@@ -98,49 +74,35 @@ fn member_may(
     ) == collab_types::CapDecision::Allow
 }
 
-/// Change the workspace in front, as the person's own governance does.
-fn change_workspace(session: &Session, change: impl FnOnce(&mut tilo_desktop_model::Workspace)) {
-    let mut tree = session.handle().read(Clone::clone);
-    let workspace = tree.active_workspace_mut().expect("a workspace in front");
-    change(workspace);
-    session.handle().replace_tree(tree);
-}
-
-/// Give `MEMBER` `role` in the workspace in front and wait for the list the daemon reads to say so:
-/// the session notices the replica's change on its own, with no timer and no request for it.
-fn written_after_role(
-    session: &mut Session,
-    acl: &Path,
-    role: tilo_action_policy::Role,
-    arrived: impl Fn(&collab_types::FsAuthority) -> bool,
-) -> collab_types::FsAuthority {
-    let owner = crate::common::PERSON.to_owned();
-    change_workspace(session, |workspace| {
-        tilo_desktop::workspace_settings::set_member_role(
-            workspace,
-            &owner,
-            &MEMBER.to_owned(),
-            role,
-        )
-        .expect("the person changes the member's role");
+#[test]
+fn the_session_tells_a_mounting_daemon_its_file_access_list() {
+    let (site, ada, _bob, ada_laptop) = crate::common::people::a_site_with_files_for_one_laptop();
+    let runtime = mounts_runtime();
+    let _in_runtime = runtime.enter();
+    let mount = mount_on(&ada_laptop, &site.workspace);
+    let list = told_until("the file access list", (&site, &ada_laptop), &mount, |_| {
+        true
     });
-    crate::common::until(session, "the list after the role", |_| {
-        access_list(acl).is_some_and(|list| arrived(&list))
-    });
-    access_list(acl).expect("the list the daemon reads")
+    let note = note(&site.workspace);
+    assert!(
+        may(&list, ada.public, &note, collab_types::caps::Access::Write),
+        "the person the device acts for writes their workspace's files"
+    );
 }
 
 #[test]
 fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
-    let root = crate::common::private_home();
-    let _env = session_env(root.path());
-    let acl = acl_path(root.path());
-    let mut session = crate::common::seeded_session(root.path());
-    crate::common::until(&mut session, "the file access list", |_| acl.is_file());
-    let note = note(&session);
+    let (site, _ada, bob, ada_laptop) = crate::common::people::a_site_with_files_for_one_laptop();
+    let runtime = mounts_runtime();
+    let _in_runtime = runtime.enter();
+    let mount = mount_on(&ada_laptop, &site.workspace);
+    let at = (&site, &ada_laptop);
+    let note = note(&site.workspace);
+    let outside = told_until("the file access list", at, &mount, |_| true);
     assert!(
-        !member_may(
-            &access_list(&acl).unwrap(),
+        !may(
+            &outside,
+            bob.public,
             &note,
             collab_types::caps::Access::Read
         ),
@@ -148,55 +110,42 @@ fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
     );
 
     // Admitted read-only, they read the workspace's files and cannot write them.
-    let read_only = written_after_role(
-        &mut session,
-        &acl,
-        tilo_action_policy::Role::Viewer,
-        |list| member_may(list, &note, collab_types::caps::Access::Read),
-    );
-    assert!(member_may(
-        &read_only,
-        &note,
-        collab_types::caps::Access::Read
-    ));
+    let mut bob_laptop = bob.device("Bob's laptop");
+    bob_laptop.install_files();
+    bob_laptop.join(&site.invite(bob.public, Role::Viewer));
+    bob_laptop.wait_holding(&site.workspace);
+    site.wait_for_member(bob.public);
+    let read_only = told_until("the list after the viewer's role", at, &mount, |list| {
+        may(list, bob.public, &note, collab_types::caps::Access::Read)
+    });
     assert!(
-        !member_may(&read_only, &note, collab_types::caps::Access::Write),
+        !may(
+            &read_only,
+            bob.public,
+            &note,
+            collab_types::caps::Access::Write
+        ),
         "a member with a read-only role cannot write a workspace file"
     );
 
-    // Their role changes to editor: the daemon reads writing too.
-    let editing = written_after_role(
-        &mut session,
-        &acl,
-        tilo_action_policy::Role::Editor,
-        |list| member_may(list, &note, collab_types::caps::Access::Write),
-    );
-    assert!(
-        member_may(&editing, &note, collab_types::caps::Access::Write),
-        "the daemon reads the editor's access"
-    );
+    // Their role changes to editor: the daemon is told writing too.
+    site.set_role(bob.public, Role::Editor);
+    told_until("the list after the editor's role", at, &mount, |list| {
+        may(list, bob.public, &note, collab_types::caps::Access::Write)
+    });
 
     // Removed from the workspace, their device reaches nothing at its next open.
-    let owner = crate::common::PERSON.to_owned();
-    change_workspace(&session, |workspace| {
-        tilo_desktop::workspace_settings::remove_member(workspace, &owner, &MEMBER.to_owned())
-            .expect("the person removes the member");
+    site.remove(bob.public);
+    let removed = told_until("the list after the removal", at, &mount, |list| {
+        !may(list, bob.public, &note, collab_types::caps::Access::Read)
     });
-    crate::common::until(&mut session, "the list after the removal", |_| {
-        access_list(&acl).is_some_and(|list| {
-            !member_may(&list, &note, collab_types::caps::Access::Read)
-                && !member_may(&list, &note, collab_types::caps::Access::Write)
-        })
-    });
-    let removed = access_list(&acl).unwrap();
-    assert!(!member_may(
-        &removed,
-        &note,
-        collab_types::caps::Access::Read
-    ));
-    assert!(!member_may(
-        &removed,
-        &note,
-        collab_types::caps::Access::Write
-    ));
+    assert!(
+        !may(
+            &removed,
+            bob.public,
+            &note,
+            collab_types::caps::Access::Write
+        ),
+        "a removed member writes nothing"
+    );
 }

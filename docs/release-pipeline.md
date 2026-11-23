@@ -6,8 +6,8 @@ does not fan out into unrelated builds:
 | Component | Publication trigger | Expensive work | Published output |
 |---|---|---|---|
 | Server, Lounge, web entry, `tilo` command | A `vX.Y.Z` tag (t's `tag:vX.Y.Z` checks), or a dispatch of one of them on that tag | The frozen RPM set of each architecture that has a build node, the images, the musl builds of the command | Images under `sha-<commit>`, the version and `latest`; the CLI archives; the published `set-<fingerprint>-<arch>` RPM snapshots |
-| Apps | Relevant `main` pushes, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Affected apps on routine `main`; selected apps once per enabled native architecture for explicit releases | Independently versioned tapps and immutable collection bundles |
-| Desktop session | `desktop-vX.Y.Z`; scheduled/manual runs from `main` publish the OS payload | Enabled native host-package jobs; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload |
+| Apps | A dispatch of t's app release checks (`apps-build-{arch}`, `sign-apps-{arch}`, `app-reproducible-{arch}`, `app-release-smoke-{arch}`) | Both native architectures: the compile, the signed package, and the render/engine smoke | Signed, reproducible tapps and immutable collection bundles built on t; registry publication is a separate step |
+| Desktop session | A dispatch of `desktop-package-{arch}`; `publish-desktop-payload` publishes the OS payload | Both native architectures' host-package jobs, run serially per architecture | Install-tested Debian, RPM, Arch and Nix packages; the immutable OS payload under `publish-desktop-payload` |
 | OS | `tools/ci/publish/os-release.sh` dispatched on a `vX.Y.Z` tag | Release image, sealed-image boot, boot signing, independent rebuild | Signed generation image, SBOM, provenance and freshness |
 | Server OS | A dispatch on a `vX.Y.Z` tag (t's `publish-host`) | The server's programs, the package-snapshot base, the sealed image booted in a VM under Secure Boot | The signed server image, its UKI signed for Secure Boot, in `registry.tilo.so/tilo/tilo-host` under `sha-<commit>`, `gen<N>`, `<version>` and `latest` |
 | Tilo Installer | Relevant protected `main` pushes; `imager-vX.Y.Z` for releases | Six native host-package jobs; signed installer media only on tags/manual rehearsals | Signed Linux/Windows and signed/notarized macOS downloads; immutable source-revision prereleases on main |
@@ -21,12 +21,12 @@ the `tilo-sdk-native` packages) are designed in
 those crates land. The two registry tokens are stored secrets, not identity tokens: neither
 PyPI nor npm's provenance accepts Forgejo's identity.
 
-Continuous app packaging runs on relevant `main` pushes. It selects affected
-tapps, reuses unchanged members from the prior immutable collection, and advances
-the verified x86-64 channel only after publication succeeds. The packaging
-coordinator that would have dispatched qualification runs was never enabled and
-is gone; release-apps.yml keeps its guarded, disabled qualification path.
-OS releases happen only when someone runs one on a release tag; never per push.
+Continuous app packaging is a dispatch of t's app release checks: `apps-build-{arch}`
+compiles the default collection, `sign-apps-{arch}` signs it, `app-reproducible-{arch}`
+proves two builds of an app match, and `app-release-smoke-{arch}` proves every app
+draws and loads its engine. The packaging coordinator that would have dispatched
+qualification runs was never enabled and is gone. OS releases happen only when
+someone runs one on a release tag; never per push.
 
 Kernel and kernel buildroot snapshots remain input-promotion work: they run only
 when their pinned input set changes, and an OS release consumes their immutable
@@ -46,11 +46,11 @@ is not published.
 Pull requests use the cheapest job that proves the affected boundary:
 
 - Rust tests use the affected-package graph in **Check affected workspace packages**.
-- **Release / apps** does not run on PRs; it plans and packages on `main`.
-- Desktop PRs with matching packaging inputs run preflight contracts. Full
-  distribution builds run weekly, on tags, or by explicit dispatch. Their
-  sccache namespace is shared by architecture; compiler identity and native
-  headers remain part of each cache key.
+- The app release checks (`apps-build-{arch}` and its dependents) are dispatches,
+  not part of an ordinary change's run.
+- Desktop changes run the preflight contracts. Full distribution builds happen
+  when `desktop-package-{arch}` is dispatched; the job builds cold, because a
+  payload that can be published never compiles through a shared cache.
 - Full OS builds (`tools/ci/publish/os-image.sh`) do not run on ordinary
   `main` pushes. Every OS image carries the Browser's Chromium engine
   runtime, built from the pinned CEF distribution in the image build.
@@ -66,36 +66,29 @@ Pull requests use the cheapest job that proves the affected boundary:
   The Forgejo repository/branch API supplies workflow protection preflight;
   it cannot replace the signing broker's authenticated protected-ref claims.
 
-Release jobs never use an Actions cache as an artifact hand-off. Forgejo cache
-entries are opportunistic and workflow artifacts are scoped to one run. Each
-app tapp is therefore published independently in Forgejo's generic package
-registry. A collection build downloads unchanged tapps from the previously
-pinned collection, replaces only the apps selected by the dependency/change
-plan, and publishes a new immutable `.tar.gz`. OS images and desktop
-distributions can pin one by version and architecture without compiling apps
-again.
+t keys every check by what it reads and serves a result across commits that keep
+its inputs, so the app release needs no artifact hand-off between jobs:
+`sign-apps-{arch}` reads `apps-build-{arch}`'s tree and `app-models`, and
+`app-release-smoke-{arch}` reads both. A collection build packages the whole
+default collection; t compiles only what changed. OS images and desktop
+distributions can pin a published collection by version and architecture
+without compiling apps again.
 
-The desktop release retains its complete ARM64 matrix and verifier behind the
-`TILO_DESKTOP_ARM64_RELEASES` capability switch. It is currently `"1"`: tagged
-and explicit full-native builds run the native amd64 and the native
-`runner-large-arm64` package jobs. Weekly and default manual builds use the
-amd64 job; PRs run preflight only. Desktop package publication requires a tag.
-No package or artifact definition needs to change if scheduling is paused.
-
-This describes workflow selection, not accepted release support:
-[the install contract](install-contract.json) still marks ARM64 desktop sessions as
-planned. Architecture-specific install/release receipts and the product owner's
-support-matrix decision remain
-separate from enabling the job.
+Both native architectures run on t: `desktop-package-amd64` and
+`desktop-package-arm64` build and install-test every distribution userspace when
+dispatched. This is not a support claim:
+[the install contract](install-contract.json) still marks ARM64 desktop sessions
+as planned, and architecture-specific install/release receipts and the product
+owner's support-matrix decision remain separate from building them.
 
 The Fedora desktop job also emits a small deterministic OS payload containing
 the same install-tested `tilo-session`, `tilo-launcher`, `tilo-runtime`
-and `tilo-unlock-helper` binaries. A successful `main` build publishes it
+and `tilo-unlock-helper` binaries. `publish-desktop-payload` publishes it
 immutably and advances `TILO_DESKTOP_PAYLOAD_{URL,SHA256}_{X86_64,AARCH64}`.
 Trusted OS composition downloads the matching architecture and omits those four
 Cargo packages from its build. OS-only changes therefore test the desktop/OS integration without
 recompiling the desktop. Scheduled/manual OS builds exercise this immutable
-integration boundary; ordinary PRs do not run the OS image workflow. The OS
+integration boundary; ordinary PRs do not run the OS image check. The OS
 build reuses the payload only while it is current: the payload's
 `manifest.json` records its source revision, and if any Rust or Cargo input
 (`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo`, `crates`, `apps`,
@@ -116,13 +109,12 @@ The outer SHA-256 is checked before extraction, every tapp/index checksum is
 checked again, every tapp must carry the expected publisher identity, and
 tagged OS provenance records the collection digest. Leaving the variables empty
 preserves the source-build fallback for bootstrap work.
-Successful default-collection publications from `main` advance the URL and
-digest variables automatically. Architecture-specific
+A publication advances the URL and digest variables. Architecture-specific
 `TILO_APP_COLLECTION_{URL,SHA256}_{X86_64,AARCH64}` variables are maintained as
 both native jobs publish; the unsuffixed pair remains the x86_64
 compatibility channel.
 
-App publication requires `TILO_PACKAGE_PUBLIC_BASE_URL`, set to the public
+An app publication requires `TILO_PACKAGE_PUBLIC_BASE_URL`, set to the public
 HTTPS generic-package base (currently
 `https://code.tilo.so/api/packages/tilo/generic`). Registry traffic may use
 the runner's internal endpoint, but receipts and persisted collection-channel
@@ -134,11 +126,6 @@ tagline. `tools/apps/registry_metadata.py` detects shipped UI languages and
 creates an owned icon for every app; checked-in screenshots are included when
 available. The release uploads that immutable artwork under `apps.tilo.so`
 before it submits the entry, so clients never receive a blank image set.
-
-Manual app packaging defaults to both native architectures; PRs only plan
-which apps are affected. During bootstrap, `architectures=x86_64` (or `aarch64`) may publish one architecture
-without waiting for an unavailable native runner; tagged releases always
-enforce the complete `x86_64 aarch64` matrix.
 
 ## App selection and collections
 
@@ -172,18 +159,11 @@ python3 tools/apps/app_release.py --collection recovery
 TILO_RELEASE_APPS='notes calculator' dist/apps/package-apps.sh
 ```
 
-The staged coordinator uses the dependency graph to select directly changed
-apps plus app binaries that transitively depend on a changed workspace crate.
-Reusing unchanged collection members requires a previously verified baseline;
-the first qualification therefore builds the full selected collection. This
-path remains separate from enabled tag/manual publication. A collection tag
-validates the complete requested set. Component tags are immutable publication
-boundaries and require the configured `TAPP_PUBLISHER_IDENTITY` secret.
-
-Manual imager runs with `full_native` rehearse the enabled Linux, Windows, and
-macOS matrix without publication. Desktop `full_native` includes ARM64; it does
-not create a tagged package release, but a manual desktop run from `main`
-**does publish the OS payload**. Only the imager option allocates macOS hosts.
+A dispatch of the app release checks builds the full default collection; t
+compiles only what changed. Signing uses the configured `TAPP_PUBLISHER_IDENTITY`
+secret. Manual imager runs with `full_native` rehearse the enabled Linux, Windows
+and macOS matrix without publication; only the imager option allocates macOS
+hosts.
 
 App collection or desktop payload publication does not release an OS version.
 
@@ -369,13 +349,7 @@ To find the current tag, read the `org.opencontainers.image.version` label of
   `allow_public_lenovo_firmware` dispatch may publish them under the public
   `tilo` owner while the board release is being brought up; other runs still
   require a private owner.
-- App publication uses two narrowly restricted Forgejo Actions (Local)
-  integrations: app release tags and manual dispatches from `main`. Their
-  audiences are stored in `TILO_APP_RELEASE_TAG_AUDIENCE` and
-  `TILO_APP_RELEASE_MAIN_AUDIENCE`; no long-lived registry token reaches the
-  publication job. The main integration has package-write and repository-write
-  scope so it can advance only the pinned collection channel after publication.
-- Desktop payload publication (`release-desktop.yml` scheduled/manual runs on
+- Desktop payload publication (t's `publish-desktop-payload`, dispatched on
   `main`) writes the immutable payload with the CI account's package token
   (`secrets.REGISTRY_TOKEN`) and advances the `TILO_DESKTOP_PAYLOAD_*` channel
   variables with the repository-scoped `secrets.RELEASE_TOKEN`; it needs no OIDC.

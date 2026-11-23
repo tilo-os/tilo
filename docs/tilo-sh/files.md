@@ -48,8 +48,8 @@ Every command takes `--json`. A member who may only read the workspace gets a re
 ## Who wrote it
 
 Every change in the folder is a change of the workspace's files, named for who made it, the same way on
-Tilo and on any other computer: an agent session, such as Claude Code or Codex, by the session's title
-(never your prompts), for Claude Code's own edits and the commands it runs; otherwise you, at that device.
+Tilo and on any other computer: a Tilo app or another program by its name, acting for you; otherwise you,
+at that device.
 Files' History lists the changes of a folder and of each file, and takes any of them back.
 
 Your device vouches for the name: coworkers see which device said so.

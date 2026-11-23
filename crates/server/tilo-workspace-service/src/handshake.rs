@@ -167,12 +167,21 @@ impl LiveIdentity {
             cert: &self.cert,
             key: &self.signing_key,
         };
+        let revocations = self.revocations.read_recover().clone();
         match trust {
             EndpointTrust::Live(policy) => {
                 let policy = policy.read_recover();
-                auth::server_refusal(&identity, HandshakeTrust::Live(&policy), hello, error)
+                auth::server_refusal(
+                    &identity,
+                    HandshakeTrust::Live(&policy),
+                    &revocations,
+                    hello,
+                    error,
+                )
             }
-            EndpointTrust::Fixed(trust) => auth::server_refusal(&identity, trust, hello, error),
+            EndpointTrust::Fixed(trust) => {
+                auth::server_refusal(&identity, trust, &revocations, hello, error)
+            }
         }
     }
 

@@ -718,7 +718,7 @@ pub fn short_url(url: &str) -> String {
 #[cfg(feature = "tilo-os")]
 const MAIL_TYPE: &str = "email";
 #[cfg(feature = "tilo-os")]
-const CALDAV_TYPE: &str = "caldav";
+pub(crate) const CALDAV_TYPE: &str = "caldav";
 pub use accounts::cloud_types::{NEXTCLOUD as NEXTCLOUD_TYPE, WEBDAV as WEBDAV_TYPE};
 
 #[cfg(feature = "tilo-os")]

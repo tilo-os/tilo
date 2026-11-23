@@ -35,7 +35,7 @@ class Shell:
             return [{**window, "rect": None, "frames": 0}]
         return [{**window, "rect": self.rect, "frames": 3}]
 
-    def invoke(self, provider, ident, args=None):
+    def invoke(self, provider, resource, action, args=None):
         return {"ok": {}}
 
     def targets(self):

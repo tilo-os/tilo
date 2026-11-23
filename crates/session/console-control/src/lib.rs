@@ -1,10 +1,11 @@
-//! The action protocol for console session apps.
+//! The actions of console session apps.
 //! The installer and the greeter run under `cage` straight from greetd, before any
-//! Tilo compositor exists, so this crate lets such an app answer the *same*
-//! semantic half of the `tilo-control` wire itself: `actions_enumerate`,
-//! `actions_invoke` (through the same resolve, availability and strict-binding API
-//! every other caller uses, [`catalog::admit`]) and `state_dump`. Input injection
-//! is deliberately not served: the console surface is semantic only.
+//! Tilo compositor exists, so this crate lets such an app serve its actions on the one
+//! action wire itself: frames ([`tilo_actions::remote::RemoteActionFrame`]), one per line,
+//! answered as an [`ActionProvider`](tilo_actions::remote::ActionProvider) whose answers
+//! the app's own thread gives ([`ConsoleApp`]), and the `state_dump` a session's control
+//! socket answers too. Input injection is deliberately not served: the console surface is
+//! semantic only.
 //! [`server::Endpoint::discover`] names at most two local endpoints: a Unix socket
 //! in the app user's private runtime directory, and the virtio-serial port
 //! [`server::VIRTIO_PORT`], which exists only in a VM. Neither is a network
@@ -18,13 +19,9 @@
     )
 )]
 
-pub mod catalog;
 pub mod server;
-pub mod wire;
 
-pub use catalog::{Admitted, Refusal, admit, enumerate};
-pub use server::{ConsoleServer, Endpoint, Pending, VIRTIO_PORT};
-pub use wire::Request;
+pub use server::{Asked, ConsoleApp, ConsoleServer, Endpoint, VIRTIO_PORT};
 
 /// The composefs digest this system booted, from the kernel command line.
 /// A console app reports it in its state, so a caller can check that a

@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 
 use accounts::email::{AccountConfig, AuthMethod};
 use accounts::thunderbird::{AccountMetadata, Transport};
-use accounts::{Account, AccountId, AccountStore};
+use accounts::{Account, AccountId};
+
+use crate::account_store::Accounts;
 use mail_parser::MimeHeaders;
 use serde::{Deserialize, Serialize};
 use tilo_seal::{Frame, migration_password};
@@ -229,7 +231,7 @@ fn binding(binding: &[u8]) -> Result<Vec<u8>, ConnectionError> {
 /// unavailable storage. No account is reported created unless its metadata and selected mail were
 /// written.
 fn publish_account(
-    store: &mut AccountStore,
+    accounts: &Accounts,
     inventory: &ThunderbirdAccount,
     metadata: &AccountMetadata,
 ) -> Result<(AccountId, bool), ConnectionError> {
@@ -242,25 +244,22 @@ fn publish_account(
         || AccountId::new(format!("thunderbird-{}", inventory.source_id)),
         AccountId::new,
     );
-    let existing = store
-        .get(&id)
-        .or_else(|| {
-            email.as_deref().and_then(|email| {
-                store.all().iter().find(|account| {
-                    account
+    let existing = accounts.get(id.as_str())?.or_else(|| {
+        email.as_deref().and_then(|email| {
+            accounts.all().ok()?.into_iter().find(|account| {
+                account
+                    .config
+                    .get("email")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| value.eq_ignore_ascii_case(email))
+                    || account
                         .config
-                        .get("email")
+                        .get("connected_identity")
                         .and_then(serde_json::Value::as_str)
                         .is_some_and(|value| value.eq_ignore_ascii_case(email))
-                        || account
-                            .config
-                            .get("connected_identity")
-                            .and_then(serde_json::Value::as_str)
-                            .is_some_and(|value| value.eq_ignore_ascii_case(email))
-                })
             })
         })
-        .cloned();
+    });
     if let Some(mut existing) = existing {
         if !matches!(
             existing.type_id.as_str(),
@@ -269,14 +268,14 @@ fn publish_account(
             return Err(ConnectionError::AlreadyPresent);
         }
         provenance(&mut existing, inventory, metadata);
-        store.upsert(existing.clone());
+        accounts.keep(&existing)?;
         return Ok((existing.id, false));
     }
     let mut account = Account::new(id.clone(), accounts::thunderbird::PENDING_TYPE);
     account.display_name = inventory.display_name.chars().take(256).collect();
     account.config = config(inventory, metadata)?;
     provenance(&mut account, inventory, metadata);
-    store.upsert(account);
+    accounts.keep(&account)?;
     Ok((id, true))
 }
 

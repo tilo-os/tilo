@@ -26,6 +26,7 @@ use tilo_resource::{Id, Replica};
 use zeroize::Zeroizing;
 
 use super::Workspaces;
+use super::account_logins::VAULT_NOT_HERE;
 #[cfg(feature = "device-keys")]
 use super::person_settings::kept_sign_ins::HostSignIns;
 
@@ -39,9 +40,6 @@ const MAX_VAULT_BYTES: usize = 64 * 1024 * 1024;
 /// a document is bounded in size.
 #[cfg(feature = "device-keys")]
 const CARRIED_PER_WRITE: usize = 16;
-
-/// The words for a vault this device cannot open.
-const UNAVAILABLE: &str = "The workspace's vault is not open on this device";
 
 /// The workspace's vault as this device read it: the document, its keys, and its entries
 /// opened with them.
@@ -109,7 +107,7 @@ impl Workspaces {
         let state = self
             .state(workspace)
             .await
-            .ok_or_else(|| UNAVAILABLE.to_owned())?;
+            .ok_or_else(|| VAULT_NOT_HERE.to_owned())?;
         if let Err(reason) = state.check_document_read(
             self.inner.host.cert.device_public_key,
             APP,
@@ -117,7 +115,7 @@ impl Workspaces {
             tilo_clock::wall(),
         ) {
             tracing::debug!(%workspace, %reason, "the policy does not let this device read the vault");
-            return Err(UNAVAILABLE.to_owned());
+            return Err(VAULT_NOT_HERE.to_owned());
         }
         // The keys are made where nobody made them yet, as this device's own write of any of
         // the workspace's documents makes them.
@@ -127,9 +125,9 @@ impl Workspaces {
             Some(Ok(keys)) => keys,
             Some(Err(reason)) => {
                 tracing::debug!(%workspace, %reason, "the vault's keys are not held here");
-                return Err(UNAVAILABLE.to_owned());
+                return Err(VAULT_NOT_HERE.to_owned());
             }
-            None => return Err(UNAVAILABLE.to_owned()),
+            None => return Err(VAULT_NOT_HERE.to_owned()),
         };
         Box::pin(self.read_vault(workspace, keys)).await
     }
@@ -147,7 +145,7 @@ impl Workspaces {
                 continue;
             }
             let carried = match self.open_vault(&workspace).await {
-                Ok(opened) => self.carry_over(opened).await,
+                Ok(opened) => Box::pin(self.carry_over(opened)).await,
                 Err(error) => Err(error),
             };
             if let Err(error) = carried {
@@ -189,7 +187,9 @@ impl Workspaces {
     async fn carry_over(&self, opened: OpenVault) -> Result<(), String> {
         let workspace = opened.workspace.clone();
         let root = self.workspace_root(&workspace);
-        let Some(sign_ins) = HostSignIns::under(&root)? else {
+        let Some(sign_ins) =
+            HostSignIns::under(&root, &self.workspace_accounts(&workspace).await?.all())?
+        else {
             return Ok(());
         };
         let kept = accounts::vault_items::KeptBefore::under(&root).map_err(|error| {
@@ -218,7 +218,7 @@ impl Workspaces {
             opened = self.read_vault(&workspace, opened.keys).await?;
         }
         kept.forget().map_err(|error| error.to_string())?;
-        sign_ins.carry(&named)?;
+        sign_ins.carry((self, &workspace), &named).await?;
         if !nothing {
             tracing::info!(%workspace, carried, "carried what the host kept of the workspace's vault into the vault document");
         }
@@ -354,7 +354,53 @@ impl Workspaces {
 pub(crate) enum VaultAt<'a> {
     Workspace(&'a Workspaces, &'a str),
     #[cfg(test)]
-    Held(&'static std::sync::Mutex<VaultItems>),
+    Held(&'static TestStores),
+}
+
+/// What a test of the code that reaches a workspace's stores keeps in hand: the vault's items
+/// and the workspace's accounts. It reads as its vault's items.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct TestStores {
+    items: std::sync::Mutex<VaultItems>,
+    accounts: std::sync::Mutex<accounts::person::PersonAccounts>,
+}
+
+#[cfg(test)]
+impl TestStores {
+    /// The workspace's accounts as they are now.
+    pub(crate) fn accounts_now(&self) -> accounts::person::PersonAccounts {
+        self.accounts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The account `id`, as the workspace's accounts keep it now.
+    pub(crate) fn account(&self, id: &str) -> Option<accounts::Account> {
+        self.accounts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .account(id)
+    }
+
+    /// Keep `account` among the workspace's accounts, as a member's Settings would.
+    pub(crate) fn keep_account(&self, account: &accounts::Account) {
+        self.accounts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keep(account)
+            .unwrap_or_else(|refusal| panic!("the account is not kept: {refusal}"));
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Deref for TestStores {
+    type Target = std::sync::Mutex<VaultItems>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.items
+    }
 }
 
 /// [`VaultAt`] for work that runs where nothing it borrowed reaches: the thread that asks a
@@ -364,7 +410,7 @@ pub(crate) enum VaultAt<'a> {
 pub(crate) enum VaultOf {
     Workspace(Workspaces, String),
     #[cfg(test)]
-    Held(&'static std::sync::Mutex<VaultItems>),
+    Held(&'static TestStores),
 }
 
 #[cfg(feature = "agents")]
@@ -424,6 +470,64 @@ impl VaultAt<'_> {
                     .map_err(|_| "the vault is poisoned".to_owned())?;
                 change(&mut items).map_err(|error| error.to_string())
             }
+        }
+    }
+
+    /// The workspace's accounts, as this device holds them
+    /// ([`Workspaces::workspace_accounts`]).
+    ///
+    /// # Errors
+    /// As [`Workspaces::workspace_accounts`].
+    pub(crate) async fn accounts(&self) -> Result<accounts::person::PersonAccounts, String> {
+        match self {
+            Self::Workspace(workspaces, workspace) => {
+                workspaces.workspace_accounts(workspace).await
+            }
+            #[cfg(test)]
+            Self::Held(held) => Ok(held
+                .accounts
+                .lock()
+                .map_err(|_| "the accounts are poisoned".to_owned())?
+                .clone()),
+        }
+    }
+
+    /// Keep `account` in the workspace's accounts, added or in place of the one with its id.
+    ///
+    /// # Errors
+    /// As [`Workspaces::keep_workspace_account`].
+    pub(crate) async fn keep_account(&self, account: &accounts::Account) -> Result<(), String> {
+        match self {
+            Self::Workspace(workspaces, workspace) => {
+                workspaces.keep_workspace_account(workspace, account).await
+            }
+            #[cfg(test)]
+            Self::Held(held) => held
+                .accounts
+                .lock()
+                .map_err(|_| "the accounts are poisoned".to_owned())?
+                .keep(account)
+                .map_err(|refusal| refusal.to_string()),
+        }
+    }
+
+    /// Remove the account `id` from the workspace's accounts. Whether it was there.
+    ///
+    /// # Errors
+    /// As [`Workspaces::remove_workspace_account`].
+    pub(crate) async fn remove_account(&self, id: &str) -> Result<bool, String> {
+        match self {
+            Self::Workspace(workspaces, workspace) => {
+                workspaces.remove_workspace_account(workspace, id).await
+            }
+            #[cfg(test)]
+            Self::Held(held) => Ok(held
+                .accounts
+                .lock()
+                .map_err(|_| "the accounts are poisoned".to_owned())?
+                .accounts
+                .remove(&tilo_resource::Id::from_raw(id.to_owned()))
+                .is_some()),
         }
     }
 }
@@ -593,22 +697,18 @@ fn seal_entry(keys: &key_group::ContentKeys, entry: &SecretItem) -> Result<Strin
 }
 
 /// Whether the workspace's policy lets `by` read the workspace's vault document, the node every
-/// reader of it is decided on, or with `app` that app's node: for `by`'s whole acting. Only the
-/// machine secrets a workspace's programs are started with ask this.
+/// reader of it is decided on: for `by`'s whole acting. Only the machine secrets a workspace's
+/// programs are started with ask this.
 #[cfg(feature = "agents")]
 pub(crate) fn may_read_vault(
     policy: &tilo_action_policy::WorkspacePolicy,
     workspace: &str,
     by: &tilo_actions::remote::Caller,
-    app: Option<&str>,
 ) -> bool {
     let acting = by.acting();
     let mut granted = acting.handed_preset(workspace);
     granted.extend(by.granted(&[]));
-    let node = app.map_or_else(
-        || collab_types::document_node(workspace, APP, WORKSPACE_VAULT_DOCUMENT),
-        |app| tilo_action_policy::TreePath::workspace(workspace).app(app),
-    );
+    let node = collab_types::document_node(workspace, APP, WORKSPACE_VAULT_DOCUMENT);
     let cx = tilo_action_policy::Context::at_time(tilo_clock::wall());
     tilo_action_policy::Authority::of_acting(acting, policy, &granted)
         .decide(&node, tilo_action_policy::ActionKind::Read, &cx)

@@ -380,13 +380,17 @@ enum Cmd {
         json: bool,
         /// Which of your agents runs here, by the name your workspace shows
         /// it under: every computer logged in under one name is one agent,
-        /// with its history; another name is another agent. Found by itself
-        /// when not given (Claude Code, Codex, Gemini CLI, ...).
+        /// with its history; another name is another agent. "Your agent"
+        /// when not given.
         #[arg(long)]
         agent: Option<String>,
+        /// How your other devices name this computer. The agent and the
+        /// hostname when not given.
+        #[arg(long, conflicts_with_all = ["new_identity", "recovery_key"])]
+        label: Option<String>,
     },
     /// Tilo's MCP server over stdio, for the agent on this computer
-    /// (`tilo agent connect` adds it).
+    /// (an agent adds it to its own MCP configuration).
     Mcp,
     /// Your workspaces' synced folders on this computer: each workspace's
     /// one folder, at ~/<workspace> unless moved (`tilo login` adds the first).
@@ -492,9 +496,25 @@ enum DeviceCmd {
                       logs in with it reaches this one directly, and this one certifies it as your device."
     )]
     Add {
+        /// What the new computer is: an ordinary member device, or one that administers your
+        /// other devices.
+        #[arg(long, value_enum, default_value_t = device::Adding::Member)]
+        capability: device::Adding,
         /// Print the ticket and the device's certificate as JSON lines.
         #[arg(long)]
         json: bool,
+        /// Print the ticket and return: the daemon keeps serving it while it lasts, for a
+        /// provisioner that hands it on rather than waiting for the computer itself.
+        #[arg(long)]
+        no_wait: bool,
+        /// The planned machine this computer will be, by its plan's id in your Servers
+        /// workspace: its certification takes that entry into its own, under its device key.
+        #[arg(long)]
+        plan: Option<String>,
+        /// The computer is a server, which keeps your workspaces: its certification leaves a
+        /// new entry for it in your Servers workspace.
+        #[arg(long)]
+        server: bool,
     },
     /// Your devices, as your workspaces know them.
     Ls {
@@ -660,7 +680,7 @@ fn command_here(here: Here) -> clap::Command {
                 // its migrations land through that login (a desktop has its
                 // own, in its setup).
                 "login" | "folders" | "migrate" => here.desktop || (here.has)(agent::MCP_SERVER),
-                // Started by agent tools (`tilo agent connect`), not typed.
+                // Started by agent tools, not typed.
                 "mcp" => true,
                 _ => return sub,
             };
@@ -734,13 +754,12 @@ fn device_examples(here: Here) -> String {
 
 fn agent_here(agent: clap::Command, here: Here) -> clap::Command {
     agent
-        .mut_subcommand("connect", |sub| {
-            sub.hide(!((here.has)(agent::MCP_SERVER) || login::logged_in()))
-        })
         .mut_subcommand("models", |sub| sub.hide(!(here.has)(agent::MODELS)))
         // Checking says whether Tilo's server is in the agent, which only a
-        // computer logged in to the person's workspace has one of.
-        .mut_subcommand("check", |sub| sub.hide(!login::logged_in()))
+        // desktop or a computer logged in to the person's workspace has one of.
+        .mut_subcommand("check", |sub| {
+            sub.hide(!((here.has)(agent::MCP_SERVER) || login::logged_in()))
+        })
 }
 
 /// The examples under `tilo --help`: real commands, only ones that work here.
@@ -768,12 +787,6 @@ fn examples(here: Here) -> String {
     }
     if here.apps || here.system {
         lines.push(("tilo update", "Update apps and this device"));
-    }
-    if (here.has)(agent::MCP_SERVER) {
-        lines.push((
-            "tilo agent connect claude",
-            "Let Claude Code act on this desktop",
-        ));
     }
     if nouns::any_present(nouns::PACKAGE, here.has) {
         lines.push(("tilo package pack", "Make a package of your app"));
@@ -1380,9 +1393,16 @@ fn run(cli: Cli) -> Result<ExitCode> {
             json,
             ..
         } => identity::new_identity(name.as_deref(), json),
-        Cmd::Login { ticket, agent, .. } => {
-            login::login(ticket.as_deref().unwrap_or_default(), agent.as_deref())
-        }
+        Cmd::Login {
+            ticket,
+            agent,
+            label,
+            ..
+        } => login::login(
+            ticket.as_deref().unwrap_or_default(),
+            agent.as_deref(),
+            label.as_deref(),
+        ),
         Cmd::Mcp => mcp::serve(),
         Cmd::Folders { json, cmd } => folders::run(cmd.unwrap_or(folders::FoldersCmd::List), json),
         Cmd::Settings { cmd } => settings::run(cmd).map(|()| ExitCode::SUCCESS),
@@ -1523,7 +1543,13 @@ fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         DeviceCmd::Health { gpu: _, json } => health::run_gpu(json),
-        DeviceCmd::Add { json } => device::add(json),
+        DeviceCmd::Add {
+            capability,
+            json,
+            no_wait,
+            plan,
+            server,
+        } => device::add(json, capability, no_wait, plan.as_deref(), server),
         DeviceCmd::Ls { json } => device::list(json),
         DeviceCmd::Revoke {
             device: which,
@@ -2573,7 +2599,6 @@ mod tests {
                     "  tilo status                       What runs on this device\n",
                     "  tilo device update                Move onto the newest system\n",
                     "  tilo update                       Update apps and this device\n",
-                    "  tilo agent connect claude         Let Claude Code act on this desktop\n",
                     "  tilo package pack                 Make a package of your app\n",
                     "  tilo keys create \"Visa backend\"   A key for your own backend: you approve it in your Tilo\n",
                     "  tilo workspace create \"Jane Doe\"  A hosted workspace, one per customer\n",

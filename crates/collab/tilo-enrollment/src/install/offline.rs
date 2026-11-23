@@ -19,7 +19,9 @@ pub struct OfflineInstall<'a> {
     pub username: &'a str,
     pub local_identity_dir: &'a Path,
     pub local_system: &'a IdentityPaths,
-    pub local_home_peers: &'a Path,
+    /// The setup machine's list of the person's devices, which gains the
+    /// image's.
+    pub local_personal_devices: &'a Path,
 }
 
 /// Enroll a fresh image for the active person on this machine, without a
@@ -108,10 +110,6 @@ pub fn install_from_local_identity(
         fleet.certificates.push(source_cert.clone());
     }
     fleet.certificates.push(cert.clone());
-    let home_peers: Vec<_> = tilo_server_protocol::read_home_peers(layout.local_home_peers)?
-        .into_iter()
-        .filter(|peer| peer.user_public_key == identity_id)
-        .collect();
 
     paths.ensure_directories()?;
     persist::write_device_key(&paths.device_privkey, &device)?;
@@ -126,7 +124,6 @@ pub fn install_from_local_identity(
             cert: &cert,
             identity: &public_identity,
             fleet: &serde_json::to_vec_pretty(&fleet)?,
-            peers: &serde_json::to_vec_pretty(&home_peers)?,
         },
         None,
         || Ok(()),
@@ -135,11 +132,18 @@ pub fn install_from_local_identity(
     // No transaction paths from the setup machine travel with the image.
     fs::remove_dir(enrollment_commit_dir(&identity_root))?;
     fs::remove_dir(enrollment_stage_dir(&identity_root))?;
+    // The image asks the setup machine, one of the person's devices, into
+    // their workspace once its service starts.
+    tilo_server_protocol::servers::keep_introducer(
+        &identity_root,
+        Some(&tilo_server_protocol::servers::Introducer::of_device(
+            source_cert,
+            &source_key,
+        )),
+    )?;
     source_store.remember_certificate(&identity_id, cert.clone())?;
     tilo_server_protocol::remember_personal_device(
-        &layout
-            .local_home_peers
-            .with_file_name("personal-device-peers.json"),
+        layout.local_personal_devices,
         cert.device_public_key,
     )?;
     Ok(cert)

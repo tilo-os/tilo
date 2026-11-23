@@ -269,37 +269,3 @@ fn a_server_answers_on_the_protocols_the_previous_version_dials() {
         );
     }
 }
-
-/// A document write is the one main-flow frame the two versions write apart: the previous
-/// version ends it before its reader set, which this build ends it with. This build reads the
-/// previous version's write as naming no reader set, through the one reader of a message,
-/// and writes that write as the previous version's bytes followed by the reader set's `None`,
-/// a byte the previous version leaves unread after the fields it knows.
-#[test]
-fn a_document_write_reads_across_the_versions() {
-    let (_, frames) = frozen();
-    let (_, kept) = frames
-        .iter()
-        .find(|(name, _)| *name == "document-write")
-        .expect("previous-peer-frames.txt keeps a `document-write` frame");
-    let kept = hex::decode(kept).unwrap();
-    assert!(
-        postcard::from_bytes::<NeighbourMsg>(&kept).is_err(),
-        "the previous version's document write ends before today's layout does"
-    );
-    let message = NeighbourMsg::decode(&kept).unwrap();
-    let NeighbourMsg::AppDocument { readers, own, .. } = &message else {
-        panic!("the previous version's `document-write` frame is a document write");
-    };
-    assert_eq!(*readers, None);
-    assert!(
-        own.is_some(),
-        "the write keeps the fields the previous version wrote"
-    );
-    let today = encode(&message);
-    assert_eq!(
-        today.split_at(kept.len()),
-        (kept.as_slice(), [0].as_slice()),
-        "this build writes a document write as the previous version did, then the reader set"
-    );
-}

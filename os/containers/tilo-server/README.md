@@ -17,19 +17,29 @@ the server.
 
 ## Start
 
+On a computer that holds the person's identity, run:
+
 ```sh
-podman compose up -d
+tilo device add --server
 ```
 
-Open Settings → Sync between devices on the trusted Tilo device and choose
-**Pair home server**. Settings shows the server name and six-digit code; confirm
-that code on the server, then approve that exact device. The signed
-certificate arrives in one authenticated provisioning response. The container
-writes its configuration and starts the server automatically.
+It prints a ticket (one line, starting `tilo1.`), good for one use and ten
+minutes, and leaves the server's entry in the person's Servers workspace. Pass
+it to the server's first start:
 
-Existing deployments may still mount a short-lived token at
-`/run/secrets/tilo-enrollment-token`; this is a compatibility path, not required
-for normal pairing.
+```sh
+TILO_TICKET='tilo1.…' podman compose up -d
+```
+
+The container spends the ticket: it logs in, keeps the certificate and the
+login on the identity volume, and writes its configuration, then starts the
+server. A volume that already holds its device key, certificate and login
+ignores `TILO_TICKET`, so a restart never needs one, and a ticket handed to it
+is left unspent.
+
+An empty volume with no ticket fails with the words that say how to make one;
+a ticket that was used, or that ran out, says so. One ticket per volume, never
+one per start.
 
 The named volumes are essential: they hold the stable Iroh
 endpoint secret, CRDT snapshots, pending offline queues, revocations, and

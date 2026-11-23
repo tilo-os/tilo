@@ -85,7 +85,7 @@ pub struct CommandRequest {
 /// variable whose value a vault item keeps. It prints nothing of the value.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VmSecret {
-    /// The variable's name (`CLAUDE_CODE_OAUTH_TOKEN`).
+    /// The variable's name (`GITHUB_TOKEN`).
     pub variable: String,
     /// What it is set to.
     pub value: String,
@@ -233,11 +233,11 @@ mod tests {
     #[test]
     fn a_secret_prints_its_name_and_never_its_value() {
         let secret = VmSecret {
-            variable: "CLAUDE_CODE_OAUTH_TOKEN".into(),
+            variable: "GITHUB_TOKEN".into(),
             value: "sk-the-value".into(),
         };
         let printed = format!("{secret:?}");
-        assert!(printed.contains("CLAUDE_CODE_OAUTH_TOKEN"), "{printed}");
+        assert!(printed.contains("GITHUB_TOKEN"), "{printed}");
         assert!(!printed.contains("sk-the-value"), "{printed}");
     }
 

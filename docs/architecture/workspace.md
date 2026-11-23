@@ -26,11 +26,13 @@ takes precedence over their custom roles, and those roles can extend access beyo
 the default. Administrators can assign roles in **People** and edit document rules in
 **Privacy & Security**.
 
-When a resource belongs to a member, their authenticated identity decides who
-reads it, regardless of workspace role. Watch history and private message
-drafts use this rule in the same workspace store. Shared channel drafts follow
-workspace roles. Earlier records with no trustworthy owner stay retained
-without granting read access.
+Some records are each one member's: their watch history and their unsent message
+drafts. The workspace policy decides them like any other record: no role reads or
+changes them, owning the workspace does not reach them, and each member holds a
+grant to their own, which the owners can widen. A member's view of the shared
+layout is read by everyone, and only its member holds a grant to change it.
+Shared channel drafts follow workspace roles. Earlier records with no trustworthy
+owner stay retained without granting read access.
 
 A restricted document uses its own MLS content key group. The group follows the
 devices that can read that document. Delivery checks the same read permission before
@@ -841,9 +843,9 @@ the shell's actions; a branch of another workspace is refused at the MCP server.
 
 **What stays behind** — what is tied to other people:
 
-- Chat: every conversation, with each person's drafts and read marks. The
-  workspace's own emoji and its agents, which Chat keeps for the workspace,
-  come along.
+- Chat: every conversation, with each person's drafts and read marks, and
+  the workspace's moderation reports and decisions. The workspace's emoji
+  and agents come along.
 - Each person's own place in the workspace's tilolang apps, one document for all
   of them.
 - Membership and governance: the branch's are new — a new workspace id, its
@@ -857,8 +859,7 @@ The source is read and never changed.
 **A workspace a host keeps.** A host that keeps workspaces of people's own
 (tilo.sh) branches one of them as the host operation `workspace.branch-own`
 {`workspace`, `name`, `branch`?, `labels`?}, beside `workspace.create-own`; the
-API offers it as `POST /v1/workspaces/{workspace}/branches` and the account
-action `account/workspaces#branch`. Only the person who owns the source
+API offers it as the account action `account/workspaces#branch`. Only the person who owns the source
 branches it, from a device of theirs or a key reaching all their workspaces; a
 key for one workspace makes none, and someone else's workspace is not theirs
 to branch. The host is a member of every channel of the workspaces it governs,

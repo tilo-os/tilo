@@ -455,7 +455,7 @@ def _timed_open(ctx, app: str, shell_anon: list[float] | None = None,
     why the open fails if the session restarted on its own around it (`label` names the
     open there)."""
     out = ctx.vm.exec(f'wc -l < "{SESSION_LOG}" 2>/dev/null || echo 0; date +%s%3N; '
-                      f"tilo-control actions invoke applications {shlex.quote(app)} >/dev/null",
+                      f"tilo open {shlex.quote(app)} >/dev/null",
                       timeout=60)
     numbers = [int(word) for word in out.split() if word.isdigit()]
     log_lines, t0 = (numbers + [None, None])[:2]
@@ -713,7 +713,7 @@ def files_after_session_crash(ctx, res):
     pids = ctx.vm.root_exec(COMPOSITOR_PID.format(unit=shlex.quote(unit))).split()
     if len(pids) != 1 or not pids[0].isdigit():
         raise Unobservable(f"no single compositor process under {unit} to end: {pids}")
-    ctx.vm.exec(f"tilo-control actions invoke applications {shlex.quote(FILES)} >/dev/null")
+    ctx.vm.exec(f"tilo open {shlex.quote(FILES)} >/dev/null")
     wrapper = (session_unit.show(ctx) or {}).get("MainPID", "")
     # Rust's own SIGSEGV handler returns from a signal no fault raised, resetting the default
     # action: the second one ends the compositor as a fault does.

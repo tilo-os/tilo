@@ -74,15 +74,6 @@ impl NativeDocumentReads for ServiceReads {
             .is_some_and(|workspaces| workspaces.seals_resources(workspace))
     }
 
-    fn own_resource(
-        &self,
-        workspace: &str,
-        app: &str,
-        resource: &str,
-    ) -> Option<collab_types::OwnResource> {
-        self.workspaces()?.own_resource(workspace, app, resource)
-    }
-
     fn resource_read(&self, workspace: &str, app: &str, resource: &str) -> ResourceRead {
         match self.workspaces() {
             Some(workspaces) if workspaces.holds_resource(workspace, app, resource) => {

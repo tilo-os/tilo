@@ -90,7 +90,7 @@ impl Config {
 }
 
 /// The catalog this build pins: the one `TILO_FONT_CATALOG` names, the
-/// image's, or the build's own.
+/// image's, one a runtime bundle the apps run on carries, or the build's own.
 fn catalog_root() -> Option<PathBuf> {
     let named = std::env::var_os(tilo_font_catalog::OVERRIDE_ENV)
         .filter(|root| !root.is_empty())
@@ -99,8 +99,33 @@ fn catalog_root() -> Option<PathBuf> {
         named
             .into_iter()
             .chain([PathBuf::from(tilo_font_catalog::INSTALLED_ROOT)])
+            .chain(bundle_catalogs())
             .chain([tilo_font_catalog::checkout_root()]),
     )
+}
+
+/// The product catalogs the installed runtime bundles carry (`<bundle>/lib/fonts`): the one the
+/// launcher mounts into every app, so a session with no catalog of its own (a development one)
+/// holds the faces its apps name.
+#[cfg(target_os = "linux")]
+fn bundle_catalogs() -> Vec<PathBuf> {
+    let roots = runtime_bundle::bundle_root()
+        .ok()
+        .into_iter()
+        .chain([runtime_bundle::system_bundle_path("")]);
+    let mut catalogs: Vec<PathBuf> = roots
+        .filter_map(|root| std::fs::read_dir(root).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|bundle| bundle.path().join("lib/fonts"))
+        .collect();
+    catalogs.sort();
+    catalogs
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bundle_catalogs() -> Vec<PathBuf> {
+    Vec::new()
 }
 
 /// Open the device every frame is drawn on.

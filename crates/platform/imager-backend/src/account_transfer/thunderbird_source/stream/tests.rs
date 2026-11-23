@@ -3,7 +3,6 @@ use super::super::{
 };
 use super::*;
 use crate::account_sources::{Inventory, SourceRoots};
-use accounts::AccountStore;
 use std::path::PathBuf;
 
 const BINDING: &[u8] = b"deferred:operation-1";
@@ -119,9 +118,9 @@ fn import(
 }
 
 fn cache_of(target: &Path, receipt: &ThunderbirdAccountReceipt) -> PathBuf {
-    let store = AccountStore::load_in(&target.join(".config/tilo"));
-    let account = store
-        .all()
+    let store = Accounts::read(&target.join(".config/tilo")).unwrap();
+    let all = store.all().unwrap();
+    let account = all
         .iter()
         .find(|account| {
             account
@@ -316,8 +315,8 @@ fn a_folder_beyond_the_former_inspection_cap_streams_into_the_mail_cache() {
         "held {} bytes of read buffer",
         report.peak_buffered_bytes
     );
-    let store = AccountStore::load_in(&target.path().join(".config/tilo"));
-    assert_eq!(store.len(), 2);
+    let store = Accounts::read(&target.path().join(".config/tilo")).unwrap();
+    assert_eq!(store.all().unwrap().len(), 2);
     let kept = kept(target.path(), imap(&receipt));
     assert_eq!(
         kept.messages.len(),
@@ -535,20 +534,20 @@ tilo_test_env::scenario! {
         let original = std::fs::read(&source_inbox).unwrap();
         let target = tempfile::tempdir().unwrap();
         let root = target.path().join(".config/tilo");
-        let mut store = AccountStore::new();
+        let record = Accounts::empty();
         let mut existing =
             accounts::Account::new(accounts::AccountId::new("person@example.test"), "email");
         existing.display_name = "Existing owner label".into();
         existing.config =
             serde_json::json!({"email":"person@example.test","owner_extension":"preserve-me"});
-        store.upsert(existing.clone());
-        store.save_in(&root).unwrap();
+        record.keep(&existing).unwrap();
+        record.project(&root).unwrap();
 
         let receipt = import(target.path(), &reviewed, &selection).unwrap();
         assert!(!imap(&receipt).created);
-        let stored = AccountStore::load_in(&root);
-        assert_eq!(stored.len(), 2);
-        let account = stored.get(&existing.id).unwrap();
+        let stored = Accounts::read(&root).unwrap();
+        assert_eq!(stored.all().unwrap().len(), 2);
+        let account = stored.get(existing.id.as_str()).unwrap().unwrap();
         assert_eq!(account.type_id.as_str(), "email");
         assert_eq!(account.config["owner_extension"], "preserve-me");
         assert_eq!(
@@ -617,7 +616,7 @@ tilo_test_env::scenario! {
             cache_bytes,
             "a retry that inserts nothing rewrites nothing"
         );
-        assert_eq!(AccountStore::load_in(&root).len(), 2);
+        assert_eq!(Accounts::read(&root).unwrap().all().unwrap().len(), 2);
     }
 
     phase a_selection_from_another_operation_is_refused;

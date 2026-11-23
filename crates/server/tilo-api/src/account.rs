@@ -1,116 +1,428 @@
-//! The account: the resource that owns a person's workspaces and keys, as
-//! an agent or program reaches it through the server with a grant reaching all
-//! of them.
+//! The account: a person's workspaces, their keys, what their workspaces
+//! keep, and their model, published as one provider ([`Account`], app
+//! [`PROVIDER`], reached by the path `account`) in every tree a key walks.
+//! An agent, a program and a route of the API reach it as they reach any
+//! action: by path, through the one walk of the tree.
 //!
-//! It is addressed like any resource, by path, through the same tools:
-//!
-//! - `account/workspaces#list {labels?}`, `#create {name, labels?, host?}`,
+//! - `account/workspaces#list {labels?}`, `#create {name, labels?, id?}`,
 //!   `#branch {workspace, name, labels?, id?}`, `#rename {workspace, name}`,
-//!   `#delete {workspace}`;
+//!   `#delete {workspace}`, `#unattended {workspace, on}`;
 //! - `account/keys#list`, `#create {name, workspace?, expires_in?}`,
-//!   `#mint {workspace, name?, expires_in?}`, `#revoke {grant}`.
+//!   `#mint {workspace, name?, expires_in?}`, `#revoke {grant}`;
+//! - `account/usage#read`;
+//! - `account/models#ask {workspace, request}`.
 //!
-//! `tilo_ls account` lists them, `tilo_read` reads the lists, `tilo_do` runs
-//! an action, and `tilo_status` follows one that waits for the person. Making
-//! a workspace is the server's own operation ([`crate::server`]). Minting a
-//! key is a certificate the grant's own key signs for one workspace
-//! ([`tilo_user_identity::prepare_minted_grant`]): narrower than the grant,
-//! ending no later than it and within 90 days, and revoked with it. Creating
-//! a key asks the person, whose device certifies it ([`crate::keys`]); one
-//! reaching all their workspaces lasts until revoked unless `expires_in`
-//! says otherwise. The run waits for them, and `tilo_status` answers the key
-//! once they approve. Deleting a workspace is the server's own operation too:
-//! final, it takes everything the host keeps of it, tells whoever is in it,
-//! and revokes every key that reached only it. The call is the confirmation:
-//! nothing asks the person again, as revoking a key asks nothing. Branching a
-//! workspace of the person's own is the server's own operation as well: a new
-//! workspace of theirs that starts with everything the source holds but what
-//! is tied to other people, and goes on apart from it; the call answers once
-//! it holds all of it.
+//! Each invocation is admitted as every action is ([`tilo_actions::policy::admit`]): a key for
+//! one workspace reaches its own keys, its workspace's setting and its model, and nothing else of
+//! the account; a key for all the person's workspaces reaches all of it.
 //!
-//! Answers are the agent surface's text (`ok …`, `failed: …`,
-//! `pending <id>: …`), or, for a caller that asks for typed answers, the
-//! shapes `docs/developers/sdk-wire.md` gives every tool.
+//! Making, branching, renaming and deleting a workspace are the server's own operations
+//! ([`crate::server`]). Minting a key is a certificate the grant's own key signs for one
+//! workspace ([`tilo_user_identity::prepare_minted_grant`]): narrower than the grant, ending no
+//! later than it and within 90 days, and revoked with it. Creating a key asks the person, whose
+//! device certifies it ([`crate::keys`]); the invocation waits for them. Deleting a workspace is
+//! final, tells whoever is in it, and revokes every key that reached only it; the call is the
+//! confirmation. Branching a workspace of the person's own makes a new one of theirs that starts
+//! with everything the source holds but what is tied to other people.
+//!
+//! Turning a workspace's unattended runs on asks the person on their approving device, and the
+//! invocation waits for them; off is done at once. On, a key for that workspace alone runs
+//! commands in its Linux machine without the person being asked each time. A model asked is the
+//! person's own, kept by the server that keeps the workspace ([`person_models::ASK`]): while it
+//! writes, the invocation's newest item holds the answer so far.
 
 use crate::grant_key::GrantKey;
 use crate::server::{Connection, ServerError};
+use crate::session::{Provider, Reach};
 use crate::store::{Grant, GrantKind, Scope};
 use crate::{Server, now_ms};
-use serde_json::{Value, json};
-use std::fmt::Write as _;
-use tilo_server_session::workspaces::WorkspaceLabels;
+use collab_types::workspace_grant::WorkspaceGrant;
+use serde_json::{Map, Value, json};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex, Weak};
+use tilo_actions::policy::{Answer, Asker, Invoked};
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    CatalogueResource, CatalogueRow, ConfirmedInvocation, InvocationReceipt, InvocationState,
+    InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget, pending,
+    person_models,
+};
+use tilo_actions::{
+    ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionKind, ActionOutput,
+    ActionParam, ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind,
+    ParamType, RiskLevel,
+};
+use tilo_server_session::workspaces::{RUN_UNATTENDED, WorkspaceLabels};
+use tilo_session_actions::SessionActions;
 use tilo_user_identity::AgentScope;
 
-/// The account's root path.
-pub const ROOT: &str = "account";
-/// An invocation that waits for the person to approve a key, followed with
-/// `tilo_status`: this prefix and the poll secret.
-const KEY_INVOCATION: &str = "account-key-";
+/// The app the account is published as: `account` names it.
+pub const PROVIDER: &str = "tilo.account";
+/// The person's workspaces.
+pub const WORKSPACES: &str = "account/workspaces";
+/// The keys to them.
+pub const KEYS: &str = "account/keys";
+/// What the workspaces keep and ran.
+pub const USAGE: &str = "account/usage";
+/// The person's own model.
+pub const MODELS: &str = "account/models";
+/// The revision every page of the account is at: what it publishes never changes.
+const REVISION: &str = "account:1";
+/// How many ended invocations are kept to be observed.
+const KEPT: usize = 256;
+/// How long turning a workspace's unattended runs on waits for the host before it is followed:
+/// off is answered at once, on once the person decided, which takes longer.
+const ANSWERING_MS: u32 = 1_000;
+/// The governance verb a workspace's host lists its keys by.
+const LIST_KEYS: &str = "key.list";
+/// The governance verb it revokes one by.
+const REVOKE_KEY: &str = "key.revoke";
 
-/// Whether a tool call with `arguments` and no workspace is for the account.
-#[must_use]
-pub fn addresses(tool: &str, arguments: &Value) -> bool {
-    if tool == "tilo_status" {
-        return arguments
-            .get("invocation_id")
-            .and_then(Value::as_str)
-            .is_some_and(|id| id.starts_with(KEY_INVOCATION));
-    }
-    let path = arguments.get("path").and_then(Value::as_str).unwrap_or("");
-    let first = path.split(['/', '#']).next().unwrap_or("");
-    match tool {
-        "tilo_ls" => path.is_empty() || first == ROOT,
-        "tilo_read" | "tilo_do" => first == ROOT,
-        _ => false,
+/// One of the account's actions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Op {
+    ListWorkspaces,
+    CreateWorkspace,
+    BranchWorkspace,
+    RenameWorkspace,
+    DeleteWorkspace,
+    Unattended,
+    ListKeys,
+    CreateKey,
+    MintKey,
+    RevokeKey,
+    Usage,
+    AskModel,
+}
+
+/// An action as the account publishes it.
+struct Verb {
+    resource: &'static str,
+    id: &'static str,
+    label: &'static str,
+    kind: ActionKind,
+    op: Op,
+    params: fn() -> Vec<ActionParam>,
+}
+
+const fn verb(
+    resource: &'static str,
+    id: &'static str,
+    label: &'static str,
+    kind: ActionKind,
+    op: Op,
+    params: fn() -> Vec<ActionParam>,
+) -> Verb {
+    Verb {
+        resource,
+        id,
+        label,
+        kind,
+        op,
+        params,
     }
 }
 
-/// Whether a key for one workspace answers `tool`'s account call from its
-/// workspace's own governance: the keys the workspace admitted, which it
-/// lists and revokes for whoever holds them.
-fn answers_from_its_workspace(tool: &str, arguments: &Value) -> bool {
-    let path = arguments.get("path").and_then(Value::as_str).unwrap_or("");
-    matches!(
-        (tool, path),
-        ("tilo_read", "account/keys") | ("tilo_do", "account/keys#list" | "account/keys#revoke")
+const VERBS: [Verb; 12] = [
+    verb(
+        WORKSPACES,
+        "list",
+        "Your workspaces, and the hosts you can create on; with labels, those labelled so",
+        ActionKind::Read,
+        Op::ListWorkspaces,
+        || vec![labels_param()],
+    ),
+    verb(
+        WORKSPACES,
+        "create",
+        "Create a workspace; the host may refuse (quota, payment)",
+        ActionKind::Outside,
+        Op::CreateWorkspace,
+        || {
+            vec![
+                ActionParam::required("name", ParamType::Text, "The workspace's name."),
+                labels_param(),
+                id_param(),
+            ]
+        },
+    ),
+    verb(
+        WORKSPACES,
+        "branch",
+        "Branch a workspace of yours: a new one of yours that starts as its copy and goes on apart",
+        ActionKind::Outside,
+        Op::BranchWorkspace,
+        || {
+            vec![
+                workspace_param(),
+                ActionParam::required("name", ParamType::Text, "The branch's name."),
+                labels_param(),
+                id_param(),
+            ]
+        },
+    ),
+    verb(
+        WORKSPACES,
+        "rename",
+        "Name a workspace, for every list and device of it; its owners and moderators may",
+        ActionKind::Outside,
+        Op::RenameWorkspace,
+        || {
+            vec![
+                workspace_param(),
+                ActionParam::required("name", ParamType::Text, "Its new name."),
+            ]
+        },
+    ),
+    verb(
+        WORKSPACES,
+        "delete",
+        "Delete a workspace of yours and everything in it, for good; its keys are revoked",
+        ActionKind::Outside,
+        Op::DeleteWorkspace,
+        || vec![workspace_param()],
+    ),
+    verb(
+        WORKSPACES,
+        "unattended",
+        "Let keys made for one workspace alone run commands in its machine without asking each \
+         time (asks you first), or ask again",
+        ActionKind::Outside,
+        Op::Unattended,
+        || {
+            vec![
+                workspace_param(),
+                ActionParam::required(
+                    "on",
+                    ParamType::Boolean,
+                    "true asks the person to allow it; false asks again from the next command.",
+                ),
+            ]
+        },
+    ),
+    verb(
+        KEYS,
+        "list",
+        "This key and the keys it minted",
+        ActionKind::Read,
+        Op::ListKeys,
+        Vec::new,
+    ),
+    verb(
+        KEYS,
+        "create",
+        "Ask the person for a new key; it waits for them",
+        ActionKind::Outside,
+        Op::CreateKey,
+        || {
+            vec![
+                ActionParam::required("name", ParamType::Text, "What the key is called."),
+                ActionParam::optional(
+                    "workspace",
+                    ParamType::Text,
+                    "The one workspace it reaches; all of the person's when omitted.",
+                ),
+                expires_in_param(),
+                ActionParam::optional(
+                    "browser_pages",
+                    ParamType::Boolean,
+                    "Whether it operates web pages in the workspace's browser.",
+                ),
+            ]
+        },
+    ),
+    verb(
+        KEYS,
+        "mint",
+        "A key for one workspace, for an agent there",
+        ActionKind::Outside,
+        Op::MintKey,
+        || {
+            vec![
+                workspace_param(),
+                ActionParam::optional("name", ParamType::Text, "What the key is called."),
+                expires_in_param(),
+            ]
+        },
+    ),
+    verb(
+        KEYS,
+        "revoke",
+        "Revoke this key or one it minted, and every key it minted",
+        ActionKind::Outside,
+        Op::RevokeKey,
+        || {
+            vec![ActionParam::required(
+                "grant",
+                ParamType::Text,
+                "The key, as account/keys#list names it.",
+            )]
+        },
+    ),
+    verb(
+        USAGE,
+        "read",
+        "What your workspaces keep and ran, and your plan",
+        ActionKind::Read,
+        Op::Usage,
+        Vec::new,
+    ),
+    verb(
+        MODELS,
+        "ask",
+        "Ask your own model one turn; the invocation's newest item holds its answer so far",
+        ActionKind::Outside,
+        Op::AskModel,
+        || {
+            vec![
+                workspace_param(),
+                ActionParam::required(
+                    "request",
+                    ParamType::Object,
+                    "The conversation, as the model service takes one.",
+                ),
+            ]
+        },
+    ),
+];
+
+fn workspace_param() -> ActionParam {
+    ActionParam::required(
+        "workspace",
+        ParamType::Text,
+        "The workspace, by id, as account/workspaces#list names it.",
     )
 }
 
-/// Whether a tool call with `arguments` acts on the account rather than in a
-/// workspace: a path under the account's, which names no workspace. `tilo_ls`
-/// with no path lists a workspace.
-#[must_use]
-pub(crate) fn on_account(tool: &str, arguments: &Value) -> bool {
-    let path = arguments.get("path").and_then(Value::as_str).unwrap_or("");
-    !path.is_empty() && addresses(tool, arguments)
+fn labels_param() -> ActionParam {
+    ActionParam::optional(
+        "labels",
+        ParamType::Object,
+        "Names to text values only the person's keys read: {customer_id: \"cus_8121\"}.",
+    )
 }
 
-/// The answer to a call of a key for one workspace that addresses the
-/// account: it reaches none, and is told so rather than that the workspace
-/// runs no app called `account`. `None` for a call in its workspace, and for
-/// the keys of its own.
-pub(crate) fn beyond_workspace(tool: &str, arguments: &Value, structured: bool) -> Option<Value> {
-    let path = arguments.get("path").and_then(Value::as_str).unwrap_or("");
-    (on_account(tool, arguments) && !answers_from_its_workspace(tool, arguments)).then(|| {
-        answer(
-            structured,
-            path,
-            failed(
-                "not_permitted",
-                "this key only works in one workspace",
-                "to create or list workspaces, ask the person for a key for all their workspaces",
-            ),
-        )
-    })
+fn id_param() -> ActionParam {
+    ActionParam::optional(
+        "id",
+        ParamType::Text,
+        "The new workspace's id (a UUID), so a retry asks for the same one.",
+    )
 }
 
-/// What an account action answered.
+fn expires_in_param() -> ActionParam {
+    ActionParam::optional(
+        "expires_in",
+        ParamType::Integer,
+        "Seconds until it expires.",
+    )
+}
+
+/// The label of the account's resource `resource`.
+fn resource_label(resource: &str) -> &'static str {
+    match resource {
+        WORKSPACES => "Workspaces",
+        KEYS => "Keys",
+        USAGE => "Usage",
+        _ => "Models",
+    }
+}
+
+impl Verb {
+    fn row(&self) -> CatalogueRow {
+        let kind = self.resource.replace('/', ".");
+        let label = resource_label(self.resource);
+        let mut tags = Vec::new();
+        // Reading the resource (`tilo_read account/workspaces`) lists it.
+        if self.kind == ActionKind::Read {
+            tags.push(tilo_actions::DOCUMENT_READ_TAG.to_owned());
+        }
+        CatalogueRow {
+            offered: None,
+            provider: PROVIDER.into(),
+            app_id: PROVIDER.into(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: self.resource.into(),
+                kind: kind.clone(),
+                label: label.into(),
+                presentation: None,
+            },
+            action: Some(ActionDescriptor {
+                did: None,
+                state: tilo_actions::ActionState::default(),
+                semantic_identity: None,
+                address: ActionAddress::new(self.resource, self.id),
+                resource_kind: kind,
+                resource_label: label.into(),
+                action_label: self.label.into(),
+                keywords: Vec::new(),
+                icon: None,
+                description: None,
+                locus: ExecutionLocus::ServerPreferred,
+                kind: OperationKind::Effect,
+                contract: ActionContract {
+                    kind: self.kind,
+                    risk: if self.kind == ActionKind::Read {
+                        RiskLevel::None
+                    } else {
+                        RiskLevel::Privileged
+                    },
+                    tags,
+                    ..ActionContract::default()
+                },
+                input: InputSpec::None,
+                params: (self.params)(),
+                view: None,
+            }),
+            has_children: false,
+            visibility: None,
+            surface: None,
+        }
+    }
+}
+
+/// The account's actions, as one key's session reaches them.
+#[derive(Clone)]
+pub struct Account(Arc<Inner>);
+
+struct Inner {
+    server: Weak<Server>,
+    /// The key's grant as its session was opened with it: an API server that never saw the
+    /// key approved holds it in no store until the workspace let it in.
+    grant: Grant,
+    reach: Reach,
+    /// Who the account's calls on a workspace's host are by: the key's person at the key.
+    caller: Caller,
+    running: Mutex<Running>,
+}
+
+/// The invocations the account answers after it admitted them.
+#[derive(Default)]
+struct Running {
+    by_id: HashMap<InvocationId, Run>,
+    order: VecDeque<InvocationId>,
+}
+
+enum Run {
+    /// The person is asked for a key: its poll secret.
+    Key(String),
+    /// A workspace's host runs it, and answers how it goes.
+    Asked(SessionActions),
+    /// It ended so.
+    Ended(InvocationState),
+}
+
+/// What an action answered.
 pub(crate) enum Outcome {
     Ok(Value),
-    Pending {
-        invocation: String,
-        ask: String,
-    },
+    /// Asked of the person: the poll secret of the key they are asked for.
+    Key(String),
+    /// Asked of a workspace's host, which runs it on.
+    Asked(SessionActions),
+    /// Asked of a workspace's host, which holds it for the person to allow: the caller is
+    /// answered that it waits for them, and the same invocation answers how they decided.
+    Held(SessionActions),
     Failed {
         code: &'static str,
         message: String,
@@ -130,12 +442,13 @@ pub(crate) fn failed(
     }
 }
 
+/// What `error` tells the caller.
 pub(crate) fn refused(error: &ServerError) -> Outcome {
     match error {
         ServerError::NotFound => failed(
             "not_found",
             "no such workspace of yours",
-            "tilo_do account/workspaces#list names your workspaces",
+            "account/workspaces#list names your workspaces",
         ),
         // The host's own reason stays in the log: the person reads what they
         // would do about it.
@@ -198,194 +511,14 @@ pub(crate) fn not_branched(error: &ServerError) -> Option<Outcome> {
     ))
 }
 
-/// A tool's result: the typed value as JSON text when the caller asked for
-/// typed answers (`structured`), else the agents' `text`.
-pub(crate) fn tool_result(structured: bool, text: &str, typed: &Value, is_error: bool) -> Value {
-    if structured {
-        json!({
-            "content": [{"type": "text", "text": typed.to_string()}],
-            "structuredContent": typed,
-            "isError": is_error,
-        })
-    } else {
-        json!({"content": [{"type": "text", "text": text}], "isError": is_error})
+/// The failure `outcome` says, as an invocation ends with it.
+fn failure(code: &str, message: String, next: &str) -> ActionFailure {
+    ActionFailure {
+        retryable: code == "unavailable" || code == BRANCH_INCOMPLETE,
+        code: code.to_owned(),
+        message,
+        details: Some(json!({"next_steps": [next]})),
     }
-}
-
-/// The result of running `path`, as `tilo_do` and `tilo_status` answer it.
-pub(crate) fn answer(structured: bool, path: &str, outcome: Outcome) -> Value {
-    match outcome {
-        Outcome::Ok(result) => tool_result(
-            structured,
-            &format!("ok\n{result}"),
-            &json!({"status": "ok", "path": path, "result": result}),
-            false,
-        ),
-        Outcome::Pending { invocation, ask } => tool_result(
-            structured,
-            &format!(
-                "pending {invocation}: the person approves it at {ask}; tilo_status {{invocation_id}} answers once they did"
-            ),
-            &json!({"status": "pending", "path": path, "invocation_id": invocation,
-                   "ask": {"invocation_id": invocation, "url": ask}}),
-            false,
-        ),
-        Outcome::Failed {
-            code,
-            message,
-            next,
-        } => {
-            let error = json!({"code": code, "message": message, "next_steps": [next]});
-            tool_result(
-                structured,
-                &format!("failed: {code}: {message}. Next: {next}"),
-                &json!({"status": "failed", "path": path, "error": error}),
-                true,
-            )
-        }
-    }
-}
-
-/// A parameter of an account or workspace action the API answers itself, as
-/// `tilo_ls` lists parameters.
-pub(crate) struct Param {
-    pub(crate) name: &'static str,
-    pub(crate) required: bool,
-    ty: &'static str,
-}
-
-/// One action the API answers itself: (resource, action, label, kind,
-/// parameters).
-pub(crate) type ActionRow = (
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static [Param],
-);
-
-pub(crate) const fn param(name: &'static str, required: bool, ty: &'static str) -> Param {
-    Param { name, required, ty }
-}
-
-/// The account's actions.
-const ACTIONS: [ActionRow; 9] = [
-    (
-        "workspaces",
-        "list",
-        "Your workspaces, and the hosts you can create on; with labels, those labelled so",
-        "read",
-        &[param("labels", false, "Object")],
-    ),
-    (
-        "workspaces",
-        "create",
-        "Create a workspace; the host may refuse (quota, payment)",
-        "outside",
-        &[
-            param("name", true, "Text"),
-            param("labels", false, "Object"),
-            param("host", false, "Text"),
-        ],
-    ),
-    (
-        "workspaces",
-        "branch",
-        "Branch a workspace of yours: a new one of yours that starts as its copy and goes on apart",
-        "outside",
-        &[
-            param("workspace", true, "Text"),
-            param("name", true, "Text"),
-            param("labels", false, "Object"),
-            param("id", false, "Text"),
-        ],
-    ),
-    (
-        "workspaces",
-        "rename",
-        "Name a workspace, for every list and device of it; its owners and moderators may",
-        "outside",
-        &[
-            param("workspace", true, "Text"),
-            param("name", true, "Text"),
-        ],
-    ),
-    (
-        "workspaces",
-        "delete",
-        "Delete a workspace of yours and everything in it, for good; its keys are revoked",
-        "outside",
-        &[param("workspace", true, "Text")],
-    ),
-    (
-        "keys",
-        "list",
-        "This key and the keys it minted",
-        "read",
-        &[],
-    ),
-    (
-        "keys",
-        "create",
-        "Ask the person for a new key; it waits for them",
-        "outside",
-        &[
-            param("name", true, "Text"),
-            param("workspace", false, "Text"),
-            param("expires_in", false, "Integer"),
-            param("browser_pages", false, "Boolean"),
-        ],
-    ),
-    (
-        "keys",
-        "mint",
-        "A key for one workspace, for an agent there",
-        "outside",
-        &[
-            param("workspace", true, "Text"),
-            param("name", false, "Text"),
-            param("expires_in", false, "Integer"),
-        ],
-    ),
-    (
-        "keys",
-        "revoke",
-        "Revoke this key or one it minted, and every key it minted",
-        "outside",
-        &[param("grant", true, "Text")],
-    ),
-];
-
-/// The action rows of the account's `resource`, as `tilo_ls` types them,
-/// and the same as text lines.
-fn actions_of(resource: &str) -> (Vec<Value>, String) {
-    listed_actions(&ACTIONS, resource)
-}
-
-/// The rows of `table` for `resource`, as `tilo_ls` types them, and the same
-/// as text lines.
-pub(crate) fn listed_actions(table: &[ActionRow], resource: &str) -> (Vec<Value>, String) {
-    let mut text = String::new();
-    let rows = table
-        .iter()
-        .filter(|row| row.0 == resource)
-        .map(|(_, action, label, kind, params)| {
-            let names: Vec<String> = params
-                .iter()
-                .map(|param| format!("{}{}", param.name, if param.required { "" } else { "?" }))
-                .collect();
-            let _ = write!(text, "\n  #{action}({})  {label}", names.join(", "));
-            json!({
-                "id": action,
-                "label": label,
-                "kind": kind,
-                "params": params.iter().map(|param| json!({
-                    "name": param.name, "ty": param.ty, "required": param.required,
-                })).collect::<Vec<_>>(),
-            })
-        })
-        .collect();
-    (rows, text)
 }
 
 pub(crate) fn grant_row(grant: &Grant) -> Value {
@@ -406,246 +539,627 @@ pub(crate) fn grant_row(grant: &Grant) -> Value {
     })
 }
 
-impl Server {
-    /// Answer `tool` with `arguments` on the account, as the grant `grant`
-    /// in its run `session`, typed when `structured`.
-    pub(crate) async fn account_call(
-        &self,
-        grant: &str,
-        session: &crate::session::Session,
-        tool: &str,
-        arguments: &Value,
-        structured: bool,
-    ) -> Value {
-        let path = arguments.get("path").and_then(Value::as_str).unwrap_or("");
-        let Some(grant) = self.store.grant(grant) else {
-            return answer(
-                structured,
-                path,
-                failed("key_revoked", "this key was revoked", crate::APPROVE_AGAIN),
-            );
-        };
-        let key = match session.connection() {
-            Ok(key) => key,
-            Err(error) => return answer(structured, path, refused(&error)),
-        };
-        match tool {
-            "tilo_ls" => self.account_ls(&key, path, structured).await,
-            "tilo_read" => self.account_read(&grant, &key, path, structured).await,
-            "tilo_status" => {
-                let id = arguments
-                    .get("invocation_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                answer(structured, "account/keys#create", self.key_status(id))
-            }
-            _ => {
-                let args = arguments.get("args").cloned().unwrap_or_else(|| json!({}));
-                let outcome = self.account_do(&grant, &key, path, &args).await;
-                answer(structured, path, outcome)
-            }
-        }
+impl Account {
+    pub(crate) fn new(server: Weak<Server>, grant: Grant, reach: Reach, caller: Caller) -> Self {
+        Self(Arc::new(Inner {
+            server,
+            grant,
+            reach,
+            caller,
+            running: Mutex::default(),
+        }))
     }
 
-    /// `tilo_ls` of the account, or of its workspaces.
-    async fn account_ls(&self, key: &Connection, path: &str, structured: bool) -> Value {
-        match path.trim_end_matches('/') {
-            "" | ROOT => {
-                let mut text = String::from("account: your workspaces and keys");
-                let mut rows = Vec::new();
-                let mut kinds = serde_json::Map::new();
-                for (resource, label) in [
-                    ("workspaces", "Your workspaces"),
-                    ("keys", "Keys to your workspaces"),
-                    ("usage", "What your workspaces keep and ran"),
-                ] {
-                    let (actions, lines) = actions_of(resource);
-                    let _ = write!(text, "\n{ROOT}/{resource}  {label}{lines}");
-                    let kind = format!("account.{resource}");
-                    // A row names its actions; the listing says each kind's once.
-                    let ids: Vec<Value> =
-                        actions.iter().map(|action| action["id"].clone()).collect();
-                    rows.push(json!({
-                        "path": format!("{ROOT}/{resource}"), "name": resource, "label": label,
-                        "kind": kind, "has_children": resource == "workspaces",
-                        "actions": ids,
-                    }));
-                    kinds.insert(kind, Value::Array(actions));
-                }
-                tool_result(
-                    structured,
-                    &text,
-                    &json!({"path": ROOT, "kind": "account", "rows": rows, "actions": [],
-                            "kinds": kinds}),
-                    false,
-                )
-            }
-            "account/workspaces" => match self.account_workspaces(key).await {
-                Outcome::Ok(listed) => {
-                    let mut text = String::from("account/workspaces:");
-                    let mut rows = Vec::new();
-                    for workspace in listed
-                        .get("workspaces")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                    {
-                        let (id, name) = (
-                            workspace["id"].as_str().unwrap_or_default(),
-                            workspace["name"].as_str().unwrap_or_default(),
-                        );
-                        text.push('\n');
-                        text.push_str(&crate::v1::lines::workspace(workspace));
-                        rows.push(json!({
-                            "path": format!("account/workspaces/{id}"), "name": id, "label": name,
-                            "kind": "account.workspace", "has_children": false, "actions": [],
-                        }));
-                    }
-                    let (actions, lines) = actions_of("workspaces");
-                    text.push_str(&lines);
-                    tool_result(
-                        structured,
-                        &text,
-                        &json!({"path": "account/workspaces", "kind": "account.workspaces",
-                               "rows": rows, "actions": actions}),
-                        false,
-                    )
-                }
-                other => answer(structured, path, other),
-            },
-            "account/keys" => {
-                let (actions, lines) = actions_of("keys");
-                tool_result(
-                    structured,
-                    &format!("account/keys:{lines}"),
-                    &json!({"path": "account/keys", "kind": "account.keys", "rows": [], "actions": actions}),
-                    false,
-                )
-            }
-            other => answer(
-                structured,
-                other,
-                failed(
-                    "not_found",
-                    format!("no {other} in the account"),
-                    "tilo_ls account lists what it holds",
-                ),
-            ),
-        }
-    }
-
-    /// `tilo_read` of the account's workspaces or keys.
-    async fn account_read(
-        &self,
-        grant: &Grant,
-        key: &Connection,
-        path: &str,
-        structured: bool,
-    ) -> Value {
-        let path = path.trim_end_matches('/');
-        let (kind, fields) = match path {
-            "account/workspaces" => match self.account_workspaces(key).await {
-                Outcome::Ok(listed) => ("account.workspaces", listed),
-                other => return answer(structured, path, other),
-            },
-            "account/keys" => match self.account_keys(grant, key).await {
-                Outcome::Ok(listed) => ("account.keys", listed),
-                other => return answer(structured, path, other),
-            },
-            "account/usage" => match key.server().account(key).await {
-                Ok(account) => ("account.usage", account),
-                Err(error) => return answer(structured, path, refused(&error)),
-            },
-            other => {
-                return answer(
-                    structured,
-                    other,
-                    failed(
-                        "not_found",
-                        format!("{other} is nothing to read"),
-                        "tilo_read account/workspaces, account/keys or account/usage",
-                    ),
-                );
-            }
-        };
-        let mut text = format!("{path}:");
-        for row in fields
-            .pointer("/subscription/usage/workspaces")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
+    /// The page `query` asks of the account, in the tree of `workspace`.
+    fn page(query: &CatalogueQuery, workspace: &str) -> CataloguePage {
+        if query
+            .provider
+            .as_deref()
+            .is_some_and(|provider| provider != PROVIDER)
         {
-            let _ = write!(
-                text,
-                "\n{}: {} s of VM time{}, {} bytes kept",
-                row["workspace"].as_str().unwrap_or_default(),
-                row["vm_seconds"].as_u64().unwrap_or_default(),
-                if row["running"] == true {
-                    ", running"
-                } else {
-                    ""
+            return CataloguePage {
+                revision: REVISION.into(),
+                exhausted: true,
+                ..CataloguePage::default()
+            };
+        }
+        let rows = VERBS.iter().map(Verb::row).collect();
+        let mut page = CataloguePage::from_rows(REVISION.into(), rows, query);
+        if query.provider.is_none() && query.cursor.is_empty() {
+            page.providers.push(publisher(workspace));
+        }
+        page
+    }
+
+    /// The grant's own connection, for what the account asks of a server.
+    fn connection(&self) -> Result<Arc<Connection>, ServerError> {
+        match &self.0.reach {
+            Reach::Forwarded(connection) => Ok(Arc::clone(connection)),
+            Reach::Here(here) => here.connection().ok_or(ServerError::NoAccountHere),
+        }
+    }
+
+    fn keep(&self, id: InvocationId, run: Run) {
+        let mut running = crate::lock(&self.0.running);
+        if running.by_id.insert(id, run).is_none() {
+            running.order.push_back(id);
+        }
+        while running.order.len() > KEPT {
+            if let Some(oldest) = running.order.pop_front() {
+                running.by_id.remove(&oldest);
+            }
+        }
+        drop(running);
+    }
+
+    /// Whether the account answers the invocation `id`.
+    fn knows(&self, id: &InvocationId) -> bool {
+        crate::lock(&self.0.running).by_id.contains_key(id)
+    }
+
+    /// Run `request`: its receipt.
+    async fn run(&self, request: InvokeRequest) -> InvocationReceipt {
+        let id = request.invocation;
+        let args = match request.argument {
+            InvokeArgument::Json(arguments) => Value::Object(arguments),
+            _ => json!({}),
+        };
+        let address = &request.target.address;
+        let outcome = match VERBS
+            .iter()
+            .find(|verb| (verb.resource, verb.id) == (&*address.resource, &*address.action))
+        {
+            Some(verb) => self.answer(verb.op, id, &args).await,
+            None => {
+                return InvocationReceipt {
+                    invocation: id,
+                    status: ReceiptStatus::Rejected {
+                        error: ActionCallError::UnknownAction,
+                    },
+                };
+            }
+        };
+        let status = match outcome {
+            Outcome::Ok(value) => ReceiptStatus::Completed {
+                output: ActionOutput {
+                    value: Some(value),
+                    ..ActionOutput::default()
                 },
-                row["stored_bytes"].as_u64().unwrap_or_default(),
+            },
+            Outcome::Key(poll) => {
+                self.keep(id, Run::Key(poll));
+                ReceiptStatus::Accepted
+            }
+            Outcome::Asked(actions) => {
+                self.keep(id, Run::Asked(actions));
+                ReceiptStatus::Accepted
+            }
+            Outcome::Held(actions) => {
+                self.keep(id, Run::Asked(actions));
+                ReceiptStatus::Rejected {
+                    error: ActionCallError::ConfirmationRequired {
+                        departure: Vec::new(),
+                    },
+                }
+            }
+            Outcome::Failed {
+                code,
+                message,
+                next,
+            } => ReceiptStatus::Failed {
+                error: failure(code, message, &next),
+            },
+        };
+        let ended = match &status {
+            ReceiptStatus::Completed { output } => Some(InvocationUpdate::Succeeded {
+                invocation: id,
+                output: output.clone(),
+            }),
+            ReceiptStatus::Failed { error } => Some(InvocationUpdate::Failed {
+                invocation: id,
+                error: error.clone(),
+            }),
+            _ => None,
+        };
+        if let Some(update) = ended {
+            self.keep(id, Run::Ended(InvocationState::new(id, update)));
+        }
+        InvocationReceipt {
+            invocation: id,
+            status,
+        }
+    }
+
+    /// Admit `op` with `args` for this key, and run it.
+    async fn answer(&self, op: Op, id: InvocationId, args: &Value) -> Outcome {
+        let Some(server) = self.0.server.upgrade() else {
+            return failed("unavailable", "the server is stopping", "try again shortly");
+        };
+        if server.store.revoked(&self.0.grant.id) {
+            return failed("key_revoked", "this key was revoked", crate::APPROVE_AGAIN);
+        }
+        let grant = server
+            .store
+            .grant(&self.0.grant.id)
+            .unwrap_or_else(|| self.0.grant.clone());
+        if tilo_actions::policy::admit(
+            Invoked {
+                answer: answer_for(&grant, op, args),
+                attended: false,
+                resource: None,
+            },
+            Asker {
+                reachable: false,
+                delegated: false,
+            },
+        )
+        .is_err()
+        {
+            return failed(
+                "not_permitted",
+                "this key only works in one workspace",
+                "to create or list workspaces, ask the person for a key for all their workspaces",
             );
         }
-        for row in fields
-            .get("workspaces")
-            .or_else(|| fields.get("keys"))
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            text.push('\n');
-            text.push_str(&if row.get("grant").is_some() {
-                crate::v1::lines::key(row)
-            } else {
-                crate::v1::lines::workspace(row)
-            });
-        }
-        tool_result(
-            structured,
-            &text,
-            &json!({"path": path, "kind": kind, "fields": fields, "children": []}),
-            false,
-        )
-    }
-
-    /// Do the account action `path` names, as `key`, with `args`.
-    async fn account_do(
-        &self,
-        grant: &Grant,
-        key: &Connection,
-        path: &str,
-        args: &Value,
-    ) -> Outcome {
-        match path {
-            "account/workspaces#list" => match labels_of(args) {
-                Ok(labels) => self.account_workspaces_labelled(key, &labels).await,
-                Err(refused) => refused,
+        let key = match self.connection() {
+            Ok(key) => key,
+            // Listing what the key reaches needs no server: a desktop serving its own
+            // workspaces lists them.
+            Err(_) if op == Op::ListWorkspaces => return self.workspaces(&server, args).await,
+            Err(error) => return refused(&error),
+        };
+        match op {
+            Op::ListWorkspaces => self.workspaces(&server, args).await,
+            Op::CreateWorkspace => create_workspace(&key, args).await,
+            Op::BranchWorkspace => branch_workspace(&key, args).await,
+            Op::RenameWorkspace => rename_workspace(&key, args).await,
+            Op::DeleteWorkspace => server.delete_workspace(&grant, &key, args).await,
+            Op::Unattended => self.unattended(&key, id, args).await,
+            Op::ListKeys => server.account_keys(&grant, &key).await,
+            Op::CreateKey => server.create_key(args),
+            Op::MintKey => server.mint(&grant, &key, args).await,
+            Op::RevokeKey => server.revoke_key(&grant, &key, args).await,
+            Op::Usage => match key.server().account(&key).await {
+                Ok(account) => Outcome::Ok(account),
+                Err(error) => refused(&error),
             },
-            "account/workspaces#create" => self.create_workspace(key, args).await,
-            "account/workspaces#branch" => self.branch_workspace(grant, key, args).await,
-            "account/workspaces#rename" => rename_workspace(key, args).await,
-            "account/workspaces#delete" => self.delete_workspace(grant, key, args).await,
-            "account/keys#list" => self.account_keys(grant, key).await,
-            "account/keys#create" => self.create_key(args),
-            "account/keys#mint" => self.mint(grant, key, args).await,
-            "account/keys#revoke" => self.revoke_key(grant, key, args).await,
-            other => failed(
-                "not_found",
-                format!("the account has no action {other}"),
-                "tilo_ls account lists its actions",
-            ),
+            Op::AskModel => self.ask_model(&key, id, args).await,
         }
     }
 
+    /// The workspaces the key reaches that are labelled with every one of the `labels` `args`
+    /// names, with the hosts it may create on.
+    async fn workspaces(&self, server: &Server, args: &Value) -> Outcome {
+        let labels = match labels_of(args) {
+            Ok(labels) => labels,
+            Err(refused) => return refused,
+        };
+        let labels = &labels;
+        let listed = match &self.0.reach {
+            Reach::Forwarded(connection) => connection.server().labelled(connection, labels).await,
+            Reach::Here(here) => Ok(here.workspaces()),
+        };
+        match listed {
+            Ok(mut workspaces) => {
+                workspaces.retain(|workspace| labelled(workspace, labels));
+                Outcome::Ok(json!({"workspaces": workspaces, "hosts": host_rows(server)}))
+            }
+            Err(error) => refused(&error),
+        }
+    }
+
+    /// Ask the workspace's host to turn its unattended runs on or off as `args` says
+    /// (`{workspace, on}`), under the invocation `id`.
+    async fn unattended(&self, key: &Connection, id: InvocationId, args: &Value) -> Outcome {
+        let (Some(workspace), Some(on)) = (
+            field(args, "workspace"),
+            args.get("on").and_then(Value::as_bool),
+        ) else {
+            return failed(
+                "invalid_arguments",
+                "`workspace` and `on` are required",
+                "pass {workspace, on: true} to ask the person, {workspace, on: false} to turn it off",
+            );
+        };
+        let mut arguments = Map::new();
+        arguments.insert("on".into(), json!(on));
+        let target = RemoteActionTarget::workspace_governance(workspace, RUN_UNATTENDED);
+        let refusal = |why: String| {
+            failed(
+                "not_permitted",
+                format!("the workspace refused: {why}"),
+                "only the workspace's owner, from a key of theirs reaching it, has it; \
+                 turning it on waits for them to allow it",
+            )
+        };
+        match self
+            .ask_host(key, workspace, id, target, arguments, Some(ANSWERING_MS))
+            .await
+        {
+            Ok(Outcome::Failed { message, .. }) => refusal(message),
+            Ok(Outcome::Asked(actions)) => Outcome::Held(actions),
+            Ok(asked) => asked,
+            Err(error) => refusal(error.to_string()),
+        }
+    }
+
+    /// Ask the person's model in `args`' workspace one turn of `args`' request, under the
+    /// invocation `id`.
+    async fn ask_model(&self, key: &Connection, id: InvocationId, args: &Value) -> Outcome {
+        let (Some(workspace), Some(Value::Object(request))) =
+            (field(args, "workspace"), args.get("request"))
+        else {
+            return failed(
+                "invalid_arguments",
+                "`workspace` and `request` are required",
+                "pass {workspace, request: {messages, …}}",
+            );
+        };
+        let target = person_models::target(person_models::ASK);
+        match self
+            .ask_host(key, workspace, id, target, request.clone(), None)
+            .await
+        {
+            Ok(asked) => asked,
+            Err(error) => failed("refused", error.to_string(), "try again shortly"),
+        }
+    }
+
+    /// Invoke `target` with `arguments` on `workspace`'s host as the key's person, under `id`:
+    /// done, followed there, or failed.
+    async fn ask_host(
+        &self,
+        key: &Connection,
+        workspace: &str,
+        id: InvocationId,
+        target: RemoteActionTarget,
+        arguments: Map<String, Value>,
+        wait_ms: Option<u32>,
+    ) -> Result<Outcome, ActionCallError> {
+        let entered = match key.server().enter(key, workspace).await {
+            Ok(entered) => entered,
+            Err(error) => return Ok(refused(&error)),
+        };
+        let actions = key.device.actions(entered);
+        let request = InvokeRequest {
+            invocation: id,
+            target,
+            argument: InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms,
+            appearance: None,
+            signed: None,
+        };
+        let receipt = actions
+            .invoke(&self.0.caller, request)
+            .await
+            .ok_or(ActionCallError::Unanswered)??;
+        Ok(match receipt.status {
+            ReceiptStatus::Completed { output } => Outcome::Ok(output.value.unwrap_or_default()),
+            ReceiptStatus::Accepted => Outcome::Asked(actions),
+            ReceiptStatus::Failed { error } => failed("refused", error.message, "try again"),
+            ReceiptStatus::Rejected { error } => return Err(error),
+            ReceiptStatus::Cancelled { .. } => {
+                failed("unavailable", "the workspace stopped it", "try again")
+            }
+        })
+    }
+
+    /// How the key the person was asked for under `poll` went, as invocation `id`.
+    fn key_state(server: &Server, id: InvocationId, poll: &str) -> InvocationState {
+        let ended = |code: &str, message: &str, next: &str| InvocationUpdate::Failed {
+            invocation: id,
+            error: failure(code, message.to_owned(), next),
+        };
+        let update = match server.key_answer(poll) {
+            crate::keys::Answer::Approved { token, grant } => InvocationUpdate::Succeeded {
+                invocation: id,
+                output: ActionOutput {
+                    value: Some(json!({
+                        "key": token,
+                        "grant": grant.id,
+                        "name": grant.client_name,
+                        "scope": grant.scope.name(),
+                        "expires_at_ms": grant.expires_ms,
+                    })),
+                    ..ActionOutput::default()
+                },
+            },
+            crate::keys::Answer::Declined => ended(
+                "declined",
+                "the person declined the key",
+                "ask again only if they want it",
+            ),
+            crate::keys::Answer::Waiting { ask } => InvocationUpdate::Progress {
+                invocation: id,
+                sequence: 0,
+                phase: "waiting".into(),
+                completed: None,
+                total: None,
+                message: Some(format!("the person approves it at {ask}")),
+            },
+            crate::keys::Answer::Expired => ended(
+                "expired",
+                "nothing waits under this id: it expired, or the key was already answered",
+                "ask again with account/keys#create",
+            ),
+        };
+        InvocationState::new(id, update)
+    }
+}
+
+/// The account, as the tree of `workspace` lists its publishers.
+fn publisher(workspace: &str) -> CatalogueProvider {
+    CatalogueProvider {
+        provider: PROVIDER.into(),
+        app_id: PROVIDER.into(),
+        workspace: workspace.to_owned(),
+        document_id: String::new(),
+        browsable: true,
+    }
+}
+
+/// What the grants answer `grant` for `op` with `args`: a key for all the person's workspaces
+/// reaches all of the account; a key for one reaches its own keys, and its workspace's setting
+/// and model.
+fn answer_for(grant: &Grant, op: Op, args: &Value) -> Answer {
+    match &grant.scope {
+        Scope::Account => Answer::Allow,
+        Scope::Workspace(own) => match op {
+            // Its list is the one workspace it reaches, as the server lists it for the key.
+            Op::ListWorkspaces | Op::ListKeys | Op::RevokeKey => Answer::Allow,
+            Op::Unattended | Op::AskModel if field(args, "workspace") == Some(own.as_str()) => {
+                Answer::Allow
+            }
+            _ => Answer::Deny,
+        },
+    }
+}
+
+impl ActionProvider for Account {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        Pending::ready(Ok(Self::page(&query, ROOT_TREE)))
+    }
+
+    fn invoke(
+        &self,
+        _caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let (done, answer) = pending();
+        let account = self.clone();
+        tokio::spawn(async move {
+            let receipt = account.run(request).await;
+            done.complete(Ok(receipt));
+        });
+        answer
+    }
+
+    fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        let running = crate::lock(&self.0.running);
+        match running.by_id.get(id)? {
+            Run::Ended(state) => Some(state.clone()),
+            Run::Asked(actions) => {
+                let actions = actions.clone();
+                drop(running);
+                actions.observe(&self.0.caller, id)
+            }
+            Run::Key(poll) => {
+                let poll = poll.clone();
+                drop(running);
+                let server = self.0.server.upgrade()?;
+                let state = Self::key_state(&server, *id, &poll);
+                if state.update.is_terminal() {
+                    self.keep(*id, Run::Ended(state.clone()));
+                }
+                Some(state)
+            }
+        }
+    }
+
+    fn next_change(&self, _caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        let actions = match crate::lock(&self.0.running).by_id.get(id)? {
+            Run::Asked(actions) => actions.clone(),
+            Run::Key(_) | Run::Ended(_) => return None,
+        };
+        actions.next_change(&self.0.caller, id)
+    }
+
+    fn cancel(&self, _caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        let actions = match crate::lock(&self.0.running).by_id.get(id) {
+            Some(Run::Asked(actions)) => actions.clone(),
+            Some(_) => {
+                return Pending::ready(Err(ActionCallError::NotCancellable {
+                    reason: "it is not running".into(),
+                }));
+            }
+            None => return Pending::ready(Err(ActionCallError::UnknownInvocation)),
+        };
+        actions.cancel(&self.0.caller, id)
+    }
+}
+
+/// The workspace the tree of a session that names none is the tree of: the account's own.
+pub const ROOT_TREE: &str = "account";
+
+/// A workspace's actions with the account's beside them: the tree a key's session walks. With
+/// no workspace, the account's alone.
+pub(crate) struct Joined {
+    workspace: String,
+    actions: Option<Provider>,
+    account: Account,
+}
+
+impl Joined {
+    pub(crate) fn provider(
+        workspace: &str,
+        actions: Option<Provider>,
+        account: Account,
+    ) -> Provider {
+        Arc::new(Self {
+            workspace: workspace.to_owned(),
+            actions,
+            account,
+        })
+    }
+
+    fn is_account(target: &RemoteActionTarget) -> bool {
+        target.provider == PROVIDER
+    }
+}
+
+impl ActionProvider for Joined {
+    fn retire_execution(&self, caller: &Caller) {
+        match &self.actions {
+            Some(actions) => actions.retire_execution(caller),
+            None => caller.retire_execution(),
+        }
+    }
+
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        let Some(actions) = self
+            .actions
+            .as_ref()
+            .filter(|_| query.provider.as_deref() != Some(PROVIDER))
+        else {
+            return Pending::ready(Ok(Account::page(&query, &self.workspace)));
+        };
+        if query.provider.is_some() || !query.cursor.is_empty() {
+            return actions.query(caller, query);
+        }
+        let account = publisher(&self.workspace);
+        actions.query(caller, query).map(move |answer| {
+            answer.map(|mut page| {
+                page.providers.push(account);
+                page
+            })
+        })
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        match &self.actions {
+            Some(actions) if !Self::is_account(&request.target) => actions.invoke(caller, request),
+            _ => self.account.invoke(caller, request),
+        }
+    }
+
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        if self.account.knows(id) {
+            return self.account.observe(caller, id);
+        }
+        self.actions.as_ref()?.observe(caller, id)
+    }
+
+    fn observed(&self, caller: &Caller, id: &InvocationId, state: Option<&InvocationState>) {
+        if let Some(actions) = &self.actions {
+            actions.observed(caller, id, state);
+        }
+    }
+
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        if self.account.knows(id) {
+            return self.account.next_change(caller, id);
+        }
+        self.actions.as_ref()?.next_change(caller, id)
+    }
+
+    fn session_state(&self, caller: &Caller) -> Option<tilo_actions::remote::SessionState> {
+        self.actions.as_ref()?.session_state(caller)
+    }
+
+    fn session_state_changed(&self, caller: &Caller) -> Option<Pending<()>> {
+        self.actions.as_ref()?.session_state_changed(caller)
+    }
+
+    fn changed(
+        &self,
+        caller: &Caller,
+        scope: tilo_actions::remote::WatchScope,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        self.actions.as_ref()?.changed(caller, scope)
+    }
+
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        match &self.actions {
+            Some(actions) if !self.account.knows(id) => actions.cancel(caller, id),
+            _ => self.account.cancel(caller, id),
+        }
+    }
+
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<ConfirmedInvocation, ActionCallError>> {
+        match &self.actions {
+            Some(actions) if !Self::is_account(&request.target) => actions.confirm(caller, request),
+            _ => Pending::ready(Err(ActionCallError::confirmation_required())),
+        }
+    }
+
+    fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
+        self.actions.as_ref()?.content_puts()
+    }
+
+    fn content_gets(&self) -> Option<Arc<dyn tilo_actions::remote::ContentGets>> {
+        self.actions.as_ref()?.content_gets()
+    }
+
+    fn here(&self, caller: &Caller) -> Option<Vec<tilo_actions::remote::Here>> {
+        self.actions.as_ref()?.here(caller)
+    }
+
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        self.actions.as_ref()?.resource_reads()
+    }
+
+    fn readings(&self) -> Option<Arc<dyn tilo_actions::remote::Readings>> {
+        self.actions.as_ref()?.readings()
+    }
+
+    fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
+        self.actions.as_ref()?.resource_changes()
+    }
+
+    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
+        self.actions.as_ref()?.resource_search()
+    }
+
+    fn change_feed(&self) -> Option<Arc<dyn tilo_actions::remote::ChangeFeed>> {
+        self.actions.as_ref()?.change_feed()
+    }
+
+    fn installed_surface(&self, app_id: &str) -> Pending<Option<Vec<u8>>> {
+        match &self.actions {
+            Some(actions) => actions.installed_surface(app_id),
+            None => Pending::ready(None),
+        }
+    }
+}
+
+impl Server {
     /// Delete the workspace `args` names, and every key that reached only it.
     async fn delete_workspace(&self, grant: &Grant, key: &Connection, args: &Value) -> Outcome {
         let Some(workspace) = field(args, "workspace") else {
             return failed(
                 "invalid_arguments",
                 "`workspace` is required",
-                "pass args {workspace: \"<id>\"}; account/workspaces#list names them",
+                "pass {workspace: \"<id>\"}; account/workspaces#list names them",
             );
         };
         if let Err(error) = key.server().delete(key, workspace).await {
@@ -665,7 +1179,7 @@ impl Server {
                     .map(|browser_pages| (expires_in, browser_pages))
             })
             .and_then(|(expires_in, browser_pages)| {
-                self.ask_for_key(
+                self.request_key(
                     field(args, "name"),
                     field(args, "workspace"),
                     expires_in,
@@ -673,11 +1187,11 @@ impl Server {
                 )
             });
         match asked {
-            Ok((invocation, ask)) => Outcome::Pending { invocation, ask },
+            Ok((poll, _)) => Outcome::Key(poll),
             Err(why) => failed(
                 "invalid_arguments",
                 why,
-                "pass args {name, workspace?, expires_in?, browser_pages?}",
+                "pass {name, workspace?, expires_in?, browser_pages?}",
             ),
         }
     }
@@ -728,7 +1242,7 @@ impl Server {
                 );
             }
             for workspace in recorded {
-                if let Err(outcome) = crate::session::keys::revoke_in(key, &workspace, id).await {
+                if let Err(outcome) = revoke_in(key, &workspace, id).await {
                     tracing::warn!(
                         workspace,
                         grant = id,
@@ -762,7 +1276,7 @@ impl Server {
                 // The workspace keeps the revocation, so every holder and API
                 // server refuses the key, not only this one.
                 if let Some(workspace) = workspace
-                    && let Err(outcome) = crate::session::keys::revoke_in(key, &workspace, id).await
+                    && let Err(outcome) = revoke_in(key, &workspace, id).await
                 {
                     tracing::warn!(
                         workspace,
@@ -778,69 +1292,6 @@ impl Server {
                 "revocation is unavailable",
                 "try again shortly",
             ),
-        }
-    }
-
-    /// Make the workspace `args` names (`name`, and `id` when the caller chose
-    /// one) as `key`.
-    async fn create_workspace(&self, key: &Connection, args: &Value) -> Outcome {
-        let Some(name) = field(args, "name") else {
-            return failed(
-                "invalid_arguments",
-                "`name` is required",
-                "pass args {name: \"Applicant: Jane Doe\"}",
-            );
-        };
-        let id = match chosen_id(args) {
-            Ok(id) => id,
-            Err(refused) => return refused,
-        };
-        let labels = match labels_of(args) {
-            Ok(labels) => labels,
-            Err(refused) => return refused,
-        };
-        match key.server().create(key, name, &labels, id).await {
-            Ok(created) => Outcome::Ok(json!({"workspace": created})),
-            Err(error) => refused(&error),
-        }
-    }
-
-    /// Branch the workspace `args` names (`workspace`, one of the person's own)
-    /// into a new one named `name`, under `id` when the caller chose one, as
-    /// `key`, a key reaching all their workspaces.
-    async fn branch_workspace(&self, grant: &Grant, key: &Connection, args: &Value) -> Outcome {
-        if grant.scope != Scope::Account {
-            return failed(
-                "not_permitted",
-                "this key only works in one workspace",
-                "to create or list workspaces, ask the person for a key for all their workspaces",
-            );
-        }
-        let Some(source) = field(args, "workspace") else {
-            return failed(
-                "invalid_arguments",
-                "`workspace` is required",
-                "pass args {workspace: \"<id>\", name}; account/workspaces#list names them",
-            );
-        };
-        let Some(name) = field(args, "name") else {
-            return failed(
-                "invalid_arguments",
-                "`name` is required",
-                "pass args {workspace, name: \"Applicant: Jane Doe, second try\"}",
-            );
-        };
-        let id = match chosen_id(args) {
-            Ok(id) => id,
-            Err(refused) => return refused,
-        };
-        let labels = match labels_of(args) {
-            Ok(labels) => labels,
-            Err(refused) => return refused,
-        };
-        match key.server().branch(key, source, name, &labels, id).await {
-            Ok(branch) => Outcome::Ok(json!({"workspace": branch})),
-            Err(error) => not_branched(&error).unwrap_or_else(|| refused(&error)),
         }
     }
 
@@ -861,30 +1312,6 @@ impl Server {
             }
         }
         revoked
-    }
-
-    async fn account_workspaces(&self, key: &Connection) -> Outcome {
-        self.account_workspaces_labelled(key, &WorkspaceLabels::new())
-            .await
-    }
-
-    /// The workspaces `key` reaches that are labelled with every one of
-    /// `labels`: all of them for none.
-    async fn account_workspaces_labelled(
-        &self,
-        key: &Connection,
-        labels: &WorkspaceLabels,
-    ) -> Outcome {
-        match key.server().labelled(key, labels).await {
-            Ok(mut workspaces) => Outcome::Ok({
-                workspaces.retain(|workspace| labelled(workspace, labels));
-                json!({
-                    "workspaces": workspaces,
-                    "hosts": host_rows(self),
-                })
-            }),
-            Err(error) => refused(&error),
-        }
     }
 
     /// The keys this one holds and the keys it minted. One reaching a
@@ -916,7 +1343,7 @@ impl Server {
             }
             return Outcome::Ok(json!({"keys": keys}));
         };
-        let grants = match crate::session::keys::grants_in(key, &workspace).await {
+        let grants = match grants_in(key, &workspace).await {
             Ok(grants) => grants,
             Err(outcome) => return outcome,
         };
@@ -936,56 +1363,8 @@ impl Server {
         Outcome::Ok(json!({"keys": keys}))
     }
 
-    /// How a key the person was asked for went.
-    fn key_status(&self, invocation: &str) -> Outcome {
-        let poll = invocation.strip_prefix(KEY_INVOCATION).unwrap_or_default();
-        match self.key_answer(poll) {
-            crate::keys::Answer::Approved { token, grant } => Outcome::Ok(json!({
-                "key": token,
-                "grant": grant.id,
-                "name": grant.client_name,
-                "scope": grant.scope.name(),
-                "expires_at_ms": grant.expires_ms,
-            })),
-            crate::keys::Answer::Declined => failed(
-                "declined",
-                "the person declined the key",
-                "ask again only if they want it",
-            ),
-            crate::keys::Answer::Waiting { ask } => Outcome::Pending {
-                invocation: invocation.to_owned(),
-                ask,
-            },
-            crate::keys::Answer::Expired => failed(
-                "expired",
-                "nothing waits under this id: it expired, or the key was already answered",
-                "ask again with account/keys#create",
-            ),
-        }
-    }
-
-    /// Ask the person for a key: the invocation that waits for them, and
-    /// where they approve it.
-    fn ask_for_key(
-        &self,
-        name: Option<&str>,
-        workspace: Option<&str>,
-        expires_in: Option<u64>,
-        browser_pages: bool,
-    ) -> Result<(String, String), &'static str> {
-        let (poll, ask) = self.request_key(name, workspace, expires_in, browser_pages)?;
-        Ok((format!("{KEY_INVOCATION}{poll}"), ask))
-    }
-
     /// Mint a key reaching one workspace, for an agent to act there.
     async fn mint(&self, grant: &Grant, connection: &Connection, args: &Value) -> Outcome {
-        if grant.scope != Scope::Account {
-            return failed(
-                "not_permitted",
-                "only a key reaching all your workspaces mints keys",
-                "mint with the key you created",
-            );
-        }
         let Some(workspace) = args.get("workspace").and_then(Value::as_str) else {
             return failed(
                 "invalid_arguments",
@@ -1052,30 +1431,16 @@ impl Server {
             ),
         }
     }
-}
 
-/// A key as the workspace's own governance records it, in the shape
-/// `GET /v1/keys` answers every other.
-/// Whether `grant` is one of the person's own keys rather than an agent's grant: an API key they
-/// approved, or the key a computer of theirs logged in with. An agent never sees or takes back the
-/// person's other keys.
-fn persons_own(grant: &Grant) -> bool {
-    matches!(grant.kind, GrantKind::Key)
-}
-
-impl Server {
     /// Every key of its person's that the workspaces `key` reaches keep, each with the workspace
     /// that keeps it. A workspace that does not answer leaves its keys out.
-    async fn recorded_keys(
-        &self,
-        key: &Connection,
-    ) -> Vec<(String, collab_types::workspace_grant::WorkspaceGrant)> {
+    async fn recorded_keys(&self, key: &Connection) -> Vec<(String, WorkspaceGrant)> {
         let Ok(workspaces) = key.server().labelled(key, &WorkspaceLabels::new()).await else {
             return Vec::new();
         };
         let mut recorded = Vec::new();
         for workspace in workspaces {
-            match crate::session::keys::grants_in(key, &workspace.id).await {
+            match grants_in(key, &workspace.id).await {
                 Ok(grants) => recorded.extend(
                     grants
                         .into_iter()
@@ -1090,7 +1455,15 @@ impl Server {
     }
 }
 
-fn workspace_grant_row(grant: &collab_types::workspace_grant::WorkspaceGrant) -> Value {
+/// Whether `grant` is one of the person's own keys rather than an agent's grant: an API key they
+/// approved, or the key a computer of theirs logged in with. An agent never sees or takes back the
+/// person's other keys.
+fn persons_own(grant: &Grant) -> bool {
+    matches!(grant.kind, GrantKind::Key)
+}
+
+/// A key as the workspace's own governance records it, in the shape every other is listed in.
+fn workspace_grant_row(grant: &WorkspaceGrant) -> Value {
     json!({
         "grant": grant.id,
         "name": grant.name,
@@ -1103,10 +1476,115 @@ fn workspace_grant_row(grant: &collab_types::workspace_grant::WorkspaceGrant) ->
     })
 }
 
-/// Whether `workspace` is labelled with every one of `labels`.
+/// The grants `workspace` records of the calling person's, as its host answers them.
+async fn grants_in(
+    connection: &Connection,
+    workspace: &str,
+) -> Result<Vec<WorkspaceGrant>, Outcome> {
+    #[derive(serde::Deserialize)]
+    struct Grants {
+        grants: Vec<WorkspaceGrant>,
+    }
+    let output = governance(connection, workspace, LIST_KEYS, Map::new()).await?;
+    serde_json::from_value::<Grants>(output)
+        .map(|grants| grants.grants)
+        .map_err(|error| {
+            failed(
+                "unavailable",
+                format!("the workspace answered no keys: {error}"),
+                "try again shortly",
+            )
+        })
+}
+
+/// Record `grant` revoked in `workspace`: whether it changed the workspace.
+async fn revoke_in(connection: &Connection, workspace: &str, grant: &str) -> Result<bool, Outcome> {
+    let mut arguments = Map::new();
+    arguments.insert("grant".to_owned(), json!(grant));
+    match governance(connection, workspace, REVOKE_KEY, arguments).await {
+        Ok(_) => Ok(true),
+        // A workspace that holds no such grant, or already refuses the key as
+        // revoked, has nothing left to record.
+        Err(Outcome::Failed { code, .. }) if code == "not_found" || code == "key_revoked" => {
+            Ok(false)
+        }
+        Err(outcome) => Err(outcome),
+    }
+}
+
+/// Run the governance verb `action` in `workspace` as the key's session, and answer its output.
+async fn governance(
+    connection: &Connection,
+    workspace: &str,
+    action: &str,
+    arguments: Map<String, Value>,
+) -> Result<Value, Outcome> {
+    let id = connection
+        .server()
+        .enter(connection, workspace)
+        .await
+        .map_err(|error| refused(&error))?;
+    let request = InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget::workspace_governance(workspace, action),
+        argument: InvokeArgument::Json(arguments),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let unanswered = || {
+        failed(
+            "unavailable",
+            "the workspace did not answer",
+            "try again shortly",
+        )
+    };
+    let receipt = connection
+        .device
+        .actions(id)
+        .invoke(&Caller::local_person("tilo api"), request)
+        .await
+        .ok_or_else(unanswered)?
+        .map_err(|error| refused_key(&error))?;
+    match receipt.status {
+        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
+        ReceiptStatus::Rejected { error } => Err(refused_key(&error)),
+        ReceiptStatus::Failed { error } => {
+            Err(failed("unavailable", error.message, "try again shortly"))
+        }
+        ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => Err(unanswered()),
+    }
+}
+
+/// What a workspace's refusal of a key's listing or revocation, `error`, tells the caller.
+fn refused_key(error: &ActionCallError) -> Outcome {
+    match error {
+        // The workspace records its keys' revocations: one it refuses as
+        // revoked asks its person for another.
+        ActionCallError::Refused { reason } if reason.contains("key_revoked") => {
+            failed("key_revoked", "this key was revoked", crate::APPROVE_AGAIN)
+        }
+        ActionCallError::UnknownAction => failed(
+            "not_found",
+            "the workspace holds no such key, or it is not this key's to revoke",
+            "account/keys#list names the keys this one holds and the keys it minted",
+        ),
+        ActionCallError::NotPermitted => failed(
+            "not_permitted",
+            "the workspace does not let this key revoke that one",
+            "only the key itself and the key that minted it revoke it",
+        ),
+        other => failed("unavailable", other.to_string(), "try again shortly"),
+    }
+}
+
 /// The hosts calls may be forwarded to, as an account lists them: the ones
 /// the API server knows, its first the default.
-fn host_rows(server: &crate::Server) -> Value {
+fn host_rows(server: &Server) -> Value {
     Value::Array(
         server
             .hosts
@@ -1118,6 +1596,7 @@ fn host_rows(server: &crate::Server) -> Value {
     )
 }
 
+/// Whether `workspace` is labelled with every one of `labels`.
 pub(crate) fn labelled(workspace: &crate::server::Workspace, labels: &WorkspaceLabels) -> bool {
     labels
         .iter()
@@ -1132,6 +1611,46 @@ fn field<'a>(args: &'a Value, name: &str) -> Option<&'a str> {
         .filter(|value| !value.is_empty())
 }
 
+/// Make the workspace `args` names (`name`, and `id` when the caller chose
+/// one) as `key`.
+async fn create_workspace(key: &Connection, args: &Value) -> Outcome {
+    let Some(name) = field(args, "name") else {
+        return failed(
+            "invalid_arguments",
+            "`name` is required",
+            "pass {name: \"Applicant: Jane Doe\"}",
+        );
+    };
+    let (id, labels) = match (chosen_id(args), labels_of(args)) {
+        (Ok(id), Ok(labels)) => (id, labels),
+        (Err(refused), _) | (_, Err(refused)) => return refused,
+    };
+    match key.server().create(key, name, &labels, id).await {
+        Ok(created) => Outcome::Ok(json!({"workspace": created})),
+        Err(error) => refused(&error),
+    }
+}
+
+/// Branch the workspace `args` names (`workspace`, one of the person's own)
+/// into a new one named `name`, under `id` when the caller chose one, as `key`.
+async fn branch_workspace(key: &Connection, args: &Value) -> Outcome {
+    let (Some(source), Some(name)) = (field(args, "workspace"), field(args, "name")) else {
+        return failed(
+            "invalid_arguments",
+            "`workspace` and `name` are required",
+            "pass {workspace: \"<id>\", name}; account/workspaces#list names them",
+        );
+    };
+    let (id, labels) = match (chosen_id(args), labels_of(args)) {
+        (Ok(id), Ok(labels)) => (id, labels),
+        (Err(refused), _) | (_, Err(refused)) => return refused,
+    };
+    match key.server().branch(key, source, name, &labels, id).await {
+        Ok(branch) => Outcome::Ok(json!({"workspace": branch})),
+        Err(error) => not_branched(&error).unwrap_or_else(|| refused(&error)),
+    }
+}
+
 /// Name the workspace `args` names (`workspace`) `name`, as `key`: the
 /// server decides by the workspace's governance, as for the person's own page.
 async fn rename_workspace(key: &Connection, args: &Value) -> Outcome {
@@ -1139,7 +1658,7 @@ async fn rename_workspace(key: &Connection, args: &Value) -> Outcome {
         return failed(
             "invalid_arguments",
             "`workspace` and `name` are required",
-            "pass args {workspace: \"<id>\", name: \"Acme\"}; account/workspaces#list names them",
+            "pass {workspace: \"<id>\", name: \"Acme\"}; account/workspaces#list names them",
         );
     };
     match key.server().rename(key, workspace, name).await {

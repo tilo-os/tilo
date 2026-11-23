@@ -21,6 +21,7 @@ use tilo_agent_session::bot::host_steps::{
     HostStepError, HostSteps, Instruction, Judgement, Question,
 };
 use tilo_app_id::apps::CHAT;
+use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::agents::assistant;
 
 use crate::tl_chat;
@@ -134,18 +135,19 @@ async fn member_runner(
     .unwrap()
 }
 
-/// Restricts for half an hour and takes back what the person did.
-struct FakeJudge;
+/// Recommends a membership change and taking back what the person did.
+struct FakeJudge(Outcome);
 
 impl Judge for FakeJudge {
     fn model(&self) -> &'static str {
         "fake-model"
     }
 
-    async fn judge(&self, _case: &Case) -> Result<Verdict, JudgeError> {
+    async fn judge(&self, case: &Case) -> Result<Verdict, JudgeError> {
+        assert_eq!(case.activity.len(), 3, "the reported person's three posts");
         Ok(Verdict {
-            outcome: Outcome::Restrict,
-            minutes: Some(30),
+            outcome: self.0,
+            minutes: (self.0 == Outcome::Restrict).then_some(30),
             revert: true,
             reasoning: "They flooded the channel with the same link.".into(),
         })
@@ -1747,19 +1749,25 @@ async fn a_bot_step_reads_the_records_it_follows_through_the_record_api() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
+async fn a_bridge_relays_under_another_name_and_the_post_stays_the_bots() {
+    use tilo_automation::{Binding, StepKind};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
+    // The greeter relays its answer as written by Grace on Discord, granted what that takes.
     let mut bridge = greeter();
     let mut shortcut = bridge.shortcut().unwrap();
-    if let tilo_automation::StepKind::Invoke { appearance, .. } = &mut shortcut.steps[0].kind {
-        *appearance = Some(tilo_automation::Binding::Literal(
-            serde_json::json!({ "name": "Grace (Discord)" }),
-        ));
+    if let StepKind::Invoke { action, args, .. } = &mut shortcut.steps[0].kind {
+        *action = tilo_actions::ActionKey::new(CHAT, TEXT_CHANNEL_KIND, "relay");
+        args.insert("by".to_owned(), Binding::Literal("Grace (Discord)".into()));
+        args.insert("written_in".to_owned(), Binding::Literal("Discord".into()));
     }
+    shortcut.grant = tilo_automation::grant::derived_rules(
+        &shortcut,
+        &tilo_automation::ActionCatalog::new(Vec::new()),
+    );
     bridge.program =
         String::from_utf8(tilo_automation::program::canonical_bytes(&shortcut).unwrap()).unwrap();
     let mut runner = member_runner(
@@ -1777,36 +1785,21 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
         matches!(reports[..], [ref report] if report.outcome == tilo_automation::InvocationOutcome::Completed),
         "the workspace admits the bridge's post: {reports:?}"
     );
-    let bytes = workspaces
-        .resource_document(&workspace, CHAT, "")
-        .await
-        .unwrap()
-        .unwrap();
     let post = posts(&workspaces, &workspace)
         .await
-        .iter()
+        .into_iter()
         .find(|message| message.text == "welcome!")
-        .map(|message| message.who.clone())
         .expect("the bridge posted");
     assert_eq!(
-        post,
+        post.who,
         Some(tl_chat::member(MemberId::bot(GREETER))),
         "still the bot's"
     );
-    let shown: Vec<_> = AutoCommit::load(&bytes)
-        .unwrap()
-        .get_changes(&[])
-        .into_iter()
-        .filter_map(|change| {
-            change
-                .message()
-                .and_then(tilo_actions::ActionContext::from_change_message)
-                .and_then(|context| context.invoker)
-                .and_then(|invoker| invoker.appearance)
-                .map(|appearance| appearance.name)
-        })
-        .collect();
-    assert_eq!(shown, ["Grace (Discord)"], "the post shows the other name");
+    assert_eq!(
+        (post.by.as_str(), post.written_in.as_str()),
+        ("Grace (Discord)", "Discord"),
+        "the post shows the other name"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1987,7 +1980,7 @@ fn membership_changes_fire_a_bots_workspace_triggers_as_governance_verbs() {
 /// opens it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
-    use crate::workspaces::sealed_fixtures::{SealingMember, governor_published, member_device};
+    use crate::workspaces::sealed_fixtures::{SealingMember, member_device};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = crate::workspaces::fixtures::governor_with(
         tilo_user_identity::DeviceCapabilities::member(),
@@ -1995,9 +1988,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
-    // A guest takes part in the chat's record, under the keys its members seal it with.
     let (guest_key, guest_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
-    let guest = SealingMember::join(&workspaces, &workspace, (CHAT, ""), guest_key).await;
     let mut runner = member_runner(
         &workspaces,
         &workspace,
@@ -2008,6 +1999,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     .await;
     assert!(runner.step().await.unwrap().is_empty());
 
+    let before = workspaces.store_writes(&workspace, CHAT).await.unwrap();
     // The guest's post, as their page writes one: through Chat's own `send`, as the guest.
     let who = tl_chat::member(MemberId::person(hex::encode(guest_cert.user_public_key)));
     let in_general = general.clone();
@@ -2023,19 +2015,47 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
         )
         .await
         .unwrap();
+    // The guest takes part in the document Chat keeps the channel's messages in, under the keys
+    // its members seal it with.
+    let (document, hello) = workspaces
+        .store_writes(&workspace, CHAT)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|(document, writes)| before.get(document).map_or(0, Vec::len) < writes.len())
+        .expect("the guest's post was published");
+    let guest = SealingMember::join(&workspaces, &workspace, (CHAT, &document), guest_key).await;
     let reports = runner.step().await.unwrap();
     assert!(
         matches!(reports[..], [ref report] if report.outcome == tilo_automation::InvocationOutcome::Completed),
         "the workspace admits the bot's post to the sealed chat: {reports:?}"
     );
 
-    // The guest opens what the workspace published, as its page does.
-    let post = governor_published(&workspaces, &workspace, "", &cert)
+    // The guest opens what the workspace published, as its page does, and holds what the
+    // workspace does: the bot's answer with it.
+    let post = workspaces
+        .store_writes(&workspace, CHAT)
         .await
+        .unwrap()
+        .remove(&document)
+        .and_then(|mut writes| writes.pop())
         .expect("the bot's post was published");
+    assert!(
+        !hello.contains(&post),
+        "the bot's post is a write of its own"
+    );
     assert!(post.encryption.is_some(), "never in the clear");
     guest.take_in(&post);
-    let _ = guest.document();
+    let held = workspaces
+        .resource_document(&workspace, CHAT, &document)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        guest.document().get_heads(),
+        AutoCommit::load(&held).unwrap().get_heads(),
+        "the guest holds the bot's answer"
+    );
     let posted = posts(&workspaces, &workspace).await;
     let answers: Vec<_> = posted
         .iter()

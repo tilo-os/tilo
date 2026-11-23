@@ -287,11 +287,11 @@ async fn only_a_members_turn_reaches_the_workspaces_mail() {
         "a turn in another workspace",
         Caller::delegated_agent(SCOUT, cy.user_public_key, cy.device_public_key)
             .in_workspace(&elsewhere)
-            .on_roster_turn(
-                tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
-                0,
-                cy.user_public_key,
-            ),
+            .on_roster(0, cy.user_public_key)
+            .on_roster_turn(tilo_action_policy::turn::Turn::new(
+                "chat/main",
+                "message-1",
+            )),
     ));
     for (who, asks) in others {
         let turn = mail.turn(&asks, None);

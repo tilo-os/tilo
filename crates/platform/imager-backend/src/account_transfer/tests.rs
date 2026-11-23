@@ -1,5 +1,6 @@
 use super::*;
-use accounts::{Account, AccountId, AccountStore, Secret, SecretVault};
+use crate::account_store::Accounts;
+use accounts::{Account, AccountId, Secret, SecretVault};
 
 #[cfg(unix)]
 #[test]
@@ -69,8 +70,8 @@ tilo_test_env::scenario! {
                 zeroize::Zeroizing::new("PRIVATE_APP_PASSWORD".into()),
             )
             .unwrap();
-        let store = AccountStore::load_in(&root);
-        let account = store.get(&id).unwrap();
+        let store = Accounts::read(&root).unwrap();
+        let account = store.get(id.as_str()).unwrap().unwrap();
         assert_eq!(account.type_id.as_str(), "webdav");
         assert_eq!(account.config["username"], "ada");
         let metadata = std::fs::read_to_string(accounts::store_path_in(&root)).unwrap();
@@ -105,10 +106,10 @@ tilo_test_env::scenario! {
         let source = temp.path().join("source");
         let target = temp.path().join("target");
         let id = AccountId::new("selected");
-        let mut store = AccountStore::new();
-        store.upsert(Account::new(id.clone(), "webdav"));
-        store.save_in(&source).unwrap();
-        store.save_in(&target).unwrap();
+        let accounts = Accounts::empty();
+        accounts.keep(&Account::new(id.clone(), "webdav")).unwrap();
+        accounts.project(&source).unwrap();
+        accounts.project(&target).unwrap();
         let mut source_vault = SecretVault::open_in(&source);
         source_vault.put(&id, &Secret::password("source-secret"));
         source_vault.try_save().unwrap();
@@ -258,12 +259,12 @@ tilo_test_env::scenario! {
         let target = temp.path().join("target");
         let own = AccountId::new("own");
         let other = AccountId::new("other");
-        let mut store = AccountStore::new();
-        store.upsert(Account::new(own.clone(), "webdav"));
+        let accounts = Accounts::empty();
+        accounts.keep(&Account::new(own.clone(), "webdav")).unwrap();
         let mut shared = Account::new(other.clone(), "nextcloud");
         shared.owner = Some("another-person".into());
-        store.upsert(shared);
-        store.save_in(&source).unwrap();
+        accounts.keep(&shared).unwrap();
+        accounts.project(&source).unwrap();
         let mut vault = SecretVault::open_in(&source);
         vault.put(
             &own,
@@ -317,7 +318,7 @@ tilo_test_env::scenario! {
         let target = temp.path().join("target");
         let connector = Connector::new(target.clone());
         let id = connector.import_rclone(&roots, team).unwrap();
-        let account = AccountStore::load_in(&target).get(&id).cloned().unwrap();
+        let account = Accounts::read(&target).unwrap().get(id.as_str()).unwrap().unwrap();
         assert_eq!(account.type_id.as_str(), "webdav");
         assert_eq!(
             account.config["server_url"],
@@ -344,7 +345,7 @@ tilo_test_env::scenario! {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("source");
         let target = root.path().join("target");
-        let mut store = AccountStore::new();
+        let accounts = Accounts::empty();
         let source_ownership = CredentialStore::for_root(Some(source.clone()));
         for (slot, scope, token) in [
             (
@@ -362,8 +363,8 @@ tilo_test_env::scenario! {
             let mut account = Account::new(id.clone(), "spotify");
             account.display_name = "Spotify".into();
             account.config = serde_json::json!({"provider":"spotify"});
-            store.upsert(account);
-            store.save_in(&source).unwrap();
+            accounts.keep(&account).unwrap();
+            accounts.project(&source).unwrap();
             source_ownership
                 .seal_oauth(
                     &id,
@@ -578,14 +579,14 @@ music_streaming = ["streaming", "user-read-private"]
     connector.spotify_api = Some(endpoint);
     let selected = connect_spotify_test_slots(&connector);
     api.join().unwrap();
-    let store = AccountStore::load_in(&stage);
+    let store = Accounts::read(&stage).unwrap();
     for id in &selected {
         assert_eq!(
-            store.get(id).unwrap().config["spotify_user_id"],
+            store.get(id.as_str()).unwrap().unwrap().config["spotify_user_id"],
             "ada-spotify"
         );
         assert_eq!(
-            store.get(id).unwrap().config["spotify_account_id"],
+            store.get(id.as_str()).unwrap().unwrap().config["spotify_account_id"],
             "stable-ada"
         );
     }
@@ -674,9 +675,9 @@ tilo_test_env::scenario! {
         let id = AccountId::new("existing-nextcloud");
         let mut account = Account::new(id.clone(), "nextcloud");
         account.config = serde_json::json!({"server_url":server.url(), "username":"ada", "app_password":true, "use_files":true});
-        let mut store = AccountStore::new();
-        store.upsert(account);
-        store.save_in(&source).unwrap();
+        let accounts = Accounts::empty();
+        accounts.keep(&account).unwrap();
+        accounts.project(&source).unwrap();
         let secret = Secret::password("original-app-password");
         let mut vault = SecretVault::open_in(&source);
         vault.put(&id, &secret);
@@ -698,7 +699,7 @@ tilo_test_env::scenario! {
         // mistaken for a fresh Nextcloud app password by the current credential store.
         let mut unknown = secret.clone();
         unknown.token = Some(serde_json::json!({"kind":"future_protected_password"}).to_string());
-        let account = AccountStore::load_in(&source).get(&id).cloned().unwrap();
+        let account = Accounts::read(&source).unwrap().get(id.as_str()).unwrap().unwrap();
         assert!(account_credentials::password_credential(&unknown).is_empty());
         account_credentials::CredentialStore::for_root(Some(source.clone())).revoke(&account, &unknown);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -714,9 +715,9 @@ tilo_test_env::scenario! {
         let source = temporary.path().join("source");
         let target = temporary.path().join("target");
         let id = AccountId::new("copied-dav");
-        let mut store = AccountStore::new();
-        store.upsert(Account::new(id.clone(), "webdav"));
-        store.save_in(&source).unwrap();
+        let accounts = Accounts::empty();
+        accounts.keep(&Account::new(id.clone(), "webdav")).unwrap();
+        accounts.project(&source).unwrap();
         let mut source_vault = SecretVault::open_in(&source);
         source_vault.put(&id, &Secret::password("original-password"));
         source_vault.try_save().unwrap();

@@ -5,7 +5,7 @@
 
 use crate::journal::Owner;
 use crate::{Route, Service};
-use accounts::{AccountId, AccountStore};
+use accounts::person::PersonAccounts;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkState {
@@ -23,7 +23,6 @@ pub struct LiveBinding {
 pub enum Refusal {
     AccountMissing,
     AccountDisabled,
-    AccountNotOwned,
     WrongService,
     WrongAccount,
     WrongDevice,
@@ -37,7 +36,7 @@ pub enum Refusal {
 /// The current binding must come from the host's account-owned adapter and
 /// certified device authority, never from user-supplied action parameters.
 pub fn check(
-    store: &AccountStore,
+    accounts: &PersonAccounts,
     route: &Route,
     expected: &Owner,
     live: &LiveBinding,
@@ -45,11 +44,11 @@ pub fn check(
     if route.service() == Service::Tilo {
         return Err(Refusal::WrongService);
     }
-    check_owned(store, route, expected, live)
+    check_owned(accounts, route, expected, live)
 }
 
 pub(crate) fn check_native(
-    store: &AccountStore,
+    accounts: &PersonAccounts,
     route: &Route,
     expected: &Owner,
     live: &LiveBinding,
@@ -57,10 +56,10 @@ pub(crate) fn check_native(
     if route.service() != Service::Tilo {
         return Err(Refusal::WrongService);
     }
-    check_owned(store, route, expected, live)
+    check_owned(accounts, route, expected, live)
 }
 fn check_owned(
-    store: &AccountStore,
+    accounts: &PersonAccounts,
     route: &Route,
     expected: &Owner,
     live: &LiveBinding,
@@ -80,16 +79,11 @@ fn check_owned(
     if expected.linking_generation != live.owner.linking_generation {
         return Err(Refusal::StaleLink);
     }
-    let account = store
-        .get(&AccountId::new(route.account()))
+    let account = accounts
+        .account(route.account())
         .ok_or(Refusal::AccountMissing)?;
     if !account.enabled {
         return Err(Refusal::AccountDisabled);
-    }
-    // Contributed workspace accounts need a separate credential delegation
-    // grant; mere visibility in a store is not permission to act as its owner.
-    if account.owner.is_some() {
-        return Err(Refusal::AccountNotOwned);
     }
     let required = match route.service() {
         Service::Whatsapp => "whatsapp",
@@ -123,16 +117,16 @@ mod tests {
     fn route() -> Route {
         Route::new(Service::Signal, "account-a".into(), "recipient".into()).unwrap()
     }
-    fn store() -> AccountStore {
-        let mut store = AccountStore::new();
+    fn store() -> PersonAccounts {
+        let mut store = PersonAccounts::default();
         let mut account = Account::new("account-a", "signal");
         account.display_name = "Same display name".into();
         account.enabled = true;
-        store.upsert(account);
+        store.keep(&account).unwrap();
         let mut another = Account::new("account-b", "signal");
         another.display_name = "Same display name".into();
         another.enabled = true;
-        store.upsert(another);
+        store.keep(&another).unwrap();
         store
     }
 
@@ -147,10 +141,10 @@ mod tests {
                 state: LinkState::Linked,
             };
             assert_eq!(check(&store(), &route(), &owner(), &live), Ok(()));
-            let mut store = AccountStore::new();
+            let mut store = PersonAccounts::default();
             let mut other = Account::new("account-b", "signal");
             other.enabled = true;
-            store.upsert(other);
+            store.keep(&other).unwrap();
             assert_eq!(
                 check(&store, &route(), &owner(), &live),
                 Err(Refusal::AccountMissing)
@@ -191,29 +185,21 @@ mod tests {
                 Err(Refusal::WrongActor)
             );
             live.owner = owner();
-            let mut disabled = AccountStore::new();
+            let mut disabled = PersonAccounts::default();
             let mut account = Account::new("account-a", "signal");
             account.enabled = false;
-            disabled.upsert(account);
+            disabled.keep(&account).unwrap();
             assert_eq!(
                 check(&disabled, &route(), &owner(), &live),
                 Err(Refusal::AccountDisabled)
             );
-            let mut wrong = AccountStore::new();
+            let mut wrong = PersonAccounts::default();
             let mut account = Account::new("account-a", "sms");
             account.enabled = true;
-            wrong.upsert(account);
+            wrong.keep(&account).unwrap();
             assert_eq!(
                 check(&wrong, &route(), &owner(), &live),
                 Err(Refusal::WrongService)
-            );
-            let mut contributed = AccountStore::new();
-            let mut account = Account::new("account-a", "signal");
-            account.owner = Some("another-person".into());
-            contributed.upsert(account);
-            assert_eq!(
-                check(&contributed, &route(), &owner(), &live),
-                Err(Refusal::AccountNotOwned)
             );
         }
     }

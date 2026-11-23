@@ -61,6 +61,10 @@ revision() { # IMAGE: the commit the image says it was built from
 git -C "$infra" fetch -q origin main
 [[ $(git -C "$infra" rev-parse HEAD) == $(git -C "$infra" rev-parse origin/main) ]] \
   || die "$infra is at $(git -C "$infra" rev-parse --short HEAD), not origin/main: bring it to origin/main first"
+# tilo/infra's push checks build every app at the pinned submodules (the Forgejo theme, and the
+# old theme inside it), and read them from this checkout: a checkout without them is refused.
+git -C "$infra" submodule update -q --init --recursive \
+  || die "$infra could not check out its submodules: git -C $infra submodule update --init --recursive"
 live_lounge=$(pinned lounge)
 [[ $(wc -l <<<"$live_lounge") == 1 ]] || die "tilo/infra pins more than one Lounge image: $live_lounge"
 live=$(revision "$live_lounge")

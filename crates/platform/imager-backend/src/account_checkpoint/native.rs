@@ -1,4 +1,5 @@
 use super::*;
+use crate::account_store::Accounts;
 use crate::setup::portable_transfer::Limits;
 const LIMITS: Limits = Limits {
     plaintext_bytes: 32 * 1024 * 1024,
@@ -62,14 +63,14 @@ fn read(storage: &StorageDirectory, name: &str, bound: u64) -> io::Result<Vec<u8
     Ok(bytes)
 }
 fn manifest(handle: &PreparedAccounts, binding: &str, group: [u8; 32]) -> io::Result<Manifest> {
-    let store = accounts::AccountStore::load_in(&handle.config_root());
+    let store = Accounts::read(&handle.config_root()).map_err(|_| invalid())?;
     let entries = handle
         .entries
         .iter()
         .map(|selected| {
             let account = store
-                .get(&accounts::AccountId::new(&selected.id))
-                .cloned()
+                .get(&selected.id)
+                .map_err(|_| invalid())?
                 .ok_or_else(invalid)?;
             Ok(Entry {
                 selected: selected.clone(),
@@ -257,9 +258,14 @@ pub(super) fn restore(
                 &ids,
             )
             .map_err(|_| invalid())?;
-        let store = accounts::AccountStore::load_in(&stage.path().join(".config/tilo"));
+        let store = Accounts::read(&stage.path().join(".config/tilo")).map_err(|_| invalid())?;
         for entry in &manifest.entries {
-            if store.get(&entry.account.id) != Some(&entry.account) {
+            if store
+                .get(entry.account.id.as_str())
+                .map_err(|_| invalid())?
+                .as_ref()
+                != Some(&entry.account)
+            {
                 return Err(invalid());
             }
         }

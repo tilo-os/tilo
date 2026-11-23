@@ -552,12 +552,9 @@ tilo_test_env::scenario! {
             .set("XDG_CONFIG_HOME", home.join(".config"))
             .set("XDG_DATA_HOME", home.join(".local/share"));
         // The setup's settings store holds its profile in this Home: its
-        // documents, the lock each one leases and the socket it serves.
+        // document, the lock it leases and the socket it serves.
         let data = home.join(".local/share");
-        let person = data.join(tilo_paths::SETTINGS_PERSON);
         let device = data.join(tilo_paths::SETTINGS_DEVICE);
-        fs::create_dir_all(&person).unwrap();
-        fs::write(person.join("canonical.lock"), b"").unwrap();
         fs::create_dir_all(&device).unwrap();
         fs::write(device.join("canonical.lock"), b"").unwrap();
         fs::write(device.join("state.automerge"), b"settings").unwrap();

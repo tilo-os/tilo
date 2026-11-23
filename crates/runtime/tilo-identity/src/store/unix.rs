@@ -3026,3 +3026,35 @@ mod secret_service_error_bridge_tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod identity_record_vector_tests {
+    use super::{IdentityRecord, load_from_bytes};
+
+    /// The shared vector a browser writes (`crates/browser/tilo-browser-runtime/
+    /// web/device-key.test.mjs`'s `personRecord`): the identity store reads it
+    /// and writes it back byte for byte, so a root a tab founds and a root a
+    /// computer imports are one record.
+    #[test]
+    fn a_browser_root_record_reads_and_writes_as_the_store_does() {
+        let fixture = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/identity-record.json"
+        ))
+        .expect("the shared identity-record vector");
+
+        // The seed inside is the root: expanding it gives the public key the
+        // record names, so a computer takes the tab's root as its own.
+        let identity = load_from_bytes(fixture.as_bytes()).expect("a single-device record");
+        assert_eq!(
+            hex::encode(identity.group_public_key()),
+            "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+        );
+
+        let record = IdentityRecord::from_json_bytes(fixture.as_bytes())
+            .expect("the identity store's record");
+        let written =
+            String::from_utf8(record.to_json_bytes().expect("the record encodes")).expect("utf-8");
+        assert_eq!(written.trim_end(), fixture.trim_end());
+    }
+}

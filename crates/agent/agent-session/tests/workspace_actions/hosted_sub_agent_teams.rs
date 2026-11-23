@@ -171,3 +171,181 @@ async fn the_main_agents_own_turn_starts_notes_and_stops_its_sub_agents() {
     assert_eq!(news[0].agent, MemberId::agent(SCOUT), "its starter is told");
     page.peer.close();
 }
+
+/// The jobs of a line two deep, and what each of its turns files in Tasks.
+const LEAD: &str = "Plan the launch with a team of your own.";
+const WORKER: &str = "File the launch's issues.";
+const FILE: &str = "tasks/tasks.issues#create-many";
+
+/// Whether a tool's answer says the call was refused, in the words the agent tools refuse in.
+fn refused_in_words(answer: &str) -> bool {
+    [
+        "has no action",
+        "no such action",
+        "may not invoke",
+        "not_permitted: ",
+    ]
+    .iter()
+    .any(|said| answer.contains(said))
+}
+
+/// A turn of the line: the person's own agent starts the lead and files an issue, the lead
+/// starts the worker and files one, the worker files one; each then answers.
+fn the_line_plays(request: &ModelRequest) -> ModelResponse {
+    let issue = || json!({"issues": [{"title": "Ship it", "status": "todo"}]});
+    let (calls, last) = if of_sub_agent(request) && said_in(request).contains(WORKER) {
+        (vec![(FILE, issue())], "Tried.")
+    } else if of_sub_agent(request) && said_in(request).contains(LEAD) {
+        (
+            vec![
+                (
+                    START,
+                    json!({"name": "Worker", "id": "worker", "job": WORKER}),
+                ),
+                (FILE, issue()),
+            ],
+            "Led.",
+        )
+    } else if of_sub_agent(request) || said_in(request).contains("Your sub-agent") {
+        (Vec::new(), "Told.")
+    } else {
+        (
+            vec![
+                (START, json!({"name": "Lead", "id": "lead", "job": LEAD})),
+                (FILE, issue()),
+            ],
+            "Started.",
+        )
+    };
+    let done = tool_answers(request).len();
+    match calls.get(done) {
+        Some((path, args)) => does(done.saturating_add(1), path, args),
+        None => answer(
+            vec![Content::Text { text: last.into() }],
+            StopReason::EndTurn,
+            1_000,
+        ),
+    }
+}
+
+/// What the tools answered the last call of the turn `of` names, in the order asked.
+fn answered_in(
+    asked: &Mutex<Vec<ModelRequest>>,
+    of: impl Fn(&ModelRequest) -> bool,
+) -> Vec<(String, bool)> {
+    asked
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|request| of(request))
+        .map(tool_answers)
+        .unwrap_or_default()
+}
+
+/// Answer the job of the sub-agent `agent` and the reply it wrote.
+async fn job_answered(
+    agents: &ServerAgents,
+    workspaces: &Workspaces,
+    (workspace, person): (&str, &str),
+    agent: &str,
+) -> asks::Replied {
+    let turns = agents.turns(workspace).await.unwrap();
+    let job = turns
+        .iter()
+        .find(|turn| turn.agent.id.0 == agent && turn.line.as_ref().is_some_and(|line| line.job))
+        .unwrap_or_else(|| panic!("{agent} is asked its job: {turns:?}"));
+    answers(agents, workspace, job).await;
+    let asked = asks_of(workspaces, workspace, person, agent).await;
+    let asked = answered(workspaces, workspace, person, &asked[0].at).await;
+    asked.latest().unwrap().clone()
+}
+
+/// A sub-agent of a sub-agent may do nothing its starter may not. The person approves their
+/// own agent for Chat alone and allows two levels. Its turn starts a lead, whose turn starts
+/// a worker: each answers its job as its own reply, which Chat lets the approved key write,
+/// and each is refused filing an issue in Tasks, which the approval leaves out, as the agent
+/// above it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sub_agent_of_a_sub_agent_does_nothing_its_starter_may_not() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let server = crate::harness::hosted::start(
+        &root,
+        &host,
+        state.path(),
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
+    )
+    .await;
+    let workspaces = server.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let page = Browser::open_at(&server, &browser, &host, &workspace).await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    make_agent(&page, &workspaces, &workspace, &person, None).await;
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = server
+        .approving_for(&workspace, &[SCOUT], &["so.tilo.chat"])
+        .await
+        .scripted(plays(&asked, the_line_plays));
+    on_roster(
+        &workspaces,
+        &workspace,
+        (None, person.as_str()),
+        WorkspaceAgents::SET_SUB_AGENT_LIMITS.with(workspace_agents::SetSubAgentLimits {
+            agent: Id::from_raw(SCOUT),
+            depth: Some(2),
+            at_once: None,
+        }),
+    )
+    .await
+    .expect("its keeper says in person how deep sub-agents go");
+
+    mentions(
+        &workspaces,
+        &workspace,
+        &person,
+        (SCOUT, "Scout", " plan the launch."),
+    )
+    .await;
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "the mention is its one turn: {turns:?}");
+    answers(&agents, &workspace, &turns[0]).await;
+    let main = answered_in(&asked, |request| {
+        !of_sub_agent(request) && !said_in(request).contains("Your sub-agent")
+    });
+    assert_eq!(main.len(), 2, "{main:?}");
+    assert!(!main[0].1, "its own agent starts the lead: {}", main[0].0);
+    assert!(
+        main[1].1 && refused_in_words(&main[1].0),
+        "its approval leaves Tasks out: {}",
+        main[1].0
+    );
+
+    let led = job_answered(&agents, &workspaces, (&workspace, &person), "lead").await;
+    assert!(led.body.contains("Led."), "{}", led.body);
+    let lead = answered_in(&asked, |request| {
+        of_sub_agent(request) && said_in(request).contains(LEAD)
+    });
+    assert_eq!(lead.len(), 2, "{lead:?}");
+    assert!(!lead[0].1, "the lead starts its worker: {}", lead[0].0);
+    assert!(
+        lead[1].1 && refused_in_words(&lead[1].0),
+        "the lead may not file what its starter may not: {}",
+        lead[1].0
+    );
+
+    let worked = job_answered(&agents, &workspaces, (&workspace, &person), "worker").await;
+    assert!(worked.body.contains("Tried."), "{}", worked.body);
+    let worker = answered_in(&asked, |request| {
+        of_sub_agent(request) && said_in(request).contains(WORKER)
+    });
+    assert_eq!(worker.len(), 1, "{worker:?}");
+    assert!(
+        worker[0].1 && refused_in_words(&worker[0].0),
+        "nor may the worker the lead started: {}",
+        worker[0].0
+    );
+    page.peer.close();
+}

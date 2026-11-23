@@ -454,7 +454,7 @@ fn parse_role(role: &str) -> Result<Role, String> {
 
 /// The identity this workspace hosts as: the operator's root file, the host
 /// device it keeps in its state, and the revocations its state's log holds.
-/// `tilo-enroll revoke` writes that log, so a device the root withdrew is
+/// `tilo device revoke` writes that log, so a device the root withdrew is
 /// refused when it connects, as on the plain daemon.
 fn hosted_identity(
     root: &SigningKey,
@@ -1522,14 +1522,6 @@ pub(crate) async fn run(
             Some(web) => web,
             None => serve_browsers(&hosted.server, &args, listen, &state, &entry_wait_list).await?,
         };
-        // A provider's sign-in page sends the browser back to the routes this
-        // deployment publishes at the same origin as the web entry.
-        workspaces.accounts_call_back_at(
-            args.web
-                .public_origin
-                .clone()
-                .unwrap_or_else(|| web.origin.clone()),
-        );
         println!(
             "{}",
             OperatorEvent::Started {
@@ -1555,7 +1547,6 @@ pub(crate) async fn run(
                 tilo_server::workspace_bots::ModerationBot::new(
                     workspaces.clone(),
                     workspace.clone(),
-                    server_cert.clone(),
                     agent,
                 )
                 .run(),
@@ -1631,7 +1622,6 @@ pub(crate) async fn run(
                 sign_in,
                 web_entry: args.web.web_entry.clone(),
                 discord: discord.clone(),
-                accounts: Some(Arc::new(context.workspaces.clone())),
             });
             println!(
                 "{}",

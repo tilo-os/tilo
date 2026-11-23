@@ -17,10 +17,7 @@ pub use item_json::item_json;
 
 /// The changes of `doc` after `since` (hex heads), in causal order, as the
 /// events their recorded entries describe, each with the heads after it.
-/// Each event is of the resource kind `kind` names, the record's, or, for
-/// `None`, of the kind its own entry names: what a tilolang record's change
-/// says it wrote (`tl.<app>.<Type>`), as its record keeps resources of every
-/// type of its app.
+/// Each event is of `kind`, the record's resource kind.
 ///
 /// Changes that carry no entry (a genesis, a merge with no action) yield
 /// no event but still advance the heads, so a cursor set from the last
@@ -30,7 +27,7 @@ pub use item_json::item_json;
 pub fn events_since(
     workspace: &str,
     record: &str,
-    kind: Option<&str>,
+    kind: &str,
     doc: &automerge::Automerge,
     since: &[String],
 ) -> Vec<(DocumentEvent, Vec<String>)> {
@@ -48,14 +45,6 @@ pub fn events_since(
         else {
             continue;
         };
-        let kind = kind
-            .or_else(|| {
-                context
-                    .resource
-                    .as_ref()
-                    .map(|resource| resource.kind.as_str())
-            })
-            .unwrap_or_default();
         let mut event = dispatch::event_of(workspace, record, kind, &hash.to_string(), &context);
         if let Some(item) = &event.item {
             event.before = item_json(doc, &parents, &item.id);
@@ -101,7 +90,7 @@ mod tests {
         let events = events_since(
             "workspace",
             "rec",
-            Some("chat.workspace"),
+            "chat.workspace",
             doc.document(),
             &hex(&cursor),
         );
@@ -112,14 +101,7 @@ mod tests {
         assert_eq!(event.after.as_ref().unwrap()["text"], "edited");
         assert_eq!(heads, &hex(&doc.get_heads()));
         assert!(
-            events_since(
-                "workspace",
-                "rec",
-                Some("chat.workspace"),
-                doc.document(),
-                heads
-            )
-            .is_empty(),
+            events_since("workspace", "rec", "chat.workspace", doc.document(), heads).is_empty(),
             "nothing is read twice past the heads it returned"
         );
     }

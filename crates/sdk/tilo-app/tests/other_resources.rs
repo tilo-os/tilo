@@ -124,7 +124,7 @@ impl ResourceApp for BoardApp {
         }) {
             column = column.push(part);
         }
-        if let Some(playback) = cx.person::<Playback>()
+        if let Some(playback) = cx.profile_resource::<Playback>()
             && let Some(part) = cx.record(&playback, |cx| {
                 Box::new(Column::new().push(Box::new(
                     cx.checkbox("Autoplay", Playback::paths().autoplay),
@@ -171,7 +171,6 @@ tilo_test_env::scenario! {
     // A click on a control bound to a field of a settings section kept in the
     // person's records stores the change in the settings document, both ways.
     {
-        crate::own_kinds::declare("so.tilo.test-board", &["test.playback"]);
         let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
         let control = checkbox(&mut app, "high_contrast");
         app.harness().click_named(&control).unwrap();
@@ -284,7 +283,6 @@ tilo_test_env::scenario! {
 
     phase a_settings_section_is_kept_in_the_settings_document_alone;
     {
-        crate::own_kinds::declare("so.tilo.test-board-declaring", &["test.playback"]);
         let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
         // The person record of playback is declared and kept open; the display
         // section is the settings document's, with no record of its own.
@@ -411,11 +409,10 @@ tilo_test_env::scenario! {
 
     phase the_persons_record_is_edited_by_path_as_the_person_whatever_their_role;
     {
-        crate::own_kinds::declare("so.tilo.test-board", &["test.playback"]);
         let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
         let control = checkbox(&mut app, "autoplay");
         app.harness().click_named(&control).unwrap();
-        let playback = app.person::<Playback>().unwrap();
+        let playback = app.profile_resource::<Playback>().unwrap();
         assert!(playback.with(|state| state.autoplay));
 
         let actions = published(&mut app, "person:test.playback");
@@ -479,7 +476,6 @@ tilo_test_env::scenario! {
     // Undo takes back is undoable, so it runs at once and asks nothing, while
     // what a grant must allow is reading, so the workspace's roles do not check it.
     {
-        crate::own_kinds::declare("so.tilo.test-board", &["test.playback"]);
         let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
         let resources = app.harness().resources();
         let descriptor = tilo_actions::api::survey(&resources)
@@ -499,7 +495,7 @@ tilo_test_env::scenario! {
         assert_eq!(contract.validate_declaration(), Vec::<String>::new());
         assert_eq!(contract.need().kind, tilo_actions::ActionKind::Read);
 
-        let playback = app.person::<Playback>().unwrap();
+        let playback = app.profile_resource::<Playback>().unwrap();
         app.call_on(
             "person:test.playback",
             "mute",
@@ -520,7 +516,6 @@ tilo_test_env::scenario! {
 
     phase declared_records_are_published_and_committed_though_no_view_shows_them;
     {
-        crate::own_kinds::declare("so.tilo.test-board-declaring", &["test.playback"]);
         let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
         app.call_on(
             "settings:test.display",
@@ -535,7 +530,7 @@ tilo_test_env::scenario! {
             serde_json::json!({ "channel": "news" }),
         )
         .unwrap();
-        let playback = app.person::<Playback>().unwrap();
+        let playback = app.profile_resource::<Playback>().unwrap();
         assert!(playback.with(|state| state.muted.contains(&"news".to_owned())));
 
         let report = tilo_app::framework::headless::surface_report::<DeclaringApp>();
@@ -573,7 +568,9 @@ impl ResourceApp for DeclaringApp {
     }
 
     fn resources(resources: &mut Resources<'_>) {
-        resources.settings::<Display>().person::<Playback>();
+        resources
+            .settings::<Display>()
+            .profile_resource::<Playback>();
     }
 }
 

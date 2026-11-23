@@ -1065,6 +1065,11 @@ fn host_services_with_hosts(
             tilo_rt::app().handle().clone(),
         )
     });
+    // A release the workspace's rules ask about first is asked by the workspace's host.
+    #[cfg(target_os = "linux")]
+    if let Some(hosts) = &hosting {
+        crate::account_passwords::asking(std::sync::Arc::new(hosts.clone()));
+    }
     let decided = broker_services(
         link,
         launches,

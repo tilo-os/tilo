@@ -44,7 +44,8 @@ pub(super) fn on_turn(person: &DeviceCert, workspace: &str, agent: &str) -> Call
         .in_workspace(workspace)
         .named("Scout")
         .in_agent_session("agent-session:test")
-        .on_roster_turn(turn(), 0, person.user_public_key)
+        .on_roster(0, person.user_public_key)
+        .on_roster_turn(turn())
 }
 
 /// The turn a test's agent works.
@@ -517,8 +518,11 @@ pub(super) fn not_hosted_turns(ada: &DeviceCert, workspace: &str) -> Vec<(&'stat
     let scout = || Caller::delegated_agent("scout", ada.user_public_key, ada.device_public_key);
     let confined_elsewhere = scout()
         .in_workspace("00000000-0000-4000-8000-000000000000")
-        .on_roster_turn(turn(), 0, ada.user_public_key);
-    let unconfined = scout().on_roster_turn(turn(), 0, ada.user_public_key);
+        .on_roster(0, ada.user_public_key)
+        .on_roster_turn(turn());
+    let unconfined = scout()
+        .on_roster(0, ada.user_public_key)
+        .on_roster_turn(turn());
     let outside_a_turn = scout()
         .in_workspace(workspace)
         .on_roster(0, ada.user_public_key);

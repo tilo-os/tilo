@@ -464,7 +464,7 @@ impl Ceremony {
             return Some(OnboardingEffect::Skip);
         }
         // Escape follows the visible Back while the identity ceremony is
-        // still reversible; on Nearby it also ends a running pairing. Intro
+        // still reversible; on Nearby it also gives up a running join. Intro
         // and Done stay: setup has either no identity yet or still needs its
         // explicit hand-off into the desktop.
         (self.page.screen.is_existing_branch() || self.page.screen == Screen::NoRecovery)

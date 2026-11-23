@@ -129,11 +129,4 @@ pub trait MailConnector {
     fn watch(&mut self, account: &str);
     /// What the servers answered since last asked; never waits.
     fn events(&mut self) -> Vec<Event>;
-    /// The accounts whose sign-in waits on the person's yes: the workspace's rules ask them
-    /// first before the account's password leaves its vault.
-    fn asks(&self) -> Vec<String> {
-        Vec::new()
-    }
-    /// The person said yes to `account` signing in.
-    fn allow(&mut self, _account: &str) {}
 }

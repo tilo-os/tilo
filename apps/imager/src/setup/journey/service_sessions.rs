@@ -645,7 +645,7 @@ mod tests {
                 account_credentials::CredentialStore::for_root(Some(destination.clone()));
             let imported = credential_store
                 .service_session(
-                    &accounts::AccountId::from(declaration.sessions[0].id.clone()),
+                    &declaration.sessions[0].account("native-slack-operation"),
                     [7; 32],
                     "native-slack-operation",
                 )

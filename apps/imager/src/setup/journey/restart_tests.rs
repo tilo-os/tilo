@@ -1,4 +1,4 @@
-//! Reopen the real guided resource; no host persona, pairing or installation starts.
+//! Reopen the real guided resource; no host persona or installation starts.
 
 use super::*;
 use crate::resource::ImagerShell;
@@ -146,7 +146,6 @@ fn reopening_guided_installer_recovers_exact_name_photo_and_signer_only_after_ex
         state["restart"]["state"] == "available"
     });
     assert!(offered["prepared_identity"]["public_key"].is_null());
-    assert_eq!(offered["pairing"]["state"], "unconnected");
     fn find_continue(
         resources: &[ui::tilo_actions::ResourceSpec],
     ) -> Option<&ui::tilo_actions::ActionSpec> {
@@ -183,7 +182,6 @@ fn reopening_guided_installer_recovers_exact_name_photo_and_signer_only_after_ex
             assert_eq!(view.personal.photo(), metadata.profile_photo.as_ref());
             assert!(view.belongings.home.is_none());
             assert!(view.storage.facts.is_none());
-            assert!(!view.pairing.busy());
         })
         .unwrap();
     let recovered =
@@ -283,9 +281,12 @@ fn assert_restored_grants(app: &mut App, ids: &[String]) {
         .with_widget::<InstallerPreview, _>(|view| view.accounts.prepared_handle().unwrap())
         .unwrap();
     assert_eq!(handle.selected_ids(), ids);
-    let store = ::accounts::AccountStore::load_in(&handle.config_root());
+    let store = imager_backend::account_store::Accounts::read(&handle.config_root()).unwrap();
     let spotify = ::accounts::AccountId::new("music.spotify");
-    assert_eq!(store.get(&spotify).unwrap().display_name, "Spotify");
+    assert_eq!(
+        store.get(spotify.as_str()).unwrap().unwrap().display_name,
+        "Spotify"
+    );
     let secret = ::accounts::SecretVault::open_in(&handle.config_root())
         .get(&spotify)
         .unwrap();
@@ -409,9 +410,10 @@ fn resumed_draft_without_account_checkpoint_requires_review_before_bulk_import()
     let prepared = resumed
         .with_widget::<InstallerPreview, _>(|view| view.accounts.prepared_handle().unwrap())
         .unwrap();
-    let store = ::accounts::AccountStore::load_in(&prepared.config_root());
-    assert_eq!(store.len(), 1);
-    let account = &store.all()[0];
+    let store = imager_backend::account_store::Accounts::read(&prepared.config_root()).unwrap();
+    let all = store.all().unwrap();
+    assert_eq!(all.len(), 1);
+    let account = &all[0];
     assert_eq!(
         account.config["server_url"],
         "https://files.example.test/dav"
@@ -447,7 +449,6 @@ fn verify_stale_account_generation(stale: &mut App, expected_key: [u8; 32]) {
             assert_eq!(view.error, Some("installer-restart-changed"));
             assert!(view.accounts.prepared_handle().is_none());
             assert!(view.belongings.home.is_none());
-            assert!(!view.pairing.busy());
         })
         .unwrap();
     paint_recovery_screen(

@@ -341,7 +341,15 @@ impl CertificationProtocol {
         if let (CertifyReply::Issued { cert, label, .. }, Some(records)) =
             (reply, self.records.get())
         {
-            records.keep_issued_device(cert, label);
+            let records = records.clone();
+            let cert = cert.clone();
+            let label = label.clone();
+            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                return;
+            };
+            runtime.spawn(async move {
+                records.keep_issued_device(&cert, &label).await;
+            });
         }
     }
 

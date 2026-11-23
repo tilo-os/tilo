@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use ui::icons::Icon;
-use ui::prelude::{Model, resource, tilo_resource};
+use ui::prelude::tilo_resource;
 
 use crate::media::MediumSpec;
 use crate::model::{Artwork, Ground, MarkBody};
@@ -416,62 +416,11 @@ pub struct RecentArtworks {
 
 tilo_resource::json_model!(RecentArtworks);
 
-/// The artworks opened or saved lately, by device: a resource Canvas keeps
-/// beside the artwork in the workspace. Their paths name files on one
-/// device, so each device reads and writes only its own list.
-#[derive(Model, Clone, Debug, Default, PartialEq)]
-pub struct ArtworkRecents {
-    pub devices: BTreeMap<String, RecentArtworks>,
-}
-
-impl ArtworkRecents {
-    /// What the resource holds: the artworks opened or saved lately, by device.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the resource as it reads any app's resource, and
-    /// a named item is read from the resource's table or by the read its own
-    /// type gives it.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "canvas.recent-artworks",
-    read_content = ArtworkRecents::read_document
-)]
-impl ArtworkRecents {
-    /// `recent` was opened or saved on `device`: it moves to the front.
-    #[action(housekeeping)]
-    pub fn remember(&mut self, device: String, recent: Recent) {
-        self.devices.entry(device).or_default().remember(recent);
-    }
-
-    /// The artwork at `path` on `device` moved or was removed.
-    #[action(housekeeping)]
-    pub fn forget(&mut self, device: String, path: ui::tilo_resource::AbsolutePath) {
-        if let Some(recents) = self.devices.get_mut(&device) {
-            recents.forget(&path.to_string_lossy());
-        }
-    }
-}
-
-impl ArtworkRecents {
-    /// The artworks `device` opened or saved lately.
-    #[must_use]
-    pub fn on(&self, device: &str) -> RecentArtworks {
-        self.devices.get(device).cloned().unwrap_or_default()
-    }
-}
-
 /// Recent file paths this device can reopen, grouped by workspace.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub(crate) struct DeviceArtworkRecents {
+pub struct DeviceArtworkRecents {
     #[serde(default)]
-    pub(crate) by_workspace: BTreeMap<String, RecentArtworks>,
+    pub by_workspace: BTreeMap<String, RecentArtworks>,
 }
 
 impl ui::storage::SettingsSchema for DeviceArtworkRecents {
@@ -479,33 +428,6 @@ impl ui::storage::SettingsSchema for DeviceArtworkRecents {
 }
 
 impl DeviceArtworkRecents {
-    pub(crate) fn open(
-        cx: &ui::framework::ViewCx<crate::model::Artwork>,
-        workspace: &str,
-    ) -> ui::framework::Setting<Self> {
-        let settings = cx.settings::<Self>();
-        if !settings.get().by_workspace.contains_key(workspace)
-            && let Some(device) = cx.device()
-        {
-            let opener = cx.resource_opener::<ArtworkRecents>(ui::apps::CANVAS);
-            match opener.legacy_member_state() {
-                Ok(Some(previous)) => {
-                    if let Err(error) = settings.update(|state| {
-                        state
-                            .by_workspace
-                            .entry(workspace.to_owned())
-                            .or_insert_with(|| previous.on(device));
-                    }) {
-                        tracing::warn!(%error, "could not restore recent artworks");
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => tracing::warn!(%error, "could not read earlier recent artworks"),
-            }
-        }
-        settings
-    }
-
     pub(crate) fn in_workspace(&self, workspace: &str) -> RecentArtworks {
         self.by_workspace
             .get(workspace)

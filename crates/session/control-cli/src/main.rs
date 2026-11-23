@@ -7,7 +7,7 @@
 //! - the device admin's control socket,
 //!   `$XDG_RUNTIME_DIR/tilo-session/admin-control.sock`, which every build
 //!   serves in the device admin's session once first login is complete. It
-//!   answers the action model — `actions`, `state-dump`, `windows` — and is
+//!   answers the action model — its frames, `state-dump`, `windows` — and is
 //!   where those subcommands go by default;
 //! - the development test-control socket, bound only by development builds
 //!   at `$TILO_TEST_CONTROL`, which also takes synthetic input and
@@ -22,12 +22,10 @@
 //! `err.code`/`err.message` to stderr), `2` on argv / I/O / parse failures.
 
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use tilo_control::client::{connect, id_from_printed, invoke_wire, printable_id, round_trip};
+use tilo_control::client::{connect, round_trip};
 use tilo_control::{TEST_CONTROL_ENV, admin_socket_path, default_socket_path};
 
 /// Which socket a command was routed to, so a failure to reach it can say
@@ -84,7 +82,7 @@ fn connect_hint(kind: SocketKind, error: &std::io::Error) -> String {
         (SocketKind::TestControl, _) => format!(
             "synthetic input and screenshots exist only in a development session started with \
              ${TEST_CONTROL_ENV} (a dev-overrides build). To drive a desktop, use the action \
-             model instead: `tilo-control actions list`, `actions invoke`, `windows`."
+             model instead: `tilo action list`, `tilo do`, `windows`."
         ),
         (SocketKind::Named, _) => {
             "is the desktop running, and is this the socket it bound?".to_string()
@@ -110,18 +108,7 @@ fn admin_socket_refusal(kind: SocketKind, response: &serde_json::Value) -> Optio
 /// A next step for a refusal the compositor answered with.
 fn error_hint(code: &str) -> Option<&'static str> {
     match code {
-        "unknown_action" => Some(
-            "list what this desktop offers with `tilo-control actions list [QUERY]` and pass \
-             back a PROVIDER ID pair exactly as listed",
-        ),
-        "invalid_arguments" => Some(
-            "`tilo-control actions list QUERY --json` shows each action's `params`; pass them \
-             as --args-json '{\"name\": value}'",
-        ),
         "session_locked" => Some("unlock the session at the device, then retry"),
-        "stale_cursor" => {
-            Some("the actions changed while you paged; list again from the first page")
-        }
         _ => None,
     }
 }
@@ -206,38 +193,6 @@ enum Command {
     Windows {
         json: bool,
     },
-    /// List the actions the shell exports right now. Read-only.
-    ActionsList {
-        query: String,
-        json: bool,
-        include_programmatic: bool,
-        page: ListPage,
-        /// `--wait[=MS]`: answer once the listing is complete.
-        wait_ms: Option<u64>,
-    },
-    /// Invoke one enumerated action by its stable `(provider, id)`
-    /// address — no synthetic input, no window, no scene.
-    ActionsInvoke {
-        provider: String,
-        id: String,
-        args_json: Option<String>,
-        args_stdin: bool,
-        device: Option<String>,
-        /// `--wait[=MS]`: answer once the invocation settles, waiting at
-        /// most this long, rather than once it is admitted.
-        wait_ms: Option<u64>,
-    },
-    ActionsStatus {
-        invocation_id: u64,
-        /// `--wait[=MS]`: answer once the invocation has settled.
-        wait_ms: Option<u64>,
-    },
-    ActionsCancel {
-        invocation_id: u64,
-    },
-    /// One connection for many requests: one wire request per stdin line,
-    /// one answer per stdout line.
-    ActionsSession,
     Raw {
         json: String,
     },
@@ -256,31 +211,9 @@ impl Command {
     const fn is_semantic(&self) -> bool {
         matches!(
             self,
-            Self::StateDump { .. }
-                | Self::Windows { .. }
-                | Self::ActionsList { .. }
-                | Self::ActionsInvoke { .. }
-                | Self::ActionsStatus { .. }
-                | Self::ActionsCancel { .. }
-                | Self::ActionsSession
-                | Self::Raw { .. }
+            Self::StateDump { .. } | Self::Windows { .. } | Self::Raw { .. }
         )
     }
-}
-
-/// Which page of `actions list` to ask for: `--limit ROWS` and `--cursor
-/// NEXT`, the `next_cursor` the previous page answered. Neither means the
-/// desktop's default first page.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct ListPage {
-    limit: Option<usize>,
-    cursor: Option<String>,
-    /// `--kind KIND`, repeatable: only rows of these kinds (`application`,
-    /// `action`, `note`, `file`, …).
-    kinds: Vec<String>,
-    /// `--files`: also list files and folders, which a listing leaves out
-    /// unless asked: every checkout's `markdown.rs` is not an app's action.
-    files: bool,
 }
 
 /// Top-level CLI invocation — the `--socket` override, if given, + the
@@ -388,7 +321,6 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
         "unlock" => Command::Unlock,
         "watch" => parse_watch(iter.next())?,
         "state-dump" | "windows" => parse_state_read(op, &mut iter)?,
-        "actions" => parse_actions_command(&mut iter)?,
         "questions" => {
             let json = match iter.next().map(String::as_str) {
                 None => false,
@@ -489,94 +421,6 @@ fn parse_wheel<'a>(iter: &mut impl Iterator<Item = &'a String>) -> Result<Comman
     })
 }
 
-/// Whether an invocation in `state` has ended, one way or another.
-fn settled(state: &str) -> bool {
-    matches!(state, "succeeded" | "failed" | "cancelled")
-}
-
-/// `actions invoke --wait`: print the answer as without `--wait`, then say
-/// how the action ended. One that failed or was cancelled exits 1 with its
-/// reason; one still running when the wait ran out says how to follow it.
-fn print_settled(response: &serde_json::Value) -> u8 {
-    let answer = response
-        .get("answer")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
-    println!("{answer}");
-    let update = answer
-        .pointer("/receipt/update")
-        .cloned()
-        .unwrap_or_default();
-    let text = |pointer: &str| {
-        update
-            .pointer(pointer)
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-    };
-    match text("/state").as_deref() {
-        Some("failed") => {
-            let code = text("/error/code").unwrap_or_else(|| "action_failed".into());
-            eprintln!(
-                "error [{code}]: {}",
-                text("/error/message").unwrap_or_default()
-            );
-            1
-        }
-        Some("cancelled") => {
-            eprintln!(
-                "error [cancelled]: {}",
-                text("/message").unwrap_or_default()
-            );
-            1
-        }
-        Some(state) if !settled(state) => {
-            if let Some(job) = answer
-                .pointer("/receipt/broker_invocation_id")
-                .and_then(serde_json::Value::as_u64)
-            {
-                eprintln!(
-                    "hint: still {state} when the wait ran out; follow it with \
-                     `tilo-control actions status {job}`"
-                );
-            }
-            0
-        }
-        _ => 0,
-    }
-}
-
-/// `actions session`: send each request line of `requests` over the one
-/// connection and write each answer line to `answers`, in order, until
-/// `requests` ends. Blank lines are skipped. One process and one connection
-/// serve every call, instead of one of each per call.
-fn run_session(
-    stream: &UnixStream,
-    requests: impl BufRead,
-    mut answers: impl Write,
-) -> std::io::Result<()> {
-    let mut sender = stream;
-    let mut replies = BufReader::new(stream);
-    for request in requests.lines() {
-        let request = request?;
-        let request = request.trim();
-        if request.is_empty() {
-            continue;
-        }
-        sender.write_all(request.as_bytes())?;
-        sender.write_all(b"\n")?;
-        let mut reply = String::new();
-        if replies.read_line(&mut reply)? == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "the desktop closed the connection",
-            ));
-        }
-        answers.write_all(reply.as_bytes())?;
-        answers.flush()?;
-    }
-    Ok(())
-}
-
 /// Parse `state-dump [--pretty] [--history]` and `windows [--json]`, the
 /// two reads of the session's state.
 fn parse_state_read<'a>(
@@ -611,8 +455,7 @@ fn parse_state_read<'a>(
     })
 }
 
-/// Parse the `actions list|invoke ...` subcommand. Split out of
-/// [`parse_args`] to keep it short.
+/// Parse `swipe` and `pinch`. Split out of [`parse_args`] to keep it short.
 fn parse_gesture<'a>(
     op: &str,
     iter: &mut impl Iterator<Item = &'a String>,
@@ -639,233 +482,6 @@ fn parse_gesture<'a>(
         scale,
         steps,
     })
-}
-
-fn parse_action_invocation<'a>(
-    iter: &mut impl Iterator<Item = &'a String>,
-) -> Result<Command, ParseError> {
-    let provider = iter.next().ok_or_else(|| {
-        ParseError::Usage("actions invoke PROVIDER ID requires a provider".to_string())
-    })?;
-    let id = iter.next().ok_or_else(|| {
-        ParseError::Usage("actions invoke PROVIDER ID requires an id".to_string())
-    })?;
-    let mut args_json = None;
-    let mut args_stdin = false;
-    let mut device = None;
-    // An invocation answers its result: the receipt of an admission says
-    // nothing a caller can act on, and a second `actions status` to learn
-    // how it went is the polling this default removes.
-    let mut wait_ms = Some(DEFAULT_INVOKE_WAIT_MS);
-    let mut waited = false;
-    while let Some(flag) = iter.next() {
-        match flag.as_str() {
-            "--wait" => {
-                wait_ms = Some(DEFAULT_INVOKE_WAIT_MS);
-                waited = true;
-            }
-            "--no-wait" => {
-                wait_ms = None;
-                waited = false;
-            }
-            "--device" => {
-                let id = iter.next().ok_or_else(|| {
-                    ParseError::Usage("--device requires an enrolled device id".to_string())
-                })?;
-                device = Some(id.clone());
-            }
-            "--args-stdin" => {
-                if args_stdin || args_json.is_some() {
-                    return Err(ParseError::Usage(
-                        "action arguments require exactly one source".into(),
-                    ));
-                }
-                args_stdin = true;
-            }
-            "--args-json" => {
-                if args_stdin || args_json.is_some() {
-                    return Err(ParseError::Usage(
-                        "action arguments require exactly one source".into(),
-                    ));
-                }
-                let json = iter.next().ok_or_else(|| {
-                    ParseError::Usage("--args-json requires a JSON object".to_string())
-                })?;
-                let parsed: serde_json::Value = serde_json::from_str(json).map_err(|error| {
-                    ParseError::Usage(format!("--args-json is not valid JSON: {error}"))
-                })?;
-                if !parsed.is_object() {
-                    return Err(ParseError::Usage(
-                        "--args-json must contain a JSON object".to_string(),
-                    ));
-                }
-                args_json = Some(json.clone());
-            }
-            other => {
-                let Some(ms) = other.strip_prefix("--wait=") else {
-                    return Err(ParseError::Usage(format!(
-                        "actions invoke: unknown option `{other}`"
-                    )));
-                };
-                wait_ms = Some(ms.parse::<u64>().map_err(|_| {
-                    ParseError::Usage(format!("--wait=MS: `{ms}` is not a number of milliseconds"))
-                })?);
-                waited = true;
-            }
-        }
-    }
-    if device.is_some() && !waited {
-        // One sent to a device answers once the device has it.
-        wait_ms = None;
-    }
-    if wait_ms.is_some() && device.is_some() {
-        return Err(ParseError::Usage(
-            "--wait follows an invocation run here; one sent with --device answers once \
-             the device has it"
-                .into(),
-        ));
-    }
-    Ok(Command::ActionsInvoke {
-        provider: id_from_printed(provider),
-        id: id_from_printed(id),
-        args_json,
-        args_stdin,
-        device,
-        wait_ms,
-    })
-}
-
-/// How long `actions invoke --wait` waits for the invocation to settle when
-/// no time is given: the MCP socket's default. The desktop caps any wait at
-/// 30 s.
-const DEFAULT_INVOKE_WAIT_MS: u64 = 5_000;
-
-/// `--wait` (the default wait) or `--wait=MS`; `None` for any other word.
-fn wait_flag(word: &str) -> Option<Result<u64, ParseError>> {
-    if word == "--wait" {
-        return Some(Ok(DEFAULT_INVOKE_WAIT_MS));
-    }
-    let ms = word.strip_prefix("--wait=")?;
-    Some(ms.parse::<u64>().map_err(|_| {
-        ParseError::Usage(format!("--wait=MS: `{ms}` is not a number of milliseconds"))
-    }))
-}
-
-/// `actions list [flags] [query words]`.
-fn parse_actions_list<'a>(
-    iter: &mut impl Iterator<Item = &'a String>,
-) -> Result<Command, ParseError> {
-    // Everything after `list` that isn't a flag joins the
-    // query, so `actions list open settings` works without
-    // the caller having to quote it.
-    let mut json = false;
-    let mut include_programmatic = false;
-    let mut page = ListPage::default();
-    let mut wait_ms = None;
-    let mut words: Vec<String> = Vec::new();
-    while let Some(rest) = iter.next() {
-        if rest == "--json" {
-            json = true;
-        } else if rest == "--programmatic" {
-            include_programmatic = true;
-        } else if rest == "--limit" {
-            let raw = iter.next().ok_or_else(|| {
-                ParseError::Usage("actions list --limit needs a number of rows".into())
-            })?;
-            page.limit = Some(raw.parse::<usize>().map_err(|_| {
-                ParseError::Usage(format!(
-                    "actions list --limit: `{raw}` is not a number of rows"
-                ))
-            })?);
-        } else if rest == "--files" {
-            page.files = true;
-        } else if rest == "--kind" {
-            page.kinds.push(
-                iter.next()
-                    .ok_or_else(|| {
-                        ParseError::Usage(
-                            "actions list --kind needs a kind: application, action, \
-                             note, record, file, …"
-                                .into(),
-                        )
-                    })?
-                    .clone(),
-            );
-        } else if rest == "--cursor" {
-            page.cursor = Some(
-                iter.next()
-                    .ok_or_else(|| {
-                        ParseError::Usage(
-                            "actions list --cursor needs the next_cursor a page gave".into(),
-                        )
-                    })?
-                    .clone(),
-            );
-        } else if let Some(wait) = wait_flag(rest) {
-            wait_ms = Some(wait?);
-        } else {
-            words.push(rest.clone());
-        }
-    }
-    Ok(Command::ActionsList {
-        query: words.join(" "),
-        json,
-        include_programmatic,
-        page,
-        wait_ms,
-    })
-}
-
-fn parse_actions_command<'a>(
-    iter: &mut impl Iterator<Item = &'a String>,
-) -> Result<Command, ParseError> {
-    let verb = iter.next().map(String::as_str).ok_or_else(|| {
-        ParseError::Usage(
-            "actions requires `list`, `invoke`, `status`, `cancel` or `session` (try --help)"
-                .to_string(),
-        )
-    })?;
-    match verb {
-        "session" => match iter.next() {
-            None => Ok(Command::ActionsSession),
-            Some(extra) => Err(ParseError::Usage(format!(
-                "actions session takes no arguments (got `{extra}`); it reads requests on stdin"
-            ))),
-        },
-        "list" => parse_actions_list(iter),
-        "invoke" => parse_action_invocation(iter),
-        "status" | "cancel" => {
-            let raw = iter.next().ok_or_else(|| {
-                ParseError::Usage(format!("actions {verb} requires an invocation id"))
-            })?;
-            let invocation_id = raw.parse::<u64>().map_err(|_| {
-                ParseError::Usage(format!("actions {verb}: `{raw}` is not an invocation id"))
-            })?;
-            let mut wait_ms = None;
-            for rest in iter.by_ref() {
-                match wait_flag(rest) {
-                    Some(wait) if verb == "status" => wait_ms = Some(wait?),
-                    _ => {
-                        return Err(ParseError::Usage(format!(
-                            "actions {verb} accepts exactly one invocation id"
-                        )));
-                    }
-                }
-            }
-            Ok(if verb == "status" {
-                Command::ActionsStatus {
-                    invocation_id,
-                    wait_ms,
-                }
-            } else {
-                Command::ActionsCancel { invocation_id }
-            })
-        }
-        other => Err(ParseError::Usage(format!(
-            "actions: unknown verb `{other}` (expected `list`, `invoke`, `status`, `cancel` or \
-             `session`)"
-        ))),
-    }
 }
 
 /// Pull the next argv slot and parse it as `f64`. Helper for the
@@ -931,67 +547,6 @@ fn parse_modifier_flags(s: &str) -> Result<(bool, bool, bool, bool), ParseError>
     Ok((ctrl, shift, alt, logo))
 }
 
-/// Build the JSON wire payload for a parsed [`Command`]. For `raw`
-/// the caller's JSON is used verbatim; every other variant serialises
-/// through `serde_json::to_string`.
-fn action_arguments(
-    text: Option<&str>,
-    stdin_pending: bool,
-) -> Result<serde_json::Value, ParseError> {
-    if stdin_pending {
-        return Err(ParseError::Usage(
-            "stdin action arguments have not been read".into(),
-        ));
-    }
-    text.map(serde_json::from_str)
-        .transpose()
-        .map_err(|_| ParseError::Usage("invalid action arguments JSON".into()))
-        .map(|value| value.unwrap_or_else(|| serde_json::json!({})))
-}
-
-/// `actions list`'s request. The table prints no contracts, so it asks for
-/// compact rows; `--json` prints what the desktop answers, so it asks for
-/// full ones. `--wait` asks the desktop to hold it until it is complete.
-fn actions_list_wire(
-    query: &str,
-    include_programmatic: bool,
-    json: bool,
-    page: &ListPage,
-    wait_ms: Option<u64>,
-) -> serde_json::Value {
-    let mut wire = serde_json::json!({ "op": "actions_enumerate", "query": query });
-    if let Some(object) = wire.as_object_mut() {
-        if include_programmatic {
-            object.insert("include_programmatic".into(), true.into());
-        }
-        if !json {
-            object.insert("detail".into(), "compact".into());
-        }
-        if let Some(limit) = page.limit {
-            object.insert("limit".into(), limit.into());
-        }
-        if let Some(cursor) = &page.cursor {
-            object.insert("cursor".into(), cursor.clone().into());
-        }
-        if !page.kinds.is_empty() {
-            object.insert("kinds".into(), page.kinds.clone().into());
-        }
-        if page.files {
-            object.insert("files".into(), true.into());
-        }
-    }
-    with_wait(&mut wire, wait_ms);
-    wire
-}
-
-/// Add `wait_ms` to a request when the caller asked to wait. A request
-/// without it keeps exactly the shape it always had.
-fn with_wait(value: &mut serde_json::Value, wait_ms: Option<u64>) {
-    if let (Some(wait_ms), Some(fields)) = (wait_ms, value.as_object_mut()) {
-        fields.insert("wait_ms".into(), wait_ms.into());
-    }
-}
-
 /// The wire payload of a pointer command the other subcommands do not share: a drag with its
 /// button, a wheel with its modifiers.
 fn pointer_to_wire(cmd: &Command) -> serde_json::Value {
@@ -1047,6 +602,9 @@ fn pointer_to_wire(cmd: &Command) -> serde_json::Value {
     }
 }
 
+/// Build the JSON wire payload for a parsed [`Command`]. For `raw`
+/// the caller's JSON is used verbatim; every other variant serialises
+/// through `serde_json::to_string`.
 fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
     use serde_json::json;
     let value = match cmd {
@@ -1088,40 +646,6 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
         Command::StateDump { .. } => json!({ "op": "state_dump" }),
         Command::Windows { .. } => json!({ "op": "windows" }),
         Command::Questions { .. } => json!({ "op": "questions" }),
-        Command::ActionsList {
-            query,
-            include_programmatic,
-            json,
-            page,
-            wait_ms,
-        } => actions_list_wire(query, *include_programmatic, *json, page, *wait_ms),
-        Command::ActionsInvoke {
-            provider,
-            id,
-            args_json,
-            args_stdin,
-            device,
-            wait_ms,
-        } => invoke_wire(
-            provider,
-            id,
-            &action_arguments(args_json.as_deref(), *args_stdin)?,
-            device.as_deref(),
-            *wait_ms,
-        ),
-        Command::ActionsStatus {
-            invocation_id,
-            wait_ms,
-        } => {
-            let mut value = json!({ "op": "actions_status", "invocation_id": invocation_id });
-            with_wait(&mut value, *wait_ms);
-            value
-        }
-        Command::ActionsCancel { invocation_id } => {
-            json!({ "op": "actions_cancel", "invocation_id": invocation_id })
-        }
-        // Its requests come from stdin, one per line, and go out as they are.
-        Command::ActionsSession => return Ok(String::new()),
         Command::Raw { json } => {
             // Validate here: a `parse_error` from the compositor can't tell
             // the caller whether their shell quoting or the payload was wrong.
@@ -1164,86 +688,6 @@ fn print_list_targets(response: &serde_json::Value) {
         };
         println!("{name}  {r}");
     }
-}
-
-/// `Response::Answer(v)` serialises as `{"answer": v}`. Split out of
-/// [`print_response`] to keep it short.
-fn print_actions_list(response: &serde_json::Value, json: bool) -> u8 {
-    let answer = response
-        .get("answer")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
-    if json {
-        println!("{answer}");
-        return 0;
-    }
-    let actions = answer
-        .get("actions")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    if actions.is_empty() {
-        // An empty surface is a real answer, not a failure — say
-        // so plainly rather than printing nothing and leaving the
-        // caller unsure whether the command ran.
-        println!("no actions exported for this query");
-        return 0;
-    }
-    for line in action_rows(&actions) {
-        println!("{line}");
-    }
-    if let Some(next) = answer.get("next_cursor").and_then(|v| v.as_str()) {
-        let total = answer.get("total").and_then(serde_json::Value::as_u64);
-        eprintln!(
-            "showing {} of {} actions; the next page: --cursor {next}",
-            actions.len(),
-            total.map_or_else(|| "more".to_string(), |total| total.to_string()),
-        );
-    }
-    0
-}
-
-/// The table rows of `actions list`: `PROVIDER:ID  KIND  TITLE`, aligned.
-///
-/// Address first: the `(provider, id)` pair is the thing a caller passes
-/// back to `actions invoke`, so it leads. Ids are machine keys that join
-/// their parts with control characters (`U+001F`); a terminal draws those
-/// as nothing, so the parts and the columns ran together. They print as
-/// [`printable_id`] escapes, which `actions invoke` takes back.
-fn action_rows(actions: &[serde_json::Value]) -> Vec<String> {
-    let rows: Vec<(String, &str, &str)> = actions
-        .iter()
-        .map(|entry| {
-            let field = |key: &str| entry.get(key).and_then(serde_json::Value::as_str);
-            let address = format!(
-                "{}:{}",
-                printable_id(field("provider").unwrap_or("?")),
-                printable_id(field("id").unwrap_or("?"))
-            );
-            (
-                address,
-                field("kind").unwrap_or(""),
-                field("title").unwrap_or(""),
-            )
-        })
-        .collect();
-    let width = rows
-        .iter()
-        .map(|(address, _, _)| address.chars().count())
-        .max()
-        .unwrap_or(0);
-    let kind_width = rows
-        .iter()
-        .map(|(_, kind, _)| kind.chars().count())
-        .max()
-        .unwrap_or(0);
-    rows.iter()
-        .map(|(address, kind, title)| {
-            format!("{address:<width$}  {kind:<kind_width$}  {title}")
-                .trim_end()
-                .to_string()
-        })
-        .collect()
 }
 
 fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
@@ -1293,22 +737,6 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
                 response.pointer("/ok/was_locked") == Some(&serde_json::Value::Bool(true));
             println!("{}", if was_locked { "unlocked" } else { "not locked" });
         }
-        Command::ActionsList { json, .. } => return print_actions_list(response, *json),
-        Command::ActionsInvoke {
-            wait_ms: Some(_), ..
-        }
-        | Command::ActionsStatus {
-            wait_ms: Some(_), ..
-        } => return print_settled(response),
-        Command::ActionsInvoke { .. }
-        | Command::ActionsStatus { .. }
-        | Command::ActionsCancel { .. } => {
-            let answer = response
-                .get("answer")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
-            println!("{answer}");
-        }
         Command::Click { .. }
         | Command::ClickAt { .. }
         | Command::Drag { .. }
@@ -1322,10 +750,6 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             // Plain Ok response — emit the canonical "ok" string.
             println!("ok");
         }
-        Command::ActionsSession => {
-            // Answered by `run_session`, which owns its round trips.
-            println!("{response}");
-        }
         Command::Questions { json } => print_questions(response, *json),
         Command::Raw { .. } => {
             // For raw passthrough, dump the response JSON verbatim
@@ -1338,8 +762,7 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
 }
 
 /// Print the `questions` op's rows: the sheets waiting for the person, and
-/// the invocation that answers or declines each, ready to paste back into
-/// `actions invoke`.
+/// the `tilo do` call that answers or declines each.
 fn print_questions(response: &serde_json::Value, json: bool) {
     let questions = response
         .get("answer")
@@ -1368,9 +791,7 @@ fn print_questions(response: &serde_json::Value, json: bool) {
                 field("handle")
             );
             for (verb, action) in [("answer", "answer"), ("decline", "cancel")] {
-                let address = format!("{resource}\u{1f}{action}");
-                let id = printable_id(&address);
-                println!("  {verb}:  actions invoke so.tilo.session {id}");
+                println!("  {verb}:  tilo do {resource}#{action}");
             }
         }
     }
@@ -1444,41 +865,15 @@ fn print_usage() {
          that set the device up, over its own login or ssh) once first login is complete.\n\
          A set $TILO_TEST_CONTROL, or --socket, sends every subcommand there instead.\n\
          \n\
-         A console app's actions (the installer, the greeter), at its own socket:\n\
-         \x20 actions list [QUERY] [--json] [--programmatic] search: list actions as `PROVIDER:ID  KIND  TITLE`\n\
-         \x20                               (read-only; empty QUERY lists everything;\n\
-         \x20                               --json adds params, contract and hierarchy;\n\
-         \x20                               apps' resources and actions come first, files\n\
-         \x20                               and folders only with --files or --kind file)\n\
-         \x20              [--kind KIND]   only rows of that kind (repeatable): application,\n\
-         \x20                               action, note, record, tab, file, …\n\
-         \x20              [--limit ROWS] [--cursor NEXT]\n\
-         \x20                               one page at a time (default 200 rows); a\n\
-         \x20                               longer listing names its next page's cursor\n\
-         \x20              [--wait[=MS]]   answer once the listing is complete: no app\n\
-         \x20                               index or directory page still on its way\n
-         \x20 actions invoke PROVIDER ID [--device DEVICE] [--args-json OBJECT | --args-stdin]\n\
-         \x20               [--wait[=MS]] [--no-wait]\n\
-         \x20                               run one action by its address; answers once\n\
-         \x20                               it has settled (default 5000 ms, at most\n\
-         \x20                               30000) with its result, and exits 1 if it\n\
-         \x20                               failed. --no-wait answers the admission\n\
-         \x20                               receipt. --device sends it to that enrolled\n\
-         \x20                               device, which answers once it has it\n\
-         \x20 actions status INVOCATION_ID [--wait[=MS]]\n\
-         \x20                               latest state and output of a running action;\n\
-         \x20                               --wait answers once it has settled\n\
-         \x20 actions cancel INVOCATION_ID  request cooperative cancellation\n\
-         \x20 actions session               many requests over one connection: one wire\n\
-         \x20                               request per stdin line (`raw` JSON), one\n\
-         \x20                               answer per stdout line\n\
          \x20 windows [--json]              open windows: workspace/strip, group, tab, app\n\
          \x20                               (`*` marks the one in front)\n\
          \x20 state-dump [--pretty] [--history]\n\
          \x20                               the whole workspace_tree + chrome as JSON;\n\
          \x20                               --history keeps effect receipts and audit\n\
          \x20                               trails, which grow with every action\n\
-         \x20 raw '<json>'                  passthrough — escape hatch for new commands\n\
+         \x20 raw '<json>' | raw -          one request line as it is (`-`: read from stdin):\n\
+         \x20                               an action frame for a console app (the\n\
+         \x20                               installer, the greeter)\n\
          \n\
          For example: `tilo open notes`, then `windows` shows its window.\n\
          \n\
@@ -1504,53 +899,10 @@ fn print_usage() {
          \x20                               shows the lock screen\n\
          \x20 unlock                        unlock the session, as an accepted password does\n\
          \x20 questions [--json]            the questions waiting for the person, each with\n\
-         \x20                               the `actions invoke so.tilo.session …` pair that\n\
-         \x20                               answers or declines it: a check driving a sheet\n\
+         \x20                               the `tilo do` call that answers or declines it: a check driving a sheet\n\
          \x20                               (a device asking to be unlocked) answers it here\n\
          \x20 watch on|off                  headless: rasterize every frame for a viewer, or stop"
     );
-}
-
-/// Read only the opt-in source; malformed input is never quoted in diagnostics.
-fn read_action_arguments(
-    command: &mut Command,
-    reader: impl std::io::Read,
-) -> Result<(), ParseError> {
-    use std::io::Read as _;
-    const LIMIT: u64 = 65_536;
-    let Command::ActionsInvoke {
-        args_json,
-        args_stdin: true,
-        ..
-    } = command
-    else {
-        return Ok(());
-    };
-    let mut bytes = Vec::new();
-    reader
-        .take(LIMIT + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| ParseError::Usage("could not read action arguments from stdin".into()))?;
-    if bytes.len() as u64 > LIMIT {
-        return Err(ParseError::Usage(
-            "stdin action arguments exceed 65536 bytes".into(),
-        ));
-    }
-    let text = String::from_utf8(bytes)
-        .map_err(|_| ParseError::Usage("stdin action arguments must be valid UTF-8".into()))?;
-    let value: serde_json::Value = serde_json::from_str(&text).map_err(|_| {
-        ParseError::Usage("stdin action arguments must be a valid JSON object".into())
-    })?;
-    if !value.is_object() {
-        return Err(ParseError::Usage(
-            "stdin action arguments must be a JSON object".into(),
-        ));
-    }
-    *args_json = Some(text);
-    if let Command::ActionsInvoke { args_stdin, .. } = command {
-        *args_stdin = false;
-    }
-    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -1579,12 +931,17 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-
-    if let Err(ParseError::Usage(message)) =
-        read_action_arguments(&mut invocation.command, std::io::stdin().lock())
+    // `raw -` reads its line from stdin, so a frame carrying a secret never reaches argv.
+    if let Command::Raw { json } = &mut invocation.command
+        && json == "-"
     {
-        eprintln!("tilo-control: {message}");
-        return ExitCode::from(2);
+        use std::io::Read as _;
+        json.clear();
+        if std::io::stdin().lock().read_to_string(json).is_err() {
+            eprintln!("tilo-control: raw -: could not read the request from stdin");
+            return ExitCode::from(2);
+        }
+        json.truncate(json.trim_end().len());
     }
 
     let cmd_json = match command_to_wire(&invocation.command) {
@@ -1625,16 +982,6 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-
-    if matches!(invocation.command, Command::ActionsSession) {
-        return match run_session(&stream, std::io::stdin().lock(), std::io::stdout().lock()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("tilo-control: session: {e}");
-                ExitCode::from(2)
-            }
-        };
-    }
 
     let response = match round_trip(&mut stream, &cmd_json) {
         Ok(v) => v,
@@ -1683,186 +1030,6 @@ mod tests {
     /// Ids join their parts with U+001F, which a terminal draws as nothing:
     /// the table ran the parts and the columns together. Each part shows,
     /// the columns line up, and what is shown invokes the same action.
-    #[test]
-    fn actions_list_shows_every_part_of_an_id_in_aligned_columns_and_invoke_takes_it_back() {
-        let id = "so.tilo.chat\u{1f}read\u{1f}tilo.history\u{1f}\u{1f}history.open";
-        let actions = [
-            serde_json::json!({
-                "provider": "app-actions", "id": id, "kind": "action", "title": "History"
-            }),
-            serde_json::json!({
-                "provider": "settings", "id": "wifi", "kind": "application", "title": "Wi-Fi"
-            }),
-        ];
-        let rows = action_rows(&actions);
-        assert!(
-            rows.iter().all(|row| !row.chars().any(char::is_control)),
-            "{rows:?}"
-        );
-        let printed = r"app-actions:so.tilo.chat\x1fread\x1ftilo.history\x1f\x1fhistory.open";
-        assert!(rows[0].starts_with(printed), "{rows:?}");
-        let kind_column = |row: &str, kind: &str| row.find(kind).expect("kind shown");
-        assert_eq!(
-            kind_column(&rows[0], " action"),
-            kind_column(&rows[1], " application"),
-            "{rows:?}"
-        );
-        let title_column = |row: &str, title: &str| row.find(title).expect("title shown");
-        assert_eq!(
-            title_column(&rows[0], "History"),
-            title_column(&rows[1], "Wi-Fi"),
-            "{rows:?}"
-        );
-
-        let (provider, shown_id) = printed.split_once(':').expect("an address");
-        let invoked = parse(&["actions", "invoke", provider, shown_id]).unwrap();
-        let Command::ActionsInvoke {
-            provider: invoked_provider,
-            id: invoked_id,
-            ..
-        } = invoked.command
-        else {
-            panic!("an invocation");
-        };
-        assert_eq!(invoked_provider, "app-actions");
-        assert_eq!(invoked_id, id);
-        let raw = parse(&["actions", "invoke", "app-actions", id]).unwrap();
-        assert!(matches!(raw.command, Command::ActionsInvoke { id: raw_id, .. } if raw_id == id));
-    }
-
-    #[test]
-    fn programmatic_discovery_is_explicit_and_uses_the_normal_actions_wire() {
-        let normal = parse(&["actions", "list", "so.tilo.browser", "--json"]).unwrap();
-        assert_eq!(
-            wire(&normal.command),
-            serde_json::json!({
-                "op": "actions_enumerate", "query": "so.tilo.browser"
-            })
-        );
-        let machine = parse(&[
-            "actions",
-            "list",
-            "--programmatic",
-            "so.tilo.browser",
-            "--json",
-        ])
-        .unwrap();
-        assert_eq!(
-            wire(&machine.command),
-            serde_json::json!({
-                "op": "actions_enumerate", "query": "so.tilo.browser", "include_programmatic": true
-            })
-        );
-        assert!(matches!(
-            machine.command,
-            Command::ActionsList {
-                json: true,
-                include_programmatic: true,
-                ..
-            }
-        ));
-    }
-
-    /// The table asks for compact rows; paging flags pass through.
-    #[test]
-    fn actions_list_pages_and_asks_for_compact_rows_for_the_table() {
-        let table = parse(&[
-            "actions", "list", "open", "--limit", "50", "--cursor", "50.ab",
-        ])
-        .unwrap();
-        assert_eq!(
-            wire(&table.command),
-            serde_json::json!({
-                "op": "actions_enumerate", "query": "open", "detail": "compact",
-                "limit": 50, "cursor": "50.ab",
-            })
-        );
-        assert!(parse(&["actions", "list", "--limit", "many"]).is_err());
-        assert!(parse(&["actions", "list", "--cursor"]).is_err());
-    }
-
-    #[test]
-    fn stdin_arguments_use_the_normal_wire_and_redact_local_failures() {
-        struct Broken;
-        impl std::io::Read for Broken {
-            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-                Err(std::io::Error::other("synthetic-private-reader-error"))
-            }
-        }
-        let mut invocation = parse(&[
-            "actions",
-            "invoke",
-            "greeter",
-            "sign-in@greeter",
-            "--args-stdin",
-        ])
-        .unwrap();
-        let supplied = br#"{"password":"synthetic-private-value"}"#;
-        read_action_arguments(&mut invocation.command, supplied.as_slice()).unwrap();
-        let wire = wire(&invocation.command);
-        assert_eq!(wire["op"], "actions_invoke");
-        assert_eq!(wire["provider"], "greeter");
-        assert_eq!(wire["id"], "sign-in@greeter");
-        assert_eq!(wire["args"]["password"], "synthetic-private-value");
-        for flags in [
-            vec!["--args-stdin", "--args-json", "{}"],
-            vec!["--args-json", "{}", "--args-stdin"],
-            vec!["--args-stdin", "--args-stdin"],
-        ] {
-            let mut words = vec!["actions", "invoke", "greeter", "sign-in@greeter"];
-            words.extend(flags);
-            assert!(parse(&words).is_err());
-        }
-        for invalid in [
-            b"{\"synthetic-private-value\":NaN}".as_slice(),
-            b"{\"synthetic-private-value\":\xff}".as_slice(),
-            b"[]".as_slice(),
-        ] {
-            let mut command = parse(&[
-                "actions",
-                "invoke",
-                "greeter",
-                "sign-in@greeter",
-                "--args-stdin",
-            ])
-            .unwrap()
-            .command;
-            let error = read_action_arguments(&mut command, invalid).unwrap_err();
-            assert!(!format!("{error:?}").contains("synthetic-private-value"));
-        }
-        let mut command = parse(&[
-            "actions",
-            "invoke",
-            "greeter",
-            "sign-in@greeter",
-            "--args-stdin",
-        ])
-        .unwrap()
-        .command;
-        assert!(
-            !format!(
-                "{:?}",
-                read_action_arguments(&mut command, Broken).unwrap_err()
-            )
-            .contains("synthetic-private")
-        );
-        let exact = format!("{{\"value\":\"{}\"}}", "a".repeat(65_524));
-        assert_eq!(exact.len(), 65_536);
-        read_action_arguments(&mut command, exact.as_bytes()).unwrap();
-        let mut command = parse(&[
-            "actions",
-            "invoke",
-            "greeter",
-            "sign-in@greeter",
-            "--args-stdin",
-        ])
-        .unwrap()
-        .command;
-        let too_large = format!("{exact} ");
-        assert!(read_action_arguments(&mut command, too_large.as_bytes()).is_err());
-        assert!(command_to_wire(&command).is_err());
-    }
-
     fn parse(args: &[&str]) -> Result<Invocation, ParseError> {
         let owned: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
         parse_args(&owned)
@@ -1899,65 +1066,6 @@ mod tests {
         assert!(
             parse(&["pinch", "three", "0.5"]).is_err(),
             "fingers are a count"
-        );
-    }
-
-    /// Receipt ids parse for `status`, which, like `list`, takes
-    /// `--wait[=MS]`; without it neither waits.
-    #[test]
-    fn waits_parse_on_status_and_list() {
-        let status = |words: &[&str]| parse(words).unwrap().command;
-        assert_eq!(
-            status(&["actions", "status", "42"]),
-            Command::ActionsStatus {
-                invocation_id: 42,
-                wait_ms: None,
-            }
-        );
-        assert_eq!(
-            status(&["actions", "status", "42", "--wait=100"]),
-            Command::ActionsStatus {
-                invocation_id: 42,
-                wait_ms: Some(100),
-            }
-        );
-        assert_eq!(
-            status(&["actions", "status", "42", "--wait"]),
-            Command::ActionsStatus {
-                invocation_id: 42,
-                wait_ms: Some(DEFAULT_INVOKE_WAIT_MS),
-            }
-        );
-        assert_eq!(
-            status(&["actions", "list", "read", "--wait=2000"]),
-            Command::ActionsList {
-                query: "read".into(),
-                json: false,
-                include_programmatic: false,
-                page: ListPage::default(),
-                wait_ms: Some(2000),
-            }
-        );
-        assert!(parse(&["actions", "cancel", "42", "--wait"]).is_err());
-        assert!(parse(&["actions", "status", "42", "--wait=soon"]).is_err());
-
-        // `--wait` travels as `wait_ms` on a job read and a listing.
-        assert_eq!(
-            wire(&Command::ActionsStatus {
-                invocation_id: 3,
-                wait_ms: Some(10),
-            }),
-            serde_json::json!({"op": "actions_status", "invocation_id": 3, "wait_ms": 10})
-        );
-        assert_eq!(
-            wire(&Command::ActionsList {
-                query: "read".into(),
-                json: true,
-                include_programmatic: false,
-                page: ListPage::default(),
-                wait_ms: Some(20),
-            }),
-            serde_json::json!({"op": "actions_enumerate", "query": "read", "wait_ms": 20})
         );
     }
 
@@ -2071,29 +1179,6 @@ mod tests {
             (&["state-dump"], dump(false)),
             (&["state-dump", "--pretty"], dump(true)),
             (
-                &[
-                    "actions",
-                    "invoke",
-                    "app-actions",
-                    "peer-address",
-                    "--args-json",
-                    r#"{"count":2,"force":true}"#,
-                ],
-                Command::ActionsInvoke {
-                    provider: "app-actions".into(),
-                    id: "peer-address".into(),
-                    args_stdin: false,
-                    args_json: Some(r#"{"count":2,"force":true}"#.into()),
-                    device: None,
-                    wait_ms: Some(DEFAULT_INVOKE_WAIT_MS),
-                },
-            ),
-            // Receipt ids parse for cancel; status in `waits_parse_on_status_and_list`.
-            (
-                &["actions", "cancel", "42"],
-                Command::ActionsCancel { invocation_id: 42 },
-            ),
-            (
                 &["raw", r#"{"op":"list_targets"}"#],
                 Command::Raw {
                     json: r#"{"op":"list_targets"}"#.to_string(),
@@ -2120,21 +1205,13 @@ mod tests {
 
     #[test]
     fn malformed_invocations_are_usage_errors_and_help_is_its_own_variant() {
-        let usage: [&[&str]; 7] = [
+        let usage: [&[&str]; 6] = [
             &["click"],
             &["click-at", "nope", "200"],
             &["modifiers", "meta"],
-            &[
-                "actions",
-                "invoke",
-                "app-actions",
-                "peer-address",
-                "--args-json",
-                "[]",
-            ],
             &["go-fishing"],
             &["--socket"],
-            &["actions", "status", "not-a-number"],
+            &["actions", "list"],
         ];
         for args in usage {
             let err = parse(args).unwrap_err();
@@ -2150,14 +1227,7 @@ mod tests {
 
     #[test]
     fn the_action_model_and_input_route_to_their_own_sockets() {
-        for semantic in [
-            &["actions", "list"][..],
-            &["actions", "invoke", "applications", "so.tilo.notes"],
-            &["actions", "status", "7"],
-            &["state-dump"],
-            &["windows"],
-            &["windows", "--json"],
-        ] {
+        for semantic in [&["state-dump"][..], &["windows"], &["windows", "--json"]] {
             assert!(
                 parse(semantic).unwrap().command.is_semantic(),
                 "{semantic:?}"
@@ -2174,127 +1244,6 @@ mod tests {
         assert!(parse(&["windows", "--pretty"]).is_err());
     }
 
-    /// `--wait` asks the desktop to hold the answer until the action
-    /// settles; without it the answer stays the admission receipt.
-    #[test]
-    fn invoke_wait_asks_the_desktop_for_the_settled_outcome() {
-        let invoke = |extra: &[&str]| {
-            let mut words = vec!["actions", "invoke", "app-actions", "notes.new"];
-            words.extend_from_slice(extra);
-            parse(&words).map(|invocation| invocation.command)
-        };
-        // The result is the answer: an invocation waits unless told not to.
-        let plain = invoke(&[]).unwrap();
-        assert!(matches!(
-            plain,
-            Command::ActionsInvoke {
-                wait_ms: Some(DEFAULT_INVOKE_WAIT_MS),
-                ..
-            }
-        ));
-        assert_eq!(wire(&plain)["wait_ms"], DEFAULT_INVOKE_WAIT_MS);
-        let admitted = invoke(&["--no-wait"]).unwrap();
-        assert!(matches!(
-            admitted,
-            Command::ActionsInvoke { wait_ms: None, .. }
-        ));
-        assert_eq!(wire(&admitted).get("wait_ms"), None);
-        assert!(matches!(
-            invoke(&["--device", "aa"]).unwrap(),
-            Command::ActionsInvoke { wait_ms: None, .. }
-        ));
-        let waited = invoke(&["--wait"]).unwrap();
-        assert!(matches!(
-            waited,
-            Command::ActionsInvoke {
-                wait_ms: Some(DEFAULT_INVOKE_WAIT_MS),
-                ..
-            }
-        ));
-        assert_eq!(wire(&waited)["wait_ms"], DEFAULT_INVOKE_WAIT_MS);
-        assert_eq!(wire(&invoke(&["--wait=250"]).unwrap())["wait_ms"], 250);
-        assert!(matches!(
-            invoke(&["--wait=soon"]),
-            Err(ParseError::Usage(_))
-        ));
-        assert!(matches!(
-            invoke(&["--wait", "--device", "aa"]),
-            Err(ParseError::Usage(_))
-        ));
-    }
-
-    #[test]
-    fn a_waited_invocation_exits_by_how_it_ended() {
-        let answer = |update: serde_json::Value| {
-            serde_json::json!({"answer": {"receipt": {
-                "broker_invocation_id": 7, "update": update}}})
-        };
-        let settled = answer(serde_json::json!({"state": "succeeded", "output": {}}));
-        assert_eq!(print_settled(&settled), 0);
-        let failed = answer(serde_json::json!({"state": "failed",
-            "error": {"code": "action_failed", "message": "no note"}}));
-        assert_eq!(print_settled(&failed), 1);
-        assert_eq!(
-            print_settled(&answer(serde_json::json!({"state": "cancelled"}))),
-            1
-        );
-        let running = answer(serde_json::json!({"state": "progress", "phase": "copying"}));
-        assert_eq!(print_settled(&running), 0, "still running is no failure");
-    }
-
-    #[test]
-    fn a_session_answers_each_request_line_in_order_over_one_connection() {
-        let (client, server) = UnixStream::pair().expect("socket pair");
-        let desktop = std::thread::spawn(move || {
-            let mut replies = &server;
-            let mut requests = BufReader::new(&server);
-            let mut seen = Vec::new();
-            let mut line = String::new();
-            while requests.read_line(&mut line).expect("request") > 0 {
-                let request: serde_json::Value =
-                    serde_json::from_str(line.trim()).expect("one JSON request per line");
-                seen.push(request["op"].as_str().unwrap_or_default().to_string());
-                writeln!(
-                    replies,
-                    "{}",
-                    serde_json::json!({"answer": {"op": request["op"]}})
-                )
-                .expect("reply");
-                line.clear();
-            }
-            seen
-        });
-        let requests =
-            b"{\"op\":\"actions_enumerate\"}\n\n{\"op\":\"actions_status\",\"invocation_id\":1}\n";
-        let mut answers = Vec::new();
-        run_session(&client, &requests[..], &mut answers).expect("session");
-        client
-            .shutdown(std::net::Shutdown::Write)
-            .expect("end of requests");
-        assert_eq!(
-            desktop.join().expect("desktop"),
-            ["actions_enumerate", "actions_status"],
-            "one request per non-blank line, in order"
-        );
-        let answers = String::from_utf8(answers).expect("utf-8 answers");
-        assert_eq!(
-            answers.lines().collect::<Vec<_>>(),
-            [
-                r#"{"answer":{"op":"actions_enumerate"}}"#,
-                r#"{"answer":{"op":"actions_status"}}"#,
-            ]
-        );
-        assert!(matches!(
-            parse(&["actions", "session"]).map(|invocation| invocation.command),
-            Ok(Command::ActionsSession)
-        ));
-        assert!(matches!(
-            parse(&["actions", "session", "extra"]),
-            Err(ParseError::Usage(_))
-        ));
-    }
-
-    /// History is opt-in, beside `--pretty` and in any order.
     #[test]
     fn state_dump_takes_history_beside_pretty() {
         assert_eq!(
@@ -2423,36 +1372,6 @@ mod tests {
             wire(&Command::Windows { json: true }),
             serde_json::json!({ "op": "windows" })
         );
-
-        let value = wire(&Command::ActionsInvoke {
-            provider: "app-actions".into(),
-            id: "7-resource-action".into(),
-            args_stdin: false,
-            args_json: Some(r#"{"resource":"notes.note:42","at":"2026-09-01T12:00:00Z"}"#.into()),
-            device: None,
-            wait_ms: None,
-        });
-        assert_eq!(value["op"], "actions_invoke");
-        assert_eq!(value["args"]["resource"], "notes.note:42");
-        assert_eq!(value["args"]["at"], "2026-09-01T12:00:00Z");
-
-        for (command, operation) in [
-            (
-                Command::ActionsStatus {
-                    invocation_id: 91,
-                    wait_ms: None,
-                },
-                "actions_status",
-            ),
-            (
-                Command::ActionsCancel { invocation_id: 91 },
-                "actions_cancel",
-            ),
-        ] {
-            let value = wire(&command);
-            assert_eq!(value["op"], operation, "case {operation}");
-            assert_eq!(value["invocation_id"], 91, "case {operation}");
-        }
 
         let json = command_to_wire(&Command::Raw {
             json: r#"{"op":"list_targets","extra":1}"#.to_string(),
