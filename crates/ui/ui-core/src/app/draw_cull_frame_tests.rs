@@ -241,30 +241,20 @@ impl Widget for WholeWindow {
 
     crate::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
         self.seen
             .borrow_mut()
-            .push(("content", presence.viewport()));
+            .push(("content", env.viewport()));
     }
 
-    fn draw_overlay(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
         self.seen
             .borrow_mut()
-            .push(("overlay", presence.viewport()));
+            .push(("overlay", env.viewport()));
     }
 
     fn name(&self) -> &'static str {

@@ -2124,14 +2124,9 @@ impl Widget for ToggleGroup {
         self.place(crate::widget::layout_rect(taffy, node, origin));
     }
 
-    fn draw(
-        &mut self,
-        out_scene: &mut Scene,
-        out_transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (out_scene, out_transform, text_renderer, theme, mut env) = ctx.parts();
         self.drew = true;
         if self.segments.is_empty() || self.segment_rects.len() != self.segments.len() {
             return;
@@ -2322,15 +2317,10 @@ impl Widget for ToggleGroup {
         self.touch.is_active() || self.menu.is_open()
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.draw_fold_menu(scene, transform, (text_renderer, theme, presence));
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        self.draw_fold_menu(scene, transform, (text_renderer, theme, &env));
     }
 
     fn claims_raw_touch(&self, point: Point) -> bool {

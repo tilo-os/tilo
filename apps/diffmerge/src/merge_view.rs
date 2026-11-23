@@ -959,13 +959,7 @@ impl MergeView {
 
         let merged_body = Rect::new(merged.x0, header.y1, merged.x1, merged.y1);
         self.merged_editor.control_mut().set_rect(merged_body);
-        self.merged_editor.control_mut().draw_embedded(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-            presence,
-        );
+        self.merged_editor.control_mut().draw_embedded(&mut tilo_ui::DrawCtx::new(ctx.scene, ctx.transform, ctx.text, theme, presence.draw_env()));
     }
 }
 
@@ -1002,14 +996,9 @@ impl Widget for MergeView {
         ));
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.action_hits.clear();
         self.source_hits.clear();
         // One metric snapshot per frame: spans, scroll clamp, controls and paint
@@ -1078,7 +1067,7 @@ impl Widget for MergeView {
             theme.tokens.colors.surfaces.content,
         );
 
-        self.draw_merged_band(&mut ctx, presence);
+        self.draw_merged_band(&mut ctx,&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
         self.dirty = false;
     }
 

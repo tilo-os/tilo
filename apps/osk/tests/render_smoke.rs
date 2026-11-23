@@ -78,7 +78,7 @@ fn osk_renders_keys_and_toolbar() {
 
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        osk.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        osk.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme,&presence.draw_env());
 
         // Distinct background so painted content (surface, caps, labels) differs.
         let bg = Color::from_rgb8(0xff, 0x00, 0xff);

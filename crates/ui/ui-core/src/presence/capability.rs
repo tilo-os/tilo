@@ -50,6 +50,51 @@ pub trait PublishesPresence: Widget {
         let _ = (theme, key, range);
         Vec::new()
     }
+
+    /// What this widget shows of a write landed in it, and how a byte range
+    /// of that text stands on its geometry: the neutral hook a presence layer
+    /// draws a writer's wash and caret from, without the widget knowing who
+    /// wrote. `None` when the widget shows no write there.
+    fn written_place<'a>(&'a self, theme: &'a crate::theme::Theme) -> Option<WrittenPlace<'a>> {
+        let _ = theme;
+        None
+    }
+}
+
+/// What a widget shows of a write landed in it, for a presence layer to draw
+/// where it stands.
+pub struct WrittenPlace<'a> {
+    /// The field the write names, when it names one; any field otherwise.
+    pub region: Option<&'a str>,
+    /// The item or block the write landed in.
+    pub block: &'a str,
+    /// The text the write covers, as this widget shows it.
+    pub text: std::borrow::Cow<'a, str>,
+    /// When the person last edited the text here; a write drawn before that is put away.
+    pub edited: Option<crate::time::Instant>,
+    /// What the person here has selected, byte offsets, while the widget holds focus.
+    pub selected: Option<(usize, usize)>,
+    /// The field's name, where a write under way should say which field it is changing.
+    pub field: Option<&'a str>,
+    /// The bands a byte range of [`Self::text`] covers and the caret at its end, where it wears
+    /// one, on this widget's geometry.
+    pub place: Box<
+        dyn FnMut(
+                &mut crate::text_render::TextRenderer,
+                &tilo_actions::SemanticInteraction,
+                usize,
+                usize,
+            ) -> (Vec<vello::kurbo::Rect>, Option<super::LabeledCaret>)
+            + 'a,
+    >;
+}
+
+/// `widget`'s written place, when it shows one.
+pub fn written_place<'a>(
+    widget: &'a dyn Widget,
+    theme: &'a crate::theme::Theme,
+) -> Option<WrittenPlace<'a>> {
+    capability::<dyn PublishesPresence>(widget)?.written_place(theme)
 }
 
 /// `widget`'s presence identity.

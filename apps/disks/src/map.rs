@@ -8,7 +8,7 @@ use ui::charts::legend;
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::presence::PresenceCtx;
+
 use ui::taffy::style_helpers::{auto, percent};
 use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::text_render::TextRenderer;
@@ -329,14 +329,9 @@ impl Widget for PartitionMap {
             .is_some_and(|clock| self.drawn_step != Some(clock.step(ui::motion::frame_now())))
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let geometry = self.lay_out(self.rect.width(), text_renderer, theme);
         self.geometry = geometry.clone();
         let origin = self.rect.origin().to_vec2();

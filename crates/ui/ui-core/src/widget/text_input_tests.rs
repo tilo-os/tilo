@@ -86,7 +86,7 @@ pub(super) fn draw_with_theme(ti: &mut TextInput, theme: &Theme) {
     let mut tr = TextRenderer::new();
     tr.set_text_scale(theme.text_scale);
     let mut scene = Scene::new();
-    Widget::draw(ti, &mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    Widget::draw(ti, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
 }
 
 pub(super) fn x_for_byte(ti: &TextInput, b: usize) -> f64 {
@@ -161,7 +161,7 @@ pub(super) fn typing_frame(input: &mut TextInput, tr: &mut TextRenderer, theme: 
     let presence = crate::presence::PresenceCtx::empty();
     presence.push_viewport(Rect::new(0.0, 0.0, 600.0, 400.0));
     let mut scene = Scene::new();
-    Widget::draw(input, &mut scene, Affine::IDENTITY, tr, theme, &presence);
+    Widget::draw(input, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, tr, theme, presence.draw_env()));
 }
 
 pub(super) fn typing_field(text: &str, tr: &mut TextRenderer, theme: &Theme) -> TextInput {

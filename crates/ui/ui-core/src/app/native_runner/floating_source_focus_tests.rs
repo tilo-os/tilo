@@ -34,15 +34,9 @@ impl crate::widget::FloatingSurfaceProvider for FocusProbe {
             .push((id.map(|id| format!("ime:{id}")), false));
     }
 
-    fn draw_floating_surface(
-        &mut self,
-        id: &str,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &crate::PresenceCtx,
-    ) -> bool {
+    fn draw_floating_surface(&mut self, id: &str, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _text, _theme, mut env) = ctx.parts();
         if !self.drawable_ids.contains(&id) {
             return false;
         }
@@ -164,19 +158,23 @@ tilo_test_env::scenario! {
         let mut text = TextRenderer::new();
         assert!(root.draw_floating_surface(
             "b",
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::default(),
-            &crate::PresenceCtx::empty()
+            &mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::default(),
+                crate::PresenceCtx::empty().draw_env(),
+            )
         ));
         assert!(!root.draw_floating_surface(
             "missing",
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::default(),
-            &crate::PresenceCtx::empty()
+            &mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::default(),
+                crate::PresenceCtx::empty().draw_env(),
+            )
         ));
         root.on_floating_surface_ime_source_changed(None);
         assert_eq!(

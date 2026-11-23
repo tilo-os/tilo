@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::Rhythm;
@@ -428,14 +428,9 @@ impl Widget for BottomPanel {
         self.sync_empty();
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         ui::surface::separator(
             scene,
             transform,
@@ -446,15 +441,15 @@ impl Widget for BottomPanel {
             theme.tokens.colors.surfaces.content,
         );
         self.tabs
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
         self.sync_empty();
         if matches!(self.tab, PanelTab::Problems | PanelTab::Search)
             && let Some(list) = self.list.as_mut()
         {
-            list.draw_child(scene, transform, text_renderer, theme, presence);
+            list.draw_child(scene, transform, text_renderer, theme,&env);
         }
         if let Some((_, empty)) = self.empty.as_mut() {
-            empty.draw_child(scene, transform, text_renderer, theme, presence);
+            empty.draw_child(scene, transform, text_renderer, theme,&env);
         }
     }
 

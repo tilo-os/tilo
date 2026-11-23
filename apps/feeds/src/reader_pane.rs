@@ -12,7 +12,7 @@ use taffy::{NodeId, Style, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::presence::PresenceCtx;
+
 use ui::surface::{ContentEdge, content_edge_fade};
 use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
@@ -579,14 +579,9 @@ impl Widget for ReaderPane {
 
     ui::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.core
             .borrow_mut()
             .paint_reader(scene, transform, text, theme, self.rect);

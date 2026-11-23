@@ -2082,11 +2082,13 @@ impl AppHandler {
         );
         let drawn = app.root_widget.draw_floating_surface(
             &surface.id,
-            &mut scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
+            &mut crate::draw::DrawCtx::new(
+                &mut scene,
+                transform,
+                &mut app.text_renderer,
+                &app.theme,
+                app.presence_ctx.draw_env(),
+            ),
         );
         scene.pop_layer();
         if !drawn {

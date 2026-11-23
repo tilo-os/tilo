@@ -18,7 +18,7 @@ use super::toggle_group::{SegmentedFace, ToggleGroup};
 use super::window_controls::{ButtonFace, CONTROL_GAP, CONTROL_PX, paint_icon_button};
 use crate::icons::Icon;
 use crate::motion::CrossFade;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;

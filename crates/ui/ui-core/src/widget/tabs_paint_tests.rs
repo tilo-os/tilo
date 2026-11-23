@@ -27,13 +27,7 @@ fn bar() -> TabBar {
 /// One draw of `bar` at rest, as a host paints it.
 fn painted(bar: &mut TabBar, tr: &mut TextRenderer, theme: &Theme) -> Scene {
     let mut scene = Scene::new();
-    bar.draw(
-        &mut scene,
-        Affine::IDENTITY,
-        tr,
-        theme,
-        &PresenceCtx::default(),
-    );
+    bar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, tr, theme, PresenceCtx::default().draw_env()));
     scene
 }
 
@@ -65,13 +59,7 @@ tilo_test_env::scenario! {
         let mut presence = PresenceCtx::default();
         presence.register_peer_at(crate::permissions::MemberId::person("peer"), &tab_presence_key(2));
         let mut scene = Scene::new();
-        bar.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &Theme::light(),
-            &presence,
-        );
+        bar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &Theme::light(), presence.draw_env()));
         assert_eq!(bar.fresh_draws, drawn + 3, "someone came to a tab");
     }
 
@@ -90,7 +78,7 @@ tilo_test_env::scenario! {
         let draw = |bar: &mut TabBar, tr: &mut TextRenderer, presence: &PresenceCtx| {
             frame::lend(presence, || {
                 let mut scene = Scene::new();
-                bar.draw(&mut scene, Affine::IDENTITY, tr, &theme, presence);
+                bar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, tr, &theme, presence.draw_env()));
             });
         };
         assert!(!clean(&bar, &presence), "an undrawn bar repaints");
@@ -118,13 +106,7 @@ tilo_test_env::scenario! {
                 let mut scene = Scene::new();
                 let recording = crate::scene_parts::Recording::begin();
                 crate::scene_parts::track(&scene);
-                bar.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    tr,
-                    &theme,
-                    &PresenceCtx::default(),
-                );
+                bar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, tr, &theme, PresenceCtx::default().draw_env()));
                 let parts = recording.finish().of(&scene).expect("well nested parts");
                 (scene, parts)
             })
@@ -167,7 +149,7 @@ tilo_test_env::scenario! {
         let draw = |bar: &mut TabBar, tr: &mut TextRenderer| {
             frame::lend(&presence, || {
                 let mut scene = Scene::new();
-                bar.draw(&mut scene, Affine::IDENTITY, tr, &theme, &presence);
+                bar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, tr, &theme, presence.draw_env()));
             });
         };
         #[allow(clippy::type_complexity, reason = "one table of one-line changes")]
@@ -238,13 +220,7 @@ tilo_test_env::scenario! {
             let mut scene = Scene::new();
             let recording = crate::scene_parts::Recording::begin();
             crate::scene_parts::track(&scene);
-            bar.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::default(),
-            );
+            bar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
             let parts = recording.finish().of(&scene).expect("well nested parts");
             (scene, parts)
         };

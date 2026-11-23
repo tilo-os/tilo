@@ -48,24 +48,10 @@ fn a_views_strip_shows_the_front_tabs_close_and_a_changed_tabs_dot_at_once() {
     let mut text = crate::font_catalog::fixture_renderer();
     // As a window does: the first draw measures the titles, the next layout and draw follow.
     tests::lay_out_at_width_with(&mut b, 900.0, &theme);
-    Widget::draw(
-        &mut b,
-        &mut vello::Scene::new(),
-        vello::kurbo::Affine::IDENTITY,
-        &mut text,
-        &theme,
-        &crate::presence::PresenceCtx::default(),
-    );
+    Widget::draw(&mut b, &mut crate::draw::DrawCtx::new(&mut vello::Scene::new(), vello::kurbo::Affine::IDENTITY, &mut text, &theme, crate::presence::PresenceCtx::default().draw_env()));
     tests::lay_out_at_width_with(&mut b, 900.0, &theme);
     let mut scene = vello::Scene::new();
-    Widget::draw(
-        &mut b,
-        &mut scene,
-        vello::kurbo::Affine::IDENTITY,
-        &mut text,
-        &theme,
-        &crate::presence::PresenceCtx::default(),
-    );
+    Widget::draw(&mut b, &mut crate::draw::DrawCtx::new(&mut scene, vello::kurbo::Affine::IDENTITY, &mut text, &theme, crate::presence::PresenceCtx::default().draw_env()));
     let rgba = crate::offscreen::OffscreenRenderer::new(900, 60)
         .render(&scene, vello::peniko::Color::WHITE);
     for (id, what) in [(1, "the tab in front's ×"), (2, "the changed tab's dot")] {

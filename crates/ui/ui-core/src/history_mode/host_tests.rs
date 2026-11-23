@@ -149,13 +149,7 @@ fn history_status_and_recovery_keep_the_existing_bar_geometry() {
             )
             .unwrap();
             history.apply_composition(&mut live, &tree, root, vello::kurbo::Point::ZERO);
-            history.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut renderer,
-                &theme,
-                &crate::presence::PresenceCtx::default(),
-            );
+            history.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut renderer, &theme, crate::presence::PresenceCtx::default().draw_env()));
             let geometry = (live.get_rect(), tree.total_node_count());
             assert_eq!(
                 *baseline.get_or_insert(geometry),

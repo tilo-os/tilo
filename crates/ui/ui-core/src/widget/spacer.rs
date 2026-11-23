@@ -132,17 +132,10 @@ impl Widget for Spacer {
         self.laid_out = true;
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self, scene, transform, theme, presence,
-        );
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _text_renderer, theme, mut env) = ctx.parts();
+        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, _text_renderer, theme, env.clone()));
     }
 
     fn name(&self) -> &'static str {

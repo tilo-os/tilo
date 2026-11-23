@@ -6,7 +6,7 @@ use crate::{
     headless::FrameHarness,
     widget::{ActionEmitter, Text, Widget},
 };
-use crate::{presence::PresenceCtx, text_render::TextRenderer, theme::Theme};
+use crate::{text_render::TextRenderer, theme::Theme};
 use automerge::{AutoCommit, ObjId, ROOT, transaction::Transactable};
 use std::{
     cell::{Cell, RefCell},
@@ -223,15 +223,10 @@ impl Widget for LiveOwner {
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.text.apply_layout(tree, node, origin);
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.text.draw(scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.text.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
     fn get_rect(&self) -> Rect {
         self.text.get_rect()

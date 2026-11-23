@@ -7,7 +7,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::Key;
 
 use crate::i18n::widget_text;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{ModelPath, TaffyTreeExt, Widget};
@@ -85,14 +85,9 @@ impl Widget for ActivityTimeline {
         self.layout_dirty = false;
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.note_frame_theme(theme);
         if self.draws_own_surface {
             self.draw_surface_chrome(scene, transform, theme);

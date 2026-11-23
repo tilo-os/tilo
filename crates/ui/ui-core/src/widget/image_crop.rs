@@ -14,7 +14,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::ColorCompat;
 use crate::LocalState;
 use crate::a11y::{AccessNode, AccessState, Action, Role};
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
@@ -371,16 +371,11 @@ impl Widget for ImageCropEditor {
         self.image.apply_layout(taffy, node, origin);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.image
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
         self.paint_crop_overlay(scene, transform, theme);
     }
 

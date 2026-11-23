@@ -24,7 +24,7 @@ use ui::LocalState;
 use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, Live, Publishes, Setting, ViewCx,
 };
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::toast::ToastKind;
@@ -1625,18 +1625,13 @@ impl ui::widget::Decorator for BackupsWindow {
         }
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.shell
-            .draw_overlay(scene, transform, text, theme, presence);
+            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         if let Some(dialog) = &mut self.restore {
-            dialog.draw_overlay(scene, transform, text, theme, presence);
+            dialog.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         }
     }
 

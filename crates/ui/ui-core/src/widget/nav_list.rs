@@ -2209,14 +2209,9 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         Some(access)
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text: &mut crate::text_render::TextRenderer,
-        theme: &crate::Theme,
-        presence: &crate::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let width = crate::widget::Widget::get_rect(&*self.list).width();
         self.sync_paint();
         let rail = {
@@ -2228,7 +2223,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         if rail {
             self.list.update_model(|_| ());
         }
-        DrawChild::draw_child(&mut *self.list, scene, transform, text, theme, presence);
+        DrawChild::draw_child(&mut *self.list, scene, transform, text, theme,&env);
         if let Some(feed) = &self.feed {
             let model = self.list.model();
             let rows = (0..model.len())

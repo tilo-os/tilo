@@ -6,7 +6,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::chart_legend::SeriesToggles;
@@ -536,14 +536,9 @@ impl<M: PlotMarks> Widget for Plot<M> {
     fn layout_measured(&mut self) {
         self.layout_dirty = false;
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         crate::scene_parts::picture();
         self.marks.paint(scene, transform, tr, theme);
         if let Some(readout) = self.marks.readout(theme) {

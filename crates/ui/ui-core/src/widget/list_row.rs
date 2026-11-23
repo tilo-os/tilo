@@ -19,7 +19,7 @@ use crate::chrome::{RowJoin, SelectionState};
 use crate::component::Person;
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::{FontChoice, TextRenderer};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -291,7 +291,35 @@ pub struct ListRowFace<'a> {
 impl<'a> ListRowFace<'a> {
     /// Who else is at the item, when the row shows them: the identity its presence dot
     /// stands for ([`ListRow::presence`]).
-    #[cfg(test)]
+    
+impl crate::presence::capability::PublishesPresence for ListRow {
+    fn written_place<'a>(
+        &'a self,
+        theme: &'a Theme,
+    ) -> Option<crate::presence::capability::WrittenPlace<'a>> {
+        let field = self.edits.as_ref()?;
+        let item = self.item.as_ref()?;
+        let band = self.text_band();
+        Some(crate::presence::capability::WrittenPlace {
+            region: Some(field.as_str()),
+            block: item.as_str(),
+            text: std::borrow::Cow::Borrowed(self.title.as_str()),
+            edited: None,
+            selected: None,
+            field: None,
+            place: Box::new(move |text, _, start, end| {
+                let mut span = None;
+                self.with_face(|face| {
+                    let (bands, caret) = face.title_span(band, (start, end), text, theme);
+                    span = Some((bands, Some(caret)));
+                });
+                span.unwrap_or_default()
+            }),
+        })
+    }
+}
+
+#[cfg(test)]
     pub(crate) fn presence_hue(&self) -> Option<PresenceHue> {
         match self.status {
             Some(RowStatus::Presence(hue)) => Some(hue),
@@ -2047,32 +2075,6 @@ impl ListRow {
         }
     }
 
-    /// Each write in the item's field the title shows, drawn on the title ([`Self::edits`]).
-    fn draw_writes(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        band: Rect,
-    ) {
-        let (Some(field), Some(item)) = (&self.edits, &self.item) else {
-            return;
-        };
-        self.with_face(|face| {
-            presence.draw_writes_in(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                (Some(field), item, &self.title),
-                (None, None),
-                None,
-                &mut |text, _, start, end| {
-                    let (bands, caret) = face.title_span(band, (start, end), text, theme);
-                    (bands, Some(caret))
-                },
-            );
-        });
-    }
 
     fn trailing_reserve(&self) -> Option<f64> {
         let trailing = self.trailing.as_ref()?;
@@ -2863,15 +2865,10 @@ impl Widget for ListRow {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if presence.should_cull(self.outer()) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        if env.should_cull(self.outer()) {
             return;
         }
         let band = self.text_band();
@@ -2896,11 +2893,11 @@ impl Widget for ListRow {
             );
             face.title_elided(band, text_renderer, theme)
         });
-        self.draw_writes(scene, transform, text_renderer, theme, presence, band);
+        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         if let Some(trailing) = &mut self.trailing {
             trailing
                 .element
-                .draw_child(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme,&env);
         }
     }
 

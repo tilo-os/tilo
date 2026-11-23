@@ -963,14 +963,9 @@ impl Widget for WebView {
         self.rect == Rect::ZERO
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.lands_at(transform);
         let drawn = self.draw_page(scene, transform, text_renderer, theme);
         self.damage = drawn
@@ -1998,13 +1993,7 @@ mod tests {
             {
                 let engine = TestEngine::new();
                 let (mut view, _, _) = laid_out(engine.clone());
-                view.draw(
-                    &mut Scene::new(),
-                    Affine::scale(2.0),
-                    &mut TextRenderer::new(),
-                    &Theme::dark(),
-                    &PresenceCtx::default(),
-                );
+                view.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::scale(2.0), &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
                 assert_eq!(
                     engine.commands().last(),
                     Some(&WebViewCommand::Resize {
@@ -2014,13 +2003,7 @@ mod tests {
                     })
                 );
                 let count = engine.commands().len();
-                view.draw(
-                    &mut Scene::new(),
-                    Affine::scale(2.0),
-                    &mut TextRenderer::new(),
-                    &Theme::dark(),
-                    &PresenceCtx::default(),
-                );
+                view.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::scale(2.0), &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
                 assert_eq!(engine.commands().len(), count);
             }
 
@@ -2282,13 +2265,7 @@ mod tests {
 
     fn draw_at(view: &mut WebView, transform: Affine) -> Scene {
         let mut scene = Scene::new();
-        view.draw(
-            &mut scene,
-            transform,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
+        view.draw(&mut crate::draw::DrawCtx::new(&mut scene, transform, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
         scene
     }
 
@@ -2400,13 +2377,7 @@ mod tests {
                 ] {
                     *engine.frames().lock().unwrap() = Some(frame);
                     let mut scene = Scene::new();
-                    view.draw(
-                        &mut scene,
-                        Affine::scale(2.0),
-                        &mut TextRenderer::new(),
-                        &Theme::dark(),
-                        &PresenceCtx::default(),
-                    );
+                    view.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::scale(2.0), &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
                     assert_eq!(
                         scene
                             .encoding()
@@ -2506,13 +2477,7 @@ mod tests {
                     engine.send(WebViewCommand::Navigate("about:frame-regression".into()));
                     let initial = engine.commands().len();
                     let mut scene = Scene::new();
-                    view.draw(
-                        &mut scene,
-                        Affine::scale(scale),
-                        &mut TextRenderer::new(),
-                        &Theme::dark(),
-                        &PresenceCtx::default(),
-                    );
+                    view.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::scale(scale), &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
                     assert!(
                         scene
                             .encoding()
@@ -2558,13 +2523,7 @@ mod tests {
                     });
                     let initial = engine.commands().len();
                     let mut scene = Scene::new();
-                    view.draw(
-                        &mut scene,
-                        Affine::scale(scale),
-                        &mut TextRenderer::new(),
-                        &Theme::dark(),
-                        &PresenceCtx::default(),
-                    );
+                    view.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::scale(scale), &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
                     assert!(
                         scene
                             .encoding()
@@ -2592,13 +2551,7 @@ mod tests {
                 for available in [Some(frame), None] {
                     *engine.frames().lock().unwrap() = available;
                     let mut scene = Scene::new();
-                    view.draw(
-                        &mut scene,
-                        Affine::IDENTITY,
-                        &mut TextRenderer::new(),
-                        &Theme::dark(),
-                        &PresenceCtx::default(),
-                    );
+                    view.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
                     assert!(
                         scene
                             .encoding()
@@ -2618,13 +2571,7 @@ mod tests {
                     height: 8,
                 });
                 let mut scene = Scene::new();
-                view.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut TextRenderer::new(),
-                    &Theme::dark(),
-                    &PresenceCtx::default(),
-                );
+                view.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
                 assert!(
                     !scene
                         .encoding()
@@ -2664,13 +2611,7 @@ mod tests {
                         });
                     }
                     let mut scene = Scene::new();
-                    root.draw(
-                        &mut scene,
-                        Affine::IDENTITY,
-                        &mut TextRenderer::new(),
-                        &Theme::dark(),
-                        &PresenceCtx::default(),
-                    );
+                    root.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
                     assert!(
                         scene
                             .encoding()
@@ -2699,7 +2640,7 @@ mod tests {
                 let mut tr = TextRenderer::new();
                 let theme = Theme::dark();
                 let presence = PresenceCtx::default();
-                w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                w.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
                 assert!(
                     w.cached_image.is_some(),
                     "draw caches the engine frame as a vello image",
@@ -2887,13 +2828,7 @@ mod shared_page_tests {
     fn draw(view: &mut WebView) {
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        view.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
+        view.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark(), PresenceCtx::empty().draw_env()));
         view.mark_drawn();
     }
 

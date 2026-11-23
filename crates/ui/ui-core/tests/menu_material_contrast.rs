@@ -179,7 +179,7 @@ fn a_menus_text_keeps_its_contrast_over_any_backdrop() {
             let case = format!("{theme_name} over {backdrop_name}");
             let mut shown = menu();
             let with_text = render(&theme, backdrop_name, |scene, text| {
-                shown.draw_overlay(scene, Affine::IDENTITY, text, &theme, &presence);
+                shown.draw_overlay(&mut crate::draw::DrawCtx::new(scene, Affine::IDENTITY, text, &theme, presence.draw_env()));
             });
             write_png(
                 &format!("menu_material_{theme_name}_{backdrop_name}"),
@@ -275,13 +275,7 @@ fn the_words_menu_of_dark_words_on_a_light_slide_reads_in_the_dark_theme() {
         .present_blocks(&[BlockContent::paragraph("a", "Goals for this phase")]);
     host.set_text_color(Some(Color::from_rgb8(0x12, 0x14, 0x18)));
     host.layout(Rect::new(40.0, 30.0, 400.0, 30.0), &theme, &mut text);
-    host.draw(
-        &mut Scene::new(),
-        Affine::IDENTITY,
-        &mut text,
-        &theme,
-        &presence,
-    );
+    host.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
     assert!(host.widget_mut().open_text_menu(Point::new(60.0, 40.0)));
     let panel = host.modal_capture().expect("the menu is open");
     let menu = host.widget().text_menu().expect("the words' menu is open");
@@ -300,7 +294,7 @@ fn the_words_menu_of_dark_words_on_a_light_slide_reads_in_the_dark_theme() {
         .collect();
     assert!(rows.len() >= 5, "the words' menu has its rows: {rows:?}");
     let with_text = render(&theme, "white", |scene, text| {
-        host.draw_overlay(scene, Affine::IDENTITY, text, &theme, &presence);
+        host.draw_overlay(&mut crate::draw::DrawCtx::new(scene, Affine::IDENTITY, text, &theme, presence.draw_env()));
     });
     write_png(
         "menu_material_words_on_light_slide_dark",

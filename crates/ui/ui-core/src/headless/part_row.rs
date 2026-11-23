@@ -284,7 +284,7 @@ impl FrameHarness {
             |scene| {
                 hosted
                     .row
-                    .draw(scene, transform, text, theme, presence, 0.0)
+                    .draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, presence.draw_env()), 0.0)
             },
         );
     }
@@ -394,11 +394,13 @@ impl FrameHarness {
         let width = f64::from(self.viewport.0);
         let mut scene = vello::Scene::new();
         hosted.row.draw(
-            &mut scene,
-            Affine::scale(scale),
-            &mut self.text,
-            &self.theme,
-            &self.presence,
+            &mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::scale(scale),
+                &mut self.text,
+                &self.theme,
+                self.presence.draw_env(),
+            ),
             0.0,
         );
         Some((scene, [0.0, 0.0, width, hosted.inset]))

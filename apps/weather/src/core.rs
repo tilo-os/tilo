@@ -16,7 +16,7 @@ use winit::event::WindowEvent;
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
@@ -1079,30 +1079,20 @@ impl Core {
         }
     }
 
-    pub fn draw_overview_overlay(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub fn draw_overview_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, t, tr, theme, mut env) = ctx.parts();
         if self.search.is_editing() {
-            self.draw_add_popover(scene, t, tr, theme, presence);
+            self.draw_add_popover(&mut tilo_ui::DrawCtx::new(scene, t, tr, theme, env.clone()));
         }
         if self.menu.is_open() {
-            self.menu.draw_overlay(scene, t, tr, theme, presence);
+            self.menu.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, t, tr, theme, env.clone()));
         }
     }
 
-    fn draw_add_popover(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_add_popover(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, t, tr, theme, mut env) = ctx.parts();
         use ui::widget::floating_surface;
         let over = self.over_rect;
         let spacing = &theme.tokens.spacing;
@@ -1111,7 +1101,7 @@ impl Core {
         let caption_h = f64::from(caption_style.line_height_px());
         let field_h = ButtonFace::height(ControlSize::Regular, theme);
         // It stays over the column it adds to, which routes its input.
-        let window = presence.viewport.get().unwrap_or(over);
+        let window = env.viewport.unwrap_or(over);
         let room = floating_surface::panel_area(window, theme)
             .intersect(floating_surface::panel_area(over, theme).inflate(0.0, over.height()));
         let w = f64::from(theme.tokens.metrics.panel_width_list).min(room.width());
@@ -1140,8 +1130,8 @@ impl Core {
         let field = Rect::new(panel.x0 + pad, top, panel.x1 - pad, top + field_h);
         self.search_field_rect = field;
         self.search.apply_layout_external(field);
-        self.search.draw_child(scene, t, tr, &on_panel, presence);
-        self.search.draw_overlay(scene, t, tr, theme, presence);
+        self.search.draw_child(scene, t, tr, &on_panel,&env);
+        self.search.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, t, tr, theme, env.clone()));
     }
 
     pub fn overview_modal_capture(&self) -> Option<Rect> {

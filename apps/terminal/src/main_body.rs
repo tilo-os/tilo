@@ -2722,14 +2722,9 @@ impl Widget for TerminalWidget {
         self.set_geometry(rect);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // Every visual parameter comes from the theme. The grid is document
         // content in the `Code` role; the window ground under it is the
         // framework's, so nothing here fills the widget.
@@ -2801,30 +2796,18 @@ impl Widget for TerminalWidget {
             return;
         }
         self.draw_top_bands(&mut outside, transform, text_renderer, theme);
-        self.draw_grid(scene, transform, text_renderer, theme, presence, outside);
+        self.draw_grid(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()), outside);
         self.draw_bell_flash(scene, transform, theme);
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let before = scene.encoding().draw_tags.len();
         if self.context_menu.is_open() {
-            Widget::draw_overlay(
-                &mut self.context_menu,
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
+            Widget::draw_overlay(&mut self.context_menu, &mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
-        self.draw_environments_panel(scene, transform, text_renderer, theme, presence);
+        self.draw_environments_panel(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         self.view.overlay_drawn = scene.encoding().draw_tags.len() != before;
     }
 

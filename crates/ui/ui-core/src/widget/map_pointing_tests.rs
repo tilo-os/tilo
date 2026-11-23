@@ -548,14 +548,7 @@ fn a_pointed_rectangle_is_outlined_where_it_stands() {
         )
         .expect("the map lays out");
         let mut scene = Scene::new();
-        Widget::draw(
-            &mut map,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &crate::presence::PresenceCtx::empty(),
-        );
+        Widget::draw(&mut map, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, crate::presence::PresenceCtx::empty().draw_env()));
         crate::offscreen::OffscreenRenderer::new(400, 300)
             .render(&scene, vello::peniko::Color::BLACK)
     };

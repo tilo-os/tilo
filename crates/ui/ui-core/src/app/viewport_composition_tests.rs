@@ -148,17 +148,12 @@ impl Widget for ResponsiveRoot {
             child.apply_layout(taffy, *node, origin);
         }
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        affine: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, affine, text, theme, mut env) = ctx.parts();
         self.paints.set(self.paints.get().saturating_add(1));
         for child in &mut self.children {
-            child.draw(scene, affine, text, theme, presence);
+            child.draw(&mut crate::draw::DrawCtx::new(scene, affine, text, theme, env.clone()));
         }
     }
     fn get_rect(&self) -> KurboRect {
@@ -365,13 +360,7 @@ fn viewport_changes_recompose_like_a_fresh_app_before_paint() {
             );
             assert!(calls.borrow().iter().any(|call| matches!(call, NativeCall::Geometry(generation, rect) if *generation == final_generation && rect.width() == f64::from(width))));
             let mut scene = Scene::new();
-            app.root_widget.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut app.text_renderer,
-                &app.theme,
-                &PresenceCtx::default(),
-            );
+            app.root_widget.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut app.text_renderer, &app.theme, PresenceCtx::default().draw_env()));
             assert!(
                 calls
                     .borrow()

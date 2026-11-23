@@ -380,14 +380,9 @@ impl Widget for Breadcrumb {
         // rects until the first paint are fine: no hover happens before it.
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // Rebuild rects every frame so a window-resize that shrinks the
         // available width retriggers truncation on the next paint.
         self.rebuild_rects(theme, text_renderer);
@@ -634,13 +629,7 @@ mod tests {
                 bc.rect = rect;
                 bc.apply_layout_helper(&theme, &mut tr);
                 let mut scene = Scene::new();
-                bc.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut tr,
-                    &theme,
-                    &crate::presence::PresenceCtx::default(),
-                );
+                bc.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, crate::presence::PresenceCtx::default().draw_env()));
                 assert_eq!(
                     scene.encoding().resources.glyph_runs.len(),
                     2,

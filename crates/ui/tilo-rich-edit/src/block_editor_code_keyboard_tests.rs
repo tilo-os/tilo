@@ -429,13 +429,7 @@ tilo_test_env::scenario! {
             )
             .unwrap();
             editor.apply_layout(&tree, node, Point::ZERO);
-            editor.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &theme,
-                &PresenceCtx::empty(),
-            );
+            editor.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &theme, PresenceCtx::empty().draw_env()));
             let line = &editor.blocks[0].line;
             assert!(line.inner().scroll_x() > 0.0);
             let caret = line.inner().caret_rect(&theme, line.cursor_pos());

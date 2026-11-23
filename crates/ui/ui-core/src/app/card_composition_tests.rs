@@ -88,13 +88,7 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
         assert_eq!(app.focused_node, Some(app.focusable_order[3]));
         assert_eq!(crate::testing::clicks("clicked"), 1);
         let mut scene = Scene::new();
-        app.root_widget.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut app.text_renderer,
-            &app.theme,
-            &PresenceCtx::default(),
-        );
+        app.root_widget.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut app.text_renderer, &app.theme, PresenceCtx::default().draw_env()));
         assert_eq!(
             controls(&app),
             initial,

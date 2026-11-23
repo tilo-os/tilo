@@ -21,7 +21,6 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDe
 use winit::keyboard::{Key, NamedKey};
 
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::Selection;
@@ -1256,15 +1255,10 @@ impl Widget for Dropdown {
         self.layout_dirty = false;
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let Some(viewport) = presence.viewport.get() {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        if let Some(viewport) = env.viewport {
             self.note_viewport(viewport);
         }
         self.adopt_theme(theme);
@@ -1321,20 +1315,15 @@ impl Widget for Dropdown {
         }
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.appear.follow(self.open, theme.motion());
         if !self.appear.is_drawn() {
             self.list_pose = crate::motion::Pose::REST;
             return;
         }
-        if let Some(viewport) = presence.viewport.get() {
+        if let Some(viewport) = env.viewport {
             self.note_viewport(viewport);
         }
         let list = self.list_rect();

@@ -10,7 +10,7 @@ use vello::peniko::{BlendMode, Fill};
 
 use crate::component::{Component, Described, PartViews};
 use crate::motion::{Drill, DrillDepth, Pose};
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::MotionSource;
@@ -103,16 +103,9 @@ impl PageSlide {
     }
 
     /// Draw `page` under `pose`, clipped to `clip`.
-    fn draw_posed(
-        page: &mut Element,
-        pose: Pose,
-        clip: Rect,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_posed(page: &mut Element, pose: Pose, clip: Rect, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if pose.opacity <= 0.0 || clip.width() <= 0.0 {
             return;
         }
@@ -123,7 +116,7 @@ impl PageSlide {
             transform,
             &clip,
         );
-        page.draw_child(scene, transform * pose.transform, text, theme, presence);
+        page.draw_child(scene, transform * pose.transform, text, theme,&env);
         scene.pop_layer();
     }
 }
@@ -245,14 +238,9 @@ impl Decorator for PageSlide {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let now = crate::motion::frame_now();
         let motion = theme.motion();
         let moving = self.depth.is_moving(now);
@@ -267,27 +255,20 @@ impl Decorator for PageSlide {
                     page,
                     pose,
                     if clip.width() > 0.0 { clip } else { *rect },
-                    scene,
-                    transform,
-                    text,
-                    theme,
-                    presence,
+                    &mut crate::draw::DrawCtx::new(
+                        scene,
+                        transform,
+                        text,
+                        theme,
+                        env.clone(),
+                    ),
                 );
             }
         } else if self.leaving.take().is_some() {
             self.dirty = true;
         }
         let pose = Drill::pose(level_of(self.level) - depth, width, motion);
-        Self::draw_posed(
-            &mut self.page,
-            pose,
-            clip,
-            scene,
-            transform,
-            text,
-            theme,
-            presence,
-        );
+        Self::draw_posed(&mut self.page, pose, clip, &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
     fn needs_animation_frame(&self) -> bool {

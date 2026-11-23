@@ -30,7 +30,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::chrome::{ChromeRole, SelectionState, selection_floor, selection_floor_ramp};
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX};
-use crate::presence::PresenceCtx;
+
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -688,14 +688,9 @@ impl Widget for QuickTile {
         self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let metrics = TileMetrics::of(theme);
         if self.metrics.as_ref() != Some(&metrics) {
             self.metrics = Some(metrics.clone());

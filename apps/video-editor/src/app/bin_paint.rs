@@ -406,15 +406,9 @@ impl VideoEditorApp {
         }
     }
 
-    pub(super) fn draw_bin_rename(
-        &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        r: &Regions,
-    ) {
+    pub(super) fn draw_bin_rename(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, r: &Regions) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, tf, tr, theme, mut env) = ctx.parts();
         let mid = match &self.bin_rename {
             Some((m, _)) => *m,
             None => return,
@@ -439,7 +433,7 @@ impl VideoEditorApp {
         };
         if let Some((_, label)) = self.bin_rename.as_mut() {
             label.apply_layout_external(rect);
-            label.draw_child(scene, tf, tr, &panel, presence);
+            label.draw_child(scene, tf, tr, &panel,&env);
         }
     }
 }

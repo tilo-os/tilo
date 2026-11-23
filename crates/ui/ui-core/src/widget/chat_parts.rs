@@ -12,7 +12,7 @@ use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 
 use crate::component::{Component, Described, Event, Person, Value};
-use crate::presence::PresenceCtx;
+
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -282,18 +282,13 @@ impl Decorator for EmojiPickerButton {
         }
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.button
-            .draw_overlay(scene, transform, text, theme, presence);
+            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
         self.picker
-            .draw_overlay(scene, transform, text, theme, presence);
+            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -561,14 +556,9 @@ impl Widget for QuoteLines {
 
     crate::rect_geometry!(measured);
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let colors = &theme.tokens.colors;
         let rect = self.rect;
         if rect.width() <= 0.0 || rect.height() <= 0.0 {

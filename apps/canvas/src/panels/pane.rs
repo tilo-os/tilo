@@ -6,7 +6,7 @@ use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Rect};
 use ui::widget::DrawChild;
 use ui::widget::{Element, Widget};
-use ui::{PresenceCtx, TextRenderer, Theme};
+use ui::{TextRenderer, Theme};
 
 /// `content`, announced as one group: what it holds is read to a person
 /// but not offered to an agent one by one, since each control is one of
@@ -85,16 +85,11 @@ impl ui::widget::Decorator for Band {
         "Band"
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.ground(scene, transform, theme);
         self.content
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
     }
 }

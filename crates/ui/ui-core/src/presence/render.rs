@@ -86,6 +86,28 @@ pub(crate) fn color_for(ctx: &PresenceCtx, user: &MemberId, theme: &Theme) -> Co
     theme.tokens.colors.presence.of_rgb(ctx.color_for(user))
 }
 
+/// A soft "indicative mist" glow over `rect` in `colour` — wayfinding to where
+/// a person currently is, over a widget that lays them out.
+pub fn paint_mist(scene: &mut Scene, colour: Color, rect: Rect) {
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        colour.with_alpha_factor(0.16),
+        None,
+        &rect,
+    );
+    // Brighter core inset from the edges, so it reads as a glow.
+    let pad = (rect.height() * 0.2).min(rect.width() * 0.45);
+    let core = rect.inflate(-pad, -pad);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        colour.with_alpha_factor(0.22),
+        None,
+        &core,
+    );
+}
+
 impl PresenceCtx {
     /// Paint a peer's caret in their colour. `rect` is the widget's own
     /// caret geometry (`TextInput::caret_rect` / `RichTextLine::caret_rect`),
@@ -149,24 +171,7 @@ impl PresenceCtx {
     /// wayfinding to where a peer currently is. Two translucent fills
     /// approximate a radial glow without an actual gradient.
     pub fn draw_peer_mist(&self, scene: &mut Scene, theme: &Theme, user: &MemberId, rect: Rect) {
-        let color = color_for(self, user, theme);
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            color.with_alpha_factor(0.16),
-            None,
-            &rect,
-        );
-        // Brighter core inset from the edges, so it reads as a glow.
-        let pad = (rect.height() * 0.2).min(rect.width() * 0.45);
-        let core = rect.inflate(-pad, -pad);
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            color.with_alpha_factor(0.22),
-            None,
-            &core,
-        );
+        paint_mist(scene, color_for(self, user, theme), rect);
     }
 
     /// Draw a peer's caret with a name chip above the tip — mirrors the
@@ -1371,13 +1376,11 @@ fn nearest_point_on(rect: Rect, p: Point) -> Point {
 /// non-shell apps drawing cross-process ghost cursors without reimplementing
 /// the geometry. No viewport, so pills are de-overlapped but not clamped —
 /// prefer [`draw_remote_presence`], which keeps names on screen.
-pub fn draw_remote_cursors(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
-) {
+pub fn draw_remote_cursors(ctx: &mut crate::draw::DrawCtx<'_>) {
+    #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+    let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+    let fallback_presence = Default::default();
+    let presence = env.presence.unwrap_or(&fallback_presence);
     // Same ownership rule as draw_remote_presence: skip pointers the
     // compositor overlay already paints.
     let peers: Vec<PeerCursor> = presence
@@ -1831,13 +1834,13 @@ pub fn draw_peer_presence(
 /// Returns the bounds, in scene coordinates, of everything painted (see
 /// [`draw_peer_cursors`]), so the frame damages only those.
 pub fn draw_remote_presence(
-    scene: &mut Scene,
-    transform: Affine,
     viewport: vello::kurbo::Rect,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
+    ctx: &mut crate::draw::DrawCtx<'_>,
 ) -> Vec<Rect> {
+    #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+    let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+    let fallback_presence = Default::default();
+    let presence = env.presence.unwrap_or(&fallback_presence);
     let mut painted = Vec::new();
     if presence.remote_cursors.is_empty() {
         return painted;
@@ -1981,12 +1984,14 @@ mod tests {
                 let mut scene = Scene::new();
                 let mut tr = TextRenderer::new();
                 draw_remote_presence(
-                    &mut scene,
-                    Affine::IDENTITY,
                     viewport,
-                    &mut tr,
-                    &theme,
-                    &ctx,
+                    &mut crate::draw::DrawCtx::new(
+                        &mut scene,
+                        Affine::IDENTITY,
+                        &mut tr,
+                        &theme,
+                        ctx.draw_env(),
+                    ),
                 );
                 let mut r = OffscreenRenderer::new(120, 120);
                 let rgba = r.render(&scene, Color::BLACK);
@@ -2391,12 +2396,14 @@ mod tests {
             let mut scene = Scene::new();
             let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
             draw_remote_presence(
-                &mut scene,
-                Affine::IDENTITY,
                 viewport,
-                &mut tr,
-                &theme,
-                &ctx,
+                &mut crate::draw::DrawCtx::new(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    ctx.draw_env(),
+                ),
             );
 
             let mut r = OffscreenRenderer::new(100, 100);
@@ -2447,12 +2454,14 @@ mod tests {
 
             let mut scene = Scene::new();
             draw_remote_presence(
-                &mut scene,
-                Affine::IDENTITY,
                 viewport,
-                &mut tr,
-                &theme,
-                &ctx,
+                &mut crate::draw::DrawCtx::new(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    ctx.draw_env(),
+                ),
             );
             let mut r = OffscreenRenderer::new(320, 240);
             let painted = r.render(&scene, Color::WHITE);
@@ -2500,12 +2509,14 @@ mod tests {
 
             let mut scene = Scene::new();
             draw_remote_presence(
-                &mut scene,
-                Affine::IDENTITY,
                 viewport,
-                &mut tr,
-                &theme,
-                &ctx,
+                &mut crate::draw::DrawCtx::new(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    ctx.draw_env(),
+                ),
             );
             let mut r = OffscreenRenderer::new(320, 240);
             let painted = r.render(&scene, Color::WHITE);

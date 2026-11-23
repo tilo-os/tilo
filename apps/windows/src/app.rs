@@ -16,7 +16,7 @@ use ui::a11y::Action as AccessibilityAction;
 use ui::framework::{EffectStatus, Live, Publishes, RunMode, ViewCx};
 use ui::icons::Icon;
 use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest};
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
@@ -2378,18 +2378,13 @@ impl ui::widget::Decorator for WindowsWindow {
         children
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.shell
-            .draw_overlay(scene, transform, text, theme, presence);
+            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         if let Some(dialog) = self.dialog.as_mut() {
-            dialog.draw_overlay(scene, transform, text, theme, presence);
+            dialog.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         }
     }
 

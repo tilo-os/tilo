@@ -41,16 +41,11 @@ impl Widget for DialogApp {
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![&mut self.dialog]
     }
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.dialog
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
+            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         self.seen.set(self.dialog.dialog_rect());
     }
     fn name(&self) -> &'static str {
@@ -137,13 +132,7 @@ fn an_apps_dialog_centres_inside_its_window_not_the_screen() {
 
     let presence = PresenceCtx::default();
     presence.viewport.set(Some(screen));
-    host.draw_overlay(
-        &mut Scene::new(),
-        Affine::IDENTITY,
-        &mut TextRenderer::new(),
-        &theme,
-        &presence,
-    );
+    host.draw_overlay(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &theme, presence.draw_env()));
     inside(seen.get(), "painted");
     assert_eq!(
         presence.viewport.get(),

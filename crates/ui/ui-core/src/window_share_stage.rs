@@ -20,7 +20,7 @@ use winit::event::{ElementState, TouchPhase, WindowEvent};
 
 use super::{LiveView, VIEW, Views, placed as place_of, view_transform};
 use crate::hosted_window::HostedWindow;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
@@ -138,16 +138,11 @@ impl Widget for Shown {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.host
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -768,14 +763,9 @@ impl Stage {
     /// Draw each view over the window that asked for it, clipped to what of its place may show: a
     /// miniature laid out at a window's size and scaled into its place, a view worked in as it is
     /// laid out.
-    pub fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.refresh_places();
         for place in &self.places {
             if place.clip.is_zero_area() || place.rect.is_zero_area() {
@@ -812,13 +802,13 @@ impl Stage {
                 transform,
                 &place.clip,
             );
-            let outer = presence.push_viewport(viewport);
+            let outer = env.push_viewport(viewport);
             if working.is_some() {
-                shown.draw_child(scene, at, text, theme, presence);
+                shown.draw_child(scene, at, text, theme,&env);
             } else {
-                shown.host.draw_child(scene, at, text, theme, presence);
+                shown.host.draw_child(scene, at, text, theme,&env);
             }
-            presence.pop_viewport(outer);
+            env.pop_viewport(outer);
             scene.pop_layer();
         }
     }

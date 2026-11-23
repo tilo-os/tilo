@@ -1150,14 +1150,9 @@ impl Widget for NotificationLayer {
         node
     }
     ui::rect_geometry!();
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut ui::TextRenderer,
-        theme: &ui::Theme,
-        _presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.type_lines = CenterLayout::metrics(theme, text);
         let notifications = self.notifications.clone();
         let host = notifications.host();
@@ -1351,8 +1346,7 @@ mod tests {
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut ui::TextRenderer::new(),
-            theme,
-            &ui::presence::PresenceCtx::default(),
+            theme,&ui::presence::PresenceCtx::default().draw_env().draw_env(),
         );
     }
 
@@ -1642,8 +1636,7 @@ mod tests {
                     &mut Scene::new(),
                     Affine::IDENTITY,
                     &mut ui::TextRenderer::new(),
-                    &theme,
-                    &ui::presence::PresenceCtx::default(),
+                    &theme,&ui::presence::PresenceCtx::default().draw_env().draw_env(),
                 );
                 let point = layer.stack.rect().center();
                 layer.route(&ui::synthetic_input::cursor_moved(point.x, point.y), 1.0);

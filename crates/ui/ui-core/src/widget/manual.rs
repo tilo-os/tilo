@@ -2,7 +2,7 @@
 use super::composition_parts::{Parts, retained_parts};
 use super::layout_info::ManualLayout;
 use super::{Element, LayoutInfo, Widget, WidgetLayoutError};
-use crate::{PresenceCtx, Theme, bound_dispatch::BoundNodeMap, text_render::TextRenderer};
+use crate::{Theme, bound_dispatch::BoundNodeMap, text_render::TextRenderer};
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::{
@@ -253,15 +253,10 @@ impl Widget for Manual {
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.parts.draw(scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
     fn paint_bounds(&self) -> Rect {

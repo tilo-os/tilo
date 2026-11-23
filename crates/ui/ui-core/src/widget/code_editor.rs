@@ -26,7 +26,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
+use crate::presence::{PathSegment, PresenceKey};
+#[cfg(test)]
+use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
@@ -449,16 +451,11 @@ impl CodeEditor {
     /// A monolithic host that owns its own layout calls [`set_rect`] then this each frame,
     /// with the presence it draws for: `presence` names the person, so their own writes are not
     /// tinted as someone else's.
-    pub fn draw_embedded(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub fn draw_embedded(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.inner
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
         self.draw_diagnostics(scene, transform, theme);
     }
 
@@ -495,10 +492,15 @@ impl CodeEditor {
         theme: &Theme,
         window: Rect,
     ) {
-        let presence = PresenceCtx::default();
-        let previous = presence.push_viewport(window);
-        self.draw_diagnostic_hover(scene, transform, text_renderer, theme, &presence);
-        presence.pop_viewport(previous);
+        let mut env = crate::draw::DrawEnv::default();
+        env.viewport = Some(window);
+        self.draw_diagnostic_hover(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env,
+        ));
     }
 
     pub fn inner(&self) -> &TextInput {
@@ -594,30 +596,20 @@ impl Widget for CodeEditor {
         self.inner.layout_measured();
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.inner
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
         self.draw_diagnostics(scene, transform, theme);
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.inner
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
-        self.draw_diagnostic_hover(scene, transform, text_renderer, theme, presence);
+            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.draw_diagnostic_hover(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     /// The field's: the editor is its field and the diagnostics it marks.
@@ -790,14 +782,9 @@ impl CodeEditor {
 
     /// The message of the diagnostic under the pointer, on a floating surface just below its line, in
     /// the window's top layer.
-    fn draw_diagnostic_hover(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_diagnostic_hover(&self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let Some(point) = self.hover else { return };
         let Some(d) = self.diagnostic_at(point) else {
             return;
@@ -813,9 +800,8 @@ impl CodeEditor {
         let size = (f64::from(w) + pad * 2.0, f64::from(h) + pad * 2.0);
         let line = self.inner.caret_rect(theme, d.range.start);
         let anchor = Rect::new(point.x, line.y0, point.x, line.y1);
-        let window = presence
+        let window = env
             .viewport
-            .get()
             .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
         let (panel, _) = crate::widget::floating_surface::place_anchored(
             anchor,
@@ -1468,7 +1454,7 @@ mod tests {
             let presence = PresenceCtx::empty();
             let mut renderer = TextRenderer::new();
             let mut scene = Scene::new();
-            editor.draw_embedded(&mut scene, Affine::IDENTITY, &mut renderer, &theme, &presence);
+            editor.draw_embedded(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &theme, presence.draw_env()));
             let colour = theme.tokens.colors.presence.of_rgb(presence.color_for(&writer));
             let drawn = &scene.encoding().draw_data;
             assert!(
@@ -1512,7 +1498,7 @@ mod tests {
         let presence = PresenceCtx::default();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        Widget::draw(ed, &mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+        Widget::draw(ed, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
     }
 
     fn lay_out_and_draw(
@@ -1544,7 +1530,7 @@ mod tests {
         Widget::apply_layout(ed, &taffy, node, Point::ZERO);
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        Widget::draw(ed, &mut scene, Affine::IDENTITY, renderer, theme, &presence);
+        Widget::draw(ed, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, renderer, theme, presence.draw_env()));
         height
     }
 
@@ -1701,14 +1687,7 @@ mod document_tests {
             editor.set_rect(Rect::new(0.0, 0.0, 400.0, 100.0));
             let mut scene = Scene::new();
             let mut tr = TextRenderer::new();
-            Widget::draw(
-                &mut editor,
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::default(),
-            );
+            Widget::draw(&mut editor, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
             let caret = editor.caret_rect(&theme, 1);
             let at = Point::new(caret.x0 + 1.0, caret.center().y);
             let hit = editor.diagnostic_at(at).map(|d| d.severity);

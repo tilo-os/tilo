@@ -415,18 +415,13 @@ impl Flow {
     }
 
     /// Draw the children through the subtree cache.
-    pub fn draw_cached(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) -> bool {
-        if presence.should_cull(self.paint_rect) {
+    pub fn draw_cached(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        if env.should_cull(self.paint_rect) {
             return false;
         }
-        if self.draw_near_view(scene, transform, text_renderer, theme, presence) {
+        if self.draw_near_view(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone())) {
             return true;
         }
 
@@ -452,11 +447,11 @@ impl Flow {
             .as_deref()
             .is_none_or(|drawn| !drawn.is(theme));
         let tracked = crate::scene_parts::is_tracked(scene);
-        let permissions_moved = self.cache_permissions != presence.paint_permission_generation();
+        let permissions_moved = self.cache_permissions != env.paint_permissions;
         // A write's mark arrives on the text it landed in and then rests or goes: while one
         // changes, on the frame after, and once one comes or goes, the drawing is made again.
-        let writes = presence.shows_writes(crate::time::now());
-        let written = presence.written_generation();
+        let writes = env.marks_changing;
+        let written = env.marks_generation;
         let input_moved =
             self.cache_outside && self.cache_input != crate::input_generation::generation();
         let model_moved = self.cache_model != crate::input_generation::model();
@@ -491,8 +486,7 @@ impl Flow {
                     scene,
                     transform,
                     text_renderer,
-                    theme,
-                    presence,
+                    theme,&env,
                 );
             }
             crate::outside_paint::end(enclosing);
@@ -511,7 +505,7 @@ impl Flow {
             // widgets were never recorded. vello's tile binner already
             // skips off-viewport tiles at compose time, so nothing is saved
             // by culling here.
-            let prev_vp = presence.viewport.replace(None);
+            let prev_vp = env.viewport.take();
             let mut local = std::mem::take(&mut self.subtree_cache);
             local.reset();
             crate::backdrop::nest_scene(&local);
@@ -543,7 +537,7 @@ impl Flow {
                         Some(index),
                         child_transform,
                     );
-                    child.draw_child(local, child_transform, text_renderer, theme, presence);
+                    child.draw_child(local, child_transform, text_renderer, theme,&env);
                     crate::scene_parts::end_widget(local, begun);
                 }
                 ghosts.draw(local, Affine::IDENTITY, shifts.as_deref());
@@ -577,14 +571,14 @@ impl Flow {
             if theme_changed {
                 self.cache_theme = Some(Box::new(DrawnTheme::of(theme)));
             }
-            self.cache_permissions = presence.paint_permission_generation();
+            self.cache_permissions = env.paint_permissions;
             self.cache_writes = writes;
             self.cache_written = written;
             self.cache_input = crate::input_generation::generation();
             self.cache_model = crate::input_generation::model();
             self.cache_present = true;
             self.descendant_caches_released = false;
-            presence.viewport.set(prev_vp);
+            env.viewport = prev_vp;
         } else {
             let dx = self.rect.x0 - self.cache_rect.x0;
             let dy = self.rect.y0 - self.cache_rect.y0;
@@ -624,15 +618,10 @@ impl Flow {
     /// copy, is not drawn at all ([`crate::draw_cull`]). Returns whether it
     /// drew so; a column shown whole, or with a band moving, draws through
     /// the cache.
-    fn draw_near_view(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) -> bool {
-        let Some(view) = presence.viewport() else {
+    fn draw_near_view(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        let Some(view) = env.viewport() else {
             return false;
         };
         if !self.stacked
@@ -671,8 +660,7 @@ impl Flow {
                 scene,
                 transform,
                 text_renderer,
-                theme,
-                presence,
+                theme,&env,
             );
             self.reach = self.reach.max(paint_reach(child.as_ref()));
         }
@@ -793,19 +781,25 @@ macro_rules! flow_widget_methods {
             self.flow.apply_layout(taffy, node, origin);
         }
 
-        fn draw(
-            &mut self,
-            scene: &mut vello::Scene,
-            transform: vello::kurbo::Affine,
-            text_renderer: &mut $crate::text_render::TextRenderer,
-            theme: &$crate::theme::Theme,
-            presence: &$crate::presence::PresenceCtx,
-        ) {
-            if self
-                .flow
-                .draw_cached(scene, transform, text_renderer, theme, presence)
-            {
-                $crate::widget::draw_permission_scrim_and_peer_focus(self, scene, transform, theme, presence);
+        fn draw(&mut self, ctx: &mut $crate::draw::DrawCtx<'_>) {
+            let (scene, transform, text_renderer, theme, env) = ctx.parts();
+            if self.flow.draw_cached(&mut $crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            )) {
+                $crate::widget::draw_over(
+                    self,
+                    &mut $crate::draw::DrawCtx::new(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        env,
+                    ),
+                );
             }
         }
 

@@ -10,7 +10,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
 use crate::chrome::header_row;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{TaffyTreeExt, Widget};
@@ -152,14 +152,9 @@ impl Widget for HeaderTitle {
 
     crate::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.covered || self.rect.width() <= 0.0 {
             return;
         }

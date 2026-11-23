@@ -91,26 +91,14 @@ tilo_test_env::scenario! {
         let owner = Rect::new(0.0, 0.0, 800.0, 600.0);
         let presence = PresenceCtx::empty();
         presence.viewport.set(Some(owner));
-        embedded.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &presence,
-        );
+        embedded.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
         assert_eq!(
             presence.viewport.get(),
             Some(owner),
             "the owner's viewport is put back"
         );
         assert!(embedded.widget_mut().open_text_menu(Point::new(380.0, 10.0)));
-        embedded.draw_overlay(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &presence,
-        );
+        embedded.draw_overlay(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
         let menu = embedded.modal_capture().expect("the menu is open");
         assert!(
             menu.x0 >= owner.x0 - 1e-6
@@ -147,13 +135,7 @@ tilo_test_env::scenario! {
                 .selection_range();
             for _ in 0..3 {
                 embedded.layout(Rect::new(0.0, 0.0, 220.0, 0.0), &normal, &mut text);
-                embedded.draw(
-                    &mut Scene::new(),
-                    Affine::IDENTITY,
-                    &mut text,
-                    &normal,
-                    &PresenceCtx::empty(),
-                );
+                embedded.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &normal, PresenceCtx::empty().draw_env()));
             }
 
             text.set_text_scale(large.text_scale);

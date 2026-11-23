@@ -1415,8 +1415,7 @@ impl StripSwitcher {
             cx.scene,
             cx.transform,
             cx.text,
-            &input_theme,
-            &PresenceCtx::default(),
+            &input_theme,&PresenceCtx::default().draw_env().draw_env(),
         );
     }
 

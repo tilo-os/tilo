@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use tilo_desktop_model::StripId;
 use ui::kurbo::{Affine, Rect};
 use ui::motion::{Direction, Drill, MotionValue, Pose, Snap, unit_opacity};
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::Instant;
@@ -332,14 +332,9 @@ impl super::DesktopSurface {
     /// Draw the strip the person left behind, at its pose, under the strip that arrived: a strip or
     /// workspace change moves as one view instead of cutting from one to the other. The bar, the
     /// notifications and the menus stay where they are.
-    pub(crate) fn draw_leaving_strip(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    pub(crate) fn draw_leaving_strip(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let motion = ui::tokens::EffectiveMotion::new(theme.tokens.motion, theme.reduce_motion);
         self.motion = motion;
         let now = ui::motion::frame_now();
@@ -350,7 +345,7 @@ impl super::DesktopSurface {
             self.slides.get_mut().drop_running();
             return;
         };
-        draw_leaving(row, rect, pose, scene, transform, text, theme, presence);
+        draw_leaving(row, rect, pose, &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
     /// Note where the strip shown was laid out, so a change away from it is drawn from where the
@@ -367,16 +362,9 @@ impl super::DesktopSurface {
 }
 
 /// Draw the strip `row` leaving at `pose` , under the strip that arrived.
-pub(super) fn draw_leaving(
-    row: &mut GroupRow,
-    rect: Rect,
-    pose: Pose,
-    scene: &mut vello::Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
-) {
+pub(super) fn draw_leaving(row: &mut GroupRow, rect: Rect, pose: Pose, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
     if !pose.is_visible() || rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
@@ -396,7 +384,7 @@ pub(super) fn draw_leaving(
         &rect,
     );
     let moved = transform.pre_translate(pose.transform.translation());
-    ui::widget::draw_child(row, scene, moved, text, theme, presence);
+    ui::widget::draw_child(row, scene, moved, text, theme,&env);
     scene.pop_layer();
     scene.pop_layer();
 }

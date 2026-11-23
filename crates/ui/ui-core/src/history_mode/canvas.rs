@@ -101,14 +101,9 @@ impl Widget for PreviewCanvas {
         clippy::arithmetic_side_effects,
         reason = "floating point display geometry is non-authoritative and does not overflow integers"
     )]
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if let Some(preview) = &mut self.preview {
             match preview.layout(self.rect, text, theme) {
                 Ok(()) => {

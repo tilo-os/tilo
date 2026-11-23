@@ -1451,15 +1451,10 @@ impl Widget for Toolbar {
             }
         }
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.viewport = presence.viewport.get().or(self.viewport);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.viewport = env.viewport.or(self.viewport);
         if let Some(viewport) = self.viewport {
             self.menu.reanchor(self.overflow_rect, viewport);
         }
@@ -1554,7 +1549,7 @@ impl Widget for Toolbar {
                 }
                 Some(ToolbarItem::Element(_)) => {
                     if let Some(ToolbarItem::Element(element)) = self.items.get_mut(index) {
-                        element.draw_child(scene, transform, text, theme, presence);
+                        element.draw_child(scene, transform, text, theme,&env);
                     }
                 }
                 Some(ToolbarItem::Spacer) | None => {}
@@ -1581,27 +1576,22 @@ impl Widget for Toolbar {
         self.shown.present();
         super::defaults::mark_drawn(self.children_mut());
     }
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         for item in &mut self.items {
             if let ToolbarItem::Element(element) = item {
-                element.draw_overlay(scene, transform, text, theme, presence);
+                element.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
             }
         }
         if let Some((index, menu)) = self.item_menu.as_mut() {
             if let (Some(viewport), Some(anchor)) = (self.viewport, self.item_rects.get(*index)) {
                 menu.reanchor(*anchor, viewport);
             }
-            menu.draw_overlay(scene, transform, text, theme, presence);
+            menu.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
         }
         self.menu
-            .draw_overlay(scene, transform, text, theme, presence);
+            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if (self.focused || self.traps_focus())
@@ -2276,13 +2266,7 @@ mod tests {
             let node = Widget::accessibility(&tb).expect("toolbar semantics");
             assert_eq!(node.children[0].name.as_deref(), Some("Product menu"));
             let mut scene = Scene::new();
-            tb.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &PresenceCtx::default(),
-            );
+            tb.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, PresenceCtx::default().draw_env()));
             let painted = PAINTED.with(Cell::get).expect("the host painted its mark");
             assert!((painted.center() - square.center()).hypot() < 0.5);
         }
@@ -2597,7 +2581,7 @@ mod tests {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        tb.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        tb.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
         scene
     }
 
@@ -2654,8 +2638,8 @@ mod lifecycle_tests {
             .viewport
             .set(Some(Rect::new(0.0, 0.0, 360.0, 220.0)));
         let mut scene = Scene::new();
-        tb.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-        tb.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+        tb.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+        tb.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
     }
 
     fn dispatch(tb: &mut Toolbar, event: WindowEvent) -> bool {
@@ -3080,13 +3064,7 @@ mod lifecycle_tests {
                     presence
                         .viewport
                         .set(Some(Rect::new(0.0, 0.0, 360.0, 220.0)));
-                    host.draw(
-                        &mut Scene::new(),
-                        Affine::IDENTITY,
-                        &mut text,
-                        &theme,
-                        &presence,
-                    );
+                    host.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
                     assert!(host.children_mut()[0].perform_semantic_action(
                         "toolbar.overflow",
                         &Action::Activate,
@@ -3204,13 +3182,7 @@ mod command_state_tests {
             assert!(tb.item_rect(1).unwrap().width() > before);
             tb.set_dot(0, true);
             let mut scene = Scene::new();
-            tb.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::dark(),
-                &PresenceCtx::default(),
-            );
+            tb.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
         }
 
         phase priority_keeps_a_pair_together_and_the_more_menu_shows_state;

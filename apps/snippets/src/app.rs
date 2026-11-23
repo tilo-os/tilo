@@ -8,7 +8,7 @@ use taffy::{NodeId, TaffyTree};
 use ui::framework::TextControl;
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, Live, Submit, ViewCx};
 use ui::icons::Icon;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Resource;
@@ -951,40 +951,30 @@ impl ui::widget::Decorator for SnippetsWindow {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.core
             .borrow_mut()
             .body
             .control_mut()
             .set_rect(Rect::ZERO);
-        ui::widget::DrawChild::draw_child(&mut self.shell, scene, transform, text, theme, presence);
+        ui::widget::DrawChild::draw_child(&mut self.shell, scene, transform, text, theme,&env);
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        Widget::draw_overlay(&mut self.shell, scene, transform, text, theme, presence);
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        Widget::draw_overlay(&mut self.shell, &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         let mut core = self.core.borrow_mut();
         let window = core.window;
         if let Some(modal) = core.expand.as_mut() {
             modal.draw(scene, transform, text, theme, window);
-            modal.draw_overlay(scene, transform, text, theme, presence);
+            modal.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         } else if core.body_available() {
             core.body
                 .control_mut()
-                .draw_overlay(scene, transform, text, theme, presence);
+                .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         }
     }
 

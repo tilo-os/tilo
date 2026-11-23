@@ -10,7 +10,7 @@ use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Circle, Rect, Stroke};
 use ui::widget::{AppModel, EventCtx, ModelPath, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
-use ui::{PresenceCtx, TextRenderer, Theme};
+use ui::{TextRenderer, Theme};
 
 use crate::tools::{Tool, Tools};
 
@@ -72,14 +72,9 @@ impl Widget for Well {
 
     ui::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.name = self.describe();
         let side =
             self.rect.width().min(self.rect.height()) - 2.0 * f64::from(theme.tokens.spacing.s1);

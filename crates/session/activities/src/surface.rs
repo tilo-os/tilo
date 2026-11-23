@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use tilo_desktop_surface::floating_layer::{Ask, FloatingLayer};
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow, ResourceSurface, SurfaceCx};
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::vello::Scene;
@@ -205,14 +205,9 @@ impl Widget for ActivitiesSurface {
         self.state.borrow_mut().catch_up();
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.state
             .borrow_mut()
             .draw(scene, transform, text_renderer, theme);

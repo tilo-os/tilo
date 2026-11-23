@@ -660,14 +660,9 @@ impl Widget for OverviewPanel {
         false
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let progress = self.progress();
         self.drawn_progress = progress;
         let drawn = self.is_drawn();
@@ -1660,8 +1655,7 @@ mod tests {
                 &mut scene,
                 Affine::IDENTITY,
                 &mut TextRenderer::new(),
-                &Theme::dark(),
-                &PresenceCtx::default(),
+                &Theme::dark(),&PresenceCtx::default().draw_env().draw_env(),
             );
             let pictures = flight.pictures();
             assert_eq!(
@@ -1691,8 +1685,7 @@ mod tests {
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut TextRenderer::new(),
-                &Theme::dark(),
-                &PresenceCtx::default(),
+                &Theme::dark(),&PresenceCtx::default().draw_env().draw_env(),
             );
             assert!(flight.pictures().is_empty());
         }
@@ -1709,8 +1702,7 @@ mod tests {
                     &mut Scene::new(),
                     Affine::IDENTITY,
                     &mut text,
-                    &Theme::dark(),
-                    &PresenceCtx::default(),
+                    &Theme::dark(),&PresenceCtx::default().draw_env().draw_env(),
                 );
             }
             assert_eq!(
@@ -1811,8 +1803,7 @@ mod tests {
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::default(),
+            &Theme::dark(),&PresenceCtx::default().draw_env().draw_env(),
         );
         assert!(scene.encoding().is_empty());
     }

@@ -5,7 +5,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
@@ -16,14 +15,9 @@ use super::shown::ListShown;
 use crate::widget::DrawChild;
 
 impl VirtualRows {
-    pub(super) fn paint(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub(super) fn paint(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.painted_lifts.clear();
         self.painted_chevrons.clear();
         self.corners = crate::widget::scrollbar::SurfaceCorners::seen(theme, transform);
@@ -204,8 +198,14 @@ impl VirtualRows {
                 .and_then(|place| place(&*self.model, row.index, &row.key))
             {
                 let device = transform.transform_rect_bbox(row_rect);
-                for user in presence.peers_on(&place) {
-                    presence.draw_peer_mist(scene, theme, user, device);
+                if let Some(faces) = env.sites.get(&place) {
+                    for face in faces {
+                        crate::presence::render::paint_mist(
+                            scene,
+                            theme.tokens.colors.presence.of_rgb(face.colour),
+                            device,
+                        );
+                    }
                 }
             }
             let slot = row.widget.get_rect() + vello::kurbo::Vec2::new(0.0, dy);
@@ -236,7 +236,7 @@ impl VirtualRows {
                 now,
                 &mut |ctx| {
                     row.widget
-                        .draw_child(ctx.scene, row_transform, ctx.text, theme, presence);
+                        .draw_child(ctx.scene, row_transform, ctx.text, theme,&env);
                 },
             );
             if let Some(marks) = tree.as_ref() {
@@ -286,7 +286,7 @@ impl VirtualRows {
         if let Some(field) = self.rename.as_mut() {
             field
                 .input
-                .draw_child(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme,&env);
         }
         if let Some(preview) = self.reorder.preview() {
             scene.fill(

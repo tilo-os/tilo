@@ -38,7 +38,7 @@ use ui::framework::{
     EffectAnswer, EffectCx, EffectReply, Effected, Live, LiveRow, Publishes, RunMode, ViewCx,
 };
 use ui::paint::PaintCtx;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::ActionOutput;
@@ -663,27 +663,17 @@ impl Widget for GitClientApp {
         self.state().set_platform_conventions(conventions);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.state().draw(scene, transform, tr, theme, presence);
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
+        self.state().draw(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.state()
-            .draw_overlay(scene, transform, text, theme, presence);
+            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -826,33 +816,23 @@ impl GitClientState {
         self.conventions = conventions;
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         // A key (1, 2, 3, d) changes what the bar shows without a sync.
         ui::window_toolbar::declare(Some(self.window_toolbar()));
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
-        self.paint_window(&mut ctx, presence);
+        self.paint_window(&mut ctx,&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let Some(confirm) = &self.confirm else {
             self.confirm_sheet.reset();
             return;
         };
-        let window = presence.viewport.get().unwrap_or(self.rect);
+        let window = env.viewport.unwrap_or(self.rect);
         let title = confirm.title();
         let body = confirm.body();
         let choices = confirm.choices();

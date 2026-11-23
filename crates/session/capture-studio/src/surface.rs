@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use tilo_sheets::{Phase, SheetState as _};
 use ui::framework::{EffectAnswer, EffectCx, Effected, ResourceSurface, SurfaceCx};
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
@@ -909,14 +909,9 @@ impl Widget for StudioSurface {
         self.catch_up();
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut VelloScene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.catch_up();
         match self.markup.as_mut() {
             // The editor is the whole studio while it is up: what it marks up
@@ -924,11 +919,11 @@ impl Widget for StudioSurface {
             Some(markup) => {
                 markup
                     .widget
-                    .draw_child(scene, transform, text_renderer, theme, presence);
+                    .draw_child(scene, transform, text_renderer, theme,&env);
             }
             None => self
                 .widget
-                .draw_child(scene, transform, text_renderer, theme, presence),
+                .draw_child(scene, transform, text_renderer, theme,&env),
         }
         self.take_markup_commands();
         self.take_intents();

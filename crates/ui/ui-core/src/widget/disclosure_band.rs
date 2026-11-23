@@ -10,7 +10,6 @@ use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
@@ -182,14 +181,9 @@ impl Widget for DisclosureBand {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.band.motion = theme.motion();
         if !self.band.in_motion() {
             if self.rect.width() <= 0.0 {
@@ -197,7 +191,7 @@ impl Widget for DisclosureBand {
             }
             let mut painted = self.band.take_painted();
             self.child
-                .draw_child(&mut painted, Affine::IDENTITY, text, theme, presence);
+                .draw_child(&mut painted, Affine::IDENTITY, text, theme,&env);
             self.band.show_at_rest(painted, scene, transform);
             return;
         }
@@ -213,7 +207,7 @@ impl Widget for DisclosureBand {
         }
         let mut painted = self.band.take_painted();
         self.child
-            .draw_child(&mut painted, Affine::IDENTITY, text, theme, presence);
+            .draw_child(&mut painted, Affine::IDENTITY, text, theme,&env);
         self.band.show_moving(painted, scene, transform);
     }
 

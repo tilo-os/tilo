@@ -32,8 +32,7 @@ tilo_test_env::scenario! {
             &mut scene,
             Affine::IDENTITY,
             &mut renderer,
-            &theme,
-            &PresenceCtx::default(),
+            &theme,&PresenceCtx::default().draw_env().draw_env(),
         );
         let runs = &scene.encoding().resources.glyph_runs;
         assert!(!runs.is_empty());
@@ -396,8 +395,7 @@ pub(super) fn lay_out_and_draw_with_text(
         &mut Scene::new(),
         Affine::IDENTITY,
         text_renderer,
-        theme,
-        &PresenceCtx::default(),
+        theme,&PresenceCtx::default().draw_env().draw_env(),
     );
 }
 
@@ -448,8 +446,7 @@ fn painted(bar: &mut TopBarChrome) -> bool {
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
-        &Theme::default(),
-        &PresenceCtx::default(),
+        &Theme::default(),&PresenceCtx::default().draw_env().draw_env(),
     );
     !scene.encoding().is_empty()
 }
@@ -1328,8 +1325,7 @@ fn scene_fingerprint(bar: &mut TopBarChrome) -> (Vec<u32>, usize, usize) {
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
-        &Theme::default(),
-        &PresenceCtx::default(),
+        &Theme::default(),&PresenceCtx::default().draw_env().draw_env(),
     );
     let encoding = scene.encoding();
     (
@@ -1646,7 +1642,7 @@ tilo_test_env::scenario! {
         let presence = PresenceCtx::default();
         let mut paint = |bar: &mut TopBarChrome| {
             let mut scene = Scene::new();
-            bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme,&presence.draw_env());
         };
         paint(&mut bar);
         let start = ui::time::now();
@@ -1740,7 +1736,7 @@ tilo_test_env::scenario! {
             ui::time::testing::with_monotonic_time(at, || {
                 bar.refresh_status_and_media_state();
                 let mut scene = Scene::new();
-                bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme,&presence.draw_env());
             });
         };
         let start = ui::time::now();
@@ -2261,7 +2257,7 @@ tilo_test_env::scenario! {
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
-        bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme,&presence.draw_env());
 
         let avatar = bar.avatar_stack_rect;
         let tray = bar.tray_pill_rect();
@@ -2321,7 +2317,7 @@ tilo_test_env::scenario! {
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
-        bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme,&presence.draw_env());
 
         assert!(
             bar.face_initials().is_empty() && bar.face_overflow() == 0,
@@ -2407,8 +2403,7 @@ tilo_test_env::scenario! {
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut TextRenderer::new(),
-                &theme,
-                &PresenceCtx::default(),
+                &theme,&PresenceCtx::default().draw_env().draw_env(),
             );
         };
 
@@ -2572,7 +2567,7 @@ tilo_test_env::scenario! {
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
-        bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme,&presence.draw_env());
 
         let bar_bottom = bar.rect.y1;
         assert!(
@@ -2719,8 +2714,7 @@ fn unread_activity_paints_nothing_on_the_people_control() {
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
-            &theme,
-            &PresenceCtx::default(),
+            &theme,&PresenceCtx::default().draw_env().draw_env(),
         );
         assert_eq!(bar.activity_unread, unread, "nothing else reset it");
         let rgba = renderer.render(&scene, Color::BLACK);

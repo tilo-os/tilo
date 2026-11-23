@@ -1,7 +1,7 @@
 //! Retained graph composition: real controls on Manual, decorative themed edges.
 use super::composition_parts::{Parts, retained_parts};
 use super::{Element, Manual, MeasureConstraint, Widget};
-use crate::{PresenceCtx, Theme, text_render::TextRenderer};
+use crate::{Theme, text_render::TextRenderer};
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::{
@@ -211,14 +211,9 @@ impl Widget for GraphCanvas {
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         // The lines are the canvas's own paint; its nodes draw as widgets of their own.
         crate::scene_parts::picture();
         for (from, to) in self.connection_rects() {
@@ -240,7 +235,7 @@ impl Widget for GraphCanvas {
                 &path,
             );
         }
-        self.parts.draw(scene, transform, text, theme, presence);
+        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

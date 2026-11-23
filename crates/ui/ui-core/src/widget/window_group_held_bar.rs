@@ -78,14 +78,9 @@ impl WindowGroup {
         crate::widget::window_header::content_bar(app as &dyn Widget)
     }
 
-    pub(super) fn draw_held_furniture(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    pub(super) fn draw_held_furniture(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         if self.held_bar.is_none() {
             return;
         }
@@ -110,15 +105,7 @@ impl WindowGroup {
                 .iter()
                 .find_map(super::held_controls::HeldControl::keyboard),
         };
-        self.held.paint(
-            scene,
-            transform,
-            tr,
-            theme,
-            presence,
-            &mut self.search,
-            state,
-        );
+        self.held.paint(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()), &mut self.search, state);
     }
 
     /// What a control of the window's furniture does when a person presses it there, as assistive

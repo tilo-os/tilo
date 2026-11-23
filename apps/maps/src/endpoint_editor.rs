@@ -440,7 +440,7 @@ impl EndpointEditor {
             field.input.apply_layout_external(rect);
             field
                 .input
-                .draw_child(scene, transform, text, theme, &PresenceCtx::empty());
+                .draw_child(scene, transform, text, theme,&PresenceCtx::empty().draw_env().draw_env());
         }
 
         let swap = Rect::new(
@@ -470,13 +470,7 @@ impl EndpointEditor {
         theme: &Theme,
     ) {
         let Some(endpoint) = self.focused else { return };
-        self.field_mut(endpoint).input.draw_overlay(
-            scene,
-            transform,
-            text,
-            theme,
-            &PresenceCtx::empty(),
-        );
+        self.field_mut(endpoint).input.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, PresenceCtx::empty().draw_env()));
     }
 }
 

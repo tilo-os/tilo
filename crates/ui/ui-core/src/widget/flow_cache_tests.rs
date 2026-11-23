@@ -94,14 +94,9 @@ impl Widget for Readout {
         taffy.widget_leaf(style, node_map, self)
     }
     crate::rect_geometry!();
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        _text: &mut crate::text_render::TextRenderer,
-        _theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _text, _theme, mut env) = ctx.parts();
         crate::outside_paint::note();
         let width = f64::from(self.width.get());
         scene.fill(
@@ -170,14 +165,9 @@ impl Widget for Gauge {
         taffy.widget_leaf(style, node_map, self)
     }
     crate::rect_geometry!();
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        _text: &mut crate::text_render::TextRenderer,
-        _theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _text, _theme, mut env) = ctx.parts();
         let width = f64::from(self.value.get());
         scene.fill(
             vello::peniko::Fill::NonZero,

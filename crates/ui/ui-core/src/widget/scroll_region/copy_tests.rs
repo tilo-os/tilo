@@ -45,14 +45,9 @@ impl Widget for Transcript {
 
     crate::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.region.set_viewport(self.rect, theme);
         self.region
             .set_content_size(self.rect.width(), LINES as f64 * LINE);

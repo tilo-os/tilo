@@ -10,7 +10,6 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
@@ -362,14 +361,9 @@ impl Widget for Surface {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let paints = OPEN_LEVELS.with(|open| self.paints_ground(&open.borrow()));
         let child_theme = if paints {
             paint_surface(scene, transform, self.rect, self.level, theme)
@@ -382,8 +376,7 @@ impl Widget for Surface {
             scene,
             transform,
             text_renderer,
-            &child_theme,
-            presence,
+            &child_theme,&env,
         );
         OPEN_LEVELS.with(|open| {
             open.borrow_mut().pop();
@@ -556,22 +549,16 @@ impl Widget for DensityRegion {
         self.child.apply_layout(taffy, node, origin);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let theme = theme.clone().with_density(self.density);
         crate::widget::draw_child(
             self.child.as_mut(),
             scene,
             transform,
             text_renderer,
-            &theme,
-            presence,
+            &theme,&env,
         );
     }
 

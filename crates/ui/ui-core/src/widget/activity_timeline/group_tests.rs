@@ -61,7 +61,7 @@ fn paint(t: &mut ActivityTimeline) {
     tr.apply_typography(&theme.tokens.typography);
     t.place_controls(&theme);
     let presence = PresenceCtx::empty();
-    t.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    t.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
 }
 
 use crate::synthetic_input::cursor_moved;

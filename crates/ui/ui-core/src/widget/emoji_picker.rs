@@ -14,7 +14,7 @@ use crate::a11y::{AccessNode, AccessState, Politeness, Role};
 use crate::emoji_catalogue::{self, CatalogueGroup};
 use crate::num::{f32_of_f64, f64_of_usize, usize_of_f64};
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
@@ -1442,14 +1442,9 @@ impl Widget for EmojiPicker {
         self.rect
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if !self.open {
             return;
         }
@@ -1479,7 +1474,7 @@ impl Widget for EmojiPicker {
             theme
         };
         self.search
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
 
         let g = self.geometry.clone();
         if !g.tabs.is_empty() {

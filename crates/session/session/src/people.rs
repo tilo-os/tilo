@@ -805,17 +805,12 @@ impl Panel {
     }
 
     /// Draw the card in the roster's place. Answers whether one stands there.
-    fn draw_card(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) -> bool {
+    fn draw_card(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) -> bool {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.profile.is_open() {
             self.profile
-                .draw_overlay(scene, transform, text, theme, presence);
+                .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         }
         self.profile.is_open()
     }
@@ -1286,16 +1281,9 @@ impl Panel {
     /// Where everyone here points, drawn by the one rule both hosts draw pointers by: over the
     /// tile of the tab it is on, in the colour and under the name the workspace knows them by,
     /// with what they say beside it. What each tab is called names where they are.
-    fn draw_pointers(
-        &self,
-        scene: &mut ui::vello::Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-        shown: &mut Shown,
-    ) {
-        let _ = presence;
+    fn draw_pointers(&self, ctx: &mut tilo_ui::DrawCtx<'_>, shown: &mut Shown) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let open = self.open.get();
         let tiles: Vec<tilo_live::presence::Tile> = self
             .handle
@@ -1327,8 +1315,7 @@ impl Panel {
                     &members,
                     &sync.here().borrow().faces(),
                     &tiles,
-                    &mut self.chats.borrow_mut(),
-                    presence,
+                    &mut self.chats.borrow_mut(),&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
                     ui::time::now(),
                     Self::presence_ms(),
                     theme.motion(),
@@ -1436,15 +1423,9 @@ impl Panel {
 
     /// The roster, drawn where it stands: under the bar as the faces open it, or kept on screen at
     /// an edge with a mirror of each person's screen. One painting for both.
-    fn draw_roster(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-        shown: &mut Shown,
-    ) {
+    fn draw_roster(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, shown: &mut Shown) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let now = ui::motion::frame_now();
         let motion = theme.motion();
         // The roster is the panel's only while it is up or kept at an edge: closed, it draws
@@ -1454,7 +1435,7 @@ impl Panel {
         }
         // The bar's faces open the roster where they stand, kept on screen or not.
         if self.open.get() {
-            self.draw_one_roster(scene, transform, text, theme, presence, shown, None);
+            self.draw_one_roster(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()), shown, None);
             return;
         }
         if let Some(pin) = shown.pinned.as_mut() {
@@ -1522,7 +1503,7 @@ impl Panel {
             placed,
             &slot.inflate(32.0, 32.0),
         );
-        self.draw_one_roster(scene, placed, text, theme, presence, shown, Some(slot));
+        self.draw_one_roster(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()), shown, Some(slot));
         scene.pop_layer();
         // What the roster made of its slot is where it now stands: the next placement centres it
         // by that, and a press on its header drags the panel the person sees.
@@ -1537,17 +1518,10 @@ impl Panel {
     }
 
     /// The roster's one painting, with the model this session builds of who is here.
-    fn draw_one_roster(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-        shown: &mut Shown,
-        panel: Option<Rect>,
-    ) {
-        let card_stands = self.draw_card(scene, transform, text, theme, presence);
+    fn draw_one_roster(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, shown: &mut Shown, panel: Option<Rect>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        let card_stands = self.draw_card(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         if card_stands {
             return;
         }
@@ -1916,14 +1890,9 @@ impl Widget for Panel {
             || self.live_card.replace(false)
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let revision = self.presence_revision();
         // The card is this panel's own, in the roster's place: what it shows is read here, while
         // the roster's state is borrowed.
@@ -1933,8 +1902,8 @@ impl Widget for Panel {
             // The card stood in the panel: closed with it, never left for the next opening to find.
             self.profile.close();
         }
-        self.draw_pointers(scene, transform, text, theme, presence, &mut shown);
-        self.draw_roster(scene, transform, text, theme, presence, &mut shown);
+        self.draw_pointers(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()), &mut shown);
+        self.draw_roster(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()), &mut shown);
         self.draw_follow(scene, transform, text, theme, &shown);
         self.drawn.set(revision);
     }

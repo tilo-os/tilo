@@ -12,7 +12,7 @@ use ui_core::application_view::{
     ApplicationFocusRestore, ApplicationLocalView, ApplicationViewState,
 };
 use ui_core::collaboration::{CollabEvent, CollabRequest};
-use ui_core::presence::PresenceCtx;
+
 use ui_core::text_render::TextRenderer;
 use ui_core::theme::{AppearanceIntent, Theme};
 use ui_core::time::Instant;
@@ -221,16 +221,11 @@ impl Decorator for Kept {
         self.content.sync(state, path);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.content
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
         if let Some(presented) = self.upkeep.presented.as_mut() {
             presented();
         }

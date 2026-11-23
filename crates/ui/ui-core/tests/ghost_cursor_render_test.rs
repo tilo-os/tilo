@@ -42,13 +42,7 @@ fn ghost_cursor_paints_only_remote_presence() {
         let mut text_renderer = TextRenderer::new();
         let theme = Theme::dark();
 
-        draw_remote_cursors(
-            &mut scene,
-            vello::kurbo::Affine::IDENTITY,
-            &mut text_renderer,
-            &theme,
-            &presence,
-        );
+        draw_remote_cursors(&mut crate::draw::DrawCtx::new(&mut scene, vello::kurbo::Affine::IDENTITY, &mut text_renderer, &theme, presence.draw_env()));
 
         let mut offscreen = OffscreenRenderer::new(width, height);
         // BLACK background so any non-zero RGB stamp is unambiguous —
@@ -103,13 +97,7 @@ fn ghost_cursor_paints_only_remote_presence() {
         let mut text_renderer = TextRenderer::new();
         let theme = Theme::dark();
 
-        draw_remote_cursors(
-            &mut scene,
-            vello::kurbo::Affine::IDENTITY,
-            &mut text_renderer,
-            &theme,
-            &presence,
-        );
+        draw_remote_cursors(&mut crate::draw::DrawCtx::new(&mut scene, vello::kurbo::Affine::IDENTITY, &mut text_renderer, &theme, presence.draw_env()));
 
         let mut offscreen = OffscreenRenderer::new(32, 32);
         let rgba = offscreen.render(&scene, Color::BLACK);

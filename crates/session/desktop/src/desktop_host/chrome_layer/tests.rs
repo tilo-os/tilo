@@ -628,8 +628,7 @@ fn the_overviews_ground_is_the_wallpapers_and_not_the_fallback() {
             &mut scene,
             ui::kurbo::Affine::IDENTITY,
             &mut ui::TextRenderer::new(),
-            &theme,
-            &ui::presence::PresenceCtx::default(),
+            &theme,&ui::presence::PresenceCtx::default().draw_env().draw_env(),
         );
         scene
     };

@@ -727,14 +727,9 @@ impl Widget for Checkbox {
         clippy::cast_possible_truncation,
         reason = "widget rectangles are finite renderer coordinates already laid out as f32"
     )]
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let now = crate::motion::frame_now();
         let (marked, glyph) = self.shown();
         self.motion
@@ -776,9 +771,7 @@ impl Widget for Checkbox {
                 &style,
             );
         }
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self, scene, transform, theme, presence,
-        );
+        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn name(&self) -> &'static str {
@@ -1238,13 +1231,7 @@ mod tests {
                     f64::from(measured.height),
                 );
                 let mut scene = Scene::new();
-                checkbox.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut renderer,
-                    &theme,
-                    &crate::presence::PresenceCtx::default(),
-                );
+                checkbox.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &theme, crate::presence::PresenceCtx::default().draw_env()));
                 assert!(!scene.encoding().resources.glyph_runs.is_empty());
                 for run in &scene.encoding().resources.glyph_runs {
                     assert!((run.font_size - 14.0 * theme_scale).abs() < 0.1);
@@ -1546,13 +1533,7 @@ mod tests {
     }
 
     fn present(checkbox: &mut Checkbox, theme: &Theme) {
-        checkbox.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            theme,
-            &crate::presence::PresenceCtx::empty(),
-        );
+        checkbox.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), theme, crate::presence::PresenceCtx::empty().draw_env()));
         checkbox.mark_drawn();
     }
 

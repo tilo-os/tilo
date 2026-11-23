@@ -708,21 +708,16 @@ impl Editor {
         self.relayout_now();
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // The geometry is resolved with the renderer that paints it, then the frame
         // follows it.
         self.layout_theme = theme.clone();
         // A key (Insert, Ctrl+I) changes what the bar shows without a sync.
         ui::window_toolbar::declare(Some(self.window_toolbar()));
         self.relayout(text_renderer, theme, true);
-        self.paint(scene, transform, text_renderer, theme, presence);
+        self.paint(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1302,16 +1297,11 @@ impl Widget for HexView {
             .place(ui::widget::layout_rect(taffy, node, origin));
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let mut editor = self.editor.borrow_mut();
-        editor.draw(scene, transform, text_renderer, theme, presence);
+        editor.draw(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         if self.goto.is_open() {
             self.goto.set_anchor(editor.goto_anchor());
         }
@@ -1609,17 +1599,9 @@ mod tests {
             &mut scene,
             Affine::IDENTITY,
             tr,
-            theme,
-            &PresenceCtx::empty(),
+            theme,&PresenceCtx::empty().draw_env().draw_env(),
         );
-        Widget::draw_overlay(
-            view,
-            &mut scene,
-            Affine::IDENTITY,
-            tr,
-            theme,
-            &PresenceCtx::empty(),
-        );
+        Widget::draw_overlay(view, &mut tilo_ui::DrawCtx::new(&mut scene, Affine::IDENTITY, tr, theme, PresenceCtx::empty().draw_env()));
     }
 
     /// The grid's pitches come from the renderer's measured advance, so paint and

@@ -1429,15 +1429,10 @@ mod admission_tests {
                 ) {
                     self.text.apply_layout(tree, node, offset);
                 }
-                fn draw(
-                    &mut self,
-                    scene: &mut Scene,
-                    transform: vello::kurbo::Affine,
-                    renderer: &mut crate::text_render::TextRenderer,
-                    theme: &crate::Theme,
-                    presence: &crate::presence::PresenceCtx,
-                ) {
-                    self.text.draw(scene, transform, renderer, theme, presence);
+                fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, renderer, theme, mut env) = ctx.parts();
+                    self.text.draw(&mut crate::draw::DrawCtx::new(scene, transform, renderer, theme, env.clone()));
                 }
                 fn handle_event(
                     &mut self,

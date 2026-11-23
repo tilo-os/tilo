@@ -719,7 +719,7 @@ impl OfflinePanel {
         modal_dialog::paint_actions(scene, transform, text, theme, &layout, &spec);
         if downloads {
             self.input
-                .draw_overlay(scene, transform, text, &ink, &PresenceCtx::empty());
+                .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, &ink, PresenceCtx::empty().draw_env()));
         }
     }
 
@@ -755,7 +755,7 @@ impl OfflinePanel {
         self.field_rect = Some(field);
         self.input.apply_layout_external(field);
         self.input
-            .draw_child(scene, transform, text, ink, &PresenceCtx::empty());
+            .draw_child(scene, transform, text, ink,&PresenceCtx::empty().draw_env().draw_env());
         y += control_h + s2;
         let mut ctx = PaintCtx::new(scene, transform, text, ink);
         let hint = match &self.pick {
@@ -787,7 +787,7 @@ impl OfflinePanel {
         self.levels_rect = Some(levels);
         self.levels.apply_layout_external(levels);
         self.levels
-            .draw_child(scene, transform, text, ink, &PresenceCtx::empty());
+            .draw_child(scene, transform, text, ink,&PresenceCtx::empty().draw_env().draw_env());
         y += control_h + s2;
 
         let estimate = TileLayer::estimate_download(request.bounds, request.z0, request.z1);
@@ -809,7 +809,7 @@ impl OfflinePanel {
             self.progress_bar
                 .apply_layout_external(Rect::new(left, y, right, y + s2));
             self.progress_bar
-                .draw_child(scene, transform, text, ink, &PresenceCtx::empty());
+                .draw_child(scene, transform, text, ink,&PresenceCtx::empty().draw_env().draw_env());
             y += s2;
         }
         y

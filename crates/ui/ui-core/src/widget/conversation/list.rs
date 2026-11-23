@@ -12,7 +12,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -1046,15 +1046,10 @@ impl Widget for ConversationList {
 
     crate::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if presence.should_cull(self.rect) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        if env.should_cull(self.rect) {
             return;
         }
         let face = ListFace::owned(&self.lines, ConversationClock::local());
@@ -1063,7 +1058,7 @@ impl Widget for ConversationList {
         face.paint_in(
             &mut paint,
             rect,
-            presence.viewport(),
+            env.viewport(),
             Self::kept_at(&mut self.caches, rect.width()),
         );
     }

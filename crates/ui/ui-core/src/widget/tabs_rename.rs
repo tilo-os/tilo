@@ -6,7 +6,7 @@ use vello::kurbo::{Affine, Rect};
 use winit::event::{ElementState, WindowEvent};
 
 use super::TabBar;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -218,21 +218,16 @@ impl TabBar {
         }
     }
 
-    pub(super) fn draw_rename(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub(super) fn draw_rename(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.touch();
         self.measure_rename(text_renderer, theme);
         self.lay_out_rename();
         if let Some(rename) = self.rename.as_mut() {
             rename
                 .label
-                .draw_child(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme,&env);
         }
     }
 }

@@ -1,8 +1,8 @@
 //! The [`Widget`] contract: what one node of a toolkit tree implements.
 
 use super::{
-    Affine, AppModel, Disclosing, Edits, EventCtx, HashMap, Instant, LayoutInfo, ManualPolicy,
-    ModelPath, NativeViewLifecycle, NodeId, ObjId, PhysicalInput, Placement, PresenceCtx,
+    Affine, AppModel, Disclosing, DrawCtx, Edits, EventCtx, HashMap, Instant, LayoutInfo,
+    ManualPolicy, ModelPath, NativeViewLifecycle, NodeId, ObjId, PhysicalInput, Placement,
     PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, Remount, Scene, StructureChange,
     TaffyTree, TextRenderer, Theme, WindowEvent, capability, defaults, router,
 };
@@ -273,15 +273,7 @@ pub trait Widget {
     ) {
     }
     /// Paint into `scene`. The default paints nothing.
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
+    fn draw(&mut self, _ctx: &mut DrawCtx<'_>) {}
 
     /// Observe this app's ordinary foreground physical input before framework shortcuts consume it.
     fn observe_physical_input(&mut self, _input: PhysicalInput) {}
@@ -1041,21 +1033,7 @@ pub trait Widget {
     /// **Top-layer pass**, run once after the whole `draw` recursion, so anything emitted here
     /// composites above every sibling regardless of tree order — the toolkit's overlay mechanism for
     /// content that escapes its layout box (an open [`Dropdown`], a popover).
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        defaults::draw_overlay(
-            self.children_mut(),
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-        );
+    fn draw_overlay(&mut self, ctx: &mut DrawCtx<'_>) {
+        defaults::draw_overlay(self.children_mut(), ctx);
     }
 }

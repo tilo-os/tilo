@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
 use ui::TextRole;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Column, Link, ModalDialog, Row, TaffyTreeExt as _, Text, Widget};
@@ -177,14 +177,9 @@ impl Widget for Mark {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        _text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _text, theme, mut env) = ctx.parts();
         crate::topbar::paint_tilo_mark(scene, transform, self.rect, theme);
     }
 

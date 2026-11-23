@@ -18,7 +18,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
 use ui::icons::Icon;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::DrawChild;
@@ -299,16 +299,11 @@ impl Chrome {
         children
     }
 
-    pub fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         for child in self.children_mut() {
-            child.draw_child(scene, transform, tr, theme, presence);
+            child.draw_child(scene, transform, tr, theme,&env);
         }
     }
 

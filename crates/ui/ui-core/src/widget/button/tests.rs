@@ -464,7 +464,7 @@ tilo_test_env::scenario! {
         let mut text = TextRenderer::new();
         let mut scene = Scene::new();
         for theme in [Theme::dark(), Theme::light()] {
-            button.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+            button.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
             assert_eq!(
                 button.last_theme,
                 Some(theme_key(&theme)),
@@ -1489,13 +1489,7 @@ tilo_test_env::scenario! {
             button.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
             button.apply_layout_external(rect);
             let mut retained = Scene::new();
-            button.draw(
-                &mut retained,
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &crate::presence::PresenceCtx::default(),
-            );
+            button.draw(&mut crate::draw::DrawCtx::new(&mut retained, Affine::IDENTITY, &mut text, &theme, crate::presence::PresenceCtx::default().draw_env()));
             let mut immediate = Scene::new();
             Button::paint(
                 &mut immediate,
@@ -1569,13 +1563,7 @@ tilo_test_env::scenario! {
                 );
                 laid_out.apply_layout_external(rect);
                 let mut retained = Scene::new();
-                laid_out.draw(
-                    &mut retained,
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &presence,
-                );
+                laid_out.draw(&mut crate::draw::DrawCtx::new(&mut retained, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
                 assert!(
                     (font_size(&retained) - label).abs() < 1e-3,
                     "retained label at renderer {renderer_scale}×: {}",
@@ -1585,13 +1573,7 @@ tilo_test_env::scenario! {
                 let mut external = Button::new("save", "Save");
                 external.apply_layout_external(rect);
                 let mut external_scene = Scene::new();
-                external.draw(
-                    &mut external_scene,
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &presence,
-                );
+                external.draw(&mut crate::draw::DrawCtx::new(&mut external_scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
                 assert!(
                     (font_size(&external_scene) - label).abs() < 1e-3,
                     "externally laid-out label at renderer {renderer_scale}×: {}",
@@ -1629,7 +1611,7 @@ tilo_test_env::scenario! {
             );
             button.apply_layout_external(rect);
             let mut first = Scene::new();
-            button.draw(&mut first, Affine::IDENTITY, &mut text, &one, &presence);
+            button.draw(&mut crate::draw::DrawCtx::new(&mut first, Affine::IDENTITY, &mut text, &one, presence.draw_env()));
             button.mark_drawn();
             assert!(!button.needs_redraw(), "settled at 1×");
 
@@ -1644,7 +1626,7 @@ tilo_test_env::scenario! {
                 "a new label size must dirty the cache"
             );
             let mut second = Scene::new();
-            button.draw(&mut second, Affine::IDENTITY, &mut text, &larger, &presence);
+            button.draw(&mut crate::draw::DrawCtx::new(&mut second, Affine::IDENTITY, &mut text, &larger, presence.draw_env()));
             let before = first.encoding().resources.glyph_runs[0].font_size;
             let after = second.encoding().resources.glyph_runs[0].font_size;
             assert!((before - 13.0).abs() < 1e-3, "{before}");

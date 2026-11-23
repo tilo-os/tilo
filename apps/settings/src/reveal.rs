@@ -137,16 +137,11 @@ impl ui::widget::Decorator for Reveal {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.content
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
         match self.highlighted_row() {
             Some(row) => ui::widget::paint_find_match(scene, transform, row, true, theme),
             None => self.highlight = None,

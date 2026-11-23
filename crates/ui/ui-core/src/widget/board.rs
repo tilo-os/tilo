@@ -11,7 +11,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::color_compat::ColorCompat as _;
 use crate::dnd::DRAG_START_THRESHOLD_PX;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
@@ -750,21 +750,15 @@ impl crate::widget::Decorator for Board {
         Widget::handle_event(&mut self.row, event, ctx);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         DrawChild::draw_child(
             &mut self.row,
             scene,
             transform,
             text_renderer,
-            theme,
-            presence,
+            theme,&env,
         );
         self.dirty = false;
         let Some(drag) = self.drag.as_ref().filter(|drag| drag.active) else {

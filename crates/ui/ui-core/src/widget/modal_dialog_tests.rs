@@ -124,8 +124,8 @@ fn present<C: Widget + 'static>(d: &mut ModalDialog<C>, window: Rect, theme: &Th
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
     tr.set_text_scale(theme.text_scale);
-    d.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
-    d.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    d.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
+    d.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
     presence.pop_viewport(previous);
     scene
 }
@@ -493,13 +493,7 @@ tilo_test_env::scenario! {
                 &Theme::dark(),
             );
             let mut scene = Scene::new();
-            d.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::dark(),
-                &PresenceCtx::default(),
-            );
+            d.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
             assert!(scene.encoding().draw_tags.is_empty(), "draw paints nothing");
 
             let scene = present(&mut d, WINDOW, &Theme::dark());
@@ -1318,16 +1312,11 @@ tilo_test_env::scenario! {
             fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
                 self.0.apply_layout(taffy, node, origin);
             }
-            fn draw(
-                &mut self,
-                scene: &mut Scene,
-                transform: Affine,
-                text_renderer: &mut TextRenderer,
-                theme: &Theme,
-                presence: &PresenceCtx,
-            ) {
+            fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
                 self.0
-                    .draw(scene, transform, text_renderer, theme, presence);
+                    .draw(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
             }
             fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
                 self.0.handle_event(event, ctx);

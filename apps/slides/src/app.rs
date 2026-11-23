@@ -1639,15 +1639,9 @@ impl SlidesApp {
         }
     }
 
-    fn draw_inspector_widgets(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        chrome: &Chrome,
-    ) {
+    fn draw_inspector_widgets(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, chrome: &Chrome) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, t, tr, theme, mut env) = ctx.parts();
         self.position_inspector_widgets(chrome);
         if chrome.font_input_rect.is_some() {
             let local = self.inspector_theme(theme);
@@ -1658,7 +1652,7 @@ impl SlidesApp {
                 t,
                 &chrome.inspector_body,
             );
-            self.font_input.draw_child(scene, t, tr, &local, presence);
+            self.font_input.draw_child(scene, t, tr, &local,&env);
             scene.pop_layer();
         }
         if chrome.layout_picker_rect().is_some() {
@@ -1671,7 +1665,7 @@ impl SlidesApp {
                 &chrome.inspector_body,
             );
             self.layout_picker
-                .draw_child(scene, t, tr, &local, presence);
+                .draw_child(scene, t, tr, &local,&env);
             scene.pop_layer();
         }
         if let Some(rect) = chrome.fill_picker_rect {
@@ -1698,7 +1692,7 @@ impl SlidesApp {
                 Point::new(rect.x0, panel.y0 + m.s4),
                 None,
             );
-            self.fill_picker.draw_child(scene, t, tr, &local, presence);
+            self.fill_picker.draw_child(scene, t, tr, &local,&env);
         }
     }
 
@@ -1714,7 +1708,7 @@ impl SlidesApp {
             self.notes.control_mut().apply_layout_external(nb);
             self.notes
                 .control_mut()
-                .draw_child(scene, t, tr, theme, &PresenceCtx::empty());
+                .draw_child(scene, t, tr, theme,&PresenceCtx::empty().draw_env().draw_env());
             return;
         }
         let notes = self
@@ -1726,7 +1720,7 @@ impl SlidesApp {
         }
         self.notes_preview.apply_layout_external(nb);
         self.notes_preview
-            .draw_child(scene, t, tr, theme, &PresenceCtx::empty());
+            .draw_child(scene, t, tr, theme,&PresenceCtx::empty().draw_env().draw_env());
     }
 
     fn draw_present(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -2158,14 +2152,9 @@ impl Widget for SlidesApp {
         false
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.rect.width() < 2.0 {
             return;
         }
@@ -2192,26 +2181,18 @@ impl Widget for SlidesApp {
                 );
                 self.draw_editor(
                     &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    &chrome,
-                    presence,
+                    &chrome,&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
                 );
-                self.draw_inspector_widgets(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    presence,
-                    &chrome,
-                );
+                self.draw_inspector_widgets(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()), &chrome);
             }
             Mode::Overview => self.draw_overview(scene, transform, text_renderer, theme),
             Mode::Present => self.draw_present(scene, transform, text_renderer, theme),
         }
         self.help_overlay
             .draw(scene, transform, text_renderer, theme, self.rect);
-        self.draw_words_overlay(scene, transform, text_renderer, theme, presence);
+        self.draw_words_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         self.ctx_menu
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
         self.note_selection();
     }
 

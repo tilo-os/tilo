@@ -2667,14 +2667,7 @@ fn semantic_controls_are_stable_modal_and_operable() {
         a.offline_panel.open(0);
         let mut scene = Scene::new();
         a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-        Widget::draw_overlay(
-            &mut a,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::empty(),
-        );
+        Widget::draw_overlay(&mut a, &mut tilo_ui::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::empty().draw_env()));
 
         let node = Widget::accessibility(&a).expect("offline dialog is semantic");
         assert_eq!(node.role, ui::a11y::Role::Dialog);

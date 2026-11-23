@@ -807,14 +807,9 @@ impl Widget for CollaborationLaunchpad {
         clippy::too_many_lines,
         reason = "immediate-mode renderer composes bounded logical-pixel geometry; text width API uses f32"
     )]
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         // Theme tokens already include accessibility scaling; TextRenderer also applies its
         // configured scale to authored font sizes.
         let scale = text.text_scale();
@@ -1678,8 +1673,7 @@ mod tests {
                     &mut Scene::new(),
                     Affine::IDENTITY,
                     &mut text,
-                    &theme,
-                    &PresenceCtx::default(),
+                    &theme,&PresenceCtx::default().draw_env().draw_env(),
                 );
                 assert!(
                     pad.card_rects[0].y0 - 90.0 >= pad.rect.y0 + 12.0,
@@ -1700,8 +1694,7 @@ mod tests {
                             &mut Scene::new(),
                             Affine::IDENTITY,
                             &mut text,
-                            &theme,
-                            &PresenceCtx::default(),
+                            &theme,&PresenceCtx::default().draw_env().draw_env(),
                         );
                         let button = pad.app_button_rect();
                         let (label_w, label_h) = text.measure(
@@ -1751,8 +1744,7 @@ mod tests {
                         &mut Scene::new(),
                         Affine::IDENTITY,
                         &mut TextRenderer::new(),
-                        &Theme::dark(),
-                        &PresenceCtx::default(),
+                        &Theme::dark(),&PresenceCtx::default().draw_env().draw_env(),
                     );
                     let heading = pad.card_rects[0].y0 - HEADING_BAND;
                     assert!(

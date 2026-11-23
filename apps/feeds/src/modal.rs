@@ -14,7 +14,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
@@ -148,18 +147,13 @@ impl Widget for ModalBody {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.caption
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
         if let Some(input) = &mut self.input {
-            input.draw_child(scene, transform, text, theme, presence);
+            input.draw_child(scene, transform, text, theme,&env);
         }
     }
 

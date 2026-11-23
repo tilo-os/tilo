@@ -18,7 +18,7 @@ use ui::advanced::{Affine, NodeId, Scene, TaffyTree, WindowEvent};
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, ResourceApp, ViewCx};
 use ui::icons::Icon;
 use ui::prelude::*;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::widget::{ContextMenu, Element, MenuItem, PanelAlign, Press, TaffyTreeExt, Widget};
 
@@ -534,26 +534,16 @@ impl Widget for PowerMenu {
         }
     }
 
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _text_renderer, theme, mut env) = ctx.parts();
         self.margin = ui::widget::floating_surface::viewport_margin(theme);
         self.follow();
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.margin = ui::widget::floating_surface::viewport_margin(theme);
         self.follow();
         if self.menu.is_open() {
@@ -561,7 +551,7 @@ impl Widget for PowerMenu {
             self.menu.reanchor(anchor, viewport);
         }
         self.menu
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
+            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         self.report();
     }
 

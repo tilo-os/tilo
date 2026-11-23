@@ -304,6 +304,7 @@ pub mod host_operation {
     };
 }
 mod app_core;
+pub mod draw;
 #[cfg_attr(
     not(any(feature = "native", test)),
     expect(dead_code, reason = "only a native host's frame culls its draw")
@@ -514,6 +515,7 @@ pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::{Card, CardGrid, Section, card_column_width, card_columns};
 pub use widget::{ContentKind, NavItem, NavList, NavMode, NavPane, NavSection, NavShell};
 pub use widget::{EditOutcome, EditableLabel};
+pub use draw::{DrawCtx, DrawEnv, WidgetOverlay, draw_widget};
 pub use widget::{Element, Widget};
 pub use widget::{
     NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,

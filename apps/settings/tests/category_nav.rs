@@ -24,7 +24,7 @@ fn renders_something(app: &mut Window) -> bool {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::empty();
         let mut scene = Scene::new();
-        shell.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        shell.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme,&presence.draw_env());
         !scene.encoding().is_empty()
     })
     .expect("settings shows its shell")

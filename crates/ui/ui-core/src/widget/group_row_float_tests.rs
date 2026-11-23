@@ -334,7 +334,7 @@ fn a_float_covers_the_windows_under_it_once_it_has_arrived() {
     let mut draw = |row: &mut GroupRow, at: crate::time::Instant| {
         let _frame = pin_frame_at(at);
         let mut scene = Scene::new();
-        row.draw(&mut scene, Affine::IDENTITY, text, &theme, &presence);
+        row.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, text, &theme, presence.draw_env()));
     };
     draw(&mut row, now);
     assert!(

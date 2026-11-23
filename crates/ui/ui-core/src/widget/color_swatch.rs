@@ -684,14 +684,9 @@ impl Widget for ColorSwatchPicker {
         self.recompute_swatches();
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.colour_for(theme);
         let sliding = self.follow_ring(theme.motion());
         let chosen = self.shown_selected();
@@ -980,13 +975,7 @@ mod tests {
 
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
-            picker.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
-                &Theme::dark(),
-                &PresenceCtx::default(),
-            );
+            picker.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark(), PresenceCtx::default().draw_env()));
             assert_eq!(painted.get(), 3, "every cell is painted by the sampler");
         }
 

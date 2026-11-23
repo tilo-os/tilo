@@ -12,7 +12,7 @@ use vello::kurbo::{Affine, Rect};
 use crate::arriving::{Arrival, ArrivalClock, Arriving, Progress, Source, Step};
 use crate::motion::CrossFade;
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
@@ -335,14 +335,9 @@ impl Widget for Reserve {
         self.rect
     }
 
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
     }
 
     fn needs_redraw(&self) -> bool {
@@ -941,18 +936,13 @@ impl Widget for ArrivingView {
         self.rect
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let now = crate::motion::frame_now();
         let step = self.step(now);
         self.drawn_step = Some(step);
-        if presence.should_cull(self.rect) {
+        if env.should_cull(self.rect) {
             return;
         }
         if self.showing() == Showing::Placeholder {
@@ -979,7 +969,7 @@ impl Widget for ArrivingView {
         let rect = self.rect;
         let inner = &mut self.inner;
         layered(scene, transform, rect, incoming, |scene| {
-            inner.draw_child(scene, transform, text_renderer, theme, presence);
+            inner.draw_child(scene, transform, text_renderer, theme,&env);
         });
     }
 

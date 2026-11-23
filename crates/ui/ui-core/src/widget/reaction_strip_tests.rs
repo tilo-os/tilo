@@ -30,13 +30,7 @@ fn lay_out_and_draw(widget: &mut ReactionStripWidget, width: f32, theme: &Theme)
         .expect("layout");
     widget.apply_layout(&taffy, node, Point::new(8.0, 8.0));
     let mut scene = Scene::new();
-    widget.draw(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text,
-        theme,
-        &crate::presence::PresenceCtx::default(),
-    );
+    widget.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, theme, crate::presence::PresenceCtx::default().draw_env()));
 }
 
 fn click(widget: &mut ReactionStripWidget, at: Point) {
@@ -393,13 +387,7 @@ fn the_widget_toggles_your_reaction_from_a_click_and_the_keyboard() {
     click(&mut widget, add.center());
     assert!(widget.is_picking(), "the add button opens the picker");
     let mut scene = Scene::new();
-    widget.draw_overlay(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut TextRenderer::new(),
-        &theme,
-        &crate::presence::PresenceCtx::default(),
-    );
+    widget.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &theme, crate::presence::PresenceCtx::default().draw_env()));
     let tree = widget.accessibility().expect("a group");
     assert!(
         tree.children.iter().any(|node| node.role == Role::Dialog),

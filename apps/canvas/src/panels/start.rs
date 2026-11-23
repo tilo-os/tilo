@@ -12,7 +12,7 @@ use ui::taffy::{self, NodeId, Style, TaffyTree};
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Point, Rect};
 use ui::widget::{AppModel, ModelPath, Widget};
-use ui::{PresenceCtx, TextRenderer, Theme};
+use ui::{TextRenderer, Theme};
 
 use super::caption;
 use crate::actions::NewArtwork;
@@ -179,14 +179,9 @@ impl Widget for Swatch {
         clippy::arithmetic_side_effects,
         reason = "kurbo's Affine composition is float geometry"
     )]
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let (width, height) = (self.sheet)();
         if width <= 0.0 || height <= 0.0 || self.rect.width() < 4.0 {
             return;

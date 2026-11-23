@@ -194,7 +194,7 @@ fn render_widget(mut input: TextInput, doc: &AutoCommit, presence: &PresenceCtx)
     (&mut input as &mut dyn Widget).apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene = Scene::new();
-    (&mut input as &mut dyn Widget).draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence);
+    (&mut input as &mut dyn Widget).draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
     let mut renderer = OffscreenRenderer::new(W, H);
     LocalRender {
         drawn: drawn_of(&scene),

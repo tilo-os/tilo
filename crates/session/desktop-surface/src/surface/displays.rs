@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use tilo_desktop_model::{Display, GroupId, GroupShape, Layout, Strip, StripId, TabId};
 use ui::kurbo::{Affine, Point, Rect};
-use ui::presence::PresenceCtx;
+
 use ui::taffy::NodeId;
 use ui::vello::Scene;
 use ui::widget::{EventCtx, GroupRow, STRIP_EDGE_GUTTER_PX, StripSection, Widget as _};
@@ -431,17 +431,12 @@ impl DesktopSurface {
     }
 
     /// Draw the rows of the strips the other displays show, before the one the person works in.
-    pub(super) fn draw_display_strips(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub(super) fn draw_display_strips(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         for strip in self.behind.clone() {
             if let Some(row) = self.rows.get_mut(&strip) {
-                ui::widget::draw_child(row, scene, transform, text, theme, presence);
+                ui::widget::draw_child(row, scene, transform, text, theme,&env);
             }
         }
     }

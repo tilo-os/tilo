@@ -14,7 +14,7 @@ use winit::event::WindowEvent;
 use super::Choosing;
 use super::{AnyModel, ListKey, VirtualRows};
 use crate::a11y::AccessNode;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
@@ -268,17 +268,12 @@ impl VirtualRows {
     }
 
     /// Paint the open menu over the rows.
-    pub(super) fn paint_menu(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub(super) fn paint_menu(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(menu) = self.menus.owned_mut() {
             menu.menu
-                .draw_overlay(scene, transform, text_renderer, theme, presence);
+                .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
     }
 

@@ -22,7 +22,7 @@ use tilo_desktop_model::layout::TileContent;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_resource::Effect;
 use tilo_session_core::desktop::navigation::LayoutEffect;
-use ui::presence::PresenceCtx;
+
 use ui::search::Scope;
 use ui::widget::DrawChild;
 use ui::widget::{AppModel, EventCtx, ModelPath, Stack, TaffyTreeExt as _, Widget};
@@ -463,14 +463,9 @@ impl Widget for BackgroundLayer {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         // The picture is the one of the workspace in front.
         let front = self.handle.read(|tree| {
             tree.active_workspace()
@@ -481,10 +476,10 @@ impl Widget for BackgroundLayer {
                 .set_workspace(front.map_or_else(String::new, |id| id.to_string()));
         }
         self.backdrop
-            .draw_child(scene, transform, text, theme, presence);
-        ui::widget::draw_child(&mut self.area, scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
+        ui::widget::draw_child(&mut self.area, scene, transform, text, theme,&env);
         if self.hosts_cards {
-            self.draw_cards(scene, transform, text, theme, presence);
+            self.draw_cards(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         }
     }
 

@@ -187,17 +187,12 @@ mod tests {
             self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
-        fn draw(
-            &mut self,
-            scene: &mut vello::Scene,
-            transform: vello::kurbo::Affine,
-            text: &mut crate::text_render::TextRenderer,
-            theme: &crate::theme::Theme,
-            presence: &crate::presence::PresenceCtx,
-        ) {
+        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
             let at = Rect::new(40.0, 60.0, 200.0, 60.0);
             self.button.layout(at, theme, text);
-            self.button.draw(scene, transform, text, theme, presence);
+            self.button.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
         }
 
         fn get_rect(&self) -> Rect {

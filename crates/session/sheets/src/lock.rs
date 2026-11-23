@@ -1040,14 +1040,9 @@ impl ui::widget::Decorator for Shaken {
         self.inner.as_mut()
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut ui::advanced::Scene,
-        transform: ui::advanced::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::theme::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let dx = self.offset.get();
         #[allow(
             clippy::arithmetic_side_effects,
@@ -1055,7 +1050,7 @@ impl ui::widget::Decorator for Shaken {
         )]
         let moved = transform * ui::advanced::Affine::translate((dx, 0.0));
         self.inner
-            .draw_child(scene, moved, text_renderer, theme, presence);
+            .draw_child(scene, moved, text_renderer, theme,&env);
     }
 }
 
@@ -1078,14 +1073,9 @@ impl ui::widget::Decorator for Faded {
         self.inner.as_mut()
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut ui::advanced::Scene,
-        transform: ui::advanced::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::theme::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let alpha = self.alpha.get();
         if alpha <= 0.0 {
             return;
@@ -1099,7 +1089,7 @@ impl ui::widget::Decorator for Faded {
             &ui::vello::kurbo::RoundedRect::from_rect(face, f64::from(theme.tokens.radii.item)),
         );
         self.inner
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
         scene.pop_layer();
     }
 }
@@ -1600,14 +1590,9 @@ impl ui::widget::Decorator for Stage {
         true
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut ui::advanced::Scene,
-        transform: ui::advanced::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::theme::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let now = frame_now();
         let motion = theme.motion();
         self.advance(now, motion);
@@ -1646,7 +1631,7 @@ impl ui::widget::Decorator for Stage {
         let submits = self.submits();
         let content = &mut self.content;
         pose.paint(scene, placement, bounds, |scene, xform| {
-            content.draw_child(scene, xform, text_renderer, theme, presence);
+            content.draw_child(scene, xform, text_renderer, theme,&env);
             if showed {
                 keyboard.paint(
                     scene,

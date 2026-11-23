@@ -22,7 +22,7 @@ use vello::kurbo::{Affine, Rect, RoundedRect, Vec2};
 use vello::peniko::Fill;
 
 use crate::i18n::widget_text;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Instant, now};
@@ -420,14 +420,9 @@ impl Widget for LevelMeter {
 
     crate::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.advance();
         LevelMeterFace::new(self.state, self.problem.is_some())
             .paint(scene, transform, theme, self.rect);

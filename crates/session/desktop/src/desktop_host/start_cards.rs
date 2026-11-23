@@ -11,7 +11,7 @@ use std::rc::Rc;
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_desktop_model::Layout;
 use tilo_desktop_surface::DesktopHandle;
-use ui::presence::PresenceCtx;
+
 use ui::search::Scope;
 use ui::widget::{AppModel, EventCtx, ModelPath, TaffyTreeExt as _, Widget};
 use ui::{TextRenderer, Theme};
@@ -231,18 +231,13 @@ impl Widget for EmptyWorkspace {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         for pad in &mut self.pads {
             if pad.shown {
                 pad.launchpad
-                    .draw_child(scene, transform, text, theme, presence);
+                    .draw_child(scene, transform, text, theme,&env);
             }
         }
     }

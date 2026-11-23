@@ -46,24 +46,20 @@ impl ui::widget::FloatingSurfaceProvider for DesktopSurface {
             .find_map(ui::widget::FloatingSurfaceProvider::take_floating_surface_request)
     }
 
-    fn draw_floating_surface(
-        &mut self,
-        id: &str,
-        scene: &mut ui::vello::Scene,
-        transform: ui::kurbo::Affine,
-        text_renderer: &mut ui::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) -> bool {
+    fn draw_floating_surface(&mut self, id: &str, ctx: &mut tilo_ui::DrawCtx<'_>) -> bool {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.rows.values_mut().any(|row| {
             ui::widget::FloatingSurfaceProvider::draw_floating_surface(
                 row,
                 id,
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
+                &mut tilo_ui::DrawCtx::new(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    env.clone(),
+                ),
             )
         })
     }

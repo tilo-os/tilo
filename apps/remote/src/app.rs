@@ -20,7 +20,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 use ui::LocalState;
 use ui::framework::{EffectStatus, Live, Publishes, ViewCx};
 use ui::icons::Icon;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Invoke;
@@ -1796,32 +1796,22 @@ impl Widget for RemoteApp {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.state().pump_session();
         self.check_views();
         self.body_mut()
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.body_mut()
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
+            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         if let Some(dialog) = self.dialog.as_mut() {
-            dialog.draw_overlay(scene, transform, text_renderer, theme, presence);
+            dialog.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
     }
 

@@ -170,13 +170,7 @@ fn scroll(theme: &Theme, scale: f64, runs: &[(f32, usize)]) -> Vec<Run> {
             None,
             &Rect::new(0.0, 0.0, SCENE.0, SCENE.1),
         );
-        host.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            theme,
-            &PresenceCtx::empty(),
-        );
+        host.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, theme, PresenceCtx::empty().draw_env()));
         host.mark_drawn();
         let parts = recording.finish().of(&scene).expect("well nested parts");
         let mut device = Scene::new();

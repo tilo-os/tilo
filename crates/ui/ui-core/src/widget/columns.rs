@@ -8,7 +8,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use super::{AppModel, Element, ModelPath, TaffyTreeExt, Widget};
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
@@ -187,18 +187,13 @@ impl Widget for Columns {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.main
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
         if let Some(aside) = &mut self.aside {
-            aside.draw_child(scene, transform, text, theme, presence);
+            aside.draw_child(scene, transform, text, theme,&env);
         }
     }
 

@@ -9,7 +9,6 @@ use winit::event::WindowEvent;
 
 use super::{CONTROL_PX, Part, SECTION_GAP, ToolbarRow, Widget};
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
@@ -302,7 +301,7 @@ impl ToolbarRow {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
+        (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
     ) {
         if let Some(anchor) = self.reactions.opening.take() {
             let area = if self.popup_area.area() > 0.0 {
@@ -318,8 +317,7 @@ impl ToolbarRow {
                 scene,
                 transform,
                 tr,
-                theme,
-                presence,
+                theme,env,
             );
         }
     }

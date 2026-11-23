@@ -8,7 +8,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -482,14 +482,9 @@ impl Widget for TextStack {
 
     crate::rect_geometry!(measured);
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let face = self.face();
         face.paint(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),

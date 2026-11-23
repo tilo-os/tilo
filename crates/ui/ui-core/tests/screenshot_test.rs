@@ -164,13 +164,7 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
 
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            widget.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text_renderer,
-                &theme,
-                &presence,
-            );
+            widget.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text_renderer, &theme, presence.draw_env()));
 
             // Red base colour: any pixel where the red channel dropped is proof the
             // widget rendered over it, otherwise the buffer would still read red.
@@ -245,7 +239,7 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
 
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            bar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
 
             // Magenta base — not in any theme colour, so it's unambiguously "no
             // widget pixels here" when sampled.

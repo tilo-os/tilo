@@ -28,13 +28,13 @@ tilo_test_env::scenario! {
         let mut text = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut in_flow = Scene::new();
-        menu.draw(&mut in_flow, Affine::IDENTITY, &mut text, &theme, &presence);
+        menu.draw(&mut crate::draw::DrawCtx::new(&mut in_flow, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
         assert!(
             in_flow.encoding().is_empty(),
             "the in-flow pass paints nothing"
         );
         let mut top = Scene::new();
-        menu.draw_overlay(&mut top, Affine::IDENTITY, &mut text, &theme, &presence);
+        menu.draw_overlay(&mut crate::draw::DrawCtx::new(&mut top, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
         assert!(!top.encoding().is_empty(), "the top layer paints the menu");
     }
 
@@ -48,13 +48,7 @@ tilo_test_env::scenario! {
         let (mut m, _f) = open_menu();
         let before = m.get_rect();
         let mut scene = Scene::new();
-        m.draw_overlay(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
+        m.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
         assert_eq!(m.get_rect(), before);
         assert_eq!(m.row_height, ROW_HEIGHT);
 
@@ -75,13 +69,7 @@ tilo_test_env::scenario! {
         m.open_at([100.0, 100.0]);
         let before = m.get_rect();
         let mut scene = Scene::new();
-        m.draw_overlay(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::default(),
-        );
+        m.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
         let after = m.get_rect();
         assert_eq!((after.x0, after.y0), (before.x0, before.y0), "origin kept");
         assert!(
@@ -242,7 +230,7 @@ tilo_test_env::scenario! {
             );
             menu.layout_within(text, &theme);
             let mut top = Scene::new();
-            menu.draw_overlay(&mut top, Affine::IDENTITY, text, &theme, &presence);
+            menu.draw_overlay(&mut crate::draw::DrawCtx::new(&mut top, Affine::IDENTITY, text, &theme, presence.draw_env()));
             (0..menu.items().len())
                 .filter_map(|index| menu.item_rect(index).map(|rect| (rect.y0, rect.height())))
                 .collect::<Vec<_>>()
@@ -258,7 +246,7 @@ tilo_test_env::scenario! {
             },
         );
         let mut top = Scene::new();
-        menu.draw_overlay(&mut top, Affine::IDENTITY, &mut text, &theme, &presence);
+        menu.draw_overlay(&mut crate::draw::DrawCtx::new(&mut top, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
         let second = open(&mut menu, &mut text);
         assert_eq!(
             first, second,
@@ -287,7 +275,7 @@ fn a_clicked_menu_comes_from_the_pointer_and_fades_when_it_closes() {
     ));
     let paint = |menu: &mut ContextMenu, text: &mut TextRenderer| {
         let mut top = Scene::new();
-        menu.draw_overlay(&mut top, Affine::IDENTITY, text, &theme, &presence);
+        menu.draw_overlay(&mut crate::draw::DrawCtx::new(&mut top, Affine::IDENTITY, text, &theme, presence.draw_env()));
         top
     };
     with_monotonic_time(t0, || {
@@ -669,7 +657,7 @@ fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
     let presence = PresenceCtx::default();
     presence.viewport.set(Some(window));
     let mut scene = Scene::new();
-    menu.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+    menu.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
     let box_rect = menu.send_to().rect();
     assert!(menu.send_to().is_open(), "the send row opened the box");
     assert!(

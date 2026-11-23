@@ -214,14 +214,9 @@ impl Widget for Owner {
             self.seen.panic_blur.set(true);
         }
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let focused = self.field.is_focused();
         self.seen.draw_focus.set(focused);
         self.seen
@@ -229,7 +224,7 @@ impl Widget for Owner {
             .set(self.field.ime_cursor_rect().is_some());
         self.seen.draws.set(self.seen.draws.get() + 1);
         self.seen.events.borrow_mut().push("draw");
-        self.field.draw(scene, transform, text, theme, presence);
+        self.field.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
         let rect = self.field.get_rect();
         assert!(
             rect.width() >= 8.0 && rect.height() >= 8.0,

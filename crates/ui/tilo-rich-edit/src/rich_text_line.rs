@@ -1172,14 +1172,9 @@ impl RichTextLine {
 
     /// Draw everything this line shows into `scene`, which the line keeps and
     /// moves while it holds (see [`Self::keeps_its_drawing`]).
-    fn paint_into(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn paint_into(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         #[cfg(test)]
         let attributes_probe = ui::profiling::frame_probe::span("line_attributes");
         self.prepare_attributes(theme);
@@ -1189,7 +1184,7 @@ impl RichTextLine {
         #[cfg(test)]
         let input_probe = ui::profiling::frame_probe::span("text_input_draw");
         self.inner
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
         #[cfg(test)]
         drop(input_probe);
 
@@ -1592,33 +1587,22 @@ impl Widget for RichTextLine {
         size
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if presence.should_cull(self.inner.paint_bounds()) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        if env.should_cull(self.inner.paint_bounds()) {
             return;
         }
-        if self.keeps_its_drawing(theme, presence) {
+        if self.keeps_its_drawing(theme,&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone())) {
             note_face_work(None);
         } else {
             let rect = self.inner.get_rect();
             let mut face = std::mem::take(&mut self.face);
-            self.paint_into(
-                face.repaint(rect),
-                Affine::IDENTITY,
-                text_renderer,
-                theme,
-                presence,
-            );
+            self.paint_into(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
             self.face = face;
             self.face_key = Some(self.face_of(theme));
             self.face_model = ui::input_generation::model();
-            self.face_permissions = presence.paint_permission_generation();
+            self.face_permissions = env.paint_permissions;
             note_face_work(Some(self.inner.value()));
         }
         self.face.append(scene, transform, self.inner.get_rect());
@@ -1931,13 +1915,7 @@ mod tests {
         let mut renderer = TextRenderer::new();
         renderer.set_text_scale(theme.text_scale);
         let mut scene = Scene::new();
-        line.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut renderer,
-            theme,
-            &PresenceCtx::empty(),
-        );
+        line.draw(&mut tilo_ui::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, theme, PresenceCtx::empty().draw_env()));
         scene
     }
 
@@ -1959,13 +1937,7 @@ mod tests {
             )
             .expect("line layout");
         line.apply_layout(&taffy, node, Point::ZERO);
-        line.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut renderer,
-            &theme,
-            &PresenceCtx::empty(),
-        );
+        line.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut renderer, &theme, PresenceCtx::empty().draw_env()));
         line.inner()
             .char_x_positions()
             .last()

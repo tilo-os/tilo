@@ -10,7 +10,7 @@ use vello::kurbo::{Affine, Arc, Cap, Circle, Join, Point, Rect, RoundedRect, Str
 use vello::peniko::{Brush, Color, Fill};
 
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -524,15 +524,10 @@ impl Widget for ProgressRing {
         self.rect = rect;
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if presence.should_cull(self.rect) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        if env.should_cull(self.rect) {
             return;
         }
         self.face().paint(
@@ -779,14 +774,9 @@ impl Widget for BarGauge {
 
     crate::widget::chart_navigation::chart_leaf!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let reading = GaugeReading {
             frac: self.frac,
             color: self.resolve_color(theme),

@@ -11,7 +11,7 @@ use tilo_session_core::desktop::names;
 use tilo_session_core::desktop::navigation::{
     ActivityView, ChromeEffect, Destination, LayoutEffect,
 };
-use ui::presence::PresenceCtx;
+
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 use ui::widget::DrawChild;
 use ui::widget::{AppModel, EventCtx, ModelPath, TaffyTreeExt as _, Widget};
@@ -2492,14 +2492,9 @@ impl Widget for DesktopChrome {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         // A card opened between two frames is sized and placed in this one.
         self.theme = theme.clone();
         self.navigator.draw(
@@ -2514,17 +2509,17 @@ impl Widget for DesktopChrome {
         // where it stands from the next event on.
         self.navigator_frame.ribbon.new_len = self.navigator.new_strip_len();
         self.overview
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
         for bar in &mut self.compact {
             if bar.presence() != TopBarPresence::Hidden {
-                bar.draw_child(scene, transform, text, theme, presence);
+                bar.draw_child(scene, transform, text, theme,&env);
             }
         }
         // Last, so what the bar opens below its band stays above the rest.
-        self.bar.draw_child(scene, transform, text, theme, presence);
+        self.bar.draw_child(scene, transform, text, theme,&env);
         // The centre hangs under the bar's trailing end, over the windows.
         if let Some(notices) = self.notices.as_mut() {
-            notices.draw_child(scene, transform, text, theme, presence);
+            notices.draw_child(scene, transform, text, theme,&env);
         }
         // Above all of it: the emoji picker is modal, the one thing the person works with until it
         // closes.
@@ -2535,8 +2530,7 @@ impl Widget for DesktopChrome {
                 scene,
                 transform,
                 text,
-                theme,
-                presence,
+                theme,&env,
             );
         }
         // Drawn or not, the picker is as this frame shows it: one that closed is gone from it.
@@ -2558,13 +2552,13 @@ impl Widget for DesktopChrome {
         // Topmost: the search palette dims what it stands over, a window in front included, and the
         // card over it.
         self.search
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
         // Above even search: Alt+Tab's panel, which is the walk the person is in the middle of and
         // the only thing a press reaches while it is up.
         let host = self.working_display().unwrap_or(self.rect);
         self.notice.place(host);
         self.notice
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
         self.switcher.draw(scene, transform, text, theme, host);
         // Over all of it, and in the way of nothing: the keys a held Super reaches take no input,
         // so the switcher a chord of them opens is never under them for long.

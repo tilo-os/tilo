@@ -22,7 +22,7 @@ use crate::chrome::{RowJoin, SelectionState, paint_row_selection, row_bleed};
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::pointer_replay::{PressAt, Release};
-use crate::presence::PresenceCtx;
+
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -553,14 +553,9 @@ impl Widget for CountPill {
 
     crate::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.rect.height() <= 0.0 {
             return;
         }
@@ -622,14 +617,9 @@ impl Widget for Chevron {
 
     crate::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        _text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _text, theme, mut env) = ctx.parts();
         let expanded = self.expanded.get();
         let icon = if expanded {
             Icon::ChevronDown
@@ -964,14 +954,9 @@ impl Widget for HeaderRow {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.painted = None;
         if let Some(disclosure) = &self.disclosure {
             let state = disclosure.interaction;
@@ -995,7 +980,7 @@ impl Widget for HeaderRow {
                 );
             }
         }
-        self.parts.draw(scene, transform, text, theme, presence);
+        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
     fn is_focusable(&self) -> bool {
@@ -1451,14 +1436,9 @@ impl Widget for Section {
         );
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.sync_rows(text, theme);
         let shown = self.shown();
         let shifts = self.follower_shifts();
@@ -1471,8 +1451,7 @@ impl Widget for Section {
                 scene,
                 transform * Affine::translate((0.0, dy)),
                 text,
-                theme,
-                presence,
+                theme,&env,
             );
         }
         self.ghosts.retain_drawn();
@@ -1826,14 +1805,9 @@ impl Widget for StatusLine {
 
     crate::rect_geometry!(measured);
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let style = theme.text(TextRole::Caption);
         let line = f64::from(style.line_height_px());
         let dot = f64::from(theme.tokens.spacing.s2);
@@ -2053,14 +2027,9 @@ impl Widget for ObjectHeader {
 
     crate::rect_geometry!(measured);
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let m = ObjectMetrics::new(theme);
         let mut ctx = PaintCtx::new(scene, transform, text, theme);
         let rect = self.rect;

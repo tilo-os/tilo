@@ -870,14 +870,9 @@ impl Widget for NumberInput {
         self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let disabled = !self.effectively_enabled();
         if disabled {
             crate::widget::paint_disabled(scene, transform, &self.rect);
@@ -904,7 +899,7 @@ impl Widget for NumberInput {
             face.paint_value(&mut ctx);
         } else {
             self.field
-                .draw_child(ctx.scene, ctx.transform, ctx.text, theme, presence);
+                .draw_child(ctx.scene, ctx.transform, ctx.text, theme,&env);
         }
 
         if disabled {
@@ -1232,13 +1227,7 @@ mod tests {
                         number.field_rect
                     );
                     assert!(f64::from(value_height) <= number.field_rect.height());
-                    number.draw(
-                        &mut Scene::new(),
-                        Affine::IDENTITY,
-                        &mut text,
-                        &theme,
-                        &crate::PresenceCtx::default(),
-                    );
+                    number.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, crate::PresenceCtx::default().draw_env()));
                     assert_eq!(number.field.get_rect(), number.field_rect);
                     number.field.set_text("25 min");
                     number.commit_local();
@@ -1300,13 +1289,7 @@ mod tests {
                         assert!(hit.width() >= 32.0 && hit.height() >= 32.0, "{hit:?}");
                     }
                     let mut scene = Scene::new();
-                    number.draw(
-                        &mut scene,
-                        Affine::IDENTITY,
-                        &mut TextRenderer::new(),
-                        &theme,
-                        &crate::PresenceCtx::default(),
-                    );
+                    number.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &theme, crate::PresenceCtx::default().draw_env()));
                     assert_eq!(
                         scene.encoding().resources.glyph_runs.len(),
                         1,

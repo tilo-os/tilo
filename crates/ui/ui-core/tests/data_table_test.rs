@@ -87,14 +87,7 @@ fn cell_render_receives_text_renderer_and_rect() {
     let mut tr = TextRenderer::new();
     let presence = tilo_ui::presence::PresenceCtx::default();
     let mut scene = Scene::new();
-    Widget::draw(
-        &mut t,
-        &mut scene,
-        Affine::IDENTITY,
-        &mut tr,
-        &theme,
-        &presence,
-    );
+    Widget::draw(&mut t, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
 
     assert_eq!(
         calls.load(Ordering::SeqCst),

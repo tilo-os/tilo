@@ -3,7 +3,7 @@
 
 use ui::i18n::ArgValue;
 use ui::paint::PaintCtx;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::{TextKind, TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
@@ -73,16 +73,11 @@ struct RowCtx<'a> {
 }
 
 impl Editor {
-    pub(super) fn paint(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub(super) fn paint(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         if !self.has_file {
-            self.paint_empty_state(scene, transform, tr, theme, presence);
+            self.paint_empty_state(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
             return;
         }
         self.paint_grid(scene, transform, tr, theme);
@@ -98,7 +93,7 @@ impl Editor {
             );
         }
         self.paint_status(scene, transform, tr, theme);
-        self.paint_inspector_region(scene, transform, tr, theme, presence);
+        self.paint_inspector_region(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
     }
 
     fn paint_grid(
@@ -391,30 +386,19 @@ impl Editor {
 
     /// The inspector: its region, heading, endianness strip and the interpretations of
     /// the bytes at the cursor.
-    fn paint_inspector_region(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn paint_inspector_region(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         let g = self.geo.clone();
         if g.inspector_visible {
             let local = self.drawer.paint_panel(scene, transform, theme);
-            self.paint_inspector(scene, transform, tr, &local, presence, &g);
+            self.paint_inspector(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()), &g);
         }
     }
 
-    fn paint_inspector(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        g: &Geo,
-    ) {
+    fn paint_inspector(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, g: &Geo) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         let colors = &theme.tokens.colors;
         let inset = f64::from(theme.tokens.spacing.s4);
         let header_h = g.endian.y0 - g.inspector.y0;
@@ -440,8 +424,7 @@ impl Editor {
             scene,
             transform,
             tr,
-            theme,
-            presence,
+            theme,&env,
         );
 
         let rows: Vec<Interpretation> =
@@ -474,16 +457,11 @@ impl Editor {
         scene.pop_layer();
     }
 
-    fn paint_empty_state(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn paint_empty_state(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.empty.apply_layout_external(self.rect);
-        ui::widget::DrawChild::draw_child(&mut self.empty, scene, transform, tr, theme, presence);
+        ui::widget::DrawChild::draw_child(&mut self.empty, scene, transform, tr, theme,&env);
         // "New empty file" under "Open file": a second way in.
         let open = self.empty.action_rect();
         if open.area() <= 0.0 {

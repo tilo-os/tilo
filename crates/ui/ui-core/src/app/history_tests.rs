@@ -2621,15 +2621,10 @@ impl crate::widget::Widget for PaletteHistoryOwner {
     ) {
         self.text.apply_layout(tree, node, origin);
     }
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text: &mut crate::TextRenderer,
-        theme: &crate::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.text.draw(scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.text.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.text.get_rect()
@@ -3195,15 +3190,10 @@ impl crate::widget::Widget for ComponentControlOwner {
     ) {
         self.text.apply_layout(tree, node, origin);
     }
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text: &mut crate::TextRenderer,
-        theme: &crate::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.text.draw(scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.text.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.text.get_rect()
@@ -3329,15 +3319,10 @@ impl crate::widget::Widget for ComponentControlSlot {
     ) {
         self.live.apply_layout(tree, node, origin);
     }
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text: &mut crate::TextRenderer,
-        theme: &crate::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.live.draw(scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.live.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.live.get_rect()
@@ -3405,15 +3390,10 @@ impl crate::widget::Widget for ComponentControlRoot {
     ) {
         self.text.apply_layout(tree, node, origin);
     }
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text: &mut crate::TextRenderer,
-        theme: &crate::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.text.draw(scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.text.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.text.get_rect()
@@ -4559,15 +4539,10 @@ impl crate::widget::Widget for OwnershipDeniedRoot {
             callback();
         }
     }
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text: &mut crate::TextRenderer,
-        theme: &crate::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.child.draw(scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.child.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.child.get_rect()
@@ -4709,16 +4684,11 @@ impl crate::widget::Widget for DomainControlsRoot {
             callback();
         }
     }
-    fn draw_overlay(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text: &mut crate::TextRenderer,
-        theme: &crate::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.child
-            .draw_overlay(scene, transform, text, theme, presence);
+            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
         if let Some(callback) = &mut self.overlay_callback {
             callback();
         }
@@ -4747,15 +4717,10 @@ impl crate::widget::Widget for DomainControlsRoot {
     ) {
         self.child.apply_layout(tree, node, origin);
     }
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text: &mut crate::TextRenderer,
-        theme: &crate::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.child.draw(scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.child.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
         if let Some(callback) = &mut self.draw_callback {
             callback();
         }

@@ -74,14 +74,9 @@ impl Widget for Hatching {
         );
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        _: &mut TextRenderer,
-        _: &Theme,
-        _: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _, _, mut env) = ctx.parts();
         let pen = Stroke::new(0.6);
         for row in 0..400_u32 {
             let mut path = BezPath::new();

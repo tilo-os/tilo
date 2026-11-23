@@ -31,7 +31,7 @@ use ui::widget::{
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::keyboard::{Key, ModifiersState, NamedKey};
 use ui::winit::window::CursorIcon;
-use ui::{PresenceCtx, TextRenderer, Theme};
+use ui::{TextRenderer, Theme};
 
 use crate::actions::{Draw, EditMarks, NewMark, NewStroke, Paint, RemoveMarks};
 use crate::gesture::area::{self, AreaGesture};
@@ -2350,14 +2350,11 @@ impl CanvasSurface {
     /// Read from `presence`, never from anything this window remembers about
     /// them, so a wash left by a peer whose frames stopped fades with their
     /// presence.
-    fn paint_peers(
-        &self,
-        scene: &mut Scene,
-        to_screen: Affine,
-        theme: &Theme,
-        text: &mut TextRenderer,
-        presence: &PresenceCtx,
-    ) {
+    fn paint_peers(&self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, to_screen, text, theme, mut env) = ctx.parts();
+        let fallback_presence = Default::default();
+        let presence = env.presence.unwrap_or(&fallback_presence);
         let keys = presence_keys();
         let bounds = to_screen.transform_rect_bbox(self.rect);
         for key in &keys {
@@ -3041,14 +3038,9 @@ impl Widget for CanvasSurface {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.advance_zoom();
         self.follow_tool();
         self.follow_view();
@@ -3108,7 +3100,7 @@ impl Widget for CanvasSurface {
         }
         ui::surface::ContentFrame::Sheet.draw(scene, transform, sheet, theme);
         self.paint_overlay(scene, to_screen, theme, text_renderer);
-        self.paint_peers(scene, to_screen, theme, text_renderer, presence);
+        self.paint_peers(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         if self.focused && !self.pressed_into_focus {
             ui::widget::paint_focus_ring(scene, transform, self.rect.inset(-2.0), 0.0, theme);
         }

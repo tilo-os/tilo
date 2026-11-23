@@ -217,8 +217,7 @@ impl FrameHarness {
                     &mut self.scene,
                     transform,
                     &mut self.text,
-                    &self.theme,
-                    &self.presence,
+                    &self.theme,&self.presence.draw_env(),
                 );
             }
         }

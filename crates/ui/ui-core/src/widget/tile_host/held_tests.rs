@@ -23,14 +23,9 @@ impl Widget for Repaints {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _tr, _th, mut env) = ctx.parts();
         let rect = self.rect;
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -58,15 +53,9 @@ impl crate::widget::CompleteContentProvider for Repaints {
         ))
     }
 
-    fn draw_complete_content(
-        &mut self,
-        scene: &mut Scene,
-        bounds: Rect,
-        transform: Affine,
-        _tr: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) -> bool {
+    fn draw_complete_content(&mut self, bounds: Rect, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _tr, _theme, mut env) = ctx.parts();
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -112,13 +101,7 @@ fn shown(scene: &Scene, at: Point) -> (u8, u8, u8) {
 
 fn draw(host: &mut TileHost, tr: &mut TextRenderer, theme: &Theme) -> Scene {
     let mut scene = Scene::new();
-    host.draw(
-        &mut scene,
-        Affine::IDENTITY,
-        tr,
-        theme,
-        &PresenceCtx::empty(),
-    );
+    host.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, tr, theme, PresenceCtx::empty().draw_env()));
     scene
 }
 
@@ -165,13 +148,7 @@ fn an_in_process_window_that_repaints_while_held_shows_what_it_showed_when_held(
     assert!((complete.height() - rect.height() * 2.0).abs() < 0.5);
     let mut capture = Scene::new();
     let captured = host
-        .draw_complete_content_capture(
-            &mut capture,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::empty(),
-        )
+        .draw_complete_content_capture(&mut crate::draw::DrawCtx::new(&mut capture, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::empty().draw_env()))
         .expect("the complete capture paints");
     assert_eq!(captured, complete);
     let low = Point::new(complete.center().x, complete.y1 - 10.0);

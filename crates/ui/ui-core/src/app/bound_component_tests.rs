@@ -319,7 +319,9 @@ impl Widget for Probe {
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {
         Self::capture("apply");
     }
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_, _, _, _, mut env) = ctx.parts();
         Self::capture("draw");
     }
     fn handle_event(&mut self, _: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

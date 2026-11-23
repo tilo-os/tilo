@@ -2,13 +2,10 @@
 
 use automerge::ObjId;
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 
 use super::{AppModel, ModelPath, Widget};
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+
 use crate::time::Instant;
 
 /// A widget's children, read-only: [`Widget::for_each_child`] of the widget
@@ -445,16 +442,9 @@ pub(super) fn release_scene_cache(children: ChildrenMut<'_>) {
     }
 }
 
-pub(super) fn draw_overlay(
-    children: ChildrenMut<'_>,
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
-) {
+pub(super) fn draw_overlay(children: ChildrenMut<'_>, ctx: &mut crate::draw::DrawCtx<'_>) {
     for child in children {
-        child.draw_overlay(scene, transform, text_renderer, theme, presence);
+        child.draw_overlay(ctx);
     }
 }
 

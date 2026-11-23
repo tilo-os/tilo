@@ -29,7 +29,7 @@ use vello::peniko::Color;
 use crate::icons::Icon;
 use crate::local_state::LocalBinding;
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -699,14 +699,9 @@ impl Widget for BannerBody {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
@@ -1149,19 +1144,14 @@ impl Banner {
     }
 
     /// The body and the buttons, where the layout placed them.
-    fn draw_contents(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_contents(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.body
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
         let on_well = theme.on_ground(well(theme, self.body.notice.kind));
         for button in self.buttons_mut() {
-            button.draw_child(scene, transform, text, &on_well, presence);
+            button.draw_child(scene, transform, text, &on_well,&env);
         }
     }
 
@@ -1356,14 +1346,9 @@ impl Widget for Banner {
         self.place_contents();
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.band.motion = theme.motion();
         if !self.in_motion() {
             if !self.visible() || self.rect.width() <= 0.0 {
@@ -1372,7 +1357,7 @@ impl Widget for Banner {
             // Kept, so its column can draw it leaving when its view stops
             // building it.
             let mut painted = self.band.take_painted();
-            self.draw_contents(&mut painted, Affine::IDENTITY, text, theme, presence);
+            self.draw_contents(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
             self.band.show_at_rest(painted, scene, transform);
             return;
         }
@@ -1382,7 +1367,7 @@ impl Widget for Banner {
             return;
         }
         let mut painted = self.band.take_painted();
-        self.draw_contents(&mut painted, Affine::IDENTITY, text, theme, presence);
+        self.draw_contents(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
         self.band.show_moving(painted, scene, transform);
     }
 

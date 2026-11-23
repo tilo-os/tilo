@@ -329,13 +329,7 @@ impl Harness {
         let vp = vello::kurbo::Rect::new(0.0, 0.0, self.logical_w, self.logical_h);
         let prev = self.presence.push_viewport(vp);
         let root: &mut dyn Widget = self.root.as_mut();
-        root.draw(
-            &mut self.scene,
-            self.transform,
-            &mut self.text_renderer,
-            &self.theme,
-            &self.presence,
-        );
+        root.draw(&mut crate::draw::DrawCtx::new(&mut self.scene, self.transform, &mut self.text_renderer, &self.theme, self.presence.draw_env()));
         self.presence.pop_viewport(prev);
         root.mark_drawn();
         self.renderer
@@ -486,7 +480,7 @@ fn scrolled_scrollable_renders_widgets_that_were_offscreen_at_initial_layout() {
         scene.reset();
         let prev = presence.push_viewport(vp);
         let r: &mut dyn Widget = root;
-        r.draw(scene, transform, text_renderer, &theme, presence);
+        r.draw(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, &theme, presence.draw_env()));
         presence.pop_viewport(prev);
         r.mark_drawn();
     };

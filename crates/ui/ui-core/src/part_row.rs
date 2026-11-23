@@ -471,15 +471,9 @@ impl PartRow {
 
     /// Paint the row from the host's frame at `left`: its band, its parts and the search,
     /// then their menus and the search's options over the app.
-    pub(crate) fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-        left: f64,
-    ) {
+    pub(crate) fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>, left: f64) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.shown.is_none() {
             return;
         }
@@ -511,10 +505,10 @@ impl PartRow {
                 &card,
             );
         }
-        self.row.paint(scene, transform, text, theme, presence);
+        self.row.paint(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
         self.search.set_ground(theme.tokens.colors.surfaces.content);
         self.search
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
         let now = crate::motion::frame_now();
         let motion = theme.motion();
         for (control, _) in self.controls.iter() {
@@ -533,9 +527,9 @@ impl PartRow {
         };
         controls.paint(scene, transform, theme, state);
         self.row
-            .paint_popups(scene, transform, text, theme, presence);
+            .paint_popups(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
         self.search
-            .draw_overlay(scene, transform, text, theme, presence);
+            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
     /// Hand `event` to the row when it is the row's: a pointer over a part, over one of

@@ -115,13 +115,7 @@ fn the_bauhaus_theme_is_legible_and_draws_through_the_host() {
     let mut button = Button::new("go", "Go").role(ButtonRole::Primary);
     button.apply_layout_external(Rect::new(100.0, 50.0, 220.0, 90.0));
     let mut scene = Scene::new();
-    button.draw(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut TextRenderer::new(),
-        &theme,
-        &crate::presence::PresenceCtx::default(),
-    );
+    button.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &theme, crate::presence::PresenceCtx::default().draw_env()));
     let at = (218.0, 88.0);
     crate::testing::Dispatch::new().send(
         &mut button,

@@ -12,7 +12,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::component::{Component, Described, Event, Value};
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{DrawChild, EventCtx, TaffyTreeExt, Widget};
@@ -133,14 +133,9 @@ impl Widget for EmojiPane {
         self.rect
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if !self.open {
             return;
         }
@@ -148,7 +143,7 @@ impl Widget for EmojiPane {
         // before painting it.
         self.picker.place_at(None, self.rect, theme);
         self.picker
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
         self.take_events();
     }
 

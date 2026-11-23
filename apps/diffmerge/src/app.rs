@@ -23,7 +23,7 @@ use ui::paint::PaintCtx;
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
 };
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -962,14 +962,9 @@ impl Widget for DiffMergeApp {
         self.sync_error_state();
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         let status_h = if self.load_error.is_some() {
             0.0
         } else {
@@ -1015,8 +1010,8 @@ impl Widget for DiffMergeApp {
             self.reveal_folder_row(self.folder_selection, row_h);
         } else {
             match self.mode {
-                Mode::Diff => self.diff.draw_child(scene, transform, tr, theme, presence),
-                Mode::Merge => self.merge.draw_child(scene, transform, tr, theme, presence),
+                Mode::Diff => self.diff.draw_child(scene, transform, tr, theme,&env),
+                Mode::Merge => self.merge.draw_child(scene, transform, tr, theme,&env),
             }
         }
 

@@ -95,13 +95,7 @@ tilo_test_env::scenario! {
             assert_eq!(app.focused_node, Some(app.focusable_order[4]));
             let order = app.focusable_order.clone();
             let mut scene = Scene::new();
-            app.root_widget.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut app.text_renderer,
-                &app.theme,
-                &PresenceCtx::default(),
-            );
+            app.root_widget.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut app.text_renderer, &app.theme, PresenceCtx::default().draw_env()));
             assert_eq!(
                 button_rects(&app),
                 before,
@@ -200,13 +194,7 @@ tilo_test_env::scenario! {
             assert!(app.dispatch_semantic_click(target.x, target.y));
             assert_eq!(*clicks.borrow(), vec![1]);
             let mut scene = Scene::new();
-            app.root_widget.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut app.text_renderer,
-                &app.theme,
-                &PresenceCtx::default(),
-            );
+            app.root_widget.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut app.text_renderer, &app.theme, PresenceCtx::default().draw_env()));
             for (&node, before) in app.focusable_order.iter().zip(rects) {
                 assert_eq!(
                     app.inspect_node(node, |widget| widget.get_rect()).unwrap(),
@@ -455,15 +443,10 @@ impl Widget for GrowingBody {
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.column.apply_layout(tree, node, origin);
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.column.draw(scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.column.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.column.handle_event(event, ctx);

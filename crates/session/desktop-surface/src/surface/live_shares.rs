@@ -222,17 +222,12 @@ impl DesktopSurface {
     }
 
     /// Draw each view over the window that embeds it, clipped to what of its place may show.
-    pub(super) fn draw_embeds(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    pub(super) fn draw_embeds(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.live_shares
             .stage
-            .draw(scene, transform, text, theme, presence);
+            .draw(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 }
 

@@ -25,14 +25,9 @@ impl Widget for FirstFrame {
     ) -> NodeId {
         taffy.leaf_node(taffy::Style::default())
     }
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _tr: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _tr, _theme, mut env) = ctx.parts();
         self.drawn.set(self.drawn.get() + 1);
     }
     fn name(&self) -> &'static str {
@@ -128,13 +123,7 @@ impl Opening {
                 .unwrap();
             self.group.apply_layout(&taffy, node, Point::ZERO);
             let mut scene = Scene::new();
-            self.group.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &theme,
-                &PresenceCtx::empty(),
-            );
+            self.group.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &theme, PresenceCtx::empty().draw_env()));
             self.group.mark_drawn();
             Shown {
                 painted: !scene.encoding().path_data.is_empty(),

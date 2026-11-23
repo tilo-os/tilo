@@ -49,13 +49,7 @@ fn external_windows_paint_to_their_border_without_spilling_into_neighbors() {
         group.apply_layout(&tree, node, Point::new(100.0, 50.0));
         assert_eq!(group.rect, Rect::new(100.0, 50.0, 300.0, 250.0));
         let mut scene = Scene::new();
-        group.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &theme,
-            &PresenceCtx::empty(),
-        );
+        group.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &theme, PresenceCtx::empty().draw_env()));
         let rgba = renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 255));
         for x in [96, 97, 98, 99, 300, 301, 302, 303] {
             let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 400, x, 150);
@@ -106,13 +100,7 @@ fn a_resting_pointer_lights_the_whole_edge_that_will_change() {
         tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
         group.apply_layout(&tree, node, Point::new(100.0, 30.0));
         let mut scene = Scene::new();
-        group.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &theme,
-            &PresenceCtx::empty(),
-        );
+        group.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &theme, PresenceCtx::empty().draw_env()));
         renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 255))
     };
     let start = crate::time::now();
@@ -620,13 +608,7 @@ fn painted_anything(g: &mut WindowGroup) -> bool {
 
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
-    g.draw(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut tr,
-        &theme,
-        &PresenceCtx::empty(),
-    );
+    g.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::empty().draw_env()));
     !scene.encoding().path_data.is_empty()
 }
 
@@ -1831,7 +1813,7 @@ fn group_close_fade_paints_pumps_frames_and_completes() {
             let mut scene = Scene::new();
             let presence = PresenceCtx::default();
             let mut tr = TextRenderer::new();
-            g.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            g.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
 
             assert_eq!(
                 g.get_rect(),

@@ -141,28 +141,18 @@ impl Widget for DeclaredModal {
         self.dialog.apply_layout(taffy, node, origin);
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: Affine,
-        text: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.dialog
-            .draw_overlay(scene, transform, text, theme, presence);
+            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: Affine,
-        text: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.dialog
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
     }
 
     fn handle_event(
@@ -371,16 +361,11 @@ impl Widget for DeclaredPanel {
         self.panel.apply_layout(taffy, node, origin);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: Affine,
-        text: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.panel
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
     }
 
     fn handle_event(
@@ -577,28 +562,18 @@ impl Widget for DeclaredPopover {
         self.popover.is_layout_dirty()
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: Affine,
-        text: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.popover
-            .draw_overlay(scene, transform, text, theme, presence);
+            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: Affine,
-        text: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.popover
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
     }
 
     fn handle_event(
@@ -763,28 +738,18 @@ impl Widget for DeclaredPopoverButton {
         self.pair.apply_layout(taffy, node, origin);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: Affine,
-        text: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.pair
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: Affine,
-        text: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.pair
-            .draw_overlay(scene, transform, text, theme, presence);
+            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
     fn handle_event(

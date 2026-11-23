@@ -3,7 +3,8 @@ use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
 use crate::i18n::widget_text;
 use crate::icons;
 use crate::paint::PaintCtx;
-use crate::presence::{PresenceCtx, PresenceKey};
+use crate::draw::{DrawEnv, MemberFace};
+use crate::presence::PresenceKey;
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
@@ -1319,7 +1320,7 @@ impl TabBar {
     fn draw_pill_inner(
         &self,
         ctx: &mut PaintCtx<'_>,
-        presence: &PresenceCtx,
+        env: &DrawEnv<'_>,
         i: usize,
         r: Rect,
         suppress_hover: bool,
@@ -1415,7 +1416,7 @@ impl TabBar {
             .get(i)
             .is_none_or(|faces| faces.slots() == 0)
         {
-            Self::draw_pill_presence(scene, transform, &shape, r, t, theme, presence);
+            Self::draw_pill_presence(scene, transform, &shape, r, t, theme, env);
         }
 
         // Chip strength ramps 0→1 as the trailing zone opens, full once it clears the chip;
@@ -1440,7 +1441,7 @@ impl TabBar {
         };
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         self.draw_pill_body(&mut ctx, &pill);
-        self.draw_pill_faces(&mut ctx, presence, &pill);
+        self.draw_pill_faces(&mut ctx, env, &pill);
         if t.attention {
             let side = f64::from(theme.tokens.spacing.s2);
             let centre = Point::new(r.x1 - side / 2.0, r.center().y);
@@ -1639,9 +1640,12 @@ impl TabBar {
         r: Rect,
         t: &TabDescriptor,
         theme: &Theme,
-        presence: &PresenceCtx,
+        env: &DrawEnv<'_>,
     ) {
-        let peers = presence.peers_on(&tab_presence_key(t.id));
+        let peers = env
+            .sites
+            .get(&tab_presence_key(t.id))
+            .map_or(&[][..], Vec::as_slice);
         if peers.is_empty() {
             return;
         }
@@ -1655,7 +1659,7 @@ impl TabBar {
         let capped = peers.len().min(4);
         let count = u8::try_from(capped).unwrap_or(4);
         let segment_w = r.width() / f64::from(count);
-        for (index, peer) in peers.iter().take(capped).enumerate() {
+        for (index, face) in peers.iter().take(capped).enumerate() {
             let index = u8::try_from(index).unwrap_or(3);
             let x0 = r.x0 + f64::from(index) * segment_w;
             let x1 = if index.saturating_add(1) == count {
@@ -1666,22 +1670,32 @@ impl TabBar {
             let p0 = transform * Point::new(x0, r.y0);
             let p1 = transform * Point::new(x1, r.y1);
             let mist_rect = Rect::new(p0.x, p0.y, p1.x, p1.y);
-            presence.draw_peer_mist(scene, theme, peer, mist_rect);
+            crate::presence::render::paint_mist(
+                scene,
+                theme.tokens.colors.presence.of_rgb(face.colour),
+                mist_rect,
+            );
         }
         scene.pop_layer();
     }
 
     /// Who a pill's faces show: on the tab in front, everyone in the window; on a tab behind, the
     /// people in that tab, so it shows faces only while someone is in it.
-    fn pill_people(&self, tab: u64, presence: &PresenceCtx) -> Vec<crate::permissions::MemberId> {
+    fn pill_people(&self, tab: u64, env: &DrawEnv<'_>) -> Vec<MemberFace> {
+        let people_at = |id: u64| -> Vec<MemberFace> {
+            env.sites
+                .get(&tab_presence_key(id))
+                .cloned()
+                .unwrap_or_default()
+        };
         if tab != self.active_id() {
-            return presence.peers_on(&tab_presence_key(tab)).to_vec();
+            return people_at(tab);
         }
-        let mut people: Vec<crate::permissions::MemberId> = Vec::new();
+        let mut people: Vec<MemberFace> = Vec::new();
         for id in std::iter::once(tab).chain(self.tabs.iter().map(|t| t.id)) {
-            for user in presence.peers_on(&tab_presence_key(id)) {
-                if !people.contains(user) {
-                    people.push(user.clone());
+            for face in people_at(id) {
+                if !people.contains(&face) {
+                    people.push(face);
                 }
             }
         }
@@ -1690,14 +1704,14 @@ impl TabBar {
 
     /// How many faces pill `i` fits: up to the cap plus a "+N" disc, fewer when the title
     /// would drop under its full width or its minimum, none on a pinned or narrow pill.
-    fn fit_pill_faces(&self, i: usize, presence: &PresenceCtx) -> PillFaces {
+    fn fit_pill_faces(&self, i: usize, env: &DrawEnv<'_>) -> PillFaces {
         let (Some(tab), Some(&r)) = (self.tabs.get(i), self.tab_rects.get(i)) else {
             return PillFaces::default();
         };
         if self.icon_only(tab.id) {
             return PillFaces::default();
         }
-        let peers = self.face_count(tab.id, presence);
+        let peers = self.face_count(tab.id, env);
         let (x0, x1) = self.title_zone_without_faces(i, r);
         let keep = self.shaped_title_width(i).min(MIN_TITLE_PX);
         PillFaces::fit(peers, x1 - x0, keep, self.face_metrics)
@@ -1705,7 +1719,7 @@ impl TabBar {
 
     /// Records how wide each unpinned tab's faces want to be, and marks the
     /// layout stale when that changed so the pills grow or shrink for them.
-    fn record_face_demand(&mut self, presence: &PresenceCtx) {
+    fn record_face_demand(&mut self, env: &DrawEnv<'_>) {
         self.touch();
         let metrics = self.face_metrics;
         let demand: HashMap<u64, f64> = self
@@ -1713,7 +1727,7 @@ impl TabBar {
             .iter()
             .filter(|tab| !self.icon_only(tab.id))
             .filter_map(|tab| {
-                let peers = self.face_count(tab.id, presence);
+                let peers = self.face_count(tab.id, env);
                 let faces = peers.min(PILL_MAX_FACES);
                 let wanted = PillFaces {
                     faces,
@@ -1734,7 +1748,7 @@ impl TabBar {
     fn draw_pill_faces(
         &self,
         ctx: &mut PaintCtx<'_>,
-        presence: &PresenceCtx,
+        env: &DrawEnv<'_>,
         pill: &PillPaint<'_>,
     ) {
         let faces = self.pill_faces.get(pill.i).copied().unwrap_or_default();
@@ -1768,7 +1782,7 @@ impl TabBar {
             .given_faces
             .get(&pill.tab.id)
             .filter(|given| !given.is_empty());
-        let peers = self.pill_people(pill.tab.id, presence);
+        let peers = self.pill_people(pill.tab.id, env);
         for part in 0..faces.faces {
             let rect = face_rect(part);
             if let Some(face) = given.and_then(|given| given.get(part)) {
@@ -1776,11 +1790,10 @@ impl TabBar {
                 paint_tab_face(ctx, rect, &face.name, colour, face.agent, ring);
                 continue;
             }
-            let Some(user) = peers.get(part) else {
+            let Some(face) = peers.get(part) else {
                 continue;
             };
-            let dimmed = presence.availability_of(user).dims();
-            if dimmed {
+            if face.dimmed {
                 ctx.scene.push_layer(
                     vello::peniko::Fill::NonZero,
                     vello::peniko::BlendMode::default(),
@@ -1789,16 +1802,14 @@ impl TabBar {
                     &rect.inflate(3.0, 3.0),
                 );
             }
-            let (red, green, blue) = presence.color_for(user);
-            if user.is_person() {
-                let name = presence.names.get(user).map_or(user.id(), String::as_str);
-                let colour = vello::peniko::Color::from_rgb8(red, green, blue);
-                paint_tab_face(ctx, rect, name, colour, false, ring);
+            if !face.agent {
+                let colour = vello::peniko::Color::from_rgb8(face.colour.0, face.colour.1, face.colour.2);
+                paint_tab_face(ctx, rect, &face.name, colour, false, ring);
             } else {
-                let colour = ctx.theme.tokens.colors.presence.of_rgb((red, green, blue));
+                let colour = ctx.theme.tokens.colors.presence.of_rgb(face.colour);
                 paint_tab_face(ctx, rect, "", colour, true, ring);
             }
-            if dimmed {
+            if face.dimmed {
                 ctx.scene.pop_layer();
             }
         }
@@ -2730,10 +2741,10 @@ impl TabBar {
     }
 
     /// How many faces a pill shows: the ones its view gave it, else the live presence feed's.
-    fn face_count(&self, tab: u64, presence: &PresenceCtx) -> usize {
+    fn face_count(&self, tab: u64, env: &DrawEnv<'_>) -> usize {
         self.given_faces
             .get(&tab)
-            .map_or_else(|| self.pill_people(tab, presence).len(), Vec::len)
+            .map_or_else(|| self.pill_people(tab, env).len(), Vec::len)
     }
 
     /// Tint `id`'s leading marker: a tab with no `app_kind` paints a filled dot, one with both
@@ -3970,15 +3981,10 @@ impl Widget for TabBar {
     /// A bar at rest whose own state, theme, placement and the people on
     /// its tabs are as when it was last drawn shows that drawing again
     /// (`TabBar::replays`); anything else draws it afresh.
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.paint_or_replay(scene, transform, tr, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
+        self.paint_or_replay(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -4066,16 +4072,11 @@ impl Widget for TabBar {
 
     /// The parts' menus (overflow, suggestions) float in the window's top
     /// layer, over the content.
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.toolbar_row
-            .paint_popups(scene, transform, text_renderer, theme, presence);
+            .paint_popups(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
     fn test_id(&self) -> Option<&str> {
         Some("tabs")
@@ -4660,16 +4661,9 @@ impl TabBar {
 
     /// One row of tab pills, each springing from its previous layout rect and fading in if
     /// freshly inserted or dimming if it's the drag source.
-    fn draw_pills(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        layout_t: Option<f64>,
-        fade_window: Duration,
-    ) {
+    fn draw_pills(&self, ctx: &mut crate::draw::DrawCtx<'_>, layout_t: Option<f64>, fade_window: Duration) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         // `None` if no drag, or the tab was removed mid-drag (avoids a panic).
         let drag_source_idx: Option<usize> = match &self.pending_drag {
             Some(DragPayload::Tab { tab, .. }) => self.tabs.iter().position(|t| t.id == *tab),
@@ -4744,7 +4738,7 @@ impl TabBar {
                 }
                 self.draw_pill_inner(
                     &mut PaintCtx::new(scene, pill_transform, tr, theme),
-                    presence,
+                    &env,
                     i,
                     r,
                     false,
@@ -4949,14 +4943,9 @@ impl TabBar {
 
     /// The dragged pill's cursor-following ghost, painted LAST so it composites over
     /// everything.
-    pub(crate) fn draw_drag_ghost(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub(crate) fn draw_drag_ghost(&self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         let Some(ghost_rect) = self.compute_ghost_rect() else {
             return;
         };
@@ -4992,7 +4981,7 @@ impl TabBar {
         );
         self.draw_pill_inner(
             &mut PaintCtx::new(scene, transform, tr, theme),
-            presence,
+            &env,
             source_idx,
             ghost_rect,
             true,
@@ -6073,13 +6062,7 @@ mod tests {
                 assert_ne!(first, second, "document identity must survive narrow tabs");
                 assert!(second.contains("060"), "{second}");
                 let mut scene = Scene::new();
-                bar.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut tr,
-                    &theme,
-                    &PresenceCtx::default(),
-                );
+                bar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
                 assert!(
                     scene
                         .encoding()
@@ -6536,13 +6519,7 @@ mod tests {
                 lay_out_at_width_with(b, 600.0, &theme);
                 let mut scene = Scene::new();
                 let mut tr = TextRenderer::new();
-                b.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut tr,
-                    &theme,
-                    &PresenceCtx::default(),
-                );
+                b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
                 scene.encoding().draw_data.clone()
             };
             let mut documents = bar();
@@ -7100,7 +7077,7 @@ mod tests {
                     let mut tr = TextRenderer::new();
                     let presence = PresenceCtx::default();
                     let mut scene = Scene::new();
-                    b.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                    b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
                     scene
                         .encoding()
                         .draw_tags
@@ -7149,13 +7126,7 @@ mod tests {
                         );
                     }
                     let mut scene = Scene::new();
-                    b.draw(
-                        &mut scene,
-                        Affine::IDENTITY,
-                        &mut TextRenderer::new(),
-                        &Theme::dark(),
-                        &presence,
-                    );
+                    b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
                     scene
                         .encoding()
                         .draw_tags
@@ -7202,13 +7173,7 @@ mod tests {
                             },
                         );
                     }
-                    b.draw(
-                        &mut Scene::new(),
-                        Affine::IDENTITY,
-                        &mut TextRenderer::new(),
-                        &Theme::dark(),
-                        &presence,
-                    );
+                    b.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
                     let r = b.tab_rects[1];
                     let (_, title_x1) = b.title_zone(1, r);
                     (b.pill_faces.clone(), r.x1 - title_x1)
@@ -7262,12 +7227,12 @@ mod tests {
                             },
                         );
                 assert_eq!(
-                    bar.pill_people(1, &presence).len(),
+                    bar.pill_people(1, &presence.draw_env()).len(),
                     1,
                     "the tab in front shows who is in the window, though they are in the tab behind"
                 );
                 assert!(
-                    bar.pill_people(2, &presence).len() == 1
+                    bar.pill_people(2, &presence.draw_env()).len() == 1
                         && TabBar::new(
                             "g2",
                             vec![
@@ -7276,7 +7241,7 @@ mod tests {
                             ],
                             4
                         )
-                        .pill_people(3, &presence)
+                        .pill_people(3, &presence.draw_env())
                         .is_empty(),
                     "a tab behind shows faces only while someone is in it"
                 );
@@ -7301,13 +7266,7 @@ mod tests {
                     b.close_rects = vec![Rect::ZERO; 2];
                     b.max_rects = vec![Rect::ZERO; 2];
                     b.search_rects = vec![Rect::ZERO; 2];
-                    b.draw(
-                        &mut Scene::new(),
-                        Affine::IDENTITY,
-                        &mut TextRenderer::new(),
-                        &Theme::dark(),
-                        presence,
-                    );
+                    b.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
                 };
                 draw_at(&mut b, 200.0, &PresenceCtx::default());
                 let content = PILL_PAD_X + b.leading_zone(1) + b.shaped_title_width(1) + reserve;
@@ -7353,13 +7312,7 @@ mod tests {
                 b.search_rects = vec![Rect::ZERO; 2];
                 let colour_tags = |b: &mut TabBar| {
                     let mut scene = Scene::new();
-                    b.draw(
-                        &mut scene,
-                        Affine::IDENTITY,
-                        &mut TextRenderer::new(),
-                        &Theme::dark(),
-                        &PresenceCtx::default(),
-                    );
+                    b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
                     scene
                         .encoding()
                         .draw_tags
@@ -7377,7 +7330,7 @@ mod tests {
                     }],
                 );
                 assert_eq!(
-                    b.face_count(1, &PresenceCtx::default()),
+                    b.face_count(1, &PresenceCtx::default().draw_env()),
                     1,
                     "the given face is the pill's face"
                 );
@@ -7805,13 +7758,7 @@ mod tests {
             assert_eq!(node.children[2].description.as_deref(), Some("Loading"));
             let mut scene = Scene::new();
             let mut tr = TextRenderer::new();
-            tabs.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::default(),
-            );
+            tabs.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
             assert!(!scene.encoding().draw_tags.is_empty());
         }
 
@@ -7948,7 +7895,7 @@ mod tests {
                 let mut tr = TextRenderer::new();
                 let presence = PresenceCtx::default();
                 let mut scene = Scene::new();
-                b.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
                 scene
                     .encoding()
                     .draw_tags
@@ -9136,13 +9083,7 @@ mod tests {
             lay_out_at_width_with(&mut b, 900.0, &theme);
             let mut scene = Scene::new();
             let mut tr = TextRenderer::new();
-            b.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::default(),
-            );
+            b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
             let location = b.location_rect();
             let home = (0..900_u32)
                 .map(|x| Point::new(f64::from(x), location.center().y))

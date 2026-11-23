@@ -962,14 +962,9 @@ impl Widget for ColorPicker {
         self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let colors = &theme.tokens.colors;
         let radius_sm = f64::from(theme.tokens.radii.detail);
 
@@ -984,7 +979,7 @@ impl Widget for ColorPicker {
         self.draw_buttons(scene, transform, text_renderer, theme);
 
         self.hex_input
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

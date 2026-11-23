@@ -137,8 +137,7 @@ fn draw_frame_content_owning(
                 scene,
                 transform,
                 &mut app.text_renderer,
-                &app.theme,
-                &app.presence_ctx,
+                &app.theme,&app.presence_ctx.draw_env(),
             );
         } else {
             history_changed = history.draw_compared(
@@ -193,8 +192,7 @@ fn draw_frame_content_owning(
                     widgets,
                     transform,
                     &mut app.text_renderer,
-                    &app.theme,
-                    &app.presence_ctx,
+                    &app.theme,&app.presence_ctx.draw_env(),
                 )
             });
         crate::draw_cull::unbind();
@@ -237,41 +235,17 @@ fn draw_frame_content_owning(
         .as_ref()
         .is_none_or(|history| history.live_visible())
     {
-        app.root_widget.draw_overlay(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
-        );
+        app.root_widget.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, &mut app.text_renderer, &app.theme, app.presence_ctx.draw_env()));
         // The box the window was asked for stands over all of it.
-        app.window_box.draw_overlay(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
-        );
+        app.window_box.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, &mut app.text_renderer, &app.theme, app.presence_ctx.draw_env()));
     }
     painted(scene, "an overlay of the app's widgets", &mut drawn);
     if let Some(history) = &mut app.history {
-        history.draw_overlay(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
-        );
+        history.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, &mut app.text_renderer, &app.theme, app.presence_ctx.draw_env()));
     }
     painted(scene, "a history overlay", &mut drawn);
     if let Some(dialog) = app.close_admission.dialog.as_mut() {
-        dialog.draw_overlay(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
-        );
+        dialog.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, &mut app.text_renderer, &app.theme, app.presence_ctx.draw_env()));
     }
     painted(scene, "the close dialog", &mut drawn);
     // Pointing at what a report is about covers the whole window, over every
@@ -321,13 +295,7 @@ fn draw_frame_content_owning(
                 &mut app.text_renderer,
             ),
         }
-        ap.draw(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
-        );
+        ap.draw(&mut crate::draw::DrawCtx::new(scene, transform, &mut app.text_renderer, &app.theme, app.presence_ctx.draw_env()));
     }
     painted(scene, "the action palette", &mut drawn);
     if let Some(notice) = &app.actions.control_notice {
@@ -408,8 +376,7 @@ fn redraw_culled_widgets(app: &mut App, culled: &mut crate::draw_cull::Scenes, d
                 widgets,
                 drawn.transform,
                 &mut app.text_renderer,
-                &app.theme,
-                &app.presence_ctx,
+                &app.theme,&app.presence_ctx.draw_env(),
             )
         });
     app.presence_ctx.pop_viewport(prev_vp);
@@ -508,12 +475,14 @@ fn draw_presence_layer(
     layer.record(|scene| {
         part_drawn(scene, PartKey::new("ui.remote-presence", ()), |scene| {
             crate::presence::draw_remote_presence(
-                scene,
-                transform,
                 window_rect,
-                &mut app.text_renderer,
-                &app.theme,
-                &app.presence_ctx,
+                &mut crate::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    &mut app.text_renderer,
+                    &app.theme,
+                    app.presence_ctx.draw_env(),
+                ),
             )
         });
         part_drawn(scene, PartKey::new("ui.action-presence", ()), |scene| {

@@ -1,4 +1,3 @@
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
@@ -172,7 +171,7 @@ impl ContentDamage {
         app: &dyn Widget,
         placement: Affine,
         clip: Rect,
-        presence: &PresenceCtx,
+        env: &crate::draw::DrawEnv<'_>,
         copies: Option<f64>,
     ) -> Option<crate::scene_parts::DamageHint> {
         let boxes = crate::damage::widget_boxes(app);
@@ -183,7 +182,7 @@ impl ContentDamage {
             .filter(|(placed, _)| *placed == placement)
             .map(|(_, before)| before);
         let (Some(before), Some((_, after))) = (
-            before.filter(|_| !presence.places_content_marks(crate::time::now())),
+            before.filter(|_| !env.marks_changing),
             self.painted.as_ref(),
         ) else {
             self.steps.clear();
@@ -1204,14 +1203,9 @@ impl TileHost {
     /// Paint a complete app-provided canvas in the ordinary window card. The
     /// app owns only its semantic pixels; shared clipping, corner radius and
     /// focus edge remain toolkit code, exactly as on screen.
-    pub fn draw_complete_content_capture(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) -> Option<Rect> {
+    pub fn draw_complete_content_capture(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) -> Option<Rect> {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         if self.content_held() {
             return self.draw_held_complete_content(scene, transform);
         }
@@ -1234,7 +1228,7 @@ impl TileHost {
         );
         let painted = match &mut self.content {
             TileContent::App(app) => {
-                app.draw_complete_content(scene, rect, transform, tr, theme, presence)
+                app.draw_complete_content(rect, &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()))
             }
             TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => false,
         };
@@ -1392,31 +1386,20 @@ impl FloatingSurfaceProvider for TileHost {
         }
     }
 
-    fn draw_floating_surfaces(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_floating_surfaces(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let TileContent::App(widget) = &mut self.content {
-            widget.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
+            widget.draw_floating_surfaces(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
     }
 
-    fn draw_floating_surface(
-        &mut self,
-        id: &str,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) -> bool {
+    fn draw_floating_surface(&mut self, id: &str, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         match &mut self.content {
             TileContent::App(widget) => {
-                widget.draw_floating_surface(id, scene, transform, text_renderer, theme, presence)
+                widget.draw_floating_surface(id, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()))
             }
             TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => false,
         }
@@ -1897,26 +1880,14 @@ impl Widget for TileHost {
             }
         }
     }
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let outer = (self.rect.width() > 0.0 && self.rect.height() > 0.0)
-            .then(|| presence.push_viewport(self.rect));
-        crate::widget::defaults::draw_overlay(
-            self.children_mut(),
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-        );
+            .then(|| env.push_viewport(self.rect));
+        crate::widget::defaults::draw_overlay(self.children_mut(), &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         if let Some(outer) = outer {
-            presence.pop_viewport(outer);
+            env.pop_viewport(outer);
         }
     }
     fn set_full_bleed(&mut self, full_bleed: bool) {
@@ -1925,14 +1896,9 @@ impl Widget for TileHost {
             app.set_full_bleed(full_bleed);
         }
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         let _running = self.running();
         if let Some(t) = self.spawned_at
             && crate::time::now().saturating_duration_since(t) >= spawn_time()
@@ -1965,17 +1931,13 @@ impl Widget for TileHost {
                 &clip,
             );
             let anim_transform = pose.applied_to(transform);
-            self.draw_window(scene, anim_transform, tr, theme, presence);
+            self.draw_window(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
             scene.pop_layer();
-            crate::widget::draw_permission_scrim_and_peer_focus(
-                self, scene, transform, theme, presence,
-            );
+            crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
             return;
         }
-        self.draw_window(scene, transform, tr, theme, presence);
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self, scene, transform, theme, presence,
-        );
+        self.draw_window(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
     }
     fn needs_redraw(&self) -> bool {
         if let Some(redraw) = self.held_redraw() {
@@ -2587,16 +2549,11 @@ impl TileHost {
         );
     }
 
-    fn draw_steady_state(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_steady_state(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         if self.full_bleed {
-            self.draw_full_bleed(scene, transform, tr, theme, presence);
+            self.draw_full_bleed(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
             return;
         }
         let radius = f64::from(theme.tokens.radii.tile);
@@ -2632,7 +2589,7 @@ impl TileHost {
         let content = crate::scene_parts::PartKey::new("ui.tile-content", ());
         let bounds = vec![transform.transform_rect_bbox(self.rect)];
         crate::scene_parts::part(scene, content, bounds, |scene| {
-            self.draw_clipped_content(scene, transform, tr, theme, presence, &shape);
+            self.draw_clipped_content(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env), &shape);
         });
         scene.pop_layer();
         let edge = crate::scene_parts::PartKey::new("ui.tile-edge", ());
@@ -2647,14 +2604,9 @@ impl TileHost {
         }
     }
 
-    fn draw_full_bleed(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_full_bleed(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -2666,19 +2618,13 @@ impl TileHost {
         let content = crate::scene_parts::PartKey::new("ui.tile-content", ());
         let bounds = vec![transform.transform_rect_bbox(self.rect)];
         crate::scene_parts::part(scene, content, bounds, |scene| {
-            self.draw_clipped_content(scene, transform, tr, theme, presence, &shape);
+            self.draw_clipped_content(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env), &shape);
         });
     }
 
-    fn draw_clipped_content(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        shape: &RoundedRect,
-    ) {
+    fn draw_clipped_content(&mut self, ctx: &mut crate::draw::DrawCtx<'_>, shape: &RoundedRect) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         let now = crate::motion::frame_now();
         self.arrival_motion = theme.motion();
         self.advance_arrival(now);
@@ -2717,10 +2663,10 @@ impl TileHost {
                     transform,
                     shape,
                 );
-                self.draw_content(scene, transform, tr, theme, presence);
+                self.draw_content(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
                 scene.pop_layer();
             }
-            None => self.draw_content(scene, transform, tr, theme, presence),
+            None => self.draw_content(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone())),
         }
     }
 
@@ -2764,14 +2710,9 @@ impl TileHost {
         }
     }
 
-    fn draw_content(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_content(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         if let Some(detail) = self.resource_error.clone() {
             if self
                 .error_card
@@ -2783,7 +2724,7 @@ impl TileHost {
             let rect = self.rect;
             if let Some((_, card)) = &mut self.error_card {
                 card.apply_layout_external(rect);
-                card.draw_child(scene, transform, tr, theme, presence);
+                card.draw_child(scene, transform, tr, theme,&env);
             }
         } else {
             let content_transform = if self.content_shift == 0.0 {
@@ -2800,7 +2741,7 @@ impl TileHost {
                     {
                         let key = crate::scene_parts::PartKey::new("ui.tile-app", ());
                         crate::scene_parts::begin(scene, key);
-                        w.draw_child(scene, content_transform, tr, theme, presence);
+                        w.draw_child(scene, content_transform, tr, theme,&env);
                         let copies = (crate::scroll_copy::host_copies()
                             && theme.tokens.colors.surfaces.content.components[3] >= 1.0)
                             .then(crate::scroll_copy::host_device_scale);
@@ -2808,7 +2749,7 @@ impl TileHost {
                             &**w,
                             content_transform,
                             transform.transform_rect_bbox(self.rect),
-                            presence,
+                            &env,
                             copies,
                         );
                         crate::scene_parts::end_hinted(scene, hint);
@@ -2816,7 +2757,7 @@ impl TileHost {
                         self.content_damage.forget();
                     }
                     if let Some(history) = &mut self.history {
-                        history.draw_child(scene, content_transform, tr, theme, presence);
+                        history.draw_child(scene, content_transform, tr, theme,&env);
                     }
                 }
                 TileContent::Stub { kind, label } => {

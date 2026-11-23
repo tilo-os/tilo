@@ -8,7 +8,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{TaffyTreeExt, Widget};
@@ -415,15 +414,9 @@ impl FloatingPanel {
 
     /// The panel itself, drawn where `rect` says: what [`Widget::draw`] draws once the panel is
     /// posed where its arrival has reached.
-    fn paint_panel(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        card: Rect,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn paint_panel(&mut self, card: Rect, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let header = if self.header.is_some() {
             self.header_rect.height()
         } else {
@@ -444,7 +437,7 @@ impl FloatingPanel {
             } else {
                 transform
             };
-            crate::widget::draw_child(slot.as_mut(), scene, at, text_renderer, &inner, presence);
+            crate::widget::draw_child(slot.as_mut(), scene, at, text_renderer, &inner,&env);
         }
     }
 }
@@ -537,14 +530,9 @@ impl Widget for FloatingPanel {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let now = crate::motion::frame_now();
         let arriving = self.placed.is_moving(now);
         // A section opening or closing in the page is drawn taller or shorter than it is laid
@@ -579,7 +567,7 @@ impl Widget for FloatingPanel {
         let pose = self.placed.pose(card, now);
         let bounds = card.union(pose.drawn_rect(card));
         pose.paint(scene, transform, bounds, |scene, transform| {
-            self.paint_panel(scene, transform, card, text_renderer, theme, presence);
+            self.paint_panel(card, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         });
     }
 

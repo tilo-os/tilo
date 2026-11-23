@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_desktop_surface::{DesktopHandle, PALETTE_EDGE, is_escape, is_search_chord};
 use ui::platform::PlatformConventions;
-use ui::presence::PresenceCtx;
+
 use ui::search::Scope;
 use ui::theme::Theme;
 use ui::widget::DrawChild;
@@ -260,14 +260,9 @@ impl Widget for SearchOverlay {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: vello::kurbo::Affine,
-        text: &mut ui::TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if !self.is_open() {
             self.shown = (false, self.handle.search_revision());
             return;
@@ -299,7 +294,7 @@ impl Widget for SearchOverlay {
             let mut search = search.borrow_mut();
             search
                 .palette_mut()
-                .draw_child(scene, transform, text, theme, presence);
+                .draw_child(scene, transform, text, theme,&env);
             vec![
                 transform
                     .transform_rect_bbox(ui::widget::floating_surface::painted_bounds(card, theme)),

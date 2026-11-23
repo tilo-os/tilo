@@ -132,7 +132,9 @@ impl Widget for PtyRoot {
             .unwrap();
     }
     crate::testing::inert_widget_methods!(unregistered_leaf_layout);
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_, _, _, _, mut env) = ctx.parts();
         panic!("hidden PTY progress must not paint");
     }
     fn name(&self) -> &'static str {

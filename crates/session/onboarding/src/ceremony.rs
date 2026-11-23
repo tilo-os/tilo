@@ -392,14 +392,9 @@ impl Ceremony {
         )
     }
 
-    fn draw_composed(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw_composed(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.composed.is_none() {
             return;
         }
@@ -420,8 +415,7 @@ impl Ceremony {
             &mut local,
             Affine::IDENTITY,
             text_renderer,
-            &on_panel,
-            presence,
+            &on_panel,&env,
         );
         scene.push_layer(
             Fill::NonZero,
@@ -434,14 +428,9 @@ impl Ceremony {
         scene.pop_layer();
     }
 
-    fn draw_chooser(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw_chooser(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let Some((_, picker)) = self.chooser.as_mut() else {
             return;
         };
@@ -453,7 +442,7 @@ impl Ceremony {
             &self.rect,
         );
         picker.set_rect(chooser_rect(self.rect));
-        picker.draw_child(scene, transform, text_renderer, theme, presence);
+        picker.draw_child(scene, transform, text_renderer, theme,&env);
     }
 
     fn escape_effect(&self) -> Option<OnboardingEffect> {
@@ -617,19 +606,14 @@ impl Widget for Ceremony {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.draw_backdrop(scene, transform, theme);
         if self.chooser.is_none() {
-            self.draw_composed(scene, transform, text_renderer, theme, presence);
+            self.draw_composed(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
-        self.draw_chooser(scene, transform, text_renderer, theme, presence);
+        self.draw_chooser(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

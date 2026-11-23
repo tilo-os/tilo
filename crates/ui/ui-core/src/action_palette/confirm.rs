@@ -10,7 +10,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use super::{ActionPalette, ConfirmationPolicy, ObjId, PendingOperation};
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
@@ -381,15 +381,10 @@ impl ActionPalette {
     }
 
     /// Paint the question as the shared sheet over `window`.
-    pub(super) fn draw_confirmation(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        let window = self.sheet_window(presence);
+    pub(super) fn draw_confirmation(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        let window = self.sheet_window(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         let focused = |index: usize| {
             self.controls
                 .children()
@@ -501,7 +496,7 @@ impl ActionPalette {
                     &spec,
                     |scene, transform, text_renderer, theme, rect: Rect| {
                         placed = place(body, theme, rect.origin(), rect.width(), text_renderer);
-                        body.draw_child(scene, transform, text_renderer, theme, presence);
+                        body.draw_child(scene, transform, text_renderer, theme,&env);
                     },
                 );
                 phrase.placed = placed;

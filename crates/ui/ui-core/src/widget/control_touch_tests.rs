@@ -41,14 +41,7 @@ tilo_test_env::scenario! {
             let theme = Theme::light();
             crate::text_render::with_layout_renderer(&theme, |text| {
                 let mut scene = vello::Scene::new();
-                Widget::draw(
-                    &mut *host.root_mut::<Stepper>(),
-                    &mut scene,
-                    vello::kurbo::Affine::IDENTITY,
-                    text,
-                    &theme,
-                    &crate::presence::PresenceCtx::default(),
-                );
+                Widget::draw(&mut *host.root_mut::<Stepper>(), &mut crate::draw::DrawCtx::new(&mut scene, vello::kurbo::Affine::IDENTITY, text, &theme, crate::presence::PresenceCtx::default().draw_env()));
             });
             let announced = host
                 .root_mut::<Stepper>()

@@ -11,7 +11,7 @@ use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_resource::{Id, Resource};
 use ui_core::a11y::{AccessNode, Role};
-use ui_core::presence::PresenceCtx;
+
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::{Affine, Point, Rect};
@@ -964,14 +964,9 @@ impl<R: Resource> Widget for Each<R> {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.remounts = 0;
         self.for_each_mounted(|view| {
             draw_child(
@@ -979,8 +974,7 @@ impl<R: Resource> Widget for Each<R> {
                 scene,
                 transform,
                 text,
-                theme,
-                presence,
+                theme,&env,
             );
         });
     }
@@ -1036,22 +1030,17 @@ impl<R: Resource> Widget for Each<R> {
         capture
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.for_each_mounted(|row| {
             row.widget
-                .draw_overlay(scene, transform, text, theme, presence);
+                .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env));
         });
         // Drawn while it is open and while it leaves (`motion::Appear`).
         self.menu
             .menu
-            .draw_overlay(scene, transform, text, theme, presence);
+            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
     /// What the menu paints — a menu arriving or leaving, a box beside it — is

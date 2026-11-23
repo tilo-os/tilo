@@ -559,14 +559,9 @@ impl Widget for Container {
             || crate::widget::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.paint_surface(scene, transform, theme);
 
         if let Some(child) = &mut self.child {
@@ -575,8 +570,7 @@ impl Widget for Container {
                 scene,
                 transform,
                 text_renderer,
-                theme,
-                presence,
+                theme,&env,
             );
         }
 
@@ -584,9 +578,7 @@ impl Widget for Container {
         let shifts = self.ghosts.shift(None, usize::from(self.child.is_some()));
         self.ghosts.draw(scene, transform, shifts.as_deref());
 
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self, scene, transform, theme, presence,
-        );
+        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

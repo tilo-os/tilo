@@ -615,14 +615,9 @@ impl Widget for KeyboardMap {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.dirty = true;
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, renderer, theme, mut env) = ctx.parts();
         let map = transform
             * Affine::translate((self.rect.x0, self.rect.y0))
             * Affine::scale(self.rect.width() / self.model_size.width.max(1.0));

@@ -9,7 +9,6 @@ use ui_core::Theme;
 use ui_core::application_view::{ApplicationFocusRestore, ApplicationLocalView};
 use ui_core::automerge::AutoCommit;
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
-use ui_core::presence::PresenceCtx;
 use ui_core::resource::ResourceSaveStatus;
 use ui_core::resources::PublishesResources;
 use ui_core::search::capability::SearchSource;
@@ -47,14 +46,7 @@ pub(crate) trait RootModel:
     fn resource_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner>;
     fn sync(&mut self, state: &AppModel, path: &ModelPath);
     fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId);
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    );
+    fn draw(&mut self, ctx: &mut ui_core::draw::DrawCtx<'_>);
     fn needs_redraw(&self) -> bool;
     /// The window's save status the root says in the window's bar.
     fn save_indicator(&self) -> &crate::framework::saves::SaveIndicator;
@@ -307,17 +299,12 @@ impl Decorator for RootWidget {
         self.0.settle(edits, path);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let root = &mut self.0;
         self.1.draw(transform, || {
-            root.draw(scene, transform, text, theme, presence);
+            root.draw(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env));
         });
     }
 

@@ -58,15 +58,10 @@ impl Widget for EventSpy {
 
     crate::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.draw_viewport.set(presence.viewport.get());
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
+        self.draw_viewport.set(env.viewport);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -999,13 +994,7 @@ tilo_test_env::scenario! {
             let presence = PresenceCtx::default();
             let outer = Rect::new(0.0, 0.0, 800.0, 600.0);
             presence.viewport.set(Some(outer));
-            scroll.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::dark(),
-                &presence,
-            );
+            scroll.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
             assert_eq!(observed.get(), Some(scroll.content_viewport_rect()));
             assert_eq!(presence.viewport.get(), Some(outer));
         }
@@ -1690,13 +1679,7 @@ tilo_test_env::scenario! {
     phase bars_keep_out_of_the_windows_rounded_corners_only;
     {
         let draw = |s: &mut Scrollable, theme: &Theme| {
-            s.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                theme,
-                &PresenceCtx::empty(),
-            );
+            s.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), theme, PresenceCtx::empty().draw_env()));
         };
         let mut square = both(900.0, 900.0);
         let mut theme = Theme::dark();

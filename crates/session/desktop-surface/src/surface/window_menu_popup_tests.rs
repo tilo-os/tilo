@@ -77,13 +77,7 @@ fn the_menu_stands_where_the_bar_was_pressed_whatever_the_frame_names() {
     presence.viewport.set(Some(Rect::new(0.0, 0.0, 1.0, 1.0)));
     let theme = ui::Theme::dark();
     let mut text = ui::text_render::TextRenderer::new();
-    popup.draw_overlay(
-        &mut ui::vello::Scene::new(),
-        ui::kurbo::Affine::IDENTITY,
-        &mut text,
-        &theme,
-        &presence,
-    );
+    popup.draw_overlay(&mut tilo_ui::DrawCtx::new(&mut ui::vello::Scene::new(), ui::kurbo::Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
     let menu = popup.menu.get_rect();
     assert!(
         menu.x0 >= 578.0 && menu.y0 >= 58.0 && menu.width() > 100.0,

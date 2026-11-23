@@ -34,7 +34,7 @@ use vello::peniko::{BlendMode, Fill};
 
 use crate::component::{Component, Described, Event, PartType, PartViews, ResourceId, Source};
 use crate::gesture::{GesturePhase, TouchGestureArena, TouchGestureEvent};
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
@@ -1648,14 +1648,9 @@ impl Map {
     /// map no longer holds leaves before it is forgotten. Every pin not drawn this frame is
     /// forgotten once its departure ends, so a map of many places only carries motion for the
     /// ones it shows.
-    fn draw_pins(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_pins(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let now = crate::motion::frame_now();
         let source = crate::motion::input_source();
         let motion = theme.motion();
@@ -1715,7 +1710,7 @@ impl Map {
                 continue;
             };
             pose.paint(scene, transform, bounds, |scene, transform| {
-                child.draw_child(scene, transform, text, theme, presence);
+                child.draw_child(scene, transform, text, theme,&env);
             });
         }
     }
@@ -2177,14 +2172,9 @@ impl Widget for Map {
                 .any(|child| child.layout_needs_measure())
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         // A page shown as HTML shows it as one image.
         crate::scene_parts::picture();
         // A canvas clips what it holds: a place outside the viewport is neither drawn nor hit.
@@ -2211,7 +2201,7 @@ impl Widget for Map {
         }
         self.draw_hint(scene, transform, text, theme);
         self.draw_frame_outline(scene, transform, theme);
-        self.draw_pins(scene, transform, text, theme, presence);
+        self.draw_pins(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
         if clips {
             scene.pop_layer();
         }

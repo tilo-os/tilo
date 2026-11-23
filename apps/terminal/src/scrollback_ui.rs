@@ -196,15 +196,9 @@ impl TerminalWidget {
     /// Paint the grid: each row in view with its share of the selection and the find matches, drawn at
     /// its place in the scrollback so a scroll only moves it ([`ui::scroll_copy::PaintedFrames`]); then the
     /// cursor, the bar, the bands above the grid (`outside`) and members' marks.
-    fn draw_grid(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        outside: Scene,
-    ) {
+    fn draw_grid(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, outside: Scene) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         use ui::scroll_copy::{Painted, Piece, piece_key};
         let frame = self.grid_frame();
         let scrolled = frame.scrolled(transform);
@@ -240,7 +234,7 @@ impl TerminalWidget {
         self.draw_cursor_piece(&mut ctx, &frame, &mut pieces);
         let mut peers = Scene::new();
         let marks = transform * Affine::translate((0.0, -(self.view.sub + frame.give)));
-        self.draw_peer_marks(&mut peers, marks, theme, presence);
+        self.draw_peer_marks(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         scene.append(&peers, None);
         scene.pop_layer();
         let mut bar = Scene::new();

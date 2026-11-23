@@ -17,7 +17,7 @@ use crate::a11y::{AccessNode, AccessState, Role};
 use crate::component::{Event, Value};
 use crate::motion::{Direction, MotionValue};
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::MotionSource;
@@ -947,15 +947,10 @@ impl Widget for Timeline {
         self.layout_dirty = false;
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if presence.should_cull(self.rect) || self.rect.width() <= 0.0 {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        if env.should_cull(self.rect) || self.rect.width() <= 0.0 {
             return;
         }
         self.theme = Some(theme.clone());

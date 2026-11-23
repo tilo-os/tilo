@@ -1046,8 +1046,7 @@ tilo_test_env::scenario! {
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text_renderer,
-                &theme,
-                &PresenceCtx::empty(),
+                &theme,&PresenceCtx::empty().draw_env().draw_env(),
             );
             let (resolved_cols, resolved_rows) = widget.grid_size();
             assert!(resolved_cols < provisional_cols);
@@ -2081,8 +2080,7 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut TextRenderer::new(),
-                &Theme::dark().with_text_scale(2.0),
-                &PresenceCtx::empty(),
+                &Theme::dark().with_text_scale(2.0),&PresenceCtx::empty().draw_env().draw_env(),
             );
             send_key(
                 &mut widget,
@@ -2196,8 +2194,7 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
             &mut scene,
             Affine::IDENTITY,
             &mut text_renderer,
-            &theme,
-            &PresenceCtx::empty(),
+            &theme,&PresenceCtx::empty().draw_env().draw_env(),
         );
 
         let menu = widget.context_menu_rect();
@@ -3913,8 +3910,7 @@ tilo_test_env::scenario! {
                     scene,
                     Affine::IDENTITY,
                     &mut text,
-                    &theme,
-                    &PresenceCtx::empty(),
+                    &theme,&PresenceCtx::empty().draw_env().draw_env(),
                 );
             });
             (scene, parts.expect("the terminal's parts are well nested"))
@@ -3972,8 +3968,7 @@ tilo_test_env::scenario! {
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut text,
-                &theme,
-                &PresenceCtx::empty(),
+                &theme,&PresenceCtx::empty().draw_env().draw_env(),
             );
         };
         frame(&mut widget);

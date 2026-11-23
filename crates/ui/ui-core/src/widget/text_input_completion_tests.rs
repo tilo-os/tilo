@@ -427,14 +427,7 @@ fn paint_with_drawer(input: &mut TextInput, theme: &Theme) {
     let presence = crate::presence::PresenceCtx::empty();
     let mut text = TextRenderer::new();
     let mut scene = Scene::new();
-    Widget::draw_overlay(
-        input,
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text,
-        theme,
-        &presence,
-    );
+    Widget::draw_overlay(input, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, theme, presence.draw_env()));
 }
 
 #[test]

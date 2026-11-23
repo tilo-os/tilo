@@ -292,14 +292,9 @@ impl Widget for QrWidget {
         clippy::cast_precision_loss,
         reason = "QR module counts are capped by the QR spec at 177"
     )]
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.secret && !self.payload.is_empty() {
             crate::secret_paint::note_secret_painted();
         }
@@ -456,13 +451,7 @@ mod tests {
             let presence = PresenceCtx::empty();
             let mut renderer = TextRenderer::new();
             let painted = SecretPaint::begin();
-            code.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut renderer,
-                &Theme::dark(),
-                &presence,
-            );
+            code.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut renderer, &Theme::dark(), presence.draw_env()));
             assert!(painted.finish());
             let semantics = code.accessibility().unwrap();
             assert_eq!(
@@ -476,13 +465,7 @@ mod tests {
             assert_eq!(code.matrix_size, 0);
             assert!(code.matrix.is_empty());
             let painted = SecretPaint::begin();
-            code.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut renderer,
-                &Theme::light(),
-                &presence,
-            );
+            code.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut renderer, &Theme::light(), presence.draw_env()));
             assert!(!painted.finish());
         }
 
@@ -491,13 +474,7 @@ mod tests {
             use crate::secret_paint::SecretPaint;
             let mut code = QrWidget::new(b"https://example.test/public".to_vec());
             let painted = SecretPaint::begin();
-            code.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::dark(),
-                &PresenceCtx::empty(),
-            );
+            code.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::empty().draw_env()));
             assert!(!painted.finish());
         }
 

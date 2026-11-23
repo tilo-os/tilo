@@ -13,7 +13,7 @@ use winit::event::WindowEvent;
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, Live, LiveRow, Publishes, ViewCx,
 };
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::MemberId;
@@ -329,16 +329,11 @@ impl FloatingSurfaceProvider for MapWindow {
         self.app().take_floating_surface_request()
     }
 
-    fn draw_floating_surfaces(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_floating_surfaces(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.app()
-            .draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
+            .draw_floating_surfaces(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn floating_surface_presentations(
@@ -406,16 +401,13 @@ impl Widget for MapWindow {
         self.app().apply_layout(taffy, node, origin);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        let fallback_presence = Default::default();
+        let presence = env.presence.unwrap_or(&fallback_presence);
         let mut app = self.app.borrow_mut();
-        app.draw_child(scene, transform, text_renderer, theme, presence);
+        app.draw_child(scene, transform, text_renderer, theme,&env);
         let following = self.following.as_ref().map(|(member, _)| member);
         app.draw_presences(
             scene,
@@ -426,16 +418,11 @@ impl Widget for MapWindow {
         );
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.app()
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
+            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

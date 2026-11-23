@@ -3,7 +3,7 @@
 //! off-screen fade in at their slot, and a key, a sync and reduced motion land.
 
 use super::{DataTableCore, RowIdentity, TableModelChange};
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
@@ -100,14 +100,9 @@ impl DataTableCore {
             .capture(self.moving.drawn.iter().copied(), true, source);
     }
 
-    pub(super) fn draw_moving_rows(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) -> Vec<crate::scroll_copy::Piece<crate::scroll_copy::Painted>> {
+    pub(super) fn draw_moving_rows(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) -> Vec<crate::scroll_copy::Piece<crate::scroll_copy::Painted>> {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // A sort or change the person made since the last frame starts its
         // motion from where the rows were drawn to where they are now.
         let now = crate::motion::frame_now();
@@ -142,7 +137,7 @@ impl DataTableCore {
                 );
             }
             cell.widget
-                .draw_child(scene, cell_transform, text_renderer, theme, presence);
+                .draw_child(scene, cell_transform, text_renderer, theme,&env);
             if faded {
                 scene.pop_layer();
             }

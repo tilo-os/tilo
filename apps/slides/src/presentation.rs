@@ -954,8 +954,7 @@ fn draw_presenter_footer(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>) {
         ctx.scene,
         ctx.transform,
         ctx.text,
-        theme,
-        &ui::presence::PresenceCtx::empty(),
+        theme,&ui::presence::PresenceCtx::empty().draw_env().draw_env(),
     );
     let style = theme.text(TextRole::Caption);
     let hints = ctx.text.elide_to_width_style(

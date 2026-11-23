@@ -2,7 +2,6 @@
 //! panel, status bar). The shown file's name, the panel toggle and the search
 //! are the window bar's.
 
-use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::Scene;
@@ -12,19 +11,14 @@ use super::CodeApp;
 use ui::widget::DrawChild;
 
 impl CodeApp {
-    pub(super) fn draw_content(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub(super) fn draw_content(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.editor
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
         if self.panel_visible {
             self.panel
-                .draw_child(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme,&env);
         }
         let status = self.status_rect;
         if status.height() > 0.0 {

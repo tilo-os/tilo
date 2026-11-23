@@ -102,14 +102,11 @@ impl tilo_ui::Widget for AdasCaret {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut tilo_ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        let fallback_presence = Default::default();
+        let presence = env.presence.unwrap_or(&fallback_presence);
         presence.draw_peer_caret_labeled(
             scene,
             theme,

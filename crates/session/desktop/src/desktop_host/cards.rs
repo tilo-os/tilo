@@ -35,19 +35,14 @@ impl BackgroundLayer {
 
     /// Draw the cards the shell stands over its windows, by the apps that own
     /// them, once the surface has drawn.
-    pub fn draw_cards(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub fn draw_cards(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let Some(surface) = self.area.children_mut().pop() else {
             return;
         };
         self.cards
-            .draw(surface, scene, transform, text, theme, presence);
+            .draw(surface, &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
     /// Hand `event` to the card it is for, in the shell's coordinates, through
@@ -252,8 +247,7 @@ mod tests {
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),
-            &Theme::default(),
-            &PresenceCtx::default(),
+            &Theme::default(),&PresenceCtx::default().draw_env().draw_env(),
         );
         let at = window.center();
         let mut dispatch = ui::testing::Dispatch::new().layout(&taffy, node);

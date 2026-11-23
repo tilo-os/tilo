@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use tilo_desktop_model::{Layout, TabId};
 use ui::TextRole;
 use ui::a11y::{AccessNode, Politeness, Role};
-use ui::presence::PresenceCtx;
+
 use ui::taffy::{Dimension, LengthPercentageAuto, NodeId, Position, Size, Style, TaffyTree};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -292,14 +292,9 @@ impl Widget for ArrivalHints {
         self.rect == Rect::ZERO
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let now = ui::time::now();
         self.place(theme, text);
         for hint in self.showing(now) {

@@ -839,42 +839,7 @@ impl Text {
 }
 
 impl Text {
-    /// Each write in the field it shows, drawn on its words ([`Self::edits`]).
-    fn draw_writes(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        let Some((field, item)) = &self.edits else {
-            return;
-        };
-        let (label, style, rect) = (self.resolved_label(), &self.style, self.rect);
-        presence.draw_writes_in(
-            &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            (Some(field), item, &label),
-            (None, None),
-            None,
-            &mut |text, _, start, end| {
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "a text's width in logical pixels"
-                )]
-                let lines = text.wrap_lines(&label, style, rect.width() as f32 + 1.0);
-                let line = f64::from(style.line_height_px_at(text.text_scale()));
-                let (bands, caret) = crate::presence::LabeledCaret::after_span(
-                    text,
-                    (&label, &lines, style),
-                    (rect.x0, rect.y0, line),
-                    (rect.y0, rect.x1),
-                    (start, end),
-                );
-                (bands, Some(caret))
-            },
-        );
-    }
+
 }
 
 impl Widget for Text {
@@ -1044,14 +1009,9 @@ impl Widget for Text {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // What a draw observes repaints the text; its size is the layout's to answer, where it
         // measures (a draw that sees another renderer than the one it was measured with must not
         // ask for a measure the next layout's renderer then reverses).
@@ -1161,10 +1121,7 @@ impl Widget for Text {
         if !crate::text_render::words_left_out() {
             self.face.append(scene, transform, self.rect);
         }
-        self.draw_writes(scene, transform, text_renderer, theme, presence);
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self, scene, transform, theme, presence,
-        );
+        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn name(&self) -> &'static str {
@@ -1243,6 +1200,41 @@ impl Widget for Text {
 impl crate::presence::capability::PublishesPresence for Text {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
+    }
+
+    fn written_place<'a>(
+        &'a self,
+        _theme: &'a Theme,
+    ) -> Option<crate::presence::capability::WrittenPlace<'a>> {
+        let (field, item) = self.edits.as_ref()?;
+        let label = self.resolved_label();
+        let for_place = label.clone();
+        let style = &self.style;
+        let rect = self.rect;
+        Some(crate::presence::capability::WrittenPlace {
+            region: Some(field.as_str()),
+            block: item.as_str(),
+            text: std::borrow::Cow::Owned(label),
+            edited: None,
+            selected: None,
+            field: None,
+            place: Box::new(move |text, _, start, end| {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "a text's width in logical pixels"
+                )]
+                let lines = text.wrap_lines(&for_place, style, rect.width() as f32 + 1.0);
+                let line = f64::from(style.line_height_px_at(text.text_scale()));
+                let (bands, caret) = crate::presence::LabeledCaret::after_span(
+                    text,
+                    (&for_place, &lines, style),
+                    (rect.x0, rect.y0, line),
+                    (rect.y0, rect.x1),
+                    (start, end),
+                );
+                (bands, Some(caret))
+            }),
+        })
     }
 }
 
@@ -1467,14 +1459,7 @@ mod tests {
 
                 text.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 123.1, 45.0));
                 let mut scene = Scene::new();
-                Widget::draw(
-                    &mut text,
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut renderer,
-                    &Theme::dark(),
-                    &crate::presence::PresenceCtx::empty(),
-                );
+                Widget::draw(&mut text, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark(), crate::presence::PresenceCtx::empty().draw_env()));
                 assert_eq!(draws.get(), 1);
                 let node = Widget::accessibility(&text).expect("custom text stays accessible");
                 assert_eq!(node.role, crate::a11y::Role::StaticText);
@@ -1625,14 +1610,7 @@ mod tests {
             // its draw alone, then puts the window's back.
             renderer.set_text_scale(window_scale * 1.0625);
             let mut scene = Scene::new();
-            Widget::draw(
-                &mut caption,
-                &mut scene,
-                Affine::IDENTITY,
-                &mut renderer,
-                &theme,
-                &crate::presence::PresenceCtx::empty(),
-            );
+            Widget::draw(&mut caption, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &theme, crate::presence::PresenceCtx::empty().draw_env()));
             renderer.set_text_scale(window_scale);
             let _ = Widget::measure(
                 &mut caption,
@@ -1853,7 +1831,7 @@ mod tests {
                 let mut label = Text::new("Reading").with_font_family(FontChoice::Named(fam.clone()));
                 label.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 400.0, 40.0));
                 let mut scene = Scene::new();
-                label.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                label.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
 
                 let _ = tr.take_shape_stats();
                 tr.draw_style(
@@ -1979,13 +1957,7 @@ mod tests {
 
     fn drawn_glyph_runs(w: &mut dyn Widget, renderer: &mut TextRenderer) -> Vec<u32> {
         let mut scene = Scene::new();
-        w.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            renderer,
-            &Theme::dark(),
-            &crate::presence::PresenceCtx::default(),
-        );
+        w.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, renderer, &Theme::dark(), crate::presence::PresenceCtx::default().draw_env()));
         let encoding = scene.encoding();
         encoding
             .resources
@@ -2079,14 +2051,7 @@ mod tests {
         );
         text.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 800.0, 200.0));
         let mut scene = Scene::new();
-        Widget::draw(
-            text,
-            &mut scene,
-            Affine::IDENTITY,
-            renderer,
-            theme,
-            &crate::presence::PresenceCtx::empty(),
-        );
+        Widget::draw(text, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, renderer, theme, crate::presence::PresenceCtx::empty().draw_env()));
         (measured, scene)
     }
 

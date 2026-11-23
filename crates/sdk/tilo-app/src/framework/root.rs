@@ -17,7 +17,7 @@ use ui_core::application_view::{
 use ui_core::automerge::AutoCommit;
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
 use ui_core::permissions::{LivePermissions, PermissionScope};
-use ui_core::presence::{PresenceCtx, PresenceKey};
+use ui_core::presence::{PresenceKey};
 use ui_core::resource::ResourceSaveStatus;
 use ui_core::search::SearchProvider;
 use ui_core::text_render::TextRenderer;
@@ -523,7 +523,7 @@ impl ResourceRoot {
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-        presence: &PresenceCtx,
+        env: &tilo_ui::DrawEnv<'_>,
     ) {
         self.native_presentation.track_theme(theme);
         if self.ground {
@@ -535,7 +535,9 @@ impl ResourceRoot {
                 &self.content.get_rect(),
             );
         }
-        self.run.people.follow(presence);
+        if let Some(presence) = env.presence {
+            self.run.people.follow(presence);
+        }
     }
 
     /// A root over `content`, the view built in `cx`, whose handles the root
@@ -1483,17 +1485,12 @@ impl RootModel for ResourceRoot {
         self.storage.settle();
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.paint_ground(scene, transform, theme, presence);
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.paint_ground(scene, transform, theme, &env);
         self.content
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
         // The window drew: what its bar says of the save is seen.
         self.save.seen();
     }

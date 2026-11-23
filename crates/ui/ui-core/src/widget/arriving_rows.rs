@@ -12,7 +12,7 @@ use vello::kurbo::{Affine, Rect};
 use crate::arriving::{Arrival, ArrivalClock, Source, Step};
 use crate::motion::CrossFade;
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
@@ -421,14 +421,9 @@ impl Widget for RowReserve {
 
     crate::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
     }
 
     fn needs_redraw(&self) -> bool {

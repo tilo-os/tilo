@@ -57,14 +57,9 @@ impl Widget for Probe {
 
     crate::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _text, _theme, mut env) = ctx.parts();
         self.animating = false;
     }
 
@@ -2417,8 +2412,8 @@ fn present_shell(
     let mut scene = Scene::new();
     let presence = PresenceCtx::empty();
     let transform = Affine::scale(scale);
-    shell.draw(&mut scene, transform, text, theme, &presence);
-    shell.draw_overlay(&mut scene, transform, text, theme, &presence);
+    shell.draw(&mut crate::draw::DrawCtx::new(&mut scene, transform, text, theme, presence.draw_env()));
+    shell.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, transform, text, theme, presence.draw_env()));
     let mut damage = Vec::new();
     shell.collect_damage(&mut damage);
     shell.mark_drawn();
@@ -2667,14 +2662,9 @@ impl Widget for Remounting {
         taffy.fill_leaf(node_map, self)
     }
     crate::rect_geometry!();
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _text, _theme, mut env) = ctx.parts();
     }
     fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
         self.pending |= self.armed.replace(false);

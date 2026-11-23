@@ -137,7 +137,7 @@ pub fn draw_chrome(frame: &mut FrameHarness) {
     let presence = ui::presence::PresenceCtx::default();
     let mut scene = ui::vello::Scene::new();
     with_chrome(frame, |chrome| {
-        chrome.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+        chrome.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme,&presence.draw_env());
     });
 }
 

@@ -10,7 +10,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{AppModel, EventCtx, ModelPath, TaffyTreeExt, Widget};
@@ -67,7 +66,9 @@ impl Widget for Tripwire {
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, origin: Point) {
         self.rect = Rect::from_origin_size(origin, (80.0, 24.0));
     }
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_, _, _, _, mut env) = ctx.parts();
         self.check();
     }
     fn get_rect(&self) -> Rect {
@@ -207,15 +208,10 @@ impl Widget for Replacing {
             self.child.apply_layout(taffy, *child, origin);
         }
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.child.draw(scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.child.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![self.child.as_ref()]

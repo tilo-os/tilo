@@ -104,7 +104,7 @@ tilo_test_env::scenario! {
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             assert!(!vp.is_playing());
             dispatch(&mut vp, &cursor_moved(320.0, 40.0));
             assert!(dispatch(&mut vp, &mouse_press()), "surface click handled");
@@ -129,7 +129,7 @@ tilo_test_env::scenario! {
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             assert!(vp.scrub_track_rect.width() > 0.0, "scrub track laid out");
             let mid_x = vp.scrub_track_rect.x0 + vp.scrub_track_rect.width() * 0.5;
             let mid_y = vp.scrub_track_rect.center().y;
@@ -153,7 +153,7 @@ tilo_test_env::scenario! {
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             let track = vp.scrub_track_rect;
             assert!(track.width() > 0.0);
             let y = track.center().y;
@@ -207,7 +207,7 @@ tilo_test_env::scenario! {
                 let mut tr = TextRenderer::new();
                 let presence = PresenceCtx::default();
                 let mut scene = Scene::new();
-                vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
                 scene.encoding().draw_tags.len()
             };
             vp.set_sponsor_marks(vec![
@@ -218,7 +218,7 @@ tilo_test_env::scenario! {
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             assert!(
                 scene.encoding().draw_tags.len() > baseline,
                 "two sponsor bands add fills to the timeline ({} vs {baseline})",
@@ -960,7 +960,7 @@ tilo_test_env::scenario! {
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             let image_count = scene
                 .encoding()
                 .draw_tags
@@ -987,7 +987,7 @@ tilo_test_env::scenario! {
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             let image_count = scene
                 .encoding()
                 .draw_tags
@@ -1050,7 +1050,7 @@ fn draw_once(vp: &mut VideoPlayer) {
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
 }
 
 fn draw_once_with_theme(vp: &mut VideoPlayer, theme: &Theme) {
@@ -1058,7 +1058,7 @@ fn draw_once_with_theme(vp: &mut VideoPlayer, theme: &Theme) {
     tr.set_text_scale(theme.text_scale);
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    vp.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
 }
 
 #[cfg(feature = "realtime-video")]
@@ -1106,7 +1106,7 @@ fn draw_at_text_scale(vp: &mut VideoPlayer, scale: f32) {
     tr.set_text_scale(scale);
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
 }
 
 #[test]
@@ -1121,7 +1121,7 @@ fn controls_ink_and_edges_read_on_both_presets() {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -1178,7 +1178,7 @@ fn controls_ink_and_edges_read_on_both_presets() {
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,

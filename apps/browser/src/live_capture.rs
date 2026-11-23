@@ -226,8 +226,7 @@ fn render_live_shot_to_png(
                         &mut scene,
                         Affine::IDENTITY,
                         &mut text_renderer,
-                        &theme,
-                        &presence,
+                        &theme,&presence.draw_env(),
                     );
                     return write_live_capture(
                         &scene,

@@ -433,14 +433,9 @@ impl Widget for ProgressBar {
         self.dirty = true;
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.reduce_motion = theme.reduce_motion || crate::time::wall_frozen();
         let segment_width = self.rect.width() * INDETERMINATE_SEGMENT_FRAC;
         if let Some(label) = self.shown_label() {
@@ -485,9 +480,7 @@ impl Widget for ProgressBar {
             };
             self.last_segment = current_segment;
         }
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self, scene, transform, theme, presence,
-        );
+        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn name(&self) -> &'static str {
@@ -602,7 +595,7 @@ mod tests {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        bar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
         scene
     }
 
@@ -760,7 +753,7 @@ mod tests {
                     // The frame owner must collect immediately after `draw`, before it
                     // clears dirty flags. `draw` is what records this frame's outgoing
                     // and incoming segment geometry.
-                    bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                    bar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
 
                     let mut regions = Vec::new();
                     bar.collect_damage(&mut regions);

@@ -41,8 +41,7 @@ fn painted(view: &mut EditorView, renderer: &mut TextRenderer, theme: &Theme) ->
         &mut scene,
         Affine::IDENTITY,
         renderer,
-        theme,
-        &PresenceCtx::empty(),
+        theme,&PresenceCtx::empty().draw_env().draw_env(),
     );
     scene
 }

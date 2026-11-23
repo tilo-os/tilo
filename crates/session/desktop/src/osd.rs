@@ -19,7 +19,7 @@ use tilo_actions::ResourceSpec;
 use tilo_resource::{Effect as _, offer, typed_resource};
 use ui::a11y::{AccessNode, Politeness, Role};
 use ui::motion::{Presence, ReadingValue, Transient};
-use ui::presence::PresenceCtx;
+
 use ui::text_render::{TextKind, TextStyle, TextWeight};
 use ui::time::{Duration, Instant};
 use ui::tokens::{EffectiveMotion, Motion, MotionSource, TextRole};
@@ -1243,14 +1243,9 @@ impl Widget for OsdSlab {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.reduce_motion = theme.reduce_motion;
         // The frame's instant, the one its layout draws the readout at: at the clock, a pip still
         // on its way was read past where the frame had placed it.

@@ -17,7 +17,7 @@ use ui::vello::kurbo::{Affine, Point, Rect, RoundedRect, Shape as _};
 use ui::vello::peniko::{ColorStop, Extend, Fill, Gradient as Brush};
 use ui::widget::{AppModel, EventCtx, ModelPath, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
-use ui::{PresenceCtx, TextRenderer, Theme};
+use ui::{TextRenderer, Theme};
 
 use super::icon_button;
 use crate::model::Artwork;
@@ -238,14 +238,9 @@ impl Widget for GradientBar {
 
     ui::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let strip = self.strip();
         if strip.width() < 2.0 {
             return;

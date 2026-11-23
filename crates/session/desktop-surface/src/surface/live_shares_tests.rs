@@ -200,14 +200,9 @@ impl Widget for View {
         self.rect
     }
 
-    fn draw(
-        &mut self,
-        _: &mut ui::vello::Scene,
-        transform: Affine,
-        _: &mut ui::TextRenderer,
-        _: &ui::Theme,
-        _: &ui::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_, transform, _, _, mut env) = ctx.parts();
         self.seen.drawn.borrow_mut().push((self.rect, transform));
     }
 

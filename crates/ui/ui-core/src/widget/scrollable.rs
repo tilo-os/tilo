@@ -4,7 +4,6 @@ use crate::widget::{AppModel, ModelPath};
 use std::cell::Cell;
 use std::rc::Rc;
 
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -1590,14 +1589,9 @@ impl Widget for Scrollable {
         self.was_overflowing = scrollable_now;
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.reduce_motion_active = theme.reduce_motion;
         self.motion = theme.motion();
         let corners = crate::widget::scrollbar::SurfaceCorners::seen(theme, transform);
@@ -1619,7 +1613,7 @@ impl Widget for Scrollable {
             transform,
             &clip,
         );
-        let previous_viewport = presence.push_viewport(self.content_viewport_rect());
+        let previous_viewport = env.push_viewport(self.content_viewport_rect());
         // After a long jump the content fades in where it landed.
         let opacity = self.scroll_to.opacity(crate::motion::frame_now());
         self.fade_drawn.set(opacity);
@@ -1637,13 +1631,13 @@ impl Widget for Scrollable {
         let keep = self.shown.keep().filter(|_| !fading);
         if let Some(c) = &mut self.child {
             crate::draw_cull::keeping(scene, keep, |scene| {
-                crate::widget::draw_child(c.as_mut(), scene, transform, tr, theme, presence);
+                crate::widget::draw_child(c.as_mut(), scene, transform, tr, theme,&env);
             });
         }
         if fading {
             scene.pop_layer();
         }
-        presence.pop_viewport(previous_viewport);
+        env.pop_viewport(previous_viewport);
         scene.pop_layer();
         self.draw_edge_fades(scene, transform, theme);
         self.draw_scrollbars(scene, transform, theme);

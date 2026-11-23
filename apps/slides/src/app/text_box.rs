@@ -336,21 +336,16 @@ impl SlidesApp {
                 || (secondary_press && self.text_edit_box.contains(self.last_mouse)))
     }
 
-    pub(super) fn draw_words_overlay(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: ui::vello::kurbo::Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub(super) fn draw_words_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if !self.editing_text {
             return;
         }
         if let Some(editor) = self.text_editor.as_mut() {
             editor
                 .host
-                .draw_overlay(scene, transform, text, theme, presence);
+                .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         }
     }
 
@@ -424,7 +419,7 @@ impl SlidesApp {
             .as_mut()
             .filter(|editor| editor.element_id == element.id && editor.words_h.is_some())
         {
-            editor.host.draw(scene, t, tr, theme, presence);
+            editor.host.draw(&mut tilo_ui::DrawCtx::new(scene, t, tr, theme, presence.draw_env()));
         }
     }
 

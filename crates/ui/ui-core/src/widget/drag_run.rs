@@ -12,7 +12,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
@@ -979,14 +979,9 @@ impl Widget for DragRun {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.is_list() {
             let (raised, radius) = Self::list_ground(theme);
             let rect = self.get_rect();
@@ -1002,7 +997,7 @@ impl Widget for DragRun {
             }
         }
         if let Some(items) = &mut self.items {
-            DrawChild::draw_child(&mut **items, scene, transform, text, theme, presence);
+            DrawChild::draw_child(&mut **items, scene, transform, text, theme,&env);
         }
         self.paint(scene, transform, text, theme);
         self.dirty = false;

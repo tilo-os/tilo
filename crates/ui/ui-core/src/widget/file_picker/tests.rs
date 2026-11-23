@@ -298,13 +298,7 @@ tilo_test_env::scenario! {
             fs::create_dir_all(&deep).unwrap();
             let mut picker = FilePicker::new("Open", &deep, vec![root.clone()]).settled();
             picker.set_rect(Rect::new(0.0, 0.0, 560.0, 420.0));
-            picker.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::dark(),
-                &PresenceCtx::default(),
-            );
+            picker.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
             let bar = picker.path_rect();
             let painted = picker.crumbs.segment_rects();
             let (last, _) = *painted.last().expect("crumbs");
@@ -1387,13 +1381,7 @@ fn listing_filters_and_scroll_window_rows() {
 }
 
 fn paint(picker: &mut FilePicker) {
-    picker.draw(
-        &mut Scene::new(),
-        Affine::IDENTITY,
-        &mut TextRenderer::new(),
-        &Theme::dark(),
-        &PresenceCtx::default(),
-    );
+    picker.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
 }
 
 fn settle(picker: &mut FilePicker) {

@@ -1790,15 +1790,10 @@ mod host_shell_allow_tests {
         ) {
             self.container.apply_layout(taffy, node, origin);
         }
-        fn draw(
-            &mut self,
-            scene: &mut vello::Scene,
-            transform: vello::kurbo::Affine,
-            text: &mut crate::TextRenderer,
-            theme: &crate::Theme,
-            presence: &crate::PresenceCtx,
-        ) {
-            self.container.draw(scene, transform, text, theme, presence);
+        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+            self.container.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
         }
         fn name(&self) -> &str {
             "DeviceShellProbe"

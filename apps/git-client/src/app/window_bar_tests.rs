@@ -25,13 +25,7 @@ fn painted(width: f64, screen: Screen) -> GitClientState {
 fn paint(app: &mut GitClientState) {
     let theme = ui::theme::Theme::dark();
     let mut text = ui::text_render::TextRenderer::new();
-    app.draw(
-        &mut Scene::new(),
-        Affine::IDENTITY,
-        &mut text,
-        &theme,
-        &ui::presence::PresenceCtx::default(),
-    );
+    app.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, ui::presence::PresenceCtx::default().draw_env()));
 }
 
 /// Where the window's bar puts the location of `toolbar` in a window

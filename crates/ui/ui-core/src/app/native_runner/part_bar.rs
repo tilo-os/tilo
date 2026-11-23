@@ -199,11 +199,13 @@ impl PartBar {
     pub(super) fn draw(&mut self, app: &mut App, scene: &mut Scene, transform: Affine) {
         let left = app.layout.safe_area.left;
         self.row.draw(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
+            &mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                &mut app.text_renderer,
+                &app.theme,
+                app.presence_ctx.draw_env(),
+            ),
             left,
         );
     }

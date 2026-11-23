@@ -332,13 +332,7 @@ tilo_test_env::scenario! {
         let mut b = solo_bar_with_slots();
         lay_out_at_width_with(&mut b, 900.0, &theme);
         let mut scene = Scene::new();
-        b.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &theme,
-            &PresenceCtx::default(),
-        );
+        b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &theme, PresenceCtx::default().draw_env()));
         let labels = b.bar_layout().labels;
         let location = labels
             .iter()
@@ -372,13 +366,7 @@ tilo_test_env::scenario! {
         let mut b = solo_bar_with_slots();
         lay_out_at_width_with(&mut b, 900.0, &theme);
         let mut text = TextRenderer::new();
-        b.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::default(),
-        );
+        b.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, PresenceCtx::default().draw_env()));
         let pill = b.tab_rects[0];
         let style = tab_title_style(&theme).with_weight(TextWeight::Semibold);
         let (width, height) = text.measure_style("DuckDuckGo", None, &style);
@@ -459,13 +447,7 @@ fn window_bar_app_action_shots() {
             }
             let mut scene = Scene::new();
             let mut tr = TextRenderer::new();
-            b.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::default(),
-            );
+            b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
             let mut renderer = crate::offscreen::OffscreenRenderer::new(900, 120);
             renderer.render_png(
                 &scene,

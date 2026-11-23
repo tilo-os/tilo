@@ -10,7 +10,7 @@ use vello::kurbo::{Affine, Point, Rect};
 
 use super::topbar_height;
 use crate::chrome::TopBarPresence;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -107,14 +107,9 @@ impl Widget for BarSpace {
         self.rect
     }
 
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
     }
 
     fn is_layout_dirty(&self) -> bool {

@@ -14,7 +14,6 @@ use winit::keyboard::{Key, NamedKey};
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -1043,34 +1042,24 @@ impl Widget for Autocomplete {
         self.rect == Rect::ZERO
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let Some(viewport) = presence.viewport.get() {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        if let Some(viewport) = env.viewport {
             self.list.set_viewport(viewport);
         }
         self.input.apply_layout_external(self.rect);
         self.input
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if !self.open {
             return;
         }
-        if let Some(viewport) = presence.viewport.get() {
+        if let Some(viewport) = env.viewport {
             self.list.set_viewport(viewport);
         }
         self.list.set_anchor(self.rect);
@@ -1656,13 +1645,13 @@ mod tests {
                 let mut text = TextRenderer::new();
                 let theme = Theme::dark().with_text_scale(2.0);
                 text.set_text_scale(theme.text_scale);
-                ac.draw_overlay(
+                ac.draw_overlay(&mut crate::draw::DrawCtx::new(
                     &mut scene,
                     Affine::IDENTITY,
                     &mut text,
                     &theme,
-                    &PresenceCtx::empty(),
-                );
+                    crate::draw::DrawEnv::default(),
+                ));
                 let panel = ac.dropdown_rect().expect("large-text dropdown");
                 let first = ac.row_rect(panel, 0);
                 let second = ac.row_rect(panel, 1);

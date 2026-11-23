@@ -188,14 +188,9 @@ impl TextInput {
         }
     }
 
-    pub(super) fn paint_completion(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    pub(super) fn paint_completion(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if !self.completion.is_open() {
             return;
         }
@@ -207,7 +202,7 @@ impl TextInput {
             theme,
             caret,
             self.rect,
-            presence.viewport.get(),
+            env.viewport,
         );
     }
 }

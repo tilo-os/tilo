@@ -32,7 +32,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::framework::{EffectAnswer, Effected};
 use ui::portal::{FileFilter, PickRequest};
-use ui::presence::PresenceCtx;
+
 use ui::surface::Region;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -1222,14 +1222,9 @@ impl Widget for TypstApp {
         self.chrome.take_structure_dirty() | self.outline.take_structure_dirty()
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, t, tr, theme, mut env) = ctx.parts();
         // Consume any finished async compile up front so its pages paint
         // this very frame (draw runs on animation frames even when sync
         // doesn't).
@@ -1243,11 +1238,11 @@ impl Widget for TypstApp {
         if self.preview_rect.area() > 0.0 {
             ui::surface::region(scene, t, self.preview_rect, Region::Inspector, theme);
         }
-        self.chrome.draw(scene, t, tr, theme, presence);
+        self.chrome.draw(&mut tilo_ui::DrawCtx::new(scene, t, tr, theme, env.clone()));
 
         if self.editor_rect.area() > 0.0 {
             self.editor
-                .draw(scene, t, tr, theme, presence, self.diagnostics.diags());
+                .draw(&mut tilo_ui::DrawCtx::new(scene, t, tr, theme, env.clone()), self.diagnostics.diags());
         }
         if self.preview_rect.area() > 0.0 {
             self.preview
@@ -1260,7 +1255,7 @@ impl Widget for TypstApp {
         if self.show_diagnostics && self.diag_rect.height() > 1.0 {
             self.diagnostics.draw(scene, t, tr, theme);
         }
-        self.outline.draw(scene, t, tr, theme, presence);
+        self.outline.draw(&mut tilo_ui::DrawCtx::new(scene, t, tr, theme, env.clone()));
 
         ui::chrome::status_bar::draw(
             scene,
@@ -1277,19 +1272,14 @@ impl Widget for TypstApp {
         self.dirty = false;
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        let window = presence.viewport.get().unwrap_or(self.rect);
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        let window = env.viewport.unwrap_or(self.rect);
         self.editor
             .draw_tooltip(scene, transform, text_renderer, theme, window);
         for child in self.chrome.children_mut() {
-            child.draw_overlay(scene, transform, text_renderer, theme, presence);
+            child.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
     }
 

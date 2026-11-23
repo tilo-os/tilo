@@ -149,16 +149,11 @@ impl super::WindowGroup {
             )
     }
 
-    pub(super) fn draw_bar_tips(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        tr: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    pub(super) fn draw_bar_tips(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         // The chip naming who opened a tab stands below it, over the top of the window.
-        let spare = crate::widget::tooltip::on_screen(presence, self.get_rect());
+        let spare = crate::widget::tooltip::on_screen(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()), self.get_rect());
         self.bar
             .draw_holder_chip(scene, transform, tr, theme, spare);
         self.bar

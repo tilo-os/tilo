@@ -32,14 +32,9 @@ impl Widget for FinalFrameWork {
             (f64::from(layout.size.width), f64::from(layout.size.height)),
         );
     }
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
         let draws = self.draws.get().saturating_add(1);
         self.draws.set(draws);
         if draws == 3 {
@@ -191,14 +186,9 @@ impl Widget for CountedFrames {
     ) -> NodeId {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
         self.drawn.set(self.drawn.get() + 1);
     }
     fn needs_animation_frame(&self) -> bool {

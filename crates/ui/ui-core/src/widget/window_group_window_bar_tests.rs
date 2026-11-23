@@ -18,14 +18,9 @@ impl Widget for Page {
 
     crate::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -99,15 +94,10 @@ impl Widget for PageApp {
     fn get_rect(&self) -> Rect {
         self.0.get_rect()
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.0.draw(scene, transform, tr, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
+        self.0.draw(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
     }
     fn name(&self) -> &'static str {
         "PageApp"
@@ -450,13 +440,7 @@ fn a_window_bar_wears_its_workspace_s_temperature_and_the_person_s_colour() {
         lay_out(&mut g, &theme);
         Widget::set_focus(&mut g.bar, true);
         let mut scene = Scene::new();
-        g.bar.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &theme,
-            &PresenceCtx::empty(),
-        );
+        g.bar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &theme, PresenceCtx::empty().draw_env()));
         (theme, scene.encoding().draw_data.clone())
     };
     let spare = WindowAppearance {

@@ -1,13 +1,7 @@
-//! What an action wrote into a field, drawn where it landed: its characters in the writer's
-//! colour, and the writer's caret at their end wearing what it did while it arrives
-//! ([`crate::presence::PresenceCtx::draw_writes_in`]), as a block of text shows an agent's write
-//! ([`crate::widget::BlockEditor`]).
-use vello::Scene;
-use vello::kurbo::Affine;
-
+//! Where an action's write landed in a field: the widget reports the text and
+//! the geometry of a byte range, and the presence layer draws the wash and
+//! caret ([`crate::presence::capability::WrittenPlace`]).
 use super::TextInput;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use automerge::{AutoCommit, ObjId};
 
 impl TextInput {
@@ -15,44 +9,6 @@ impl TextInput {
     pub fn bound_at(mut self, locate: impl Fn(&AutoCommit) -> Option<ObjId> + 'static) -> Self {
         self.locate_text = Some(Box::new(locate));
         self
-    }
-
-    pub(super) fn draw_written(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        let Some((region, block)) = self.edits.as_ref().filter(|_| !self.holds_secret()) else {
-            return;
-        };
-        presence.draw_writes_in(
-            &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            (Some(region), block, &self.text),
-            (
-                self.typing.last_edit(),
-                self.is_focused
-                    .then(|| self.selection_anchor_focus_or_caret()),
-            ),
-            Some(self.accessible_name.as_str()),
-            &mut |_, _, start, end| {
-                (
-                    self.selection_rects(theme, start, end),
-                    Some(
-                        crate::presence::LabeledCaret::within(
-                            self.caret_rect(theme, end),
-                            self.rect.y0,
-                        )
-                        .among(
-                            self.selection_rects(theme, 0, self.text.len()),
-                            self.rect.x1,
-                        ),
-                    ),
-                )
-            },
-        );
     }
 }
 

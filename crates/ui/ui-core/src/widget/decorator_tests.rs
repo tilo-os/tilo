@@ -278,13 +278,7 @@ fn lay_and_draw(
     widget.sync(doc, &automerge::ROOT);
     let node = widget.build_layout(&mut taffy, theme, &mut nodes);
     widget.apply_layout(&taffy, node, Point::ORIGIN);
-    widget.draw(
-        &mut Scene::new(),
-        Affine::IDENTITY,
-        &mut TextRenderer::new(),
-        theme,
-        &PresenceCtx::empty(),
-    );
+    widget.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), theme, PresenceCtx::empty().draw_env()));
     (taffy, node, nodes)
 }
 
@@ -343,14 +337,9 @@ impl Widget for Recorder {
         self.note("apply_layout");
     }
 
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
         self.note("draw");
     }
 

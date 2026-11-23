@@ -440,8 +440,7 @@ fn paint(app: &mut GreeterApp, theme: &Theme, text: &mut TextRenderer) {
         &mut scene,
         Affine::IDENTITY,
         text,
-        theme,
-        &PresenceCtx::default(),
+        theme,&PresenceCtx::default().draw_env().draw_env(),
     );
 }
 
@@ -452,8 +451,7 @@ fn scene_bytes(app: &mut GreeterApp) -> (Vec<u32>, Vec<u32>) {
         &mut scene,
         Affine::IDENTITY,
         &mut text,
-        &Theme::dark(),
-        &PresenceCtx::default(),
+        &Theme::dark(),&PresenceCtx::default().draw_env().draw_env(),
     );
     let encoding = scene.encoding();
     (

@@ -75,13 +75,7 @@ tilo_test_env::scenario! {
                 let previous = presence.push_viewport(window);
                 let (origin, width) = placement(window, &theme);
                 palette.layout(&theme, origin, width);
-                palette.draw(
-                    &mut Scene::new(),
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &presence,
-                );
+                palette.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
                 let layout = palette
                     .confirmation_sheet
                     .layout()
@@ -660,13 +654,7 @@ tilo_test_env::scenario! {
                 let previous = presence.push_viewport(window);
                 let (origin, width) = placement(window, &theme);
                 palette.layout(&theme, origin, width);
-                palette.draw(
-                    &mut Scene::new(),
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &presence,
-                );
+                palette.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
                 let layout = palette
                     .confirmation_sheet
                     .layout()

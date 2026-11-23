@@ -17,7 +17,7 @@ use crate::a11y::{AccessNode, AccessState, Role};
 use crate::input::{InputBinding, KeyLegend, KeyboardBinding, KeyboardModifier};
 use crate::interaction::InteractionEnvironment;
 use crate::platform::PlatformConventions;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -284,14 +284,9 @@ impl Widget for ShortcutRecorder {
 
     crate::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.measure_keys(text, theme);
         let chord = self.chord_rect();
         let keycap = InputHint::keycap_height(theme);

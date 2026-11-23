@@ -91,7 +91,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhas
 use crate::actions::SetPreference;
 use crate::learned::{Learned, Lesson};
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -2670,14 +2670,9 @@ impl Widget for OskWidget {
         self.layout_bands();
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if !self.visible {
             return;
         }
@@ -2734,7 +2729,7 @@ impl Widget for OskWidget {
 
         // Last, so the skin-tone row floats over the keys.
         self.emoji_panel
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

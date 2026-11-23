@@ -7,7 +7,6 @@ use automerge::AutoCommit;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use crate::presence::PresenceCtx;
 use crate::richtext::RichSpan;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::TextPosition;
@@ -78,8 +77,6 @@ pub trait DocumentLine {
 
     /// Whether the line changed what it paints since it was last painted.
     fn paint_changed(&self) -> bool;
-    /// Whether anyone else is shown in the line now (a peer's caret or selection).
-    fn shows_peers(&self, presence: &PresenceCtx) -> bool;
     /// Whether the line paints its caret into the shaped text.
     fn paints_shaped_caret(&self) -> bool;
     /// Paint the caret the last draw left out, so the editor keeps it in a damage part of its
@@ -191,9 +188,6 @@ impl DocumentLine for TextInput {
         TextInput::paint_changed(self)
     }
 
-    fn shows_peers(&self, presence: &PresenceCtx) -> bool {
-        TextInput::shows_peers(self, presence)
-    }
 
     fn paints_shaped_caret(&self) -> bool {
         TextInput::paints_shaped_caret(self)

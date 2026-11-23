@@ -248,13 +248,7 @@ mod tests {
             let mut tabs = tabs();
             let strip = vello::kurbo::Rect::new(10.0, 20.0, 410.0, 60.0);
             tabs.apply_layout_external(strip);
-            tabs.draw(
-                &mut vello::Scene::new(),
-                vello::kurbo::Affine::IDENTITY,
-                &mut crate::text_render::TextRenderer::new(),
-                &theme,
-                &crate::presence::PresenceCtx::default(),
-            );
+            tabs.draw(&mut crate::draw::DrawCtx::new(&mut vello::Scene::new(), vello::kurbo::Affine::IDENTITY, &mut crate::text_render::TextRenderer::new(), &theme, crate::presence::PresenceCtx::default().draw_env()));
             tabs.apply_layout_external(strip);
             let rects: Vec<_> = (0..4).map(|i| tabs.tab_rect(i).expect("a tab")).collect();
             assert_eq!(tabs.tab_rect(4), None);

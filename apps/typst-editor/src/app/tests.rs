@@ -465,7 +465,7 @@ fn render_once(app: &mut TypstApp) {
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
     let presence = PresenceCtx::empty();
-    app.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    app.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme,&presence.draw_env());
 }
 
 #[test]
@@ -1072,8 +1072,7 @@ fn text_scale_compacts_before_the_panes_collide() {
         &mut Scene::new(),
         Affine::IDENTITY,
         &mut tr,
-        &theme,
-        &PresenceCtx::empty(),
+        &theme,&PresenceCtx::empty().draw_env().draw_env(),
     );
 
     assert!(app.compact, "1280px is compact at 200% text scale");

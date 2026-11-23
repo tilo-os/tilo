@@ -501,19 +501,14 @@ impl ui::widget::Decorator for WeatherApp {
         asked || followed
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.tick_network();
         self.keep_places_in_front_without_a_forecast();
         self.core.borrow_mut().side_by_side = self.nav.geometry().side_by_side;
         self.nav
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
         self.stage_pending_scenario();
     }
 
@@ -649,8 +644,7 @@ mod interaction_tests {
                 &mut scene,
                 Affine::IDENTITY,
                 &mut self.tr,
-                &theme,
-                &presence,
+                &theme,&presence.draw_env(),
             );
         }
 

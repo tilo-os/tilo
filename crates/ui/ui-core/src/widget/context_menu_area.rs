@@ -14,7 +14,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::{ContextMenu, Element, EventCtx, MenuItem, Widget};
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
@@ -891,27 +891,22 @@ impl super::Decorator for ContextMenuArea {
             .or_else(|| self.content.modal_capture())
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // The overlay pass sees the whole window, where the menu may go;
         // the content's own pass may be scoped to a scrolled list.
-        if let Some(viewport) = presence.viewport.get() {
+        if let Some(viewport) = env.viewport {
             self.viewport = Some(viewport);
             // The row it stands under may have scrolled, and the window may
             // have changed: the menu stands where what opened it is now.
             self.place_menu();
         }
         self.content
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
+            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         // The menu paints in the overlay pass, over everything.
         self.menu
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
+            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         if let Some((anchor, pick)) = self.picker_wanted.take() {
             let mut picker = super::EmojiPicker::framed();
             let viewport = self.viewport.unwrap_or_else(|| self.content.get_rect());
@@ -919,7 +914,7 @@ impl super::Decorator for ContextMenuArea {
             self.picker = Some((picker, pick));
         }
         if let Some((picker, _)) = self.picker.as_mut() {
-            picker.draw_child(scene, transform, text_renderer, theme, presence);
+            picker.draw_child(scene, transform, text_renderer, theme,&env);
         }
     }
 
@@ -1222,16 +1217,11 @@ mod tests {
         ) {
             self.inner.apply_layout(taffy, node, origin);
         }
-        fn draw(
-            &mut self,
-            scene: &mut Scene,
-            transform: Affine,
-            text_renderer: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-        ) {
+        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
             self.inner
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
         fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut EventCtx<'_>) {
             if matches!(
@@ -1413,16 +1403,11 @@ mod tests {
         ) {
             self.inner.apply_layout(taffy, node, origin);
         }
-        fn draw(
-            &mut self,
-            scene: &mut Scene,
-            transform: Affine,
-            text_renderer: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-        ) {
+        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
             self.inner
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
         fn get_rect(&self) -> Rect {
             self.inner.get_rect()

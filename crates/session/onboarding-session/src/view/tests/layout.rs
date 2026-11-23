@@ -62,8 +62,7 @@ pub fn draw_until_rest<W: ui::widget::Widget + ?Sized>(
             &mut vello::Scene::new(),
             vello::kurbo::Affine::IDENTITY,
             text,
-            theme,
-            &ui::presence::PresenceCtx::empty(),
+            theme,&ui::presence::PresenceCtx::empty().draw_env().draw_env(),
         );
         ui::motion::frame_drawn(ui::motion::frame_now());
         if !widget.needs_animation_frame() {

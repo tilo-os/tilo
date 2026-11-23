@@ -211,14 +211,9 @@ impl crate::widget::Widget for DeclaredRail {
         self.laid_out != Some(self.count)
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: Affine,
-        text: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.rail
             .begin_frame_with_theme(theme, self.rect, self.count, self.current);
         let tones = &theme.tokens.colors;

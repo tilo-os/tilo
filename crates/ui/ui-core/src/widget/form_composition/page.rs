@@ -125,15 +125,10 @@ impl Widget for PageBody {
             .collect();
         FormSection::share_label_column(&mut parts, tree, text);
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.parts.draw(scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 }
 
@@ -192,14 +187,9 @@ impl Widget for PinnedActions {
             _ => false,
         }
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let rect = self.parts.rect;
         crate::surface::separator(
             scene,
@@ -210,7 +200,7 @@ impl Widget for PinnedActions {
             0.0,
             theme.tokens.colors.surfaces.content,
         );
-        self.parts.draw(scene, transform, text, theme, presence);
+        self.parts.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 }
 
@@ -572,17 +562,12 @@ macro_rules! framed_page {
                 map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
                 node
             }
-            fn draw(
-                &mut self,
-                scene: &mut Scene,
-                transform: Affine,
-                text: &mut TextRenderer,
-                theme: &Theme,
-                presence: &PresenceCtx,
-            ) {
+            fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
                 self.frame
                     .parts
-                    .draw(scene, transform, text, theme, presence);
+                    .draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
             }
         }
     };

@@ -9,7 +9,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::motion::{Presence, Transient};
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{MotionSource, Rhythm};
@@ -258,18 +258,13 @@ impl Decorator for HoverToolbar {
         self.follow(None);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.focused = self.focus_shows();
         self.follow(Some(theme));
         self.layers
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -330,20 +325,15 @@ impl Decorator for ToolbarFace {
         self.bar.handle_event(event, ctx);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let openness = self.shown.openness.get();
         if openness <= 0.0 {
             return;
         }
         if openness >= 1.0 {
-            self.bar.draw_child(scene, transform, text, theme, presence);
+            self.bar.draw_child(scene, transform, text, theme,&env);
             return;
         }
         let rect = self.bar.get_rect();
@@ -358,7 +348,7 @@ impl Decorator for ToolbarFace {
             transform,
             &rect,
         );
-        self.bar.draw_child(scene, transform, text, theme, presence);
+        self.bar.draw_child(scene, transform, text, theme,&env);
         scene.pop_layer();
     }
 

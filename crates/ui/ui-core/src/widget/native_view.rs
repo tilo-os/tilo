@@ -392,14 +392,9 @@ impl Widget for NativeView {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -416,7 +411,7 @@ impl Widget for NativeView {
         }
 
         if let Some(fallback) = &mut self.fallback {
-            fallback.draw_child(scene, transform, text_renderer, theme, presence);
+            fallback.draw_child(scene, transform, text_renderer, theme,&env);
             return;
         }
 
@@ -720,13 +715,7 @@ mod tests {
                     scale_factor: 1.5,
                 })));
                 view.set_focus(true);
-                view.draw(
-                    &mut Scene::new(),
-                    Affine::IDENTITY,
-                    &mut TextRenderer::new(),
-                    &Theme::dark(),
-                    &PresenceCtx::default(),
-                );
+                view.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
                 crate::widget::native_view_frame_start(&mut view);
                 crate::widget::unmount_native_views(&mut view);
 

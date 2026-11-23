@@ -790,8 +790,7 @@ fn host_section(
                 scene,
                 Affine::IDENTITY,
                 text,
-                &theme,
-                &tilo_app::presence::PresenceCtx::empty(),
+                &theme,&tilo_app::presence::PresenceCtx::empty().draw_env().draw_env(),
             );
         },
     );

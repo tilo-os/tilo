@@ -113,15 +113,10 @@ impl Widget for Slideshow {
         self.image.apply_layout(taffy, node, origin);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: crate::kurbo::Affine,
-        text: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        crate::widget::draw_child(&mut self.image, scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        crate::widget::draw_child(&mut self.image, scene, transform, text, theme,&env);
     }
 
     fn handle_event(

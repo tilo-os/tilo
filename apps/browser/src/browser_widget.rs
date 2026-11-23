@@ -24,7 +24,7 @@ use tilo_webview::{
     WebViewCommand, WebViewEvent,
 };
 use ui::icons::Icon;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::{ActionBinding, ControlInvocation};
@@ -4269,14 +4269,9 @@ impl Widget for BrowserWidget {
         self.refresh_active_pip_region();
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // The identity transform: nothing an ancestor cache resources changes.
         let coefficients = ui::scroll_copy::on_screen(transform).as_coeffs();
         let scale = coefficients[0].hypot(coefficients[1]);
@@ -4291,7 +4286,7 @@ impl Widget for BrowserWidget {
             ui::paint::fill_rect(scene, transform, rect, theme.tokens.colors.overlay_medium);
         }
         if let Some(c) = self.composed.element_mut() {
-            c.draw_child(scene, transform, text_renderer, theme, presence);
+            c.draw_child(scene, transform, text_renderer, theme,&env);
         }
         self.paint_side_panel_edge(scene, transform, theme);
         // A hairline under the toolbar row; the loading line takes its place
@@ -4324,19 +4319,14 @@ impl Widget for BrowserWidget {
 
     /// The suggestion dropdown is a field, not a tree child, so it paints here,
     /// above the page.
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(c) = self.composed.element_mut() {
-            c.draw_overlay(scene, transform, text_renderer, theme, presence);
+            c.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
         if let Some(panel) = &mut self.anchored_panel {
-            panel.draw_overlay(scene, transform, text_renderer, theme, presence);
+            panel.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
         // Re-anchor under the address field every draw: layout may not have
         // re-run since the suggestions changed.
@@ -4344,15 +4334,15 @@ impl Widget for BrowserWidget {
             self.suggestions.set_anchor(r, self.rect);
         }
         self.suggestions
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
+            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
 
         self.page_menu
             .menu
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
         self.back_menu
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
         if let Some(dialog) = sign_in::modal_mut(&mut self.page_sign_in, &mut self.page_dialogs) {
-            dialog.draw_overlay(scene, transform, text_renderer, theme, presence);
+            dialog.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
     }
 

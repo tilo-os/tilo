@@ -604,14 +604,9 @@ impl Widget for ProbeRoot {
         node
     }
     tilo_ui::rect_geometry!();
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        text: &mut tilo_ui::TextRenderer,
-        theme: &tilo_ui::Theme,
-        _: &tilo_ui::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_, _, text, theme, mut env) = ctx.parts();
         PRESENTATION.with_borrow(|slot| {
             if let Some(observations) = slot {
                 let mut observations = observations.borrow_mut();

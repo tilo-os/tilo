@@ -11,7 +11,7 @@ use super::DrawChild;
 use super::{AppModel, Element, EventCtx, ModelPath, Widget, layout_rect};
 use crate::i18n::I18nManager;
 use crate::interaction::InteractionEnvironment;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
@@ -133,16 +133,11 @@ impl Composed {
         }
     }
 
-    pub fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(element) = &mut self.element {
-            element.draw_child(scene, transform, text_renderer, theme, presence);
+            element.draw_child(scene, transform, text_renderer, theme,&env);
         }
     }
 
@@ -196,16 +191,8 @@ macro_rules! forward_to_composed {
             self.$field.apply_layout(taffy, node, origin);
         }
 
-        fn draw(
-            &mut self,
-            scene: &mut $crate::vello::Scene,
-            transform: $crate::kurbo::Affine,
-            text_renderer: &mut $crate::text_render::TextRenderer,
-            theme: &$crate::theme::Theme,
-            presence: &$crate::presence::PresenceCtx,
-        ) {
-            self.$field
-                .draw(scene, transform, text_renderer, theme, presence);
+        fn draw(&mut self, ctx: &mut $crate::draw::DrawCtx<'_>) {
+            self.$field.draw(ctx);
         }
 
         fn handle_event(
@@ -253,21 +240,15 @@ macro_rules! forward_to_child {
             }
         }
 
-        fn draw(
-            &mut self,
-            scene: &mut $crate::vello::Scene,
-            transform: $crate::kurbo::Affine,
-            text_renderer: &mut $crate::text_render::TextRenderer,
-            theme: &$crate::theme::Theme,
-            presence: &$crate::presence::PresenceCtx,
-        ) {
+        fn draw(&mut self, ctx: &mut $crate::draw::DrawCtx<'_>) {
+            let (scene, transform, text_renderer, theme, env) = ctx.parts();
             $crate::widget::DrawChild::draw_child(
                 &mut self.$child,
                 scene,
                 transform,
                 text_renderer,
                 theme,
-                presence,
+                &env,
             );
         }
 

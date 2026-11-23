@@ -107,13 +107,7 @@ tilo_test_env::scenario! {
         let presence = PresenceCtx::default();
         presence.viewport.set(Some(Rect::new(0.0, 0.0, 1280.0, 800.0)));
         let mut scene = Scene::new();
-        m.draw_overlay(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &presence,
-        );
+        m.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
         let rect = m.get_rect();
         assert!(
             rect.x0 >= 0.0 && rect.x1 <= 1280.0 && rect.y0 >= 0.0 && rect.y1 <= 800.0,

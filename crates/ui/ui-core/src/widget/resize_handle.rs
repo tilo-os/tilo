@@ -7,7 +7,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 
 use crate::color_compat::ColorCompat;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -118,14 +118,9 @@ impl Widget for ResizeHandle {
         false
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        _tr: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _tr, theme, mut env) = ctx.parts();
         // Always the idle rule: under the pointer it is the owning window's
         // own edge that lights up, so the border never suggests that
         // the gap itself, or both windows, will move.

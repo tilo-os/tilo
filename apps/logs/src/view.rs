@@ -11,7 +11,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use ui::framework::Actions;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::{TextKind, TextRenderer};
 use ui::theme::Theme;
 use ui::tilo_actions::ActionBinding;
@@ -555,24 +555,19 @@ impl Widget for JournalPane {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.shows_filters() {
             self.unit
-                .draw_child(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme,&env);
             self.boot
-                .draw_child(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme,&env);
             self.severity
-                .draw_child(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme,&env);
         }
         self.body_mut()
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

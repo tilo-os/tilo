@@ -7,7 +7,7 @@ use winit::event::{TouchPhase, WindowEvent};
 
 use crate::icons::Icon;
 use crate::motion::{Direction, MotionValue, Snap};
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
@@ -390,14 +390,9 @@ impl Decorator for SwipeRow {
         self.content.handle_event(event, ctx);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let now = crate::motion::frame_now();
         // Reduced motion lands a settle at once.
         if theme.motion().reduced() && self.drag.is_none() && self.offset.is_moving(now) {
@@ -407,7 +402,7 @@ impl Decorator for SwipeRow {
         self.drawn = offset;
         if offset == 0.0 {
             self.content
-                .draw_child(scene, transform, text, theme, presence);
+                .draw_child(scene, transform, text, theme,&env);
             return;
         }
         let row = self.content.get_rect();
@@ -427,7 +422,7 @@ impl Decorator for SwipeRow {
             None,
             &row,
         );
-        self.content.draw_child(scene, moved, text, theme, presence);
+        self.content.draw_child(scene, moved, text, theme,&env);
         scene.pop_layer();
     }
 

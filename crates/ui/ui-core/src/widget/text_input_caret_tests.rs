@@ -217,14 +217,7 @@ tilo_test_env::scenario! {
             let theme = Theme::dark();
             let presence = crate::presence::PresenceCtx::empty();
             let mut scene = Scene::new();
-            Widget::draw(
-                &mut ti,
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-            );
+            Widget::draw(&mut ti, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
 
             let layout = ti
                 .single_layout
@@ -551,14 +544,7 @@ tilo_test_env::scenario! {
             let presence = crate::presence::PresenceCtx::empty();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            Widget::draw(
-                &mut ti,
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-            );
+            Widget::draw(&mut ti, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
 
             let r0 = ti.caret_rect(&theme, 0);
             let r5 = ti.caret_rect(&theme, 5);
@@ -956,14 +942,7 @@ tilo_test_env::scenario! {
             let presence = crate::presence::PresenceCtx::empty();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            Widget::draw(
-                &mut ti,
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-            );
+            Widget::draw(&mut ti, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             assert_eq!(
                 ti.scroll_x(),
                 0.0,
@@ -971,14 +950,7 @@ tilo_test_env::scenario! {
             );
 
             ti.set_focus(true);
-            Widget::draw(
-                &mut ti,
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-            );
+            Widget::draw(&mut ti, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             assert!(
                 ti.scroll_x() > 0.0,
                 "focused input follows the caret on a long line"
@@ -1027,14 +999,7 @@ tilo_test_env::scenario! {
             let mut shown = TextInput::local().with_placeholder("Type here");
             shown.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
             let mut scene = Scene::new();
-            Widget::draw(
-                &mut shown,
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-            );
+            Widget::draw(&mut shown, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             assert!(
                 !scene.encoding().resources.glyph_runs.is_empty(),
                 "placeholder must paint a glyph run when shown",
@@ -1044,14 +1009,7 @@ tilo_test_env::scenario! {
             focused.set_focus(true);
             focused.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
             let mut scene_focused = Scene::new();
-            Widget::draw(
-                &mut focused,
-                &mut scene_focused,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-            );
+            Widget::draw(&mut focused, &mut crate::draw::DrawCtx::new(&mut scene_focused, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             assert!(
                 !scene_focused.encoding().resources.glyph_runs.is_empty(),
                 "a focused empty input still paints the placeholder",

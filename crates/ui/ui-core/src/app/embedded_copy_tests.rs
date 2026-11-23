@@ -128,7 +128,7 @@ fn section(
         &mut scene,
         PartKey::new("test.tile-content", ()),
         vec![REGION],
-        |scene| tile.draw(scene, Affine::IDENTITY, text, theme, &PresenceCtx::empty()),
+        |scene| tile.draw(&mut crate::draw::DrawCtx::new(scene, Affine::IDENTITY, text, theme, PresenceCtx::empty().draw_env())),
     );
     scene.pop_layer();
     if host.translucent {

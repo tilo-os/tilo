@@ -178,16 +178,11 @@ impl Widget for ZoomableImage {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: crate::kurbo::Affine,
-        text: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if let Some(viewer) = &mut self.viewer {
-            viewer.draw_child(scene, transform, text, theme, presence);
+            viewer.draw_child(scene, transform, text, theme,&env);
         }
     }
 

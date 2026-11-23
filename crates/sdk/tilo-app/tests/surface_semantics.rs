@@ -266,14 +266,9 @@ impl Widget for WritesWhilePainting {
         "WritesWhilePainting"
     }
 
-    fn draw(
-        &mut self,
-        _scene: &mut tilo_app::vello::Scene,
-        _transform: tilo_app::vello::kurbo::Affine,
-        _text_renderer: &mut tilo_app::TextRenderer,
-        _theme: &Theme,
-        _presence: &tilo_app::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
         if let Some(dispatch) = &self.dispatch {
             dispatch.submit(Ballot::APPROVE.invoke());
         }

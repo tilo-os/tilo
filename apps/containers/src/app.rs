@@ -17,7 +17,7 @@ use ui::a11y::{AccessNode, Role};
 use ui::framework::{
     Dispatcher, EffectStatus, Effected, Live, LiveRow, Publishes, RunMode, ViewCx,
 };
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
@@ -1891,28 +1891,18 @@ impl Widget for ContainersApp {
         mine || children
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.window
-            .draw_child(scene, transform, tr, theme, presence);
+            .draw_child(scene, transform, tr, theme,&env);
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         for child in self.children_mut() {
-            child.draw_overlay(scene, transform, tr, theme, presence);
+            child.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
         }
     }
 

@@ -39,15 +39,10 @@ impl crate::widget::Decorator for Field {
         &mut self.input
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        crate::widget::Widget::draw(&mut self.input, scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        crate::widget::Widget::draw(&mut self.input, &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
         self.drawn.set(self.input.caret_rect(theme, 0));
     }
 }
@@ -115,7 +110,7 @@ fn frame(
     });
     let _frame = PanReplay::begin(kind, number);
     let mut scene = Scene::new();
-    row.draw(&mut scene, Affine::IDENTITY, text, &Theme::dark(), presence);
+    row.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, text, &Theme::dark(), presence.draw_env()));
     row.mark_drawn();
 }
 

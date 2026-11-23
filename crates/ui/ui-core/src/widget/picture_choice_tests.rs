@@ -62,11 +62,11 @@ tilo_test_env::scenario! {
         let theme = Theme::light();
         let mut text = TextRenderer::new();
         let presence = crate::presence::PresenceCtx::default();
-        picker.draw(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, &presence);
+        picker.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
         assert!(!picker.needs_animation_frame(), "the first look rests");
         crate::motion::note_source(crate::tokens::MotionSource::Pointer);
         picker.set_selected(Some(2));
-        picker.draw(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, &presence);
+        picker.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
         assert!(picker.needs_animation_frame(), "the edge slides rather than jumps");
     }
 

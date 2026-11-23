@@ -34,8 +34,7 @@ pub(super) fn draw_at(widget: &mut BrowserWidget, scale: f64) -> Scene {
         &mut scene,
         Affine::scale(scale),
         &mut TextRenderer::new(),
-        &Theme::dark(),
-        &PresenceCtx::default(),
+        &Theme::dark(),&PresenceCtx::default().draw_env().draw_env(),
     );
     scene
 }
@@ -1069,8 +1068,8 @@ fn narrow_chrome_keeps_settings_toolbar_and_page_viewport_usable() {
                 let mut text = TextRenderer::new();
                 let mut scene = Scene::new();
                 let presence = PresenceCtx::default();
-                widget.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-                widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+                widget.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme,&presence.draw_env());
+                widget.draw_overlay(&mut tilo_ui::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
                 if let Some(directory) = std::env::var_os("TILO_CREDENTIAL_RENDER_EVIDENCE") {
                     let directory = std::path::PathBuf::from(directory);
                     std::fs::create_dir_all(&directory).unwrap();
@@ -1301,9 +1300,9 @@ fn site_panel_stays_retained_composed_and_actionable() {
             let panel = widget.anchored_panel.as_ref().unwrap();
             assert!(panel.get_rect().height() > 100.0);
             let mut scene = Scene::new();
-            widget.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+            widget.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme,&presence.draw_env());
             let page_tags = scene.encoding().draw_tags.len();
-            widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+            widget.draw_overlay(&mut tilo_ui::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
             assert!(
                 scene.encoding().draw_tags.len() > page_tags + 5,
                 "overlay must emit visible content"
@@ -1375,8 +1374,8 @@ fn site_panel_stays_retained_composed_and_actionable() {
                 "{rect:?}"
             );
             let mut scene = Scene::new();
-            widget.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-            widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+            widget.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme,&presence.draw_env());
+            widget.draw_overlay(&mut tilo_ui::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
             if let Some(directory) = std::env::var_os("TILO_SITE_RENDER_EVIDENCE") {
                 let path = std::path::PathBuf::from(directory);
                 std::fs::create_dir_all(&path).unwrap();
@@ -1676,13 +1675,7 @@ fn pip_feedback_is_anchored_clamped_and_settles() {
 
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
-            widget.draw_overlay(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
-                &Theme::dark(),
-                &PresenceCtx::empty(),
-            );
+            widget.draw_overlay(&mut tilo_ui::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark(), PresenceCtx::empty().draw_env()));
             assert!(
                 !scene.encoding().draw_tags.is_empty(),
                 "compact feedback must remain visible even without a PiP toolbar button"

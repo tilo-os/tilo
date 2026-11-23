@@ -4,35 +4,25 @@
 use super::part_change::{PartKey, Pose};
 use super::{
     Affine, Breadcrumb, ButtonFace, FieldFace, Icon, LOCATION_ICON_PX, LocationLabel, Part, Parts,
-    Point, PresenceCtx, Rect, Scene, SegmentedFace, TextRenderer, Theme, ToggleGroup, ToolbarRow,
+    Point, Rect, Scene, SegmentedFace, TextRenderer, Theme, ToggleGroup, ToolbarRow,
     VIEWS_SIZE, Widget, WindowToolbar, paint_icon_button, trailing_word,
 };
 use crate::widget::DrawChild;
 
 impl ToolbarRow {
-    pub(crate) fn paint_popups(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        Widget::draw_overlay(&mut self.menu, scene, transform, tr, theme, presence);
+    pub(crate) fn paint_popups(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
+        Widget::draw_overlay(&mut self.menu, &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
         if self.suggestions_open() {
             self.suggestions.paint(scene, transform, tr, theme);
         }
-        self.paint_picker(scene, transform, (tr, theme, presence));
+        self.paint_picker(scene, transform, (tr, theme, env));
     }
 
-    pub(crate) fn paint(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub(crate) fn paint(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         if self.measure_views(theme) {
             self.measured = true;
         }
@@ -49,7 +39,7 @@ impl ToolbarRow {
                 let _ = paint_parts(
                     scene,
                     transform,
-                    (tr, theme, presence),
+                    (tr, theme, env),
                     toolbar,
                     parts,
                     (None, None),
@@ -83,14 +73,14 @@ impl ToolbarRow {
             trigger = paint_parts(
                 scene,
                 transform,
-                (tr, theme, presence),
+                (tr, theme, env),
                 toolbar,
                 parts,
                 (Some(&interaction), crumbs),
                 Some(&mut words),
             );
             if let Some(field) = field {
-                DrawChild::draw_child(field, scene, transform, tr, theme, presence);
+                DrawChild::draw_child(field, scene, transform, tr, theme,&env);
             }
         });
         if let Some(trigger) = trigger {
@@ -118,7 +108,7 @@ impl ToolbarRow {
                 self.strip.text_rect(),
             ));
         }
-        self.paint_leaving(scene, transform, (tr, theme, presence), incoming);
+        self.paint_leaving(scene, transform, (tr, theme, env), incoming);
         self.paint_reactions(scene, transform, (tr, theme));
         self.labels = words;
     }
@@ -142,7 +132,7 @@ impl ToolbarRow {
         &self,
         scene: &mut Scene,
         transform: Affine,
-        (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
+        (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
         incoming: f32,
     ) {
         let now = crate::motion::frame_now();
@@ -163,7 +153,7 @@ impl ToolbarRow {
             let _ = paint_parts(
                 scene,
                 at,
-                (tr, theme, presence),
+                (tr, theme, env),
                 toolbar,
                 parts,
                 (None, None),
@@ -238,7 +228,7 @@ fn posed(
 pub(super) fn paint_parts(
     scene: &mut Scene,
     transform: Affine,
-    (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
+    (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
     toolbar: &WindowToolbar,
     parts: &Parts,
     (interaction, crumbs): (Option<&Interaction>, Option<&mut Breadcrumb>),
@@ -490,7 +480,7 @@ pub(super) fn paint_parts(
             trigger = paint_location(
                 scene,
                 at,
-                (tr, theme, presence),
+                (tr, theme, env),
                 (location, crumbs),
                 (parts.location, parts.form),
                 (lifted, toolbar.notice.as_ref().map(|notice| notice.kind)),
@@ -511,7 +501,7 @@ pub(crate) struct LocationLift {
 pub(super) fn paint_location(
     scene: &mut Scene,
     transform: Affine,
-    (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
+    (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
     (location, crumbs): (
         &crate::window_toolbar::ToolbarLocation,
         Option<&mut Breadcrumb>,
@@ -575,7 +565,7 @@ pub(super) fn paint_location(
     {
         if text_rect.width() > 0.0 {
             crumbs.set_rect(Rect::new(text_rect.x0, rect.y0, text_rect.x1, rect.y1));
-            DrawChild::draw_child(crumbs, scene, transform, tr, theme, presence);
+            DrawChild::draw_child(crumbs, scene, transform, tr, theme,env);
         }
         return None;
     }

@@ -44,13 +44,7 @@ fn lay_out_again(map: &mut Map, viewport: Rect) {
 fn draw(map: &mut Map) {
     let mut scene = Scene::new();
     let mut text = crate::font_catalog::fixture_renderer();
-    map.draw(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text,
-        &theme(),
-        &PresenceCtx::default(),
-    );
+    map.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme(), PresenceCtx::default().draw_env()));
 }
 
 #[test]

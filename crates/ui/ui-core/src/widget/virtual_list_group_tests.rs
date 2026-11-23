@@ -629,13 +629,7 @@ fn painted(list: &mut VirtualList<Grouped>, theme: &Theme) -> Vec<u8> {
     let mut text = TextRenderer::new();
     text.set_text_scale(theme.text_scale);
     let mut scene = Scene::new();
-    list.draw(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text,
-        theme,
-        &PresenceCtx::empty(),
-    );
+    list.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, theme, PresenceCtx::empty().draw_env()));
     let mut renderer =
         crate::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(300, 400)
             .expect("the offscreen renderer");

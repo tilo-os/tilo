@@ -11,7 +11,7 @@ use taffy::{NodeId, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::Instant;
@@ -191,15 +191,9 @@ impl Core {
         })
     }
 
-    pub(crate) fn paint_list(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        area: Rect,
-    ) {
+    pub(crate) fn paint_list(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, area: Rect) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, t, text, theme, mut env) = ctx.parts();
         self.list.rows.clear();
         self.list.shown_drawing = None;
         let resized = self.list.rect.size() != area.size();
@@ -210,7 +204,7 @@ impl Core {
         let inset = f64::from(theme.tokens.spacing.s2);
         let settled = !self.refresh.visible();
         let top = if self.refresh.visible() {
-            self.paint_refresh(scene, t, text, theme, presence, area)
+            self.paint_refresh(&mut tilo_ui::DrawCtx::new(scene, t, text, theme, env.clone()), area)
         } else {
             area.y0
         };
@@ -451,15 +445,9 @@ impl Core {
 
     /// The refresh progress under the header: one sentence over the bar.
     /// Returns where the rows start.
-    fn paint_refresh(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        area: Rect,
-    ) -> f64 {
+    fn paint_refresh(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, area: Rect) -> f64 {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, t, text, theme, mut env) = ctx.parts();
         let spacing = &theme.tokens.spacing;
         let caption = theme.text(TextRole::Caption);
         let line = f64::from(text.measure_style("Ag", None, &caption).1);
@@ -490,7 +478,7 @@ impl Core {
         self.list.progress.apply_layout_external(bar);
         self.list
             .progress
-            .draw_child(scene, t, text, theme, presence);
+            .draw_child(scene, t, text, theme,&env);
         let top = bar.y1 + f64::from(spacing.s3);
         ui::surface::separator(
             scene,
@@ -693,23 +681,18 @@ impl Widget for ListPane {
             .collect()
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let viewport = {
             let mut core = self.core.borrow_mut();
-            core.paint_list(scene, transform, text, theme, presence, self.rect);
+            core.paint_list(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()), self.rect);
             core.list.viewport
         };
         if let Some((_, empty)) = self.empty.as_mut() {
             // Centred in the rows' viewport, below any refresh progress.
             empty.apply_layout_external(viewport);
-            empty.draw_child(scene, transform, text, theme, presence);
+            empty.draw_child(scene, transform, text, theme,&env);
         }
     }
 

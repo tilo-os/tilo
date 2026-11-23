@@ -58,19 +58,14 @@ impl MapInfoSheet {
         was_open
     }
 
-    pub(crate) fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub(crate) fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.current.is_none() {
             return;
         }
         self.dialog
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
+            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     pub(crate) fn handle_event(
@@ -178,13 +173,7 @@ mod tests {
             presence
                 .viewport
                 .set(Some(Rect::new(0.0, 0.0, 1000.0, 700.0)));
-            sheet.draw_overlay(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::dark(),
-                &presence,
-            );
+            sheet.draw_overlay(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
 
             assert!(sheet.modal_capture().is_some());
             let node = sheet.accessibility().expect("open dialog a11y node");

@@ -5,7 +5,6 @@ use vello::Scene;
 use vello::kurbo::Affine;
 
 use super::GroupRow;
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
@@ -19,7 +18,7 @@ impl GroupRow {
         &mut self,
         i: usize,
         transform: Affine,
-        (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
+        (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
     ) {
         let id = self.groups[i].id;
         if !crate::window_pictures::owed(id)
@@ -29,9 +28,9 @@ impl GroupRow {
             return;
         }
         // Drawn whole: what a window draws is culled to the part of it on screen, which is none.
-        let viewport = presence.viewport.take();
-        let drawing = self.record_group(i, Scene::new(), transform, (tr, theme, presence));
-        presence.viewport.set(viewport);
+        let mut whole = env.clone();
+        whole.viewport = None;
+        let drawing = self.record_group(i, Scene::new(), transform, (tr, theme, &whole));
         drawing.offer_picture(0);
     }
 }

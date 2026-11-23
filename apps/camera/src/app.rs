@@ -35,7 +35,7 @@ use vello::kurbo::{Affine, Point, Rect};
 
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::framework::{EffectReply, Setting};
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::ActionEmitter;
@@ -2762,14 +2762,9 @@ impl Widget for CameraApp {
         true
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, t, tr, theme, mut env) = ctx.parts();
         self.regions.clear();
         self.tooltip_targets.clear();
         // Camera is an immersive capture surface: the viewfinder fills the
@@ -2779,7 +2774,7 @@ impl Widget for CameraApp {
             Screen::Camera | Screen::Settings => self.draw_camera(scene, t, tr, theme, full),
             Screen::Scanner => self.draw_scanner(scene, t, tr, theme, full),
             Screen::Document => {
-                self.draw_document_scanner(scene, t, tr, theme, presence, full);
+                self.draw_document_scanner(&mut tilo_ui::DrawCtx::new(scene, t, tr, theme, env.clone()), full);
             }
         }
         if self.screen == Screen::Settings {

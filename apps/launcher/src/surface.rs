@@ -7,7 +7,7 @@ use std::rc::Rc;
 use ui::ActionPalette;
 use ui::framework::{EffectAnswer, Effected, LiveRow, Publishes, ViewCx};
 use ui::paint::PaintCtx;
-use ui::presence::PresenceCtx;
+
 use ui::search::system::filters::{
     FilterAction, FilterStripSlot, FilterText, KindChip, SearchFilters, toggle_kind,
 };
@@ -540,14 +540,9 @@ impl Decorator for LauncherSurface {
         std::mem::take(&mut self.structure_dirty) || palette
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.tell_fit();
         if !self.open {
             return;
@@ -555,7 +550,7 @@ impl Decorator for LauncherSurface {
         let card = self.palette.get_rect();
         ui::widget::floating_surface::paint_card_shadow(scene, transform, card, 1.0, theme);
         self.palette
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         if self.shows_band() {
             let band = self.palette.filter_strip_rect();
             self.filters.draw(

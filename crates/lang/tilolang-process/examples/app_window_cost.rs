@@ -162,8 +162,7 @@ fn show(end: End, text: &mut ui::TextRenderer, theme: &ui::Theme) -> Shown {
         &mut scene,
         ui::kurbo::Affine::IDENTITY,
         text,
-        theme,
-        &ui::presence::PresenceCtx::default(),
+        theme,&ui::presence::PresenceCtx::default().draw_env().draw_env(),
     );
     Shown { window, scene }
 }

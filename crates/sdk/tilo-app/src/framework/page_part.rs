@@ -80,7 +80,7 @@ impl<W: Widget + 'static> Placed<W> {
         let presence = PresenceCtx::default();
         let outer = presence.push_viewport(clip);
         self.host
-            .draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, &presence);
+            .draw(&mut tilo_ui::DrawCtx::new(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence.draw_env()));
         presence.pop_viewport(outer);
         self.placed = true;
     }

@@ -56,7 +56,6 @@ use super::{
     EventCtx, LayoutInfo, ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion,
     PrimaryScrollResult, Widget,
 };
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
@@ -614,13 +613,7 @@ decorator_trait! {
             clippy::disallowed_methods,
             reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
         )]
-        fn draw(
-            scene: &mut Scene,
-            transform: Affine,
-            text_renderer: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-        );
+        fn draw(ctx: &mut crate::draw::DrawCtx<'_>);
         fn observe_physical_input(input: crate::widget::PhysicalInput);
         fn handle_event(event: &WindowEvent, ctx: &mut EventCtx<'_>);
         fn children_mut() -> Vec<&mut (dyn Widget + '_)>;
@@ -662,13 +655,7 @@ decorator_trait! {
         fn mark_drawn();
         fn layout_measured();
         fn release_scene_cache();
-        fn draw_overlay(
-            scene: &mut Scene,
-            transform: Affine,
-            text_renderer: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-        );
+        fn draw_overlay(ctx: &mut crate::draw::DrawCtx<'_>);
         fn apply_primary_vertical_scroll(action: PrimaryScrollAction) -> PrimaryScrollResult;
         fn focus_requested(target: Option<NodeId>, tree: &TaffyTree<()>);
         fn mount_native_views(host: &crate::widget::native_view::NativeViewHost<'_>);

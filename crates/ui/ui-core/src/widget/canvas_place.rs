@@ -19,7 +19,7 @@ use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 
 use crate::component::{Component, Described};
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{Rhythm, SpacingStep, TextRole};
@@ -222,14 +222,9 @@ impl Decorator for PlaceGround {
         (rect.width() > 0.0).then_some(rect)
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let rect = self.column.get_rect();
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -244,7 +239,7 @@ impl Decorator for PlaceGround {
             &RoundedRect::from_rect(rect, radius),
         );
         self.column
-            .draw_child(scene, transform, text, &on, presence);
+            .draw_child(scene, transform, text, &on,&env);
         scene.pop_layer();
     }
 }

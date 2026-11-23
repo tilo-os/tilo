@@ -15,7 +15,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::icons::Icon;
 use crate::motion::{Disclose, Presence};
 use crate::platform::PlatformConventions;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{EffectiveMotion, MotionSource};
@@ -1501,14 +1501,9 @@ impl Widget for WindowSearch {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.motion = theme.motion();
         if self.anchor.area() <= 0.0 {
             return;
@@ -1547,7 +1542,7 @@ impl Widget for WindowSearch {
             );
         }
         self.field
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
         if self.parts_opacity > 0.0 {
             let bounds = self
                 .parts
@@ -1570,20 +1565,15 @@ impl Widget for WindowSearch {
         }
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let shown = options::Shown {
             options: self.options(),
             matches: self.matches(),
         };
         self.panel
-            .paint(scene, transform, text, theme, presence, shown);
+            .paint(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()), shown);
     }
 
     fn mark_drawn(&mut self) {

@@ -10,7 +10,7 @@ use ui::vello::peniko::Fill;
 use ui::widget::{AppModel, Element, EventCtx, ModelPath, Widget};
 use ui::winit::event::{ElementState, KeyEvent, WindowEvent};
 use ui::winit::keyboard::{Key, NamedKey};
-use ui::{PresenceCtx, TextRenderer, Theme};
+use ui::{TextRenderer, Theme};
 
 use crate::model::Artwork;
 use crate::render::{Options, Renderer};
@@ -160,16 +160,11 @@ impl ui::widget::Decorator for VersionPreview {
         self.canvas.sync(state, path);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.canvas
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
         self.paint(scene, transform, text_renderer, theme);
     }
 

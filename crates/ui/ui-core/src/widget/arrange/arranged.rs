@@ -16,7 +16,7 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use super::Side;
 use super::units::{At, Fit, Length, WidthClass};
 use crate::interaction::InteractionEnvironment;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
@@ -834,20 +834,15 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         for (index, part) in self.parts.iter_mut().enumerate() {
-            if self.layout.hidden(index) || presence.should_cull(part.element.get_rect()) {
+            if self.layout.hidden(index) || env.should_cull(part.element.get_rect()) {
                 continue;
             }
             part.element
-                .draw_child(scene, transform, text, theme, presence);
+                .draw_child(scene, transform, text, theme,&env);
         }
     }
 

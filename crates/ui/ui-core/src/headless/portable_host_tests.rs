@@ -111,14 +111,9 @@ impl Widget for Blocker {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: taffy::NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: vello::kurbo::Affine,
-        _text: &mut crate::text_render::TextRenderer,
-        _theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _text, _theme, mut env) = ctx.parts();
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -160,14 +155,9 @@ impl Widget for OverlayProbe {
 
     crate::rect_geometry!();
 
-    fn draw_overlay(
-        &mut self,
-        _: &mut Scene,
-        _: Affine,
-        _: &mut TextRenderer,
-        _: &Theme,
-        _: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_, _, _, _, mut env) = ctx.parts();
         self.draws.set(self.draws.get() + 1);
     }
 }
@@ -334,16 +324,11 @@ impl Widget for Hold {
         nodes.insert(node, self as *mut dyn Widget);
         node
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.open.get() {
-            self.content.draw(scene, transform, text, theme, presence);
+            self.content.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

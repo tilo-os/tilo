@@ -539,19 +539,14 @@ impl Widget for EditableLabel {
                 .is_none_or(|(text, style)| text != self.shown_text() || *style != self.style)
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.adopt_theme(theme);
         if self.editing {
             self.input.apply_layout_external(self.rect);
             self.input
-                .draw_child(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme,&env);
             return;
         }
         let (shown, color) = if self.value.is_empty() {
@@ -969,13 +964,7 @@ mod tests {
                 let mut renderer = crate::TextRenderer::new();
                 let mut draw = |label: &mut EditableLabel| {
                     let mut scene = Scene::new();
-                    label.draw(
-                        &mut scene,
-                        Affine::IDENTITY,
-                        &mut renderer,
-                        &Theme::dark(),
-                        &PresenceCtx::empty(),
-                    );
+                    label.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark(), PresenceCtx::empty().draw_env()));
                     scene.encoding().draw_tags.len()
                 };
                 let visible = draw(&mut label);

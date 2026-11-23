@@ -78,13 +78,7 @@ impl PartPainter for Triangles {
 
 fn draw(button: &mut Button, theme: &Theme) -> Scene {
     let mut scene = Scene::new();
-    button.draw(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut TextRenderer::new(),
-        theme,
-        &crate::presence::PresenceCtx::default(),
-    );
+    button.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), theme, crate::presence::PresenceCtx::default().draw_env()));
     scene
 }
 

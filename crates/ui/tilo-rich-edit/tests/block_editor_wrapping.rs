@@ -72,13 +72,7 @@ impl RetainedCode {
             .unwrap();
         }
         self.editor.apply_layout(&self.tree, self.root, Point::ZERO);
-        self.editor.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut self.text,
-            &self.theme,
-            &tilo_ui::presence::PresenceCtx::empty(),
-        );
+        self.editor.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut self.text, &self.theme, tilo_ui::presence::PresenceCtx::empty().draw_env()));
         self.editor.mark_drawn();
     }
 

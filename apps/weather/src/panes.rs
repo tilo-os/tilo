@@ -14,7 +14,7 @@ use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 
 use ui::a11y::{AccessNode, Action};
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -72,14 +72,9 @@ impl Widget for OverviewPane {
 
     ui::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // The core's paint, which other parts of the app move: current only until
         // the next input.
         ui::outside_paint::note();
@@ -89,22 +84,11 @@ impl Widget for OverviewPane {
     }
 
     /// The add-place suggestions and the menu, in the window's top layer.
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         ui::outside_paint::note();
-        self.core.borrow_mut().draw_overview_overlay(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-        );
+        self.core.borrow_mut().draw_overview_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -195,14 +179,9 @@ impl Widget for DetailPane {
 
     ui::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         ui::outside_paint::note();
         self.core
             .borrow_mut()

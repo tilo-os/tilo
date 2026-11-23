@@ -278,22 +278,15 @@ impl ToggleGroup {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        (text, theme, presence): (&mut TextRenderer, &Theme, &crate::presence::PresenceCtx),
+        (text, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
     ) {
-        if let Some(viewport) = presence.viewport.get() {
+        if let Some(viewport) = env.viewport {
             if self.menu.is_open() && self.viewport != Some(viewport) {
                 self.menu.set_viewport(Some(viewport));
             }
             self.viewport = Some(viewport);
         }
-        crate::widget::Widget::draw_overlay(
-            &mut self.menu,
-            scene,
-            transform,
-            text,
-            theme,
-            presence,
-        );
+        crate::widget::Widget::draw_overlay(&mut self.menu, &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
     pub(super) fn fold_menu() -> ContextMenu {
@@ -331,22 +324,8 @@ mod tests {
             .viewport
             .set(Some(Rect::new(0.0, 0.0, 640.0, 480.0)));
         let mut scene = Scene::new();
-        Widget::draw(
-            group,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &presence,
-        );
-        Widget::draw_overlay(
-            group,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &presence,
-        );
+        Widget::draw(group, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, env.clone()));
+        Widget::draw_overlay(group, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, env.clone()));
         scene.encoding().draw_data.clone()
     }
 

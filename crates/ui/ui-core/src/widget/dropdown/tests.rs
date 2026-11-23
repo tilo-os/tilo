@@ -15,13 +15,7 @@ fn opts() -> Vec<String> {
 fn paint_list(dd: &mut Dropdown, renderer: &mut TextRenderer, theme: &Theme) -> f64 {
     dd.adopt_theme(theme);
     dd.place_list();
-    dd.draw_overlay(
-        &mut Scene::new(),
-        Affine::IDENTITY,
-        renderer,
-        theme,
-        &PresenceCtx::empty(),
-    );
+    dd.draw_overlay(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, renderer, theme, PresenceCtx::empty().draw_env()));
     dd.list_rect().width()
 }
 
@@ -160,13 +154,7 @@ tilo_test_env::scenario! {
                 .viewport
                 .set(Some(Rect::new(0.0, 0.0, 800.0, 760.0)));
             let mut scene = Scene::new();
-            dd.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::dark(),
-                &presence,
-            );
+            dd.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
             assert_eq!(dd.viewport, Some(Rect::new(0.0, 0.0, 800.0, 760.0)));
             let mut hosted =
                 Dropdown::new(opts(), "tz").with_viewport(Rect::new(0.0, 0.0, 800.0, 760.0));
@@ -335,8 +323,8 @@ tilo_test_env::scenario! {
         stands_where("the panel", panel, dd.list_rect());
         let mut scene = Scene::new();
         let presence = PresenceCtx::empty();
-        dd.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-        dd.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+        dd.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+        dd.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
         stands_where("the filter field", query, dd.query_rect);
         stands_where("the panel", panel, dd.list_rect());
         for (row, placed) in rows.iter().enumerate() {
@@ -779,14 +767,7 @@ tilo_test_env::scenario! {
 
             let mut scene = Scene::new();
             let mut renderer = TextRenderer::new();
-            Widget::draw(
-                &mut dd,
-                &mut scene,
-                Affine::IDENTITY,
-                &mut renderer,
-                &Theme::dark(),
-                &PresenceCtx::empty(),
-            );
+            Widget::draw(&mut dd, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark(), PresenceCtx::empty().draw_env()));
             let candidate = Widget::ime_cursor_rect(&dd).expect("open combobox publishes its caret");
             assert!(dd.get_rect().contains(candidate.center()));
 

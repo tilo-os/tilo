@@ -33,7 +33,7 @@ use crate::i18n::{t, t_args};
 use tilo_desktop_model::Layout;
 use tilo_session_core::desktop::names;
 use ui::TextRole;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextStyle;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -1336,14 +1336,9 @@ impl Widget for TopBarChrome {
         }
     }
 
-    fn draw(
-        &mut self,
-        out_scene: &mut Scene,
-        out_transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (out_scene, out_transform, text_renderer, theme, mut env) = ctx.parts();
         // Leaving with a maximizing window, or coming back with its restore: the whole bar slides
         // up off its display as it fades.
         if self.with_window_moving() {
@@ -1360,20 +1355,14 @@ impl Widget for TopBarChrome {
                 out_transform,
                 &self.rect,
             );
-            self.draw_bar(
-                out_scene,
-                out_transform.pre_translate(lift),
-                text_renderer,
-                theme,
-                presence,
-            );
+            self.draw_bar(&mut tilo_ui::DrawCtx::new(out_scene, out_transform, text_renderer, theme, env.clone()));
             out_scene.pop_layer();
             return;
         }
         if self.presence() == TopBarPresence::Hidden && !self.with_window.is_open() {
             return;
         }
-        self.draw_bar(out_scene, out_transform, text_renderer, theme, presence);
+        self.draw_bar(&mut tilo_ui::DrawCtx::new(out_scene, out_transform, text_renderer, theme, env.clone()));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1814,14 +1803,9 @@ impl Widget for TopBarChrome {
 }
 
 impl TopBarChrome {
-    fn draw_bar(
-        &mut self,
-        out_scene: &mut Scene,
-        out_transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_bar(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (out_scene, out_transform, text_renderer, theme, mut env) = ctx.parts();
         // Zero-height (fullscreen) paints nothing; without this guard the encode below still runs
         // at intrinsic size, overflowing into a stray fragment over the fullscreen window.
         if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
@@ -1844,7 +1828,7 @@ impl TopBarChrome {
             ui::tokens::MotionSource::Pointer,
             ui::time::now(),
         );
-        self.read_face_looks(presence, theme.motion());
+        self.read_face_looks(&mut tilo_ui::DrawCtx::new(out_scene, out_transform, text_renderer, theme, env.clone()), theme.motion());
         let fp = self.current_fingerprint();
         if fp == self.cache_fp && self.cache_theme.as_ref() == Some(theme) && fp.rect_px.2 > 0 {
             ui::scene_parts::append(

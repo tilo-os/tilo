@@ -2428,19 +2428,14 @@ impl Widget for DesktopSurface {
         self.refresh_presentation();
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        self.draw_leaving_strip(scene, transform, text, theme, presence);
-        self.draw_display_strips(scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.draw_leaving_strip(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.draw_display_strips(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         let read_ink = self.shared.borrow().hint_reading == HintReading::WithInk;
         let hint_places = self.shown_row().map(|row| {
-            ui::widget::draw_child(row, scene, transform, text, theme, presence);
+            ui::widget::draw_child(row, scene, transform, text, theme,&env);
             row.hint_places(read_ink)
         });
         // What the strips just drew of their floated windows whole over the windows under them,
@@ -2456,8 +2451,8 @@ impl Widget for DesktopSurface {
         shared.float_covers = float_covers;
         shared.hint_places = hint_places.unwrap_or_default();
         drop(shared);
-        self.draw_embeds(scene, transform, text, theme, presence);
-        self.draw_overlays(scene, transform, text, theme, presence);
+        self.draw_embeds(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.draw_overlays(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         // A window's first frame presents as it is drawn, after this frame's update pass: noted
         // here, the status published for this frame says it is drawn, and no later pass has to
         // come for it.
@@ -2806,18 +2801,13 @@ impl Widget for DesktopSurface {
 impl DesktopSurface {
     /// The arrival hints, the cards of apps that stopped answering, the banners and the centre over
     /// everything the shell draws.
-    fn draw_overlays(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw_overlays(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.arrival_hints
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
         self.hung_apps
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
     }
 }
 

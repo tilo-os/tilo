@@ -579,14 +579,9 @@ impl Widget for Leaf {
     fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: taffy::NodeId, _: vello::kurbo::Point) {
         self.capture("apply");
     }
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut tilo_ui::TextRenderer,
-        _: &tilo_ui::Theme,
-        _: &tilo_ui::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_, _, _, _, mut env) = ctx.parts();
         self.capture("draw");
     }
     fn handle_event(
@@ -784,22 +779,17 @@ impl Widget for Root {
     fn apply_layout(&mut self, t: &taffy::TaffyTree<()>, n: taffy::NodeId, o: vello::kurbo::Point) {
         self.0.apply_layout(t, n, o);
     }
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        renderer: &mut tilo_ui::TextRenderer,
-        theme: &tilo_ui::Theme,
-        presence: &tilo_ui::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, renderer, theme, mut env) = ctx.parts();
         assert!(
-            presence.permits(&tilo_ui::permissions::PermissionScope::workspace(
+            env.permits(&tilo_ui::permissions::PermissionScope::workspace(
                 tilo_ui::permissions::ActionKind::Undoable
             )) == EXPECTED_WRITE.get(),
             "draw received outer authority"
         );
         self.mark("draw-permissions");
-        self.0.draw(scene, transform, renderer, theme, presence);
+        self.0.draw(&mut crate::draw::DrawCtx::new(scene, transform, renderer, theme, env.clone()));
     }
     fn handle_event(
         &mut self,
@@ -1314,13 +1304,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                     presence.with_permissions(
                         tilo_ui::permissions::PermissionContext::permissive(),
                         || {
-                            tile.draw(
-                                &mut vello::Scene::new(),
-                                vello::kurbo::Affine::IDENTITY,
-                                &mut renderer,
-                                &tilo_ui::Theme::dark(),
-                                &presence,
-                            );
+                            tile.draw(&mut crate::draw::DrawCtx::new(&mut vello::Scene::new(), vello::kurbo::Affine::IDENTITY, &mut renderer, &tilo_ui::Theme::dark(), presence.draw_env()));
                         },
                     );
                 }
@@ -1968,15 +1952,10 @@ impl Widget for ReplacingHost {
         self.0
             .apply_layout(tree, tree.children(node).unwrap()[0], origin);
     }
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text: &mut tilo_ui::TextRenderer,
-        theme: &tilo_ui::Theme,
-        presence: &tilo_ui::PresenceCtx,
-    ) {
-        self.0.draw(scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.0.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
     fn name(&self) -> &'static str {
         "ReplacingHost"
@@ -2014,15 +1993,10 @@ impl Widget for SameNameUnregisteredWrapper {
     ) {
         self.0.apply_layout(tree, node, origin);
     }
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text: &mut tilo_ui::TextRenderer,
-        theme: &tilo_ui::Theme,
-        presence: &tilo_ui::PresenceCtx,
-    ) {
-        self.0.draw(scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.0.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
     fn name(&self) -> &str {
         self.0.name()

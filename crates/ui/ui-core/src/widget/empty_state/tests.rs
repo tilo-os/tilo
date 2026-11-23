@@ -30,7 +30,7 @@ fn draw(w: &mut dyn Widget) -> Scene {
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    w.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
     scene
 }
 
@@ -151,13 +151,7 @@ tilo_test_env::scenario! {
                 .with_action("Try again");
             state.apply_layout_external(rect);
             let mut scene = Scene::new();
-            state.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut renderer,
-                &theme,
-                &PresenceCtx::default(),
-            );
+            state.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &theme, PresenceCtx::default().draw_env()));
             let action = state.action_rect();
             assert!(rect.contains(action.center()));
             let action_style = theme

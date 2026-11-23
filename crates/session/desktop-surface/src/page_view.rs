@@ -348,14 +348,9 @@ impl Widget for PageView {
         clippy::arithmetic_side_effects,
         reason = "a page's size and the tile's box are finite, and a scale that is not is refused above"
     )]
-    fn draw(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // The page's own background is drawn with it; what shows around it is
         // the tile's.
         scene.fill(

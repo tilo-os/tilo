@@ -21,13 +21,7 @@ fn opened(title: &str) -> OpenedBy {
 }
 
 fn draw(bar: &mut TabBar, tr: &mut TextRenderer, theme: &Theme) {
-    bar.draw(
-        &mut Scene::new(),
-        Affine::IDENTITY,
-        tr,
-        theme,
-        &PresenceCtx::default(),
-    );
+    bar.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, tr, theme, PresenceCtx::default().draw_env()));
 }
 
 tilo_test_env::scenario! {

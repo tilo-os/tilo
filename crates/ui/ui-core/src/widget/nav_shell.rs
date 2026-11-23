@@ -19,7 +19,6 @@ use crate::chrome::HeaderRowMetrics;
 use crate::icons::Icon;
 use crate::local_state::LocalBinding;
 use crate::platform::{HostShortcut, PlatformConventions};
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
@@ -2767,7 +2766,7 @@ struct Frame<'a> {
     transform: Affine,
     text: &'a mut TextRenderer,
     theme: &'a Theme,
-    presence: &'a PresenceCtx,
+    env: &'a crate::draw::DrawEnv<'a>,
 }
 
 impl Frame<'_> {
@@ -2779,7 +2778,7 @@ impl Frame<'_> {
                 self.transform,
                 self.text,
                 theme,
-                self.presence,
+                self.env,
             );
         }
     }
@@ -3016,34 +3015,24 @@ impl Widget for NavShell {
             || self.laid_out_parts.iter().any(part_dirty)
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.paint(&mut Frame {
             scene,
             transform,
             text: text_renderer,
             theme,
-            presence,
+            env,
         });
         self.tick(theme);
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         for child in self.children_mut() {
-            child.draw_overlay(scene, transform, text_renderer, theme, presence);
+            child.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
     }
 

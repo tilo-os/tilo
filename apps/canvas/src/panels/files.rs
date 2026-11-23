@@ -26,7 +26,7 @@ use ui::vello::Scene;
 use ui::vello::kurbo::Affine;
 use ui::widget::{AppModel, EventCtx, ModelPath, Widget};
 use ui::winit::event::WindowEvent;
-use ui::{PresenceCtx, TextRenderer, Theme};
+use ui::{TextRenderer, Theme};
 
 use crate::actions::{NewArtwork, OpenArtwork};
 use crate::document::{self, ArtworkFile, DeviceArtworkRecents, EXTENSION, Recent, RecentArtworks};
@@ -679,18 +679,13 @@ impl ui::widget::Decorator for FileChooser {
         self.content.sync(state, path);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.take();
         self.poll();
         self.content
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
     }
 
     /// The window's keys work wherever the focus is (a tool just clicked

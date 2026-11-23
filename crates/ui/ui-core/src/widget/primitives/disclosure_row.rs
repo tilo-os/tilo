@@ -14,7 +14,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::icons::Icon;
 use crate::motion::{Disclose, Presence};
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::EffectiveMotion;
@@ -881,14 +881,9 @@ impl Widget for DisclosureRow {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         self.paint_header(&mut ctx);
         self.paint_separator(&mut ctx);
@@ -898,8 +893,7 @@ impl Widget for DisclosureRow {
                 scene,
                 transform,
                 text_renderer,
-                theme,
-                presence,
+                theme,&env,
             );
         }
         let progress = self.progress();
@@ -925,8 +919,7 @@ impl Widget for DisclosureRow {
             scene,
             transform,
             text_renderer,
-            theme,
-            presence,
+            theme,&env,
         );
         scene.pop_layer();
     }

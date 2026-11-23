@@ -100,15 +100,11 @@ impl VideoEditorApp {
         clippy::many_single_char_names,
         reason = "the paint pass's shorthands: colours c, regions r, and the t/x/h of each tick and mark"
     )]
-    pub(super) fn draw_timeline(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        r: &Regions,
-    ) {
+    pub(super) fn draw_timeline(&self, ctx: &mut tilo_ui::DrawCtx<'_>, r: &Regions) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, tf, tr, theme, mut env) = ctx.parts();
+        let fallback_presence = Default::default();
+        let presence = env.presence.unwrap_or(&fallback_presence);
         let c = &theme.tokens.colors;
         let ground = c.surfaces.content;
         // The timeline stands on the window's own ground; the divider the
@@ -151,8 +147,7 @@ impl VideoEditorApp {
         let (tag, tag_rect) = self.playhead_tag(r, tr, theme);
         let mut claimed: Vec<(f64, f64)> = vec![(tag_rect.x0, tag_rect.x1)];
         let peer_name = caption(theme);
-        let peer_tags = crate::presence::place_peer_tags(
-            presence,
+        let peer_tags = crate::presence::place_peer_tags(&mut tilo_ui::DrawCtx::new(scene, tf, tr, theme, env.clone()),
             r.tracks,
             &claimed,
             |t| self.time_to_x(t, &r.tracks),
@@ -507,7 +502,7 @@ impl VideoEditorApp {
         // greyed track, which is exactly when knowing someone else is on a locked clip
         // matters.
         crate::presence::draw_peer_clips(
-            &mut crate::presence::PeerPaintCtx::new(scene, tf, tr, theme, presence),
+            &mut crate::presence::PeerPaintCtx::new(presence),
             &drawn,
             Rect::new(r.tracks.x0, r.tracks.y0, r.tracks.x1, r.timeline.y1),
         );
@@ -571,7 +566,7 @@ impl VideoEditorApp {
         // the same frame reads as an addition to it rather than as something
         // that replaced it.
         crate::presence::draw_peer_playheads(
-            &mut crate::presence::PeerPaintCtx::new(scene, tf, tr, theme, presence),
+            &mut crate::presence::PeerPaintCtx::new(presence),
             &peer_tags,
             self.playhead_bottom(r),
         );

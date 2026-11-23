@@ -131,7 +131,7 @@ fn draw_chrome(frame: &mut FrameHarness) {
     let presence = ui::presence::PresenceCtx::default();
     let mut scene = ui::vello::Scene::new();
     let mut chrome = frame.root_mut::<DesktopChrome>();
-    chrome.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+    chrome.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme,&presence.draw_env());
 }
 
 /// What a case leaves the feed as, before a frame.
@@ -268,7 +268,7 @@ fn draw_shell(shell: &mut FrameHarness) {
     let presence = ui::presence::PresenceCtx::default();
     let mut scene = ui::vello::Scene::new();
     let mut surface = shell.root_mut::<DesktopSurface>();
-    surface.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+    surface.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme,&presence.draw_env());
 }
 
 /// The pill the hint `unlearned` paints over `tree`, as the chrome drives it, with the strip's own

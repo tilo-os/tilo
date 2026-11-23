@@ -884,14 +884,9 @@ impl ui::widget::Decorator for HostedWindow {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: ui::kurbo::Affine,
-        text: &mut ui::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         // What the window's first frames show, for its launch timing: the instance's own
         // tree, or the loading state before it arrived.
         let showing_tree = self
@@ -906,7 +901,7 @@ impl ui::widget::Decorator for HostedWindow {
         }
         self.drawn = true;
         self.content_mut()
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
     }
 
     fn needs_idle_sync(&self) -> bool {

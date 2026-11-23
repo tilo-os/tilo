@@ -457,14 +457,9 @@ impl Widget for DesktopBackdrop {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.paint_backdrop(scene, transform, theme);
         if let Some(child) = &mut self.child {
             ui::widget::draw_child(
@@ -472,8 +467,7 @@ impl Widget for DesktopBackdrop {
                 scene,
                 transform,
                 text_renderer,
-                theme,
-                presence,
+                theme,&env,
             );
         }
     }
@@ -575,8 +569,7 @@ mod tests {
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::default(),
+            &Theme::dark(),&PresenceCtx::default().draw_env().draw_env(),
         );
     }
 

@@ -111,8 +111,7 @@ fn draw(case: &Case) -> (TopBarChrome, usize) {
         &mut scene,
         Affine::IDENTITY,
         &mut text,
-        &theme,
-        &PresenceCtx::default(),
+        &theme,&PresenceCtx::default().draw_env().draw_env(),
     );
     // The glyphs the ask's words set, counted where the question starts: a question cut with an
     // ellipsis sets fewer glyphs than the whole one, and no pill at all leaves none.

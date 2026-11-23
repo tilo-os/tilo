@@ -269,14 +269,9 @@ impl Widget for PromptBody {
         self.place_field();
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         let c = &theme.tokens.colors;
         let width = crate::num::f32_of_f64(self.rect.width().max(1.0));
         let gap = Self::gap(theme);
@@ -312,7 +307,7 @@ impl Widget for PromptBody {
                 &theme.text(TextRole::Label),
             );
         }
-        self.input.draw_child(scene, transform, tr, theme, presence);
+        self.input.draw_child(scene, transform, tr, theme,&env);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -449,13 +444,7 @@ mod tests {
                 let mut text = TextRenderer::new();
                 text.set_text_scale(scale);
                 let theme = Theme::high_contrast().with_text_scale(scale);
-                body.draw(
-                    &mut Scene::new(),
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &PresenceCtx::empty(),
-                );
+                body.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, PresenceCtx::empty().draw_env()));
                 let (_, caption) =
                     text.measure_style(&body.caption, Some(240.0), &theme.text(TextRole::Body));
                 let (_, label) =

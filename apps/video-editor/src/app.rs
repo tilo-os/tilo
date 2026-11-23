@@ -5614,15 +5614,11 @@ impl VideoEditorApp {
 // Widget impl
 // ==========================================================================
 impl VideoEditorApp {
-    fn draw_inspector_editors(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        regions: &Regions,
-    ) {
+    fn draw_inspector_editors(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, regions: &Regions) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
+        let fallback_presence = Default::default();
+        let presence = env.presence.unwrap_or(&fallback_presence);
         if !self.inspector_is_visible(regions) {
             return;
         }
@@ -5635,15 +5631,15 @@ impl VideoEditorApp {
         }
         if let (Some((_, dropdown)), Some(rect)) = (self.font_picker.as_mut(), layout.title_font) {
             dropdown.apply_layout_external(rect);
-            dropdown.draw_child(scene, transform, tr, theme, presence);
+            dropdown.draw_child(scene, transform, tr, theme,&env);
         }
         if let (Some((media_id, field)), Some(rect)) = (self.title_edit.as_mut(), layout.title_text)
         {
             let media_id = *media_id;
             field.apply_layout_external(rect.inset(-4.0));
-            field.draw_child(scene, transform, tr, theme, presence);
+            field.draw_child(scene, transform, tr, theme,&env);
             crate::presence::draw_peer_field_carets(
-                &mut crate::presence::PeerPaintCtx::new(scene, transform, tr, theme, presence),
+                &mut crate::presence::PeerPaintCtx::new(presence),
                 crate::presence::FIELD_TITLE_WORDS,
                 media_id,
                 |byte| field.caret_rect(theme, byte),
@@ -5661,7 +5657,7 @@ impl VideoEditorApp {
             .map(|(_, row)| self.marker_edit_rect(*row));
         if let (Some((_, label)), Some(rect)) = (self.marker_rename.as_mut(), marker_row) {
             label.apply_layout_external(rect);
-            label.draw_child(scene, transform, tr, theme, presence);
+            label.draw_child(scene, transform, tr, theme,&env);
         }
     }
 }
@@ -5875,14 +5871,9 @@ impl Widget for VideoEditorApp {
         self.rect = ui::widget::placed(layout, origin);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         let r = self.prepare_draw_frame(theme);
         self.strips.begin_frame();
         // A key (B, Ctrl+I, S) or a render's progress changes what the bar
@@ -5893,7 +5884,7 @@ impl Widget for VideoEditorApp {
         #[cfg(feature = "samples")]
         let staged = self.capture.presence.clone();
         #[cfg(feature = "samples")]
-        let presence: &PresenceCtx = staged.as_ref().unwrap_or(presence);
+        let presence: &PresenceCtx = staged.as_ref().unwrap_or(&fallback_presence);
         // Keep the inspector scroll within the current selection's content.
         let max_scroll = self.inspector_max_scroll(&r);
         self.inspector_scroll = self.inspector_scroll.clamp(0.0, max_scroll);
@@ -5934,7 +5925,7 @@ impl Widget for VideoEditorApp {
         if !r.inspector_overlay && r.inspector.width() > 1.0 {
             self.draw_inspector(scene, transform, tr, theme, &r);
         }
-        self.draw_timeline(scene, transform, tr, theme, presence, &r);
+        self.draw_timeline(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()), &r);
         if r.inspector_overlay && self.inspector_flap.reveal() > 0.001 {
             self.draw_inspector(scene, transform, tr, theme, &r);
         }
@@ -5958,15 +5949,15 @@ impl Widget for VideoEditorApp {
         // Live bin→timeline drag: drop-track highlight, insertion marker + ghost.
         self.draw_bin_drag(scene, transform, tr, theme, &r);
         // Inline rename field, drawn over the bin item's name band.
-        self.draw_bin_rename(scene, transform, tr, theme, presence, &r);
+        self.draw_bin_rename(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()), &r);
         // Inline inspector editors paint after the panel so carets and open
         // pickers float over its body.
-        self.draw_inspector_editors(scene, transform, tr, theme, presence, &r);
+        self.draw_inspector_editors(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()), &r);
         if self.presentation.export_open {
             self.draw_export_modal(scene, transform, tr, theme, &r);
         }
         if self.goto_entry.is_some() {
-            self.draw_goto(scene, transform, tr, theme, presence, &r);
+            self.draw_goto(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()), &r);
         }
         if self.navigation.help_open {
             self.draw_help_sheet(scene, transform, tr, theme, &r);
@@ -7764,15 +7755,9 @@ impl VideoEditorApp {
 
     /// A value that cannot be read keeps the field open and says so under it in danger
     /// ink, rather than closing and silently going nowhere.
-    fn draw_goto(
-        &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        r: &Regions,
-    ) {
+    fn draw_goto(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, r: &Regions) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, tf, tr, theme, mut env) = ctx.parts();
         if self.goto_entry.is_none() {
             return;
         }
@@ -7794,7 +7779,7 @@ impl VideoEditorApp {
         );
         if let Some(field) = self.goto_entry.as_mut() {
             field.apply_layout_external(l.entry);
-            field.draw_child(scene, tf, tr, &panel, presence);
+            field.draw_child(scene, tf, tr, &panel,&env);
         }
         // The field says only what is wrong with what was typed; the key that
         // takes it is the key people already press in a text field.

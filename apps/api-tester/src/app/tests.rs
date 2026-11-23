@@ -1365,8 +1365,7 @@ fn long_navigation_labels_fit_the_shared_rows() {
                 &mut scene,
                 vello::kurbo::Affine::IDENTITY,
                 text,
-                theme,
-                &ui::presence::PresenceCtx::default(),
+                theme,&ui::presence::PresenceCtx::default().draw_env().draw_env(),
             );
             // The list paints the rows near the viewport and clips the rest, so a label must
             // stay inside the row that holds it.

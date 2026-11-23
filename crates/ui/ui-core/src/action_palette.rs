@@ -17,7 +17,6 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::presence::PresenceCtx;
 use crate::search::{
     Facet, FacetFilter, FieldWeight, ListIndex, PagePoll, PendingToken, ScopeDecl, SearchCursor,
     SearchProvider, SearchQuery, SearchResult,
@@ -2544,18 +2543,13 @@ impl ActionPalette {
     }
 
     /// Draw the field + results overlay. `layout` must have run this frame.
-    pub fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let presented = self.is_presented();
         self.appear.follow(presented, theme.motion());
         if presented && self.confirm.is_some() {
-            self.draw_confirmation(scene, transform, text_renderer, theme, presence);
+            self.draw_confirmation(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
             return;
         }
         self.paint_scrim(scene, transform, theme);
@@ -2565,17 +2559,17 @@ impl ActionPalette {
             return;
         };
         self.field
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
         self.draw_facet_chips(scene, transform, text_renderer, theme);
         let dimmed = self.begin_stale_dim(scene, transform, theme);
         self.results
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
         if dimmed {
             scene.pop_layer();
         }
         if self.controls_node.is_some() {
             self.controls
-                .draw_child(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme,&env);
         }
         pose.end(scene);
     }

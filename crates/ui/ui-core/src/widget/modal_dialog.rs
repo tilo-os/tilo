@@ -45,7 +45,6 @@ use winit::keyboard::{Key, NamedKey};
 use crate::icons::Icon;
 use crate::interaction::InteractionEnvironment;
 use crate::platform::{DialogActionOrder, PlatformConventions};
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -1961,20 +1960,15 @@ impl Widget for ModalDialog<dyn Widget> {
         self.remeasure = false;
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if !self.appear.is_drawn() {
             return;
         }
         // Each change starts on the motion the person allows, which only the theme says.
         self.appear.follow(self.up(), theme.motion());
-        if let Some(window) = presence.viewport.get() {
+        if let Some(window) = env.viewport {
             self.window = window;
             self.presented = true;
         }
@@ -2058,8 +2052,7 @@ impl Widget for ModalDialog<dyn Widget> {
                 scene,
                 transform * Affine::translate(shift),
                 text_renderer,
-                &on_panel,
-                presence,
+                &on_panel,&env,
             );
         }
         if layout.body_overflows {
@@ -2074,13 +2067,13 @@ impl Widget for ModalDialog<dyn Widget> {
         let shift = self.content_target() - self.content_origin;
         let content_transform = transform * Affine::translate(shift);
         self.content
-            .draw_child(scene, content_transform, text_renderer, &on_panel, presence);
+            .draw_child(scene, content_transform, text_renderer, &on_panel,&env);
         if layout.body_overflows {
             scene.pop_layer();
         }
         self.paint_scroll_edges(scene, transform, theme);
         self.content
-            .draw_overlay(scene, content_transform, text_renderer, &on_panel, presence);
+            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         pose.end(scene);
     }
 
@@ -2512,16 +2505,11 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         self.as_dyn_mut().apply_layout(taffy, node, origin);
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.as_dyn_mut()
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
+            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

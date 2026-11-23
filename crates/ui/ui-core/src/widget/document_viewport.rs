@@ -18,7 +18,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
@@ -1157,14 +1157,9 @@ impl Widget for DocumentViewport {
         self.publish_zoom();
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.zoom_requested() {
             self.apply_requested_zoom();
             self.publish_zoom();
@@ -1188,7 +1183,7 @@ impl Widget for DocumentViewport {
         let rect = self.rect;
         let content = &mut self.content;
         let mut draw_content = |scene: &mut Scene, at: Affine| match content {
-            Content::Widget(c) => c.draw_child(scene, at, text_renderer, theme, presence),
+            Content::Widget(c) => c.draw_child(scene, at, text_renderer, theme,&env),
             Content::Draw(draw) => draw(scene, at, text_renderer, theme, rect),
         };
         let canvas_xf = compose(transform, self.state.content_to_canvas());

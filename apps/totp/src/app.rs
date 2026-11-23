@@ -20,7 +20,7 @@ use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::framework::{Dispatcher, Live};
 use ui::paint::PaintCtx;
 use ui::portal::{ContentsOutcome, FileFilter, PickRequest};
-use ui::presence::PresenceCtx;
+
 use ui::secrets::SecretStore;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -1039,14 +1039,9 @@ impl Widget for AuthenticatorApp {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         self.place(&mut ctx);
         self.paint_banner(&mut ctx);

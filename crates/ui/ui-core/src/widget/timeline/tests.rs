@@ -210,13 +210,7 @@ tilo_test_env::scenario! {
         let theme = Theme::dark();
         let mut scene = vello::Scene::new();
         let mut text = TextRenderer::new();
-        timeline.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &crate::presence::PresenceCtx::empty(),
-        );
+        timeline.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, crate::presence::PresenceCtx::empty().draw_env()));
         assert!(timeline.painted() > 0, "the week shows its events");
         assert!(
             timeline.painted() < 2_000,

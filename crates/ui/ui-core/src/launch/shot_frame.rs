@@ -162,8 +162,7 @@ impl ShotFrame {
                 &mut scene,
                 Affine::IDENTITY,
                 &mut self.text,
-                &self.theme,
-                &self.presence,
+                &self.theme,&self.presence.draw_env(),
             )
         });
         self.presence.pop_viewport(previous);
@@ -178,13 +177,7 @@ impl ShotFrame {
             crate::backdrop::BackdropRecording::continuing(std::mem::take(&mut self.backdrop));
         crate::backdrop::layer_scene(scene, 0);
         let previous = self.presence.push_viewport(self.window());
-        widget.draw_overlay(
-            scene,
-            Affine::IDENTITY,
-            &mut self.text,
-            &self.theme,
-            &self.presence,
-        );
+        widget.draw_overlay(&mut crate::draw::DrawCtx::new(scene, Affine::IDENTITY, &mut self.text, &self.theme, self.presence.draw_env()));
         self.presence.pop_viewport(previous);
         self.backdrop = recording.finish();
     }
@@ -192,13 +185,13 @@ impl ShotFrame {
     /// Paint app-owned floating surfaces onto `scene`, in the order the live compositor stacks them
     /// above the window.
     pub fn draw_floating_surfaces(&mut self, widget: &mut dyn Widget, scene: &mut Scene) {
-        widget.draw_floating_surfaces(
+        widget.draw_floating_surfaces(&mut crate::draw::DrawCtx::new(
             scene,
             Affine::IDENTITY,
             &mut self.text,
             &self.theme,
-            &self.presence,
-        );
+            self.presence.draw_env(),
+        ));
     }
 }
 

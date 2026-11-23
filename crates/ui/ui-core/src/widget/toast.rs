@@ -1837,14 +1837,9 @@ impl crate::widget::Widget for NoticeLayer {
         self.rect == Rect::ZERO
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.reduce_motion = theme.reduce_motion;
         let now = crate::time::now();
         let shown = {

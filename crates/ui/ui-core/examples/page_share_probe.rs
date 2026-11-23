@@ -521,8 +521,7 @@ impl Window {
             &mut scene,
             Affine::IDENTITY,
             &mut self.text,
-            &self.theme,
-            &self.presence,
+            &self.theme,&self.presence.draw_env(),
         );
     }
 

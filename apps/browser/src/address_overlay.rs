@@ -254,14 +254,9 @@ impl Widget for AddressSuggestions {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if !self.items.is_empty() {
             self.list.paint(scene, transform, text_renderer, theme);
         }
@@ -486,13 +481,7 @@ mod tests {
         w.set_anchor(FIELD, WINDOW);
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
-        w.draw_overlay(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
+        w.draw_overlay(&mut tilo_ui::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &Theme::dark(), PresenceCtx::empty().draw_env()));
         w
     }
 
@@ -564,13 +553,7 @@ mod tests {
         hidden.set_anchor(FIELD, WINDOW);
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
-        hidden.draw_overlay(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
+        hidden.draw_overlay(&mut tilo_ui::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &Theme::dark(), PresenceCtx::empty().draw_env()));
         assert_eq!(
             scene.encoding().draw_tags.len(),
             0,

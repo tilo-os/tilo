@@ -403,14 +403,9 @@ impl Widget for PermissionPrompt {
         self.apply_layout_helper();
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         text_renderer.security_surface(|text_renderer| {
             let radius = f64::from(theme.tokens.radii.control);
             let body = RoundedRect::from_rect(self.rect, radius);
@@ -798,13 +793,7 @@ mod tests {
             let height = prompt.preferred_height(&mut text, &theme);
             assert!(height > PROMPT_HEIGHT, "the complete explanation must wrap");
             prompt.set_rect(Rect::new(16.0, 16.0, 784.0, 16.0 + height));
-            prompt.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &PresenceCtx::default(),
-            );
+            prompt.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, PresenceCtx::default().draw_env()));
             assert!(prompt.get_rect().contains(prompt.allow_rect().center()));
             assert!(prompt.get_rect().contains(prompt.deny_rect().center()));
             let node = prompt.accessibility().unwrap();

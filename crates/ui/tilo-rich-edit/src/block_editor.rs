@@ -8603,16 +8603,11 @@ impl Widget for BlockEditor {
 
     /// The editor's popovers, in the window's top layer — unless its owner
     /// painted them itself this frame, inside its own scroll and clip.
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         for child in self.children_mut() {
-            child.draw_overlay(scene, transform, text_renderer, theme, presence);
+            child.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
         if !self.popovers_painted {
             self.paint_popovers(scene, transform, text_renderer, theme);
@@ -8938,14 +8933,11 @@ impl Widget for BlockEditor {
         clippy::cast_precision_loss,
         reason = "one cohesive paint pass uses aligned caches and bounded viewport arithmetic"
     )]
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        let fallback_presence = ui::presence::PresenceCtx::default();
+        let presence = env.presence.unwrap_or(&fallback_presence);
         #[cfg(test)]
         let setup_probe = ui::profiling::frame_probe::span("block_setup");
         self.paint_references(theme);
@@ -8956,7 +8948,7 @@ impl Widget for BlockEditor {
                 self.mention_roster = roster;
                 self.follow_mention_caret();
             }
-            if let Some(viewport) = presence.viewport.get() {
+            if let Some(viewport) = env.viewport {
                 self.overlay_viewport = Some(viewport);
             }
         }
@@ -9321,14 +9313,7 @@ impl Widget for BlockEditor {
                     theme,
                 );
                 if preceding.is_none() {
-                    table.draw_projected_focus(
-                        ctx.scene,
-                        ctx.transform,
-                        ctx.text_renderer,
-                        theme,
-                        presence,
-                        self.caret_paint_suppressed,
-                    );
+                    table.draw_projected_focus(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()), self.caret_paint_suppressed);
                     if let Some(painted) = table.projected_focus_paint() {
                         self.table_focus_paint.insert(b.id.clone(), painted);
                     }
@@ -9378,8 +9363,7 @@ impl Widget for BlockEditor {
                     ctx.scene,
                     ctx.transform,
                     ctx.text_renderer,
-                    theme,
-                    presence,
+                    theme,&env,
                 );
                 if self.focused == Some(idx)
                     || Rect::new(rect.x0, top, rect.x1, rect.y1).contains(self.last_mouse_pos)
@@ -9388,15 +9372,13 @@ impl Widget for BlockEditor {
                         ctx.scene,
                         ctx.transform,
                         ctx.text_renderer,
-                        theme,
-                        presence,
+                        theme,&env,
                     );
                     control.add_column.draw_child(
                         ctx.scene,
                         ctx.transform,
                         ctx.text_renderer,
-                        theme,
-                        presence,
+                        theme,&env,
                     );
                 }
                 if let Some(parts) = table_parts.as_mut() {
@@ -9707,7 +9689,7 @@ impl Widget for BlockEditor {
             }
         }
 
-        let document_selections = self.resolve_document_selections(presence);
+        let document_selections = self.resolve_document_selections(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         for (i, b) in self.blocks.iter().enumerate() {
             if painted[i] {
                 self.draw_block_presence(i, b, &document_selections, &mut ctx);
@@ -9730,7 +9712,7 @@ impl Widget for BlockEditor {
                 {
                     image
                         .button_mut()
-                        .draw_child(scene, transform, text_renderer, theme, presence);
+                        .draw_child(scene, transform, text_renderer, theme,&env);
                 }
             }
             if let Some(handle) = self.image_resize_handle(index) {
@@ -9779,7 +9761,7 @@ impl Widget for BlockEditor {
             self.paint_damage.record(
                 self.paint_extent(),
                 Some(ui::widget::paint_damage::PaintFrame::new(
-                    vec![place, presence.viewport.get().unwrap_or(place)],
+                    vec![place, env.viewport.unwrap_or(place)],
                     transform,
                     theme,
                     suffix,

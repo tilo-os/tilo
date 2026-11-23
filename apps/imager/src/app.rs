@@ -18,7 +18,7 @@ use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::local_state::LocalState;
 use ui::portal::{FileFilter, PickRequest};
-use ui::presence::PresenceCtx;
+
 use ui::text_render::{ParagraphAlign, TextRenderer};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
@@ -3310,20 +3310,15 @@ impl Widget for ImagerApp {
         self.composed.apply_layout(taffy, node, origin);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.export_dialog.is_open() {
             self.export_dialog
                 .layout_in(self.composed.rect(), theme, text_renderer);
         }
         if let Some(composed) = self.composed.element_mut() {
-            composed.draw_child(scene, transform, text_renderer, theme, presence);
+            composed.draw_child(scene, transform, text_renderer, theme,&env);
         }
     }
 
@@ -3368,17 +3363,12 @@ impl Widget for ImagerApp {
         }
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.export_dialog.is_open() {
             self.export_dialog
-                .draw_detached(scene, transform, text, theme, presence);
+                .draw_detached(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         }
     }
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {

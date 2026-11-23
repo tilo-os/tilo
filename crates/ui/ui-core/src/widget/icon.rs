@@ -180,14 +180,9 @@ impl Widget for IconWidget {
 
     crate::rect_geometry!(measured);
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _text_renderer, theme, mut env) = ctx.parts();
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
@@ -231,7 +226,7 @@ mod tests {
         let mut scene = Scene::new();
         let edge = f64::from(w.size.px(&theme));
         w.rect = Rect::new(0.0, 0.0, edge, edge);
-        w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        w.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
         scene
     }
 
@@ -259,7 +254,7 @@ mod tests {
                 let presence = PresenceCtx::default();
                 let mut scene = Scene::new();
                 let mut w = IconWidget::new(Icon::Home).sized(IconSize::Large);
-                w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                w.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
                 let tags = scene.encoding().draw_tags.len();
                 assert_eq!(tags, 0, "no draw work for a zero-size icon");
             }

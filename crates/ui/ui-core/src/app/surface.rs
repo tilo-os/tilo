@@ -1879,14 +1879,9 @@ mod tests {
             taffy.fill_leaf(nodes, self)
         }
         crate::rect_geometry!();
-        fn draw(
-            &mut self,
-            scene: &mut Scene,
-            transform: Affine,
-            _text: &mut TextRenderer,
-            theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
+        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _text, theme, mut env) = ctx.parts();
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -2460,13 +2455,7 @@ mod tests {
         embedded.apply_layout(&taffy, node, Point::new(100.0, 50.0));
         let mut text = TextRenderer::new();
         let mut scene = Scene::new();
-        embedded.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::default(),
-            &PresenceCtx::empty(),
-        );
+        embedded.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::default(), PresenceCtx::empty().draw_env()));
         assert!(!scene.encoding().is_empty(), "the app paints in the host");
 
         let modifiers = winit::event::Modifiers::default();
@@ -2535,13 +2524,7 @@ mod tests {
             )
             .unwrap();
         embedded.apply_layout(&taffy, node, Point::new(100.0, 50.0));
-        embedded.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::default(),
-            &PresenceCtx::empty(),
-        );
+        embedded.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::default(), PresenceCtx::empty().draw_env()));
 
         fn find(node: &crate::a11y::AccessNode, name: &str) -> Option<crate::a11y::AccessNode> {
             if node.name.as_deref() == Some(name) {

@@ -5028,14 +5028,9 @@ impl Widget for TextInput {
         taffy::Size { width, height }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.last_caret_width = theme.caret_width;
         self.ml_caret = None;
         self.reduce_motion = theme.reduce_motion;
@@ -5049,7 +5044,7 @@ impl Widget for TextInput {
         // Fields that are not collecting a mention read no roster at all.
         if self.is_focused && self.completion().mentions() {
             self.mention_roster =
-                crate::widget::mention_picker::merged_roster(presence, &self.mention_candidates);
+                crate::widget::mention_picker::merged_roster(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()), &self.mention_candidates);
         } else {
             self.mention_roster.clear();
         }
@@ -5069,7 +5064,7 @@ impl Widget for TextInput {
                 self.drop_shaped_layouts();
                 self.draw_multiline_body(scene, transform, text_renderer, theme, &shape);
             } else {
-                let visible = presence.viewport.get().map_or(self.rect, |viewport| {
+                let visible = env.viewport.map_or(self.rect, |viewport| {
                     Rect::new(
                         self.rect.x0,
                         self.rect.y0.max(viewport.y0),
@@ -5086,7 +5081,7 @@ impl Widget for TextInput {
             self.draw_pending_token(scene, transform, theme);
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
-            self.draw_peers_and_permission_scrim(scene, transform, text_renderer, theme, presence);
+            self.draw_peers_and_permission_scrim(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
             #[cfg(test)]
             let _probe = crate::profiling::frame_probe::span("text.note");
             self.note_shown(transform, theme, text_renderer);
@@ -5173,7 +5168,7 @@ impl Widget for TextInput {
         if self.has_reveal_control() {
             self.refresh_reveal_control();
             self.reveal
-                .draw_child(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme,&env);
         }
         if own_text {
             #[cfg(test)]
@@ -5185,7 +5180,7 @@ impl Widget for TextInput {
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
         }
-        self.draw_peers_and_permission_scrim(scene, transform, text_renderer, theme, presence);
+        self.draw_peers_and_permission_scrim(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -5834,23 +5829,11 @@ impl Widget for TextInput {
         Some((self.core.caret(), self.text.clone()))
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        Widget::draw_overlay(
-            &mut *self.context_menu,
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-        );
-        self.paint_completion(scene, transform, text_renderer, theme, presence);
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        Widget::draw_overlay(&mut *self.context_menu, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.paint_completion(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 }
 
@@ -5956,6 +5939,33 @@ impl crate::presence::capability::PublishesPresence for TextInput {
             )
         }
     }
+
+    fn written_place<'a>(
+        &'a self,
+        theme: &'a Theme,
+    ) -> Option<crate::presence::capability::WrittenPlace<'a>> {
+        let (region, block) = self.edits.as_ref().filter(|_| !self.holds_secret())?;
+        let selected = self
+            .is_focused
+            .then(|| self.selection_anchor_focus_or_caret());
+        Some(crate::presence::capability::WrittenPlace {
+            region: Some(region.as_str()),
+            block: block.as_str(),
+            text: std::borrow::Cow::Borrowed(self.text.as_str()),
+            edited: self.typing.last_edit(),
+            selected,
+            field: Some(self.accessible_name.as_str()),
+            place: Box::new(move |_, _, start, end| {
+                (
+                    self.selection_rects(theme, start, end),
+                    Some(
+                        crate::presence::LabeledCaret::within(self.caret_rect(theme, end), self.rect.y0)
+                            .among(self.selection_rects(theme, 0, self.text.len()), self.rect.x1),
+                    ),
+                )
+            }),
+        })
+    }
 }
 
 impl crate::widget::controls::ActionControls for TextInput {
@@ -6005,80 +6015,22 @@ impl TextInput {
     /// Whether anyone else is shown in this field now (a peer's caret, their
     /// selection, what they are typing): what a host that keeps the drawing
     /// it made of the field asks before keeping it.
-    pub(crate) fn shows_peers(&self, presence: &crate::presence::PresenceCtx) -> bool {
-        crate::presence::capability::presence_key(self)
-            .is_some_and(|key| presence.shows_anyone_at(&key))
-    }
 
-    fn draw_peers_and_permission_scrim(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.draw_written(scene, transform, text_renderer, theme, presence);
-        if let Some(key) = crate::presence::capability::presence_key(self) {
-            // Peer caret + selection reuse `caret_rect`/`selection_rect`, never a
-            // re-derived approximation. `transform` maps the local rect to the scene.
-
-            if presence.has_typing_marks() {
-                let now = crate::time::now();
-                for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
-                    let rect = self.selection_rect(theme, range.start, range.end);
-                    #[allow(
-                        clippy::arithmetic_side_effects,
-                        reason = "Affine*Point transform over f64 screen coordinates, no overflow/wrap semantics"
-                    )]
-                    let (p0, p1) = (
-                        transform * vello::kurbo::Point::new(rect.x0, rect.y0),
-                        transform * vello::kurbo::Point::new(rect.x1, rect.y1),
-                    );
-                    presence.draw_peer_typing(
-                        scene,
-                        theme,
-                        &user,
-                        &[(vello::kurbo::Rect::new(p0.x, p0.y, p1.x, p1.y), alpha)],
-                    );
-                }
-            }
-            if let Some(list) = presence.carets.get(&key) {
-                for (user, caret) in list {
-                    let name = presence.display_name(user);
-                    presence.draw_peer_caret_labeled(
-                        scene,
-                        theme,
-                        text_renderer,
-                        transform,
-                        user,
-                        &name,
-                        self.caret_rect(theme, *caret),
-                    );
-                }
-            }
-
-            if let Some(list) = presence.selections.get(&key) {
-                for (user, range) in list {
-                    for r in self.selection_rects(theme, range.start, range.end) {
-                        presence.draw_peer_selection(scene, theme, transform, user, r);
-                    }
-                }
-            }
-        }
-
+    fn draw_peers_and_permission_scrim(&self, ctx: &mut crate::draw::DrawCtx<'_>) {
         if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !presence.permits(&scope)
+            && !ctx.env.permits(&scope)
         {
             let r = self.rect;
-            let overlay = Self::PERMISSION_DENIED_OVERLAY;
-            scene.fill(
+            ctx.scene.fill(
                 vello::peniko::Fill::NonZero,
                 Affine::IDENTITY,
-                overlay,
+                Self::PERMISSION_DENIED_OVERLAY,
                 None,
                 &r,
             );
+        }
+        if let Some(overlay) = ctx.env.overlay {
+            overlay.paint_over(self, ctx.scene, ctx.transform, ctx.text_renderer, ctx.theme);
         }
     }
 

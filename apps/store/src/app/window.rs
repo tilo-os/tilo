@@ -9,7 +9,7 @@ use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Politeness, Role};
 use ui::framework::{Live, Publishes, RunMode, ViewCx};
 use ui::widget::{AppModel, Element, ModelPath, Widget};
-use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+use ui::{Theme, text_render::TextRenderer};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -259,29 +259,19 @@ impl Widget for StoreApp {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(root) = self.root.as_mut() {
-            root.draw_child(scene, transform, text_renderer, theme, presence);
+            root.draw_child(scene, transform, text_renderer, theme,&env);
         }
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(root) = self.root.as_mut() {
-            root.draw_overlay(scene, transform, text_renderer, theme, presence);
+            root.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
     }
 

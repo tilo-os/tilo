@@ -801,14 +801,9 @@ impl Widget for Toggle {
         clippy::cast_possible_truncation,
         reason = "widget rectangles are finite renderer coordinates already laid out as f32"
     )]
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let now = crate::motion::frame_now();
         let motion = theme.motion();
         self.motion = Some(motion);
@@ -856,9 +851,7 @@ impl Widget for Toggle {
                 &self.label_style,
             );
         }
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self, scene, transform, theme, presence,
-        );
+        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1073,13 +1066,7 @@ mod tests {
                     toggle.control.rect = target;
                     let mut actual = Scene::new();
                     let mut text = TextRenderer::new();
-                    toggle.draw(
-                        &mut actual,
-                        Affine::IDENTITY,
-                        &mut text,
-                        &theme,
-                        &crate::presence::PresenceCtx::default(),
-                    );
+                    toggle.draw(&mut crate::draw::DrawCtx::new(&mut actual, Affine::IDENTITY, &mut text, &theme, crate::presence::PresenceCtx::default().draw_env()));
 
                     let interact = Interaction {
                         hovered,
@@ -1317,13 +1304,7 @@ mod tests {
             let theme = Theme::dark();
             let mut t = Toggle::bound("wifi", "wifi");
             let frame = |t: &mut Toggle| {
-                t.draw(
-                    &mut Scene::new(),
-                    Affine::IDENTITY,
-                    &mut TextRenderer::new(),
-                    &theme,
-                    &crate::presence::PresenceCtx::empty(),
-                );
+                t.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &theme, crate::presence::PresenceCtx::empty().draw_env()));
                 t.mark_drawn();
             };
             assert!(t.needs_redraw(), "never painted");
@@ -1344,13 +1325,7 @@ mod tests {
                 assert!(!t.needs_redraw(), "and rests once drawn");
             }
             t.control.is_hovered = false;
-            t.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &theme,
-                &crate::presence::PresenceCtx::empty(),
-            );
+            t.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &theme, crate::presence::PresenceCtx::empty().draw_env()));
             assert!(t.needs_redraw());
         }
 
@@ -1646,13 +1621,7 @@ mod tests {
     }
 
     fn present(t: &mut Toggle, theme: &Theme) {
-        t.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            theme,
-            &crate::presence::PresenceCtx::empty(),
-        );
+        t.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), theme, crate::presence::PresenceCtx::empty().draw_env()));
         t.mark_drawn();
     }
 

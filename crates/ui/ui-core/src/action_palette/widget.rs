@@ -144,19 +144,14 @@ impl Widget for ActionPalette {
     fn get_rect(&self) -> Rect {
         self.rect
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.hosts_rows() {
-            self.draw_host(scene, transform, text, theme, presence);
+            self.draw_host(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
             return;
         }
-        ActionPalette::draw(self, scene, transform, text, theme, presence);
+        ActionPalette::draw(self, &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.dirty = true;

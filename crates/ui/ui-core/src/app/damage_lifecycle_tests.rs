@@ -17,14 +17,9 @@ impl Widget for DrawUpdatedDamage {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
 
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
         self.damage = KurboRect::new(80.0, 0.0, 100.0, 8.0);
     }
 
@@ -133,13 +128,7 @@ tilo_test_env::scenario! {
         };
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        widget.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &PresenceCtx::default(),
-        );
+        widget.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark(), PresenceCtx::default().draw_env()));
 
         let mut regions = Vec::new();
         collect_submitted_widget_damage(&widget, &mut regions);

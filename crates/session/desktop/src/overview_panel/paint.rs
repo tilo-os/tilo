@@ -1061,8 +1061,7 @@ impl OverviewPanel {
             scene,
             transform,
             &mut *ctx.text,
-            &input_theme,
-            &PresenceCtx::default(),
+            &input_theme,&PresenceCtx::default().draw_env().draw_env(),
         );
     }
 }

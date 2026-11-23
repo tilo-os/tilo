@@ -46,13 +46,7 @@ fn lay_out(map: &mut Map) {
 fn draw(map: &mut Map) {
     let mut scene = Scene::new();
     let mut text = crate::font_catalog::fixture_renderer();
-    map.draw(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text,
-        &theme(),
-        &PresenceCtx::default(),
-    );
+    map.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme(), PresenceCtx::default().draw_env()));
 }
 
 /// An empty canvas the person pointed at `at` on, laid out and drawn: the map the next one is

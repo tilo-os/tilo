@@ -243,7 +243,7 @@ mod component_adapter {
         AudiencePresentationWidgetExt, AutoCommit, CompleteContentProvider,
         CompleteContentWidgetExt, Continuable, ControlBindingMetadata, FloatingSurfaceProvider,
         FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt, HashMap, HashSet,
-        Instant, NodeId, ObjId, PermissionScope, PresenceCtx, PresenceKey, ResourceOperationStart,
+        Instant, NodeId, ObjId, PermissionScope, PresenceKey, ResourceOperationStart,
         Scene, TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
     };
 
@@ -639,17 +639,20 @@ mod component_adapter {
             self.in_root_mut(|root| root.on_floating_surface_ime_source_changed(id));
         }
 
-        fn draw_floating_surface(
-            &mut self,
-            id: &str,
-            scene: &mut vello::Scene,
-            transform: vello::kurbo::Affine,
-            text_renderer: &mut crate::text_render::TextRenderer,
-            theme: &crate::theme::Theme,
-            presence: &crate::presence::PresenceCtx,
-        ) -> bool {
+        fn draw_floating_surface(&mut self, id: &str, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
             self.in_root_mut(|root| {
-                root.draw_floating_surface(id, scene, transform, text_renderer, theme, presence)
+                root.draw_floating_surface(
+                    id,
+                    &mut crate::draw::DrawCtx::new(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        env.clone(),
+                    ),
+                )
             })
             .unwrap_or_default()
         }
@@ -723,16 +726,11 @@ mod component_adapter {
                 .unwrap_or_default()
         }
 
-        fn draw_floating_surfaces(
-            &mut self,
-            scene: &mut vello::Scene,
-            transform: vello::kurbo::Affine,
-            text_renderer: &mut crate::text_render::TextRenderer,
-            theme: &crate::theme::Theme,
-            presence: &crate::presence::PresenceCtx,
-        ) {
+        fn draw_floating_surfaces(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
             self.in_root_mut(|root| {
-                root.draw_floating_surfaces(scene, transform, text_renderer, theme, presence)
+                root.draw_floating_surfaces(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env))
             });
         }
 
@@ -844,15 +842,9 @@ mod component_adapter {
             .flatten()
         }
 
-        fn draw_complete_content(
-            &mut self,
-            scene: &mut Scene,
-            bounds: vello::kurbo::Rect,
-            transform: Affine,
-            text_renderer: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-        ) -> bool {
+        fn draw_complete_content(&mut self, bounds: vello::kurbo::Rect, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
             if self.component.behaviour.capture_protected {
                 crate::secret_paint::note_secret_painted();
             }
@@ -864,14 +856,7 @@ mod component_adapter {
                 return false;
             };
             if root.complete_content_size().is_some() {
-                return root.draw_complete_content(
-                    scene,
-                    bounds,
-                    transform,
-                    text_renderer,
-                    theme,
-                    presence,
-                );
+                return root.draw_complete_content(bounds, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
             }
             if unrolled_height(root).is_none() || bounds.area() <= 0.0 {
                 return false;
@@ -885,9 +870,10 @@ mod component_adapter {
                 return false;
             }
             let permissions = binding.permissions.borrow().clone();
-            presence.with_permissions(permissions, || {
-                root.draw_child(scene, transform, text_renderer, theme, presence);
-            });
+            let mut inner = env.clone();
+            inner.permissions = Some(permissions);
+            inner.paint_permissions = crate::permissions::shared_revision();
+            root.draw_child(scene, transform, text_renderer, theme, &inner);
             let _ = crate::widget::layout::lay_out_detached(root, live, theme, text_renderer);
             if let Some(offset) = offset {
                 let _ = root.apply_primary_vertical_scroll(
@@ -1189,14 +1175,9 @@ mod component_adapter {
                 }
             });
         }
-        fn draw(
-            &mut self,
-            scene: &mut Scene,
-            transform: Affine,
-            text_renderer: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-        ) {
+        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
                 return;
@@ -1210,9 +1191,10 @@ mod component_adapter {
                 crate::secret_paint::note_secret_painted();
             }
             let permissions = binding.permissions.borrow().clone();
-            presence.with_permissions(permissions, || {
-                root.draw_child(scene, transform, text_renderer, theme, presence);
-            });
+            let mut inner = env.clone();
+            inner.permissions = Some(permissions);
+            inner.paint_permissions = crate::permissions::shared_revision();
+            root.draw_child(scene, transform, text_renderer, theme, &inner);
         }
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             let binding = self.component.callback_binding();
@@ -1588,19 +1570,14 @@ mod component_adapter {
             self.in_root(|root| root.layout_needs_measure())
                 .unwrap_or_default()
         }
-        fn draw_overlay(
-            &mut self,
-            scene: &mut Scene,
-            transform: Affine,
-            text_renderer: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-        ) {
+        fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
             if self.component.behaviour.capture_protected {
                 crate::secret_paint::note_secret_painted();
             }
             self.in_root_mut(|root| {
-                root.draw_overlay(scene, transform, text_renderer, theme, presence)
+                root.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env))
             });
         }
     }

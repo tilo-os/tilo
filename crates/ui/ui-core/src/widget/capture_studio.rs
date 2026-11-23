@@ -1761,7 +1761,7 @@ impl CaptureStudio {
         }
         if let Some(menu) = self.send_menu.as_mut() {
             menu.layout_within(tr, theme);
-            menu.draw_overlay(scene, transform, tr, theme, &PresenceCtx::default());
+            menu.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, PresenceCtx::default().draw_env()));
         }
     }
 
@@ -1955,14 +1955,9 @@ impl Widget for CaptureStudio {
     fn is_layout_dirty(&self) -> bool {
         false
     }
-    fn draw(
-        &mut self,
-        s: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        _: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (s, t, tr, theme, mut env) = ctx.parts();
         if !self.choosing() {
             return;
         }
@@ -1979,7 +1974,7 @@ impl Widget for CaptureStudio {
         self.paint_bar(&mut PaintCtx::new(s, t, tr, theme));
         if let Some(menu) = self.options_menu.as_mut() {
             menu.layout_within(tr, theme);
-            menu.draw_overlay(s, t, tr, theme, &PresenceCtx::default());
+            menu.draw_overlay(&mut crate::draw::DrawCtx::new(s, t, tr, theme, env));
         }
         s.pop_layer();
         self.paint_generation = self.paint_generation.wrapping_add(1);

@@ -13,7 +13,7 @@ use winit::event::{Modifiers, WindowEvent};
 use super::Widget;
 use crate::bound_dispatch::BoundNodeMap;
 use crate::widget::DrawChild;
-use crate::{PresenceCtx, Theme, text_render::TextRenderer};
+use crate::{Theme, text_render::TextRenderer};
 
 /// A widget laid out and driven by the widget that owns it.
 pub struct Embedded<W: Widget> {
@@ -198,54 +198,48 @@ impl<W: Widget + 'static> Embedded<W> {
     }
 
     /// Paint the widget where it was last laid out.
-    pub fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let recoloured = self.recoloured(theme);
         let theme = recoloured.as_ref().unwrap_or(theme);
-        let owner = self.child_viewport(presence);
+        let owner = self.child_viewport(env.viewport);
+        let mut child_env = env.clone();
+        child_env.viewport = owner.map(|viewport| {
+            self.transform.inverse().transform_rect_bbox(viewport)
+        });
         self.widget
-            .draw_child(scene, transform * self.transform, text, theme, presence);
-        presence.viewport.set(owner);
+            .draw_child(scene, transform * self.transform, text, theme, &child_env);
         self.widget.mark_drawn();
     }
 
-    fn child_viewport(&mut self, presence: &PresenceCtx) -> Option<Rect> {
-        let owner = presence.viewport.get();
-        if owner.is_some() {
-            self.owner_viewport = owner;
+    fn child_viewport(&mut self, viewport: Option<Rect>) -> Option<Rect> {
+        if viewport.is_some() {
+            self.owner_viewport = viewport;
         }
-        if self.transform.determinant().abs() > f64::EPSILON {
-            presence
-                .viewport
-                .set(owner.map(|viewport| self.transform.inverse().transform_rect_bbox(viewport)));
-        }
-        owner
+        viewport
     }
 
     /// Paint what the widget floats over everything (its menus, a link's popover).
-    pub fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         // What floats over everything (a menu, a popover) stands on its own
         // panel in the owner's inks: the words' own colour
         // ([`Self::set_text_color`]) is for the words, and dark words on a
         // light slide must never become a dark menu's labels.
-        let owner = self.child_viewport(presence);
-        let placed = self.overlay_transform().unwrap_or(self.transform);
-        self.widget
-            .draw_overlay(scene, transform * placed, text, theme, presence);
-        presence.viewport.set(owner);
+        let owner = self.child_viewport(env.viewport);
+        let mut child_env = env.clone();
+        child_env.viewport = owner.map(|viewport| {
+            self.transform.inverse().transform_rect_bbox(viewport)
+        });
+        self.widget.draw_overlay(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            child_env,
+        ));
     }
 
     fn overlay_transform(&self) -> Option<Affine> {

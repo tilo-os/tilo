@@ -2,7 +2,7 @@
 //! found once per admitted layout, not every row of a long list.
 
 use crate::app::framework_history_tests::{app_with_root, layout};
-use crate::presence::PresenceCtx;
+
 use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -42,15 +42,10 @@ impl Widget for Asker {
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.text.apply_layout(tree, node, origin);
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.text.draw(scene, transform, text, theme, presence);
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.text.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
     fn get_rect(&self) -> Rect {
         self.text.get_rect()

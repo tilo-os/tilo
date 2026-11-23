@@ -785,14 +785,7 @@ tilo_test_env::scenario! {
         fn drawn(field: &mut TextInput, theme: &Theme) -> Scene {
             let mut renderer = TextRenderer::new();
             let mut scene = Scene::new();
-            Widget::draw(
-                field,
-                &mut scene,
-                Affine::IDENTITY,
-                &mut renderer,
-                theme,
-                &crate::presence::PresenceCtx::empty(),
-            );
+            Widget::draw(field, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, theme, crate::presence::PresenceCtx::empty().draw_env()));
             scene
         }
 

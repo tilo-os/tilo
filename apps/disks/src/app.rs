@@ -9,7 +9,7 @@ use std::sync::mpsc;
 
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, Live, LiveRow, RunMode};
 use ui::portal::LaunchOutcome;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::vello::Scene;
@@ -1090,16 +1090,11 @@ impl ui::widget::Decorator for DisksApp {
         }
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.shell
-            .draw_overlay(scene, transform, text, theme, presence);
+            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
     fn needs_animation_frame(&self) -> bool {

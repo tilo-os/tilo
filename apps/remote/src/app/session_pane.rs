@@ -12,7 +12,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{ModifiersState, PhysicalKey};
 
 use ui::TextRole;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{TaffyTreeExt, Widget};
@@ -333,14 +333,9 @@ impl Widget for SessionPane {
 
     ui::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let mut core = self.session.borrow_mut();
         if let Some(grid) = Self::terminal_grid(&core) {
             Self::draw_terminal(grid, scene, transform, text_renderer, theme, self.rect);

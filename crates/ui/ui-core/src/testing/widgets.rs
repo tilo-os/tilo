@@ -75,15 +75,8 @@ macro_rules! delegate_widget_methods {
         }
     };
     (@ $field:tt draw) => {
-        fn draw(
-            &mut self,
-            scene: &mut ::vello::Scene,
-            transform: ::vello::kurbo::Affine,
-            text: &mut $crate::text_render::TextRenderer,
-            theme: &$crate::theme::Theme,
-            presence: &$crate::presence::PresenceCtx,
-        ) {
-            self.$field.draw(scene, transform, text, theme, presence);
+        fn draw(&mut self, ctx: &mut $crate::draw::DrawCtx<'_>) {
+            self.$field.draw(ctx);
         }
     };
     (@ $field:tt handle_event) => {

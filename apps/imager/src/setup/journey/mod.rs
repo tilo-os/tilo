@@ -5535,14 +5535,9 @@ impl Widget for InstallerPreview {
             child.apply_layout(taffy, node, self.rect.origin());
         }
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let now = ui::motion::frame_now();
         if theme.reduce_motion || self.capture {
             self.pending_slide = None;
@@ -5572,7 +5567,7 @@ impl Widget for InstallerPreview {
         }
         let mut current = Scene::new();
         if let Some(child) = &mut self.composed {
-            child.draw_child(&mut current, Affine::IDENTITY, text, theme, presence);
+            child.draw_child(&mut current, Affine::IDENTITY, text, theme,&env);
         }
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -10543,8 +10538,7 @@ mod tests {
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut TextRenderer::new(),
-                theme,
-                &PresenceCtx::default(),
+                theme,&PresenceCtx::default().draw_env().draw_env(),
             );
         };
         app.with_widget::<InstallerPreview, _>(|preview| paint(preview, &Theme::dark()))

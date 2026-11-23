@@ -46,14 +46,9 @@ impl Widget for Fader {
 
     ui::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: Affine,
-        _text: &mut ui::TextRenderer,
-        _theme: &ui::Theme,
-        _presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _text, _theme, mut env) = ctx.parts();
         if self.under.get() {
             scene.fill(
                 Fill::NonZero,

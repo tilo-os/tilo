@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::framework::{EffectAnswer, EffectCx, Effected, Live};
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::DrawChild;
@@ -570,22 +570,17 @@ impl Widget for BrowserWindow {
             self.page.apply_layout(taffy, *page, origin);
         }
     }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         if self.layout_immersive == Some(true) {
-            self.page.draw_child(scene, transform, tr, theme, presence);
+            self.page.draw_child(scene, transform, tr, theme,&env);
             return;
         }
         if let Some(panel) = self.exit_panel.as_mut() {
-            panel.draw_child(scene, transform, tr, theme, presence);
+            panel.draw_child(scene, transform, tr, theme,&env);
         }
-        self.page.draw_child(scene, transform, tr, theme, presence);
+        self.page.draw_child(scene, transform, tr, theme,&env);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.repaint = true;
@@ -681,16 +676,11 @@ impl Widget for BrowserWindow {
         self.page
             .perform_semantic_action(target, action, state, path)
     }
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.page
-            .draw_overlay(scene, transform, tr, theme, presence);
+            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
     }
     /// The window paints nothing of its own: its damage is its children's, so a
     /// blinking caret repaints the caret.

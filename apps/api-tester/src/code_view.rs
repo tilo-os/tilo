@@ -9,7 +9,7 @@ use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Role};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
@@ -204,14 +204,9 @@ impl Widget for CodeView {
         self.dirty = true;
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let metrics = self.resolve(theme, text_renderer);
         let colors = &theme.tokens.colors;
         let visible = self.visible();
@@ -229,7 +224,7 @@ impl Widget for CodeView {
         for index in visible {
             let band = Rect::new(self.rect.x0, y, self.rect.x1, y + metrics.line_h);
             y += metrics.line_h;
-            if presence.should_cull(band) {
+            if env.should_cull(band) {
                 continue;
             }
             let Some(line) = self.lines.get(index) else {

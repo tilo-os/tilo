@@ -572,8 +572,7 @@ mod tests {
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut renderer,
-                &theme,
-                &PresenceCtx::empty(),
+                &theme,&PresenceCtx::empty().draw_env().draw_env(),
             );
         };
         frame(&mut view);

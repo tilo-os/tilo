@@ -10,7 +10,7 @@ use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
-use crate::presence::PresenceCtx;
+
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{ModelPath, TaffyTreeExt, Widget};
@@ -145,14 +145,9 @@ impl Widget for RevealToggle {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _text_renderer, theme, mut env) = ctx.parts();
         if self.rect.is_zero_area() {
             return;
         }

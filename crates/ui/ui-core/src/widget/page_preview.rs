@@ -105,14 +105,9 @@ impl Widget for PagePreview {
 
     crate::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         let g = Geometry::of(theme);
         let colors = &theme.tokens.colors;
         let sheet = Rect::new(
@@ -214,13 +209,7 @@ mod tests {
             let mut preview = PagePreview::new("Report", 2, 5);
             preview.rect = Rect::new(0.0, 0.0, small.sheet_w, small.height());
             let mut scene = Scene::new();
-            preview.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::dark(),
-                &PresenceCtx::default(),
-            );
+            preview.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
             assert_eq!(
                 Widget::accessibility(&preview)
                     .unwrap()

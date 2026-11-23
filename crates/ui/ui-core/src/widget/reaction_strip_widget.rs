@@ -12,7 +12,6 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::{ReactionStrip, StripHit, StripMetrics, layout};
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{
@@ -333,18 +332,13 @@ impl Widget for ReactionStripWidget {
         self.rect
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.me.is_none()
-            && let Some(own) = presence.self_id()
+            && let Some(own) = env.self_member.clone()
         {
-            self.me = Some(own.clone());
+            self.me = Some(own);
             self.layout_dirty = true;
         }
         self.relayout(text, theme);
@@ -362,16 +356,11 @@ impl Widget for ReactionStripWidget {
             || self.picker.as_ref().is_some_and(Widget::needs_redraw)
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         if let Some(picker) = &mut self.picker {
-            picker.draw_overlay(scene, transform, text, theme, presence);
+            picker.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
         }
     }
 

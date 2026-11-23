@@ -21,7 +21,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use ui::a11y::Politeness;
 use ui::i18n::ArgValue;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::Rhythm;
@@ -3731,16 +3731,11 @@ impl Widget for InstallerApp {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(c) = self.composed.element_mut() {
-            c.draw_child(scene, transform, text_renderer, theme, presence);
+            c.draw_child(scene, transform, text_renderer, theme,&env);
         }
     }
 

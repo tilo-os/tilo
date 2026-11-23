@@ -1415,14 +1415,9 @@ impl ui::widget::Decorator for ApiTesterApp {
         self.nav.handle_event(event, ctx);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::theme::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if std::mem::take(&mut self.menu_pending) && !self.history.is_empty() {
             // Staged after layout: the menu opens under the newest sent request.
             let window = Widget::get_rect(&self.nav);
@@ -1441,17 +1436,10 @@ impl ui::widget::Decorator for ApiTesterApp {
             None => {}
         }
         self.nav
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
         if let Some(open) = self.menu.as_mut() {
             open.menu.layout_within(text_renderer, theme);
-            Widget::draw_overlay(
-                &mut open.menu,
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
+            Widget::draw_overlay(&mut open.menu, &mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
     }
 

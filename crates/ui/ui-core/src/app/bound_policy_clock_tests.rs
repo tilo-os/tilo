@@ -105,13 +105,7 @@ tilo_test_env::scenario! {
             .unwrap();
         tile.apply_layout(&taffy, node, vello::kurbo::Point::ZERO);
         let paint = |tile: &mut crate::app::EmbeddedApp| {
-            tile.draw(
-                &mut vello::Scene::new(),
-                vello::kurbo::Affine::IDENTITY,
-                &mut crate::text_render::TextRenderer::new(),
-                &theme,
-                &crate::presence::PresenceCtx::empty(),
-            );
+            tile.draw(&mut crate::draw::DrawCtx::new(&mut vello::Scene::new(), vello::kurbo::Affine::IDENTITY, &mut crate::text_render::TextRenderer::new(), &theme, crate::presence::PresenceCtx::empty().draw_env()));
         };
         let start = crate::time::now();
 

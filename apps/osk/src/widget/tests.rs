@@ -979,7 +979,7 @@ fn offscreen_render_and_geometry_follow_layout_and_suggestions() {
         let presence = PresenceCtx::empty();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        osk.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        osk.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme,&presence.draw_env());
 
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("osk_dialpad.png");
@@ -1007,7 +1007,7 @@ fn offscreen_render_and_geometry_follow_layout_and_suggestions() {
         let presence = PresenceCtx::empty();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        osk.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        osk.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme,&presence.draw_env());
 
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("osk_suggestion_bar.png");
@@ -1838,7 +1838,7 @@ fn every_panel_face_paints() {
     open_panel(&mut osk);
     let mut paint = |osk: &mut OskWidget| {
         let mut scene = Scene::new();
-        osk.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        osk.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme,&presence.draw_env());
         assert!(!scene.encoding().is_empty());
     };
     paint(&mut osk);

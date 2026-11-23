@@ -540,13 +540,7 @@ mod tests {
                 );
                 chart.marks.frame.rect = Rect::new(0.0, 0.0, w, h);
                 let mut scene = Scene::new();
-                chart.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut tr,
-                    &theme,
-                    &PresenceCtx::default(),
-                );
+                chart.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
                 let (center, _, outer) = chart.marks.geometry();
                 let labels = chart.marks.label_layout(&mut tr, &theme, center, outer);
                 assert!(!labels.is_empty(), "{w}: some arcs are named");

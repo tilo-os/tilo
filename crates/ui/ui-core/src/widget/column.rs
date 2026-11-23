@@ -349,7 +349,7 @@ mod tests {
         let presence = crate::presence::PresenceCtx::default();
         let mut frame = |col: &mut Column, theme: &Theme| {
             let mut scene = Scene::new();
-            col.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+            col.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
             col.mark_drawn();
             scene
         };
@@ -407,7 +407,7 @@ mod tests {
         let mut scene = Scene::new();
         // Draw through the column's cached-draw path (the buggy one) — that's where the leading Text was
         // dropped.
-        root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        root.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
         scene
             .encoding()
             .draw_tags

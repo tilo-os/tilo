@@ -42,7 +42,7 @@ use tilo_session_core::desktop::i18n::{t, t_args};
 use tilo_session_core::desktop::seed_tree;
 use ui::headless::FrameHarness;
 use ui::kurbo::{Affine, Point, Rect};
-use ui::presence::PresenceCtx;
+
 use ui::state::State;
 use ui::taffy::{Display, FlexDirection, NodeId, Size, Style, TaffyTree};
 use ui::theme::Theme;
@@ -169,21 +169,16 @@ impl Widget for Stage {
         bar || shell || menu
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut ui::TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.shell
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
         if let Some(bar) = &mut self.bar {
-            bar.draw_child(scene, transform, text, theme, presence);
+            bar.draw_child(scene, transform, text, theme,&env);
         }
         self.menu
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {

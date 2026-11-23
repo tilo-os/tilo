@@ -302,24 +302,12 @@ fn laid_out_window(group: &mut WindowGroup) {
         .compute_layout(root, Size::MAX_CONTENT)
         .expect("the window lays out");
     group.apply_layout(&taffy, node, Point::ZERO);
-    group.draw(
-        &mut Scene::new(),
-        Affine::IDENTITY,
-        &mut TextRenderer::new(),
-        &theme,
-        &PresenceCtx::empty(),
-    );
+    group.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &theme, PresenceCtx::empty().draw_env()));
 }
 
 fn bar_top_layer_tags(group: &mut WindowGroup) -> usize {
     let mut scene = Scene::new();
-    group.draw_bar_popups(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut TextRenderer::new(),
-        &Theme::dark(),
-        &PresenceCtx::empty(),
-    );
+    group.draw_bar_popups(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::empty().draw_env()));
     scene.encoding().draw_tags.len()
 }
 

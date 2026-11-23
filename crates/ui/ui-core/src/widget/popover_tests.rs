@@ -47,8 +47,8 @@ fn present<C: Widget + 'static>(p: &mut Popover<C>, theme: &Theme) -> Scene {
     let previous = presence.push_viewport(WINDOW);
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
-    p.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
-    p.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    p.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
+    p.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, theme, presence.draw_env()));
     presence.pop_viewport(previous);
     scene
 }
@@ -297,13 +297,7 @@ tilo_test_env::scenario! {
         {
             let mut p = opened();
             let mut scene = Scene::new();
-            p.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::dark(),
-                &PresenceCtx::default(),
-            );
+            p.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
             assert!(scene.encoding().draw_tags.is_empty());
             assert!(
                 !present(&mut p, &Theme::dark())

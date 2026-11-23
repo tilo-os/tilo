@@ -17,7 +17,7 @@ use ui::charts::{BarGauge, Chart, ChartStyle, Series, nice_step};
 use ui::fact::{Measure, Measured};
 use ui::format::memory as format_bytes;
 use ui::i18n::ArgValue;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::{TextKind, TextRenderer};
 use ui::theme::Theme;
 use ui::widget::card::{CardGrid, CardWidth};
@@ -873,19 +873,14 @@ impl Widget for ProcessesPane {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(summary) = &mut self.summary {
-            summary.draw_child(scene, transform, text_renderer, theme, presence);
+            summary.draw_child(scene, transform, text_renderer, theme,&env);
         }
         self.body_mut()
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1415,16 +1410,11 @@ impl Widget for ResourcesPane {
         self.reveal_section();
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(page) = &mut self.page {
-            page.draw_child(scene, transform, text_renderer, theme, presence);
+            page.draw_child(scene, transform, text_renderer, theme,&env);
         }
     }
 

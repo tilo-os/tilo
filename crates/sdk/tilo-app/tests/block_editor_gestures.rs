@@ -134,8 +134,7 @@ fn wrapped_block_caret_stays_on_one_baseline_when_moving_or_typing() {
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut renderer,
-                &theme,
-                &PresenceCtx::empty(),
+                &theme,&PresenceCtx::empty().draw_env().draw_env(),
             );
             let caret = line.caret_rect(&theme, byte);
             if let Some(y) = baseline {
@@ -178,8 +177,7 @@ fn empty_wrapped_block_reserves_the_same_caret_band_as_first_character() {
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut renderer,
-            &theme,
-            &PresenceCtx::empty(),
+            &theme,&PresenceCtx::empty().draw_env().draw_env(),
         );
         carets.push(line.caret_rect(&theme, 0));
     }

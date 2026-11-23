@@ -176,7 +176,7 @@ impl GitClientState {
         }
         self.commit_input.apply_layout_external(out.commit_input);
         self.commit_input
-            .draw_child(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
+            .draw_child(ctx.scene, ctx.transform, ctx.text, ctx.theme,&presence.draw_env());
     }
 
     /// The commit list in `list`, of which `clip` is showing.
@@ -345,7 +345,7 @@ impl GitClientState {
         self.branch_input.apply_layout_external(out.branch_field);
         if out.branch_field.width() > 0.0 {
             self.branch_input
-                .draw_child(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
+                .draw_child(ctx.scene, ctx.transform, ctx.text, ctx.theme,&presence.draw_env());
         }
         for (input, rect) in [
             &mut self.worktree_branch_input,
@@ -357,7 +357,7 @@ impl GitClientState {
         {
             input.apply_layout_external(rect);
             if rect.width() > 0.0 {
-                input.draw_child(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
+                input.draw_child(ctx.scene, ctx.transform, ctx.text, ctx.theme,&presence.draw_env());
             }
         }
         let max_y = out.content_height - body.height();
@@ -439,7 +439,7 @@ impl GitClientState {
         let (field, choose, button) = (controls.field, controls.choose, controls.open);
         self.open_input.apply_layout_external(field);
         self.open_input
-            .draw_child(ctx.scene, ctx.transform, ctx.text, theme, presence);
+            .draw_child(ctx.scene, ctx.transform, ctx.text, theme,&presence.draw_env());
         self.semantic.push(Target {
             rect: field,
             hit: Hit::OpenPath,

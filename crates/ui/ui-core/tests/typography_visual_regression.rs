@@ -195,13 +195,7 @@ fn render(case: Case) -> Frame {
         height,
     } = lay_out(case);
     let mut scene = Scene::new();
-    widget.draw(
-        &mut scene,
-        Affine::scale(case.display_scale),
-        &mut text_renderer,
-        &theme,
-        &PresenceCtx::default(),
-    );
+    widget.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::scale(case.display_scale), &mut text_renderer, &theme, PresenceCtx::default().draw_env()));
     let mut renderer = OffscreenRenderer::try_new(width, height)
         .expect("typography golden qualification requires an actual offscreen adapter");
     let info = renderer.adapter_info();

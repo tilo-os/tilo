@@ -14,7 +14,6 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use super::GroupRow;
 use crate::num::f32_of_f64;
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Spacing;
@@ -319,7 +318,7 @@ impl GroupRow {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
+        (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
     ) {
         self.drawn_covers.clear();
         let now = crate::motion::frame_now();
@@ -358,7 +357,7 @@ impl GroupRow {
                     transform,
                     &shape,
                 );
-                self.draw_group_plain(i, scene, transform, (tr, on, presence));
+                self.draw_group_plain(i, scene, transform, (tr, on, env));
                 scene.pop_layer();
             });
             self.groups[i].set_edge_by_card(false);

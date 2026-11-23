@@ -78,13 +78,7 @@ fn frame(table: &mut DataTable<R>, theme: &Theme) {
     }
     let mut scene = Scene::new();
     let mut text = TextRenderer::new();
-    table.draw(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text,
-        theme,
-        &PresenceCtx::default(),
-    );
+    table.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, theme, PresenceCtx::default().draw_env()));
 }
 
 /// Lay out and draw until the table's layout rests.

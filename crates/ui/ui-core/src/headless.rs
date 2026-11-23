@@ -4080,8 +4080,7 @@ impl FrameHarness {
                 &mut self.scene,
                 transform,
                 &mut self.text,
-                &self.theme,
-                &self.presence,
+                &self.theme,&self.presence.draw_env(),
             );
         }
         if self
@@ -4098,8 +4097,7 @@ impl FrameHarness {
                             &mut self.scene,
                             transform,
                             &mut self.text,
-                            &self.theme,
-                            &self.presence,
+                            &self.theme,&self.presence.draw_env(),
                         )
                     });
             }
@@ -4110,21 +4108,8 @@ impl FrameHarness {
             .is_none_or(|history| history.live_visible())
         {
             if paint {
-                self.root.draw_overlay(
-                    &mut self.scene,
-                    transform,
-                    &mut self.text,
-                    &self.theme,
-                    &self.presence,
-                );
-                self.cards.draw(
-                    self.root.as_mut(),
-                    &mut self.scene,
-                    transform,
-                    &mut self.text,
-                    &self.theme,
-                    &self.presence,
-                );
+                self.root.draw_overlay(&mut crate::draw::DrawCtx::new(&mut self.scene, transform, &mut self.text, &self.theme, self.presence.draw_env()));
+                self.cards.draw(self.root.as_mut(), &mut crate::draw::DrawCtx::new(&mut self.scene, transform, &mut self.text, &self.theme, self.presence.draw_env()));
             }
             self.root.mark_drawn();
         }
@@ -4134,13 +4119,7 @@ impl FrameHarness {
         self.admission.ended(paint, self.scene_drawn);
         if let Some(history) = &mut self.history {
             if paint {
-                history.draw_overlay(
-                    &mut self.scene,
-                    transform,
-                    &mut self.text,
-                    &self.theme,
-                    &self.presence,
-                );
+                history.draw_overlay(&mut crate::draw::DrawCtx::new(&mut self.scene, transform, &mut self.text, &self.theme, self.presence.draw_env()));
             }
             history.mark_drawn();
         }
@@ -4170,8 +4149,7 @@ impl FrameHarness {
                     &mut self.scene,
                     transform,
                     &mut self.text,
-                    &self.theme,
-                    &self.presence,
+                    &self.theme,&self.presence.draw_env(),
                 );
             }
         }

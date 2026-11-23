@@ -25,7 +25,8 @@ pub(crate) use resource_operation::{
 };
 
 use crate::permissions::PermissionScope;
-use crate::presence::{PresenceCtx, PresenceKey};
+use crate::draw::{DrawCtx, DrawEnv};
+use crate::presence::PresenceKey;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use automerge::{AutoCommit, ObjId};
@@ -391,17 +392,9 @@ pub fn draw_child(
     transform: Affine,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
-    presence: &PresenceCtx,
+    env: &DrawEnv<'_>,
 ) {
-    draw_child_at(
-        child,
-        None,
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        presence,
-    );
+    draw_child_at(child, None, scene, transform, text_renderer, theme, env);
 }
 
 /// [`draw_child`] for a container that knows `child`'s place among its
@@ -415,23 +408,15 @@ pub fn draw_child_at(
     transform: Affine,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
-    presence: &PresenceCtx,
+    env: &DrawEnv<'_>,
 ) {
-    if presence.should_cull(child.paint_bounds()) {
+    if env.should_cull(child.paint_bounds()) {
         if index.is_none() {
             crate::scene_parts::skip_widget();
         }
         return;
     }
-    draw_child_unculled(
-        child,
-        index,
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        presence,
-    );
+    draw_child_unculled(child, index, scene, transform, text_renderer, theme, env);
 }
 
 /// Draw `child` with its key ([`draw_child_at`]) even where it misses the
@@ -445,18 +430,21 @@ pub fn draw_child_unculled(
     transform: Affine,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
-    presence: &PresenceCtx,
+    env: &DrawEnv<'_>,
 ) {
     #[cfg(debug_assertions)]
     let open = scene.encoding().n_open_clips;
     #[cfg(debug_assertions)]
     let _painting = paint_pass::Painting::enter();
     let begun = crate::scene_parts::begin_widget(scene, child, index, transform);
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the one keyed draw path a widget is drawn through"
-    )]
-    child.draw(scene, transform, text_renderer, theme, presence);
+    {
+        let mut ctx = DrawCtx::new(scene, transform, text_renderer, theme, env.clone());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the one keyed draw path a widget is drawn through"
+        )]
+        child.draw(&mut ctx);
+    }
     crate::scene_parts::end_widget(scene, begun);
     #[cfg(debug_assertions)]
     debug_assert_eq!(
@@ -468,9 +456,9 @@ pub fn draw_child_unculled(
 }
 
 /// [`draw_child_unculled`] as a method, for a container that draws a child
-/// itself: `child.draw_child(scene, transform, text_renderer, theme,
-/// presence)` takes the place of calling the child's [`Widget::draw`], and
-/// carries the child's key into the scene for a host that keys widgets.
+/// itself: `child.draw_child(scene, transform, text_renderer, theme, env)`
+/// takes the place of calling the child's [`Widget::draw`], and carries the
+/// child's key into the scene for a host that keys widgets.
 pub trait DrawChild {
     fn draw_child(
         &mut self,
@@ -478,7 +466,7 @@ pub trait DrawChild {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        presence: &PresenceCtx,
+        env: &DrawEnv<'_>,
     );
 }
 
@@ -494,16 +482,19 @@ impl<W: Widget> DrawChild for W {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        presence: &PresenceCtx,
+        env: &DrawEnv<'_>,
     ) {
         #[cfg(debug_assertions)]
         let _painting = paint_pass::Painting::enter();
         let begun = crate::scene_parts::begin_widget(scene, self, None, transform);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the keyed draw path of a widget held by value"
-        )]
-        self.draw(scene, transform, text_renderer, theme, presence);
+        {
+            let mut ctx = DrawCtx::new(scene, transform, text_renderer, theme, env.clone());
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the keyed draw path of a widget held by value"
+            )]
+            self.draw(&mut ctx);
+        }
         crate::scene_parts::end_widget(scene, begun);
     }
 }
@@ -517,9 +508,9 @@ macro_rules! draw_child_of_dyn {
                 transform: Affine,
                 text_renderer: &mut TextRenderer,
                 theme: &Theme,
-                presence: &PresenceCtx,
+                env: &DrawEnv<'_>,
             ) {
-                draw_child_unculled(self, None, scene, transform, text_renderer, theme, presence);
+                draw_child_unculled(self, None, scene, transform, text_renderer, theme, env);
             }
         }
 
@@ -530,7 +521,7 @@ macro_rules! draw_child_of_dyn {
                 transform: Affine,
                 text_renderer: &mut TextRenderer,
                 theme: &Theme,
-                presence: &PresenceCtx,
+                env: &DrawEnv<'_>,
             ) {
                 draw_child_unculled(
                     &mut **self,
@@ -539,7 +530,7 @@ macro_rules! draw_child_of_dyn {
                     transform,
                     text_renderer,
                     theme,
-                    presence,
+                    env,
                 );
             }
         }
@@ -548,31 +539,25 @@ macro_rules! draw_child_of_dyn {
 
 draw_child_of_dyn!(Widget, AppWidget,);
 
-/// What a guarded, presence-publishing widget draws over itself once drawn:
-/// the denied-permission scrim, then the focus ring of the first peer on it.
-pub(crate) fn draw_permission_scrim_and_peer_focus(
-    widget: &(impl Widget + ?Sized),
-    scene: &mut Scene,
-    transform: Affine,
-    theme: &Theme,
-    presence: &PresenceCtx,
-) {
+/// What a widget draws over itself once drawn: the denied-permission scrim
+/// its authority forbids, then whatever the host paints over it — the focus
+/// ring of whoever else is on it, their caret and selection where the widget
+/// publishes the geometry for them.
+pub fn draw_over(widget: &dyn Widget, ctx: &mut DrawCtx<'_>) {
     let rect = widget.get_rect();
     if let Some(scope) = crate::permissions::capability::permission_scope(widget)
-        && !presence.permits(&scope)
+        && !ctx.env.permits(&scope)
     {
-        scene.fill(
+        ctx.scene.fill(
             vello::peniko::Fill::NonZero,
-            transform,
+            ctx.transform,
             crate::tokens::colors::PERMISSION_DENIED_SCRIM,
             None,
             &rect,
         );
     }
-    if let Some(key) = crate::presence::capability::presence_key(widget)
-        && let Some(user) = presence.here.get(&key).and_then(|peers| peers.first())
-    {
-        presence.draw_peer_focus(scene, theme, user, rect);
+    if let Some(overlay) = ctx.env.overlay {
+        overlay.paint_over(widget, ctx.scene, ctx.transform, ctx.text_renderer, ctx.theme);
     }
 }
 
@@ -1267,32 +1252,16 @@ pub trait FloatingSurfaceProvider {
         Vec::new()
     }
 
-    fn draw_floating_surfaces(
-        &mut self,
-        _scene: &mut vello::Scene,
-        _transform: vello::kurbo::Affine,
-        _text_renderer: &mut crate::text_render::TextRenderer,
-        _theme: &crate::theme::Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
-    }
+    fn draw_floating_surfaces(&mut self, _ctx: &mut DrawCtx<'_>) {}
 
-    fn draw_floating_surface(
-        &mut self,
-        id: &str,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) -> bool {
+    fn draw_floating_surface(&mut self, id: &str, ctx: &mut DrawCtx<'_>) -> bool {
         let presentations = self.floating_surface_presentations();
         if presentations.len() != 1 || presentations[0].id != id {
             // A plural paint pass cannot select one of several owners safely.
             // Multi-surface providers must implement the exact-id pass.
             return false;
         }
-        self.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
+        self.draw_floating_surfaces(ctx);
         true
     }
 
@@ -1406,15 +1375,7 @@ pub trait AudioTapProvider {
 pub trait CompleteContentProvider {
     fn complete_content_size(&self) -> Option<vello::kurbo::Size>;
 
-    fn draw_complete_content(
-        &mut self,
-        scene: &mut vello::Scene,
-        bounds: vello::kurbo::Rect,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) -> bool;
+    fn draw_complete_content(&mut self, bounds: vello::kurbo::Rect, ctx: &mut DrawCtx<'_>) -> bool;
 }
 
 /// The document as a host lends it to one pass that may change it: read
@@ -1664,23 +1625,8 @@ pub trait FloatingSurfaceWidgetExt {
     /// Whether the person asked to pick an area of the screen to float. Consumed.
     fn take_pip_area_request(&mut self) -> bool;
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)>;
-    fn draw_floating_surfaces(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    );
-    fn draw_floating_surface(
-        &mut self,
-        id: &str,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) -> bool;
+    fn draw_floating_surfaces(&mut self, ctx: &mut DrawCtx<'_>);
+    fn draw_floating_surface(&mut self, id: &str, ctx: &mut DrawCtx<'_>) -> bool;
     fn floating_surface_presentations(
         &self,
     ) -> Vec<crate::floating_surface::FloatingSurfacePresentation>;
@@ -1765,31 +1711,15 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
         )
     }
 
-    fn draw_floating_surfaces(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw_floating_surfaces(&mut self, ctx: &mut DrawCtx<'_>) {
         if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
-            provider.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
+            provider.draw_floating_surfaces(ctx);
         }
     }
 
-    fn draw_floating_surface(
-        &mut self,
-        id: &str,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) -> bool {
-        capability::capability_mut::<dyn FloatingSurfaceProvider>(self).is_some_and(|provider| {
-            provider.draw_floating_surface(id, scene, transform, text_renderer, theme, presence)
-        })
+    fn draw_floating_surface(&mut self, id: &str, ctx: &mut DrawCtx<'_>) -> bool {
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self)
+            .is_some_and(|provider| provider.draw_floating_surface(id, ctx))
     }
 
     fn floating_surface_presentations(
@@ -1929,15 +1859,7 @@ impl<T: Widget + ?Sized> FullscreenWidgetExt for T {
 /// Ergonomic host API for optional complete-content capture.
 pub trait CompleteContentWidgetExt {
     fn complete_content_size(&self) -> Option<vello::kurbo::Size>;
-    fn draw_complete_content(
-        &mut self,
-        scene: &mut vello::Scene,
-        bounds: vello::kurbo::Rect,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) -> bool;
+    fn draw_complete_content(&mut self, bounds: vello::kurbo::Rect, ctx: &mut DrawCtx<'_>) -> bool;
 }
 
 impl<T: Widget + ?Sized> CompleteContentWidgetExt for T {
@@ -1946,18 +1868,10 @@ impl<T: Widget + ?Sized> CompleteContentWidgetExt for T {
             .and_then(CompleteContentProvider::complete_content_size)
     }
 
-    fn draw_complete_content(
-        &mut self,
-        scene: &mut vello::Scene,
-        bounds: vello::kurbo::Rect,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) -> bool {
-        capability::capability_mut::<dyn CompleteContentProvider>(self).is_some_and(|provider| {
-            provider.draw_complete_content(scene, bounds, transform, text_renderer, theme, presence)
-        })
+    fn draw_complete_content(&mut self, bounds: vello::kurbo::Rect, ctx: &mut DrawCtx<'_>)
+    -> bool {
+        capability::capability_mut::<dyn CompleteContentProvider>(self)
+            .is_some_and(|provider| provider.draw_complete_content(bounds, ctx))
     }
 }
 

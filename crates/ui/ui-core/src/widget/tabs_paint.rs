@@ -21,30 +21,10 @@ pub(super) struct PaintedBar {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct PersonSeen {
     tab: u64,
-    user: crate::permissions::MemberId,
     colour: (u8, u8, u8),
     dims: bool,
     agent: bool,
-    name: Option<String>,
-}
-
-impl PersonSeen {
-    /// Whether this is still how `user` on `tab` looks: one person as the
-    /// bar drew them against the same person now, without building the
-    /// list of everyone again.
-    fn matches(
-        &self,
-        tab: u64,
-        user: &crate::permissions::MemberId,
-        presence: &PresenceCtx,
-    ) -> bool {
-        self.tab == tab
-            && &self.user == user
-            && self.colour == presence.color_for(user)
-            && self.dims == presence.availability_of(user).dims()
-            && self.agent != user.is_person()
-            && self.name.as_deref() == presence.names.get(user).map(String::as_str)
-    }
+    name: String,
 }
 
 impl TabBar {
@@ -77,14 +57,9 @@ impl TabBar {
     }
 
     /// [`Widget::draw`] of everything the bar shows, at `transform`.
-    pub(super) fn draw_fresh(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub(super) fn draw_fresh(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.drag_lift_duration = theme.tokens.motion.durations.fast();
         self.painted_labels.borrow_mut().clear();
         self.busy_drawn =
@@ -93,9 +68,9 @@ impl TabBar {
             return;
         }
         self.face_metrics = FaceMetrics::of(theme);
-        self.record_face_demand(presence);
+        self.record_face_demand(&env);
         self.pill_faces = (0..self.tabs.len())
-            .map(|i| self.fit_pill_faces(i, presence))
+            .map(|i| self.fit_pill_faces(i, &env))
             .collect();
         self.visible_titles = (0..self.tabs.len())
             .map(|i| self.visible_title(i, tr, theme))
@@ -118,8 +93,8 @@ impl TabBar {
             self.selection_move = None;
         }
 
-        self.draw_pills(scene, transform, tr, theme, presence, layout_t, fade_window);
-        self.draw_rename(scene, transform, tr, theme, presence);
+        self.draw_pills(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()), layout_t, fade_window);
+        self.draw_rename(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
         // The tab list's focus ring comes and goes with keyboard focus: a
         // damage part around the active pill, not a repaint of the bar.
         let focus = crate::scene_parts::PartKey::new("ui.tab-focus", ());
@@ -169,14 +144,14 @@ impl TabBar {
                 vec![transform.transform_rect_bbox(area)],
                 |scene| {
                     scene.push_clip_layer(vello::peniko::Fill::NonZero, transform, &area);
-                    row.paint(scene, transform, tr, theme, presence);
+                    row.paint(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env));
                     scene.pop_layer();
                 },
             );
         }
         self.draw_closing_tabs(scene, transform, tr, theme);
         self.draw_drop_indicator(scene, transform, theme);
-        self.draw_drag_ghost(scene, transform, tr, theme, presence);
+        self.draw_drag_ghost(&mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()));
     }
 
     /// The window's History toggle: the app's action, so it wears the app's
@@ -229,27 +204,30 @@ impl TabBar {
     /// Whether the bar's held drawing is the drawing it would make now: the
     /// bar is at rest, and nothing it draws from changed since it was made.
     /// Answers without building the list of people again.
-    pub(super) fn replays(&self, transform: Affine, theme: &Theme, presence: &PresenceCtx) -> bool {
+    pub(super) fn replays(&self, transform: Affine, theme: &Theme, env: &crate::draw::DrawEnv<'_>) -> bool {
         self.painted.as_ref().is_some_and(|painted| {
             painted.epoch == self.paint_epoch
                 && painted.transform == transform
                 && painted.theme == *theme
                 && self.at_rest()
-                && self.same_people(&painted.seen, presence)
+                && self.same_people(&painted.seen, env)
         })
     }
 
-    pub(super) fn people_seen(&self, presence: &PresenceCtx) -> Vec<PersonSeen> {
+    pub(super) fn people_seen(&self, env: &crate::draw::DrawEnv<'_>) -> Vec<PersonSeen> {
         let mut seen = Vec::new();
         for tab in &self.tabs {
-            for user in presence.peers_on(&tab_presence_key(tab.id)) {
+            for face in env
+                .sites
+                .get(&tab_presence_key(tab.id))
+                .map_or(&[][..], Vec::as_slice)
+            {
                 seen.push(PersonSeen {
                     tab: tab.id,
-                    colour: presence.color_for(user),
-                    dims: presence.availability_of(user).dims(),
-                    agent: !user.is_person(),
-                    name: presence.names.get(user).cloned(),
-                    user: user.clone(),
+                    colour: face.colour,
+                    dims: face.dimmed,
+                    agent: face.agent,
+                    name: face.name.clone(),
                 });
             }
         }
@@ -264,7 +242,7 @@ impl TabBar {
             painted.epoch != self.paint_epoch
                 || !self.at_rest()
                 || crate::presence::frame::frame(|presence| {
-                    !self.same_people(&painted.seen, presence)
+                    !self.same_people(&painted.seen, &presence.draw_env())
                 })
                 .unwrap_or(false)
         })
@@ -273,34 +251,17 @@ impl TabBar {
     /// Whether `seen` — the people a drawing was made of — are the people on
     /// the bar's tabs now. Walks the same order [`TabBar::people_seen`]
     /// builds, so it answers without building that list.
-    fn same_people(&self, seen: &[PersonSeen], presence: &PresenceCtx) -> bool {
-        let mut at = 0;
-        for tab in &self.tabs {
-            for user in presence.peers_on(&tab_presence_key(tab.id)) {
-                if !seen
-                    .get(at)
-                    .is_some_and(|drawn| drawn.matches(tab.id, user, presence))
-                {
-                    return false;
-                }
-                at += 1;
-            }
-        }
-        at == seen.len()
+    fn same_people(&self, seen: &[PersonSeen], env: &crate::draw::DrawEnv<'_>) -> bool {
+        *seen == self.people_seen(env)
     }
 
     /// [`Widget::draw`] — a bar at rest whose own state, theme, placement
     /// and the people on its tabs are as when it was last drawn shows that
     /// drawing again ([`TabBar::replays`]); anything else draws it afresh.
-    pub(super) fn paint_or_replay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if self.replays(transform, theme, presence) {
+    pub(super) fn paint_or_replay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
+        if self.replays(transform, theme, &env) {
             if let Some(painted) = self.painted.as_ref() {
                 crate::scene_parts::append(scene, &painted.scene, painted.parts.as_ref(), None);
             }
@@ -309,7 +270,7 @@ impl TabBar {
         let _drawn = tilo_resource::profiling::Phase::start("ui.tab_bar.draw");
         let mut own = Scene::new();
         let ((), parts) = crate::scene_parts::record(&mut own, |own| {
-            self.draw_fresh(own, transform, tr, theme, presence);
+            self.draw_fresh(&mut crate::draw::DrawCtx::new(own, transform, tr, theme, env));
         });
         let drawn = self.paint_epoch;
         if self.toolbar_row.take_measured() && self.strip_squeezes_parts() {
@@ -320,7 +281,7 @@ impl TabBar {
         {
             self.fresh_draws = self.fresh_draws.saturating_add(1);
         }
-        let seen = self.people_seen(presence);
+        let seen = self.people_seen(&env);
         self.painted = self.at_rest().then(|| PaintedBar {
             epoch: drawn,
             transform,

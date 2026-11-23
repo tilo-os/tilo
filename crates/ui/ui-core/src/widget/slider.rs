@@ -1092,14 +1092,9 @@ impl Widget for Slider {
         self.rect
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.shows_value {
             let style = theme.text(crate::tokens::TextRole::Body).numeric();
             // The area fits the widest value the slider shows, so the track
@@ -1162,19 +1157,12 @@ impl Widget for Slider {
                 .focused(self.is_focused)
                 .disabled(!self.effectively_enabled()),
         );
-        crate::widget::draw_permission_scrim_and_peer_focus(
-            self, scene, transform, theme, presence,
-        );
+        crate::widget::draw_over(self, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.readout_drawn = self.reads_out && self.is_held() && self.effectively_enabled();
         if self.readout_drawn {
             let face = SliderFace::new(self.track_rect(), self.fraction());
@@ -2182,13 +2170,7 @@ mod tests {
         }
     }
     fn present(s: &mut Slider, theme: &Theme) {
-        s.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            theme,
-            &crate::presence::PresenceCtx::empty(),
-        );
+        s.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), theme, crate::presence::PresenceCtx::empty().draw_env()));
         s.mark_drawn();
     }
 

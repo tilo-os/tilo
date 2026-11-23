@@ -499,14 +499,9 @@ impl Widget for Tooltip {
 
     crate::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(since) = self.hover_since
             && !self.is_visible
             && crate::time::now().saturating_duration_since(since) >= self.delay
@@ -522,9 +517,8 @@ impl Widget for Tooltip {
 
         // Generous fallback so an unclamped chip still renders in bare test
         // harnesses that never push a viewport.
-        let viewport = presence
+        let viewport = env
             .viewport
-            .get()
             .unwrap_or(Rect::new(0.0, 0.0, 100_000.0, 100_000.0));
         let size = chip_size_in_viewport(&self.label, text_renderer, theme, viewport);
         if self.anchor != Rect::ZERO {
@@ -1165,13 +1159,7 @@ mod tests {
                 let presence = PresenceCtx::default();
                 presence.viewport.set(Some(viewport));
                 let mut text = TextRenderer::new();
-                tip.draw(
-                    &mut Scene::new(),
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &presence,
-                );
+                tip.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
                 let rect = tip.get_rect();
                 assert!(
                     viewport.contains_rect(rect),

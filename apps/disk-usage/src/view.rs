@@ -8,7 +8,7 @@ use std::rc::Rc;
 use ui::LocalState;
 use ui::framework::{Actions, Dispatcher, EffectCx, Effected, LiveRow, Publishes, RunMode, ViewCx};
 use ui::icons::Icon;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
@@ -925,17 +925,12 @@ impl ui::widget::Decorator for SliceChart {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         self.prepare(theme);
         self.chart
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme,&env);
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {

@@ -505,14 +505,9 @@ impl Widget for EmbeddedApp {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _text_renderer, _theme, mut env) = ctx.parts();
         self.paint_generation = self.paint_generation.wrapping_add(1);
         let mut painted = self.painted.borrow_mut();
         let mut painted_parts = self.painted_parts.borrow_mut();
@@ -1002,27 +997,23 @@ impl crate::widget::CompleteContentProvider for EmbeddedApp {
         self.app.root_widget.complete_content_size()
     }
 
-    fn draw_complete_content(
-        &mut self,
-        scene: &mut Scene,
-        bounds: KurboRect,
-        transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) -> bool {
+    fn draw_complete_content(&mut self, bounds: KurboRect, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _text_renderer, _theme, mut env) = ctx.parts();
         self.runs();
         use crate::widget::CompleteContentWidgetExt as _;
         let app = &mut self.app;
         let local = bounds - vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0);
         let mut painted = Scene::new();
         let drawn = app.root_widget.draw_complete_content(
-            &mut painted,
             local,
-            Affine::IDENTITY,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
+            &mut crate::draw::DrawCtx::new(
+                &mut painted,
+                Affine::IDENTITY,
+                &mut app.text_renderer,
+                &app.theme,
+                app.presence_ctx.draw_env(),
+            ),
         );
         scene.append(
             &painted,
@@ -1371,13 +1362,7 @@ mod theme_repaint_tests {
 
     pub(super) fn paint(tile: &mut EmbeddedApp, theme: &Theme) -> Vec<u32> {
         let mut scene = Scene::new();
-        tile.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            theme,
-            &PresenceCtx::empty(),
-        );
+        tile.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), theme, PresenceCtx::empty().draw_env()));
         scene.encoding().draw_data.clone()
     }
 
@@ -1390,13 +1375,7 @@ mod theme_repaint_tests {
         let recording = crate::scene_parts::Recording::begin();
         let mut scene = Box::new(Scene::new());
         crate::scene_parts::track(&scene);
-        tile.draw(
-            &mut scene,
-            Affine::translate((40.0, 20.0)),
-            &mut TextRenderer::new(),
-            theme,
-            &PresenceCtx::empty(),
-        );
+        tile.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::translate((40.0, 20.0)), &mut TextRenderer::new(), theme, PresenceCtx::empty().draw_env()));
         let parts = recording
             .finish()
             .of(&scene)
@@ -1833,14 +1812,9 @@ mod wake_deadline_tests {
             taffy.widget_leaf(taffy::Style::default(), node_map, self)
         }
         crate::rect_geometry!();
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
+        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_, _, _, _, mut env) = ctx.parts();
         }
         fn name(&self) -> &'static str {
             "Asked"
@@ -1868,14 +1842,9 @@ mod wake_deadline_tests {
             taffy.widget_leaf(taffy::Style::default(), node_map, self)
         }
         crate::rect_geometry!();
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
+        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_, _, _, _, mut env) = ctx.parts();
             self.frames.set(self.frames.get().saturating_sub(1));
         }
         fn name(&self) -> &'static str {

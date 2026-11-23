@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use typst::syntax::{LinkedNode, Source, SyntaxKind, SyntaxNode, ast};
 use ui::framework::LiveRow;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{NavItem, NavList, NavSection, SidebarDrawer, Widget};
@@ -209,19 +209,14 @@ impl Outline {
         }
     }
 
-    pub(crate) fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    pub(crate) fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         if !self.visible() {
             return;
         }
         let panel = self.drawer.paint_panel(scene, transform, theme);
-        ui::widget::DrawChild::draw_child(&mut self.list, scene, transform, tr, &panel, presence);
+        ui::widget::DrawChild::draw_child(&mut self.list, scene, transform, tr, &panel,&env);
     }
 
     pub(crate) fn dismiss_if_overlay(&mut self) {

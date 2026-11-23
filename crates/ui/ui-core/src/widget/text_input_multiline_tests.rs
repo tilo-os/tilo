@@ -507,13 +507,7 @@ tilo_test_env::scenario! {
         input.rect = Rect::new(0.0, 0.0, 360.0, 42.0);
         let mut scene = Scene::new();
         let mut renderer = crate::font_catalog::fixture_renderer();
-        input.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut renderer,
-            &Theme::dark(),
-            &crate::PresenceCtx::empty(),
-        );
+        input.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark(), crate::PresenceCtx::empty().draw_env()));
         assert!(input.is_focused);
         assert!(!input.text.is_empty());
         assert!(input.rect.width() > 0.0);

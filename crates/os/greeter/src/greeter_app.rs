@@ -34,7 +34,7 @@ use ui::a11y::AccessibilityRequest;
 use ui::app::UserEvent;
 use ui::caps_lock::CapsLockEstimate;
 use ui::icons::Icon;
-use ui::presence::PresenceCtx;
+
 use ui::text_render::{NumericStyle, OpenTypeTag, TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
@@ -307,16 +307,11 @@ impl Widget for Stack {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         for child in &mut self.children {
-            child.draw_child(scene, transform, text_renderer, theme, presence);
+            child.draw_child(scene, transform, text_renderer, theme,&env);
         }
     }
 
@@ -2442,14 +2437,9 @@ impl Widget for GreeterApp {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // The backdrop holds one composition. A login screen mostly waits,
         // and a moving full-screen backdrop re-rasterized the whole display
         // behind every keystroke.
@@ -2467,7 +2457,7 @@ impl Widget for GreeterApp {
             ui::auth_backdrop::draw(scene, theme, transform, output, BACKDROP_PHASE_SECONDS);
         }
         if let Some(c) = self.composed.element_mut() {
-            c.draw_child(scene, transform, text_renderer, theme, presence);
+            c.draw_child(scene, transform, text_renderer, theme,&env);
         }
     }
 

@@ -1731,32 +1731,22 @@ impl Widget for ContextMenu {
     /// A menu paints nothing in place: it is a floating Panel in the
     /// window's top layer ([`Widget::draw_overlay`]), so no later sibling,
     /// pane or chrome covers it.
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (_scene, _transform, _text_renderer, theme, mut env) = ctx.parts();
         self.set_text_scale(theme.text_scale);
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.set_text_scale(theme.text_scale);
         self.cache_theme(theme);
         // A menu without a viewport of its own flips and shifts inside the
         // window it is presented in, and so does everything it opens beside
         // it.
         if self.viewport.is_none()
-            && let Some(window) = presence.viewport.get()
+            && let Some(window) = env.viewport
         {
             self.set_viewport(Some(window));
         }
@@ -1792,7 +1782,7 @@ impl Widget for ContextMenu {
             self.paint_menu(scene, transform, text_renderer, theme);
         });
         if let Some((_, menu)) = self.submenu.as_mut() {
-            menu.draw_overlay(scene, transform, text_renderer, theme, presence);
+            menu.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
         self.paint_send_to(scene, transform, text_renderer, theme);
     }
@@ -2282,13 +2272,7 @@ mod nested_and_anchored_tests {
         let presence = PresenceCtx::default();
         let previous = presence.push_viewport(WINDOW);
         let mut scene = Scene::new();
-        m.draw_overlay(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &presence,
-        );
+        m.draw_overlay(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
         presence.pop_viewport(previous);
     }
 

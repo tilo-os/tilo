@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use taffy::{NodeId, Style, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Action, Role};
 use ui::passcode_keyboard::{PasscodeInput, PasscodeKey, PasscodeKeyboard};
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{FieldRole, SecretPrompt, TaffyTreeExt as _, Widget};
@@ -280,14 +280,9 @@ impl Widget for TouchKeyboard {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.shared.keyboard.get().paint(
             scene,
             transform,

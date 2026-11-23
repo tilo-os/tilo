@@ -8,7 +8,6 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -714,15 +713,9 @@ impl PopoverPanel {
         }
     }
 
-    fn draw_overlay(
-        &mut self,
-        content: &mut dyn Widget,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, content: &mut dyn Widget, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // It comes from its anchor and goes back (`motion::Appear`); a
         // closing panel is drawn until it has gone, but takes no input.
         self.appear.follow(self.open, theme.motion());
@@ -731,7 +724,7 @@ impl PopoverPanel {
             return;
         }
         self.layout_theme = theme.clone();
-        if let Some(window) = presence.viewport.get() {
+        if let Some(window) = env.viewport {
             if self.open
                 && self
                     .presented
@@ -759,8 +752,8 @@ impl PopoverPanel {
                     self.stale = true;
                 }
                 let transform = transform * Affine::translate(shift);
-                content.draw_child(scene, transform, text_renderer, &on_panel, presence);
-                content.draw_overlay(scene, transform, text_renderer, &on_panel, presence);
+                content.draw_child(scene, transform, text_renderer, &on_panel,&env);
+                content.draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, &on_panel, env));
             }
         });
     }
@@ -1050,14 +1043,9 @@ impl Widget for PopoverPrompt {
         self.input.apply_layout_external(field);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         let colors = &theme.tokens.colors;
         if !self.caption.is_empty() {
             tr.draw_style(
@@ -1069,7 +1057,7 @@ impl Widget for PopoverPrompt {
                 &theme.text(TextRole::Label),
             );
         }
-        self.input.draw_child(scene, transform, tr, theme, presence);
+        self.input.draw_child(scene, transform, tr, theme,&env);
         if !self.hint.is_empty() {
             let y = self.field_rect().y1 + Self::gap(theme);
             tr.draw_style(
@@ -1385,22 +1373,10 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         self.panel.apply_layout(&mut self.content, taffy, node);
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.panel.draw_overlay(
-            &mut self.content,
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-        );
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        self.panel.draw_overlay(&mut self.content, &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn adjust_layout_style(
@@ -1644,33 +1620,23 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
         self.popover.apply_layout(taffy, popover, at);
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // A keyboard activation reaches the button through the host.
         self.take_request();
         self.button
-            .draw_child(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme,&env);
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.button
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
+            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         self.popover.set_anchor(self.button.get_rect());
         self.popover
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
+            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

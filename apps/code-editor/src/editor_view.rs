@@ -2517,14 +2517,9 @@ impl Widget for EditorView {
 
     ui::rect_geometry!();
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let theme = &theme.clone().with_text_scale(self.text_zoom);
         self.collect_highlights();
         let code_size = theme.text(TextRole::Code).size;
@@ -2540,7 +2535,7 @@ impl Widget for EditorView {
         if self.text_obj.is_none() {
             self.empty.apply_layout_external(self.rect);
             self.empty
-                .draw_child(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme,&env);
             self.forget_shown();
             return;
         }
@@ -3061,8 +3056,7 @@ mod tests {
                 &mut scene,
                 Affine::IDENTITY,
                 &mut renderer,
-                &theme,
-                &PresenceCtx::empty(),
+                &theme,&PresenceCtx::empty().draw_env().draw_env(),
             );
             assert!(
                 scene.encoding().resources.glyphs.len() < 100,
@@ -3082,8 +3076,7 @@ mod tests {
             &mut scene,
             Affine::IDENTITY,
             &mut renderer,
-            &theme,
-            &PresenceCtx::empty(),
+            &theme,&PresenceCtx::empty().draw_env().draw_env(),
         );
         assert!(scene.encoding().resources.glyphs.len() < 100);
         assert_eq!(

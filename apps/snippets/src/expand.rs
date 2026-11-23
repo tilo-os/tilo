@@ -205,7 +205,7 @@ impl ExpandModal {
             field.input.apply_layout_external(rect);
             field
                 .input
-                .draw_child(scene, t, text, &ink, &ui::presence::PresenceCtx::empty());
+                .draw_child(scene, t, text, &ink,&ui::presence::PresenceCtx::empty().draw_env().draw_env());
             self.geometry.fields.push(rect);
             y = row.y1 + f64::from(rhythm.sibling);
         }
@@ -424,18 +424,13 @@ impl ExpandModal {
         self.fields.iter().find_map(|f| f.input.cursor_shape(point))
     }
 
-    pub fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    pub fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, tr, theme, mut env) = ctx.parts();
         if let Some(field) = self.fields.get_mut(self.focused) {
             field
                 .input
-                .draw_overlay(scene, transform, tr, theme, presence);
+                .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
         }
     }
 

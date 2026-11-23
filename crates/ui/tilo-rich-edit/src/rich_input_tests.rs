@@ -139,14 +139,7 @@ tilo_test_env::scenario! {
         };
         assert!(input.set_props(given), "the people change in place");
         let presence = PresenceCtx::default();
-        Decorator::draw(
-            &mut input,
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &presence,
-        );
+        Decorator::draw(&mut input, &mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
         let offered = input
             .offered()
             .into_iter()

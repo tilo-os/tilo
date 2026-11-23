@@ -1940,13 +1940,7 @@ pub(super) fn table_color_fills(t: &mut DataTable<R>) -> usize {
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    t.draw(
-        &mut scene,
-        vello::kurbo::Affine::IDENTITY,
-        &mut tr,
-        &theme,
-        &presence,
-    );
+    t.draw(&mut crate::draw::DrawCtx::new(&mut scene, vello::kurbo::Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
     scene
         .encoding()
         .draw_tags

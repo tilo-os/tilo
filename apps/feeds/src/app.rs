@@ -23,7 +23,7 @@ use ui::icons::Icon;
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, LaunchChannel, LaunchOutcome, PickRequest,
 };
-use ui::presence::PresenceCtx;
+
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::Instant;
@@ -2380,43 +2380,33 @@ impl ui::widget::Decorator for FeedsApp {
         out
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
         // Results land live, every frame, without a document in hand.
         self.core.borrow_mut().drain_fetches_live();
         self.take_toast();
-        ui::widget::DrawChild::draw_child(&mut self.shell, scene, transform, text, theme, presence);
+        ui::widget::DrawChild::draw_child(&mut self.shell, scene, transform, text, theme,&env);
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        Widget::draw_overlay(&mut self.shell, scene, transform, text, theme, presence);
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        Widget::draw_overlay(&mut self.shell, &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         if let Some(panel) = self.settings_panel.as_mut() {
-            panel.draw_overlay(scene, transform, text, theme, presence);
+            panel.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         }
         {
             let mut core = self.core.borrow_mut();
             if let Some(open) = core.menu.as_mut() {
                 open.menu.layout_within(text, theme);
-                Widget::draw_overlay(&mut open.menu, scene, transform, text, theme, presence);
+                Widget::draw_overlay(&mut open.menu, &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
             }
         }
         if let Some(modal) = self.modal.as_mut() {
             modal
                 .dialog
-                .draw_overlay(scene, transform, text, theme, presence);
+                .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         }
     }
 
