@@ -36,6 +36,8 @@ if [ "$require_signing" = 1 ]; then
 fi
 if [ "$host" = Linux ] && [ "$require_signing" = 1 ]; then export TILO_REQUIRE_CAPTURE=1; fi
 source "$(dirname "${BASH_SOURCE[0]}")/build-capture-host.sh" --features host-media-writer
+# What the build above wrote: Cargo's target directory is the job's own on t.
+binary="${TILO_IMAGER_BINARY:-${CARGO_TARGET_DIR:-target}/release/imager}"
 mkdir -p "$out"
 
 write_digest() {
@@ -147,7 +149,7 @@ case "$host" in
     # release's per-architecture DMGs; package-macos.sh owns the bundle, the
     # signature, notarization and the DMG.
     bash "$(dirname -- "${BASH_SOURCE[0]}")/package-macos.sh" \
-      "$package_arch" target/release/imager "$out"
+      "$package_arch" "$binary" "$out"
     ;;
   Linux)
     if [ "$require_signing" = 1 ] || [ -n "${TILO_LINUX_SIGNER:-}" ] \
@@ -157,19 +159,19 @@ case "$host" in
     artifact_base="tilo-imager-linux-$package_arch"
     bundle="$out/$artifact_base"
     mkdir -p "$bundle"
-    cp target/release/imager "$bundle/tilo-imager-bin"
+    cp "$binary" "$bundle/tilo-imager-bin"
     cp apps/imager/packaging/linux/tilo-imager "$bundle/tilo-imager"
     chmod +x "$bundle/tilo-imager" "$bundle/tilo-imager-bin"
     cp apps/imager/packaging/linux/tilo-imager.desktop "$bundle/"
     cp docs/installer-walkthrough.md "$bundle/README.md"
-    apps/imager/packaging/stage-capture-sidecar.sh target/release/imager "$bundle" "$bundle/tilo-imager-bin"
+    apps/imager/packaging/stage-capture-sidecar.sh "$binary" "$bundle" "$bundle/tilo-imager-bin"
     tar -C "$out" -czf "$out/$artifact_base.tar.gz" "$artifact_base"
     write_digest "$out/$artifact_base.tar.gz"
     sign_linux_artifact "$out/$artifact_base.tar.gz"
     if [ -n "${TILO_CAPTURE_PINS:-}" ]; then
       platform="$out/$artifact_base-platform.tar.gz"
       python3 apps/imager/packaging/package-capture-platform.py \
-        --host target/release/imager --output "$platform"
+        --host "$binary" --output "$platform"
       write_digest "$platform"
       sign_linux_artifact "$platform"
     fi
@@ -178,8 +180,8 @@ case "$host" in
     mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" \
       "$appdir/usr/share/metainfo" \
       "$appdir/usr/share/icons/hicolor/scalable/apps"
-    cp target/release/imager "$appdir/usr/bin/tilo-imager-bin"
-    apps/imager/packaging/stage-capture-sidecar.sh target/release/imager "$appdir/usr" "$appdir/usr/bin/tilo-imager-bin"
+    cp "$binary" "$appdir/usr/bin/tilo-imager-bin"
+    apps/imager/packaging/stage-capture-sidecar.sh "$binary" "$appdir/usr" "$appdir/usr/bin/tilo-imager-bin"
     cp apps/imager/packaging/linux/tilo-imager "$appdir/usr/bin/tilo-imager"
     cp apps/imager/packaging/linux/tilo-imager.desktop \
       "$appdir/usr/share/applications/org.tilo.Imager.desktop"

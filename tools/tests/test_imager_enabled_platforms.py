@@ -20,8 +20,8 @@ def checks():
     for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]:
         arches = check.get("matrix", {}).get("arch", [None])
         for arch in arches:
-            name = check["name"] if arch is None else check["name"].replace("{arch}", arch)
-            found[name] = check
+            expand = (lambda text: text) if arch is None else (lambda text: text.replace("{arch}", arch))
+            found[expand(check["name"])] = {**check, "needs": [expand(need) for need in check.get("needs", [])]}
     return found
 
 
@@ -57,6 +57,10 @@ class InstallerRelease(unittest.TestCase):
                 self.assertIn(f"package/{platform}-{arch}", found["release-assets/imager"]["needs"])
             self.assertIn(f"medium/imager-{arch}", found["release-assets/imager"]["needs"])
             self.assertIn(f"package/linux-{arch}", found[f"install/linux-{arch}"]["needs"])
+            # Only the tag's build holds the capture identities, and only it is signed.
+            self.assertNotIn("secrets", found[f"package/linux-{arch}"])
+            self.assertEqual(["tag:imager-v*"], found[f"release/linux-{arch}"]["on"])
+            self.assertIn(f"release/linux-{arch}", found[f"sign/linux-{arch}"]["needs"])
         publish = found["publish-github-release"]
         self.assertEqual(["tag:imager-v*"], publish["on"])
         for gate in ("release-assets/imager", "install/linux-x86_64", "install/linux-aarch64",
