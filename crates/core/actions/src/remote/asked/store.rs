@@ -39,6 +39,9 @@ pub const NOT_YOURS: &str = "Only the person this question asks can answer it";
 pub const ANSWERED: &str = "This question was answered already";
 /// What a resolve naming no record kept here is refused with.
 pub const NOTHING_ASKED: &str = "Nothing waits for an answer under that record";
+/// What an answer from another device to a question answered only where it was asked (what
+/// the person types in secret, the files they pick) is refused with.
+pub const ANSWERED_THERE: &str = "This question is answered on the device that asked it";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Status {
@@ -124,6 +127,9 @@ pub struct AskedStore {
     keeping: OnceLock<Arc<dyn AskedKeeping>>,
     /// Each dispatch that keeps calls here, by its name.
     dispatches: Mutex<HashMap<String, Weak<dyn AskedDispatch>>>,
+    /// The device this store asks on, its key in hex: where a question answered only where it
+    /// was asked is answered.
+    here: OnceLock<String>,
 }
 
 /// One dispatch's way into an [`AskedStore`]: what it writes is kept as its own, so a person's
@@ -135,6 +141,12 @@ struct DispatchRecords {
 }
 
 impl AskedStore {
+    /// Ask on the device whose key is `device`: a question answered only where it was asked
+    /// ([`AskedFacts::answered_where_asked`]) names it, and is answered only from it.
+    pub fn asks_on(&self, device: &[u8; 32]) {
+        let _ = self.here.set(hex::encode(device));
+    }
+
     /// Write the grants people give with an approve through `grants`; without, no answer
     /// grants anything.
     pub fn grants_through(&self, grants: Arc<dyn AskedGrants>) {
@@ -243,7 +255,10 @@ impl AskedStore {
             workspace: workspace.to_owned(),
             // The invocation's own id: what the workspace's invocations publish it under.
             record: request.invocation.0.to_string(),
-            device: None,
+            device: facts
+                .answered_where_asked()
+                .then(|| self.here.get().cloned())
+                .flatten(),
         };
         let mut kept = self.kept.lock_recover();
         if let Some(record) = kept.find(&at) {
@@ -384,6 +399,15 @@ impl AskedStore {
         }
         if record.status != Status::Asked {
             return Err(refused(ANSWERED));
+        }
+        // What is typed in secret, or picked from the device's files, reaches the asker only on
+        // the device that asked: answered by the person there (a caller of no other device's).
+        if let Some(device) = &record.at.device
+            && answering
+                .device_public_key()
+                .is_some_and(|answering| hex::encode(answering) != *device)
+        {
+            return Err(refused(ANSWERED_THERE));
         }
         if !Offer::of(&record.facts).contains(&answer.resolution) {
             return Err(refused("This question does not offer that answer"));
@@ -616,10 +640,10 @@ fn grant_of(record: &Record) -> Result<tilo_action_policy::Grant, ActionCallErro
         record.facts.kind.clone(),
         record.request.target.address.action.clone(),
     );
-    // The resource the call is on, where it names one: one site's "always" is not every
-    // site's.
+    // The resource the call is on, where it names one other than its type's collection: one
+    // site's "always" is not every site's.
     let resource = &record.request.target.address.resource;
-    let scope = if resource.is_empty() {
+    let scope = if resource.is_empty() || *resource == kind {
         AnswerScope::action(app, kind, action)
     } else {
         AnswerScope::resource(app, kind, resource.clone(), action)
@@ -631,6 +655,64 @@ fn grant_of(record: &Record) -> Result<tilo_action_policy::Grant, ActionCallErro
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person(record.person.clone()),
     ))
+}
+
+impl Record {
+    /// The record as its person reads it.
+    fn row(&self) -> Asked {
+        let target = &self.request.target;
+        let app = app_of(&target.provider).to_owned();
+        Asked {
+            record: self.at.clone(),
+            workspace: self.at.workspace.clone(),
+            workspace_name: self.at.workspace.clone(),
+            action: format!("{app}#{}", target.address.action),
+            name: if self.facts.verb.is_empty() {
+                target.address.action.clone()
+            } else {
+                self.facts.verb.clone()
+            },
+            app,
+            asked_at_ms: self.asked_at_ms,
+            pressed: None,
+            offers: Offer::of(&self.facts),
+            facts: self.facts.clone(),
+        }
+    }
+}
+
+/// A call that waits in its asked record, as a reading of its workspace's invocations shows it.
+#[derive(Clone, Debug)]
+pub struct Waiting {
+    pub invocation: InvocationId,
+    /// The person asked, the hex of their root key.
+    pub person: String,
+    /// Who made the call.
+    pub caller: Caller,
+    pub asked: Asked,
+}
+
+impl AskedStore {
+    /// Every call that waits for its person's answer in `workspace`, oldest first: what the
+    /// reading of the workspace's invocations shows of each.
+    #[must_use]
+    pub fn waiting_in(&self, workspace: &str) -> Vec<Waiting> {
+        let kept = self.kept.lock_recover();
+        let mut rows: Vec<Waiting> = kept
+            .records
+            .iter()
+            .filter(|record| record.status == Status::Asked && record.at.workspace == workspace)
+            .map(|record| Waiting {
+                invocation: record.invocation,
+                person: record.person.clone(),
+                caller: record.caller.clone(),
+                asked: record.row(),
+            })
+            .collect();
+        drop(kept);
+        rows.sort_by_key(|row| row.asked.asked_at_ms);
+        rows
+    }
 }
 
 impl AskedRecords for AskedStore {
@@ -651,26 +733,7 @@ impl AskedRecords for AskedStore {
             .records
             .iter()
             .filter(|record| record.status == Status::Asked && record.person == person)
-            .map(|record| {
-                let target = &record.request.target;
-                let app = app_of(&target.provider).to_owned();
-                Asked {
-                    record: record.at.clone(),
-                    workspace: record.at.workspace.clone(),
-                    workspace_name: record.at.workspace.clone(),
-                    action: format!("{app}#{}", target.address.action),
-                    name: if record.facts.verb.is_empty() {
-                        target.address.action.clone()
-                    } else {
-                        record.facts.verb.clone()
-                    },
-                    app,
-                    asked_at_ms: record.asked_at_ms,
-                    pressed: None,
-                    offers: Offer::of(&record.facts),
-                    facts: record.facts.clone(),
-                }
-            })
+            .map(Record::row)
             .collect();
         drop(kept);
         rows.sort_by_key(|row| row.asked_at_ms);

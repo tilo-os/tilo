@@ -899,9 +899,10 @@ impl Daemon {
     }
 }
 
-/// What admits the run that asked a call which waited across the daemon's restart afresh: an
-/// agent's, for the same agent under the key this device keeps for it, on the person's admission
-/// here. Each call of the run is checked as every call is.
+/// What admits the run that asked a call which waited across the daemon's restart afresh, on
+/// the person's admission here: an agent's for the same agent under the key this device keeps for
+/// it, the person's own through their own dispatch. Each call of the run is checked as every
+/// call is.
 fn admits_again(
     broker: &BrokerHandle,
     workspaces: &Arc<ServiceWorkspaces>,
@@ -913,18 +914,28 @@ fn admits_again(
         actor.to_owned(),
     );
     Box::new(move |run| {
-        let super::asked::Run::Agent {
-            workspace,
-            agent,
-            name,
-        } = run;
-        let broker = broker
-            .as_ref()
-            .ok_or("the action broker is unavailable")?;
-        let (admitting, named, actor) =
-            (Arc::clone(&workspaces), workspace.clone(), actor.clone());
+        let broker = broker.as_ref().ok_or("the action broker is unavailable")?;
+        let workspace = match run {
+            super::asked::Run::Agent { workspace, .. }
+            | super::asked::Run::Own { workspace, .. } => workspace,
+        };
+        let (admitting, named, actor) = (Arc::clone(&workspaces), workspace.clone(), actor.clone());
         let admission =
             block_on_owned(async move { admitting.admit_execution(&named, &actor).await })?;
+        let super::asked::Run::Agent { agent, name, .. } = run else {
+            // The person's own call, through their own dispatch here: only while it serves.
+            admission
+                .check(workspaces.copies())
+                .map_err(|refusal| refusal.to_string())?;
+            let provider = broker
+                .certified_local_action_provider(admission.caller(), admission.presentation())?;
+            let person = admission.caller().clone();
+            let provider: Arc<dyn ActionProvider + Send + Sync> = Arc::new(AdmittedAgain {
+                provider,
+                _admission: admission,
+            });
+            return Ok((provider, person));
+        };
         let caller = admission.caller();
         let (Some(person), Some(workspace)) = (caller.acting().person_id(), caller.workspace())
         else {
@@ -992,6 +1003,7 @@ fn asked_store(
     workspaces: &Arc<ServiceWorkspaces>,
 ) -> io::Result<Arc<tilo_actions::remote::asked::AskedStore>> {
     let asked = Arc::new(tilo_actions::remote::asked::AskedStore::default());
+    asked.asks_on(&workspaces.device_cert().device_public_key);
     let copies = workspaces.copies().clone();
     let runtime = tilo_rt::app().handle().clone();
     asked.grants_through(copies.asked_grants(runtime.clone()));
@@ -2569,9 +2581,85 @@ impl DispatchReads {
             items.extend(page.items);
             match page.next_cursor {
                 Some(next) => cursor = Some(next),
-                None => return Ok(items),
+                None => break,
             }
         }
+        if let Some(store) = self.workspaces.copies().asked_store() {
+            with_questions(
+                &mut items,
+                store.waiting_in(&self.workspace),
+                invocation.as_deref(),
+            );
+        }
+        Ok(items)
+    }
+}
+
+/// `items`, a reading of a workspace's invocations, with what each call that waits in
+/// `waiting` asks its person, and each such call the device keeps no record of (it waited across
+/// a restart, or another dispatch here keeps it) listed beside them: only `only`, when the
+/// reading names one.
+pub(super) fn with_questions(
+    items: &mut Vec<tilo_actions::remote::workspace_invocations::Invocation>,
+    waiting: Vec<tilo_actions::remote::asked::Waiting>,
+    only: Option<&str>,
+) {
+    use tilo_actions::remote::asked::AskedBy;
+    use tilo_actions::remote::workspace_invocations::{Invocation, InvocationBy, InvocationStatus};
+    for question in waiting {
+        let id = question.invocation.0.to_string();
+        if only.is_some_and(|only| only != id) {
+            continue;
+        }
+        if let Some(item) = items
+            .iter_mut()
+            .find(|item| item.id.as_deref() == Some(id.as_str()))
+        {
+            item.status = InvocationStatus::Waiting;
+            item.person = Some(question.person);
+            item.asked = Some(Box::new(question.asked));
+            continue;
+        }
+        let by = match &question.asked.facts.by {
+            AskedBy::Agent(agent) => InvocationBy {
+                name: agent.name.clone(),
+                kind: "agent".to_owned(),
+                id: Some(agent.id.clone()),
+            },
+            AskedBy::App { app, title, .. } => InvocationBy {
+                name: title.clone(),
+                kind: "app".to_owned(),
+                id: Some(app.clone()),
+            },
+            AskedBy::Device(device) => InvocationBy {
+                name: device.name.clone(),
+                kind: "device".to_owned(),
+                id: Some(device.id.clone()),
+            },
+            AskedBy::Program { name, app_id } => InvocationBy {
+                name: name.clone(),
+                kind: "program".to_owned(),
+                id: app_id.clone(),
+            },
+        };
+        let row = Invocation {
+            id: Some(id.clone()),
+            calls: vec![id],
+            by,
+            status: InvocationStatus::Waiting,
+            started_ms: i64::try_from(question.asked.asked_at_ms).unwrap_or(i64::MAX),
+            action: Some(question.asked.action.clone()),
+            remembered: true,
+            person: Some(question.person),
+            asked: Some(Box::new(question.asked)),
+            ..Invocation::default()
+        };
+        // Newest first, as the reading is.
+        let at = items
+            .iter()
+            .position(|item| item.started_ms <= row.started_ms)
+            .unwrap_or(items.len());
+        items.insert(at, row);
     }
 }
 
@@ -2897,6 +2985,18 @@ impl ActionProvider for RuntimeActionProvider {
                 let route = (Arc::clone(&session.provider), agent.clone());
                 return asked.send(run, caller, route, request);
             }
+            // The person's own call waits for them as its asked record too: where a program
+            // outside Tilo asks them through the shell, or a press needs their yes.
+            if let Some(asked) = &self.asked
+                && session.agent.is_none()
+            {
+                let run = super::asked::Run::Own {
+                    workspace: self.workspace.clone(),
+                    pressed: None,
+                };
+                let route = (Arc::clone(&session.provider), session.acting().clone());
+                return asked.send(run, caller, route, request);
+            }
             let runs_as = session.acting().clone();
             let invocation = request.invocation;
             self.invocations.record(
@@ -3046,7 +3146,6 @@ impl ActionProvider for RuntimeActionProvider {
             .state()
             .action_next_change_after_now(&on_this_device(caller), id)
     }
-
 
     fn cancel(
         &self,

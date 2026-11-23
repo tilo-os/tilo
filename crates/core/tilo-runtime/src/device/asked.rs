@@ -50,22 +50,34 @@ pub(crate) enum Run {
         agent: String,
         name: String,
     },
+    /// The person's own call in `workspace`: from their shell (a question a program outside
+    /// Tilo asks them, which the shell raises), or pressed in an app's window (`pressed`). Sent
+    /// again as the person, through their own dispatch here.
+    #[serde(rename_all = "camelCase")]
+    Own {
+        workspace: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pressed: Option<asked::Pressed>,
+    },
 }
 
 impl Run {
     fn workspace(&self) -> &str {
         match self {
-            Self::Agent { workspace, .. } => workspace,
+            Self::Agent { workspace, .. } | Self::Own { workspace, .. } => workspace,
         }
     }
 
-    /// Who asks, as the person reads it: the run's own, whatever the provider said.
-    fn asker(&self) -> AskedBy {
+    /// Who asks, as the person reads it, where the run says it: an agent is its own, whatever
+    /// the provider said. The person's own call shows whoever its provider names (a program,
+    /// a device, an app).
+    fn asker(&self) -> Option<AskedBy> {
         match self {
-            Self::Agent { agent, name, .. } => AskedBy::Agent(Named {
+            Self::Agent { agent, name, .. } => Some(AskedBy::Agent(Named {
                 id: agent.clone(),
                 name: name.clone(),
-            }),
+            })),
+            Self::Own { .. } => None,
         }
     }
 }
@@ -185,6 +197,16 @@ impl DeviceAsked {
         provider
             .invoke(&acting, request)
             .map(move |answered| match refused_for_a_yes(&answered) {
+                // Kept where it was sent, for its person to answer there: it goes on, and the
+                // listing says it waits for them.
+                None if answered
+                    .as_ref()
+                    .err()
+                    .is_some_and(ActionCallError::awaits_person) =>
+                {
+                    me.invocations.note_waiting(&call.invocation);
+                    answered
+                }
                 Some(facts) if call.approval().is_none() => {
                     me.keep(Waiting { run, caller, route }, &call, facts)
                 }
@@ -199,7 +221,9 @@ impl DeviceAsked {
         mut facts: AskedFacts,
     ) -> Result<InvocationReceipt, ActionCallError> {
         let invocation = request.invocation;
-        facts.by = waiting.run.asker();
+        if let Some(by) = waiting.run.asker() {
+            facts.by = by;
+        }
         let (caller, acting) = (waiting.caller.clone(), waiting.route.1.clone());
         let workspace = waiting.run.workspace().to_owned();
         // What an approve sends it again with, there before its record is written.

@@ -25,7 +25,10 @@ use zeroize::Zeroizing;
 use super::{ActionAddress, RemoteActionTarget};
 
 mod store;
-pub use store::{ANSWERED, AskedStore, MOST_WAITING, NOT_YOURS, NOTHING_ASKED, TOO_MANY_WAIT};
+pub use store::{
+    ANSWERED, ANSWERED_THERE, AskedStore, MOST_WAITING, NOT_YOURS, NOTHING_ASKED, TOO_MANY_WAIT,
+    Waiting,
+};
 
 /// What a frame carrying an approve no resolve handed back is refused with
 /// ([`AskedStore::admits_approval`]).

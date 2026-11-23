@@ -39,6 +39,8 @@ const WAIT: Duration = Duration::from_secs(5);
 struct Workspace {
     ran: Mutex<Vec<InvokeRequest>>,
     revoked: Mutex<bool>,
+    /// What it asks, when not the agent's default: a program's question that takes a secret.
+    asks: Mutex<Option<AskedFacts>>,
 }
 
 impl ActionProvider for Workspace {
@@ -59,6 +61,9 @@ impl ActionProvider for Workspace {
             return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         if request.approval().is_none() {
+            if let Some(asks) = self.asks.lock().unwrap().clone() {
+                return Pending::ready(Err(ActionCallError::asks(asks)));
+            }
             return Pending::ready(Err(ActionCallError::asks(
                 AskedFacts {
                     verb: "send".into(),
@@ -436,4 +441,173 @@ fn a_waiting_call_survives_the_devices_restart() {
     assert_eq!(ran[0].invocation, call.invocation);
     assert!(asked::same_call(&ran[0], &call));
     assert!(kept.0.lock().unwrap().is_empty(), "nothing waits any more");
+}
+
+/// Scout's question reads in the workspace's invocations, where Ada's devices draw it: on the
+/// device's own record of the call, and as a row of its own where the device keeps no record of
+/// it (it waited across a restart). It names her as the one asked and carries what she reads.
+#[test]
+fn a_waiting_question_reads_in_the_workspaces_invocations() {
+    use tilo_actions::remote::workspace_invocations::{Invocation, InvocationStatus};
+
+    let device = Device::start(&Arc::default(), &Arc::default());
+    let call = send_mail();
+    device.send(&call).unwrap();
+    let waiting = device.store.waiting_in(WORKSPACE);
+    assert_eq!(waiting.len(), 1);
+    assert!(device.store.waiting_in("elsewhere").is_empty());
+    let id = call.invocation.0.to_string();
+
+    let mut recorded = vec![Invocation {
+        id: Some(id.clone()),
+        status: InvocationStatus::Running,
+        ..Invocation::default()
+    }];
+    super::super::services::with_questions(&mut recorded, waiting.clone(), None);
+    assert_eq!(recorded.len(), 1, "the record it has is the one read");
+    let item = &recorded[0];
+    assert_eq!(item.status, InvocationStatus::Waiting);
+    assert_eq!(item.person.as_deref(), Some(hex::encode(ADA).as_str()));
+    let asked = item.asked.as_ref().expect("what she is asked");
+    assert_eq!(asked.record.record, id);
+    assert!(asked.facts.facts.iter().any(|fact| fact.label == "To"));
+
+    let mut after_restart = Vec::new();
+    super::super::services::with_questions(&mut after_restart, waiting.clone(), None);
+    assert_eq!(
+        after_restart.len(),
+        1,
+        "listed though the device kept no record"
+    );
+    assert_eq!(after_restart[0].by.kind, "agent");
+    assert_eq!(after_restart[0].by.name, "Scout");
+    assert_eq!(after_restart[0].status, InvocationStatus::Waiting);
+
+    let mut another = Vec::new();
+    super::super::services::with_questions(&mut another, waiting, Some("another"));
+    assert!(
+        another.is_empty(),
+        "a reading of one invocation reads only that one"
+    );
+}
+
+/// A program outside Tilo asks Ada, through her shell, for her password: the question is the
+/// program's, answered only on this device. What she types there reaches the program's provider
+/// with her approve, and is never written to the record, the device's keeping of it or its
+/// reading; the same answer from her other device is refused.
+#[test]
+fn a_secret_is_answered_only_where_it_was_asked_and_never_kept() {
+    use tilo_actions::remote::asked::{AskedBy, Take};
+
+    const HERE: [u8; 32] = [7; 32];
+    const SECRET: &str = "correct horse battery staple";
+    let (kept, workspace) = (Arc::<Kept>::default(), Arc::<Workspace>::default());
+    *workspace.asks.lock().unwrap() = Some(AskedFacts {
+        verb: "unlock".into(),
+        takes: vec![Take {
+            label: "Password".into(),
+            secret: true,
+            shown: false,
+            initial: None,
+            chord: false,
+        }],
+        ..AskedFacts::by(AskedBy::Program {
+            name: "polkit".into(),
+            app_id: Some("org.freedesktop.policykit".into()),
+        })
+    });
+    let device = Device::start(&kept, &workspace);
+    device.store.asks_on(&HERE);
+    let ada_here = Caller::authenticated(ADA, HERE).in_workspace(WORKSPACE);
+    let call = send_mail();
+    let route: Route = (workspace.clone(), ada_here.clone());
+    let run = Run::Own {
+        workspace: WORKSPACE.into(),
+        pressed: None,
+    };
+    device
+        .asked
+        .send(run, &ada_here, route, call.clone())
+        .wait_timeout(WAIT)
+        .ok()
+        .flatten()
+        .unwrap()
+        .expect("kept for her to answer");
+    let questions = device.store.asked_of(&ADA);
+    assert_eq!(questions.len(), 1);
+    assert!(
+        matches!(&questions[0].facts.by, AskedBy::Program { name, .. } if name == "polkit"),
+        "the program's question, as its provider named it: {:?}",
+        questions[0].facts.by
+    );
+    assert!(
+        !questions[0].offers.contains(&Offer::ApproveAndGrant),
+        "a program's question grants nothing"
+    );
+    assert_eq!(
+        questions[0].record.device.as_deref(),
+        Some(hex::encode(HERE).as_str()),
+        "answered only on this device"
+    );
+
+    let at = device.store.record(&call.invocation.0.to_string()).unwrap();
+    let typed = |by: &Caller| {
+        device
+            .store
+            .resolve(
+                &at,
+                by,
+                &Resolve {
+                    typed: vec![SECRET.into()],
+                    ..Resolve::default()
+                },
+            )
+            .wait_timeout(WAIT)
+            .ok()
+            .flatten()
+            .unwrap()
+    };
+    assert_eq!(refusal(typed(&ada())), asked::ANSWERED_THERE);
+    assert!(
+        workspace.ran().is_empty(),
+        "nothing ran from her other device"
+    );
+    let written = |what: &str| {
+        let kept = serde_json::to_string(&*kept.0.lock().unwrap()).unwrap();
+        let reading = format!("{:?}", device.store.waiting_in(WORKSPACE));
+        assert!(
+            !kept.contains(SECRET) && !reading.contains(SECRET),
+            "the secret is in no record {what}"
+        );
+    };
+    written("while it waits");
+
+    typed(&ada_here).expect("answered here");
+    let ran = workspace.ran();
+    assert_eq!(ran.len(), 1, "it ran once");
+    let approval = ran[0].approval().expect("with her approve");
+    assert_eq!(
+        approval
+            .typed
+            .iter()
+            .map(|typed| typed.as_str())
+            .collect::<Vec<_>>(),
+        [SECRET],
+        "what she typed reaches the provider"
+    );
+    assert!(
+        !serde_json::to_string(&ran[0]).unwrap().contains(SECRET),
+        "the call as it travels carries no secret"
+    );
+    written("once answered");
+    let recorded = device
+        .invocations
+        .get(&ada_here, &call.invocation)
+        .expect("the device's record of it");
+    assert!(
+        !serde_json::to_string(&recorded.request)
+            .unwrap()
+            .contains(SECRET),
+        "the device's record of the call carries no secret"
+    );
 }

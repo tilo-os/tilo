@@ -377,6 +377,15 @@ pub struct Invocation {
     pub recorded: bool,
     /// The host remembers its calls: `id` reads, stops and takes it back.
     pub remembered: bool,
+    /// The person it waits for, the hex of their root key, while it asks them
+    /// ([`InvocationStatus::Waiting`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub person: Option<String>,
+    /// What its person is asked while it waits for them: the words, facts, what they type
+    /// (by label: what they typed never reaches a record), choose and pick, where it was
+    /// pressed, and the answers it offers. They answer it with `<record>#resolve`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asked: Option<Box<super::asked::Asked>>,
 }
 
 /// A page of a workspace's invocations, newest first.
