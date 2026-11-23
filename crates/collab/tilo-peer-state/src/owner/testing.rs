@@ -1,5 +1,6 @@
 //! Fixtures and internals for owner tests, the desktop session's included.
 #![allow(
+    clippy::expect_used,
     clippy::missing_panics_doc,
     clippy::unwrap_used,
     clippy::indexing_slicing,
