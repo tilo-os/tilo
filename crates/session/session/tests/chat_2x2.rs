@@ -854,3 +854,45 @@ fn a_running_apps_open_is_listed_and_brings_its_window_forward() {
         "the open brought the one window forward and started no second"
     );
 }
+
+/// An idle studio wakes nothing: with the workspace, its people and Chat's windows all settled
+/// and nothing typed, no device keeps a core busy and its collaboration broker stays asleep. A
+/// held read re-checking on a clock, or a window drawing with nothing to show, is caught here.
+/// The whole tree's wakeups are not the measure: a software-rendered session's rasteriser pool
+/// wakes on every frame it is handed, so the CPU it spends and the broker thread's own wakeups
+/// are.
+#[test]
+fn an_idle_studio_keeps_every_device_asleep() {
+    let studio = Studio::start();
+    for device in [
+        &studio.ada_laptop,
+        &studio.ada_phone,
+        &studio.bob_laptop,
+        &studio.bob_phone,
+    ] {
+        let pid = device.process().expect("the device's session runs");
+        // Two settled seconds, after the studio's own startup has finished: a device that keeps
+        // re-reading on a clock costs the same then as it did on its first frame.
+        let idle =
+            tilo_test_env::idle::idle_wakeups(pid, Duration::from_secs(2), Duration::from_secs(2))
+                .expect("a process tree to sample");
+        // One whole core is the complaint an idle device answers: an idle session costs a small
+        // share of one, and a device re-reading its records on a clock costs several.
+        assert!(
+            idle.total_cpu_percent() < 100.0,
+            "{} burns a core while idle: {idle}",
+            device.label
+        );
+        let broker: u64 = idle
+            .rows
+            .iter()
+            .filter(|row| row.thread == "tilo-collab-bro")
+            .map(tilo_test_env::idle::WakeupRow::wakeups)
+            .sum();
+        assert!(
+            idle.rate(broker) < 20.0,
+            "{}: the collaboration broker keeps waking while idle: {idle}",
+            device.label
+        );
+    }
+}

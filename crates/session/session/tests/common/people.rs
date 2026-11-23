@@ -1346,6 +1346,12 @@ impl Device {
         std::fs::read_to_string(self.logs_dir().join("session.log")).unwrap_or_default()
     }
 
+    /// The process this device's session runs as, while it runs: what a sample of everything the
+    /// session started ([`tilo_test_env::idle::idle_wakeups`]) is rooted at.
+    pub fn process(&self) -> Option<u32> {
+        self.child.as_ref().map(std::process::Child::id)
+    }
+
     /// What this device's session logged as a warning or an error, oldest first: what a failed step
     /// says when it never happened.
     pub fn warnings(&self) -> String {
