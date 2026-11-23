@@ -942,6 +942,9 @@ pub(crate) struct WorkspaceServices {
     pub(crate) work: tilo_server_protocol::WorkSetting,
     /// The relays this device holds back until something needs it reachable.
     pub(crate) reachability: tilo_endpoint_reachability::Reachability,
+    /// Whether the endpoint had named where it is reached when the service opened, or names it
+    /// only later ([`crate::service::ServiceConfig::reaching`]).
+    pub(crate) reaching: tilo_endpoint_reachability::Reaching,
     /// What this keeper says of itself among the holders of the workspaces it serves, which
     /// its signed address carries.
     pub(crate) holder: Arc<std::sync::RwLock<HolderClaim>>,

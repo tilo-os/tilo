@@ -1625,14 +1625,21 @@ impl Workspaces {
     /// relays, which wake for it and are waited for up to a net report, because a link signed
     /// before this device reached one names only the network it stands in. A device that reaches
     /// none in that time names the address it has, so one with no way out still hands out a link.
-    /// Nothing held back names the address the endpoint has. Asked before the workspace is
-    /// locked: the wait belongs to the invitation, not to everything the workspace answers.
+    /// With nothing held back, a service that opened before its endpoint reached one of its
+    /// relays ([`tilo_endpoint_reachability::Reaching::WhenNeeded`]) waits for it the same way;
+    /// any other names the address the endpoint has. Asked before the workspace is locked: the
+    /// wait belongs to the invitation, not to everything the workspace answers.
     pub(super) async fn invitation_addr(&self) -> EndpointAddr {
         match self
             .reachability()
             .reached_addr("an invitation names this device's address")
         {
             Some(reached) => reached.await,
+            None if self.inner.host.reaching
+                == tilo_endpoint_reachability::Reaching::WhenNeeded =>
+            {
+                tilo_endpoint_reachability::await_relay(&self.inner.host.endpoint).await
+            }
             None => self.endpoint_addr(),
         }
     }

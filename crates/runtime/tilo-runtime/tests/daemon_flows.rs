@@ -152,3 +152,61 @@ fn a_device_of_the_person_is_answered_and_a_visitor_is_refused_over_the_device_l
         );
     });
 }
+
+/// Whether a signed address names a relay: what reaches a device from another network.
+fn relayed(hint: &tilo_peer_state::join::TransportHint) -> bool {
+    let named: Value = serde_json::from_str(&hint.opaque_json).unwrap();
+    named["endpoint_addr"]["addrs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|addr| addr.get("Relay").is_some())
+}
+
+/// The daemon serves before its endpoint reaches a relay. An invitation made at once waits for
+/// the relay and names it, so another person's computer joins through it, and the address the
+/// workspace names for the daemon carries the relay too.
+#[test]
+fn an_invitation_made_at_start_names_the_relay_and_another_person_joins_with_it() {
+    host::run(|host| async move {
+        let workspace = host.workspace().to_owned();
+        let laptop = host.member("Ada's laptop", &workspace).await;
+        let invited = laptop
+            .call(
+                tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
+                tilo_actions::remote::workspace_governance_address(&workspace, "invite"),
+                &json!({"role": "editor"}),
+            )
+            .await;
+        let Ok(tilo_actions::InvocationUpdate::Succeeded { output, .. }) = &invited else {
+            panic!("the person's laptop invites: {invited:?}");
+        };
+        let answer = output.value.as_ref().expect("the invitation");
+        let signed = hex::decode(answer["invitation"].as_str().expect("its bytes")).unwrap();
+        let verified = tilo_peer_state::join::decode_and_verify_invitation(
+            &signed,
+            None,
+            &tilo_user_identity::RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        )
+        .unwrap();
+        let hint = &verified.grant().transport[0];
+        assert!(
+            relayed(hint),
+            "the invitation names the relay: {}",
+            hint.opaque_json
+        );
+
+        let (key, cert) = host::stranger("Bob's phone");
+        tilo_peer_state::join_transport::WorkspaceJoinClient::new(host::endpoint(&key).await)
+            .redeem_hint(hint, signed, cert, &key, [7; 32])
+            .await
+            .expect("another person's computer joins through the relay");
+
+        let named = host.daemon().workspaces().hosts(&workspace).await.unwrap();
+        assert!(
+            named.iter().any(relayed),
+            "the workspace names the daemon at its relay: {named:?}"
+        );
+    });
+}

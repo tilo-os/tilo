@@ -506,8 +506,13 @@ impl Tickets {
         };
         let args = Value::Object(argument.clone());
         let action = request.target.address.action.clone();
-        let waiting = matches!(action.as_str(), LOG_IN | PENDING | APPROVE | REPORTED)
-            || args.get("wait").and_then(Value::as_bool) == Some(true);
+        let wait = args.get("wait").and_then(Value::as_bool) == Some(true);
+        // A ticket names where the new computer dials this one: made before this device's
+        // endpoint reached one of its relays, it would name only the network this device stands
+        // in. It waits for the relay first, as an invitation does.
+        let unreached = action == ISSUE && !wait && !reached(&self.0.endpoint);
+        let waiting =
+            matches!(action.as_str(), LOG_IN | PENDING | APPROVE | REPORTED) || wait || unreached;
         if !waiting {
             let answer = if action == INFO {
                 Ok(device_info(&self.0.place, &self.0.key))
@@ -535,6 +540,10 @@ impl Tickets {
                 PENDING => served.pending(&args).await,
                 APPROVE => served.approve(&args).await,
                 REPORTED => served.report(&args).await,
+                ISSUE if !wait => {
+                    tilo_endpoint_reachability::await_relay(&served.0.endpoint).await;
+                    served.issue(&args)
+                }
                 _ => served.waited().await,
             };
             let update = match answer {
@@ -946,4 +955,11 @@ pub(crate) fn logged_in(device: &tilo_device_identity::login::Device) -> Value {
         "workspace_name": device.workspace_name,
         "host_origin": device.host_origin,
     })
+}
+
+/// Whether `endpoint` names where it is reached from another network: one of its relays answers
+/// it, or this device has none to wait for.
+fn reached(endpoint: &iroh::Endpoint) -> bool {
+    endpoint.addr().relay_urls().next().is_some()
+        || tilo_endpoint_reachability::relays().relays.is_empty()
 }

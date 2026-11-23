@@ -329,6 +329,7 @@ impl ServiceSessions {
             environments: self.handler.environments.clone(),
             work: cfg.work.clone(),
             reachability: cfg.reachability.clone(),
+            reaching: cfg.reaching,
             holder: Arc::new(std::sync::RwLock::new(crate::workspaces::HolderClaim {
                 label: cfg.label.clone(),
                 cloud: cfg.rented,

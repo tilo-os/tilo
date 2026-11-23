@@ -108,9 +108,13 @@ impl ServiceWorkspaces {
                     Some(configure) => configure(config),
                     // A person's computer serves its workspaces at once, on the network or off
                     // it: the service names its address in them once a relay answers, so
-                    // starting never waits out a net report.
+                    // starting never waits out a net report. One with no relays names none.
                     None => ServiceConfig {
-                        reaching: tilo_workspace_service::Reaching::WhenNeeded,
+                        reaching: if tilo_endpoint_reachability::relays().relays.is_empty() {
+                            tilo_workspace_service::Reaching::OnItsOwn
+                        } else {
+                            tilo_workspace_service::Reaching::WhenNeeded
+                        },
                         ..config
                     },
                 }

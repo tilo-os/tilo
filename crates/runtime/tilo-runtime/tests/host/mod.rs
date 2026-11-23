@@ -15,6 +15,7 @@
 //! | [`Host::agent`], then [`Agent::tool`] | `tilo mcp`: an agent run the device hands its person's MCP client |
 //! | [`Host::member`], then [`Member::call`] | another device of the person, over `tilo-actions/1` |
 //! | [`Host::visitor`] | a key the workspace has no certificate for ([`Caller::visitor`]) |
+//! | [`stranger`], then [`endpoint`] | another person's computer, dialling through the relay |
 //! | [`Host::dispatch`] | the daemon's one dispatch, as the person's own call |
 //!
 //! Each test runs in a process of its own, with a home, identity store and profile of its own:
@@ -211,24 +212,7 @@ impl Host {
         label: &str,
         capabilities: DeviceCapabilities,
     ) -> (SigningKey, DeviceCert) {
-        let mut secret = [0; 32];
-        getrandom::fill(&mut secret).unwrap();
-        let key = SigningKey::from_bytes(&secret);
-        // Issued a minute ago: a check reads the clock in whole milliseconds, and a certificate
-        // issued later than the check's own now is not valid yet.
-        let now = tilo_clock::unix_now_ns().saturating_sub(60 * 1_000_000_000);
-        let mut cert = DeviceCert {
-            user_public_key: self.root.public_key(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: label.into(),
-            capabilities,
-            issued_at_ns: now,
-            expires_at_ns: Some(now.saturating_add(24 * 60 * 60 * 1_000_000_000)),
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &self.root).unwrap();
-        (key, cert)
+        certified(&self.root, self.root.public_key(), label, capabilities)
     }
 
     /// A key of the person's reaching all their workspaces, named `label`: the key an SDK or a
@@ -275,9 +259,7 @@ impl Host {
     /// A key no certificate of `workspace` names, asking the daemon over the device link: a
     /// page at the workspace's public entry. It reaches only what the workspace opens to any key.
     pub async fn visitor(&self, workspace: &str) -> Member {
-        let mut secret = [0; 32];
-        getrandom::fill(&mut secret).unwrap();
-        self.dial(SigningKey::from_bytes(&secret), workspace).await
+        self.dial(random_key(), workspace).await
     }
 
     async fn dial(&self, key: SigningKey, workspace: &str) -> Member {
@@ -392,6 +374,59 @@ impl Member {
         .await
         .expect("the device link answers")
     }
+}
+
+/// A device of another person's, `label`, whom no workspace here knows: one an invitation brings
+/// in.
+#[must_use]
+pub fn stranger(label: &str) -> (SigningKey, DeviceCert) {
+    let root = random_key();
+    let person = root.verifying_key().to_bytes();
+    certified(&root, person, label, DeviceCapabilities::member())
+}
+
+/// An endpoint of `key`'s, reached through the relays this machine's devices use: another
+/// computer, dialling from a network of its own.
+pub async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
+    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+        .relay_mode(iroh::RelayMode::Custom(
+            tilo_endpoint_reachability::relays().relays,
+        ))
+        .bind()
+        .await
+        .unwrap()
+}
+
+fn random_key() -> SigningKey {
+    let mut secret = [0; 32];
+    getrandom::fill(&mut secret).unwrap();
+    SigningKey::from_bytes(&secret)
+}
+
+/// A new key `label` of the person whose root `root` is, certified with `capabilities`.
+fn certified(
+    root: &dyn tilo_user_identity::StatementSigner,
+    person: [u8; 32],
+    label: &str,
+    capabilities: DeviceCapabilities,
+) -> (SigningKey, DeviceCert) {
+    let key = random_key();
+    // Issued a minute ago: a check reads the clock in whole milliseconds, and a certificate
+    // issued later than the check's own now is not valid yet.
+    let now = tilo_clock::unix_now_ns().saturating_sub(60 * 1_000_000_000);
+    let mut cert = DeviceCert {
+        user_public_key: person,
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: label.into(),
+        capabilities,
+        issued_at_ns: now,
+        expires_at_ns: Some(now.saturating_add(24 * 60 * 60 * 1_000_000_000)),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
+    (key, cert)
 }
 
 /// A call of the action at `address` of `provider` with `arguments` (an object, or `null`).
