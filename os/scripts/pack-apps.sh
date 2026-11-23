@@ -251,9 +251,9 @@ fi
 export TILO_LAUNCHER_PATH="${TILO_LAUNCHER_PATH:-/usr/libexec/tilo/tilo-launcher}"
 
 export TILO_APPS_DATA_DIR="$STORE"
-# An image build has no device, identity or package service, so each install
-# below names the store it writes (`--offline-store`) and tilo-install makes the
-# package service's install action in its own process.
+# An image build has no device or identity, so each install below names the
+# store it writes (`--offline-store`) and tilo-install makes the device cache's
+# install change in its own process.
 
 # --- pack + install every manifest -----------------------------------------
 shipped=(); missing=(); failed=()

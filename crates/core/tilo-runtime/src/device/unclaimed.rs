@@ -20,8 +20,8 @@ use std::time::Duration;
 use ed25519_dalek::SigningKey;
 use serde_json::Value;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
@@ -83,18 +83,26 @@ impl ThisDevice {
         claimed(&self.place, &self.key)
     }
 
-    /// The device's own actions, as its endpoints answer them before its person's services run.
+    /// The device's own actions, as its endpoints answer them before its person's services run:
+    /// its package cache among them, the one it answers after a login too.
     pub(crate) fn answers(&self) -> DeviceOnly {
-        DeviceOnly(
+        let answers = DeviceOnly(
             Arc::new(Answering {
                 key: self.key.clone(),
                 place: self.place.clone(),
                 entered: Arc::clone(&self.entered),
                 calls: std::sync::Mutex::default(),
                 runtime: tilo_rt::app().handle().clone(),
+                packages: std::sync::OnceLock::new(),
             }),
             None,
-        )
+        );
+        #[cfg(unix)]
+        match super::packages::PackageCache::this_device(&self.key.verifying_key().to_bytes()) {
+            Ok(cache) => return answers.with_packages(cache),
+            Err(why) => tracing::warn!(%why, "this device keeps no packages"),
+        }
+        answers
     }
 
     /// The device a ticket made of this computer while this daemon ran, when one did: what its
@@ -184,8 +192,8 @@ pub(crate) async fn take_handed_ticket(
 
 /// What a device answers on its native endpoint before its person's services run, and to every
 /// account it serves no person for: what it is ([`INFO`]), logging it in with a ticket
-/// ([`LOG_IN`]), and, to root, who signed in and who left ([`crate::seats`]). Every other action
-/// needs a person, and is refused saying so.
+/// ([`LOG_IN`]), its package cache ([`super::packages`]), and, to root, who signed in and who left
+/// ([`crate::seats`]). Every other action needs a person, and is refused saying so.
 #[derive(Clone)]
 pub(crate) struct DeviceOnly(Arc<Answering>, Option<crate::seats::Seated>);
 
@@ -197,6 +205,8 @@ struct Answering {
     /// Each invocation taken, and where it is.
     calls: std::sync::Mutex<HashMap<InvocationId, InvocationState>>,
     runtime: tokio::runtime::Handle,
+    /// The device's package cache, which it answers before a login as after it.
+    packages: std::sync::OnceLock<Arc<dyn ActionProvider + Send + Sync>>,
 }
 
 impl DeviceOnly {
@@ -210,9 +220,22 @@ impl DeviceOnly {
                 entered: Entered::default(),
                 calls: std::sync::Mutex::default(),
                 runtime: tilo_rt::app().handle().clone(),
+                packages: std::sync::OnceLock::new(),
             }),
             None,
         )
+    }
+
+    /// These actions with the device's package cache `packages` among them: the first cache
+    /// given is the one they answer.
+    pub(crate) fn with_packages(self, packages: Arc<dyn ActionProvider + Send + Sync>) -> Self {
+        drop(self.0.packages.set(packages));
+        self
+    }
+
+    /// The device's package cache, when it keeps one.
+    fn packages(&self) -> Option<&Arc<dyn ActionProvider + Send + Sync>> {
+        self.0.packages.get()
     }
 
     /// These actions as one connection asks them: its account, which the seats' actions are
@@ -310,14 +333,24 @@ impl DeviceOnly {
 
 impl ActionProvider for DeviceOnly {
     fn serves(&self, provider: &str) -> bool {
-        provider == PROVIDER || provider == crate::seats::PROVIDER
+        provider == PROVIDER
+            || provider == crate::seats::PROVIDER
+            || self.packages().is_some_and(|cache| cache.serves(provider))
     }
 
     fn query(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        if let Some(cache) = self.packages()
+            && query
+                .provider
+                .as_deref()
+                .is_some_and(|provider| cache.serves(provider))
+        {
+            return cache.query(caller, query);
+        }
         Pending::ready(match query.provider.as_deref() {
             // Listed as the running providers, in no workspace, as a person's daemon lists the
             // device's beside their workspace's apps.
@@ -325,6 +358,16 @@ impl ActionProvider for DeviceOnly {
                 let mut page = device_only_catalogue(&query);
                 page.providers.push(provider(""));
                 page.providers.push(crate::seats::provider());
+                #[cfg(unix)]
+                if self.packages().is_some() {
+                    page.providers.push(CatalogueProvider {
+                        provider: super::packages::PROVIDER.to_owned(),
+                        app_id: super::packages::PROVIDER.to_owned(),
+                        workspace: String::new(),
+                        browsable: true,
+                        ..CatalogueProvider::default()
+                    });
+                }
                 Ok(page)
             }
             Some(PROVIDER) => Ok(device_only_catalogue(&query)),
@@ -335,12 +378,17 @@ impl ActionProvider for DeviceOnly {
 
     fn invoke(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
         if let Some(state) = self.0.calls.lock_recover().get(&invocation) {
             return Pending::ready(Ok(state.receipt()));
+        }
+        if let Some(cache) = self.packages()
+            && cache.serves(&request.target.provider)
+        {
+            return cache.invoke(caller, request);
         }
         let address = &request.target.address;
         if request.target.provider == crate::seats::PROVIDER {
@@ -400,8 +448,13 @@ impl ActionProvider for DeviceOnly {
         }
     }
 
-    fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.0.calls.lock_recover().get(id).cloned()
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        self.0
+            .calls
+            .lock_recover()
+            .get(id)
+            .cloned()
+            .or_else(|| self.packages()?.observe(caller, id))
     }
 
     fn cancel(&self, _caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
@@ -411,5 +464,9 @@ impl ActionProvider for DeviceOnly {
             },
             None => ActionCallError::UnknownInvocation,
         }))
+    }
+
+    fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
+        self.packages()?.content_puts()
     }
 }

@@ -11,6 +11,7 @@ pub mod image;
 pub mod manifest;
 pub mod pack;
 pub mod package;
+pub mod review;
 pub mod search_keywords;
 pub mod signed;
 pub mod tapp;
@@ -42,8 +43,7 @@ pub use signed::{SIGNED_ROOT_LEN, SIGNING_PREFIX_LEN, SignedRoot, SignedRootErro
 pub use tapp::{TAPP_FORMAT_VERSION, Tapp, TappError};
 pub use trust::{
     ATTESTATION_DOMAIN, AttestorScope, RevocationList, RevokedKey, TrustFile, TrustLoadError,
-    TrustedAttestor, TrustedAttestors, attestation_preimage, default_revoked_keys_path,
-    default_trusted_attestors_path,
+    TrustedAttestor, TrustedAttestors, attestation_preimage,
 };
 pub use unpack::{
     UnpackError, unpack, validate_materialized_payload, validate_materialized_payload_within,

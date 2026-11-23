@@ -252,11 +252,10 @@ ln -s ../libexec/tilo/tilo-model-manager %{buildroot}%{_bindir}/tilo-model-manag
 install -Dpm 0755 apps/bin/tilo-model-gateway %{buildroot}%{_libexecdir}/tilo/tilo-model-gateway
 ln -s ../libexec/tilo/tilo-model-gateway %{buildroot}%{_bindir}/tilo-model-gateway
 install -Dpm 0755 apps/libexec/tilo-cli-shim %{buildroot}%{_libexecdir}/tilo-cli-shim
-install -Dpm 0755 apps/libexec/tilo-package-service %{buildroot}%{_libexecdir}/tilo-package-service
 install -Dpm 0755 apps/libexec/tilo-ush %{buildroot}%{_libexecdir}/tilo-ush
 install -Dpm 0755 apps/bin/tilo-linux-vm %{buildroot}%{_libexecdir}/tilo/tilo-linux-vm
 ln -s ../libexec/tilo/tilo-linux-vm %{buildroot}%{_bindir}/tilo-linux-vm
-for unit in tilo-package-service tilo-models tilo-model-gateway tilo-ush; do
+for unit in tilo-models tilo-model-gateway tilo-ush; do
     install -Dpm 0644 apps/systemd-user/$unit.service \
         %{buildroot}%{_userunitdir}/$unit.service
     install -Dpm 0644 apps/systemd-user/$unit.socket \
@@ -337,7 +336,7 @@ grep -q '/usr/lib/tilo-apps/bin' %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.
 test -s %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
 # What the ush supervisor runs, at the paths it looks for it.
 test -x %{buildroot}%{_bindir}/tilo-linux-vm
-for unit in tilo-package-service tilo-models tilo-model-gateway tilo-ush; do
+for unit in tilo-models tilo-model-gateway tilo-ush; do
     test -f %{buildroot}%{_userunitdir}/$unit.service
     test -f %{buildroot}%{_userunitdir}/$unit.socket
     grep -q "^Service=$unit.service$" %{buildroot}%{_userunitdir}/$unit.socket
@@ -381,12 +380,9 @@ done
 %{_bindir}/tilo-model-gateway
 %{_libexecdir}/tilo/tilo-model-gateway
 %{_libexecdir}/tilo-cli-shim
-%{_libexecdir}/tilo-package-service
 %{_libexecdir}/tilo-ush
 %{_bindir}/tilo-linux-vm
 %{_libexecdir}/tilo/tilo-linux-vm
-%{_userunitdir}/tilo-package-service.service
-%{_userunitdir}/tilo-package-service.socket
 %{_userunitdir}/tilo-models.service
 %{_userunitdir}/tilo-models.socket
 %{_userunitdir}/tilo-model-gateway.service

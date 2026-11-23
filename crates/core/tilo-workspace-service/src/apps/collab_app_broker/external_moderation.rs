@@ -58,7 +58,13 @@ impl Context {
         {
             return Err("external moderation operation expired or not yet valid".into());
         }
-        trusted_destination(&self.request.operation.destination)?;
+        let registries = state
+            .membership
+            .as_ref()
+            .and_then(|membership| membership.package_registries(&self.original.route().cluster_id))
+            .and_then(|rows| app_cli::config::registries_from_rows(&rows))
+            .unwrap_or_default();
+        trusted_destination(&registries, &self.request.operation.destination)?;
         self.check_committed_evidence(&state)?;
         self.original.check_execution_frontier(&state)
     }
@@ -258,12 +264,14 @@ fn validate_committed_report(
     Ok(())
 }
 
-/// The operation names a destination, not a trust anchor. Read the host's
-/// current configuration on every frontier check so disabling a registry or
-/// rotating its pin also retires already admitted requests.
-fn trusted_destination(destination: &registry_types::ModerationDestination) -> Result<(), String> {
+/// The operation names a destination, not a trust anchor. `configured` is the
+/// workspace's registry list, read again on every frontier check so disabling a
+/// registry or rotating its pin also retires already admitted requests.
+fn trusted_destination(
+    configured: &app_cli::config::RegistriesFile,
+    destination: &registry_types::ModerationDestination,
+) -> Result<(), String> {
     destination_url(&destination.base_url)?;
-    let configured = app_cli::config::load_registries_no_seed();
     if !configured.enabled().any(|registry| {
         registry.base_url == destination.base_url
             && registry

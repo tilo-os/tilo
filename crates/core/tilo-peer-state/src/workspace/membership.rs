@@ -266,6 +266,10 @@ fn row_name(row: GovernanceRow) -> &'static str {
         GovernanceRow::Settings => "the workspace's settings",
         GovernanceRow::RetiredMedia => "the call policy older builds kept",
         GovernanceRow::Versions => "the app versions the workspace runs",
+        GovernanceRow::PackageTrust => {
+            "the attestors the workspace trusts and the publishers it refuses"
+        }
+        GovernanceRow::PackageRegistries => "the registries the workspace fetches apps from",
         GovernanceRow::Checkpoints => "the workspace's checkpoints",
         GovernanceRow::Hosts => "the workspace's hosts",
         GovernanceRow::Log => "the workspace's operations",

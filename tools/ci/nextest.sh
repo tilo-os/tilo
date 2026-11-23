@@ -130,9 +130,9 @@ fi
 # shellcheck source=tools/ci/handed.sh
 source "$root/tools/ci/handed.sh"
 
-# The app-cli and package-service trust tests execute the installer, which no package
-# depends on. A run handed it has it where the build left it, beside the tests' own build.
-if (( runs_tests )) && tests app-cli package-service; then
+# The app-cli trust tests execute the installer, which no package depends on. A run
+# handed it has it where the build left it, beside the tests' own build.
+if (( runs_tests )) && tests app-cli; then
     path=$(handed_bin tilo-install)
     [[ -n $path ]] || cargo build --locked -p install --bin tilo-install
 fi

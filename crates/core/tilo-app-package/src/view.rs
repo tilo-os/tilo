@@ -390,7 +390,7 @@ mod tests {
                 "package_id = \"so.tilo.store\"\nversion = \"9.9.9\"\n{}",
                 source(
                     "id = \"com.evil.app\"\nversion = \"0.1.0\"\nkind = \"app\"",
-                    "[entrypoint]\nbin = \"bin/x\"\n[sandbox.services]\npackage-service = \"required@1\"",
+                    "[entrypoint]\nbin = \"bin/x\"\n[sandbox.services]\ncollab = \"required@37\"",
                 )
             );
             let view = ManifestView::from_toml_str(&confused).expect("decodes");

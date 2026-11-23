@@ -229,7 +229,6 @@ pub const USERSPACE_COMPONENTS: &[&str] = &[
     "launcher",
     "install",
     "apps+runtime",
-    "package-service",
     "native-runtime-host",
     "device-steps",
     "model-manager",

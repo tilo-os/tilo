@@ -1,11 +1,13 @@
 //! tilo-install — the person's command line for Tilo packages (.tapp): install, update, remove,
 //! pin, collect, trust, images and runtime bundles, and the reads beside them.
 //!
-//! While the device runs, every change is the package service's action: this sends it and shows
-//! what it did, so a change from a terminal gets the same permissions and record as one from the
-//! Store, an agent or an automation. An OS image build has no device, identity or service, so it
-//! names the store it writes (`--offline-store DIR`) and the same action runs in this process.
-//! Reads (list, inspect, verify, run, the trust lists) read the store directly.
+//! While the device runs, every change is an action asked of this computer's daemon: an app's
+//! install, update, pin or removal is the workspace tree's, which each of its devices follows,
+//! and a runtime, an image, a collection or a check is the device cache's. So a change from a
+//! terminal gets the same permissions and record as one from the Store, an agent or an
+//! automation. An OS image build has no device, identity or daemon, so it names the store it
+//! writes (`--offline-store DIR`) and the same change runs in this process. Reads (list,
+//! inspect, run, the trust lists) read the store directly.
 
 use std::fs;
 use std::os::unix::process::CommandExt;
@@ -16,10 +18,10 @@ use std::sync::OnceLock;
 use clap::{Args, Parser, Subcommand};
 
 mod trust_cmd;
-use package_service_client::wire::{self, Change, ChangeReport, SavedData, Uploaded};
+mod workspace;
+use package_actions::{Change, SavedData, Uploaded};
 use package_store::installer::{
-    self, Error, data_home_root, decode_hex_32, load_revocation_list, load_trusted_attestors,
-    runtime_bundle_present,
+    self, Error, data_home_root, decode_hex_32, runtime_bundle_present,
 };
 use package_store::{InstalledPackage, PackageStore};
 
@@ -30,8 +32,8 @@ use package_store::{InstalledPackage, PackageStore};
 )]
 struct Cli {
     /// Write the package store at DIR in this process, as an OS image build does: there is no
-    /// device, identity or package service to ask. Without it, changes go through the person's
-    /// package service.
+    /// device or identity to ask. Without it, changes go through this computer's device daemon:
+    /// the workspace's app actions and its package cache.
     #[arg(long, global = true, value_name = "DIR")]
     offline_store: Option<PathBuf>,
     #[command(subcommand)]
@@ -407,48 +409,92 @@ fn find_installed(pkg_id: &str) -> Result<InstalledPackage, Error> {
         .ok_or_else(|| Error::NotInstalled(pkg_id.into()))
 }
 
-/// Trust-related flags as the installer takes them.
+/// Trust-related flags as the installer takes them, read against the workspace's
+/// trust list.
 impl From<&TrustFlags> for installer::Trust {
     fn from(flags: &TrustFlags) -> Self {
+        let (attestors, revoked) = workspace::trust();
         Self {
             require_package_root: flags.require_package_root.clone(),
             require_publisher: flags.require_publisher.clone(),
             require_attestor: flags.require_attestor.clone(),
             allow_self_signed: flags.allow_self_signed,
+            attestors: attestors
+                .into_iter()
+                .filter_map(|attestor| {
+                    Some(tilo_app_package::trust::TrustedAttestor {
+                        scope: tilo_app_package::trust::AttestorScope::parse(&attestor.scope)
+                            .ok()?,
+                        id: attestor.id,
+                        pubkey_hex: attestor.pubkey_hex,
+                    })
+                })
+                .collect(),
+            revoked: revoked
+                .into_iter()
+                .map(|key| tilo_app_package::trust::RevokedKey {
+                    pubkey_hex: key.pubkey_hex,
+                    reason: key.reason,
+                })
+                .collect(),
         }
     }
 }
 
-/// The trust flags as the package service takes them.
-fn wire_trust(flags: &TrustFlags) -> wire::Trust {
-    wire::Trust {
+/// The trust flags as the cache's changes take them, with the workspace's
+/// trust list beside them.
+fn wire_trust(flags: &TrustFlags) -> package_actions::Trust {
+    let (attestors, revoked) = workspace::trust();
+    package_actions::Trust {
         require_package_root: flags.require_package_root.clone(),
         require_publisher: flags.require_publisher.clone(),
         require_attestor: flags.require_attestor.clone(),
         allow_self_signed: flags.allow_self_signed,
+        attestors: attestors
+            .into_iter()
+            .filter_map(|attestor| {
+                Some(tilo_app_package::trust::TrustedAttestor {
+                    scope: tilo_app_package::trust::AttestorScope::parse(&attestor.scope).ok()?,
+                    id: attestor.id,
+                    pubkey_hex: attestor.pubkey_hex,
+                })
+            })
+            .collect(),
+        revoked: revoked
+            .into_iter()
+            .map(|key| tilo_app_package::trust::RevokedKey {
+                pubkey_hex: key.pubkey_hex,
+                reason: key.reason,
+            })
+            .collect(),
     }
 }
 
-/// Make `change`, which names `file` when it takes one, and show what it did: through the package
-/// service, or in this process for the store `--offline-store` names.
-fn make(change: Change, file: Option<&Path>) -> Result<(), String> {
-    let report: ChangeReport = match OFFLINE_STORE.get() {
+/// Make `change` and show what it did: in this process for the store `--offline-store` names, else
+/// through this computer's daemon.
+fn make(change: Change) -> Result<(), String> {
+    let report = match OFFLINE_STORE.get() {
         Some(root) => {
             let store = PackageStore::at(root);
             let catalog = package_store::Catalog::at(root, package_store::SystemStore::from_env());
-            package_service::change::apply(
-                &package_service::change::Target {
+            package_actions::apply(
+                &package_actions::Target {
                     store: &store,
                     catalog: &catalog,
                     max_store_bytes: package_store::DEFAULT_MAX_STORE_BYTES,
                 },
                 change,
-                file,
+                &package_actions::Entry::ImageBuild,
             )?
         }
-        None => package_service_client::person::change(change, file)?,
+        None => package_actions::device::make(change)?,
     };
-    package_service_client::person::show(&report, "tilo-install");
+    for warning in &report.warnings {
+        eprintln!("tilo-install: {warning}");
+    }
+    for line in &report.lines {
+        println!("{line}");
+    }
     Ok(())
 }
 
@@ -571,75 +617,11 @@ fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Resu
             SavedData::Keep
         }
     };
-    make(
-        Change::Uninstall {
-            app: pkg_id.to_owned(),
-            saved_data,
-            dry_run,
-        },
-        None,
-    )
-}
-
-/// Replay the signature chain for one installed package, or all of them.
-fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
-    let targets: Vec<InstalledPackage> = match pkg_id {
-        Some(id) => vec![find_installed(id)?],
-        None => list_catalog()?,
-    };
-    if targets.is_empty() {
-        println!("(no packages installed)");
-        return Ok(());
-    }
-    let checked = targets.len();
-    let mut bad: usize = 0;
-    for entry in &targets {
-        match package_store::integrity::verify(entry, &entry.payload_root) {
-            Ok(report) if report.is_intact() => {
-                println!(
-                    "ok       {} {}  ({} file(s) checked)",
-                    entry.id, entry.version, report.files_checked
-                );
-                for extra in &report.unexpected {
-                    println!("         note: not part of the package: {extra}");
-                }
-            }
-            Ok(report) => {
-                bad = bad.saturating_add(1);
-                println!(
-                    "FAILED   {} {}  ({} of {} file(s) do not match)",
-                    entry.id,
-                    entry.version,
-                    report.faults.len(),
-                    report.files_checked
-                );
-                for fault in &report.faults {
-                    println!("         {fault}");
-                }
-            }
-            Err(e) => {
-                bad = bad.saturating_add(1);
-                println!("FAILED   {} {}  {e}", entry.id, entry.version);
-            }
-        }
-        if !entry.runtime.is_empty() {
-            let version = entry.runtime.split_once('/').map_or("", |(_, v)| v);
-            if !runtime_bundle_present(version) {
-                println!(
-                    "         note: declared runtime {} is not installed, so this \
-                     package cannot launch",
-                    entry.runtime
-                );
-            }
-        }
-    }
-    if bad > 0 {
-        return Err(Error::VerificationFailed {
-            failed: bad,
-            checked,
-        });
-    }
-    Ok(())
+    make(Change::Uninstall {
+        app: pkg_id.to_owned(),
+        saved_data,
+        dry_run,
+    })
 }
 
 fn run(
@@ -671,12 +653,12 @@ fn run(
     }
 
     // Check trust policy again at launch: a revocation may postdate the install, and
-    // `--require-attestor` is held against the recorded `attested_by`.
-    let attestors = load_trusted_attestors()?;
-    let revocation = load_revocation_list()?;
-    if let Ok(pk_bytes) = decode_hex_32(&entry.publisher_key_hex)
-        && let Some(rev) = revocation.find(&pk_bytes)
-    {
+    // `--require-attestor` is checked against the recorded `attested_by`.
+    let (attestors, revoked) = workspace::trust();
+    if let Some(rev) = revoked.iter().find(|key| {
+        key.pubkey_hex
+            .eq_ignore_ascii_case(&entry.publisher_key_hex)
+    }) {
         eprintln!(
             "tilo-install: REFUSED — installed package's publisher is revoked: {}",
             rev.reason
@@ -688,8 +670,8 @@ fn run(
     }
     if let Some(required) = &trust.require_attestor {
         // The recorded `attested_by` is fixed at install time and goes stale when
-        // `trusted-attestors.toml` changes, so check it is still trusted.
-        let still_trusted = attestors.get(&entry.attested_by).is_some();
+        // the workspace's trust list changes, so check it is still trusted.
+        let still_trusted = attestors.iter().any(|a| a.id == entry.attested_by);
         if entry.attested_by != *required || !still_trusted {
             if !trust.allow_self_signed {
                 return Err(Error::AttestorMismatch {
@@ -707,15 +689,6 @@ fn run(
             );
         }
     }
-    if let Err(error) = make(
-        Change::Opened {
-            app: pkg_id.to_owned(),
-        },
-        None,
-    ) {
-        eprintln!("tilo-install: could not record the launch: {error}");
-    }
-
     // `tilo-launcher` on PATH, else a sibling of this binary.
     let launcher = which_launcher();
     let mut cmd = Command::new(&launcher);
@@ -930,33 +903,40 @@ fn runtime(cmd: RuntimeCmd) -> Result<(), String> {
             // An explicit prefix wins over the host root; neither builds from the host's
             // defaults.
             let from = from.or_else(|| from_host.then(|| PathBuf::from("/")));
-            make(
-                Change::InstallRuntime {
-                    version,
-                    from: from.map(|from| from.display().to_string()),
-                    arch,
-                    identity: identity.as_deref().map(uploaded),
-                    force,
-                },
-                identity.as_deref(),
-            )
+            make(Change::InstallRuntime {
+                from: from
+                    .map(|root| {
+                        let arch = arch
+                            .as_deref()
+                            .unwrap_or_else(|| runtime_bundle::host_arch());
+                        runtime_bundle::host_root_files(&root, arch).map(|files| {
+                            files
+                                .into_iter()
+                                .map(|(path, at)| package_actions::HostFile {
+                                    path: path.to_owned(),
+                                    file: uploaded(&at),
+                                })
+                                .collect()
+                        })
+                    })
+                    .transpose()
+                    .map_err(|error| error.to_string())?,
+                version,
+                arch,
+                identity: identity.as_deref().map(uploaded),
+                force,
+            })
         }
         RuntimeCmd::List => runtime_list().map_err(|error| error.to_string()),
-        RuntimeCmd::Remove { version } => make(Change::RemoveRuntime { version }, None),
-        RuntimeCmd::Pin { version } => make(
-            Change::PinRuntime {
-                version,
-                pinned: true,
-            },
-            None,
-        ),
-        RuntimeCmd::Unpin { version } => make(
-            Change::PinRuntime {
-                version,
-                pinned: false,
-            },
-            None,
-        ),
+        RuntimeCmd::Remove { version } => make(Change::RemoveRuntime { version }),
+        RuntimeCmd::Pin { version } => make(Change::PinRuntime {
+            version,
+            pinned: true,
+        }),
+        RuntimeCmd::Unpin { version } => make(Change::PinRuntime {
+            version,
+            pinned: false,
+        }),
         RuntimeCmd::Path { version } => runtime_path(&version).map_err(|error| error.to_string()),
         RuntimeCmd::Verify { version } => {
             runtime_verify(&version).map_err(|error| error.to_string())
@@ -994,22 +974,19 @@ fn dispatch(cmd: Cmd) -> Result<(), String> {
             runtime,
             dry_run,
             payload_from,
-        } => make(
-            Change::Install {
-                file: uploaded(&tapp),
-                trust: wire_trust(&trust),
-                pinned,
-                replacement: match (force, preserve_held) {
-                    (false, _) => wire::Replacement::Refuse,
-                    (true, false) => wire::Replacement::Replace,
-                    (true, true) => wire::Replacement::PreserveHeld,
-                },
-                ignore_missing_runtime: runtime.ignore_missing_runtime,
-                dry_run,
-                payload_from,
+        } => make(Change::Install {
+            file: uploaded(&tapp),
+            trust: wire_trust(&trust),
+            pinned,
+            replacement: match (force, preserve_held) {
+                (false, _) => package_actions::Replacement::Refuse,
+                (true, false) => package_actions::Replacement::Replace,
+                (true, true) => package_actions::Replacement::PreserveHeld,
             },
-            Some(&tapp),
-        ),
+            ignore_missing_runtime: runtime.ignore_missing_runtime,
+            dry_run,
+            payload_from,
+        }),
         Cmd::Update {
             pkg_id,
             from,
@@ -1019,19 +996,16 @@ fn dispatch(cmd: Cmd) -> Result<(), String> {
             trust,
             runtime,
             payload_from,
-        } => make(
-            Change::Update {
-                app: pkg_id,
-                file: from.as_deref().map(uploaded),
-                version,
-                allow_downgrade,
-                dry_run,
-                trust: wire_trust(&trust),
-                ignore_missing_runtime: runtime.ignore_missing_runtime,
-                payload_from,
-            },
-            from.as_deref(),
-        ),
+        } => make(Change::Update {
+            app: pkg_id,
+            file: from.as_deref().map(uploaded),
+            version,
+            allow_downgrade,
+            dry_run,
+            trust: wire_trust(&trust),
+            ignore_missing_runtime: runtime.ignore_missing_runtime,
+            payload_from,
+        }),
         Cmd::List {
             json: true,
             runtime_paths,
@@ -1043,21 +1017,15 @@ fn dispatch(cmd: Cmd) -> Result<(), String> {
             keep_state,
             dry_run,
         } => uninstall(&pkg_id, purge, keep_state, dry_run),
-        Cmd::Verify { pkg_id } => read(verify_installed(pkg_id.as_deref())),
-        Cmd::Pin { pkg_id } => make(
-            Change::SetPinned {
-                app: pkg_id,
-                pinned: true,
-            },
-            None,
-        ),
-        Cmd::Unpin { pkg_id } => make(
-            Change::SetPinned {
-                app: pkg_id,
-                pinned: false,
-            },
-            None,
-        ),
+        Cmd::Verify { pkg_id } => make(Change::Verify { app: pkg_id }),
+        Cmd::Pin { pkg_id } => make(Change::SetPinned {
+            app: pkg_id,
+            pinned: true,
+        }),
+        Cmd::Unpin { pkg_id } => make(Change::SetPinned {
+            app: pkg_id,
+            pinned: false,
+        }),
         Cmd::Run {
             pkg_id,
             no_services,
@@ -1073,19 +1041,14 @@ fn dispatch(cmd: Cmd) -> Result<(), String> {
         )),
         Cmd::Inspect { pkg_id } => read(inspect(&pkg_id)),
         Cmd::Trust { cmd } => match cmd {
-            TrustCmd::Add { id, pubkey, scope } => {
-                make(Change::AddAttestor { id, pubkey, scope }, None)
-            }
+            TrustCmd::Add { id, pubkey, scope } => make(Change::AddAttestor { id, pubkey, scope }),
             TrustCmd::List => read(trust_cmd::trust_list()),
-            TrustCmd::Remove { id } => make(Change::RemoveAttestor { id }, None),
+            TrustCmd::Remove { id } => make(Change::RemoveAttestor { id }),
         },
-        Cmd::Revoke { pubkey_hex, reason } => make(
-            Change::Revoke {
-                pubkey: pubkey_hex,
-                reason,
-            },
-            None,
-        ),
+        Cmd::Revoke { pubkey_hex, reason } => make(Change::Revoke {
+            pubkey: pubkey_hex,
+            reason,
+        }),
         Cmd::Revoked { cmd } => match cmd {
             RevokedCmd::List => read(trust_cmd::revoked_list()),
         },
@@ -1095,14 +1058,11 @@ fn dispatch(cmd: Cmd) -> Result<(), String> {
             dry_run,
             grace_secs,
             max_store_bytes,
-        } => make(
-            Change::Collect {
-                dry_run,
-                grace_secs,
-                max_store_bytes,
-            },
-            None,
-        ),
+        } => make(Change::Collect {
+            dry_run,
+            grace_secs,
+            max_store_bytes,
+        }),
         Cmd::Runtime { cmd } => runtime(cmd),
         Cmd::Image { cmd } => image(cmd),
     }
@@ -1114,17 +1074,16 @@ fn image(cmd: ImageCmd) -> Result<(), String> {
             tapp,
             publisher,
             payload_from,
-        } => make(
-            Change::AddImage {
-                file: uploaded(&tapp),
-                publisher,
-                payload_from,
-            },
-            Some(&tapp),
-        ),
+        } => make(Change::AddImage {
+            file: uploaded(&tapp),
+            publisher,
+            payload_from,
+            trust: wire_trust(&TrustFlags::default()),
+        }),
         ImageCmd::List => {
-            for meta in package_service::change::image_store(
+            for meta in package_actions::image_store(
                 &data_root().map_err(|error| error.to_string())?,
+                &wire_trust(&TrustFlags::default()),
             )
             .and_then(|store| store.images().map_err(installer::store_error))
             .map_err(|error| error.to_string())?
@@ -1147,7 +1106,7 @@ fn image(cmd: ImageCmd) -> Result<(), String> {
             Ok(())
         }
         ImageCmd::Path { id, registry } => {
-            let id = package_service_client::image_id(&id)?;
+            package_actions::image_id(&id)?;
             let registry = registry
                 .or_else(|| {
                     std::env::var("TILO_REGISTRY")
@@ -1155,20 +1114,9 @@ fn image(cmd: ImageCmd) -> Result<(), String> {
                         .filter(|url| !url.is_empty())
                 })
                 .unwrap_or_else(|| "https://apps.tilo.so".to_owned());
-            make(
-                Change::FetchImage {
-                    id: *id.as_bytes(),
-                    registry,
-                },
-                None,
-            )
+            make(Change::FetchImage { id, registry })
         }
-        ImageCmd::Remove { id } => make(
-            Change::RemoveImage {
-                id: *package_service_client::image_id(&id)?.as_bytes(),
-            },
-            None,
-        ),
+        ImageCmd::Remove { id } => make(Change::RemoveImage { id }),
     }
 }
 

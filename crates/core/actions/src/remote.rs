@@ -215,6 +215,15 @@ pub const WORKSPACE_SERVERS: &str = "servers";
 /// The apps and bots a workspace uses, under its governance root
 /// (`workspace/apps`).
 pub const WORKSPACE_APPS: &str = "apps";
+/// The attestors a workspace trusts and the publisher keys it refuses, under
+/// its governance root (`workspace/trust`).
+pub const WORKSPACE_TRUST: &str = "trust";
+/// The registries a workspace fetches apps from, under its governance root
+/// (`workspace/registries`).
+pub const WORKSPACE_REGISTRIES: &str = "registries";
+/// One app a workspace runs (`workspace/apps/<app>`, its id): what updates, pins and uninstalls
+/// it is published on it.
+pub const WORKSPACE_APP: &str = "apps/*";
 /// The mail accounts a workspace keeps on its server, under its governance
 /// root (`workspace/mail-accounts`): `tilo.accounts`'s, reached by path.
 pub const WORKSPACE_MAIL_ACCOUNTS: &str = "mail-accounts";
@@ -257,8 +266,9 @@ pub const WORKSPACE_WAITING: &str = "waiting";
 /// under the root it is on (none for the root itself) and its id there, as a
 /// person names it. An operation not listed is published on the root under its
 /// own name; one listed on [`WORKSPACE_MEMBER`] is published on each person, who
-/// is its `person`.
-pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 21] = [
+/// is its `person`, and one listed on [`WORKSPACE_APP`] on each app the workspace runs, which
+/// is its `app`.
+pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 37] = [
     ("member.list", Some(WORKSPACE_MEMBERS), "list"),
     (
         "member.add",
@@ -289,9 +299,25 @@ pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 21] = [
     ("copies.set", Some(WORKSPACE_SERVERS), "copies"),
     ("copies.read", Some(WORKSPACE_SERVERS), "keeps"),
     ("content.held", Some(WORKSPACE_SERVERS), "content"),
-    ("install-app", Some(WORKSPACE_APPS), "install-app"),
-    ("uninstall-app", Some(WORKSPACE_APPS), "uninstall-app"),
-    ("upload-app-file", Some(WORKSPACE_APPS), "upload-app-file"),
+    ("trust.list", Some(WORKSPACE_TRUST), "list"),
+    ("trust.revoked", Some(WORKSPACE_TRUST), "revoked"),
+    ("trust.add", Some(WORKSPACE_TRUST), "add"),
+    ("trust.remove", Some(WORKSPACE_TRUST), "remove"),
+    ("trust.revoke", Some(WORKSPACE_TRUST), "revoke"),
+    ("registry.list", Some(WORKSPACE_REGISTRIES), "list"),
+    ("registry.add", Some(WORKSPACE_REGISTRIES), "add"),
+    ("registry.remove", Some(WORKSPACE_REGISTRIES), "remove"),
+    ("registry.enable", Some(WORKSPACE_REGISTRIES), "enable"),
+    ("registry.disable", Some(WORKSPACE_REGISTRIES), "disable"),
+    ("registry.channel", Some(WORKSPACE_REGISTRIES), "channel"),
+    ("install-app", Some(WORKSPACE_APPS), "install"),
+    ("upload-app-file", Some(WORKSPACE_APPS), "upload"),
+    ("app.offers", Some(WORKSPACE_APPS), "offers"),
+    ("install-app", Some(WORKSPACE_APP), "update"),
+    ("app.pin", Some(WORKSPACE_APP), "pin"),
+    ("app.unpin", Some(WORKSPACE_APP), "unpin"),
+    ("uninstall-app", Some(WORKSPACE_APP), "uninstall"),
+    ("app.earlier", Some(WORKSPACE_APP), "earlier"),
 ];
 
 /// The resource `child` of `workspace`'s governance tree: the root for `None`.
@@ -313,14 +339,26 @@ pub fn workspace_member(workspace: &str, person: &str) -> String {
     )
 }
 
+/// The app `app` (its id) among the apps `workspace` runs.
+#[must_use]
+pub fn workspace_app(workspace: &str, app: &str) -> String {
+    format!(
+        "{}/{app}",
+        workspace_governance_child(workspace, Some(WORKSPACE_APPS))
+    )
+}
+
 /// The address `workspace`'s governance tree publishes the operation
-/// `operation` at, where it is not one person's.
+/// `operation` at, where it is not one person's or one app's.
 #[must_use]
 pub fn workspace_governance_address(workspace: &str, operation: &str) -> ActionAddress {
     match WORKSPACE_GOVERNANCE_PUBLISHED
         .iter()
-        .find(|(granted, child, _)| *granted == operation && *child != Some(WORKSPACE_MEMBER))
-    {
+        .find(|(granted, child, _)| {
+            *granted == operation
+                && *child != Some(WORKSPACE_MEMBER)
+                && *child != Some(WORKSPACE_APP)
+        }) {
         Some((_, child, action)) => {
             ActionAddress::new(workspace_governance_child(workspace, *child), *action)
         }
@@ -347,6 +385,8 @@ pub fn workspace_governance_operation(address: &ActionAddress) -> Option<(&str, 
     let action = address.action.as_str();
     let child = if workspace_person(address).is_some() {
         Some(WORKSPACE_MEMBER)
+    } else if workspace_app_named(address).is_some() {
+        Some(WORKSPACE_APP)
     } else {
         child
     };
@@ -378,6 +418,22 @@ pub fn workspace_person(address: &ActionAddress) -> Option<&str> {
         && person.len() == 64
         && person.bytes().all(|byte| byte.is_ascii_hexdigit()))
     .then_some(person)
+}
+
+/// The app (its id) `address` names among the apps its workspace runs
+/// (`workspace/apps/<app>`), when it names one.
+#[must_use]
+pub fn workspace_app_named(address: &ActionAddress) -> Option<&str> {
+    let named = address
+        .resource
+        .strip_prefix(workspace_governance_resource("").as_str())?;
+    let (apps, app) = named.split_once('/')?.1.split_once('/')?;
+    (apps == WORKSPACE_APPS
+        && !app.is_empty()
+        && app
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')))
+    .then_some(app)
 }
 
 /// Adding a computer to the person's devices with a one-use ticket: the computer's own daemon

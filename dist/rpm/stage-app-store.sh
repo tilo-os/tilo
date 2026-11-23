@@ -106,7 +106,7 @@ export TILO_LAUNCHER_PATH=/usr/libexec/tilo/tilo-launcher
 # arrives the way the app expects it to, fetched from the registry on first use
 # (dist/dev/nested-session.sh installs the same collection the same way).
 for package in "$work"/tapp/*.tapp; do
-    # A package build has no device or package service: the store it stages is
+    # A package build has no device: the store it stages is
     # written in this process.
     "$bin_dir/tilo-install" --offline-store "$store" install "$package" --allow-self-signed \
         --ignore-missing-runtime >/dev/null

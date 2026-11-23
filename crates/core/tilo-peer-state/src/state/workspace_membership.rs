@@ -350,6 +350,12 @@ impl PeerWorkspaceMut<'_> {
         if let Some(outcome) = self.peer.apply_app_command(caller, command, key, now) {
             return outcome;
         }
+        if let Some(outcome) = self.peer.apply_trust_command(caller, command, key, now) {
+            return outcome;
+        }
+        if let Some(outcome) = self.peer.apply_registry_command(caller, command, key, now) {
+            return outcome;
+        }
         if let Some(outcome) = self.peer.apply_call_command(caller, command, key, now) {
             return outcome;
         }

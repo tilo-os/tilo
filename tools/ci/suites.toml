@@ -1177,12 +1177,6 @@ readers = [
 ]
 
 [[cargo]]
-package = "app-cli"
-# The canonical downloader proves its staging path against the installed host unit.
-inputs = ["crates/core/package-service/systemd/tilo-package-service.service"]
-readers = ["crates/os/app-cli/src/install.rs"]
-
-[[cargo]]
 package = "tilo-app-cli"
 # Scaffolding and the dev loop locate the SDK and the UI builder in the tree;
 # standalone scaffolds embed the workspace's lock, patches, profiles and toolchain.
@@ -2152,12 +2146,6 @@ readers = ["apps/video-editor/build.rs"]
 [[covered]]
 suite = "tools/android/mediation/prepare-res.py"
 by = "tools/tests/test_android_fixture_resources.py"
-
-[[cargo]]
-package = "install"
-# Real signed runtime installation is checked against its broker service grants.
-inputs = ["crates/core/package-service/systemd/tilo-package-service.service", "os/usr/lib/systemd/user/tilo-package-service.service"]
-readers = ["crates/core/install/tests/runtime_package.rs"]
 
 [[unrequired]]
 suite = "tools/ci/windows/wine-test.sh"

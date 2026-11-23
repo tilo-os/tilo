@@ -18,6 +18,11 @@ const COPIES_KEY: &str = crate::state::COPY_POLICY_KEY;
 const CALLS_KEY: &str = "calls_v1";
 /// The document key holding the app versions a workspace runs.
 const VERSIONS_KEY: &str = "app_versions_v1";
+/// The document keys of the attestors a workspace trusts and the publisher
+/// keys it refuses.
+const TRUST_KEYS: [&str; 2] = ["package_attestors_v1", "package_revoked_v1"];
+/// The document key of the registries a workspace fetches apps from.
+const REGISTRIES_KEY: &str = "package_registries_v1";
 /// The document keys holding what a workspace vouches for the record history it
 /// published and the checkpoint it rests on.
 const CHECKPOINT_KEYS: [&str; 4] = [
@@ -44,6 +49,11 @@ pub enum GovernanceRow {
     RetiredMedia,
     /// The app versions the workspace runs.
     Versions,
+    /// The attestors whose signatures it accepts and the publisher keys it
+    /// refuses.
+    PackageTrust,
+    /// The registries it fetches apps from.
+    PackageRegistries,
     /// Checkpoint coverage, durability receipts and import floors.
     Checkpoints,
     /// The hosts serving the workspace.
@@ -65,13 +75,15 @@ pub enum GovernanceRow {
 }
 
 impl GovernanceRow {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 15] = [
         Self::Owner,
         Self::Membership,
         Self::Identities,
         Self::Settings,
         Self::RetiredMedia,
         Self::Versions,
+        Self::PackageTrust,
+        Self::PackageRegistries,
         Self::Checkpoints,
         Self::Hosts,
         Self::Log,
@@ -120,6 +132,8 @@ impl GovernanceRow {
             Self::Settings => &["name", "presets_v1", "entry_v1"],
             Self::RetiredMedia => &[MEDIA_KEY],
             Self::Versions => &[VERSIONS_KEY],
+            Self::PackageTrust => &TRUST_KEYS,
+            Self::PackageRegistries => &[REGISTRIES_KEY],
             Self::Checkpoints => &CHECKPOINT_KEYS,
             Self::Hosts => &[KEEPING_DEVICES_KEY, COPIES_KEY],
             Self::Removals => &[crate::removals::FIELD_V1],
@@ -138,7 +152,9 @@ impl GovernanceRow {
             Self::RetiredMedia | Self::Checkpoints | Self::Hosts | Self::Removals => {
                 Some(governance::SETTINGS)
             }
-            Self::Versions => Some(governance::INSTALL_APP),
+            Self::Versions | Self::PackageTrust | Self::PackageRegistries => {
+                Some(governance::INSTALL_APP)
+            }
             Self::Calls => Some(governance::CALL),
             Self::Owner
             | Self::Membership

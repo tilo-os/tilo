@@ -265,6 +265,7 @@ fn entry_for_checked(
             tapp_root_hash_hex: binding.package_id.to_hex(),
             tapp_size_bytes: tapp_bytes.len() as u64,
             tapp_blake3_hex: binding.tapp_blake3_hex,
+            tapp_surface_hex: binding.tapp_surface_hex,
             target: binding.target,
         }),
     };
@@ -404,10 +405,33 @@ pub(crate) fn signed_entry(
     Ok(entry)
 }
 
+/// The BLAKE3 of the surface `tapp_bytes` carries, in the form it is kept by: what a workspace
+/// that runs the version records and decides its changes against. Empty for a package that
+/// publishes no surface.
+///
+/// # Errors
+/// The bytes are no package, or its surface.toml is missing from it or does not parse.
+pub fn surface_hex(tapp_bytes: &[u8]) -> Result<String> {
+    let mut blobs: std::collections::BTreeMap<tilo_app_package::blobs::BlobHash, Vec<u8>> =
+        std::collections::BTreeMap::new();
+    let tapp = tilo_app_package::tapp::read(tapp_bytes, &mut blobs)
+        .map_err(|error| anyhow!("decode .tapp: {error}"))?;
+    let Some(hash) = tapp.meta.collection.entries.get("surface.toml") else {
+        return Ok(String::new());
+    };
+    let bytes = blobs
+        .get(hash)
+        .ok_or_else(|| anyhow!("the .tapp names a surface.toml it does not carry"))?;
+    let (_, kept) = collab_types::surface::SurfaceFile::kept(bytes)
+        .map_err(|error| anyhow!("the package's surface.toml: {error}"))?;
+    Ok(blake3::hash(kept.as_bytes()).to_hex().to_string())
+}
+
 /// What a registry version binds from the final tapp bytes.
 struct ArtifactBinding {
     package_id: tilo_app_package::PackageId,
     tapp_blake3_hex: String,
+    tapp_surface_hex: String,
     target: registry_types::RegistryTarget,
 }
 
@@ -424,6 +448,7 @@ fn native_binding(
         return Ok(ArtifactBinding {
             package_id: checked.id,
             tapp_blake3_hex: blake3::hash(tapp_bytes).to_hex().to_string(),
+            tapp_surface_hex: surface_hex(tapp_bytes)?,
             target: registry_types::RegistryTarget {
                 platform: registry_types::TILO_OS_PLATFORM.into(),
                 architecture: registry_types::ANY_ARCHITECTURE.into(),
@@ -458,6 +483,7 @@ fn native_binding(
     Ok(ArtifactBinding {
         package_id: checked.id,
         tapp_blake3_hex: blake3::hash(tapp_bytes).to_hex().to_string(),
+        tapp_surface_hex: surface_hex(tapp_bytes)?,
         target: registry_types::RegistryTarget {
             platform: registry_types::TILO_OS_PLATFORM.into(),
             architecture: arch_wire(arch).into(),
@@ -516,6 +542,7 @@ fn signed_target_binding(
     Ok(ArtifactBinding {
         package_id: checked.id,
         tapp_blake3_hex: blake3::hash(tapp_bytes).to_hex().to_string(),
+        tapp_surface_hex: surface_hex(tapp_bytes)?,
         target,
     })
 }
@@ -539,6 +566,7 @@ fn same_artifact(
     left.tapp_root_hash_hex == right.tapp_root_hash_hex
         && left.tapp_size_bytes == right.tapp_size_bytes
         && left.tapp_blake3_hex == right.tapp_blake3_hex
+        && left.tapp_surface_hex == right.tapp_surface_hex
         && left.target == right.target
 }
 
@@ -628,6 +656,7 @@ mod tests {
                 tapp_root_hash_hex: String::new(),
                 tapp_size_bytes: 0,
                 tapp_blake3_hex: String::new(),
+                tapp_surface_hex: String::new(),
                 target: registry_types::RegistryTarget {
                     platform: registry_types::TILO_OS_PLATFORM.into(),
                     architecture: "x86_64".into(),

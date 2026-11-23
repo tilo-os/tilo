@@ -6,7 +6,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use app_cli::RegistriesFile;
 
-use crate::registry_to_installed::Device;
+use crate::registry_fixture::Device;
 
 const OFFICIAL_KEY: &str = "d5dd5851bebac876b19986485184213ead36b67595b7efedf1144c120033b0bb";
 const MIRROR_KEY: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";

@@ -111,6 +111,7 @@ fn run() -> Result<(), String> {
                 tapp_root_hash_hex: tapp_root,
                 tapp_size_bytes: advertised_len as u64,
                 tapp_blake3_hex: blake3::hash(&tapp).to_hex().to_string(),
+                tapp_surface_hex: String::new(),
                 target: registry_types::RegistryTarget {
                     platform: registry_types::TILO_OS_PLATFORM.into(),
                     architecture: "x86_64".into(),

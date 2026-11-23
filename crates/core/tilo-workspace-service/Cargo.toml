@@ -155,6 +155,10 @@ tilo-app-package = { path = "../tilo-app-package" }
 # registry that offers the runtime bundle the package names when this host's
 # image carries another release's.
 app-cli = { path = "../../os/app-cli" }
+# The default collection's app ids, compiled in: the apps a workspace made here starts with.
+app-fleet = { path = "../../packaging/app-fleet" }
+# The releases this device's package cache already holds: a default app no registry answered for.
+package-store = { path = "../package-store" }
 # A host's workspaces keep their content in directories.
 tilo-content = { path = "../content", features = ["dir"] }
 # The person's own accounts and model providers, kept beside their

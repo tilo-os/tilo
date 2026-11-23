@@ -19,7 +19,6 @@ SUPPORT = {
     "install",
     "runtime-bundle",
     "cli-shim",
-    "package-service",
     "app-cli",
     "ush",
     "local-model-service",

@@ -758,6 +758,13 @@ impl WorkspaceAuthority for ServiceWorkspaces {
         Some(revocations)
     }
 
+    /// The registries the workspace's replica on this device records: what a moderation
+    /// request's destination is checked against here.
+    fn package_registries(&self, workspace: &str) -> Option<serde_json::Value> {
+        let peer = self.peer(WorkspaceId::parse(workspace)?)?;
+        Some(serde_json::json!({ "registries": peer.governance().package_registries() }))
+    }
+
     /// The work kept done in the workspace's replica on this device: what counts a shortcut's
     /// triggered runs here.
     fn done_under(&self, workspace: &str, prefix: &str) -> Vec<serde_json::Value> {

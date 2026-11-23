@@ -366,7 +366,7 @@ Trust is never widened: the cohort is signed with an ephemeral key that is not
 exported, and the device accepts it only after verifying the key pins carried in
 the layer, every signed package, the runtime ABI and the loader closure. Nothing
 is added to `/etc/tilo/runtime-bundle-trusted-publishers.txt`, and
-`launcher`/`package-service` keep ignoring `TILO_RUNTIME_BUNDLE_DIR` unless built with
+`launcher` keeps ignoring `TILO_RUNTIME_BUNDLE_DIR` unless built with
 `dev-overrides`. `tilo-vm rollback` returns to the previous apps and runtime
 unless the user packages it installed require the newer SDK (it says so).
 

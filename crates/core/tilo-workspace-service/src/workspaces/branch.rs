@@ -194,7 +194,7 @@ mod copy {
             self.begin_branch(branch)
                 .await
                 .map_err(NotMade::of("the new workspace"))?;
-            let made = match self.create_workspace(name, Some(branch)).await {
+            let made = match self.create_workspace_keeping_its_apps(name, branch).await {
                 Ok(summary) => self
                     .fill(source, branch, forked, person)
                     .await

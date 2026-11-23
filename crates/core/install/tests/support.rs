@@ -49,7 +49,8 @@ pub fn cmd(home: &Path) -> Command {
 }
 
 /// Changes `cmd` makes go to the store under `data_home` in its own process, the way an image build
-/// makes them: the package service runs the same change, and its own tests drive it there.
+/// makes them: the device daemon's package cache runs the same change, and its own tests drive it
+/// there.
 pub fn offline(cmd: &mut Command, data_home: &Path) {
     cmd.arg("--offline-store").arg(data_home.join("tilo-apps"));
 }

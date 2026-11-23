@@ -1194,6 +1194,7 @@ mod runtime_readiness_tests {
                         tapp_root_hash_hex: "aa".repeat(32),
                         tapp_size_bytes: 12_288,
                         tapp_blake3_hex: "bb".repeat(32),
+                        tapp_surface_hex: String::new(),
                         target: RegistryTarget {
                             platform: registry_types::TILO_OS_PLATFORM.into(),
                             architecture: "x86_64".into(),

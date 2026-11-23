@@ -22,17 +22,9 @@ pub(crate) fn verified_launch_publisher(
     payload_root: &Path,
     expected: &str,
 ) -> Result<(ManifestView, [u8; 32]), LaunchError> {
-    // Re-read on every launch, as `tilo-install run` does: a publisher revoked after install must not
-    // keep launching from the shell.
-    use tilo_app_package::TrustFile as _;
-    let revoked = match tilo_app_package::default_revoked_keys_path() {
-        Some(path) => tilo_app_package::RevocationList::load(&path).map_err(|error| {
-            LaunchError::InvalidServiceLaunch(format!(
-                "the publisher revocation list is unreadable ({error})"
-            ))
-        })?,
-        None => tilo_app_package::RevocationList::default(),
-    };
+    // Read on every launch, as `tilo-install run` does: a publisher the workspace
+    // revoked after install must not keep launching from the shell.
+    let revoked = workspace_revocations();
     verified_launch_publisher_against(installed, manifest_path, payload_root, expected, &revoked)
 }
 
@@ -75,4 +67,20 @@ fn verified_launch_publisher_against(
         return Err(refusal());
     }
     Ok((manifest, record.root.publisher_identity))
+}
+
+/// The publisher keys the workspace refuses, as its trust reading answers
+/// them: none when no desktop session answers, which refuses nothing beyond
+/// the package's own signature.
+fn workspace_revocations() -> tilo_app_package::RevocationList {
+    tilo_app_package::RevocationList {
+        revoked: tilo_control::packages::trust()
+            .1
+            .into_iter()
+            .map(|key| tilo_app_package::RevokedKey {
+                pubkey_hex: key.pubkey_hex,
+                reason: key.reason,
+            })
+            .collect(),
+    }
 }

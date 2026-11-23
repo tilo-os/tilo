@@ -13,12 +13,14 @@ pub struct AppRelease {
     /// The version its package names (`1.4.0`, `1.5.0-dev.3`).
     pub version: String,
     /// The BLAKE3 hash of the version's surface in the form it is kept by,
-    /// hex: the surface every change made with this version names.
+    /// hex: the surface every change made with this version names. Empty for a
+    /// version that publishes no surface, and for a Flatpak.
     pub surface: String,
     /// The package's `tapp:` hash (the BLAKE3 of its signed root), hex:
     /// what each member fetches and verifies before running the version.
+    /// Empty for a Flatpak, which names its payload by reference instead.
     pub package: String,
-    /// The publisher key that signed the package, hex.
+    /// The publisher key that signed the package, hex. Empty for a Flatpak.
     pub publisher: String,
     /// The BLAKE3 hash of the `.tapp` file, hex, when the workspace's host keeps
     /// it: members fetch it from the workspace by this hash and install it,
@@ -29,10 +31,106 @@ pub struct AppRelease {
     /// a registry; every window of the app says so.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dev: bool,
+    /// The workspace keeps this version: an update is refused until a member unpins it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+    /// What each device installs to run the app.
+    #[serde(default, skip_serializing_if = "AppPayload::is_tapp")]
+    pub payload: AppPayload,
+}
+
+/// What a device installs to run an app version the workspace runs.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum AppPayload {
+    /// The Tilo package the release names (`package`, `publisher`, `file`).
+    #[default]
+    Tapp,
+    /// A Flatpak (`app/org.example.App/x86_64/stable`), installed into the system's Flatpak
+    /// installation of each device that can run it.
+    Flatpak { reference: String },
+}
+
+impl AppPayload {
+    /// Whether the payload is a Tilo package, the one a release names unless it says otherwise.
+    #[must_use]
+    pub const fn is_tapp(&self) -> bool {
+        matches!(self, Self::Tapp)
+    }
+
+    /// Whether the payload is a Flatpak.
+    #[must_use]
+    pub const fn is_flatpak(&self) -> bool {
+        matches!(self, Self::Flatpak { .. })
+    }
+
+    /// The Flatpak reference (`app/org.example.App/x86_64/stable`) this payload
+    /// names, if it is one.
+    #[must_use]
+    pub fn flatpak_reference(&self) -> Option<&str> {
+        match self {
+            Self::Tapp => None,
+            Self::Flatpak { reference } => Some(reference),
+        }
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Tapp => Ok(()),
+            Self::Flatpak { reference }
+                if !reference.is_empty()
+                    && reference.len() <= MAX_FLATPAK_REFERENCE
+                    && reference.split('/').count() == 4
+                    && reference.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'/')
+                    }) =>
+            {
+                Ok(())
+            }
+            Self::Flatpak { .. } => Err(
+                "a Flatpak is named kind/id/arch/branch, as `app/org.example.App/x86_64/stable`"
+                    .into(),
+            ),
+        }
+    }
 }
 
 /// Most bytes an app release's version takes.
 const MAX_APP_VERSION: usize = 64;
+/// Most bytes a Flatpak reference takes.
+const MAX_FLATPAK_REFERENCE: usize = 255;
+
+/// Check `hash` is 64 lowercase hex digits.
+fn check_hash(what: &str, hash: &str) -> Result<(), String> {
+    if hash.len() == 64
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(())
+    } else {
+        Err(format!("the app's {what} is not 64 lowercase hex digits"))
+    }
+}
+
+/// The app id a Flatpak reference (`app/org.example.App/x86_64/stable`) is
+/// recorded under in a workspace's tree: its application id, lowercased, so
+/// every device names the same record. `None` for anything but an application
+/// reference.
+#[must_use]
+pub fn flatpak_app_id(reference: &str) -> Option<String> {
+    let mut parts = reference.split('/');
+    let (kind, id, arch, branch) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some()
+        || kind != "app"
+        || id.is_empty()
+        || arch.is_empty()
+        || branch.is_empty()
+    {
+        return None;
+    }
+    Some(id.to_ascii_lowercase())
+}
 
 impl AppRelease {
     /// Validate what the release names.
@@ -47,23 +145,36 @@ impl AppRelease {
         {
             return Err("invalid app version".into());
         }
-        for (what, hash) in [
-            ("surface", &self.surface),
-            ("package", &self.package),
-            ("publisher", &self.publisher),
-        ]
-        .into_iter()
-        .chain(self.file.iter().map(|file| ("file", file)))
-        {
-            if hash.len() != 64
-                || !hash
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            {
-                return Err(format!("the app's {what} is not 64 lowercase hex digits"));
+        match &self.payload {
+            AppPayload::Tapp => {
+                // A Tilo package names the package each member verifies and its publisher; a
+                // version that publishes no surface (a language pack) names none.
+                check_hash("package", &self.package)?;
+                check_hash("publisher", &self.publisher)?;
+                if !self.surface.is_empty() {
+                    check_hash("surface", &self.surface)?;
+                }
+                if let Some(file) = &self.file {
+                    check_hash("file", file)?;
+                }
+            }
+            AppPayload::Flatpak { .. } => {
+                // A Flatpak carries none of a Tilo package's fields: its reference is its payload.
+                for (what, present) in [
+                    ("surface", !self.surface.is_empty()),
+                    ("package", !self.package.is_empty()),
+                    ("publisher", !self.publisher.is_empty()),
+                    ("file", self.file.is_some()),
+                ] {
+                    if present {
+                        return Err(format!(
+                            "a Flatpak release carries no {what}: its payload is its reference"
+                        ));
+                    }
+                }
             }
         }
-        Ok(())
+        self.payload.validate()
     }
 
     /// The surface the changes made with this release name.
@@ -125,6 +236,22 @@ pub enum WorkspaceMembershipCommand {
     /// Take back the grant `grant`, as the caller: they must hold the workspace's
     /// revoke action.
     Revoke { grant: GrantId },
+    /// Add, replace or remove an attestor whose signature the workspace
+    /// accepts ([`TrustAttestor`](crate::TrustAttestor)).
+    AddAttestor(crate::TrustAttestor),
+    /// Remove the attestor `id` from the workspace's trust list.
+    RemoveAttestor { id: String },
+    /// Refuse every package publisher key `pubkey` signed, from now on.
+    RevokePublisher { pubkey: String, reason: String },
+    /// Add or replace a registry the workspace fetches apps from
+    /// ([`PackageRegistry`](crate::PackageRegistry)).
+    AddRegistry(crate::PackageRegistry),
+    /// Stop reading the registry `name`.
+    RemoveRegistry { name: String },
+    /// Read the registry `name`, or stop reading it.
+    SetRegistryEnabled { name: String, enabled: bool },
+    /// Offer `channel`'s releases from the registry `name`.
+    SetRegistryChannel { name: String, channel: String },
     /// Run this release of its app in the workspace, for every member
     /// ([`AppRelease`]).
     InstallApp(AppRelease),
@@ -341,6 +468,53 @@ impl WorkspaceMembershipCommand {
             }
             return Ok(());
         }
+        if let Self::AddAttestor(attestor) = self {
+            return if crate::state::package_trust::valid_attestor(attestor) {
+                Ok(())
+            } else {
+                Err("an attestor needs an id, a 64-hex key and a scope of `all`, `mime:` or `prefix:`".into())
+            };
+        }
+        if let Self::RemoveAttestor { id } = self {
+            return if id.trim().is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
+                Err("invalid attestor id".into())
+            } else {
+                Ok(())
+            };
+        }
+        if let Self::RevokePublisher { pubkey, .. } = self {
+            return if crate::state::package_trust::valid_pubkey(pubkey) {
+                Ok(())
+            } else {
+                Err("a revoked key is an Ed25519 key in hex".into())
+            };
+        }
+        if let Self::AddRegistry(registry) = self {
+            return if crate::state::package_registries::valid_registry(registry) {
+                Ok(())
+            } else {
+                Err("a registry needs a name, a credential-free address, a pinned 64-hex owner key and a known channel".into())
+            };
+        }
+        if let Self::RemoveRegistry { name } | Self::SetRegistryEnabled { name, .. } = self {
+            return if name.trim().is_empty()
+                || name.len() > 128
+                || name.chars().any(char::is_control)
+            {
+                Err("invalid registry name".into())
+            } else {
+                Ok(())
+            };
+        }
+        if let Self::SetRegistryChannel { name, channel } = self {
+            if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+                return Err("invalid registry name".into());
+            }
+            if !crate::state::package_registries::CHANNELS.contains(&channel.as_str()) {
+                return Err("a registry offers `stable` or `development` releases".into());
+            }
+            return Ok(());
+        }
         if let Self::InstallApp(release) = self {
             return release.validate();
         }
@@ -533,11 +707,13 @@ mod tests {
             let install = WorkspaceMembershipCommand::InstallApp(AppRelease {
                 app: app.to_owned(),
                 version: "1.0.0".into(),
-                surface: hex64("a"),
-                package: hex64("b"),
-                publisher: hex64("c"),
+                surface: Some(hex64("a")),
+                package: Some(hex64("b")),
+                publisher: Some(hex64("c")),
                 file: None,
                 dev: false,
+                pinned: false,
+                payload: AppPayload::Tapp,
             });
             assert_eq!(install.validate().is_ok(), expected, "install {app:?}");
             let uninstall = WorkspaceMembershipCommand::UninstallApp {
@@ -545,5 +721,80 @@ mod tests {
             };
             assert_eq!(uninstall.validate().is_ok(), expected, "uninstall {app:?}");
         }
+    }
+
+    #[test]
+    fn a_language_pack_release_names_no_surface() {
+        let pack = WorkspaceMembershipCommand::InstallApp(AppRelease {
+            app: "so.tilo.language-pack.de".into(),
+            version: "1.0.0".into(),
+            surface: String::new(),
+            package: "b".repeat(64),
+            publisher: "c".repeat(64),
+            file: Some("d".repeat(64)),
+            dev: false,
+            pinned: false,
+            payload: AppPayload::Tapp,
+        });
+        assert_eq!(pack.validate(), Ok(()));
+        let no_package = WorkspaceMembershipCommand::InstallApp(AppRelease {
+            app: "so.tilo.language-pack.de".into(),
+            version: "1.0.0".into(),
+            surface: String::new(),
+            package: String::new(),
+            publisher: "c".repeat(64),
+            file: None,
+            dev: false,
+            pinned: false,
+            payload: AppPayload::Tapp,
+        });
+        assert!(
+            no_package.validate().is_err(),
+            "a Tilo package names its package"
+        );
+    }
+
+    #[test]
+    fn a_flatpak_release_carries_only_its_reference() {
+        let reference = "app/org.gnome.Calculator/x86_64/stable";
+        assert_eq!(
+            flatpak_app_id(reference).as_deref(),
+            Some("org.gnome.calculator")
+        );
+        assert_eq!(
+            flatpak_app_id("runtime/org.freedesktop.Platform/x86_64/24.08"),
+            None
+        );
+        let flatpak = WorkspaceMembershipCommand::InstallApp(AppRelease {
+            app: flatpak_app_id(reference).expect("an application reference"),
+            version: "stable".into(),
+            surface: String::new(),
+            package: String::new(),
+            publisher: String::new(),
+            file: None,
+            dev: false,
+            pinned: false,
+            payload: AppPayload::Flatpak {
+                reference: reference.into(),
+            },
+        });
+        assert_eq!(flatpak.validate(), Ok(()));
+        let with_package = WorkspaceMembershipCommand::InstallApp(AppRelease {
+            app: "org.gnome.calculator".into(),
+            version: "stable".into(),
+            surface: String::new(),
+            package: "b".repeat(64),
+            publisher: String::new(),
+            file: None,
+            dev: false,
+            pinned: false,
+            payload: AppPayload::Flatpak {
+                reference: reference.into(),
+            },
+        });
+        assert!(
+            with_package.validate().is_err(),
+            "a Flatpak carries no package"
+        );
     }
 }

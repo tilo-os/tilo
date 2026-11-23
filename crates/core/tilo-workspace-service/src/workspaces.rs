@@ -29,8 +29,8 @@ mod appended;
 #[cfg(feature = "agents")]
 mod applications;
 mod authored;
-pub(crate) mod blocked;
 mod authority;
+pub(crate) mod blocked;
 mod branch;
 mod moderation_history;
 pub use branch::{BranchContent, BranchFileKeys, Branched};
@@ -39,6 +39,7 @@ mod collaboration;
 mod commit;
 mod content;
 mod creating;
+mod default_apps;
 mod delete;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;

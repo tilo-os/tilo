@@ -1,5 +1,8 @@
-//! Serialized package actor with cooperative catalogue refreshes. Independent
-//! source reads share its authenticated connection; the UI drains snapshots.
+//! The Store's serialized worker: catalogue and package-source reads, and the workspace's apps,
+//! this device's packages and the changes to them, over the session's action API (`packages`).
+//! This device's Flatpak metadata and Flathub's feed are read on threads of their own; the
+//! workspace's Tilo repositories are read by this device's package cache. The UI drains
+//! snapshots.
 
 use crate::resource::CATALOG;
 use std::num::NonZeroUsize;
@@ -19,11 +22,11 @@ use crate::config::{RegistriesFile, RegistryConfig};
 use crate::flathub_client::{Remote, installed_flatpaks};
 use crate::model::{ActionKind, StoreSource};
 use crate::search::StoreDirectory;
-use crate::sources::{
-    installed_flatpak_to_item, installed_tilo_to_store_item, merge, tilo_to_store_item_on_channel,
-};
 use crate::{FlatpakRef, StoreItem};
 
+mod packages;
+#[cfg(test)]
+mod packages_tests;
 mod refresh;
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(900);
@@ -127,6 +130,8 @@ pub struct Snapshot {
     pub expired_repositories: Vec<String>,
     pub blocks: ui::registry::BlockList,
     pub updating: Option<String>,
+    /// The apps this device is fetching, by app id, with the bytes it has.
+    pub installs: std::collections::BTreeMap<String, ui::arriving::Progress>,
 }
 
 struct QueuedRequest {
@@ -168,24 +173,25 @@ impl StoreWorker {
     /// # Panics
     /// Panics if the OS refuses to spawn a thread (extreme resource
     /// exhaustion): a live Store without its worker has nothing to show.
-    pub fn spawn(directory: StoreDirectory, wake: WakeHandle) -> Self {
-        Self::spawn_with_host(
-            directory,
-            wake,
-            package_service::client::BlockingClient::from_service,
-        )
+    pub fn spawn(
+        directory: StoreDirectory,
+        wake: WakeHandle,
+        actions: ui::RemoteActions,
+        workspace: Option<String>,
+    ) -> Self {
+        Self::spawn_with(directory, wake, actions, workspace, Vec::new())
     }
 
     #[allow(
         clippy::expect_used,
         reason = "thread spawn failure means the OS is out of resources; the surface attaching the worker has no fallible path to report it on"
     )]
-    fn spawn_with_host(
+    fn spawn_with(
         directory: StoreDirectory,
         wake: WakeHandle,
-        connect: impl FnOnce() -> Result<package_service::client::BlockingClient, String>
-        + Send
-        + 'static,
+        actions: ui::RemoteActions,
+        workspace: Option<String>,
+        registries: Vec<RegistryConfig>,
     ) -> Self {
         let (request_tx, request_rx) = mpsc::channel();
         let (snapshot_tx, snapshot_rx) = mpsc::channel();
@@ -197,6 +203,7 @@ impl StoreWorker {
             .name("store-worker".into())
             .spawn({
                 let pending = Arc::clone(&pending);
+                let registries = registries.clone();
                 move || {
                     // Fluent managers are thread-local. Worker status must
                     // use the same selected app catalogue as its live view.
@@ -206,7 +213,14 @@ impl StoreWorker {
                         wake,
                         pending,
                     };
-                    run(&request_rx, &snapshots, directory, connect());
+                    run(
+                        &request_rx,
+                        &snapshots,
+                        directory,
+                        actions,
+                        workspace,
+                        registries,
+                    );
                 }
             })
             .expect("spawn store worker");
@@ -219,15 +233,15 @@ impl StoreWorker {
         }
     }
 
+    /// A worker like this one that reads through `actions` and the repositories `registries`.
     #[cfg(test)]
-    pub(crate) fn with_connected_host(
+    pub(crate) fn with_actions(
         &self,
         directory: StoreDirectory,
-        fd: std::os::fd::OwnedFd,
+        actions: ui::RemoteActions,
+        registries: Vec<RegistryConfig>,
     ) -> Self {
-        Self::spawn_with_host(directory, self.wake.clone(), move || {
-            package_service::client::BlockingClient::from_connected_fd(fd)
-        })
+        Self::spawn_with(directory, self.wake.clone(), actions, None, registries)
     }
 
     pub fn request(&self, request: Request) -> bool {
@@ -295,11 +309,15 @@ struct State {
     refresh_requested: bool,
     /// Passive source hydration must not erase a completed operation's notice.
     operation_notice: Option<String>,
-    host: Option<package_service::client::BlockingClient>,
+    /// Whether a refresh reads this device's Flatpak metadata and Flathub's feed on threads of
+    /// their own. A state built to check one response at a time reads neither.
+    background_reads: bool,
+    /// The workspace's apps and this device's packages, through the session's action API.
+    packages: packages::AppPackages,
     opened_ref: Option<FlatpakRef>,
     imported_package: Option<crate::package_import::ImportedPackage>,
     base_items: Vec<StoreItem>,
-    installed: Vec<(String, String)>,
+    flatpak_installed: Vec<(String, String)>,
     installed_origins: std::collections::HashMap<String, (String, bool)>,
     remotes: Vec<Remote>,
     flatpak_available: bool,
@@ -311,35 +329,51 @@ struct State {
     directory: StoreDirectory,
     blocks: ui::registry::BlockList,
     /// The person's repositories as the last refresh read them. Kept here so
-    /// publishing the directory never asks the host again: each ask runs
-    /// `app repo list` on the host.
+    /// publishing the directory never asks the workspace again.
     registries: Vec<RegistryConfig>,
     /// Flathub's catalogue as the last refresh read it, so the next refresh
     /// lists Flathub's apps from its first snapshot while it reads again.
     flathub: Option<crate::catalogue::flathub::FlathubFeed>,
     force_refresh: bool,
+    /// The change the worker started and has not finished, if any.
+    running: Option<Running>,
+    /// A press on Open waiting for this device to finish installing the app.
+    opens: Vec<OpenWait>,
+}
+
+/// One change on its way to the workspace, and the caller waiting for it.
+struct Running {
+    started: packages::Started,
+    done: Option<Done>,
+}
+
+/// A press on Open that waits for the app's package to reach this device.
+struct OpenWait {
+    app: String,
+    name: String,
+    done: Option<Done>,
+    /// When the wait began, so one that never ends is said rather than kept.
+    since: std::time::Instant,
 }
 
 fn initial_state(
     directory: StoreDirectory,
-    host: Result<package_service::client::BlockingClient, String>,
+    actions: ui::RemoteActions,
+    workspace: Option<String>,
+    registries: Vec<RegistryConfig>,
 ) -> State {
     State {
         refresh_requested: false,
         operation_notice: None,
-        host: host
-            .map_err(|error| {
-                tracing::error!(%error, "required package-service capability unavailable");
-                error
-            })
-            .ok(),
+        background_reads: true,
+        packages: packages::AppPackages::new(actions, workspace),
         opened_ref: None,
         imported_package: None,
         // The catalogue the last window kept: a refresh keeps describing
         // every app it lists until that app's own source answers, so the
         // window never empties while the sources are asked again.
         base_items: crate::catalogue::cache::load().map_or_else(Vec::new, |cached| cached.items),
-        installed: Vec::new(),
+        flatpak_installed: Vec::new(),
         installed_origins: std::collections::HashMap::new(),
         remotes: Vec::new(),
         flatpak_available: false,
@@ -350,9 +384,11 @@ fn initial_state(
         details: LruCache::new(CACHE_CAP),
         blocks: ui::registry::BlockList::load(),
         directory,
-        registries: Vec::new(),
+        registries,
         flathub: crate::catalogue::flathub::load(),
         force_refresh: false,
+        running: None,
+        opens: Vec::new(),
     }
 }
 
@@ -386,20 +422,26 @@ fn run(
     requests: &mpsc::Receiver<QueuedRequest>,
     snapshots: &Snapshots,
     directory: StoreDirectory,
-    host: Result<package_service::client::BlockingClient, String>,
+    actions: ui::RemoteActions,
+    workspace: Option<String>,
+    registries: Vec<RegistryConfig>,
 ) {
-    let staging = crate::actions::tapp_staging_dir()
-        .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
-    let _ = std::fs::create_dir_all(&staging);
-    let mut state = initial_state(directory, host);
-    let mut refresh = Some(refresh::Refresh::start(&state, None));
+    let mut state = initial_state(directory, actions, workspace, registries);
+    let mut refresh = Some(refresh::Refresh::start(&mut state, None));
     let mut deferred_imports = std::collections::VecDeque::new();
     loop {
         if !poll_refresh(&mut refresh, &mut state, snapshots) {
             break;
         }
+        if !advance_packages(&mut state, snapshots) {
+            break;
+        }
         let wait = if refresh.is_some() {
             Duration::from_millis(25)
+        } else if state.running.is_some() || !state.opens.is_empty() || state.packages.reading() {
+            Duration::from_millis(50)
+        } else if state.packages.waiting() {
+            Duration::from_secs(1)
         } else {
             REFRESH_INTERVAL
         };
@@ -413,7 +455,7 @@ fn run(
         match next {
             Ok(QueuedRequest {
                 request,
-                done,
+                mut done,
                 locale,
             }) => {
                 locale.apply();
@@ -442,7 +484,8 @@ fn run(
                     // Only a refresh someone asked for (an effect's job)
                     // reads Flathub's whole catalogue again.
                     state.force_refresh = done.is_some();
-                    refresh = Some(refresh::Refresh::start(&state, done));
+                    state.packages.retry();
+                    refresh = Some(refresh::Refresh::start(&mut state, done));
                     state.force_refresh = false;
                     continue;
                 }
@@ -453,7 +496,7 @@ fn run(
                         | Request::InstallImported { .. }
                         | Request::ImportPackage(_)
                 );
-                let (alive, outcome) = handle(request, &mut state, snapshots, &staging);
+                let (alive, outcome) = handle(request, &mut state, snapshots, &mut done);
                 if package_operation
                     && let Some(outcome) = &outcome
                     && !outcome
@@ -465,7 +508,9 @@ fn run(
                         Err(error) => error.clone(),
                     });
                 }
-                if let (Some(done), Some(outcome)) = (done, outcome) {
+                if let Some(outcome) = outcome
+                    && let Some(done) = done
+                {
                     let _ = done.send(outcome);
                 }
                 if !alive {
@@ -477,13 +522,14 @@ fn run(
                         previous.retire();
                     } else {
                         snapshots.pending.fetch_add(1, Ordering::Relaxed);
-                        refresh = Some(refresh::Refresh::start(&state, None));
+                        refresh = Some(refresh::Refresh::start(&mut state, None));
                     }
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) if refresh.is_none() => {
                 snapshots.pending.fetch_add(1, Ordering::Relaxed);
-                refresh = Some(refresh::Refresh::start(&state, None));
+                state.packages.retry();
+                refresh = Some(refresh::Refresh::start(&mut state, None));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -545,8 +591,179 @@ fn poll_refresh(
             expired_repositories: state.expired_repositories.clone(),
             blocks: state.blocks.clone(),
             updating: None,
+            installs: installs_of(state),
         })
 }
+
+/// Take in what the session answered about the workspace's apps and this device's packages, and
+/// finish what waited for them: a change that ended, a press on Open whose package arrived.
+fn advance_packages(state: &mut State, snapshots: &Snapshots) -> bool {
+    if state.running.is_some() {
+        state.packages.poll();
+    }
+    let advanced = state.packages.advance();
+    let mut changed = advanced.changed;
+    let mut error = None;
+    if let Some(code) = advanced.error {
+        let reason = match code {
+            "the_packages" => CATALOG.t("store-packages-unavailable"),
+            _ => CATALOG.t("store-package-rows-unavailable"),
+        };
+        state.operation_notice = Some(reason.clone());
+        error = Some(reason);
+        changed = true;
+    }
+    if advanced.changed {
+        apply_installed(state);
+    }
+    let ended = state.running.as_ref().and_then(|running| {
+        packages::settled(&running.started.call)
+            .map(|ended| (ended, running.started.app.clone(), running.started.change))
+    });
+    if let Some((ended, app, change)) = ended
+        && let Some(started) = state.running.take()
+    {
+        let result = match ended {
+            Ok(()) => Ok(Finished::status(status_of(change, &app))),
+            Err(reason) => Err(reason),
+        };
+        state.operation_notice = Some(match &result {
+            Ok(finished) => finished.status.clone(),
+            Err(reason) => reason.clone(),
+        });
+        if change != packages::Change::Get {
+            state.refresh_requested = true;
+        }
+        if let Some(done) = started.done {
+            let _ = done.send(result);
+        }
+        changed = true;
+    }
+    changed |= advance_opens(state);
+    if changed {
+        let status = state
+            .operation_notice
+            .clone()
+            .unwrap_or_else(|| CATALOG.t("store-catalogue-refreshed"));
+        return publish(snapshots, state, &status, error);
+    }
+    true
+}
+
+/// Put what the workspace runs and what this device holds into each catalogue row.
+fn apply_installed(state: &mut State) {
+    let installed = state.packages.installed().clone();
+    for item in &mut state.base_items {
+        if !matches!(item.source, StoreSource::Tilo { .. }) {
+            continue;
+        }
+        item.installed = installed.state(&item.id, item.latest_version());
+    }
+}
+
+/// Answer each press on Open whose package reached this device.
+fn advance_opens(state: &mut State) -> bool {
+    let roots: std::collections::BTreeMap<String, String> = state
+        .packages
+        .installed()
+        .device
+        .iter()
+        .filter(|(_, row)| row.installed())
+        .map(|(app, row)| (app.clone(), row.root.clone()))
+        .collect();
+    let opens = std::mem::take(&mut state.opens);
+    let (arrived, waiting): (Vec<OpenWait>, Vec<OpenWait>) = opens
+        .into_iter()
+        .partition(|wait| roots.contains_key(&wait.app));
+    let (expired, waiting): (Vec<OpenWait>, Vec<OpenWait>) = waiting
+        .into_iter()
+        .partition(|wait| wait.since.elapsed() >= OPEN_WAIT);
+    state.opens = waiting;
+    let mut changed = false;
+    for press in arrived {
+        let outcome = Ok(Finished {
+            status: CATALOG.t_args(
+                "store-progress-opening",
+                &[("name", ui::i18n::ArgValue::Text(press.name.clone()))],
+            ),
+            case: None,
+            launch: Some(crate::actions::ApplicationLaunch {
+                app_id: press.app.clone(),
+                package_root: roots.get(&press.app).cloned(),
+            }),
+        });
+        if let Some(done) = press.done {
+            let _ = done.send(outcome);
+        }
+        changed = true;
+    }
+    for press in expired {
+        if let Some(done) = press.done {
+            let _ = done.send(Err(CATALOG.t_args(
+                "store-open-not-installed",
+                &[("name", ui::i18n::ArgValue::Text(press.name.clone()))],
+            )));
+        }
+        changed = true;
+    }
+    changed
+}
+
+/// The window's line for a change that ended.
+fn status_of(change: packages::Change, app: &str) -> String {
+    let name = ui::i18n::ArgValue::Text(app.to_owned());
+    CATALOG.t_args(
+        match change {
+            packages::Change::Get => "store-app-got",
+            packages::Change::Update => "store-app-updated",
+            packages::Change::Uninstall => "store-app-removed",
+            packages::Change::Pin => "store-kept",
+            packages::Change::Unpin => "store-released",
+        },
+        &[("name", name)],
+    )
+}
+
+/// Publish what the window shows, with the apps this device is fetching.
+fn publish(
+    snapshots: &Snapshots,
+    state: &State,
+    status_line: &str,
+    operation_error: Option<String>,
+) -> bool {
+    snapshots.send(Snapshot {
+        items: state.base_items.clone(),
+        status_line: status_line.to_owned(),
+        query: None,
+        detail: None,
+        remotes: state.remotes.clone(),
+        flatpak_available: state.flatpak_available,
+        flatpak_error: state.flatpak_error.clone(),
+        operation_error: operation_error
+            .or_else(|| state.catalogue_error.clone())
+            .or_else(|| state.flatpak_error.clone()),
+        unanswered_repositories: state.unanswered_repositories.clone(),
+        expired_repositories: state.expired_repositories.clone(),
+        blocks: state.blocks.clone(),
+        updating: None,
+        installs: installs_of(state),
+    })
+}
+
+/// The apps this device is fetching, by app id, with the bytes it has.
+fn installs_of(state: &State) -> std::collections::BTreeMap<String, ui::arriving::Progress> {
+    let installed = state.packages.installed();
+    let mut progress = std::collections::BTreeMap::new();
+    for item in &state.base_items {
+        if let Some(progress_of) = installed.progress(&item.id) {
+            progress.insert(item.id.clone(), progress_of);
+        }
+    }
+    progress
+}
+
+/// How long a press on Open waits for the app's package to reach this device.
+const OPEN_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 /// Keep the catalogue the refresh settled on for the next window's first
 /// frame. Rows a handed file added (an opened `.flatpakref`, a reviewed
@@ -574,32 +791,41 @@ fn keep_catalogue(state: &State) {
     }
 }
 
-/// Resolve only enabled repositories through the launcher-issued host capability.
+/// How long the Store waits for this device's package cache to read a repository.
+const CACHE_READ_WAIT: Duration = Duration::from_secs(60);
+
+/// How long a change the worker waits for may take: a runtime fetched, a package file handed to
+/// the workspace.
+const CHANGE_WAIT: Duration = Duration::from_secs(30 * 60);
+
+/// Review the runtime build `runtime` that the enabled repositories offer (only
+/// `selected_registry` when one is named), as this device's package cache reads their offers.
 fn runtime_details(
     runtime: &str,
     selected_registry: Option<&str>,
-    state: &State,
+    state: &mut State,
 ) -> Result<StoreItem, String> {
-    let host = state
-        .host
-        .as_ref()
-        .ok_or_else(|| CATALOG.t("store-runtime-service-unavailable"))?;
-    let repositories = crate::config::repositories(Some(host))?;
+    let repositories = crate::config::repositories()?;
     if selected_registry
         .is_some_and(|name| !repositories.enabled().any(|registry| registry.name == name))
     {
         return Err(CATALOG.t("store-runtime-unavailable"));
     }
-    // Unreadable installs only cost the review its "already installed":
-    // installing the same verified offer again changes nothing.
-    let installed = host.list().unwrap_or_default();
     let mut selected = None;
     for registry in repositories
         .enabled()
         .filter(|registry| selected_registry.is_none_or(|name| registry.name == name))
     {
-        let offer = host.runtime_offer(&registry.name, runtime)?;
-        let Some(offer) = serde_json::from_str::<Option<app_cli::CatalogueApp>>(&offer)
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("registry".into(), registry.name.clone().into());
+        arguments.insert("runtime".into(), runtime.to_owned().into());
+        let answer = state
+            .packages
+            .cache_call_now("runtime-offer", arguments, CACHE_READ_WAIT)?;
+        let offer = answer
+            .get("offer")
+            .ok_or_else(|| CATALOG.t("store-runtime-offer-mismatch"))?;
+        let Some(offer) = serde_json::from_value::<Option<app_cli::CatalogueApp>>(offer.clone())
             .map_err(|error| error.to_string())?
         else {
             continue;
@@ -626,38 +852,31 @@ fn runtime_details(
         if selected.is_some() {
             return Err(CATALOG.t("store-runtime-offer-ambiguous"));
         }
-        selected = Some(runtime_item(offer, &installed));
+        selected = Some(runtime_item(offer, state.packages.installed()));
     }
     selected.ok_or_else(|| CATALOG.t("store-runtime-unavailable"))
 }
 
-#[expect(
-    clippy::suspicious_operation_groupings,
-    reason = "an installed package matches an offer by its package id, which the offer names package_id"
-)]
-fn runtime_item(
-    offer: app_cli::CatalogueApp,
-    installed: &[package_service::client::ListedPackage],
-) -> StoreItem {
+/// The Store's row for a runtime `offer`: installed only when this device has exactly the
+/// package it offers.
+fn runtime_item(offer: app_cli::CatalogueApp, installed: &packages::Installed) -> StoreItem {
     let installed = installed
-        .iter()
-        .map(|listed| &listed.package)
-        .find(|package| {
-            package.id == offer.package_id
-                && package.version == offer.version
-                && package
-                    .package_id_hex
-                    .eq_ignore_ascii_case(&offer.tapp_root_hash_hex)
-                && package
-                    .publisher_key_hex
-                    .eq_ignore_ascii_case(&offer.publisher_pubkey_hex)
+        .device
+        .get(&offer.package_id)
+        .filter(|row| {
+            row.installed()
+                && row.version == offer.version
+                && row.root.eq_ignore_ascii_case(&offer.tapp_root_hash_hex)
         })
-        .map_or(crate::model::InstalledState::Not, |package| {
+        .map_or(crate::model::InstalledState::Not, |row| {
             crate::model::InstalledState::Installed {
-                version: package.version.clone(),
+                version: row.version.clone(),
                 available: offer.version.clone(),
-                pinned: package.pinned,
-                user_managed: package.user_managed(),
+                pinned: installed
+                    .workspace
+                    .get(&offer.package_id)
+                    .is_some_and(|app| app.pinned),
+                user_managed: true,
             }
         });
     StoreItem {
@@ -684,12 +903,68 @@ fn runtime_item(
             released_at_unix: 0,
             download_url: Some(offer.download_url),
             root_hash_hex: Some(offer.tapp_root_hash_hex),
+            surface_hex: (!offer.tapp_surface_hex.is_empty()).then_some(offer.tapp_surface_hex),
             size_bytes: offer.tapp_size_bytes,
             runtime: offer.runtime,
         }],
         publisher_pubkey_hex: Some(offer.publisher_pubkey_hex),
         installed,
     }
+}
+
+/// Fetch the runtime `item` names into this computer's package cache (`runtime-fetch`), bound to
+/// the package root and publisher its review named: a runtime is a payload of this computer, not
+/// a version a workspace runs.
+fn install_runtime(item: &StoreItem, state: &mut State) -> crate::actions::ActionOutcome {
+    use crate::actions::ActionOutcome;
+    if let Some((_, reason)) = item.unavailable_action(ActionKind::RuntimeInstall) {
+        return ActionOutcome::fail(reason);
+    }
+    let StoreSource::Tilo { registry_name } = &item.source else {
+        return ActionOutcome::fail("This package has no Tilo repository.");
+    };
+    let Some(version) = item.versions.first() else {
+        return ActionOutcome::fail("registry entry has no version");
+    };
+    let (Some(runtime), Some(package), Some(publisher)) = (
+        version.runtime.as_deref(),
+        version.root_hash_hex.as_deref(),
+        item.publisher_pubkey_hex.as_deref(),
+    ) else {
+        return ActionOutcome::fail(CATALOG.t("store-runtime-offer-mismatch"));
+    };
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("registry".into(), registry_name.clone().into());
+    arguments.insert("runtime".into(), runtime.to_owned().into());
+    arguments.insert("package".into(), package.to_owned().into());
+    arguments.insert("publisher".into(), publisher.to_owned().into());
+    match state
+        .packages
+        .cache_call_now("runtime-fetch", arguments, CHANGE_WAIT)
+    {
+        Ok(_) => ActionOutcome::ok(CATALOG.t_args(
+            "store-runtime-installed",
+            &[
+                ("name", ui::i18n::ArgValue::Text(item.name.clone())),
+                ("version", ui::i18n::ArgValue::Text(version.version.clone())),
+            ],
+        )),
+        Err(error) => ActionOutcome::fail(format!("{}: install refused: {error}", item.name)),
+    }
+}
+
+/// Install the reviewed `package`: hand its file to the workspace, then name that version on the
+/// workspace's tree, which every device installs, checking it again.
+fn install_imported(package: &crate::package_import::ImportedPackage, state: &State) -> Outcome {
+    let file = state.packages.upload(&package.bytes, CHANGE_WAIT)?;
+    let release = package.release(&file)?;
+    let started = state.packages.start(
+        packages::Change::Get,
+        &package.expected.app_id,
+        Some(serde_json::Value::Object(release)),
+    )?;
+    state.packages.await_call(&started.call, CHANGE_WAIT)?;
+    Ok(Finished::status(CATALOG.t("store-package-installed")))
 }
 
 #[allow(
@@ -700,7 +975,7 @@ fn handle(
     request: Request,
     state: &mut State,
     snapshots: &Snapshots,
-    staging: &std::path::Path,
+    done: &mut Option<Done>,
 ) -> (bool, Option<Outcome>) {
     match request {
         Request::Refresh => {
@@ -719,7 +994,7 @@ fn handle(
         Request::BrowseRemote(id) => browse_remote(&id, state, snapshots),
         Request::Detail(id) => (detail(&id, state, snapshots), None),
         Request::RuntimeDetails { runtime, registry } => {
-            let opened = runtime_details(&runtime, registry.as_deref(), state);
+            let opened = runtime_details(&runtime, registry.as_deref(), &mut *state);
             let (label, detail, error) = match &opened {
                 Ok(item) => (
                     crate::resource::CATALOG.t_args(
@@ -768,8 +1043,12 @@ fn handle(
             let reviewed = input.read().and_then(|bytes| {
                 crate::package_import::review(bytes.clone(), &state.base_items).or_else(
                     |catalogue_error| {
-                        let host = state.host.as_ref().ok_or(catalogue_error)?;
-                        crate::package_import::review_local(bytes, host)
+                        crate::package_import::review_local(
+                            bytes,
+                            &app_cli::config::trust(),
+                            state.packages.installed(),
+                            catalogue_error,
+                        )
                     },
                 )
             });
@@ -808,21 +1087,22 @@ fn handle(
                 })
                 .ok_or_else(|| CATALOG.t("store-package-review-required"))
                 .and_then(|package| {
-                    // Recheck immutable handed bytes against the latest independent offers.
-                    let host = state
-                        .host
-                        .as_ref()
-                        .ok_or_else(|| CATALOG.t("store-package-unavailable"))?;
-                    if let Some(review) = &package.local {
-                        host.install_local(&package.bytes, review)?;
-                    } else {
-                        let current = crate::package_import::review(
+                    // Recheck the immutable handed bytes against the latest independent offers,
+                    // or the workspace's trust as it is now.
+                    let current = if package.local.is_some() {
+                        crate::package_import::review_local(
                             package.bytes.to_vec(),
-                            &state.base_items,
-                        )?;
-                        host.install_offer(&current.registry, &current.expected)?;
+                            &app_cli::config::trust(),
+                            state.packages.installed(),
+                            CATALOG.t("store-package-offer-required"),
+                        )?
+                    } else {
+                        crate::package_import::review(package.bytes.to_vec(), &state.base_items)?
+                    };
+                    if current.expected != package.expected {
+                        return Err(CATALOG.t("store-package-review-required"));
                     }
-                    Ok(Finished::status(CATALOG.t("store-package-installed")))
+                    install_imported(&current, state)
                 });
             if result.is_ok() {
                 state.imported_package = None;
@@ -866,46 +1146,29 @@ fn handle(
             );
             (alive, Some(outcome))
         }
-        Request::RemoteAdd { name, url } => {
-            let result = state.host.as_ref().map_or_else(
-                || Err("App service unavailable.".to_string()),
-                |host| host.remote(true, &name, Some(&url)),
-            );
-            if result.is_ok() {
-                refresh(state);
-            } else {
-                refresh_flatpak(state);
-            }
-            remote_result(snapshots, state, result)
+        // The device's Flatpak repositories are the device's: a person adds or removes one
+        // through its daemon, never from the Store's sandbox.
+        Request::RemoteAdd { .. } | Request::RemoteSetEnabled { .. } | Request::RemoteRemove(_) => {
+            refresh_flatpak(state);
+            remote_result(
+                snapshots,
+                state,
+                Err("This device's Flatpak repositories are managed on the device.".to_string()),
+            )
         }
-        Request::RemoteSetEnabled { name, enabled } => {
-            let result = state.host.as_ref().map_or_else(
-                || Err("App service unavailable.".to_string()),
-                |host| host.set_remote_enabled(&name, enabled),
-            );
-            if result.is_ok() {
-                refresh(state);
-            } else {
-                refresh_flatpak(state);
-            }
-            remote_result(snapshots, state, result)
-        }
-        Request::RemoteRemove(name) => {
-            let result = state.host.as_ref().map_or_else(
-                || Err("App service unavailable.".to_string()),
-                |host| host.remote(false, &name, None),
-            );
-            if result.is_ok() {
-                refresh(state);
-            } else {
-                refresh_flatpak(state);
-            }
-            remote_result(snapshots, state, result)
-        }
-        Request::UpdateAll(items) => update_all(&items, state, snapshots, staging),
+        Request::UpdateAll(items) => update_all(&items, state, snapshots),
         Request::Act(item, action) => {
-            let outcome =
-                crate::actions::execute_with_host(state.host.as_ref(), &item, action, staging);
+            if action == ActionKind::Open && matches!(item.source, StoreSource::Tilo { .. }) {
+                return open_app(&item, state, snapshots, done);
+            }
+            if let Some(change) = tree_change(&item, action) {
+                return activate_tree_change(&item, action, change, state, snapshots, done);
+            }
+            let outcome = if action == ActionKind::RuntimeInstall {
+                install_runtime(&item, state)
+            } else {
+                crate::actions::execute(&item, action)
+            };
             // The refresh this asks for reads the device again in the
             // background; the answer does not wait for Flatpak to be asked.
             state.refresh_requested = true;
@@ -940,7 +1203,7 @@ fn handle(
             registry_name,
             case_id,
         } => {
-            let registries = crate::config::repositories(state.host.as_ref()).unwrap_or_default();
+            let registries = crate::config::repositories().unwrap_or_default();
             let outcome = moderation_registry(&registries, &registry_name)
                 .and_then(|registry| {
                     crate::moderation_client::fetch_verified_case(&registry, &case_id)
@@ -965,6 +1228,169 @@ fn handle(
             )
         }
     }
+}
+
+/// The change of the workspace's tree `action` on `item` asks for, when it is one: a Tilo app's
+/// version, or a Flatpak named on the tree for the device's daemon to install.
+fn tree_change(item: &StoreItem, action: ActionKind) -> Option<packages::Change> {
+    let flatpak = matches!(
+        item.source,
+        StoreSource::Flathub | StoreSource::FlatpakRemote { .. }
+    );
+    match action {
+        ActionKind::Get if !flatpak => Some(packages::Change::Get),
+        ActionKind::Update if !flatpak => Some(packages::Change::Update),
+        ActionKind::Remove if !flatpak => Some(packages::Change::Uninstall),
+        ActionKind::MarkInstalled if !flatpak => Some(packages::Change::Pin),
+        ActionKind::Unmark if !flatpak => Some(packages::Change::Unpin),
+        // A Flatpak's update names its reference again: the daemon installs what the tree names.
+        ActionKind::FlatpakInstall | ActionKind::FlatpakUpdate if flatpak => {
+            Some(packages::Change::Get)
+        }
+        ActionKind::FlatpakRemove if flatpak => Some(packages::Change::Uninstall),
+        _ => None,
+    }
+}
+
+/// The app id `change` of `item` names on the workspace's tree, and the release it records: a
+/// Tilo app's newest version, or a Flatpak's reference.
+fn tree_release(
+    item: &StoreItem,
+    change: packages::Change,
+) -> Result<(String, Option<serde_json::Value>), String> {
+    if matches!(
+        item.source,
+        StoreSource::Flathub | StoreSource::FlatpakRemote { .. }
+    ) {
+        let (app, release) = crate::actions::flatpak_release(item);
+        let release =
+            (change == packages::Change::Get).then_some(serde_json::Value::Object(release));
+        return Ok((app, release));
+    }
+    let release = match change {
+        packages::Change::Get | packages::Change::Update => Some(release_of(item)?),
+        packages::Change::Uninstall | packages::Change::Pin | packages::Change::Unpin => None,
+    };
+    Ok((item.id.clone(), release))
+}
+
+/// A Tilo app's Get, update, pin, unpin or uninstall, or a Flatpak's install, update or removal:
+/// each starts the workspace's change and is answered as it ends, the device's fetch going on
+/// after a Get.
+fn activate_tree_change(
+    item: &StoreItem,
+    action: ActionKind,
+    change: packages::Change,
+    state: &mut State,
+    snapshots: &Snapshots,
+    done: &mut Option<Done>,
+) -> (bool, Option<Outcome>) {
+    if state.running.is_some() {
+        return (
+            true,
+            Some(Err(
+                "Another change to this workspace's apps is still under way.".to_owned(),
+            )),
+        );
+    }
+    let name = item.name.clone();
+    if matches!(action, ActionKind::Get | ActionKind::FlatpakInstall)
+        && let Some((_, reason)) = item.unavailable_action(action)
+    {
+        return (true, Some(Err(reason)));
+    }
+    if action == ActionKind::Get
+        && !state.packages.installed().workspace.contains_key(&item.id)
+        && item.versions.is_empty()
+    {
+        return (
+            true,
+            Some(Err("This app has no version its source offers.".to_owned())),
+        );
+    }
+    let (id, release) = match tree_release(item, change) {
+        Ok(found) => found,
+        Err(reason) => return (true, Some(Err(reason))),
+    };
+    let started = match state.packages.start(change, &id, release) {
+        Ok(started) => started,
+        Err(reason) => return (true, Some(Err(reason))),
+    };
+    let progress = crate::app::progress_label(change.progress(), &name);
+    state.operation_notice = Some(progress.clone());
+    state.running = Some(Running {
+        started,
+        done: done.take(),
+    });
+    (publish(snapshots, state, &progress, None), None)
+}
+
+/// A press on Open: answered at once from this device's package, or kept until it arrives.
+fn open_app(
+    item: &StoreItem,
+    state: &mut State,
+    snapshots: &Snapshots,
+    done: &mut Option<Done>,
+) -> (bool, Option<Outcome>) {
+    if !state.packages.installed().workspace.contains_key(&item.id) {
+        return (
+            true,
+            Some(Err(
+                "This workspace runs no version of the app, so there is nothing to open."
+                    .to_owned(),
+            )),
+        );
+    }
+    if let Some(root) = state.packages.installed().root(&item.id) {
+        return (
+            true,
+            Some(Ok(Finished {
+                status: CATALOG.t_args(
+                    "store-progress-opening",
+                    &[("name", ui::i18n::ArgValue::Text(item.name.clone()))],
+                ),
+                case: None,
+                launch: Some(crate::actions::ApplicationLaunch {
+                    app_id: item.id.clone(),
+                    package_root: Some(root.to_owned()),
+                }),
+            })),
+        );
+    }
+    state.opens.push(OpenWait {
+        app: item.id.clone(),
+        name: item.name.clone(),
+        done: done.take(),
+        since: std::time::Instant::now(),
+    });
+    let status = CATALOG.t_args(
+        "store-progress-installing",
+        &[("name", ui::i18n::ArgValue::Text(item.name.clone()))],
+    );
+    (publish(snapshots, state, &status, None), None)
+}
+
+/// The release `item`'s newest version names, as the workspace's install records it.
+fn release_of(item: &StoreItem) -> Result<serde_json::Value, String> {
+    let version = item
+        .versions
+        .first()
+        .ok_or_else(|| "This app has no version its source offers.".to_owned())?;
+    let package = version
+        .root_hash_hex
+        .as_deref()
+        .ok_or_else(|| "This app's version names no signed package.".to_owned())?;
+    let publisher = item
+        .publisher_pubkey_hex
+        .as_deref()
+        .ok_or_else(|| "This app's version names no publisher.".to_owned())?;
+    Ok(app_cli::device::release(
+        &item.id,
+        &version.version,
+        version.surface_hex.as_deref().unwrap_or_default(),
+        package,
+        publisher,
+    ))
 }
 
 /// The reference `path` names, or its `contents` kept in the Store's cache
@@ -1059,14 +1485,9 @@ fn browse_remote(id: &str, state: &mut State, snapshots: &Snapshots) -> (bool, O
             "The configured repository is no longer available. Refresh and try again.".to_string()
         })
         .and_then(|remote| {
-            let host = state
-                .host
-                .as_ref()
-                .ok_or_else(|| "App service unavailable.".to_string())?;
-            let rows = host
-                .flatpak_catalogue(&remote.name, remote.user_managed)
-                .map_err(|error| crate::flathub_client::remote_error(remote, &error))?;
-            let mut items = crate::sources::remote_catalogue_items(&rows, remote, &state.installed);
+            let rows = crate::device::catalogue(remote);
+            let mut items =
+                crate::sources::remote_catalogue_items(&rows, remote, &state.flatpak_installed);
             for item in &mut items {
                 crate::sources::apply_flatpak_origin(item, &state.installed_origins);
             }
@@ -1191,7 +1612,6 @@ fn update_all(
     items: &[StoreItem],
     state: &mut State,
     snapshots: &Snapshots,
-    staging: &std::path::Path,
 ) -> (bool, Option<Outcome>) {
     let total = items.len();
     let mut failures = Vec::new();
@@ -1219,17 +1639,14 @@ fn update_all(
             expired_repositories: state.expired_repositories.clone(),
             blocks: state.blocks.clone(),
             updating: Some(item.id.clone()),
+            installs: installs_of(state),
         };
         if !snapshots.progress(progress) {
             return (false, None);
         }
-        let action = match item.source {
-            StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => ActionKind::FlatpakUpdate,
-            StoreSource::Tilo { .. } => ActionKind::Update,
-        };
-        let outcome = crate::actions::execute_with_host(state.host.as_ref(), item, action, staging);
-        if !outcome.ok {
-            failures.push(format!("{}: {}", item.name, outcome.status_line));
+        let refusal = update_tree(item, state);
+        if let Some(reason) = refusal {
+            failures.push(format!("{}: {reason}", item.name));
         }
     }
     state.refresh_requested = true;
@@ -1250,6 +1667,27 @@ fn update_all(
         Err(summary)
     };
     (alive, Some(finished))
+}
+
+/// Move one app the workspace runs to the newest version its source offers, or name a Flatpak's
+/// reference again, waiting for the workspace to take the change.
+fn update_tree(item: &StoreItem, state: &State) -> Option<String> {
+    let change = match item.source {
+        StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => packages::Change::Get,
+        StoreSource::Tilo { .. } => packages::Change::Update,
+    };
+    let (app, release) = match tree_release(item, change) {
+        Ok(found) => found,
+        Err(reason) => return Some(reason),
+    };
+    let started = match state.packages.start(change, &app, release) {
+        Ok(started) => started,
+        Err(reason) => return Some(reason),
+    };
+    state
+        .packages
+        .await_call(&started.call, std::time::Duration::from_secs(120))
+        .err()
 }
 
 fn update_all_summary(total: usize, failures: &[String]) -> String {
@@ -1297,6 +1735,7 @@ fn send_tracked(
         expired_repositories: state.expired_repositories.clone(),
         blocks: state.blocks.clone(),
         updating: None,
+        installs: installs_of(state),
     })
 }
 
@@ -1317,26 +1756,12 @@ fn moderation_registry(
 }
 
 fn refresh_flatpak(state: &mut State) {
-    let result = state
-        .host
-        .as_ref()
-        .ok_or_else(|| "App service unavailable.".to_string())
-        .and_then(package_service::client::BlockingClient::flatpak_status);
-    match result {
-        Ok(status) => {
-            state.flatpak_error = None;
-            state.flatpak_available = status.available;
-            state.installed = installed_flatpaks(&status.installed);
-            state.installed_origins = crate::flathub_client::installed_origins(&status.installed);
-            state.remotes =
-                crate::flathub_client::refreshed_remotes(&status.remotes, &state.remotes);
-        }
-        Err(error) => {
-            tracing::error!(%error, "could not observe host Flatpak state");
-            state.flatpak_available = false;
-            state.flatpak_error = Some(format!("Could not read Flatpak on this device: {error}"));
-        }
-    }
+    let status = crate::device::status();
+    state.flatpak_error = None;
+    state.flatpak_available = status.available;
+    state.flatpak_installed = installed_flatpaks(&status.installed);
+    state.installed_origins = crate::flathub_client::installed_origins(&status.installed);
+    state.remotes = crate::flathub_client::refreshed_remotes(&status.remotes, &state.remotes);
 }
 
 fn refresh(state: &mut State) {
@@ -1400,6 +1825,7 @@ mod tests {
                 released_at_unix: 0,
                 download_url: None,
                 root_hash_hex: None,
+                surface_hex: None,
                 size_bytes: 0,
                 runtime: None,
             }],
@@ -1412,11 +1838,12 @@ mod tests {
         State {
             operation_notice: None,
             refresh_requested: false,
-            host: None,
+            background_reads: false,
+            packages: packages::AppPackages::new(ui::RemoteActions::current(), None),
             opened_ref: None,
             imported_package: None,
             base_items: items,
-            installed: Vec::new(),
+            flatpak_installed: Vec::new(),
             installed_origins: std::collections::HashMap::new(),
             remotes: Vec::new(),
             flatpak_available: false,
@@ -1430,6 +1857,8 @@ mod tests {
             registries: Vec::new(),
             flathub: None,
             force_refresh: false,
+            running: None,
+            opens: Vec::new(),
         }
     }
 
@@ -1440,16 +1869,7 @@ mod tests {
             wake: WakeHandle::new(),
             pending: Arc::new(AtomicUsize::new(0)),
         };
-        let staging = tempfile::tempdir().unwrap();
-        assert!(
-            handle(
-                Request::Detail(id.into()),
-                state,
-                &snapshots,
-                staging.path(),
-            )
-            .0
-        );
+        assert!(handle(Request::Detail(id.into()), state, &snapshots, &mut None).0);
         let snapshot = received.recv().unwrap();
         assert!(snapshot.operation_error.is_none());
         let Some(DetailUpdate::Requested {
@@ -1500,7 +1920,7 @@ mod tests {
                 },
                 &mut state,
                 &snapshots,
-                directory.path(),
+                &mut None,
             );
             assert!(alive && outcome.unwrap().is_ok());
             assert!(matches!(
@@ -1519,367 +1939,13 @@ mod tests {
         }
     }
 
-    struct ImportOfferServer {
-        registry: String,
-        expected: package_service::install::InstallExpectation,
-        installs: Arc<AtomicUsize>,
-        offer: Option<app_cli::CatalogueApp>,
-        installed_root: Option<[u8; 32]>,
-    }
-
-    impl package_service::wire::Server for ImportOfferServer {
-        fn handle(
-            self: std::rc::Rc<Self>,
-            request: package_service::wire::Operation,
-            _progress: package_service::wire::Sink,
-        ) -> impl core::future::Future<Output = Result<package_service::wire::Answer, String>> + 'static
-        {
-            use package_service::wire::{Action, Answer, Operation, Resource};
-            std::future::ready(match request {
-                Operation::Read(Resource::Packages) => Ok(Answer::Packages(
-                    self.installed_root
-                        .into_iter()
-                        .map(|root| package_service::wire::PackageEntry {
-                            id: root,
-                            pinning: package_service::wire::WirePinning::Tried,
-                            payload_root: "/payloads/engine".into(),
-                            manifest_path: "/payloads/engine/manifest.toml".into(),
-                            manifest_text: concat!(
-                                "[package]\nid = \"so.tilo.runtime.chromium\"\nversion = \"4.0.0\"\n",
-                                "kind = \"app\"\n[publisher]\nidentity = \"ed25519:",
-                                "2222222222222222222222222222222222222222222222222222222222222222",
-                                "\"\nsignature = \"\"\n[sandbox]\nnamespaces = []\n",
-                                "seccomp = \"tilo-default\"\nlandlock = \"strict\"\n",
-                                "[sandbox.net]\nmode = \"off\"\n[entrypoint]\nbin = \"bin/engine\"\n",
-                            )
-                            .into(),
-                            size_bytes: 0,
-                            last_used_unix: 0,
-                            user_managed: true,
-                        })
-                        .collect(),
-                )),
-                Operation::Read(Resource::Repositories) => Ok(Answer::Text(
-                    serde_json::to_string(&crate::config::RegistriesFile {
-                        registries: vec![crate::config::RegistryConfig {
-                            name: self.registry.clone(),
-                            base_url: "https://example.invalid".into(),
-                            owner_pubkey_hex: "55".repeat(32),
-                            enabled: true,
-                            channel: app_cli::ReleaseChannel::Stable,
-                        }],
-                    })
-                    .unwrap(),
-                )),
-                Operation::Read(Resource::RuntimeOffer { registry, runtime }) => {
-                    assert_eq!(registry, self.registry);
-                    assert_eq!(runtime, "tilo-runtime/2026.10.4-chromium");
-                    Ok(Answer::Text(serde_json::to_string(&self.offer).unwrap()))
-                }
-                Operation::Invoke(Action::InstallOffer { registry, expected }) => {
-                    assert_eq!(registry, self.registry);
-                    assert_eq!(expected.app_id, self.expected.app_id);
-                    assert_eq!(expected.version, self.expected.version);
-                    assert_eq!(&expected.root, self.expected.package_root.as_bytes());
-                    assert_eq!(expected.publisher, self.expected.publisher);
-                    assert_eq!(expected.size_bytes, self.expected.size_bytes);
-                    self.installs.fetch_add(1, Ordering::SeqCst);
-                    Ok(Answer::Installed(*self.expected.package_root.as_bytes()))
-                }
-                other => package_service::testing::refuse(&other),
-            })
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn a_runtime_review_installs_only_the_exact_offer;
-
-        phase runtime_review_capability_preserves_exact_offer_and_installs_without_launch;
-        {
-            let offer: app_cli::CatalogueApp = serde_json::from_value(serde_json::json!({
-                "package_id":"so.tilo.runtime.chromium", "display_name":"Chromium", "version":"4.0.0",
-                "registry":"main", "download_url":"https://example.invalid/engine.tapp",
-                "tapp_root_hash_hex":"11".repeat(32), "tapp_size_bytes":6656,
-                "publisher_pubkey_hex":"22".repeat(32), "runtime":"tilo-runtime/2026.10.4-chromium",
-                "trust":"publisher-signed"
-            }))
-            .unwrap();
-            let installs = Arc::new(AtomicUsize::new(0));
-            let expected = package_service::install::InstallExpectation {
-                package_root: format!("tapp:{}", offer.tapp_root_hash_hex)
-                    .parse()
-                    .unwrap(),
-                publisher: [0x22; 32],
-                app_id: offer.package_id.clone(),
-                version: offer.version.clone(),
-                size_bytes: offer.tapp_size_bytes,
-            };
-            let (service, connection) = package_service::testing::ConnectedService::start(ImportOfferServer {
-                registry: "main".into(),
-                expected,
-                installs: installs.clone(),
-                offer: Some(offer),
-                installed_root: None,
-            })
-            .unwrap();
-            let mut state = state_with_items(Vec::new(), StoreDirectory::default());
-            state.host = Some(package_service::client::BlockingClient::from_connected_fd(connection).unwrap());
-            let (sender, received) = mpsc::channel();
-            let snapshots = Snapshots {
-                sender,
-                wake: WakeHandle::new(),
-                pending: Arc::new(AtomicUsize::new(0)),
-            };
-            let dir = tempfile::tempdir().unwrap();
-            let (_, result) = handle(
-                Request::RuntimeDetails {
-                    runtime: "tilo-runtime/2026.10.4-chromium".into(),
-                    registry: None,
-                },
-                &mut state,
-                &snapshots,
-                dir.path(),
-            );
-            assert!(result.unwrap().is_ok());
-            assert_eq!(
-                installs.load(Ordering::SeqCst),
-                0,
-                "review installs nothing"
-            );
-            let DetailUpdate::OpenedReference(item) = received.recv().unwrap().detail.unwrap() else {
-                panic!("runtime details missing")
-            };
-            assert_eq!(
-                item.versions[0].runtime.as_deref(),
-                Some("tilo-runtime/2026.10.4-chromium")
-            );
-            assert_eq!(item.action_kind(true), ActionKind::RuntimeInstall);
-            let outcome = crate::actions::execute_with_host(
-                state.host.as_ref(),
-                &item,
-                ActionKind::RuntimeInstall,
-                dir.path(),
-            );
-            assert!(outcome.ok);
-            assert!(
-                outcome.launch.is_none(),
-                "a runtime must never launch as an application"
-            );
-            assert_eq!(installs.load(Ordering::SeqCst), 1);
-            drop(state);
-            service.shutdown().unwrap();
-        }
-
-        phase runtime_review_marks_only_the_exact_installed_root_installed;
-        {
-            let offer: app_cli::CatalogueApp = serde_json::from_value(serde_json::json!({
-                "package_id":"so.tilo.runtime.chromium", "display_name":"Chromium", "version":"4.0.0",
-                "registry":"main", "download_url":"https://example.invalid/engine.tapp",
-                "tapp_root_hash_hex":"11".repeat(32), "tapp_size_bytes":6656,
-                "publisher_pubkey_hex":"22".repeat(32), "runtime":"tilo-runtime/2026.10.4-chromium",
-                "trust":"publisher-signed"
-            }))
-            .unwrap();
-            for (installed_root, installed) in [([0x11; 32], true), ([0x33; 32], false)] {
-                let (service, connection) =
-                    package_service::testing::ConnectedService::start(ImportOfferServer {
-                        registry: "main".into(),
-                        expected: package_service::install::InstallExpectation {
-                            package_root: format!("tapp:{}", "11".repeat(32)).parse().unwrap(),
-                            publisher: [0x22; 32],
-                            app_id: offer.package_id.clone(),
-                            version: offer.version.clone(),
-                            size_bytes: offer.tapp_size_bytes,
-                        },
-                        installs: Arc::new(AtomicUsize::new(0)),
-                        offer: Some(offer.clone()),
-                        installed_root: Some(installed_root),
-                    })
-                    .unwrap();
-                let mut state = state_with_items(Vec::new(), StoreDirectory::default());
-                state.host =
-                    Some(package_service::client::BlockingClient::from_connected_fd(connection).unwrap());
-                let item = runtime_details("tilo-runtime/2026.10.4-chromium", None, &state).unwrap();
-                assert_eq!(item.installed.is_installed(), installed);
-                assert_eq!(
-                    item.unavailable_action(ActionKind::RuntimeInstall)
-                        .map(|(code, _)| code),
-                    installed.then_some("runtime_already_installed")
-                );
-                drop(state);
-                service.shutdown().unwrap();
-            }
-        }
-
-        phase runtime_review_capability_refuses_missing_foreign_or_malformed_offers;
-        {
-            let valid: app_cli::CatalogueApp = serde_json::from_value(serde_json::json!({
-                "package_id":"so.tilo.runtime.chromium", "display_name":"Chromium", "version":"4.0.0",
-                "registry":"main", "download_url":"https://example.invalid/engine.tapp",
-                "tapp_root_hash_hex":"11".repeat(32), "tapp_size_bytes":6656,
-                "publisher_pubkey_hex":"22".repeat(32), "runtime":"tilo-runtime/2026.10.4-chromium",
-                "trust":"publisher-signed"
-            }))
-            .unwrap();
-            let mut wrong_runtime = valid.clone();
-            wrong_runtime.runtime = Some("tilo-runtime/2026.10.5-chromium".into());
-            let mut untrusted = valid.clone();
-            untrusted.trust = "untrusted".into();
-            let mut wrong_registry = valid.clone();
-            wrong_registry.registry = "foreign".into();
-            let mut zero_size = valid.clone();
-            zero_size.tapp_size_bytes = 0;
-            let mut malformed_root = valid.clone();
-            malformed_root.tapp_root_hash_hex = "xx".repeat(32);
-            let mut malformed_publisher = valid;
-            malformed_publisher.publisher_pubkey_hex = "x".into();
-            for offer in [
-                None,
-                Some(wrong_runtime),
-                Some(untrusted),
-                Some(wrong_registry),
-                Some(zero_size),
-                Some(malformed_root),
-                Some(malformed_publisher),
-            ] {
-                let installs = Arc::new(AtomicUsize::new(0));
-                let (service, connection) =
-                    package_service::testing::ConnectedService::start(ImportOfferServer {
-                        registry: "main".into(),
-                        expected: package_service::install::InstallExpectation {
-                            package_root: format!("tapp:{}", "11".repeat(32)).parse().unwrap(),
-                            publisher: [0x22; 32],
-                            app_id: "so.tilo.runtime.chromium".into(),
-                            version: "4.0.0".into(),
-                            size_bytes: 6656,
-                        },
-                        installs: installs.clone(),
-                        offer,
-                        installed_root: None,
-                    })
-                    .unwrap();
-                let mut state = state_with_items(Vec::new(), StoreDirectory::default());
-                state.host =
-                    Some(package_service::client::BlockingClient::from_connected_fd(connection).unwrap());
-                assert!(runtime_details("tilo-runtime/2026.10.4-chromium", None, &state).is_err());
-                assert_eq!(installs.load(Ordering::SeqCst), 0);
-                drop(state);
-                service.shutdown().unwrap();
-            }
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn a_package_import_is_reviewed_by_the_worker_before_its_install;
-
-        phase package_import_worker_reviews_before_exact_owned_offer_install;
-        {
-            check_import_worker(crate::package_import::tests::signed_fixture());
-        }
-
-        phase package_import_offered_worker_preserves_verified_offer_install_route;
-        {
-            check_import_worker(crate::package_import::tests::catalogue_fixture());
-        }
-    }
-
-    fn check_import_worker((bytes, item): (Vec<u8>, StoreItem)) {
-        use super::*;
-        let reviewed =
-            crate::package_import::review(bytes.clone(), std::slice::from_ref(&item)).unwrap();
-        let installs = Arc::new(AtomicUsize::new(0));
-        let (service, connection) =
-            package_service::testing::ConnectedService::start(ImportOfferServer {
-                registry: reviewed.registry.clone(),
-                expected: reviewed.expected.clone(),
-                installs: installs.clone(),
-                offer: None,
-                installed_root: None,
-            })
-            .unwrap();
-        let mut state = state_with_items(vec![item.clone()], StoreDirectory::default());
-        state.host =
-            Some(package_service::client::BlockingClient::from_connected_fd(connection).unwrap());
-        let (sender, received) = mpsc::channel();
-        let snapshots = Snapshots {
-            sender,
-            wake: WakeHandle::new(),
-            pending: Arc::new(AtomicUsize::new(0)),
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let (alive, outcome) = handle(
-            Request::ImportPackage(crate::package_import::Input::Bytes(bytes.clone())),
-            &mut state,
-            &snapshots,
-            dir.path(),
-        );
-        assert!(alive && outcome.unwrap().is_ok());
-        assert_eq!(installs.load(Ordering::SeqCst), 0, "opening never installs");
-        assert!(
-            matches!(received.recv().unwrap().detail, Some(DetailUpdate::ImportedPackage { item: shown, .. }) if shown.id == item.id)
-        );
-        let (_, outcome) = handle(
-            Request::InstallImported {
-                app: item.id.clone(),
-                root: "00".repeat(32),
-            },
-            &mut state,
-            &snapshots,
-            dir.path(),
-        );
-        assert!(outcome.unwrap().is_err());
-        assert_eq!(
-            installs.load(Ordering::SeqCst),
-            0,
-            "stale reviewed identity cannot install"
-        );
-        let (_, outcome) = handle(
-            Request::InstallImported {
-                app: item.id.clone(),
-                root: reviewed.expected.package_root.to_hex(),
-            },
-            &mut state,
-            &snapshots,
-            dir.path(),
-        );
-        assert!(outcome.unwrap().is_ok());
-        assert_eq!(installs.load(Ordering::SeqCst), 1);
-        assert!(state.imported_package.is_none() && state.refresh_requested);
-        handle(
-            Request::ImportPackage(crate::package_import::Input::Bytes(bytes)),
-            &mut state,
-            &snapshots,
-            dir.path(),
-        );
-        state.base_items.clear();
-        let (_, outcome) = handle(
-            Request::InstallImported {
-                app: item.id,
-                root: reviewed.expected.package_root.to_hex(),
-            },
-            &mut state,
-            &snapshots,
-            dir.path(),
-        );
-        assert!(outcome.unwrap().is_err());
-        assert_eq!(installs.load(Ordering::SeqCst), 1);
-        drop(state);
-        service.shutdown().unwrap();
-    }
-
+    /// A Flatpak installation that cannot be read reaches the window as its own error, apart
+    /// from a device without Flatpak.
     #[test]
     fn flatpak_observation_failure_reaches_worker_snapshot_separately_from_missing() {
         let mut state = state_with_items(Vec::new(), StoreDirectory::default());
-        state.flatpak_available = true;
-        refresh_flatpak(&mut state);
-        assert!(!state.flatpak_available);
-        assert!(
-            state
-                .flatpak_error
-                .as_deref()
-                .unwrap()
-                .contains("App service unavailable")
-        );
+        state.flatpak_available = false;
+        state.flatpak_error = Some("This device's Flatpak installation cannot be read.".into());
         let (sender, received) = mpsc::channel();
         let snapshots = Snapshots {
             sender,
@@ -1894,26 +1960,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_cache_is_non_blocking_and_keeps_the_authoritative_directory() {
-        {
-            let (release, held) = mpsc::channel::<()>();
-            let worker = StoreWorker::spawn_with_host(
-                StoreDirectory::default(),
-                WakeHandle::new(),
-                move || {
-                    let _ = held.recv();
-                    Err("held".into())
-                },
-            );
-            assert!(worker.request(Request::Detail("editor".into())));
-            assert!(
-                worker.try_snapshot().is_none(),
-                "the held worker has answered nothing yet"
-            );
-            assert!(worker.has_pending());
-            release.send(()).unwrap();
-        }
-
+    fn worker_cache_keeps_the_authoritative_directory() {
         {
             let directory = StoreDirectory::default();
             let state = state_with_items(

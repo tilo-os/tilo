@@ -2,16 +2,6 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-app_cli="$root/crates/os/app-cli/src/install.rs"
-package_service="$root/crates/core/package-service/src/service.rs"
-
-for source in "$app_cli" "$package_service"; do
-  grep -Eq 'bounded_command::(run_prepared|spawn_prepared)\(' "$source"
-  if grep -Eq '\.output\(\)|wait_with_output\(' "$source"; then
-    echo "unbounded packaging subprocess in ${source#"$root/"}" >&2
-    exit 1
-  fi
-done
 
 # The image's binaries are compiled outside the image build, by this script.
 # The links are forced and never follow a directory: a re-run replaces what an

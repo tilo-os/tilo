@@ -27,14 +27,6 @@ shell-ui = 37
 # (crates/core/runtime-portal/interface.toml).
 runtime = 37
 
-# App ↔ app host: the resources and actions the Store reads and invokes, and the
-# language-pack requests Settings makes, on the package-service service only those
-# two apps are handed, and the store changes the person's terminal makes there
-# (crates/core/package-service/interface.toml).
-# Its own interface, so a change to what the Store reads never versions the
-# apps that never talk to the app host.
-package-service = 7
-
 # App ↔ messaging service: the person's messaging accounts for Messages and
 # the service's permission requests for Passwords, on the messaging service
 # only those two apps are handed (crates/integrations/tilo-messaging/interface.toml).

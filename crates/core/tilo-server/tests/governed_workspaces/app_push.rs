@@ -1,5 +1,5 @@
 //! The version of an app a workspace uses: its `install-app` governance
-//! (`workspace/apps#install-app` in its action API) names it, every member is
+//! (`workspace/apps#install` in its action API) names it, every member is
 //! to use it, and a change made with another version waits until its author
 //! has. A developer pushes a version and a bot's program through that API
 //! (`tilo-app push`, proved in `workspace_actions/api_apps.rs`); here the
@@ -157,6 +157,8 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
                 publisher: hex::encode(laptop.cert.user_public_key),
                 file: Some(file.clone()),
                 dev: true,
+                pinned: false,
+                payload: tilo_peer_state::workspace_membership::AppPayload::Tapp,
             }),
         )
         .await

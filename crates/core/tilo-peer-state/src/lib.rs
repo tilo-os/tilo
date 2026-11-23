@@ -89,6 +89,7 @@ pub use state::DocumentKeysBasis;
 /// A state of a workspace's governance, kept to ask which heads it holds.
 pub use state::GovernanceHeads;
 pub use state::mail_send_lease;
+pub use state::{CHANNELS as REGISTRY_CHANNELS, PackageRegistry, RevokedPublisher, TrustAttestor};
 pub use state::{
     CLOCK_SKEW_NS, COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus, DONE_KEY, DelegateInactive,
     DocumentRow, Done, GovernedAccess, GovernedAgent, GovernedDelegateRow, HELD_COPIES_KEY,

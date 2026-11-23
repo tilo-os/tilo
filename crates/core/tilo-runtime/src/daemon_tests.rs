@@ -733,6 +733,136 @@ fn an_unclaimed_device_answers_its_own_actions_at_once_and_says_it_has_no_person
     );
 }
 
+/// Before anyone logs a device in, an account on it changes its package cache over the native
+/// endpoint the way it would after: it puts the host files a runtime is built from, then asks the
+/// cache to build the runtime from them, and the runtime is installed. A host path that leaves
+/// the root it names is refused before anything is copied.
+#[cfg(target_os = "linux")]
+#[test]
+fn before_a_login_an_account_builds_a_runtime_from_files_it_puts() {
+    use io::{BufRead as _, Write as _};
+    use serde_json::json;
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let bundles = home.data().join("bundles");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_RUNTIME_BUNDLE_DIR", &bundles);
+    let dir = tempfile::tempdir().unwrap();
+    let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
+    let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let place = tilo_device_identity::login::Place::at(dir.path().join("login"), keys);
+    let device = key.verifying_key().to_bytes();
+    let cache = crate::device::packages::PackageCache::new(
+        &device,
+        &dir.path().join("packages"),
+        std::sync::Arc::new(crate::device::control::DeviceContent::at(
+            &dir.path().join("content"),
+        )),
+    );
+    let native = std::sync::Arc::new(super::Native::new(
+        crate::device::unclaimed::DeviceOnly::new(key, place)
+            .with_packages(std::sync::Arc::new(cache)),
+        crate::seats::peer_uid,
+        tilo_api::daemon::admission::here(|| rustix::process::geteuid().as_raw()),
+    ));
+    let listener =
+        tilo_files::native::private::bind_socket(&dir.path().join("native.sock")).unwrap();
+    {
+        let native = std::sync::Arc::clone(&native);
+        std::thread::spawn(move || native.accept(&listener));
+    }
+    let stream = std::os::unix::net::UnixStream::connect(dir.path().join("native.sock")).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(120)))
+        .unwrap();
+    let mut reader = io::BufReader::new(stream.try_clone().unwrap());
+    let mut writer = stream;
+    let mut id = 0;
+    let mut call = |tool: &str, arguments: serde_json::Value| {
+        id += 1;
+        let request = json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments}});
+        writeln!(writer, "{request}").unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("the device answers");
+        serde_json::from_str::<serde_json::Value>(&line).unwrap()
+    };
+
+    let host = [
+        "/lib64/ld-linux-x86-64.so.2",
+        "/lib64/libc.so.6",
+        "/lib64/libm.so.6",
+        "/lib64/libdl.so.2",
+        "/etc/ld.so.cache",
+    ];
+    let bytes = |path: &str| format!("stub: {path}\n").into_bytes();
+    let put = call(
+        "tilo_put_many",
+        json!({"files": host.iter().map(|path| base64(&bytes(path))).collect::<Vec<_>>()}),
+    );
+    assert_ne!(put["result"]["isError"], true, "{put}");
+    let from: Vec<serde_json::Value> = host
+        .iter()
+        .map(|path| {
+            let source = format!("tilo.content:{}", blake3::hash(&bytes(path)).to_hex());
+            assert!(put.to_string().contains(&source), "{path} is put: {put}");
+            json!({"path": path, "file": {"source": source}})
+        })
+        .collect();
+
+    let escaping = call(
+        "tilo_do",
+        json!({"path": "packages#runtime-install", "wait_ms": 60_000, "args": {
+            "version": "escaped", "arch": "x86_64",
+            "from": [{"path": "/lib64/../../outside", "file": from[1]["file"]}]}}),
+    );
+    assert!(
+        escaping
+            .to_string()
+            .contains("a host path names only directories and a file"),
+        "a host path that leaves its root is refused: {escaping}"
+    );
+    assert!(!bundles.join("escaped").exists(), "{escaping}");
+
+    let installed = call(
+        "tilo_do",
+        json!({"path": "packages#runtime-install", "wait_ms": 60_000, "args": {
+            "version": "vv", "arch": "x86_64", "from": from}}),
+    );
+    assert_ne!(installed["result"]["isError"], true, "{installed}");
+    assert!(
+        installed
+            .to_string()
+            .contains("installed runtime bundle: tilo-runtime/vv"),
+        "the cache says what it installed: {installed}"
+    );
+    assert_eq!(
+        std::fs::read(bundles.join("vv/lib/lib64/libc.so.6")).unwrap(),
+        bytes("/lib64/libc.so.6"),
+        "the runtime is built from the files put"
+    );
+}
+
+/// `bytes` as standard base64, the way a client puts a file.
+#[cfg(target_os = "linux")]
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut text = String::new();
+    for chunk in bytes.chunks(3) {
+        let word = chunk
+            .iter()
+            .zip([16, 8, 0])
+            .fold(0u32, |word, (byte, shift)| word | u32::from(*byte) << shift);
+        for (at, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            text.push(if at <= chunk.len() {
+                char::from(ALPHABET[(word >> shift & 63) as usize])
+            } else {
+                '='
+            });
+        }
+    }
+    text
+}
+
 /// A device nobody set up founds no person by itself: it stays its device alone until its own
 /// account starts one (`devices#found`), as a laptop's first command does through the place every
 /// client finds the daemon at. Another account may not, and a device with a person starts no

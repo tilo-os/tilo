@@ -14,6 +14,8 @@ path = "src/lib.rs"
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-app-package = { path = "../tilo-app-package" }
 registry-types = { path = "../registry-types" }
+# The kept form of a package's surface, whose hash a registry version names.
+collab-types = { path = "../collab-types" }
 tilo-automation = { path = "../automation" }
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 # Payload blobs and publisher uploads come from the registry server over

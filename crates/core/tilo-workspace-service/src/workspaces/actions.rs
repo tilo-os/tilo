@@ -55,9 +55,10 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_INVITATIONS,
     WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBER_PLACED,
-    WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, WORKSPACE_SERVERS, WORKSPACE_WAITING, formats,
-    mcp_server, person_accounts, person_asking, person_connections, person_models, person_telling,
-    person_vault, server_account, workspace_governance_address, workspace_governance_child,
+    WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, WORKSPACE_REGISTRIES, WORKSPACE_SERVERS,
+    WORKSPACE_TRUST, WORKSPACE_WAITING, formats, mcp_server, person_accounts, person_asking,
+    person_connections, person_models, person_telling, person_vault, server_account, workspace_app,
+    workspace_app_named, workspace_governance_address, workspace_governance_child,
     workspace_governance_operation, workspace_governance_resource, workspace_member,
     workspace_person,
 };
@@ -174,8 +175,41 @@ pub(crate) const PUBLICATION: &str = "publication";
 /// No longer choosing which version of an app the workspace runs
 /// (`install-app`, the governance action of that name, chooses one).
 pub(crate) const UNINSTALL_APP: &str = "uninstall-app";
+/// Keeping the version of an app the workspace runs: an update is refused until it is unpinned.
+pub(crate) const PIN_APP: &str = "app.pin";
+/// Letting the version of an app the workspace runs be updated again.
+pub(crate) const UNPIN_APP: &str = "app.unpin";
+/// The versions of an app the workspace ran before the one it runs, the most recent first.
+pub(crate) const EARLIER_APP_VERSIONS: &str = "app.earlier";
+/// What the tree publishes on each app the workspace runs, not on its apps: updating, pinning
+/// and uninstalling it.
+const ON_EACH_APP: [&str; 4] = [UNINSTALL_APP, PIN_APP, UNPIN_APP, EARLIER_APP_VERSIONS];
 /// Hand the workspace's holder a piece of an app version's package file.
 pub(crate) const UPLOAD_APP_FILE: &str = "upload-app-file";
+/// The attestors whose signatures the workspace accepts for packages.
+pub(crate) const TRUSTED_ATTESTORS: &str = "trust.list";
+/// The publisher keys the workspace refuses.
+pub(crate) const REVOKED_PUBLISHERS: &str = "trust.revoked";
+/// Add or replace an attestor the workspace trusts.
+pub(crate) const ADD_ATTESTOR: &str = "trust.add";
+/// Remove an attestor.
+pub(crate) const REMOVE_ATTESTOR: &str = "trust.remove";
+/// Refuse every package publisher key from now on.
+pub(crate) const REVOKE_PUBLISHER: &str = "trust.revoke";
+/// The registries the workspace fetches apps from.
+pub(crate) const REGISTRIES: &str = "registry.list";
+/// Add a registry.
+pub(crate) const ADD_REGISTRY: &str = "registry.add";
+/// Remove a registry.
+pub(crate) const REMOVE_REGISTRY: &str = "registry.remove";
+/// Read a registry, or stop reading it.
+pub(crate) const ENABLE_REGISTRY: &str = "registry.enable";
+pub(crate) const DISABLE_REGISTRY: &str = "registry.disable";
+/// Offer another channel of a registry's releases.
+pub(crate) const REGISTRY_CHANNEL: &str = "registry.channel";
+/// The apps the configured registries offer, with the version, package and publisher an install
+/// names; language packs among them, which Settings offers a person.
+pub(crate) const APP_OFFERS: &str = "app.offers";
 
 /// How long an invitation stays redeemable when the caller does not say.
 const DEFAULT_INVITATION_HOURS: u64 = 7 * 24;
@@ -213,7 +247,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 29] = [
+const VERBS: [Verb; 44] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -394,10 +428,124 @@ const VERBS: [Verb; 29] = [
         params: app_file_params,
     },
     Verb {
+        id: APP_OFFERS,
+        label: "The apps the registries offer",
+        // A read: every member may see what could be installed.
+        check: "",
+        kind: ActionKind::Read,
+        params: Vec::new,
+    },
+    Verb {
+        id: TRUSTED_ATTESTORS,
+        label: "List the attestors this workspace trusts",
+        // A reading: every member's Store needs the list, and neither the
+        // attestors nor the addresses are secrets.
+        check: "",
+        kind: ActionKind::Read,
+        params: Vec::new,
+    },
+    Verb {
+        id: REVOKED_PUBLISHERS,
+        label: "List the publisher keys this workspace refuses",
+        // A reading: every member's Store needs the list, and a refused key
+        // is no secret.
+        check: "",
+        kind: ActionKind::Read,
+        params: Vec::new,
+    },
+    Verb {
+        id: ADD_ATTESTOR,
+        label: "Trust an attestor",
+        check: governance::INSTALL_APP,
+        kind: roles::GOVERNANCE_KIND,
+        params: attestor_params,
+    },
+    Verb {
+        id: REMOVE_ATTESTOR,
+        label: "Stop trusting an attestor",
+        check: governance::INSTALL_APP,
+        kind: roles::GOVERNANCE_KIND,
+        params: attestor_id_params,
+    },
+    Verb {
+        id: REVOKE_PUBLISHER,
+        label: "Refuse a publisher",
+        check: governance::INSTALL_APP,
+        kind: roles::GOVERNANCE_KIND,
+        params: revoke_params,
+    },
+    Verb {
+        id: REGISTRIES,
+        label: "List the registries this workspace fetches apps from",
+        // A reading: every member's Store needs the list, and neither the
+        // attestors nor the addresses are secrets.
+        check: "",
+        kind: ActionKind::Read,
+        params: Vec::new,
+    },
+    Verb {
+        id: ADD_REGISTRY,
+        label: "Add a registry",
+        check: governance::INSTALL_APP,
+        kind: roles::GOVERNANCE_KIND,
+        params: add_registry_params,
+    },
+    Verb {
+        id: REMOVE_REGISTRY,
+        label: "Remove a registry",
+        check: governance::INSTALL_APP,
+        kind: roles::GOVERNANCE_KIND,
+        params: registry_params,
+    },
+    Verb {
+        id: ENABLE_REGISTRY,
+        label: "Read a registry",
+        check: governance::INSTALL_APP,
+        kind: roles::GOVERNANCE_KIND,
+        params: registry_params,
+    },
+    Verb {
+        id: DISABLE_REGISTRY,
+        label: "Stop reading a registry",
+        check: governance::INSTALL_APP,
+        kind: roles::GOVERNANCE_KIND,
+        params: registry_params,
+    },
+    Verb {
+        id: REGISTRY_CHANNEL,
+        label: "Choose a registry's release channel",
+        check: governance::INSTALL_APP,
+        kind: roles::GOVERNANCE_KIND,
+        params: registry_channel_params,
+    },
+    Verb {
         id: UNINSTALL_APP,
         label: "Let everyone run their own version of an app",
         check: governance::INSTALL_APP,
         kind: roles::GOVERNANCE_KIND,
+        params: app_params,
+    },
+    Verb {
+        id: PIN_APP,
+        label: "Keep this version",
+        check: governance::INSTALL_APP,
+        kind: roles::GOVERNANCE_KIND,
+        params: app_params,
+    },
+    Verb {
+        id: UNPIN_APP,
+        label: "Let the app be updated",
+        check: governance::INSTALL_APP,
+        kind: roles::GOVERNANCE_KIND,
+        params: app_params,
+    },
+    Verb {
+        id: EARLIER_APP_VERSIONS,
+        label: "List the versions this workspace ran before",
+        // A reading: going back a version is an update to one of these, which
+        // the install grant decides.
+        check: "",
+        kind: ActionKind::Read,
         params: app_params,
     },
     Verb {
@@ -589,20 +737,25 @@ fn app_release_params() -> Vec<ActionParam> {
     vec![
         app_param(),
         ActionParam::required("version", ParamType::Text, "The version its package names."),
-        ActionParam::required(
+        ActionParam::optional(
             "surface",
             ParamType::Text,
-            "The BLAKE3 hash of the package's surface.toml, 64 hex characters.",
+            "The BLAKE3 hash of the package's surface.toml in the form it is kept by, 64 hex characters; none for a package that publishes no surface.",
         ),
-        ActionParam::required(
+        ActionParam::optional(
             "package",
             ParamType::Text,
-            "The package's tapp: hash, 64 hex characters.",
+            "The package's tapp: hash, 64 hex characters; absent for a Flatpak.",
         ),
-        ActionParam::required(
+        ActionParam::optional(
             "publisher",
             ParamType::Text,
-            "The publisher key that signed the package, 64 hex characters.",
+            "The publisher key that signed the package, 64 hex characters; absent for a Flatpak.",
+        ),
+        ActionParam::optional(
+            "flatpak",
+            ParamType::Text,
+            "A Flatpak reference (`app/org.example.App/x86_64/stable`): run that Flatpak instead of a Tilo package. The app id is its application id, lowercased.",
         ),
         ActionParam::optional(
             "dev",
@@ -636,6 +789,89 @@ fn app_file_params() -> Vec<ActionParam> {
 
 fn app_params() -> Vec<ActionParam> {
     vec![app_param()]
+}
+
+fn attestor_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "id",
+            ParamType::Text,
+            "The attestor's id, as a package's `[[trust.attested_by]]` names it.",
+        ),
+        ActionParam::required(
+            "pubkey",
+            ParamType::Text,
+            "The attestor's Ed25519 public key, 64 hex characters.",
+        ),
+        ActionParam::optional(
+            "scope",
+            ParamType::Text,
+            "What its signature covers: `all`, `mime:<list>` or `prefix:<list>`; `all` when omitted.",
+        ),
+    ]
+}
+
+fn attestor_id_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "id",
+        ParamType::Text,
+        "The attestor's id, as listing the trust list reports it.",
+    )]
+}
+
+fn revoke_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "pubkey",
+            ParamType::Text,
+            "The publisher's Ed25519 public key, 64 hex characters.",
+        ),
+        ActionParam::optional(
+            "reason",
+            ParamType::Text,
+            "Why it is refused; shown wherever the list is read.",
+        ),
+    ]
+}
+
+fn registry_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "name",
+        ParamType::Text,
+        "The registry, as listing the registries reports it.",
+    )]
+}
+
+fn add_registry_params() -> Vec<ActionParam> {
+    let mut params = registry_params();
+    params.extend([
+        ActionParam::required(
+            "url",
+            ParamType::Text,
+            "Its address: credential-free HTTPS, or loopback HTTP for development.",
+        ),
+        ActionParam::required(
+            "owner_key",
+            ParamType::Text,
+            "The owner key its signed catalogue is pinned to, 64 hex characters.",
+        ),
+        ActionParam::optional(
+            "channel",
+            ParamType::Text,
+            "`stable` or `development`; `stable` when omitted.",
+        ),
+    ]);
+    params
+}
+
+fn registry_channel_params() -> Vec<ActionParam> {
+    let mut params = registry_params();
+    params.push(ActionParam::required(
+        "channel",
+        ParamType::Text,
+        "`stable` or `development`.",
+    ));
+    params
 }
 
 fn key_params() -> Vec<ActionParam> {
@@ -800,6 +1036,8 @@ impl Verb {
         let label = match child {
             Some(WORKSPACE_SERVERS) => "Servers",
             Some(WORKSPACE_APPS) => "Apps",
+            Some(WORKSPACE_TRUST) => "Trust",
+            Some(WORKSPACE_REGISTRIES) => "App registries",
             Some(WORKSPACE_MEMBERS) => "People",
             Some(WORKSPACE_INVITATIONS) => "Invitations",
             Some(WORKSPACE_WAITING) => "Waiting to be invited",
@@ -810,8 +1048,9 @@ impl Verb {
         if child.is_some() {
             row.parent_resource.clone_from(&root);
         }
-        // The workspace's people each hold what changes their place.
-        row.has_children = child == Some(WORKSPACE_MEMBERS);
+        // The workspace's people each hold what changes their place, and its apps what
+        // updates, pins and uninstalls each.
+        row.has_children = matches!(child, Some(WORKSPACE_MEMBERS | WORKSPACE_APPS));
         if let Some(action) = row.action.as_mut() {
             // Reading what the tree holds (`tilo_read workspace/members`) lists it.
             if child.is_some() && address.action == "list" && self.kind == ActionKind::Read {
@@ -824,6 +1063,49 @@ impl Verb {
         }
         row
     }
+}
+
+/// What each app `workspace` runs publishes (`workspace/apps/<app>`) that `offered` lets the
+/// caller ask, when `query` browses its apps: updating it to another version, keeping the one it
+/// runs or letting it be updated again, and uninstalling it.
+fn app_rows(
+    workspace: &super::GovernedWorkspace,
+    query: &CatalogueQuery,
+    offered: impl Fn(&Verb) -> bool,
+) -> Vec<CatalogueRow> {
+    let apps = workspace_governance_child(workspace.workspace(), Some(WORKSPACE_APPS));
+    if query.parent_resource.as_deref() != Some(apps.as_str()) {
+        return Vec::new();
+    }
+    let verbs: Vec<&Verb> = VERBS
+        .iter()
+        .filter(|verb| {
+            (verb.id == governance::INSTALL_APP || ON_EACH_APP.contains(&verb.id)) && offered(verb)
+        })
+        .collect();
+    let mut rows = Vec::new();
+    for installed in workspace.peer().governance().app_versions() {
+        let release = installed.release;
+        let resource = workspace_app(workspace.workspace(), &release.app);
+        for verb in &verbs {
+            let published = match verb.id {
+                governance::INSTALL_APP if !release.pinned => "update",
+                PIN_APP if !release.pinned => "pin",
+                UNPIN_APP if release.pinned => "unpin",
+                UNINSTALL_APP => "uninstall",
+                EARLIER_APP_VERSIONS => "earlier",
+                _ => continue,
+            };
+            let mut row = verb.row(GOVERNANCE, &resource, &release.app);
+            row.parent_resource.clone_from(&apps);
+            if let Some(action) = row.action.as_mut() {
+                action.address = ActionAddress::new(resource.as_str(), published);
+                action.params.retain(|param| param.name != "app");
+            }
+            rows.push(row);
+        }
+    }
+    rows
 }
 
 /// `rows` of a workspace's governance tree, the workspace named `name`, its
@@ -859,12 +1141,15 @@ fn governance_tree(mut rows: Vec<CatalogueRow>, name: &str) -> Vec<CatalogueRow>
 fn governance_request(request: &InvokeRequest, workspace: &str, operation: &str) -> InvokeRequest {
     let mut asked = request.clone();
     asked.target.address = ActionAddress::new(workspace_governance_resource(workspace), operation);
-    if let Some(person) = workspace_person(&request.target.address) {
+    let named = workspace_person(&request.target.address)
+        .map(|person| ("person", person))
+        .or_else(|| workspace_app_named(&request.target.address).map(|app| ("app", app)));
+    if let Some((name, value)) = named {
         let mut arguments = match asked.argument {
             InvokeArgument::Json(arguments) => arguments,
             _ => Map::new(),
         };
-        arguments.insert("person".into(), person.into());
+        arguments.insert(name.into(), value.into());
         asked.argument = InvokeArgument::Json(arguments);
     }
     asked
@@ -1464,14 +1749,20 @@ impl Workspaces {
                 let offered = |verb: &Verb| {
                     self.offers(verb, (caller, &device), &workspace, grants.as_ref(), now)
                 };
-                // Removing is published on each person, under the workspace's people.
+                // Removing is published on each person, under the workspace's people, and
+                // what changes one app on that app, under its apps.
                 let mut rows: Vec<CatalogueRow> = VERBS
                     .iter()
-                    .filter(|verb| verb.id != governance::REMOVE_MEMBER && offered(verb))
+                    .filter(|verb| {
+                        verb.id != governance::REMOVE_MEMBER
+                            && !ON_EACH_APP.contains(&verb.id)
+                            && offered(verb)
+                    })
                     .map(|verb| verb.governance_row(workspace.workspace(), &workspace.name()))
                     .collect();
                 let own = device.user_public_key;
                 rows.extend(self.member_rows(&workspace, (query, own), offered));
+                rows.extend(app_rows(&workspace, query, offered));
                 if operating.is_some() {
                     rows.extend(server::rows(&workspace));
                 }
@@ -1996,10 +2287,18 @@ impl Workspaces {
             server::MACHINE_ADMIT => Box::pin(self.machine_admit(call)).await,
             WAIT_LIST | UNLIST | MAIL_INVITATION => self.governance_wait_list(action, call).await,
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
-            governance::INSTALL_APP | UNINSTALL_APP => self.governance_apps(action, call).await,
+            governance::INSTALL_APP | UNINSTALL_APP | PIN_APP | UNPIN_APP => {
+                self.governance_apps(action, call).await
+            }
+            TRUSTED_ATTESTORS | REVOKED_PUBLISHERS | ADD_ATTESTOR | REMOVE_ATTESTOR
+            | REVOKE_PUBLISHER => self.package_trust_action(action, call).await,
+            REGISTRIES | ADD_REGISTRY | REMOVE_REGISTRY | ENABLE_REGISTRY | DISABLE_REGISTRY
+            | REGISTRY_CHANNEL => self.package_registries_action(action, call).await,
             governance::CALL => self.call_action(call).await,
             FETCH_GRANT => self.fetch_grant(call),
             UPLOAD_APP_FILE => self.upload_app_piece(call.workspace, call.args),
+            APP_OFFERS => self.apps_offers(call.workspace).await,
+            EARLIER_APP_VERSIONS => self.earlier_app_versions(call).await,
             KEYS => self.governance_keys(call).await,
             REVOKE_KEY => self.governance_revoke_key(call).await,
             _ => self.governance_members(action, call).await,
@@ -2134,15 +2433,74 @@ impl Workspaces {
         action: &str,
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionCallError> {
-        use tilo_peer_state::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
+        use tilo_peer_state::workspace_membership::{
+            AppPayload, AppRelease, WorkspaceMembershipCommand, flatpak_app_id,
+        };
         let GovernanceCall {
             workspace,
             device,
             request_id,
             args,
         } = call;
-        let app = args.required_text("app")?.to_owned();
-        let command = if action == governance::INSTALL_APP {
+        // A Flatpak is named by its reference; the record its app id. Every other change names the
+        // app it is about.
+        let flatpak = args.text("flatpak")?.map(str::to_owned);
+        let app = match (args.text("app")?, flatpak.as_deref()) {
+            (Some(app), None) => app.to_owned(),
+            (Some(app), Some(reference)) => {
+                let named = flatpak_app_id(reference).ok_or_else(|| {
+                    ActionCallError::invalid_request(
+                        "`flatpak` names `app/<application id>/<arch>/<branch>`",
+                    )
+                })?;
+                if named != app {
+                    return Err(ActionCallError::invalid_request(format!(
+                        "the Flatpak `{reference}` is {named} in this workspace, not `{app}`"
+                    )));
+                }
+                named
+            }
+            (None, Some(reference)) => flatpak_app_id(reference).ok_or_else(|| {
+                ActionCallError::invalid_request(
+                    "`flatpak` names `app/<application id>/<arch>/<branch>`",
+                )
+            })?,
+            (None, None) => return Err(ActionCallError::invalid_request("`app` is required")),
+        };
+        let running = self
+            .app_versions(workspace)
+            .await
+            .map_err(|error| ActionCallError::refused(error.to_string()))?
+            .into_iter()
+            .find(|installed| installed.release.app == app);
+        let command = if matches!(action, PIN_APP | UNPIN_APP) {
+            let mut release = running
+                .ok_or_else(|| {
+                    ActionCallError::refused("the workspace runs no version of this app")
+                })?
+                .release;
+            release.pinned = action == PIN_APP;
+            WorkspaceMembershipCommand::InstallApp(release)
+        } else if action == governance::INSTALL_APP {
+            if let Some(running) = running.as_ref().filter(|running| running.release.pinned) {
+                return Err(ActionCallError::refused(format!(
+                    "the workspace keeps version {} of this app: unpin it first",
+                    running.release.version
+                )));
+            }
+            let version = args.required_text("version")?.to_owned();
+            // A version that publishes no surface names none, and a Flatpak names neither a
+            // package nor a publisher: its reference is its payload.
+            let surface = args.text("surface")?.map(str::to_owned).unwrap_or_default();
+            // A Flatpak names neither a package nor a publisher: its reference is its payload.
+            let (package, publisher) = if flatpak.is_some() {
+                (String::new(), String::new())
+            } else {
+                (
+                    args.required_text("package")?.to_owned(),
+                    args.required_text("publisher")?.to_owned(),
+                )
+            };
             let file = args.text("file")?.map(str::to_owned);
             // Members fetch the file from this holder: it must be here first.
             if let Some(file) = &file
@@ -2152,14 +2510,20 @@ impl Workspaces {
                     "the workspace's host does not have this package file: hand it over with `upload-app-file` first",
                 ));
             }
+            let payload = match flatpak {
+                Some(reference) => AppPayload::Flatpak { reference },
+                None => AppPayload::Tapp,
+            };
             WorkspaceMembershipCommand::InstallApp(AppRelease {
                 app: app.clone(),
-                version: args.required_text("version")?.to_owned(),
-                surface: args.required_text("surface")?.to_owned(),
-                package: args.required_text("package")?.to_owned(),
-                publisher: args.required_text("publisher")?.to_owned(),
+                version,
+                surface,
+                package,
+                publisher,
                 file,
                 dev: args.flag("dev")?,
+                pinned: false,
+                payload,
             })
         } else {
             WorkspaceMembershipCommand::UninstallApp { app: app.clone() }
@@ -2178,6 +2542,158 @@ impl Workspaces {
             .into_iter()
             .find(|installed| installed.release.app == app);
         Ok(json!({ "generation": done.generation, "running": running }))
+    }
+
+    /// The trust the workspace keeps for packages: adding or replacing an
+    /// attestor, removing one, or refusing a publisher. Every call answers the
+    /// lists as they are then.
+    async fn package_trust_action(
+        &self,
+        action: &str,
+        call: GovernanceCall<'_>,
+    ) -> Result<Value, ActionCallError> {
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
+        let GovernanceCall {
+            workspace,
+            device,
+            request_id,
+            args,
+        } = call;
+        let command = match action {
+            ADD_ATTESTOR => Some(WorkspaceMembershipCommand::AddAttestor(
+                tilo_peer_state::TrustAttestor {
+                    id: args.required_text("id")?.to_owned(),
+                    pubkey_hex: args.required_text("pubkey")?.to_ascii_lowercase(),
+                    scope: args.text("scope")?.unwrap_or("all").to_owned(),
+                },
+            )),
+            REMOVE_ATTESTOR => Some(WorkspaceMembershipCommand::RemoveAttestor {
+                id: args.required_text("id")?.to_owned(),
+            }),
+            REVOKE_PUBLISHER => Some(WorkspaceMembershipCommand::RevokePublisher {
+                pubkey: args.required_text("pubkey")?.to_ascii_lowercase(),
+                reason: args.text("reason")?.unwrap_or_default().to_owned(),
+            }),
+            TRUSTED_ATTESTORS | REVOKED_PUBLISHERS => None,
+            _ => return Err(ActionCallError::UnknownAction),
+        };
+        if let Some(command) = command {
+            command
+                .validate()
+                .map_err(ActionCallError::invalid_request)?;
+            self.change_package_trust(workspace, device, request_id, command)
+                .await
+                .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        }
+        let (attestors, revoked) = self
+            .package_trust(workspace)
+            .await
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        Ok(json!({ "attestors": attestors, "revoked": revoked }))
+    }
+
+    /// The registries the workspace fetches apps from: adding one, removing
+    /// one, reading it or not, or choosing the channel it offers. Every call
+    /// answers the list as it is then.
+    async fn package_registries_action(
+        &self,
+        action: &str,
+        call: GovernanceCall<'_>,
+    ) -> Result<Value, ActionCallError> {
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
+        let GovernanceCall {
+            workspace,
+            device,
+            request_id,
+            args,
+        } = call;
+        let command = match action {
+            ADD_REGISTRY => Some(WorkspaceMembershipCommand::AddRegistry(
+                tilo_peer_state::PackageRegistry {
+                    name: args.required_text("name")?.to_owned(),
+                    base_url: args.required_text("url")?.trim_end_matches('/').to_owned(),
+                    owner_pubkey_hex: args.required_text("owner_key")?.to_ascii_lowercase(),
+                    enabled: true,
+                    channel: args.text("channel")?.unwrap_or("stable").to_owned(),
+                },
+            )),
+            REMOVE_REGISTRY => Some(WorkspaceMembershipCommand::RemoveRegistry {
+                name: args.required_text("name")?.to_owned(),
+            }),
+            ENABLE_REGISTRY | DISABLE_REGISTRY => {
+                Some(WorkspaceMembershipCommand::SetRegistryEnabled {
+                    name: args.required_text("name")?.to_owned(),
+                    enabled: action == ENABLE_REGISTRY,
+                })
+            }
+            REGISTRY_CHANNEL => Some(WorkspaceMembershipCommand::SetRegistryChannel {
+                name: args.required_text("name")?.to_owned(),
+                channel: args.required_text("channel")?.to_owned(),
+            }),
+            REGISTRIES => None,
+            _ => return Err(ActionCallError::UnknownAction),
+        };
+        if let Some(command) = command {
+            command
+                .validate()
+                .map_err(ActionCallError::invalid_request)?;
+            self.change_package_registries(workspace, device, request_id, command)
+                .await
+                .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        }
+        let registries = self
+            .registries(workspace)
+            .await
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        Ok(json!({ "registries": registries }))
+    }
+
+    /// The apps `workspace`'s registries offer: each one's name, the version to install, the
+    /// signed package root and publisher an install names, and the registry offering it.
+    /// The versions of the app `call` names the workspace ran before the one it runs, the most
+    /// recent first: `{"releases": [...]}`, each as `#update` takes it.
+    async fn earlier_app_versions(
+        &self,
+        call: GovernanceCall<'_>,
+    ) -> Result<Value, ActionCallError> {
+        let app = call.args.required_text("app")?.to_owned();
+        let releases = self
+            .earlier_app_versions_of(call.workspace, &app)
+            .await
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        Ok(json!({ "releases": releases }))
+    }
+
+    async fn apps_offers(&self, workspace: &str) -> Result<Value, ActionCallError> {
+        // The workspace's own registries, read here: never the list a desktop answers.
+        let registries = self
+            .registries(workspace)
+            .await
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        let registries =
+            app_cli::config::registries_from_rows(&json!({ "registries": registries }))
+                .unwrap_or_default();
+        let listing = tokio::task::spawn_blocking(move || {
+            app_cli::config::with_registries(registries, app_cli::all_offers)
+        })
+        .await
+        .map_err(|error| ActionCallError::refused(format!("reading the registries: {error}")))?;
+        let offers: Vec<Value> = listing
+            .apps
+            .iter()
+            .map(|app| {
+                json!({
+                    "app": app.package_id,
+                    "name": app.display_name,
+                    "version": app.version,
+                    "package": app.tapp_root_hash_hex,
+                    "publisher": app.publisher_pubkey_hex,
+                    "surface": app.tapp_surface_hex,
+                    "registry": app.registry,
+                })
+            })
+            .collect();
+        Ok(json!({ "offers": offers }))
     }
 
     /// A piece of an app version's package file, for this holder to keep and
@@ -2223,7 +2739,13 @@ impl Workspaces {
         // it by asking for the verb by name, and no person is
         // offered what only a key or the key that minted it can do.
         if verb.check.is_empty() {
-            return verb.id == NAME && caller.acting().is_person();
+            // Naming themselves is every person's; so is reading what their
+            // workspace trusts and where it fetches from, which their Store
+            // shows them.
+            return matches!(
+                verb.id,
+                NAME | TRUSTED_ATTESTORS | REVOKED_PUBLISHERS | REGISTRIES
+            ) && caller.acting().is_person();
         }
         if grants
             .is_some_and(|grants| grants.answer(&verb.operation(GOVERNANCE), now) == Answer::Deny)
@@ -3030,6 +3552,9 @@ impl ActionProvider for InWorkspace {
                 .into_iter()
                 .find(|installed| installed.release.app == app)?;
             let hash = installed.release.surface;
+            if hash.is_empty() {
+                return None;
+            }
             if let Some(bytes) = crate::surfaces::read(&hash) {
                 return Some(bytes);
             }

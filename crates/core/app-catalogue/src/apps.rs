@@ -1,8 +1,8 @@
 //! The installed half of the catalogue: the applications this device can launch, with the signed
 //! manifest each was admitted with. Every installed package ([`package_store::Catalog`]) read
 //! through the view of its manifest ([`tilo_app_package::view`]), and what each declared it may do
-//! on the action API under its own identity. The desktop session, the per-user runtime and
-//! package-service launch from this one answer.
+//! on the action API under its own identity. The desktop session launches from this one answer,
+//! and so does the device daemon that serves the workspace's app actions.
 
 use std::path::PathBuf;
 

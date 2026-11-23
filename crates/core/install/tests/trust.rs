@@ -2,12 +2,12 @@
 //! would be a circular workspace dependency) and driven through the built binary with
 //! `XDG_CONFIG_HOME` and `XDG_DATA_HOME` in a tempdir.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ed25519_dalek::{Signer, SigningKey};
 use tilo_app_package::manifest::TrustAttestation;
 use tilo_app_package::trust::{
-    AttestorScope, RevocationList, RevokedKey, TrustFile, TrustedAttestor, TrustedAttestors,
+    AttestorScope, RevocationList, RevokedKey, TrustedAttestor, TrustedAttestors,
     attestation_preimage,
 };
 use tilo_app_package::{Manifest, SigningIdentity, pack};
@@ -89,40 +89,44 @@ fn attest_and_inject(
     });
 }
 
-/// One test's isolated data and config dirs.
+/// One test's isolated data dirs and the workspace trust list its commands read.
 struct TestEnv {
     home: tempfile::TempDir,
+    trust: std::cell::RefCell<(Vec<TrustedAttestor>, Vec<RevokedKey>)>,
 }
 
 impl TestEnv {
     fn new() -> Self {
         Self {
             home: tempfile::tempdir().unwrap(),
+            trust: std::cell::RefCell::new((Vec::new(), Vec::new())),
         }
     }
 
-    fn xdg_config(&self) -> PathBuf {
-        self.home.path().join("config")
-    }
-
-    fn tilo_config(&self) -> PathBuf {
-        self.xdg_config().join("tilo")
-    }
-
+    /// The workspace's trust list, as its reading answers it.
     fn write_trusted_attestors(&self, attestors: &TrustedAttestors) {
-        std::fs::create_dir_all(self.tilo_config()).unwrap();
-        let path = self.tilo_config().join("trusted-attestors.toml");
-        attestors.save(&path).unwrap();
+        self.trust.borrow_mut().0.clone_from(&attestors.attestor);
     }
 
     fn write_revocation(&self, list: &RevocationList) {
-        std::fs::create_dir_all(self.tilo_config()).unwrap();
-        let path = self.tilo_config().join("revoked-keys.toml");
-        list.save(&path).unwrap();
+        self.trust.borrow_mut().1.clone_from(&list.revoked);
     }
 
     fn cli(&self, arguments: &[&str]) -> (bool, String, String) {
         let mut cmd = crate::support::cmd(self.home.path());
+        let (attestors, revoked) = &*self.trust.borrow();
+        let trust = serde_json::json!({
+            "attestors": attestors
+                .iter()
+                .map(|attestor| serde_json::json!({
+                    "id": attestor.id,
+                    "pubkey_hex": attestor.pubkey_hex,
+                    "scope": attestor.scope.render(),
+                }))
+                .collect::<Vec<_>>(),
+            "revoked": revoked,
+        });
+        cmd.env("TILO_WORKSPACE_TRUST", trust.to_string());
         cmd.args(arguments);
         crate::support::run(cmd)
     }
@@ -373,27 +377,28 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase trust_store_commands_round_trip;
+    phase trust_reads_the_workspace_list;
     {
         {
             let env = TestEnv::new();
             let pubkey = "aa".repeat(32);
+            env.write_trusted_attestors(&TrustedAttestors {
+                attestor: vec![TrustedAttestor {
+                    id: "acme/1".into(),
+                    pubkey_hex: pubkey.clone(),
+                    scope: AttestorScope::Prefix(vec!["so.tilo.".into()]),
+                }],
+            });
 
-            let (ok, stdout, stderr) =
-                env.cli(&["trust", "add", "--id", "acme/1", "--pubkey", &pubkey]);
-            assert!(ok, "trust add failed: {stderr}");
-            assert!(stdout.contains("acme/1"), "stdout: {stdout}");
-
-            let (ok, stdout, _stderr) = env.cli(&["trust", "list"]);
-            assert!(ok);
+            let (ok, stdout, stderr) = env.cli(&["trust", "list"]);
+            assert!(ok, "trust list failed: {stderr}");
             assert!(stdout.contains("acme/1"), "list stdout: {stdout}");
-            assert!(
-                stdout.contains(&pubkey),
-                "list stdout missing key: {stdout}"
-            );
-
-            let (ok, _stdout, stderr) = env.cli(&["trust", "remove", "acme/1"]);
-            assert!(ok, "trust remove failed: {stderr}");
+            assert!(stdout.contains(&pubkey), "list stdout: {stdout}");
+            assert!(stdout.contains("prefix:so.tilo."), "list stdout: {stdout}");
+        }
+        {
+            let env = TestEnv::new();
+            let pubkey = "bb".repeat(32);
 
             let (ok, stdout, _stderr) = env.cli(&["trust", "list"]);
             assert!(ok);
@@ -401,15 +406,13 @@ tilo_test_env::scenario! {
                 stdout.contains("(no trusted attestors)"),
                 "stdout: {stdout}"
             );
-        }
-        {
-            let env = TestEnv::new();
-            let pubkey = "bb".repeat(32);
 
-            let (ok, stdout, stderr) = env.cli(&["revoke", &pubkey, "--reason", "compromised"]);
-            assert!(ok, "revoke failed: {stderr}");
-            assert!(stdout.contains(&pubkey), "stdout: {stdout}");
-
+            env.write_revocation(&RevocationList {
+                revoked: vec![RevokedKey {
+                    pubkey_hex: pubkey.clone(),
+                    reason: "compromised".into(),
+                }],
+            });
             let (ok, stdout, _stderr) = env.cli(&["revoked", "list"]);
             assert!(ok);
             assert!(stdout.contains(&pubkey), "list stdout: {stdout}");

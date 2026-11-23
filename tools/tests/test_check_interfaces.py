@@ -373,7 +373,7 @@ class WordListTests(unittest.TestCase):
 
 
 class RepositoryTests(unittest.TestCase):
-    def test_the_eight_interfaces_each_have_one_number(self):
+    def test_the_seven_interfaces_each_have_one_number(self):
         names = sorted(
             interfaces.load_spec(path)[0].name for path in interfaces.interface_files()
         )
@@ -384,7 +384,6 @@ class RepositoryTests(unittest.TestCase):
                 "app-keeper",
                 "messaging",
                 "package",
-                "package-service",
                 "peer",
                 "runtime",
                 "shell-ui",

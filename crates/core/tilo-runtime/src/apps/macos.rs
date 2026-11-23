@@ -413,11 +413,15 @@ fn verify_package(package: &package_store::registry::InstalledPackage) -> Result
         &package.package_id_hex,
     )
     .map_err(|error| error.to_string())?;
-    use tilo_app_package::TrustFile as _;
-    let revoked = match tilo_app_package::default_revoked_keys_path() {
-        Some(path) => tilo_app_package::RevocationList::load(&path)
-            .map_err(|error| format!("the revocation list is unreadable ({error})"))?,
-        None => tilo_app_package::RevocationList::default(),
+    let revoked = tilo_app_package::RevocationList {
+        revoked: tilo_control::packages::trust()
+            .1
+            .into_iter()
+            .map(|key| tilo_app_package::RevokedKey {
+                pubkey_hex: key.pubkey_hex,
+                reason: key.reason,
+            })
+            .collect(),
     };
     if let Some(entry) = revoked.find(&signed.root.publisher_identity) {
         return Err(format!("its publisher's key is revoked ({})", entry.reason));

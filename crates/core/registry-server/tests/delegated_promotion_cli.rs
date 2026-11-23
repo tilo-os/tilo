@@ -995,6 +995,7 @@ mode = "off"
                 tapp_root_hash_hex: packed.id().to_hex(),
                 tapp_size_bytes: bytes.len() as u64,
                 tapp_blake3_hex: digest.clone(),
+                tapp_surface_hex: String::new(),
                 target: target.clone(),
             }),
         }],

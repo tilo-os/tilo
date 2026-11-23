@@ -92,7 +92,6 @@ COPY \
     os/usr/lib/systemd/user/tilo-model-gateway.service \
     os/usr/lib/systemd/user/tilo-model-gateway.socket \
     os/usr/lib/systemd/user/tilo-secret-service.service \
-    os/usr/lib/systemd/user/tilo-package-service.socket \
     os/usr/lib/systemd/user/tilo-projector.service \
     os/usr/lib/systemd/user/tilo-projector.socket \
     os/usr/lib/systemd/user/tilo-cache-gc.service \
@@ -781,7 +780,6 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
     systemctl --global enable tilo-models.socket && \
     systemctl --global enable tilo-model-gateway.socket && \
     systemctl --global enable tilo-projector.socket && \
-    systemctl --global enable tilo-package-service.socket && \
     systemctl --global enable tilo-ush.socket && \
     systemctl --global enable tilo-fs-cloud.service && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service && \

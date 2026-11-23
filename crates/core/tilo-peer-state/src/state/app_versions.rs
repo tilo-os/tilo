@@ -163,6 +163,59 @@ impl PeerGovernance<'_> {
         let (_, versions) = doc.get(ROOT, APP_VERSIONS).ok()??;
         read_version(&**doc, &versions, app)
     }
+
+    /// The releases of `app` the workspace ran before the one it runs now, the most recent
+    /// first, each once: its row as each change of the governance history left it. What going
+    /// back a version goes back to.
+    #[must_use]
+    pub fn earlier_app_versions(self, app: &str) -> Vec<AppRelease> {
+        let Some(doc) = self.peer.core.workspace_doc.as_deref() else {
+            return Vec::new();
+        };
+        let Ok(Some((_, versions))) = doc.get(ROOT, APP_VERSIONS) else {
+            return Vec::new();
+        };
+        let current = self.app_version(app).map(|installed| installed.release);
+        let mut ran: Vec<AppRelease> = Vec::new();
+        for change in doc.committed_document().get_changes(&[]) {
+            let Some(row) = read_version_at(doc, &versions, app, &[change.hash()]) else {
+                continue;
+            };
+            let mut release = row.release;
+            // Keeping a version or letting it go is no other version.
+            release.pinned = false;
+            ran.retain(|earlier| *earlier != release);
+            ran.push(release);
+        }
+        let current = current.map(|mut release| {
+            release.pinned = false;
+            release
+        });
+        ran.retain(|release| Some(release) != current.as_ref());
+        ran.reverse();
+        ran
+    }
+}
+
+/// The row kept under `app` as the document stood at `heads`, if it read as a valid release then.
+fn read_version_at(
+    doc: &impl ReadDoc,
+    versions: &automerge::ObjId,
+    app: &str,
+    heads: &[automerge::ChangeHash],
+) -> Option<InstalledApp> {
+    match doc.get_at(versions, app, heads).ok()?? {
+        (automerge::Value::Scalar(value), _) => match value.as_ref() {
+            automerge::ScalarValue::Bytes(bytes) => tilo_failure::ignored!(
+                "a row that did not decode then named no version the workspace ran",
+                serde_json::from_slice::<InstalledApp>(bytes)
+                    .ok()
+                    .filter(|row| row.release.app == app && row.release.validate().is_ok())
+            ),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// The row kept under `app`, if it reads as a valid release of that app: a

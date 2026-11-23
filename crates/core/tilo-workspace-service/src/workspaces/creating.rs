@@ -67,6 +67,10 @@ impl super::Workspaces {
     /// given: a workspace moving here keeps the workspace it is. Refused when
     /// this host holds that workspace already.
     ///
+    /// A workspace made this way starts with the default apps this device's registries offer,
+    /// recorded as the versions it runs. A workspace that comes here with apps of its own is
+    /// created with [`Self::create_workspace_keeping_its_apps`] instead, so it keeps them.
+    ///
     /// # Errors
     ///
     /// The name is not 1–80 characters, `workspace` is no UUID or held here
@@ -77,7 +81,22 @@ impl super::Workspaces {
         workspace: Option<&str>,
     ) -> Result<WorkspaceSummary, String> {
         // Making a workspace is a large future; whoever awaits it holds a pointer.
-        Box::pin(self.make_workspace(name, workspace, None)).await
+        Box::pin(self.make_workspace(name, workspace, None, true)).await
+    }
+
+    /// Create a governed workspace under the identity `workspace` that keeps the apps it
+    /// already has: a branch, or a workspace placed here from another device. It records no
+    /// default apps, so what it runs stays what its source runs.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::create_workspace`].
+    pub(super) async fn create_workspace_keeping_its_apps(
+        &self,
+        name: &str,
+        workspace: &str,
+    ) -> Result<WorkspaceSummary, String> {
+        Box::pin(self.make_workspace(name, Some(workspace), None, false)).await
     }
 
     /// [`Self::create_workspace`] for `person`: the workspace is theirs from
@@ -96,7 +115,7 @@ impl super::Workspaces {
         workspace: Option<&str>,
         person: [u8; 32],
     ) -> Result<WorkspaceSummary, String> {
-        Box::pin(self.make_workspace(name, workspace, Some(person))).await
+        Box::pin(self.make_workspace(name, workspace, Some(person), true)).await
     }
 
     async fn make_workspace(
@@ -104,6 +123,7 @@ impl super::Workspaces {
         name: &str,
         workspace: Option<&str>,
         person: Option<[u8; 32]>,
+        seed_defaults: bool,
     ) -> Result<WorkspaceSummary, String> {
         // A workspace placed under an identity waits for another placing the
         // same one, so two devices placing it at once create it once. Others
@@ -158,6 +178,16 @@ impl super::Workspaces {
             }
         }
         let device = self.device_keys();
+        // The apps this workspace starts with, as `workspace/apps#install` would record them.
+        // Made here so the lookup runs once, on the device that makes the workspace.
+        // The registries come first: the default apps are the releases they offer.
+        let (registries, defaults) = if seed_defaults {
+            let registries = super::default_apps::registries();
+            let defaults = super::default_apps::on_this_device(&registries);
+            (super::default_apps::registry_rows(&registries), defaults)
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let workspace = match workspace {
             Some(workspace) => GovernedWorkspace::create_in(
                 &self.inner.dir,
@@ -165,6 +195,7 @@ impl super::Workspaces {
                 name,
                 (&self.inner.host.cert, &self.inner.host.key),
                 device.as_ref(),
+                (&registries, &defaults),
                 tilo_clock::wall(),
             )?,
             None => GovernedWorkspace::create(
@@ -173,6 +204,7 @@ impl super::Workspaces {
                 &self.inner.host.cert,
                 &self.inner.host.key,
                 device.as_ref(),
+                (&registries, &defaults),
                 tilo_clock::wall(),
             )?,
         };

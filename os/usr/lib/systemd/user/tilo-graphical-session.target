@@ -7,17 +7,17 @@ Documentation=man:systemd.special(7)
 Requires=graphical-session-pre.target graphical-session.target
 After=graphical-session-pre.target
 # Tilo apps in the layered desktop package use the same per-user services as
-# the OS image. The app process and model daemons are socket-activated; eagerly
-# pulling their services here defeats that design and can put model storage and
-# network readiness on the login path. Only the confined shell runtime must be
-# started with the session. Each activated service is still bound to this target
-# through PartOf= and is stopped when the Tilo session ends.
+# the OS image. The model daemons are socket-activated; eagerly pulling their
+# services here defeats that design and can put model storage and network
+# readiness on the login path. Only the confined shell runtime must be started
+# with the session. Each activated service is still bound to this target through
+# PartOf= and is stopped when the Tilo session ends.
 Wants=tilo-ush.service
 # Their activation sockets, though, must listen whenever the session does. The
 # image enables them globally, but a layered host package enables nothing, so
-# without this a host session has no package-service, model or gateway socket and
-# every app that requires one (Store, Agent) exits before drawing.
-Wants=tilo-package-service.socket tilo-models.socket tilo-model-gateway.socket
+# without this a host session has no model or gateway socket and every app that
+# requires one (Store, Agent) exits before drawing.
+Wants=tilo-models.socket tilo-model-gateway.socket
 PartOf=graphical-session.target
 # Releasing the Tilo-owned target must tear down both standard session
 # targets immediately; relying on later StopWhenUnneeded garbage collection

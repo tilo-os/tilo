@@ -525,7 +525,7 @@ mkdir -p "$stamps" "$TILO_APPS_DATA_DIR"
 # os/scripts/pack-apps.sh installs a device's, so the launcher treats them as
 # the image's own. The person's store keeps what they install themselves.
 in_system_store() { env -u TILO_APPS_SYSTEM_DIR TILO_APPS_DATA_DIR="$system_store" "$@"; }
-# The session is not running yet, so no package service is either: like an
+# The session is not running yet, so no device daemon is either: like an
 # image build, every change below names the store it writes (`--offline-store`).
 installed=$(in_system_store "$bin/tilo-install" list 2>/dev/null || true)
 user_installed=$(env -u TILO_APPS_SYSTEM_DIR "$bin/tilo-install" list 2>/dev/null || true)

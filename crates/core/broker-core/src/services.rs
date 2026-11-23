@@ -115,6 +115,13 @@ pub trait WorkspaceAuthority: Send + Sync {
         None
     }
 
+    /// The registries `workspace`'s document says it fetches apps from, as its `registry.list`
+    /// reading answers them (`{"registries": [...]}`). `None` when this host holds no document
+    /// of the workspace: nothing is a registry of it here.
+    fn package_registries(&self, _workspace: &str) -> Option<serde_json::Value> {
+        None
+    }
+
     /// What was kept of the work done once in `workspace` under every lease whose id starts
     /// with `prefix`, as each lease's answer. Empty when this host holds no document of the
     /// workspace.

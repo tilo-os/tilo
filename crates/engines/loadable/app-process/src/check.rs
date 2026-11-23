@@ -3,9 +3,8 @@
 //! os/scripts/build-thin-apps.sh builds and runs it on every runtime build,
 //! so the engine exists, and is known to resolve against this exact
 //! `libruntime_dylib.so`, whichever apps the release selects. The self-check
-//! reviews an archive through the app host's client and blocks an app in the
-//! catalogue's block list, which reach into the runtime (`tilo-app-package`,
-//! `serde`, the allocator).
+//! blocks an app in the catalogue's block list, which reaches into the runtime
+//! (`tilo-app-package`, `serde`, the allocator).
 
 use std::process::ExitCode;
 

@@ -21,7 +21,7 @@ use registry_types::{
     SignedRegistrySnapshot, VersionIndexFile, sign_entry,
 };
 
-use crate::registry_to_installed::{
+use crate::registry_fixture::{
     Device, author_tapp_version, native_target, registry_config, test_publisher,
 };
 
@@ -101,6 +101,7 @@ fn version(number: &str, url: &str, tapp: &[u8]) -> RegistryVersion {
             tapp_root_hash_hex: app_registry::tapp::load(tapp).unwrap().package_id.to_hex(),
             tapp_size_bytes: tapp.len() as u64,
             tapp_blake3_hex: blake3::hash(tapp).to_hex().to_string(),
+            tapp_surface_hex: String::new(),
             target: registry_types::RegistryTarget {
                 platform: registry_types::TILO_OS_PLATFORM.into(),
                 architecture: native_target().0.into(),

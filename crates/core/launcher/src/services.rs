@@ -40,7 +40,6 @@ pub const COMPAT_SERVICE: &str = "compat";
 pub const SYSTEM_SERVICE: &str = "system";
 /// Hosted model planning is performed by this per-user, desktop-owned gateway.
 pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
-pub const PACKAGE_SERVICE: &str = "package-service";
 /// The person's messaging accounts (`tilo-messaging`).
 pub const MESSAGING_SERVICE: &str = "messaging";
 /// The connections an account's sign-in makes to the account's own servers, made by the session
@@ -91,7 +90,6 @@ pub const HANDED_SERVICES: &[&str] = &[
     COMPAT_SERVICE,
     SYSTEM_SERVICE,
     MODEL_GATEWAY_SERVICE,
-    PACKAGE_SERVICE,
     MESSAGING_SERVICE,
     USH_SERVICE,
     BLOB_SERVICE,
@@ -131,11 +129,8 @@ pub(crate) const RESERVED_CHILD_FDS: &[i32] = &[
 fn child_fd_reserved(fd: i32) -> bool {
     RESERVED_CHILD_FDS.contains(&fd)
 }
-/// Settings holds `package-service` for the person's languages alone: the host answers it which language packs
-/// are offered and installs one, never the Store's package-management interface (the host decides by
-/// the app id stamped on the connection).
+/// Only Settings adds accounts, so only Settings is handed the connections to their servers.
 use tilo_app_id::apps::SETTINGS as SETTINGS_APP_ID;
-use tilo_app_id::apps::STORE as STORE_APP_ID;
 /// The version of the handoff the launcher writes the compatibility service, apart from the
 /// version of the requests the app then sends.
 pub const COMPAT_HANDOFF_PROTOCOL: u16 = 1;
@@ -201,10 +196,6 @@ pub enum ServiceError {
         #[source]
         source: std::io::Error,
     },
-    #[error(
-        "service `package-service` is restricted to the Store, and to Settings for its language packs"
-    )]
-    PackageServiceUnauthorized,
     /// Only Settings adds accounts, so only Settings is handed the connections to their servers.
     #[error("service `accounts` is restricted to Settings, where accounts are added")]
     AccountsServiceUnauthorized,
@@ -749,16 +740,6 @@ fn authenticate_service(
             ),
         };
     }
-
-    if name == PACKAGE_SERVICE {
-        let launch = context.ok_or(ServiceError::PackageServiceUnauthorized)?;
-        write_package_service_handoff(stream, launch.app_id).map_err(|source| {
-            ServiceError::OpenFailed {
-                path: path.to_path_buf(),
-                source,
-            }
-        })?;
-    }
     Ok(HandoffOutcome::Ready)
 }
 
@@ -781,10 +762,6 @@ fn write_ush_handoff(
     stream.flush()
 }
 
-fn write_package_service_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
-    package_service::wire::write_handoff(stream, app_id)
-}
-
 fn resolve_service_binds_inner(
     services: &BTreeMap<String, ServiceReq>,
     no_services: bool,
@@ -801,12 +778,6 @@ fn resolve_service_binds_inner(
         }
         let path = socket_for(name);
 
-        if name == PACKAGE_SERVICE
-            && context
-                .is_none_or(|launch| ![STORE_APP_ID, SETTINGS_APP_ID].contains(&launch.app_id))
-        {
-            return Err(ServiceError::PackageServiceUnauthorized);
-        }
         if name == ACCOUNTS_SERVICE && context.is_none_or(|launch| launch.app_id != SETTINGS_APP_ID)
         {
             return Err(ServiceError::AccountsServiceUnauthorized);
@@ -947,7 +918,6 @@ mod image_interface_tests {
             COMPAT_SERVICE,
             SYSTEM_SERVICE,
             MODEL_GATEWAY_SERVICE,
-            PACKAGE_SERVICE,
             USH_SERVICE,
             "tools",
             "models",
@@ -1254,11 +1224,6 @@ mod tests {
                         "workspace": "workspace-7",
                     })
                 );
-
-                let bytes = written(|stream| write_package_service_handoff(stream, "so.tilo.notes"));
-                let handoff = package_service::wire::read_handoff(&mut bytes.as_slice())
-                    .expect("the package service handoff");
-                assert_eq!(handoff.app_id, "so.tilo.notes");
             }
             {
                 use std::io::Read;
@@ -1487,23 +1452,6 @@ mod tests {
 
         phase service_requirements_resolve_or_fail_as_declared;
         {
-            {
-                let mut services = BTreeMap::new();
-                services.insert(
-                    PACKAGE_SERVICE.to_string(),
-                    crate::manifest::service_req("required@1"),
-                );
-                let error = resolve_service_binds_for_launch(
-                    &services,
-                    false,
-                    ServiceLaunchContext {
-                        app_id: "org.example.untrusted",
-                        workspace_id: None,
-                    },
-                )
-                .expect_err("third-party manifest must not grant package-manager authority");
-                assert!(matches!(error, ServiceError::PackageServiceUnauthorized));
-            }
             {
                 let mut services = BTreeMap::new();
                 services.insert(

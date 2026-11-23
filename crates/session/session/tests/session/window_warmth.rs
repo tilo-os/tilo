@@ -147,12 +147,12 @@ fn a_window_takes_the_temperature_of_its_workspace_and_the_person_s_colour() {
     session.step(Duration::from_millis(1)).expect("a frame");
 
     // The app runs in its own workspace, and its window stands in the one in front.
-    let mut package_service = std::process::Command::new("sleep")
+    let mut app_process = std::process::Command::new("sleep")
         .arg("120")
         .spawn_locked()
         .expect("a launched app's process");
     let app = "org.example.Notes";
-    launches.started(package_service.id(), app, "private", false);
+    launches.started(app_process.id(), app, "private", false);
     let _client = mapped(&mut session, app);
     let workspace = session.handle().read(|tree| tree.active);
     // The person gives the workspace a warm light, and goes to another one,
@@ -160,7 +160,7 @@ fn a_window_takes_the_temperature_of_its_workspace_and_the_person_s_colour() {
     warmed(workspace, 40.0);
     invoke(&mut session, CHROME_RESOURCE, "new-workspace");
 
-    let mut window = Window::open(&launches, app, package_service.id());
+    let mut window = Window::open(&launches, app, app_process.id());
     window.hello();
     let opened = appearance(
         &told(&mut window, &mut session, 200).expect("the window opens to its appearance"),
@@ -214,6 +214,6 @@ fn a_window_takes_the_temperature_of_its_workspace_and_the_person_s_colour() {
         "a window is told only what changed"
     );
 
-    let _ = package_service.kill();
-    let _ = package_service.wait();
+    let _ = app_process.kill();
+    let _ = app_process.wait();
 }

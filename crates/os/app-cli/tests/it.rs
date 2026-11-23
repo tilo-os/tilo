@@ -12,11 +12,9 @@
 
 #[path = "catalogue_selection.rs"]
 pub mod catalogue_selection;
-#[path = "package_file.rs"]
-pub mod package_file;
+#[path = "registry_fixture.rs"]
+pub mod registry_fixture;
 mod registry_recovery;
-#[path = "registry_to_installed.rs"]
-pub mod registry_to_installed;
 #[path = "repo_cli.rs"]
 pub mod repo_cli;
 #[path = "runtime_fetch.rs"]

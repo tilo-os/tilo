@@ -4,8 +4,7 @@
 
 # App ↔ runtime: the session services the launcher connects an app to
 # (collaboration, the filesystem and its document media, the identity
-# broker, shell-owned tools), one number for all of them. The app host is an
-# interface of its own (crates/core/package-service/interface.toml).
+# broker, shell-owned tools), one number for all of them.
 name = "runtime"
 version = 37
 version_const = "crates/core/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"

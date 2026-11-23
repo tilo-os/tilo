@@ -14,9 +14,16 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     use automerge::transaction::Transactable as _;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let mut workspace =
-        GovernedWorkspace::create(dir.path(), "Team", &cert, &key, None, SystemTime::now())
-            .unwrap();
+    let mut workspace = GovernedWorkspace::create(
+        dir.path(),
+        "Team",
+        &cert,
+        &key,
+        None,
+        (&[], &[]),
+        SystemTime::now(),
+    )
+    .unwrap();
     // Incompressible text, so the saved record stays large.
     let mut text = vec![0u8; 48 * 1024];
     blake3::Hasher::new()

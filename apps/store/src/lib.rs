@@ -3,11 +3,13 @@
 //! The store surfaces two kinds of installable software side-by-side:
 //!
 //!   * **Tilo apps** listed by any registry the user has configured. Each
-//!     entry carries an ed25519 publisher signature and a BLAKE3 root
-//!     hash of the `.tapp`, so the client can verify identity + integrity
-//!     before running `tilo-install`.
+//!     entry carries an ed25519 publisher signature, the BLAKE3 root of the
+//!     `.tapp` and the surface it publishes. Getting one records its version on
+//!     the workspace's tree, and every device of the workspace fetches it from
+//!     the enabled registries and checks those against the record.
 //!   * **Legacy Flatpak apps** fetched from Flathub's public JSON API.
-//!     Actions cross the capability-scoped package-service service.
+//!     Running one names it in the workspace's tree, and the device's daemon
+//!     installs it into the device's system Flatpak installation.
 //!
 //! The catalogue groups apps by the decision they invite (an update, already
 //! on the device, new) in a scrolling grid of cards, and a details page opens
@@ -26,11 +28,13 @@
 //!     and the filter enum shared across the app.
 //!   * [`registry_client`] — HTTP client for the Tilo registry protocol.
 //!   * [`flathub_client`]  — HTTP client for the Flathub JSON API.
-//!   * [`config`]          — the registries the user pulls apps from.
+//!   * [`config`]          — the workspace's registries, read as its list.
 //!   * [`sources`]         — merges the two feeds + installed state into
 //!     one [`StoreItem`] stream.
-//!   * [`actions`]         — dispatches Add / Install / Remove via package-service.
-//!   * [`worker`]          — the serialized catalogue and package worker.
+//!   * [`actions`]         — opening a Flatpak the device has; every change (a Tilo app, a
+//!     Flatpak, a runtime) is the worker's, through the workspace's and the device's actions.
+//!   * [`worker`]          — the serialized catalogue worker, and the workspace's
+//!     tree and this device's packages over the session's action API.
 //!   * [`app`]             — the `StoreApp` window.
 //!   * [`bindings`]        — the surface's controls, bound to the resource.
 //!   * [`fixture`]         — the catalogue screenshots show, and its artwork.
@@ -52,6 +56,7 @@ pub mod app;
 pub mod bindings;
 pub mod catalogue;
 pub mod config;
+pub mod device;
 pub mod fixture;
 pub mod flathub_client;
 pub mod flatpakref;

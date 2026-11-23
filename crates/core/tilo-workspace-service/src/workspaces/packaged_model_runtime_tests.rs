@@ -247,6 +247,7 @@ fn runtime_entry(
                 tapp_root_hash_hex: root.into(),
                 tapp_size_bytes: thin.len() as u64,
                 tapp_blake3_hex: blake3::hash(thin).to_hex().to_string(),
+                tapp_surface_hex: String::new(),
                 target: registry_types::RegistryTarget {
                     platform: registry_types::TILO_OS_PLATFORM.into(),
                     architecture: native_target().0.into(),

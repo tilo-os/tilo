@@ -95,6 +95,7 @@ mod tests {
                 tapp_root_hash_hex: String::new(),
                 tapp_size_bytes: 0,
                 tapp_blake3_hex: String::new(),
+                tapp_surface_hex: String::new(),
                 target: RegistryTarget {
                     platform: crate::TILO_OS_PLATFORM.into(),
                     architecture: architecture.into(),

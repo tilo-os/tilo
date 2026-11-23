@@ -244,6 +244,28 @@ pub fn supported_archs() -> Vec<&'static str> {
     vec!["x86_64", "aarch64"]
 }
 
+/// The files a bundle for `arch` takes from the host root `from` that are there: each one's path
+/// on a host, and where it is under `from`. Whoever cannot hand a builder the whole root (the
+/// device daemon cannot read a caller's files) hands it these, laid out as a root of their own.
+///
+/// # Errors
+///
+/// [`BundleError::UnsupportedArch`] for an architecture no bundle is built for.
+pub fn host_root_files(
+    from: &Path,
+    arch: &str,
+) -> Result<Vec<(&'static str, PathBuf)>, BundleError> {
+    let paths = host_minimal_paths_for(arch)
+        .ok_or_else(|| BundleError::UnsupportedArch(arch.to_string()))?;
+    Ok(paths
+        .iter()
+        .copied()
+        .chain([HOST_LD_SO_CACHE])
+        .map(|path| (path, resolve_from(from, path)))
+        .filter(|(_, at)| at.exists())
+        .collect())
+}
+
 /// The host's architecture, the default target.
 pub fn host_arch() -> &'static str {
     std::env::consts::ARCH

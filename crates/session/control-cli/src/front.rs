@@ -599,6 +599,32 @@ pub fn run(
     say(answered, json, io)
 }
 
+/// Do the action `name` names, with `args`, and answer what it answered: for a
+/// program reading a workspace's readings rather than saying one action's
+/// lines. `name` is resolved as [`run`] resolves it.
+///
+/// # Errors
+/// The desktop could not be reached, the name is ambiguous or unknown, or the
+/// action failed.
+pub fn call_action(
+    sockets: &[ControlSocket],
+    name: &str,
+    args: &Value,
+    spelling: &Spelling,
+) -> Result<Value, String> {
+    let mut desktop = connect(sockets)?;
+    let rows = offered(&mut desktop, listed(name), spelling)?;
+    let row = find(&rows, name, spelling)?;
+    let args = args.as_object().cloned().unwrap_or_default();
+    invoke(
+        &mut desktop,
+        target(row),
+        args,
+        &row.action.action_label,
+        spelling,
+    )
+}
+
 /// What `row` invokes.
 fn target(row: &Offer) -> RemoteActionTarget {
     RemoteActionTarget {

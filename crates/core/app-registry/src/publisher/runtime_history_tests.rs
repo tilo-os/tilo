@@ -12,6 +12,7 @@ fn version(value: &str, architecture: &str, build: u8) -> RegistryVersion {
             tapp_root_hash_hex: format!("{build:064x}"),
             tapp_size_bytes: 12_288 + u64::from(build),
             tapp_blake3_hex: format!("{:064x}", u16::from(build) + 256),
+            tapp_surface_hex: String::new(),
             target: RegistryTarget {
                 platform: registry_types::TILO_OS_PLATFORM.into(),
                 architecture: architecture.into(),

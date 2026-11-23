@@ -27,7 +27,7 @@ PURPOSE = 'tilo-development-native-builder'
 REQUIRED = ('shell fs tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-secret-service '
             'tilo-server tilo-greeter tilo-installer '
             'tilo-firstboot-home-seeds '
-            'tilo-runtime tilo-runtime-bundle tilo-launcher tilo-package-service tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust tilo-device-key-init '
+            'tilo-runtime tilo-runtime-bundle tilo-launcher tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust tilo-device-key-init '
             'tilo tilo-app-package tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager '
             'tilo-projector tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime').split()
 

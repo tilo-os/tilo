@@ -216,9 +216,21 @@ pub enum StoreEffect {
         #[param("Web address (http or https)")]
         url: String,
     },
+    /// Get.
+    ///
+    /// Add the newest version the app's source offers to this workspace. Every device of the
+    /// workspace then fetches it, and the app opens here once it has arrived.
+    #[effect(kind = "outside", on = CatalogueApp)]
+    #[effect(job)]
+    #[effect(label = "store-action-get")]
+    GetApp {
+        #[param("App identity")]
+        app: String,
+    },
     /// Open.
     ///
-    /// A Tilo app is fetched when it is not on this device yet.
+    /// The app opens from this device once it has the version the workspace runs; a press
+    /// before then waits for it rather than being dropped.
     #[effect(kind = "outside", on = CatalogueApp)]
     #[effect(job, returns)]
     #[effect(label = "store-action-open")]
@@ -230,6 +242,17 @@ pub enum StoreEffect {
     #[effect(job)]
     #[effect(label = "store-action-update")]
     Update {
+        #[param("App identity")]
+        app: String,
+    },
+    /// Uninstall.
+    ///
+    /// Stop running the version in this workspace. This device keeps or removes its copy by its
+    /// own rules once no workspace names it.
+    #[effect(kind = "outside", on = CatalogueApp)]
+    #[effect(job)]
+    #[effect(label = "store-action-remove")]
+    UninstallApp {
         #[param("App identity")]
         app: String,
     },
@@ -369,9 +392,11 @@ impl StoreEffect {
                     .and_then(|version| version.root_hash_hex.clone())
                     .unwrap_or_default(),
             },
+            ActionKind::Get => Self::GetApp { app },
             ActionKind::Open => Self::OpenApp { app },
             ActionKind::Update => Self::Update { app },
-            ActionKind::Remove | ActionKind::FlatpakRemove => return None,
+            ActionKind::Remove => Self::UninstallApp { app },
+            ActionKind::FlatpakRemove => return None,
             ActionKind::MarkInstalled => Self::Pin { app },
             ActionKind::Unmark => Self::Unpin { app },
             ActionKind::FlatpakInstall => Self::FlatpakInstall { app },
@@ -385,8 +410,10 @@ impl StoreEffect {
     pub fn as_package(&self) -> Option<(&str, ActionKind)> {
         let (app, action) = match self {
             Self::InstallRuntime { app, .. } => (app, ActionKind::RuntimeInstall),
+            Self::GetApp { app } => (app, ActionKind::Get),
             Self::OpenApp { app } => (app, ActionKind::Open),
             Self::Update { app } => (app, ActionKind::Update),
+            Self::UninstallApp { app } => (app, ActionKind::Remove),
             Self::Pin { app } => (app, ActionKind::MarkInstalled),
             Self::Unpin { app } => (app, ActionKind::Unmark),
             Self::FlatpakInstall { app } => (app, ActionKind::FlatpakInstall),
@@ -1010,59 +1037,6 @@ mod tests {
     }
 
     #[test]
-    fn native_open_declares_observed_window_json_and_flatpak_remains_unit_job() {
-        let _offline = offline();
-        let mut app = TestApp::<StoreShell>::new().unwrap();
-        settle_catalogue_worker(&mut app);
-        let items = crate::fixture::fixture_catalog();
-        let native = items
-            .iter()
-            .find(|item| {
-                matches!(item.source, crate::model::StoreSource::Tilo { .. })
-                    && item.allows_action(ActionKind::Open, true)
-            })
-            .unwrap()
-            .id
-            .clone();
-        let flatpak = items
-            .iter()
-            .find(|item| item.allows_action(ActionKind::FlatpakOpen, true))
-            .unwrap()
-            .id
-            .clone();
-        app.with_surface::<StoreApp, _>(|surface| {
-            surface.state().set_flatpak_available(true);
-            surface.state().set_items(items);
-        })
-        .unwrap();
-        app.settle();
-        let resources = app.harness().resources();
-        let native = find(&resources, &format!("app:{native}"))
-            .unwrap()
-            .actions
-            .into_iter()
-            .find(|action| action.id == "open-app")
-            .unwrap()
-            .contract
-            .clone();
-        assert!(matches!(
-            native.result,
-            ui::tilo_actions::ResultSpec::Json { .. }
-        ));
-        assert!(native.validate_declaration().is_empty());
-        native.result.validate(&ui::tilo_actions::ActionOutput {value: Some(serde_json::json!({"launch": {"adopted_window": {"surface_id": 73, "package_id": "so.tilo.calculator", "workspace": "workspace"}}})), ..Default::default()}).unwrap();
-        let flatpak = find(&resources, &format!("app:{flatpak}"))
-            .unwrap()
-            .actions
-            .into_iter()
-            .find(|action| action.id == "flatpak-open")
-            .unwrap()
-            .contract
-            .clone();
-        assert_eq!(flatpak.result, ui::tilo_actions::ResultSpec::Job);
-    }
-
-    #[test]
     fn declared_open_job_waits_for_its_original_channel_startup_receipt() {
         use ui::collaboration::{CollabEvent, CollabRequest};
         use ui::widget::Collaborative;
@@ -1220,198 +1194,104 @@ mod tests {
         });
     }
 
-    struct CatalogueServer {
-        installs: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        browses: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        registry_hold: Option<std::sync::Arc<CatalogueHold>>,
-        account: bool,
-        failed_repository: bool,
-        disabled: std::sync::atomic::AtomicBool,
-    }
-
+    /// A device's package cache whose repository never answers a catalogue until the cache
+    /// itself goes away.
     #[derive(Default)]
-    struct CatalogueHold {
-        entered: std::sync::atomic::AtomicBool,
-        released: std::sync::atomic::AtomicBool,
-        calls: std::sync::atomic::AtomicUsize,
-        canceled: std::sync::atomic::AtomicBool,
-        completed: std::sync::atomic::AtomicBool,
-        waker: std::sync::Mutex<Vec<std::task::Waker>>,
-        registry_count: usize,
+    struct SlowCache {
+        /// The catalogue reading the Store asked for, unanswered.
+        asked: std::sync::Mutex<
+            Vec<
+                ui::tilo_actions::remote::Completer<
+                    Result<
+                        ui::tilo_actions::remote::InvocationReceipt,
+                        ui::tilo_actions::remote::ActionCallError,
+                    >,
+                >,
+            >,
+        >,
     }
 
-    impl CatalogueHold {
-        fn retire_waiter(&self) {
-            let wakers = std::mem::take(&mut *self.waker.lock().unwrap());
-            drop(wakers);
+    impl SlowCache {
+        fn asked(&self) -> bool {
+            !self.asked.lock().unwrap().is_empty()
         }
 
-        fn release(&self) {
-            self.released
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            let wakers = std::mem::take(&mut *self.waker.lock().unwrap());
-            for waker in wakers {
-                waker.wake();
+        /// The cache goes away with the reading unanswered.
+        fn vanish(&self) {
+            self.asked.lock().unwrap().clear();
+        }
+    }
+
+    impl ui::tilo_actions::remote::ActionProvider for SlowCache {
+        fn serves(&self, provider: &str) -> bool {
+            provider == "so.tilo.packages"
+        }
+
+        fn query(
+            &self,
+            _caller: &ui::tilo_actions::remote::Caller,
+            query: ui::tilo_actions::remote::CatalogueQuery,
+        ) -> ui::tilo_actions::remote::Pending<
+            Result<
+                ui::tilo_actions::remote::CataloguePage,
+                ui::tilo_actions::remote::ActionCallError,
+            >,
+        > {
+            use ui::tilo_actions::remote::{
+                CataloguePage, CatalogueResource, CatalogueRow, Pending,
+            };
+            if query.provider.as_deref() != Some("so.tilo.packages") {
+                return Pending::ready(Ok(CataloguePage::default()));
             }
+            Pending::ready(Ok(CataloguePage {
+                revision: "packages".into(),
+                rows: vec![CatalogueRow {
+                    provider: "so.tilo.packages".into(),
+                    app_id: "so.tilo.packages".into(),
+                    resource: CatalogueResource {
+                        id: "devices/11111111111111111111111111111111/packages".into(),
+                        kind: "devices.packages".into(),
+                        label: "Packages".into(),
+                        presentation: None,
+                    },
+                    ..CatalogueRow::default()
+                }],
+                exhausted: true,
+                ..CataloguePage::default()
+            }))
         }
-    }
 
-    struct PendingCatalogue(std::sync::Arc<CatalogueHold>);
-
-    impl Drop for PendingCatalogue {
-        fn drop(&mut self) {
-            if !self.0.released.load(std::sync::atomic::Ordering::SeqCst) {
-                self.0
-                    .canceled
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-            }
+        fn invoke(
+            &self,
+            _caller: &ui::tilo_actions::remote::Caller,
+            request: ui::tilo_actions::remote::InvokeRequest,
+        ) -> ui::tilo_actions::remote::Pending<
+            Result<
+                ui::tilo_actions::remote::InvocationReceipt,
+                ui::tilo_actions::remote::ActionCallError,
+            >,
+        > {
+            assert_eq!(request.target.address.action, "catalogue");
+            let (asked, answer) = ui::tilo_actions::remote::pending();
+            self.asked.lock().unwrap().push(asked);
+            answer
         }
-    }
 
-    impl package_service::wire::Server for CatalogueServer {
-        #[expect(
-            clippy::too_many_lines,
-            reason = "one fake host answering every request the catalogue tests make"
-        )]
-        #[allow(
-            clippy::future_not_send,
-            reason = "the fake host serves its connection on a single-threaded LocalSet"
-        )]
-        fn handle(
-            self: std::rc::Rc<Self>,
-            request: package_service::wire::Operation,
-            _progress: package_service::wire::Sink,
-        ) -> impl core::future::Future<Output = Result<package_service::wire::Answer, String>> + 'static
+        fn observe(
+            &self,
+            _caller: &ui::tilo_actions::remote::Caller,
+            _id: &ui::tilo_actions::InvocationId,
+        ) -> Option<ui::tilo_actions::remote::InvocationState> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _caller: &ui::tilo_actions::remote::Caller,
+            _id: &ui::tilo_actions::InvocationId,
+        ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionCallError>>
         {
-            use package_service::wire::{Action, Answer, Catalogue, Operation, Resource};
-            async move {
-                match request {
-                    Operation::Invoke(Action::Flatpak {
-                        verb,
-                        app_id,
-                        reference,
-                    }) => {
-                        assert_eq!(verb, package_service::wire::FlatpakVerb::Install);
-                        assert_eq!(app_id, "org.example.Editor");
-                        assert!(reference.is_empty());
-                        self.installs
-                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        Ok(Answer::Text(
-                            "Installing runtime/org.example.Runtime…\nInstalling app/org.example.Editor…"
-                                .into(),
-                        ))
-                    }
-                    Operation::Read(Resource::Packages) => Ok(Answer::Packages(Vec::new())),
-                    Operation::Read(Resource::Repositories) => {
-                        let json = if let Some(check) = &self.registry_hold {
-                            let count = check.registry_count.max(1);
-                            let registries = (0..count).map(|index| serde_json::json!({
-                                "name": format!("slow-{index}"), "base_url": "https://registry.example",
-                                "owner_pubkey_hex": "11".repeat(32), "enabled": true
-                            })).collect::<Vec<_>>();
-                            serde_json::json!({"registry": registries})
-                        } else {
-                            serde_json::json!({"registry": []})
-                        };
-                        Ok(Answer::Text(json.to_string()))
-                    }
-                    Operation::Read(Resource::RegistryCatalogue { .. }) => {
-                        let check = std::sync::Arc::clone(self.registry_hold.as_ref().unwrap());
-                        let call = check
-                            .calls
-                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        if call < check.registry_count.max(1) {
-                            let _pending = PendingCatalogue(std::sync::Arc::clone(&check));
-                            check
-                                .entered
-                                .store(true, std::sync::atomic::Ordering::SeqCst);
-                            std::future::poll_fn(|cx| {
-                                let mut waker = check.waker.lock().unwrap();
-                                if check.released.load(std::sync::atomic::Ordering::SeqCst) {
-                                    std::task::Poll::Ready(())
-                                } else {
-                                    if !waker.iter().any(|waiting| waiting.will_wake(cx.waker())) {
-                                        waker.push(cx.waker().clone());
-                                    }
-                                    std::task::Poll::Pending
-                                }
-                            })
-                            .await;
-                            check
-                                .completed
-                                .store(true, std::sync::atomic::Ordering::SeqCst);
-                        }
-                        Ok(Answer::Catalogue(Catalogue::Rows("[]".into())))
-                    }
-                    Operation::Read(Resource::FlatpakStatus) => {
-                        let installed =
-                            if self.installs.load(std::sync::atomic::Ordering::SeqCst) > 0 {
-                                "org.example.Editor\t2.0\tflathub\tuser\n"
-                            } else {
-                                ""
-                            };
-                        let mut row = if self.registry_hold.is_some() || self.failed_repository {
-                            let scope = if self.account { "user" } else { "system" };
-                            let disabled =
-                                if self.disabled.load(std::sync::atomic::Ordering::SeqCst) {
-                                    ",disabled"
-                                } else {
-                                    ""
-                                };
-                            format!(
-                                "flathub\thttps://dl.flathub.org/repo/\tFlathub\t{scope}{disabled}\n"
-                            )
-                        } else {
-                            "tools\thttps://tools.example/repo\tExample tools\tsystem\n".into()
-                        };
-                        if self.failed_repository {
-                            row.push_str(
-                                "fedora\thttps://registry.fedoraproject.org\tFedora Flatpaks\tsystem\n",
-                            );
-                        }
-                        Ok(Answer::FlatpakStatus {
-                            available: true,
-                            installed: installed.into(),
-                            remotes: row,
-                        })
-                    }
-                    Operation::Invoke(Action::Remote { verb, name, .. }) => {
-                        assert!(
-                            self.account,
-                            "the immutable device source cannot be changed"
-                        );
-                        assert_eq!(name, "flathub");
-                        assert_eq!(verb, package_service::wire::RemoteVerb::Disable);
-                        self.disabled
-                            .store(true, std::sync::atomic::Ordering::SeqCst);
-                        Ok(Answer::Text("Source disabled.".into()))
-                    }
-                    Operation::Read(Resource::FlatpakCatalogue {
-                        remote,
-                        user_managed,
-                    }) => {
-                        if self.failed_repository && remote == "fedora" {
-                            return Err("Unable to load summary".into());
-                        }
-                        let name = if self.registry_hold.is_some() || self.failed_repository {
-                            "flathub"
-                        } else {
-                            "tools"
-                        };
-                        assert_eq!(remote, name);
-                        assert!(
-                            user_managed == self.account,
-                            "the original source scope reaches the host"
-                        );
-                        self.browses
-                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        Ok(Answer::Catalogue(Catalogue::Rows(format!(
-                            "org.example.Editor\tEditor\tEdit local documents\t2.0\tstable\t{name}\n"
-                        ))))
-                    }
-                    other => package_service::testing::refuse(&other),
-                }
-            }
+            ui::tilo_actions::remote::Pending::ready(Ok(()))
         }
     }
 
@@ -1455,255 +1335,43 @@ mod tests {
         );
     }
 
-    #[test]
-    fn slow_native_registry_does_not_block_configured_flatpak_browse_or_search() {
-        let _offline = offline();
-        let mut app = TestApp::<StoreShell>::new().unwrap();
-        settle_catalogue_worker(&mut app);
-        app.harness().resize((1472, 920)).unwrap();
-        let check = std::sync::Arc::new(CatalogueHold {
-            registry_count: 6,
-            ..CatalogueHold::default()
-        });
-        let browses = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (service, connection) =
-            package_service::testing::ConnectedService::start(CatalogueServer {
-                installs: std::sync::Arc::default(),
-                browses: std::sync::Arc::clone(&browses),
-                registry_hold: Some(std::sync::Arc::clone(&check)),
-                account: false,
-                failed_repository: false,
-                disabled: std::sync::atomic::AtomicBool::new(false),
-            })
-            .unwrap();
-        app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
-            .unwrap()
-            .unwrap();
-        assert!(
-            app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
-                check.entered.load(std::sync::atomic::Ordering::SeqCst)
-            }),
-            "the actual native catalogue RPC is pending"
-        );
-        let remote = "remote:system:flathub";
-        assert!(
-            app.harness()
-                .wait_until(tilo_test_env::hang_bound(), |harness| {
-                    find(&harness.resources(), remote).is_some()
-                }),
-            "the independent configured remote must publish while native discovery is pending"
-        );
-        app.effect(&StoreEffect::ShowRemotes).unwrap();
-        assert_visible_owner_control(&mut app, "Flathub");
-        let contract = find(&app.harness().resources(), remote)
-            .unwrap()
-            .actions
-            .into_iter()
-            .find(|action| action.id == "browse-remote")
-            .unwrap()
-            .contract
-            .clone();
-        let before = browses.load(std::sync::atomic::Ordering::SeqCst);
-        let invocation = app
-            .start_effect_on(
-                remote,
-                &StoreEffect::BrowseRemote {
-                    remote: remote.into(),
-                },
-            )
-            .unwrap();
-        assert_valid_unit_job_completion(&mut app, invocation, &contract);
-        assert_visible_owner_control(&mut app, "Editor");
-        assert_bar_search_reaches_the_store(&mut app);
-        assert!(browses.load(std::sync::atomic::Ordering::SeqCst) > before);
-        assert!(!check.released.load(std::sync::atomic::Ordering::SeqCst));
-        app.effect(&StoreEffect::SetSearch {
-            query: "Editor".into(),
-        })
-        .unwrap();
-        tilo_test_env::wait_until(
-            "the actual public Search result while native discovery is pending",
-            || {
-                app.settle();
-                let snapshot = app
-                    .effect(&StoreEffect::InspectCatalogue { app: None })
-                    .unwrap()
-                    .value
-                    .unwrap();
-                snapshot["query"] == "Editor"
-                    && snapshot["items"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .any(|item| item["id"] == "org.example.Editor")
-            },
-        );
-        assert!(!check.released.load(std::sync::atomic::Ordering::SeqCst));
-        assert_eq!(
-            app.with_surface::<StoreApp, _>(|surface| surface.state().query().to_owned()),
-            Some("Editor".to_owned())
-        );
-        assert!(
-            app.with_surface::<StoreApp, _>(|surface| surface
-                .state()
-                .items()
-                .iter()
-                .any(|item| item.id == "org.example.Editor"))
-                .unwrap()
-        );
-        assert_visible_owner_control(&mut app, "Editor");
-        assert_bar_search_reaches_the_store(&mut app);
-        assert_background_refresh_keeps_its_locale(&mut app, remote, &contract, &check);
-        service.shutdown().unwrap();
+    /// The one repository a Store test's slow package cache is asked for a catalogue of.
+    fn slow_registries() -> Vec<crate::config::RegistryConfig> {
+        vec![crate::config::RegistryConfig {
+            name: "slow-0".into(),
+            base_url: "https://registry.example".into(),
+            owner_pubkey_hex: "11".repeat(32),
+            enabled: true,
+            channel: app_cli::ReleaseChannel::Stable,
+        }]
     }
 
-    fn assert_background_refresh_keeps_its_locale(
-        app: &mut TestApp<StoreShell>,
-        remote: &str,
-        contract: &ui::tilo_actions::ActionContract,
-        check: &CatalogueHold,
-    ) {
-        let selected = ui::i18n::I18nManager::current_locale();
-        let pseudo = ui::i18n::I18nManager::pseudo_locale();
-        let expected = CATALOG.t("store-catalogue-refreshed").as_str().to_owned();
-        ui::i18n::I18nManager::set_pseudo_locale(ui::i18n::PseudoLocale::Expanded);
-        assert_ne!(CATALOG.t("store-catalogue-refreshed").as_str(), expected);
-        let invocation = app
-            .start_effect_on(
-                remote,
-                &StoreEffect::BrowseRemote {
-                    remote: remote.into(),
-                },
-            )
-            .unwrap();
-        assert_valid_unit_job_completion(app, invocation, contract);
-        let inspector = app
-            .effect(&StoreEffect::InspectCatalogue { app: None })
-            .unwrap()
-            .value
-            .unwrap();
-        assert_eq!(inspector["worker_busy"], true);
-        let calls = check.calls.load(std::sync::atomic::Ordering::SeqCst);
-        assert!(
-            (2..=4).contains(&calls),
-            "several native sources remain bounded and pending: {calls}"
-        );
-        assert!(!check.released.load(std::sync::atomic::Ordering::SeqCst));
-        check.release();
-        settle_catalogue_worker(app);
-        let actual = app
-            .effect(&StoreEffect::InspectCatalogue { app: None })
-            .unwrap()
-            .value
-            .unwrap();
-        ui::i18n::I18nManager::set_locale(&selected);
-        ui::i18n::I18nManager::set_pseudo_locale(pseudo);
-        assert_eq!(
-            actual["status"], expected,
-            "background refresh retains its own locale across differently localized requests"
-        );
-    }
-
-    #[test]
-    fn source_mutation_retires_pending_generation_without_reenabling_the_source() {
-        let _offline = offline();
-        let mut app = TestApp::<StoreShell>::new().unwrap();
-        settle_catalogue_worker(&mut app);
-        let check = std::sync::Arc::new(CatalogueHold::default());
-        let (service, connection) =
-            package_service::testing::ConnectedService::start(CatalogueServer {
-                installs: std::sync::Arc::default(),
-                browses: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-                registry_hold: Some(std::sync::Arc::clone(&check)),
-                account: true,
-                failed_repository: false,
-                disabled: std::sync::atomic::AtomicBool::new(false),
-            })
-            .unwrap();
-        app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
-            .unwrap()
-            .unwrap();
-        let remote = "remote:flathub";
-        assert!(
-            app.harness()
-                .wait_until(tilo_test_env::hang_bound(), |harness| {
-                    check.entered.load(std::sync::atomic::Ordering::SeqCst)
-                        && find(&harness.resources(), remote).is_some()
-                })
-        );
-        let contract = find(&app.harness().resources(), remote)
-            .unwrap()
-            .actions
-            .into_iter()
-            .find(|action| action.id == "disable-remote")
-            .unwrap()
-            .contract
-            .clone();
-        let invocation = app
-            .start_effect_on(
-                remote,
-                &StoreEffect::DisableRemote {
-                    remote: remote.into(),
-                },
-            )
-            .unwrap();
-        assert_valid_unit_job_completion(&mut app, invocation, &contract);
-        assert!(!check.released.load(std::sync::atomic::Ordering::SeqCst));
-        assert!(
-            app.with_surface::<StoreApp, _>(|surface| surface
-                .state()
-                .admit(StoreEffect::BrowseRemote {
-                    remote: remote.into()
-                })
-                .is_err())
-                .unwrap(),
-            "the mutation readback immediately makes the disabled source unavailable"
-        );
-        // The old bounded server call really completes late. Its response
-        // cannot overwrite the mutation's newer source state.
-        check.release();
-        settle_catalogue_worker(&mut app);
-        assert!(check.completed.load(std::sync::atomic::Ordering::SeqCst));
-        assert!(check.calls.load(std::sync::atomic::Ordering::SeqCst) >= 2);
-        assert!(
-            app.with_surface::<StoreApp, _>(|surface| surface
-                .state()
-                .admit(StoreEffect::BrowseRemote {
-                    remote: remote.into()
-                })
-                .is_err())
-                .unwrap(),
-            "the late retired response cannot re-enable the source"
-        );
-        service.shutdown().unwrap();
-    }
-
+    /// A package cache that goes away while a repository's catalogue is unanswered settles the
+    /// refresh, and the window says which repository gave nothing, with no made-up success.
     #[test]
     fn disconnected_source_settles_refresh_and_reports_the_transport_error() {
         let _offline = offline();
         let mut app = TestApp::<StoreShell>::new().unwrap();
         settle_catalogue_worker(&mut app);
-        let check = std::sync::Arc::new(CatalogueHold::default());
-        let (service, connection) =
-            package_service::testing::ConnectedService::start(CatalogueServer {
-                installs: std::sync::Arc::default(),
-                browses: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-                registry_hold: Some(std::sync::Arc::clone(&check)),
-                account: false,
-                failed_repository: false,
-                disabled: std::sync::atomic::AtomicBool::new(false),
-            })
-            .unwrap();
-        app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
-            .unwrap()
-            .unwrap();
-        assert!(app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
-            check.entered.load(std::sync::atomic::Ordering::SeqCst)
-        }));
-        service.shutdown().unwrap();
-        check.retire_waiter();
+        let cache = std::sync::Arc::new(SlowCache::default());
+        let _entered = ui::RemoteActions::enter(
+            std::sync::Arc::clone(&cache)
+                as std::sync::Arc<dyn ui::tilo_actions::remote::ActionProvider + Send + Sync>,
+            ui::tilo_actions::remote::Caller::local_person("ada"),
+        );
+        app.with_surface::<StoreApp, _>(|surface| {
+            surface
+                .state()
+                .connect_test_actions(ui::RemoteActions::current(), slow_registries())
+        })
+        .unwrap()
+        .unwrap();
+        assert!(
+            app.harness()
+                .wait_until(tilo_test_env::hang_bound(), |_| cache.asked())
+        );
+        cache.vanish();
         settle_catalogue_worker(&mut app);
-        assert!(check.canceled.load(std::sync::atomic::Ordering::SeqCst));
         assert!(
             app.with_surface::<StoreApp, _>(|surface| {
                 surface.state().inspect_catalogue(None).unwrap()["error"]
@@ -1713,426 +1381,6 @@ mod tests {
             .unwrap(),
             "the actual source disconnect remains visible, with no fake success result"
         );
-    }
-
-    #[test]
-    fn failed_repository_does_not_poison_healthy_browse_or_install() {
-        let mut environment = offline();
-        let _feed = available_feed(&mut environment);
-        let mut app = TestApp::<StoreShell>::new().unwrap();
-        settle_catalogue_worker(&mut app);
-        let (service, connection) =
-            package_service::testing::ConnectedService::start(CatalogueServer {
-                installs: std::sync::Arc::default(),
-                browses: std::sync::Arc::default(),
-                registry_hold: None,
-                account: false,
-                failed_repository: true,
-                disabled: std::sync::atomic::AtomicBool::new(false),
-            })
-            .unwrap();
-        app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
-            .unwrap()
-            .unwrap();
-        settle_catalogue_worker(&mut app);
-        app.with_surface::<StoreApp, _>(|surface| {
-            let inspected = surface.state().inspect_catalogue(None).unwrap();
-            assert!(inspected["error"].is_null(), "an independent failed repository must not fail healthy catalogue operations: {inspected}");
-            let failed = inspected["remotes"].as_array().unwrap().iter().find(|remote| remote["name"] == "fedora").unwrap();
-            assert!(failed["catalogue_error"].as_str().unwrap().contains("Unable to load summary"));
-            assert!(surface.state().items().iter().any(|item| item.id == "org.example.Editor"));
-        }).unwrap();
-        assert_metadata_refresh_keeps_repository_failure(&mut app);
-        let remote = "remote:system:flathub";
-        let contract = find(&app.harness().resources(), remote)
-            .unwrap()
-            .actions
-            .into_iter()
-            .find(|action| action.id == "browse-remote")
-            .unwrap()
-            .contract
-            .clone();
-        let invocation = app
-            .start_effect_on(
-                remote,
-                &StoreEffect::BrowseRemote {
-                    remote: remote.into(),
-                },
-            )
-            .unwrap();
-        assert_valid_unit_job_completion(&mut app, invocation, &contract);
-        app.with_surface::<StoreApp, _>(|surface| {
-            assert!(surface.state().inspect_catalogue(None).unwrap()["error"].is_null());
-        })
-        .unwrap();
-        let item_id = "app:org.example.Editor";
-        let contract = find(&app.harness().resources(), item_id)
-            .unwrap()
-            .actions
-            .into_iter()
-            .find(|action| action.id == "flatpak-install")
-            .unwrap()
-            .contract
-            .clone();
-        let invocation = app
-            .start_effect_on(
-                item_id,
-                &StoreEffect::FlatpakInstall {
-                    app: "org.example.Editor".into(),
-                },
-            )
-            .unwrap();
-        assert_valid_unit_job_completion(&mut app, invocation, &contract);
-        settle_catalogue_worker(&mut app);
-        app.with_surface::<StoreApp, _>(|surface| {
-            let inspected = surface
-                .state()
-                .inspect_catalogue(Some("org.example.Editor"))
-                .unwrap();
-            assert_eq!(inspected["detail"]["installed"], true);
-            assert!(inspected["error"].is_null());
-            assert!(
-                inspected["remotes"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|remote| remote["name"] == "fedora")
-                    .unwrap()["catalogue_error"]
-                    .as_str()
-                    .unwrap()
-                    .contains("Unable to load summary")
-            );
-        })
-        .unwrap();
-        service.shutdown().unwrap();
-    }
-
-    fn assert_metadata_refresh_keeps_repository_failure(app: &mut TestApp<StoreShell>) {
-        let refresh_contract = find(&app.harness().resources(), "store:remotes")
-            .unwrap()
-            .actions
-            .into_iter()
-            .find(|action| action.id == "refresh-remotes")
-            .unwrap()
-            .contract
-            .clone();
-        let invocation = app
-            .start_effect_on("store:remotes", &StoreEffect::RefreshRemotes)
-            .unwrap();
-        assert_valid_unit_job_completion(app, invocation, &refresh_contract);
-        app.with_surface::<StoreApp, _>(|surface| {
-            assert!(
-                surface.state().inspect_catalogue(None).unwrap()["remotes"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|remote| remote["name"] == "fedora")
-                    .unwrap()["catalogue_error"]
-                    .as_str()
-                    .unwrap()
-                    .contains("Unable to load summary")
-            );
-        })
-        .unwrap();
-    }
-
-    #[test]
-    fn explicitly_browsing_failed_repository_retains_failed_terminal_receipt() {
-        let mut environment = offline();
-        let _feed = available_feed(&mut environment);
-        let mut app = TestApp::<StoreShell>::new().unwrap();
-        settle_catalogue_worker(&mut app);
-        let (service, connection) =
-            package_service::testing::ConnectedService::start(CatalogueServer {
-                installs: std::sync::Arc::default(),
-                browses: std::sync::Arc::default(),
-                registry_hold: None,
-                account: false,
-                failed_repository: true,
-                disabled: std::sync::atomic::AtomicBool::new(false),
-            })
-            .unwrap();
-        app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
-            .unwrap()
-            .unwrap();
-        settle_catalogue_worker(&mut app);
-        let id = "remote:system:fedora";
-        let invocation = app
-            .start_effect_on(id, &StoreEffect::BrowseRemote { remote: id.into() })
-            .unwrap();
-        assert!(
-            app.harness()
-                .wait_until(tilo_test_env::hang_bound(), |harness| harness
-                    .job_updates(invocation)
-                    .iter()
-                    .any(ui::tilo_actions::InvocationUpdate::is_terminal))
-        );
-        let updates = app.harness().job_updates(invocation);
-        assert!(updates.iter().any(|update| matches!(update, ui::tilo_actions::InvocationUpdate::Failed { error, .. } if error.message.contains("Unable to load summary"))));
-        assert!(
-            !updates.iter().any(|update| matches!(
-                update,
-                ui::tilo_actions::InvocationUpdate::Succeeded { .. }
-            ))
-        );
-        service.shutdown().unwrap();
-    }
-
-    #[test]
-    fn declared_browse_job_completes_through_host_rpc_worker_and_snapshot() {
-        let _offline = offline();
-        let mut app = TestApp::<StoreShell>::new().unwrap();
-        settle_catalogue_worker(&mut app);
-        let browses = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (service, connection) =
-            package_service::testing::ConnectedService::start(CatalogueServer {
-                installs: std::sync::Arc::default(),
-                browses: std::sync::Arc::clone(&browses),
-                registry_hold: None,
-                account: false,
-                failed_repository: false,
-                disabled: std::sync::atomic::AtomicBool::new(false),
-            })
-            .unwrap();
-        app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
-            .unwrap()
-            .unwrap();
-        settle_catalogue_worker(&mut app);
-        let remote = "remote:system:tools";
-        let contract = find(&app.harness().resources(), remote)
-            .unwrap()
-            .actions
-            .into_iter()
-            .find(|action| action.id == "browse-remote")
-            .unwrap()
-            .contract
-            .clone();
-        assert_eq!(contract.result, ui::tilo_actions::ResultSpec::Job);
-        let before = browses.load(std::sync::atomic::Ordering::SeqCst);
-        let versions = app.versions().len();
-        let invocation = app
-            .start_effect_on(
-                remote,
-                &StoreEffect::BrowseRemote {
-                    remote: remote.into(),
-                },
-            )
-            .unwrap();
-        assert_valid_unit_job_completion(&mut app, invocation, &contract);
-        assert_eq!(
-            browses.load(std::sync::atomic::Ordering::SeqCst),
-            before + 1
-        );
-        app.with_surface::<StoreApp, _>(|surface| {
-            assert!(
-                surface.state().items().iter().any(|item| {
-                    item.id == "org.example.Editor"
-                        && item.name == "Editor"
-                        && item.description == "Edit local documents"
-                }),
-                "the real RPC catalogue reached the live snapshot"
-            );
-            assert!(
-                surface.state().status_line().contains("Example tools"),
-                "the worker status is a human catalogue message: {:?}",
-                surface.state().status_line()
-            );
-        })
-        .unwrap();
-        assert_browse_uses_current_locale(&mut app, remote, &contract);
-        assert_eq!(
-            browses.load(std::sync::atomic::Ordering::SeqCst),
-            before + 2
-        );
-        assert_eq!(
-            app.versions().len(),
-            versions,
-            "Browse writes no shared document"
-        );
-        drop(app);
-        service.shutdown().unwrap();
-    }
-
-    #[test]
-    fn declared_system_flathub_install_uses_the_account_rpc_and_unit_job_receipt() {
-        let _offline = offline();
-        let mut app = TestApp::<StoreShell>::new().unwrap();
-        settle_catalogue_worker(&mut app);
-        let installs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let check = std::sync::Arc::new(CatalogueHold::default());
-        check.release();
-        let (service, connection) =
-            package_service::testing::ConnectedService::start(CatalogueServer {
-                installs: std::sync::Arc::clone(&installs),
-                browses: std::sync::Arc::default(),
-                registry_hold: Some(check),
-                account: false,
-                failed_repository: false,
-                disabled: std::sync::atomic::AtomicBool::new(false),
-            })
-            .unwrap();
-        app.with_surface::<StoreApp, _>(|surface| surface.state().connect_test_host(connection))
-            .unwrap()
-            .unwrap();
-        settle_catalogue_worker(&mut app);
-        let remote = "remote:system:flathub";
-        let resource = find(&app.harness().resources(), remote).unwrap();
-        let contract = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "browse-remote")
-            .map(|action| action.contract.clone())
-            .unwrap();
-        let invocation = app
-            .start_effect_on(
-                remote,
-                &StoreEffect::BrowseRemote {
-                    remote: remote.into(),
-                },
-            )
-            .unwrap();
-        assert_valid_unit_job_completion(&mut app, invocation, &contract);
-        let id = "app:org.example.Editor";
-        let resources = app.harness().resources();
-        let resource = find(&resources, id).unwrap_or_else(|| {
-            panic!(
-                "{id} missing; published: {:?}",
-                resources.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-            )
-        });
-        let contract = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "flatpak-install")
-            .unwrap()
-            .contract
-            .clone();
-        let invocation = app
-            .start_effect_on(
-                id,
-                &StoreEffect::FlatpakInstall {
-                    app: "org.example.Editor".into(),
-                },
-            )
-            .unwrap();
-        assert_valid_unit_job_completion(&mut app, invocation, &contract);
-        assert_eq!(installs.load(std::sync::atomic::Ordering::SeqCst), 1);
-        settle_catalogue_worker(&mut app);
-        assert_eq!(status_line(&mut app), CATALOG.t("store-app-installed"));
-        app.with_surface::<StoreApp, _>(|surface| {
-            let state = surface.state();
-            let item = state
-                .items()
-                .iter()
-                .find(|item| item.id == "org.example.Editor")
-                .unwrap();
-            assert!(matches!(
-                item.installed,
-                crate::InstalledState::Installed {
-                    user_managed: true,
-                    ..
-                }
-            ));
-            assert_eq!(item.action_kind(true), crate::ActionKind::FlatpakOpen);
-        })
-        .unwrap();
-        let contract = find(&app.harness().resources(), Reports::KIND)
-            .unwrap()
-            .actions
-            .into_iter()
-            .find(|action| action.id == "refresh")
-            .unwrap()
-            .contract
-            .clone();
-        let invocation = app.start_effect(&StoreEffect::Refresh).unwrap();
-        assert_valid_unit_job_completion(&mut app, invocation, &contract);
-        assert_eq!(
-            status_line(&mut app),
-            CATALOG.t("store-catalogue-refreshed")
-        );
-        drop(app);
-        service.shutdown().unwrap();
-    }
-
-    fn status_line(app: &mut TestApp<StoreShell>) -> String {
-        app.with_surface::<StoreApp, _>(|surface| surface.state().status_line().to_owned())
-            .unwrap()
-    }
-
-    fn assert_valid_launch_job_completion(
-        app: &mut TestApp<StoreShell>,
-        invocation: ui::tilo_actions::InvocationId,
-        contract: &ui::tilo_actions::ActionContract,
-    ) {
-        assert_valid_unit_job_completion(app, invocation, contract);
-        assert_eq!(
-            app.with_surface::<StoreApp, _>(|surface| surface.state().status_line().to_owned()),
-            Some(CATALOG.t("store-launch-opened").as_str().to_owned())
-        );
-    }
-
-    fn assert_valid_unit_job_completion(
-        app: &mut TestApp<StoreShell>,
-        invocation: ui::tilo_actions::InvocationId,
-        contract: &ui::tilo_actions::ActionContract,
-    ) {
-        assert!(
-            app.harness()
-                .wait_until(tilo_test_env::hang_bound(), |harness| {
-                    harness
-                        .job_updates(invocation)
-                        .iter()
-                        .any(ui::tilo_actions::InvocationUpdate::is_terminal)
-                })
-        );
-        let updates = app.harness().job_updates(invocation);
-        let output = updates
-            .iter()
-            .find_map(|update| match update {
-                ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => Some(output),
-                _ => None,
-            })
-            .expect("the declared worker job succeeds");
-        contract
-            .result
-            .validate(output)
-            .expect("the actual published job accepts its terminal output");
-        assert!(output.value.is_none() && output.resources.is_empty());
-    }
-
-    fn assert_browse_uses_current_locale(
-        app: &mut TestApp<StoreShell>,
-        remote: &str,
-        contract: &ui::tilo_actions::ActionContract,
-    ) {
-        let selected = ui::i18n::I18nManager::current_locale();
-        let pseudo = ui::i18n::I18nManager::pseudo_locale();
-        let previous = status_line(app);
-        ui::i18n::I18nManager::set_locale("fr");
-        ui::i18n::I18nManager::set_pseudo_locale(ui::i18n::PseudoLocale::Expanded);
-        let expected = CATALOG.t_args(
-            "store-remote-results",
-            &[
-                ("name", ui::i18n::ArgValue::Text("Example tools".into())),
-                ("count", ui::i18n::ArgValue::Text("1".into())),
-            ],
-        );
-        assert_ne!(expected, previous, "the selected format must be observable");
-        let invocation = app
-            .start_effect_on(
-                remote,
-                &StoreEffect::BrowseRemote {
-                    remote: remote.into(),
-                },
-            )
-            .unwrap();
-        assert_valid_unit_job_completion(app, invocation, contract);
-        assert_eq!(
-            app.with_surface::<StoreApp, _>(|surface| surface.state().status_line().to_owned()),
-            Some(expected)
-        );
-        ui::i18n::I18nManager::set_locale(&selected);
-        ui::i18n::I18nManager::set_pseudo_locale(pseudo);
     }
 
     #[test]
@@ -2398,60 +1646,6 @@ mod tests {
                 .iter()
                 .all(|row| row.get("supported_languages").is_none())
         );
-    }
-
-    #[test]
-    fn captures_cover_account_setup_search_views_and_flatpak_actions() {
-        for (scenario, control) in [
-            ("account-setup", "Trust and moderation"),
-            ("account-remotes", "Refresh repositories"),
-        ] {
-            let mut app = TestApp::<StoreShell>::capture(Some(scenario)).unwrap();
-            let shown = frame(&mut app);
-            assert!(!shown.contains("Use Flathub for my apps"));
-            let toolbar = ui::window_toolbar::declared().expect("the Store declares its bar");
-            assert!(
-                toolbar.actions.iter().any(|action| action.name == control),
-                "{scenario} exposes {control} in the window's bar: {toolbar:?}"
-            );
-            if scenario == "account-remotes" {
-                assert!(shown.contains("Flathub"));
-            }
-            assert!(app.state().reports.is_empty());
-        }
-        let mut search = TestApp::<StoreShell>::capture(Some("search-notes")).unwrap();
-        let shown = frame(&mut search);
-        assert!(shown.contains("Notes"));
-        assert!(!shown.contains("Terminal"));
-
-        for (scenario, present, absent) in [
-            ("updates", &["Files", "Update all"][..], "Inkscape"),
-            ("bots", &["Notes digest"][..], "Terminal"),
-            ("category", &["Inkscape"][..], "Terminal"),
-            ("installed", &["Terminal", "VLC"][..], "Inkscape"),
-            (
-                "detail-blocked",
-                &["The School workspace blocked this app."][..],
-                "Block app",
-            ),
-        ] {
-            let mut app = TestApp::<StoreShell>::capture(Some(scenario)).unwrap();
-            let shown = frame(&mut app);
-            for text in present {
-                assert!(shown.contains(text), "{scenario} shows {text}");
-            }
-            assert!(!shown.contains(absent), "{scenario} leaves out {absent}");
-        }
-
-        for (scenario, name, action) in [
-            ("flatpak-detail", "Chess", "Install"),
-            ("flatpak-installed", "VLC", "Open"),
-        ] {
-            let mut app = TestApp::<StoreShell>::capture(Some(scenario)).unwrap();
-            let shown = frame(&mut app);
-            assert!(shown.contains(name));
-            assert!(shown.contains(action));
-        }
     }
 }
 

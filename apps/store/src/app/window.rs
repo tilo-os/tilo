@@ -68,9 +68,13 @@ pub(crate) fn window(cx: &ViewCx<Store>, mut window: StoreApp) -> Element {
     let state = Rc::clone(&window.state);
     {
         let mut store = state.borrow_mut();
+        store.remote = ui::RemoteActions::current();
         store.package_content = cx.content();
         match cx.mode() {
-            RunMode::Live => store.start_worker(cx.waker()),
+            RunMode::Live => {
+                let actions = ui::RemoteActions::current();
+                store.start_worker(cx.waker(), actions, cx.workspace())
+            }
             RunMode::Capture => {
                 if let Some(catalogue) = cx.fixture::<crate::resource::CaptureCatalogue>() {
                     store.show_capture_catalogue(catalogue.items.clone());

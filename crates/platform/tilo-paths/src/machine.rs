@@ -45,6 +45,81 @@ pub fn account_daemon_profile() -> Option<std::path::PathBuf> {
     Some(super::home()?.join(suffix))
 }
 
+/// The unit Tilo OS runs the device daemon from boot with, as the system's own account.
+pub const DAEMON_SYSTEM_UNIT: &str = "/usr/lib/systemd/system/tilo-runtime.service";
+
+/// Whether this computer's daemon is the system's: Tilo OS runs it from boot as its own
+/// account for every person of the computer, where other computers run it as the person.
+#[must_use]
+pub fn system_daemon() -> bool {
+    cfg!(target_os = "linux") && std::path::Path::new(DAEMON_SYSTEM_UNIT).is_file()
+}
+
+/// Where this computer's daemon keeps its sockets: the system unit's runtime directory under
+/// Tilo OS; else, for the account `uid` runs it as, `$XDG_RUNTIME_DIR/tilo` (the one systemd
+/// names by the account when the variable is not said, over ssh or from cron) on Linux, and the
+/// account's temporary directory (`/var/folders/…/T/tilo`) on macOS. Neither made nor checked:
+/// the daemon makes it, private to the account.
+///
+/// # Errors
+/// macOS names no temporary directory for this account.
+#[cfg(unix)]
+pub fn daemon_sockets(uid: u32) -> Result<std::path::PathBuf, String> {
+    use std::path::PathBuf;
+    if system_daemon() {
+        return Ok(PathBuf::from(DAEMON_SOCKETS));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = uid;
+        Ok(darwin_temp_dir()?.join("tilo"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    Ok(crate::var("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|runtime| runtime.is_absolute() && runtime.is_dir())
+        .or_else(|| Some(PathBuf::from(format!("/run/user/{uid}"))).filter(|run| run.is_dir()))
+        .map_or_else(
+            || std::env::temp_dir().join(format!("tilo-{uid}")),
+            |runtime| runtime.join("tilo"),
+        ))
+}
+
+/// The native endpoint of the daemon this account reaches ([`daemon_sockets`] of its own
+/// account).
+///
+/// # Errors
+/// As [`daemon_sockets`].
+#[cfg(unix)]
+pub fn daemon_native() -> Result<std::path::PathBuf, String> {
+    Ok(daemon_sockets(rustix::process::geteuid().as_raw())?.join(DAEMON_NATIVE))
+}
+
+/// This account's temporary directory on macOS (`/var/folders/…/T/`), as the system names it:
+/// private to the account, and short whatever the home folder is.
+#[cfg(target_os = "macos")]
+fn darwin_temp_dir() -> Result<std::path::PathBuf, String> {
+    use std::os::unix::ffi::OsStringExt as _;
+    let mut buf = vec![0_u8; 1024];
+    // SAFETY: `buf` is writable for `buf.len()` bytes; confstr writes at most that many, its
+    // NUL included.
+    let len = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+        )
+    };
+    if len == 0 || len > buf.len() {
+        return Err(format!(
+            "this account has no temporary directory: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    buf.truncate(len.saturating_sub(1));
+    Ok(std::path::PathBuf::from(std::ffi::OsString::from_vec(buf)))
+}
+
 /// Whether a session reaches the machine's own daemons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reach {

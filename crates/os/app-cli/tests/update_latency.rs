@@ -19,7 +19,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use ed25519_dalek::SigningKey;
 use registry_types::{PublisherAuthorization, SignedRegistrySnapshot, sign_snapshot};
 
-use crate::registry_to_installed::{
+use crate::registry_fixture::{
     Device, author_tapp_version, registry_config, signed_entry_version, test_publisher,
 };
 

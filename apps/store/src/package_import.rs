@@ -1,14 +1,20 @@
-//! Local package review against the same independently verified Store offers.
-//! An archive can describe itself; it cannot authorize its publisher or identity.
+//! Local package review against the same independently verified Store offers, or against the
+//! workspace's trust for an archive no catalogue lists. An archive can describe itself; it cannot
+//! authorize its publisher or identity. Installing a reviewed archive hands its file to the
+//! workspace and names that version on its tree, which every device then installs, checking it
+//! again.
 
 use crate::resource::CATALOG;
 use std::sync::Arc;
 
-use package_service::install::InstallExpectation;
+use tilo_app_package::review::{ArchiveReviewError, AttestedReview, InstallExpectation};
+use tilo_app_package::trust::{
+    AttestorScope, RevocationList, RevokedKey, TrustedAttestor, TrustedAttestors,
+};
 
 use crate::{StoreItem, StoreSource, StoreTrust};
 
-pub const MAX_IMPORT_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_IMPORT_BYTES: usize = tilo_app_package::review::MAX_REVIEWED_BYTES;
 
 /// Immutable bytes and independent catalogue identity retained until approval.
 #[derive(Clone, Debug)]
@@ -17,7 +23,34 @@ pub struct ImportedPackage {
     pub item: StoreItem,
     pub expected: InstallExpectation,
     pub registry: String,
-    pub local: Option<package_service::local_package::LocalReview>,
+    /// The review against the workspace's trust, for an archive no catalogue lists.
+    pub local: Option<AttestedReview>,
+}
+
+impl ImportedPackage {
+    /// The version the workspace's install names for these bytes, handed over as `file` (their
+    /// BLAKE3, hex): its app, version, surface, package root and publisher.
+    ///
+    /// # Errors
+    /// The package's surface cannot be read.
+    pub fn release(
+        &self,
+        file: &str,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        let surface = app_registry::publisher::entry::surface_hex(&self.bytes)
+            .map_err(|_| CATALOG.t("store-package-invalid"))?;
+        let mut release = serde_json::Map::new();
+        release.insert("app".into(), self.expected.app_id.clone().into());
+        release.insert("version".into(), self.expected.version.clone().into());
+        release.insert("surface".into(), surface.into());
+        release.insert("package".into(), self.expected.package_root.to_hex().into());
+        release.insert(
+            "publisher".into(),
+            hex::encode(self.expected.publisher).into(),
+        );
+        release.insert("file".into(), file.to_owned().into());
+        Ok(release)
+    }
 }
 
 pub fn review(bytes: Vec<u8>, offers: &[StoreItem]) -> Result<ImportedPackage, String> {
@@ -25,13 +58,9 @@ pub fn review(bytes: Vec<u8>, offers: &[StoreItem]) -> Result<ImportedPackage, S
         return Err(CATALOG.t("store-package-size-refused"));
     }
     let archive =
-        package_service::local_package::review_archive(&bytes).map_err(|error| match error {
-            package_service::local_package::ArchiveReviewError::Invalid => {
-                CATALOG.t("store-package-invalid")
-            }
-            package_service::local_package::ArchiveReviewError::NotApplication => {
-                CATALOG.t("store-package-app-only")
-            }
+        tilo_app_package::review::review_archive(&bytes).map_err(|error| match error {
+            ArchiveReviewError::Invalid => CATALOG.t("store-package-invalid"),
+            ArchiveReviewError::NotApplication => CATALOG.t("store-package-app-only"),
         })?;
     for item in offers {
         let StoreSource::Tilo { registry_name } = &item.source else {
@@ -87,20 +116,60 @@ pub fn review(bytes: Vec<u8>, offers: &[StoreItem]) -> Result<ImportedPackage, S
     Err(CATALOG.t("store-package-offer-required"))
 }
 
-/// Review an unlisted archive through the launcher-issued host capability.
+/// The workspace's trust as a package's verification takes it.
 ///
 /// # Errors
-/// Returns an existing-trust refusal; never supplies a publisher trust key.
+/// An attestor's scope is not one a package can name.
+fn trust_lists(
+    trust: &app_cli::config::TrustList,
+) -> Result<(TrustedAttestors, RevocationList), String> {
+    let attestor = trust
+        .attestors
+        .iter()
+        .map(|attestor| {
+            Ok(TrustedAttestor {
+                id: attestor.id.clone(),
+                pubkey_hex: attestor.pubkey_hex.clone(),
+                scope: AttestorScope::parse(&attestor.scope).map_err(|e| e.to_string())?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let revoked = trust
+        .revoked
+        .iter()
+        .map(|key| RevokedKey {
+            pubkey_hex: key.pubkey_hex.clone(),
+            reason: key.reason.clone(),
+        })
+        .collect();
+    Ok((TrustedAttestors { attestor }, RevocationList { revoked }))
+}
+
+/// Review an archive no catalogue lists against the workspace's trust (`trust`): an attestor it
+/// already trusts must have signed it. `installed` says what the workspace and this device
+/// already have of the app. `unlisted` is what to say when the workspace trusts no attestor at
+/// all, so nothing but a catalogue offer could vouch for the archive.
+///
+/// # Errors
+/// The archive is not attested by a trusted attestor, is revoked, or is malformed; never supplies
+/// a publisher trust key.
 pub fn review_local(
     bytes: Vec<u8>,
-    host: &package_service::client::BlockingClient,
+    trust: &app_cli::config::TrustList,
+    installed: &crate::sources::Installed,
+    unlisted: String,
 ) -> Result<ImportedPackage, String> {
     if bytes.is_empty() || bytes.len() > MAX_IMPORT_BYTES {
         return Err(CATALOG.t("store-package-size-refused"));
     }
-    let checked = host.review_local(&bytes)?;
+    let (attestors, revoked) = trust_lists(trust)?;
+    if attestors.attestor.is_empty() {
+        return Err(unlisted);
+    }
+    let checked = tilo_app_package::review::review_attested(&bytes, &attestors, &revoked)?;
     let package = &checked.manifest.package;
-    let expected = package_service::local_package::local_expectation(&checked, bytes.len() as u64)
+    let expected = checked
+        .expectation(bytes.len() as u64)
         .map_err(|_| CATALOG.t("store-package-invalid"))?;
     let item = StoreItem {
         bot: None,
@@ -126,19 +195,12 @@ pub fn review_local(
             released_at_unix: 0,
             download_url: None,
             root_hash_hex: Some(checked.root.clone()),
+            surface_hex: None,
             size_bytes: bytes.len() as u64,
             runtime: None,
         }],
         publisher_pubkey_hex: Some(checked.publisher.clone()),
-        installed: checked.installed_version.as_ref().map_or(
-            crate::InstalledState::Not,
-            |version| crate::InstalledState::Installed {
-                version: version.clone(),
-                available: package.version.clone(),
-                pinned: checked.pinned,
-                user_managed: checked.user_managed,
-            },
-        ),
+        installed: installed.state(&package.id, &package.version),
     };
     Ok(ImportedPackage {
         expected,
@@ -260,6 +322,7 @@ type = "gui"
                     tapp_root_hash_hex: packed.id().to_hex(),
                     tapp_size_bytes: bytes.len() as u64,
                     tapp_blake3_hex: ui::framework::content::hash_bytes(&bytes),
+                    tapp_surface_hex: String::new(),
                     target: ui::registry::RegistryTarget {
                         platform: ui::registry::TILO_OS_PLATFORM.into(),
                         architecture: arch.into(),
@@ -440,6 +503,7 @@ type = "gui"
                 released_at_unix: 0,
                 download_url: Some("https://packages.test/import.tapp".into()),
                 root_hash_hex: Some(packed.id().to_hex()),
+                surface_hex: None,
                 size_bytes: thin.len() as u64,
                 runtime: None,
             }],

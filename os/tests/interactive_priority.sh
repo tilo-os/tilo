@@ -75,8 +75,13 @@ if [ "$mode" = static ]; then
     bad "${scope#"$repo"/} caps the session"
   fi
   ok 'session tier: weights, floors, io delegation, oomd limits, OOM score'
-  grep -Fqx 'Slice=session.slice' "$repo/os/usr/lib/systemd/user/tilo-package-service.service" \
-    || bad 'tilo-package-service is not in session.slice'
+  # The device daemon answers app launches and installs as the device: it
+  # takes the system tier's weight, so it is neither demoted to background
+  # work nor capped below the session that waits on it.
+  if grep -Eq '^(Slice=background\.slice|CPUQuota|MemoryMax|MemoryHigh|IOReadBandwidthMax|IOWriteBandwidthMax)=' \
+      "$repo/os/usr/lib/systemd/system/tilo-runtime.service"; then
+    bad 'the device daemon is capped or demoted below the session it answers'
+  fi
   grep -Fqx 'Slice=background.slice' "$repo/os/usr/lib/systemd/user/tilo-fs-cloud.service" \
     || bad 'tilo-fs-cloud sync is not background'
   # Everything else nobody is waiting on: updates, catalogue and model
@@ -102,7 +107,7 @@ else
   prop --user user.slice ManagedOOMMemoryPressure kill
   prop --user app.slice ManagedOOMMemoryPressure auto
   prop --user session.slice CPUWeight 400
-  prop --user tilo-package-service.service Slice session.slice
+  prop --system tilo-runtime.service Slice system.slice
   prop --user tilo-app-update.service Slice background.slice
   prop --user tilo-models.service Slice background.slice
   prop --system fs.service ManagedOOMPreference avoid

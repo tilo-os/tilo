@@ -165,14 +165,13 @@ packages = [
     "tilolang-tilo", "ush", "windows-vm",
 ]
 isolation = { nested = ["launcher", "runtime-bundle", "tilo-sandbox-core", "tilo-device-steps", "ush"] }
-# The programs of other packages these tests find beside their own build: the installer and the
-# package service the app CLI's install tests run (the package service also for the installer's),
-# the render helper an agent's host renders video in, and the tilolang
+# The programs of other packages these tests find beside their own build: the installer the app
+# CLI's install tests run, the render helper an agent's host renders video in, and the tilolang
 # host a task's programs run in. Each shard is handed them as the test family's are; a job handed
 # none builds it (tools/ci/nextest.sh, or the render helper's setup step, .config/nextest.toml),
 # and a shard names none. So is the capability probe a job of a package
 # .config/nextest-capabilities.toml names first.
-starts = { app-cli = ["install:tilo-install", "package-service:tilo-package-service"], install = ["package-service:tilo-package-service"], launcher = ["tilo-test-env:tilo-capability-probe"], windows-vm = ["tilo-test-env:tilo-capability-probe"], tilo-agent-session = ["tilo-video-render:tilo-video-render", "tilolang-process:tilolang-process"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe"] }
+starts = { app-cli = ["install:tilo-install"], launcher = ["tilo-test-env:tilo-capability-probe"], windows-vm = ["tilo-test-env:tilo-capability-probe"], tilo-agent-session = ["tilo-video-render:tilo-video-render", "tilolang-process:tilolang-process"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe"] }
 matrix = { arch = ["x86_64", "aarch64"] }
 
 # The packages whose tests cost main a lot for what they catch: on main's newest head when t has
@@ -794,8 +793,8 @@ heavy = true
 name = "app-surfaces"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 isolation = "nested"
-run = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\" --check\n"
-fix = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces --write\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\"\n"
+run = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\" --check\npython3 -I tools/apps/generate_default_apps.py --check\n"
+fix = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- surfaces --write\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\"\npython3 -I tools/apps/generate_default_apps.py\n"
 env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 
 [[check]]

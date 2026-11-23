@@ -163,12 +163,12 @@ fn an_app_that_shows_a_secret_has_its_window_withheld_in_copies() {
     session.step(Duration::from_millis(1)).unwrap();
 
     // The app this session started, in the workspace it runs in, and its window.
-    let mut package_service = std::process::Command::new("sleep")
+    let mut app_process = std::process::Command::new("sleep")
         .arg("120")
         .spawn_locked()
         .expect("a launched app's process");
     let app = "org.example.Vault";
-    launches.started(package_service.id(), app, "private", false);
+    launches.started(app_process.id(), app, "private", false);
     let _client = mapped(&mut session, app);
     let (_, (x, y, w, h)) = window(session.compositor(), app).expect("the app's window");
     let centre = (
@@ -184,7 +184,7 @@ fn an_app_that_shows_a_secret_has_its_window_withheld_in_copies() {
     let connection = shell_ui_connection(
         &launches,
         app,
-        package_service.id(),
+        app_process.id(),
         &[
             FloatingSurfaceClientMessage::Hello {
                 version: FLOATING_SURFACE_PROTOCOL_VERSION,
@@ -237,6 +237,6 @@ fn an_app_that_shows_a_secret_has_its_window_withheld_in_copies() {
     let copy = copied(&mut session);
     assert_eq!(copy.pixel(centre.0, centre.1), Some(content));
 
-    let _ = package_service.kill();
-    let _ = package_service.wait();
+    let _ = app_process.kill();
+    let _ = app_process.wait();
 }

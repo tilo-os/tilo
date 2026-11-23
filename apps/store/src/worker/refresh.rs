@@ -1,83 +1,194 @@
-//! Independent, bounded catalogue reads on the worker's existing host connection.
+//! Independent, bounded catalogue reads: this device's Flatpak metadata and Flathub's feed on
+//! threads of their own, and the workspace's Tilo repositories through this device's package
+//! cache, which reads them for the Store (its `catalogue` reading).
 
 use crate::resource::CATALOG;
 use std::collections::{HashMap, HashSet, VecDeque};
 use ui::time::Instant;
 
-use package_service::client::{
-    CatalogueError, FlatpakStatus, ListedPackage, PackageAbout, PendingRead, Refusal,
-};
-use package_store::InstalledPackage;
+use crate::device::{self, FlatpakStatus};
 
 use super::{
-    Done, Duration, LocaleContext, RegistryConfig, Remote, State, StoreItem, StoreSource,
-    installed_flatpak_to_item, installed_flatpaks, installed_tilo_to_store_item, merge,
-    refresh_flatpak, sync_authoritative_catalogue, tilo_to_store_item_on_channel,
+    Done, Duration, LocaleContext, RegistryConfig, State, StoreItem, StoreSource, refresh_flatpak,
+    sync_authoritative_catalogue,
 };
 use crate::catalogue::flathub::FlathubFeed;
+use crate::flathub_client::{Remote, installed_flatpaks};
+use crate::sources::{
+    installed_flatpak_to_item, installed_tilo_to_store_item, merge, tilo_to_store_item_on_channel,
+};
 
 const MAX_ACTIVE_READS: usize = 4;
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// Why a repository's catalogue gave no rows, as the package cache refused it, typed: a reworded
+/// detail never changes what the Store says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    /// The system's interface declaration cannot be read: the system needs an update before any
+    /// repository can be judged.
+    SystemUpdateNeeded,
+    /// The repository's catalogue is authentic but expired.
+    Expired,
+    /// The repository serves a catalogue older than the one this device already accepted.
+    BehindAccepted,
+    /// The repository did not answer within the read's deadline.
+    TimedOut,
+}
+
+/// Why a catalogue read gave no rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CatalogueError {
+    /// Refused for a reason the Store explains.
+    Refused {
+        refusal: Refusal,
+        /// For logs; never decides anything.
+        detail: String,
+    },
+    /// Anything else: the action API, the package cache, the repository.
+    Failed(String),
+}
+
+impl CatalogueError {
+    #[must_use]
+    pub(crate) const fn refusal(&self) -> Option<Refusal> {
+        match self {
+            Self::Refused { refusal, .. } => Some(*refusal),
+            Self::Failed(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for CatalogueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused { refusal, detail } => write!(f, "{refusal:?}: {detail}"),
+            Self::Failed(error) => f.write_str(error),
+        }
+    }
+}
+
+impl From<String> for CatalogueError {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+
+impl From<&str> for CatalogueError {
+    fn from(error: &str) -> Self {
+        Self::Failed(error.to_owned())
+    }
+}
+
+/// What the package cache answered a `catalogue` reading: its entries, or why it gave none.
+pub(crate) fn catalogue_of(
+    answer: Result<serde_json::Value, String>,
+) -> Result<serde_json::Value, CatalogueError> {
+    let mut value = answer.map_err(CatalogueError::Failed)?;
+    if let Some(reason) = value.get("refused").and_then(serde_json::Value::as_str) {
+        let detail = value
+            .get("detail")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let refusal = match reason {
+            "system-update-needed" => Refusal::SystemUpdateNeeded,
+            "expired" => Refusal::Expired,
+            "behind-accepted" => Refusal::BehindAccepted,
+            other => {
+                return Err(CatalogueError::Failed(format!(
+                    "the package cache refused the catalogue ({other}): {detail}"
+                )));
+            }
+        };
+        return Err(CatalogueError::Refused { refusal, detail });
+    }
+    value
+        .get_mut("entries")
+        .map(serde_json::Value::take)
+        .ok_or_else(|| CatalogueError::Failed("the package cache answered no catalogue".into()))
+}
+
+/// A read of this device's own data, run on a thread of its own so no source waits for another.
+fn off_thread<T: Send + Sync + 'static>(
+    name: &str,
+    read: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> ui::Arriving<T> {
+    let arriving = ui::Arriving::pending(ui::arriving::Source::Local);
+    let writer = arriving.writer();
+    let refused = writer.clone();
+    let started = std::thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(move || writer.finish(read()));
+    if let Err(error) = started {
+        refused.fail(format!("could not start reading: {error}"));
+    }
+    arriving
+}
+
+/// The answer of a read that ran off this thread, once it is there.
+fn arrived<T: Clone>(read: &ui::Arriving<T>) -> Option<Result<T, String>> {
+    match read.get() {
+        ui::Arrival::Pending { .. } => None,
+        ui::Arrival::Ready(value) => Some(Ok(value)),
+        ui::Arrival::Failed(error) => Some(Err(error)),
+    }
+}
+
 enum Source {
-    /// The catalogue the host last verified from a repository, read without
-    /// the network so the repository's apps are described at once.
+    /// The catalogue this device last verified from a repository, read without the network so
+    /// the repository's apps are described at once.
     LastVerified(RegistryConfig),
     Native(RegistryConfig),
     Flatpak(Remote),
 }
 
 enum Read {
-    Status(PendingRead<FlatpakStatus>),
-    Repositories(PendingRead<String>),
-    Installed(PendingRead<Vec<ListedPackage>>),
-    LastVerified(RegistryConfig, PendingRead<String, CatalogueError>),
-    Native(RegistryConfig, PendingRead<String, CatalogueError>),
-    Flatpak(Remote, PendingRead<String, CatalogueError>),
-    Flathub(PendingRead<FlathubFeed>),
+    Status(ui::Arriving<FlatpakStatus>),
+    LastVerified(RegistryConfig, ui::InvocationCall),
+    Native(RegistryConfig, ui::InvocationCall),
+    Flatpak(Remote, ui::Arriving<String>),
+    Flathub(ui::Arriving<FlathubFeed>),
 }
 
 enum Response {
     Status(Result<FlatpakStatus, String>),
-    Repositories(Result<String, String>),
-    Installed(Result<Vec<ListedPackage>, String>),
-    LastVerified(RegistryConfig, Result<String, CatalogueError>),
-    Native(RegistryConfig, Result<String, CatalogueError>),
-    Flatpak(Remote, Result<String, CatalogueError>),
+    LastVerified(RegistryConfig, Result<serde_json::Value, CatalogueError>),
+    Native(RegistryConfig, Result<serde_json::Value, CatalogueError>),
+    Flatpak(Remote, Result<String, String>),
     Flathub(Result<FlathubFeed, String>),
 }
 
 impl Read {
-    fn poll(&mut self, host: &package_service::client::BlockingClient) -> Option<Response> {
+    fn poll(&self) -> Option<Response> {
         match self {
-            Self::Status(read) => read.poll(host).map(Response::Status),
-            Self::Repositories(read) => read.poll(host).map(Response::Repositories),
-            Self::Installed(read) => read.poll(host).map(Response::Installed),
-            Self::LastVerified(registry, read) => read
-                .poll(host)
-                .map(|result| Response::LastVerified(registry.clone(), result)),
-            Self::Native(registry, read) => read
-                .poll(host)
-                .map(|result| Response::Native(registry.clone(), result)),
-            Self::Flatpak(remote, read) => read
-                .poll(host)
-                .map(|result| Response::Flatpak(remote.clone(), result)),
-            Self::Flathub(read) => read.poll(host).map(Response::Flathub),
+            Self::Status(read) => arrived(read).map(Response::Status),
+            Self::LastVerified(registry, call) => super::packages::answered(call)
+                .map(|answer| Response::LastVerified(registry.clone(), catalogue_of(answer))),
+            Self::Native(registry, call) => super::packages::answered(call)
+                .map(|answer| Response::Native(registry.clone(), catalogue_of(answer))),
+            Self::Flatpak(remote, read) => {
+                arrived(read).map(|result| Response::Flatpak(remote.clone(), result))
+            }
+            Self::Flathub(read) => arrived(read).map(Response::Flathub),
         }
+    }
+
+    /// Whether the package cache answers it through the action API.
+    const fn is_call(&self) -> bool {
+        matches!(self, Self::LastVerified(..) | Self::Native(..))
     }
 
     fn timed_out(&self) -> Response {
         let error = CATALOG.t("store-source-timeout");
         match self {
             Self::Status(_) => Response::Status(Err(error)),
-            Self::Repositories(_) => Response::Repositories(Err(error)),
-            Self::Installed(_) => Response::Installed(Err(error)),
             Self::LastVerified(registry, _) => {
                 Response::LastVerified(registry.clone(), Err(timed_out(error)))
             }
             Self::Native(registry, _) => Response::Native(registry.clone(), Err(timed_out(error))),
-            Self::Flatpak(remote, _) => Response::Flatpak(remote.clone(), Err(timed_out(error))),
+            Self::Flatpak(remote, _) => Response::Flatpak(remote.clone(), Err(error)),
             Self::Flathub(_) => Response::Flathub(Err(error)),
         }
     }
@@ -91,8 +202,6 @@ struct ActiveRead {
 pub(super) struct Refresh {
     active: Vec<ActiveRead>,
     queued: VecDeque<Source>,
-    installed: Option<Vec<InstalledPackage>>,
-    about: HashMap<String, PackageAbout>,
     registries: Option<Vec<RegistryConfig>>,
     native: HashMap<String, Vec<crate::registry_client::VerifiedEntry>>,
     /// Repositories that answered this refresh; their catalogue replaces the
@@ -110,52 +219,45 @@ pub(super) struct Refresh {
 }
 
 impl Refresh {
-    pub(super) fn start(state: &State, done: Option<Done>) -> Self {
-        Self::start_with_feed(state, done, None, None)
+    pub(super) fn start(state: &mut State, done: Option<Done>) -> Self {
+        Self::start_with_feed(state, done, None, None, true)
     }
 
     /// A refresh generation. `feed_read` is a Flathub read already under way
     /// (a restarted generation keeps it); `feed` one already answered.
     fn start_with_feed(
-        state: &State,
+        state: &mut State,
         done: Option<Done>,
         feed_read: Option<ActiveRead>,
         feed: Option<FlathubFeed>,
+        seeded: bool,
     ) -> Self {
-        let mut active = state.host.as_ref().map_or_else(Vec::new, |host| {
-            vec![
-                Read::Status(host.begin_flatpak_status()),
-                Read::Repositories(host.begin_repositories()),
-                Read::Installed(host.begin_list()),
-            ]
-            .into_iter()
-            .map(|read| ActiveRead {
-                read,
+        let mut active = Vec::new();
+        if state.background_reads {
+            active.push(ActiveRead {
+                read: Read::Status(off_thread("store-flatpak-status", || Ok(device::status()))),
                 started: ui::time::now(),
-            })
-            .collect()
-        });
+            });
+        }
         let answered = feed.is_some();
         if let Some(read) = feed_read {
             active.push(read);
-        } else if !answered && let Some(host) = state.host.as_ref() {
+        } else if !answered && state.background_reads {
             // The kept catalogue answers at once while it is fresh; reading
             // Flathub's whole catalogue again runs in the background and
             // never blocks the other sources.
             let locale = crate::catalogue::desktop_locale();
             let force = state.force_refresh;
             active.push(ActiveRead {
-                read: Read::Flathub(host.background_read(move || {
+                read: Read::Flathub(off_thread("store-flathub", move || {
                     crate::catalogue::flathub::load_or_fetch(&locale, force)
                 })),
                 started: ui::time::now(),
             });
         }
-        Self {
+        let mut refresh = Self {
             active,
             queued: VecDeque::new(),
-            installed: None,
-            about: HashMap::new(),
             registries: None,
             native: HashMap::new(),
             answered: HashSet::new(),
@@ -163,20 +265,29 @@ impl Refresh {
             flatpak: HashMap::new(),
             feed: feed.or_else(|| state.flathub.clone()),
             cached: state.base_items.clone(),
-            errors: if state.host.is_none() {
-                vec![(0, "App service unavailable.".into())]
-            } else {
-                Vec::new()
-            },
+            errors: Vec::new(),
             deadline: ui::time::now() + REFRESH_TIMEOUT,
             retired: false,
             locale: LocaleContext::capture(),
             done,
-        }
+        };
+        // The workspace's registries are a reading: its list comes from the
+        // desktop's action API, or from the list a test's worker was started
+        // with. Every other refresh re-reads the workspace's list, so a
+        // registry added or disabled reaches the Store on the next one.
+        let repositories = if seeded && !state.registries.is_empty() {
+            crate::config::RegistriesFile {
+                registries: state.registries.clone(),
+            }
+        } else {
+            crate::config::repositories().unwrap_or_default()
+        };
+        refresh.repositories(state, repositories);
+        refresh
     }
 
     /// Drain the old bounded requests before starting a replacement generation.
-    /// A cancelled response does not promise the service stopped serving it.
+    /// A cancelled response does not promise its source stopped serving it.
     pub(super) fn retire(&mut self) {
         self.retired = true;
         self.queued.clear();
@@ -188,7 +299,7 @@ impl Refresh {
 
     /// Replace read generation after a real mutation, retaining the original
     /// refresh invocation and its deadline. Old responses cannot merge later.
-    pub(super) fn restart(self, state: &State) -> Self {
+    pub(super) fn restart(self, state: &mut State) -> Self {
         let deadline = self.deadline;
         self.locale.apply();
         let feed_read = self
@@ -196,28 +307,26 @@ impl Refresh {
             .into_iter()
             .find(|active| matches!(active.read, Read::Flathub(_)));
         let feed = if feed_read.is_some() { None } else { self.feed };
-        let mut refreshed = Self::start_with_feed(state, self.done, feed_read, feed);
+        let mut refreshed = Self::start_with_feed(state, self.done, feed_read, feed, false);
         refreshed.deadline = deadline;
         refreshed
     }
 
     pub(super) fn poll(&mut self, state: &mut State) -> (bool, bool) {
         self.locale.apply();
-        let Some(host) = state.host.as_ref() else {
-            refresh_flatpak(state);
-            self.rebuild(state);
-            return (true, true);
-        };
+        if self.active.iter().any(|active| active.read.is_call()) {
+            state.packages.poll();
+        }
         let mut responses = Vec::new();
         for index in (0..self.active.len()).rev() {
-            let Some(active) = self.active.get_mut(index) else {
+            let Some(active) = self.active.get(index) else {
                 continue;
             };
             let response =
                 if active.started.elapsed() >= READ_TIMEOUT || ui::time::now() >= self.deadline {
                     Some(active.read.timed_out())
                 } else {
-                    active.read.poll(host)
+                    active.read.poll()
                 };
             if let Some(response) = response {
                 self.active.swap_remove(index);
@@ -235,24 +344,27 @@ impl Refresh {
             }
             return (false, self.active.is_empty());
         }
-        let changed = !responses.is_empty();
+        let mut changed = !responses.is_empty();
         if changed {
             self.cached.clone_from(&state.base_items);
         }
         for response in responses {
             self.apply(state, response);
         }
-        self.admit(state);
+        if self.admit(state) && !changed {
+            self.cached.clone_from(&state.base_items);
+            changed = true;
+        }
         if changed {
             self.rebuild(state);
         }
         (changed, self.active.is_empty() && self.queued.is_empty())
     }
 
-    fn admit(&mut self, state: &State) {
-        let Some(host) = state.host.as_ref() else {
-            return;
-        };
+    /// Start queued reads while slots are free; answers whether a source was settled without a
+    /// read (this computer answers no package cache to read repositories through).
+    fn admit(&mut self, state: &mut State) -> bool {
+        let mut settled = false;
         while self.active.len() < MAX_ACTIVE_READS {
             let Some(source) = self.queued.pop_front() else {
                 break;
@@ -263,15 +375,50 @@ impl Refresh {
             }
             let read = match source {
                 Source::LastVerified(registry) => {
-                    let read = host.begin_last_verified_catalogue(&registry.name);
-                    Read::LastVerified(registry, read)
+                    match state
+                        .packages
+                        .cache_call("catalogue", catalogue_arguments(&registry, false))
+                    {
+                        Ok(Some(call)) => Read::LastVerified(registry, call),
+                        Ok(None) => {
+                            // This device's package cache is not found yet: asked again on the
+                            // next pass.
+                            self.queued.push_front(Source::LastVerified(registry));
+                            break;
+                        }
+                        Err(_) => {
+                            let error = CATALOG.t("store-package-rows-unavailable");
+                            self.apply(state, Response::LastVerified(registry, Err(error.into())));
+                            settled = true;
+                            continue;
+                        }
+                    }
                 }
                 Source::Native(registry) => {
-                    let read = host.begin_registry_catalogue(&registry.name);
-                    Read::Native(registry, read)
+                    match state
+                        .packages
+                        .cache_call("catalogue", catalogue_arguments(&registry, true))
+                    {
+                        Ok(Some(call)) => Read::Native(registry, call),
+                        Ok(None) => {
+                            self.queued.push_front(Source::Native(registry));
+                            break;
+                        }
+                        Err(_) => {
+                            let error = CATALOG.t("store-package-rows-unavailable");
+                            self.apply(state, Response::Native(registry, Err(error.into())));
+                            settled = true;
+                            continue;
+                        }
+                    }
                 }
                 Source::Flatpak(remote) => {
-                    let read = host.begin_flatpak_catalogue(&remote.name, remote.user_managed);
+                    let read = {
+                        let remote = remote.clone();
+                        off_thread("store-flatpak-catalogue", move || {
+                            Ok(device::catalogue(&remote))
+                        })
+                    };
                     Read::Flatpak(remote, read)
                 }
             };
@@ -280,6 +427,7 @@ impl Refresh {
                 started: ui::time::now(),
             });
         }
+        settled
     }
 
     fn apply(&mut self, state: &mut State, response: Response) {
@@ -287,7 +435,7 @@ impl Refresh {
             Response::Status(Ok(status)) => {
                 state.flatpak_error = None;
                 state.flatpak_available = status.available;
-                state.installed = installed_flatpaks(&status.installed);
+                state.flatpak_installed = installed_flatpaks(&status.installed);
                 state.installed_origins =
                     crate::flathub_client::installed_origins(&status.installed);
                 state.remotes =
@@ -303,17 +451,6 @@ impl Refresh {
                 state.flatpak_error =
                     Some(format!("Could not read Flatpak on this device: {error}"));
             }
-            Response::Repositories(result) => self.repositories(state, result),
-            Response::Installed(Ok(listed)) => {
-                self.about = listed
-                    .iter()
-                    .map(|listed| (listed.package.id.clone(), listed.about.clone()))
-                    .collect();
-                self.installed = Some(listed.into_iter().map(|listed| listed.package).collect());
-            }
-            Response::Installed(Err(error)) => self
-                .errors
-                .push((0, format!("Could not read apps on this device: {error}"))),
             Response::LastVerified(registry, result) => self.last_verified(registry, result),
             Response::Native(registry, result) => self.native_response(registry, result),
             Response::Flatpak(remote, result) => {
@@ -330,7 +467,11 @@ impl Refresh {
                 if let Ok(rows) = result {
                     self.flatpak.insert(
                         remote.resource_id(),
-                        crate::sources::remote_catalogue_items(&rows, &remote, &state.installed),
+                        crate::sources::remote_catalogue_items(
+                            &rows,
+                            &remote,
+                            &state.flatpak_installed,
+                        ),
                     );
                 }
             }
@@ -344,35 +485,26 @@ impl Refresh {
         }
     }
 
-    fn repositories(&mut self, state: &mut State, result: Result<String, String>) {
-        let parsed = result.and_then(|json| {
-            serde_json::from_str::<crate::config::RegistriesFile>(&json)
-                .map_err(|error| format!("unreadable repository list: {error}"))
-        });
-        match parsed {
-            Ok(file) => {
-                state.registries.clone_from(&file.registries);
-                // The stored catalogues are local reads: ask for them first,
-                // so a slow repository is already described while it answers.
-                let enabled = || file.registries.iter().filter(|registry| registry.enabled);
-                self.queued
-                    .extend(enabled().cloned().map(Source::LastVerified));
-                self.queued.extend(enabled().cloned().map(Source::Native));
-                self.registries = Some(file.registries);
-            }
-            Err(error) => self
-                .errors
-                .push((0, format!("Could not read app repositories: {error}"))),
-        }
+    fn repositories(&mut self, state: &mut State, file: crate::config::RegistriesFile) {
+        state.registries.clone_from(&file.registries);
+        // The stored catalogues are local reads: ask for them first, so a
+        // slow repository is already described while it answers.
+        let enabled = || file.registries.iter().filter(|registry| registry.enabled);
+        self.queued
+            .extend(enabled().cloned().map(Source::LastVerified));
+        self.queued.extend(enabled().cloned().map(Source::Native));
+        self.registries = Some(file.registries);
     }
 
-    fn last_verified(&mut self, registry: RegistryConfig, result: Result<String, CatalogueError>) {
+    fn last_verified(
+        &mut self,
+        registry: RegistryConfig,
+        result: Result<serde_json::Value, CatalogueError>,
+    ) {
         if self.answered.contains(&registry.name) {
             return;
         }
-        if let Ok(entries) = result.map_err(|error| error.to_string()).and_then(|json| {
-            serde_json::from_str(&json).map_err(|error: serde_json::Error| error.to_string())
-        }) {
+        if let Ok(Ok(entries)) = result.map(serde_json::from_value) {
             self.native.insert(registry.name, entries);
         }
     }
@@ -380,10 +512,10 @@ impl Refresh {
     fn native_response(
         &mut self,
         registry: RegistryConfig,
-        result: Result<String, CatalogueError>,
+        result: Result<serde_json::Value, CatalogueError>,
     ) {
-        let entries = result.and_then(|json| {
-            serde_json::from_str(&json).map_err(|error| {
+        let entries = result.and_then(|entries| {
+            serde_json::from_value(entries).map_err(|error| {
                 CatalogueError::Failed(format!("Invalid verified catalogue: {error}"))
             })
         });
@@ -403,8 +535,8 @@ impl Refresh {
         }
     }
 
-    fn native_items(&self) -> Vec<StoreItem> {
-        let installed = self.installed.as_deref().unwrap_or_default();
+    fn native_items(&self, state: &State) -> Vec<StoreItem> {
+        let installed = state.packages.installed();
         let mut items = self
             .cached
             .iter()
@@ -434,38 +566,12 @@ impl Refresh {
                 }
             }
         }
-        if self.installed.is_some() {
-            for item in &mut items {
-                // What the signed manifest of the installed copy declares is
-                // what the app may do here; a registry entry does not say.
-                if let Some(about) = self.about.get(&item.id) {
-                    item.listing.capabilities.clone_from(&about.capabilities);
-                    if item.tagline.trim().is_empty() {
-                        item.tagline = about
-                            .tagline_for(&crate::sources::preferred_locale())
-                            .to_owned();
-                    }
-                }
-                item.installed = installed.iter().find(|entry| entry.id == item.id).map_or(
-                    crate::InstalledState::Not,
-                    |entry| crate::InstalledState::Installed {
-                        version: entry.version.clone(),
-                        available: item
-                            .versions
-                            .first()
-                            .map_or_else(String::new, |version| version.version.clone()),
-                        pinned: entry.pinned,
-                        user_managed: entry.user_managed(),
-                    },
-                );
-            }
-            for entry in installed {
-                if !items.iter().any(|item| item.id == entry.id) {
-                    items.push(installed_tilo_to_store_item(
-                        entry,
-                        self.about.get(&entry.id),
-                    ));
-                }
+        for item in &mut items {
+            item.installed = installed.state(&item.id, item.latest_version());
+        }
+        for app in installed.workspace.keys() {
+            if !items.iter().any(|item| item.id == *app) {
+                items.push(installed_tilo_to_store_item(app, installed));
             }
         }
         items
@@ -505,7 +611,7 @@ impl Refresh {
                 items.push(item.clone());
             }
         }
-        for (id, version) in &state.installed {
+        for (id, version) in &state.flatpak_installed {
             if !items.iter().any(|item| item.id == *id) {
                 items.push(installed_flatpak_to_item(id, version));
             }
@@ -515,7 +621,7 @@ impl Refresh {
             // catalogue response must not silently install a different offer.
             items.retain(|item| item.id != reference.app_id);
             let version = state
-                .installed
+                .flatpak_installed
                 .iter()
                 .find_map(|(id, version)| (id == &reference.app_id).then(|| version.clone()));
             items.insert(0, reference.clone().into_store_item(version));
@@ -529,7 +635,7 @@ impl Refresh {
                     .map_or_else(String::new, |version| version.version.clone()),
             };
             item.installed = state
-                .installed
+                .flatpak_installed
                 .iter()
                 .find(|(id, _)| *id == item.id)
                 .map_or(crate::InstalledState::Not, |(_, version)| {
@@ -546,7 +652,7 @@ impl Refresh {
     }
 
     fn rebuild(&self, state: &mut State) {
-        state.base_items = merge(self.native_items(), self.flatpak_items(state));
+        state.base_items = merge(self.native_items(state), self.flatpak_items(state));
         // Who blocked which app: read again with each rebuild, so a block set
         // elsewhere shows here too. Blocked apps stay in the catalogue, so a
         // link still opens their page, which says who blocked them; the
@@ -585,9 +691,20 @@ fn timed_out(detail: String) -> CatalogueError {
     }
 }
 
+/// The `catalogue` reading's arguments for `registry`: asked of the repository now when `fresh`.
+fn catalogue_arguments(
+    registry: &RegistryConfig,
+    fresh: bool,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("registry".into(), registry.name.clone().into());
+    arguments.insert("fresh".into(), fresh.into());
+    arguments
+}
+
 /// What the Store says when the repository `name` could not be read.
 ///
-/// Decided by the host's typed refusal alone, never by the text of an error:
+/// Decided by the package cache's typed refusal alone, never by the text of an error:
 /// an expired catalogue is the repository's to renew; while the system's
 /// interface declaration cannot be read the system needs an update, and
 /// saying so is the way out, where transport details would read as an
@@ -606,7 +723,15 @@ fn native_error(name: &str, error: &CatalogueError) -> String {
             "store-repository-timeout",
             &[("name", name.to_owned().into())],
         ),
-        Some(Refusal::DeviceRepositoryStale) | None => format!("Could not load {name}: {error}"),
+        Some(Refusal::BehindAccepted) => format!("Could not load {name}: {}", error_detail(error)),
+        None => format!("Could not load {name}: {error}"),
+    }
+}
+
+/// What a refusal's detail says, for a refusal the Store has no words of its own for.
+fn error_detail(error: &CatalogueError) -> &str {
+    match error {
+        CatalogueError::Refused { detail, .. } | CatalogueError::Failed(detail) => detail,
     }
 }
 
@@ -626,30 +751,10 @@ mod tests {
         }
     }
 
-    fn bundled_mail() -> ListedPackage {
-        let mut package = crate::sources::tests::installed_package(
-            "so.tilo.mail",
-            "0.4.0",
-            "ab".repeat(32),
-            false,
-            false,
-        );
-        package.payload_bytes = 2_400_000;
-        ListedPackage {
-            package,
-            about: PackageAbout {
-                name: "Mail".into(),
-                names: std::collections::BTreeMap::new(),
-                category: Some("Office".into()),
-                ..PackageAbout::default()
-            },
-        }
-    }
-
-    fn catalogue_with_mail(version: &str) -> String {
+    fn catalogue_with_mail(version: &str) -> serde_json::Value {
         let mut entry = crate::sources::tests::tilo_entry("so.tilo.mail", "Mail", version, [3; 32]);
         entry.description = "Read and write email.".into();
-        serde_json::to_string(&[crate::sources::tests::verified(entry)]).unwrap()
+        serde_json::to_value([crate::sources::tests::verified(entry)]).unwrap()
     }
 
     fn refresh_with_bundled_mail() -> (State, Refresh) {
@@ -657,18 +762,26 @@ mod tests {
             Vec::new(),
             crate::search::StoreDirectory::default(),
         );
-        let mut refresh = Refresh::start(&state, None);
-        refresh.apply(
+        let mut refresh = Refresh::start(&mut state, None);
+        refresh.repositories(
             &mut state,
-            Response::Repositories(Ok(serde_json::json!({
-                "registry": [{
-                    "name": MAIN, "base_url": "https://apps.tilo.so",
-                    "owner_pubkey_hex": "11".repeat(32), "enabled": true
-                }]
-            })
-            .to_string())),
+            crate::config::RegistriesFile {
+                registries: vec![main_registry()],
+            },
         );
-        refresh.apply(&mut state, Response::Installed(Ok(vec![bundled_mail()])));
+        // The installed package's manifest describes it while no repository answers.
+        state
+            .packages
+            .set_installed(crate::sources::tests::described(
+                crate::sources::tests::installed_package("so.tilo.mail", "0.4.0", false),
+                "so.tilo.mail",
+                package_actions::PackageAbout {
+                    name: "Mail".into(),
+                    category: Some("Office".into()),
+                    ..package_actions::PackageAbout::default()
+                },
+                2_400_000,
+            ));
         (state, refresh)
     }
 
@@ -709,7 +822,7 @@ mod tests {
                 crate::search::StoreDirectory::default(),
             );
             let opened = super::super::open_reference(Some(path), None, &mut state).unwrap();
-            let mut refresh = Refresh::start(&state, None);
+            let mut refresh = Refresh::start(&mut state, None);
             refresh.errors.clear();
             let record = serde_json::from_value(serde_json::json!({
                 "flatpakAppId": "org.example.Editor", "name": "Editor",
@@ -768,7 +881,7 @@ mod tests {
             };
             state.remotes.push(remote.clone());
             for version in ["1.0", "2.0"] {
-                let mut refresh = Refresh::start(&state, None);
+                let mut refresh = Refresh::start(&mut state, None);
                 refresh.errors.clear();
                 refresh.apply(
                     &mut state,
@@ -804,7 +917,7 @@ mod tests {
                 vec![native],
                 crate::search::StoreDirectory::default(),
             );
-            let mut refresh = Refresh::start(&state, None);
+            let mut refresh = Refresh::start(&mut state, None);
             refresh.apply(
                 &mut state,
                 Response::Status(Ok(FlatpakStatus {
@@ -967,7 +1080,7 @@ mod tests {
         fn a_refused_or_expired_catalogue_says_why;
 
         phase a_repository_the_system_is_too_old_to_read_says_the_system_needs_an_update;
-        // When the package service cannot read the system's interface declaration it
+        // When this device's package cache cannot read the system's interface declaration it
         // refuses the repository; the Store says the device needs a system
         // update, naming the repository, as visibly as an outage and without
         // the RPC's internals.
@@ -1009,7 +1122,7 @@ mod tests {
         }
 
         phase a_refusal_reads_the_same_whatever_its_detail_says;
-        // The Store's state follows the host's typed refusal alone: the same
+        // The Store's state follows the package cache's typed refusal alone: the same
         // refusal with any wording of its detail, or with none, reads the same,
         // and a failure whose text merely mentions a refusal is not one.
         {
@@ -1058,9 +1171,9 @@ mod tests {
             }
         }
 
-        phase a_refusal_crosses_the_wire_typed_whatever_its_detail_says;
-        // The refusal crosses the wire typed: whatever the host's detail says,
-        // the Store's pending read gets the refusal, and the same state follows.
+        phase a_refusal_the_package_cache_answers_is_typed_whatever_its_detail_says;
+        // The package cache answers a refusal typed: whatever its detail says, the Store reads
+        // the refusal, and the same state follows. An answer that names no catalogue fails.
         {
             crate::resource::CATALOG.ensure();
             let mut seen = Vec::new();
@@ -1069,13 +1182,11 @@ mod tests {
                 "declaration unreadable",
                 "Failed: remote exception: timed out",
             ] {
-                let (service, connection) = package_service::testing::ConnectedService::start(RefusingServer(
-                    package_service::client::Refusal::SystemUpdateNeeded,
-                    detail,
-                ))
-                .unwrap();
-                let client = package_service::client::BlockingClient::from_connected_fd(connection).unwrap();
-                let error = client.registry_catalogue(MAIN).unwrap_err();
+                let error = catalogue_of(Ok(serde_json::json!({
+                    "refused": "system-update-needed",
+                    "detail": detail,
+                })))
+                .unwrap_err();
                 assert_eq!(
                     error.refusal(),
                     Some(Refusal::SystemUpdateNeeded),
@@ -1085,10 +1196,24 @@ mod tests {
                 refresh.apply(&mut state, Response::Native(main_registry(), Err(error)));
                 refresh.rebuild(&mut state);
                 seen.push(state.catalogue_error);
-                drop(client);
-                service.shutdown().unwrap();
             }
             assert!(seen.windows(2).all(|pair| pair[0] == pair[1]), "{seen:?}");
+            let expired = catalogue_of(Ok(serde_json::json!({"refused": "expired"}))).unwrap_err();
+            assert_eq!(expired.refusal(), Some(Refusal::Expired));
+            for unknown in [
+                serde_json::json!({"refused": "something new", "detail": "x"}),
+                serde_json::json!({"rows": []}),
+            ] {
+                assert_eq!(catalogue_of(Ok(unknown)).unwrap_err().refusal(), None);
+            }
+            assert_eq!(
+                catalogue_of(Ok(serde_json::json!({"entries": []}))).unwrap(),
+                serde_json::json!([])
+            );
+            assert_eq!(
+                catalogue_of(Err("no package cache".into())).unwrap_err(),
+                CatalogueError::Failed("no package cache".into())
+            );
         }
 
         phase an_expired_catalogue_is_reported_as_expired;
@@ -1103,7 +1228,7 @@ mod tests {
             assert_eq!(state.expired_repositories, [MAIN]);
             // Reported in the Store's words (the visible copy is pinned by
             // app::tests::an_expired_catalogue_is_named_as_expired_not_as_unreachable),
-            // never as the host's raw text.
+            // never as the package cache's raw text.
             let reported = state.catalogue_error.as_deref().unwrap();
             assert!(!reported.contains("1792587897"), "{reported}");
             assert!(!reported.contains("Could not load"), "{reported}");
@@ -1116,29 +1241,6 @@ mod tests {
             );
             refresh.rebuild(&mut state);
             assert!(state.expired_repositories.is_empty());
-        }
-    }
-
-    /// A host that refuses every catalogue read with one refusal and the
-    /// detail it is given.
-    struct RefusingServer(package_service::client::Refusal, &'static str);
-    impl package_service::wire::Server for RefusingServer {
-        fn handle(
-            self: std::rc::Rc<Self>,
-            request: package_service::wire::Operation,
-            _progress: package_service::wire::Sink,
-        ) -> impl core::future::Future<Output = Result<package_service::wire::Answer, String>> + 'static
-        {
-            use package_service::wire::{Answer, Catalogue, Operation, Resource};
-            std::future::ready(match request {
-                Operation::Read(Resource::RegistryCatalogue { .. }) => {
-                    Ok(Answer::Catalogue(Catalogue::Refused {
-                        refusal: self.0,
-                        detail: self.1.into(),
-                    }))
-                }
-                other => package_service::testing::refuse(&other),
-            })
         }
     }
 }

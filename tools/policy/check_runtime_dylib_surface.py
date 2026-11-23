@@ -64,7 +64,6 @@ DENIED = {
     "tilo-fs": "the FUSE filesystem daemon",
     "fuser": "the FUSE filesystem daemon's kernel binding",
     "launcher": "the sandbox launcher",
-    "package-service": "the app host daemon (apps use its client side)",
     "app-cli": "the install and registry CLI",
     "app-registry": "the registry client edges behind the installer",
     "install": "the package installer (tilo-install)",
@@ -150,7 +149,7 @@ ENGINES = {
     "browser-continuity": "the import from another browser's profile, which Browser loads from "
                           "libtilo_browser_import_engine.so (the runtime keeps "
                           "browser-continuity-core)",
-    "tilo-app-process-engine": "the app host client's engine library (libtilo_app_process_engine.so)",
+    "tilo-app-process-engine": "the Store's catalogue engine library (libtilo_app_process_engine.so)",
     "app-catalogue": "the Store's catalogue, which Store loads from libtilo_app_process_engine.so",
     "tilo-settings-engine": "Settings' engine library (libtilo_settings_engine.so)",
     "settings": "Settings' own library, which the app runs from libtilo_settings_engine.so",

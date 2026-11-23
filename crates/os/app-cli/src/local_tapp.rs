@@ -5,8 +5,9 @@
 //! person trusts installs; a valid signature from a self-signed or unknown
 //! publisher asks once, naming the publisher as unverified. With no terminal
 //! to ask on, that is refused unless `--yes` is given. The installer stays
-//! the one verifier: `tilo-install check` says who signed the file, and the
-//! package service's install action verifies the same bytes again.
+//! the one verifier: `tilo-install check` says who signed the file, and each
+//! device's package cache verifies the same bytes again when it installs the
+//! version the workspace records.
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -14,7 +15,6 @@ use std::process::{Command, ExitCode};
 
 use app_cli::install::{DownloadProgress, staging_dir, tilo_install_bin};
 use clap::Args;
-use package_service_client::wire::{self, Replacement, Trust, Uploaded};
 
 /// How a package file is accepted; shared by `install` and `update --from`.
 #[derive(Debug, Args, Clone, Default)]
@@ -212,7 +212,7 @@ pub fn apply(
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> ExitCode {
     match prepare(source, change, trust, on_progress) {
-        Ok((file, accepted)) => run_installer(&file.path, change, trust, accepted),
+        Ok((file, accepted)) => run_installer(&file.path, accepted),
         Err(error) => {
             eprintln!("app: {error}");
             ExitCode::FAILURE
@@ -237,39 +237,9 @@ fn prepare(
     Ok((file, accepted))
 }
 
-fn run_installer(path: &Path, change: &Change<'_>, trust: &FileTrust, accepted: bool) -> ExitCode {
-    let file = Some(Uploaded {
-        source: path.display().to_string(),
-    });
-    let trust = Trust {
-        require_package_root: trust.require_package_root.clone(),
-        require_publisher: trust.require_publisher.clone(),
-        require_attestor: trust.require_attestor.clone(),
-        allow_self_signed: accepted,
-    };
-    let change = match change {
-        Change::Install => wire::Change::Install {
-            file: Uploaded {
-                source: path.display().to_string(),
-            },
-            trust,
-            pinned: false,
-            // Replace an older copy of the same id, as installing from a repository does.
-            replacement: Replacement::Replace,
-            ignore_missing_runtime: false,
-            dry_run: false,
-            payload_from: None,
-        },
-        Change::Update(id) => wire::Change::Update {
-            app: Some((*id).to_owned()),
-            file,
-            version: None,
-            allow_downgrade: false,
-            dry_run: false,
-            trust,
-            ignore_missing_runtime: false,
-            payload_from: None,
-        },
-    };
-    crate::store_verbs::change(change, Some(path))
+/// Install the package file at `path` in the workspace (`accepted` a self-signed one): an update
+/// is the same install over the version the workspace runs, which the workspace refuses while
+/// it keeps that version.
+fn run_installer(path: &Path, accepted: bool) -> ExitCode {
+    crate::store_verbs::answered(app_cli::device::install_file(path, accepted, false))
 }

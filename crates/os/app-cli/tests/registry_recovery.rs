@@ -19,7 +19,7 @@ use registry_types::{
 };
 use tilo_app_package::pack::SigningIdentity;
 
-use crate::registry_to_installed::{
+use crate::registry_fixture::{
     Device, Registry, author_tapp_version, registry_config, signed_entry_version, test_publisher,
 };
 

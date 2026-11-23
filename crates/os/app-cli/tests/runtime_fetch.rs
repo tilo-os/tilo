@@ -16,7 +16,7 @@ use registry_types::{
 use tilo_app_package::Manifest;
 use tilo_app_package::pack::{SigningIdentity, pack};
 
-use crate::registry_to_installed::{Device, native_target, registry_config};
+use crate::registry_fixture::{Device, native_target, registry_config};
 
 const APP_ID: &str = "so.tilo.linked-e2e";
 
@@ -243,6 +243,7 @@ fn entry(package_id: &str, version: &str, url: &str, tapp: &[u8], runtime: &str)
                 tapp_root_hash_hex: root.to_hex(),
                 tapp_size_bytes: tapp.len() as u64,
                 tapp_blake3_hex: blake3::hash(tapp).to_hex().to_string(),
+                tapp_surface_hex: String::new(),
                 target: registry_types::RegistryTarget {
                     platform: registry_types::TILO_OS_PLATFORM.into(),
                     architecture: native_target().0.into(),

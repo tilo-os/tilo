@@ -23,6 +23,7 @@ use crate::resource::{
 };
 use crate::worker::{Outcome, Request, StoreWorker};
 mod view;
+pub(crate) use view::progress_label;
 mod window;
 mod window_bar;
 
@@ -117,6 +118,7 @@ fn action_code(action: ActionKind) -> &'static str {
     match action {
         ActionKind::RuntimeInstall => "install-runtime",
         ActionKind::Open => "open",
+        ActionKind::Get => "get",
         ActionKind::Remove => "remove",
         ActionKind::Update => "update",
         ActionKind::MarkInstalled => "pin",
@@ -387,7 +389,7 @@ type LaunchCompletion = Result<(String, Option<serde_json::Value>), String>;
 /// An operation as a job the whole system sees. It offers no Stop, because
 /// there is nothing here that could honour one: the package manager runs the
 /// operation to the end in a process of its own, and the Store holds no
-/// handle to that child (the package service's `flatpak` call has no cancel), so
+/// handle to that child (the device's daemon runs `flatpak` to its end), so
 /// stopping here would only stop the Store watching (`APP-store-01`). The
 /// job's row and the app's page say that, and what the person can do instead:
 /// leave it running, or close the window.
@@ -451,6 +453,8 @@ pub struct StoreState {
     /// card communicate progress and reject a second activation; it is a
     /// backend observation, not shared document state.
     active_operation: Option<(String, ActionKind)>,
+    /// The apps this device is fetching, by app id, with the bytes it has.
+    installs: std::collections::BTreeMap<String, ui::arriving::Progress>,
     operation_jobs: HashMap<String, OperationJob>,
     needs: ui::attention::Presses,
     jobs: ui::jobs::Presses,
@@ -500,6 +504,11 @@ pub struct StoreState {
     status_said: String,
     /// Shared async, bounded decoded-artwork cache. `None` for hermetic shots.
     images: Option<ui::ImageStore>,
+    /// The workspace's actions: an app installs into the workspace's tree, and the device's
+    /// daemon installs it here.
+    remote: ui::RemoteActions,
+    /// The Flatpak install or removal on its way to the workspace, and the app it is for.
+    flatpak_call: Option<(String, ui::InvocationCall)>,
 }
 
 impl StoreState {
@@ -530,6 +539,7 @@ impl StoreState {
             remote_name_state: ui::LocalState::new(String::new()),
             remote_url_state: ui::LocalState::new(String::new()),
             status_line: String::new(),
+            installs: std::collections::BTreeMap::new(),
             worker_busy: false,
             catalogue_read: ui::Arriving::ready(()),
             active_operation: None,
@@ -561,6 +571,8 @@ impl StoreState {
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
             status_said: String::new(),
             images: None,
+            remote: ui::RemoteActions::default(),
+            flatpak_call: None,
         }
     }
 
@@ -593,7 +605,12 @@ impl StoreState {
             .collect()
     }
 
-    pub(crate) fn start_worker(&mut self, wake: ui::WakeHandle) {
+    pub(crate) fn start_worker(
+        &mut self,
+        wake: ui::WakeHandle,
+        actions: ui::RemoteActions,
+        workspace: Option<String>,
+    ) {
         if self.worker.is_some() {
             return;
         }
@@ -613,16 +630,26 @@ impl StoreState {
             Err(error) => tracing::warn!(%error, "app details cannot be fetched"),
         }
         self.set_worker_busy(true);
-        self.worker = Some(StoreWorker::spawn(self.directory.clone(), wake));
+        self.worker = Some(StoreWorker::spawn(
+            self.directory.clone(),
+            wake,
+            actions,
+            workspace,
+        ));
     }
 
+    /// Replace the window's worker with one that reads through `actions` and `registries`.
     #[cfg(test)]
-    pub(crate) fn connect_test_host(&mut self, fd: std::os::fd::OwnedFd) -> Result<(), String> {
+    pub(crate) fn connect_test_actions(
+        &mut self,
+        actions: ui::RemoteActions,
+        registries: Vec<crate::config::RegistryConfig>,
+    ) -> Result<(), String> {
         let current = self
             .worker
             .take()
             .ok_or_else(|| "the live window must already have its mounted worker".to_owned())?;
-        self.worker = Some(current.with_connected_host(self.directory.clone(), fd));
+        self.worker = Some(current.with_actions(self.directory.clone(), actions, registries));
         self.set_worker_busy(true);
         Ok(())
     }
@@ -764,6 +791,17 @@ impl StoreState {
                     user_managed: true,
                     catalogue_error: None,
                 }]);
+            }
+            Some("installing") => {
+                // A Get on its way: the workspace took the version and this
+                // device is fetching it, which is what a card shows meanwhile.
+                self.installs.insert(
+                    "so.tilo.notes".into(),
+                    ui::arriving::Progress::new(1_920_000, Some(4_800_000)),
+                );
+                if let Some(item) = self.items.iter().find(|item| item.id == "so.tilo.notes") {
+                    self.set_status_line(view::progress_label(ActionKind::Get, &item.name));
+                }
             }
             Some("progress") => {
                 // Terminal is already on the device and its offered action is
@@ -1058,6 +1096,22 @@ impl StoreState {
         &self.items
     }
 
+    /// The apps this device is fetching, with the bytes it has.
+    pub fn set_installs(
+        &mut self,
+        installs: std::collections::BTreeMap<String, ui::arriving::Progress>,
+    ) {
+        if self.installs != installs {
+            self.installs = installs;
+            self.structure_dirty = true;
+        }
+    }
+
+    /// The progress of `app`'s fetch on this device, when it is on its way.
+    pub(crate) fn install_progress(&self, app: &str) -> Option<ui::arriving::Progress> {
+        self.installs.get(app).copied()
+    }
+
     pub fn set_flatpak_available(&mut self, available: bool) {
         self.flatpak_available = available;
         self.flatpak_error = None;
@@ -1336,7 +1390,79 @@ impl Job {
 }
 
 impl StoreState {
+    /// Name the Flatpak `item` in the workspace's tree, or take the name back: the device's
+    /// daemon installs it into the system Flatpak installation, and removes it on uninstall.
+    fn start_flatpak(&mut self, action: ActionKind, item: &StoreItem) -> Result<Admitted, String> {
+        use ui::tilo_actions::remote::{
+            Confirmation, InvokeArgument, RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER,
+            workspace_app, workspace_governance,
+        };
+        let workspace = ui::framework::reference::workspace()?;
+        // The record's id is the Flatpak application id, lowercased.
+        let (app, release) = crate::actions::flatpak_release(item);
+        let (target, arguments) = if action == ActionKind::FlatpakRemove {
+            let target = RemoteActionTarget {
+                provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+                address: ui::tilo_actions::ActionAddress::new(
+                    workspace_app(&workspace, &app),
+                    "uninstall",
+                ),
+            };
+            (target, serde_json::Map::new())
+        } else {
+            (workspace_governance(&workspace, "install-app"), release)
+        };
+        let call = self.remote.invoke(
+            target,
+            InvokeArgument::Json(arguments),
+            Some(Confirmation::Confirmed),
+        );
+        self.status_line = view::progress_label(action, &item.name);
+        self.operation_error = None;
+        self.active_operation = Some((item.id.clone(), action));
+        self.flatpak_call = Some((item.id.clone(), call));
+        self.structure_dirty = true;
+        Ok(Admitted::Done)
+    }
+
+    /// Take the workspace's answer to a Flatpak install or removal.
+    fn poll_flatpak(&mut self) {
+        let Some((app, call)) = self.flatpak_call.as_ref() else {
+            return;
+        };
+        let app = app.clone();
+        let outcome = match call.with(Clone::clone) {
+            ui::Arrival::Pending { .. } => return,
+            ui::Arrival::Failed(error) => Err(format!("{error:?}")),
+            ui::Arrival::Ready(ui::tilo_actions::InvocationUpdate::Succeeded { .. }) => Ok(()),
+            ui::Arrival::Ready(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) => {
+                Err(error.message)
+            }
+            ui::Arrival::Ready(
+                ui::tilo_actions::InvocationUpdate::Accepted { .. }
+                | ui::tilo_actions::InvocationUpdate::Progress { .. }
+                | ui::tilo_actions::InvocationUpdate::Item { .. },
+            ) => return,
+        };
+        self.flatpak_call = None;
+        self.active_operation = None;
+        match outcome {
+            Ok(()) => {
+                self.status_line = CATALOG.t("store-app-installed");
+                if let Some(worker) = self.worker.as_ref() {
+                    let _ = worker.request(Request::Refresh);
+                }
+            }
+            Err(error) => {
+                self.status_line = CATALOG.t("store-operation-failed");
+                self.operation_error = Some(error);
+            }
+        }
+        self.structure_dirty = true;
+    }
+
     fn drain_worker(&mut self) {
+        self.poll_flatpak();
         self.drain_fetcher();
         let Some(worker) = self.worker.as_ref() else {
             return;
@@ -1397,6 +1523,7 @@ impl StoreState {
         if let Some(detail) = snap.detail {
             self.set_detail_from_worker(detail);
         }
+        self.set_installs(snap.installs);
         self.set_flatpak_available(snap.flatpak_available);
         self.flatpak_error = snap.flatpak_error;
         self.set_remotes(snap.remotes);
@@ -1623,6 +1750,12 @@ impl StoreState {
         if let Some((app, action)) = effect.as_package() {
             let app = app.to_owned();
             let item = self.package_operation(&app, action)?;
+            if matches!(
+                action,
+                ActionKind::FlatpakInstall | ActionKind::FlatpakUpdate | ActionKind::FlatpakRemove
+            ) {
+                return self.start_flatpak(action, &item);
+            }
             if let StoreEffect::InstallRuntime { root, .. } = &effect
                 && item
                     .versions
@@ -1914,8 +2047,10 @@ impl StoreState {
                 return Ok(Admitted::Export(report_envelope(&report, item)));
             }
             StoreEffect::InstallRuntime { .. }
+            | StoreEffect::GetApp { .. }
             | StoreEffect::OpenApp { .. }
             | StoreEffect::Update { .. }
+            | StoreEffect::UninstallApp { .. }
             | StoreEffect::Pin { .. }
             | StoreEffect::Unpin { .. }
             | StoreEffect::FlatpakInstall { .. }
@@ -2743,6 +2878,7 @@ fn remote_row(remote: &crate::flathub_client::Remote, bindings: &RowBindings) ->
 fn package_action_label(action: ActionKind, error: Option<&str>) -> String {
     CATALOG.t(match action {
         ActionKind::Open | ActionKind::FlatpakOpen => "store-action-open",
+        ActionKind::Get => "store-action-get",
         ActionKind::FlatpakInstall => "store-action-install",
         ActionKind::RuntimeInstall => "store-runtime-install",
         ActionKind::Update | ActionKind::FlatpakUpdate => "store-action-update",
@@ -2984,11 +3120,11 @@ mod tests {
             }
         }
 
-        phase uninstalling_is_the_systems_one_action_not_a_store_effect;
+        phase uninstalling_a_flatpak_is_the_systems_one_action;
         {
             let mut app = seeded_app();
             for item in &mut app.items {
-                if item.id == "id.chess" || item.id == "id.notes" {
+                if item.id == "id.chess" {
                     item.installed = InstalledState::Installed {
                         version: "1".into(),
                         available: "1".into(),
@@ -2997,32 +3133,47 @@ mod tests {
                     };
                 }
             }
-            for (row, remove) in [
-                ("app:id.chess", ActionKind::FlatpakRemove),
-                ("app:id.notes", ActionKind::Remove),
-            ] {
-                let resource = app.live_row(row).unwrap();
-                assert!(
-                    resource
-                        .operations()
-                        .iter()
-                        .all(|action| action.id != "remove" && action.id != "flatpak-remove")
-                );
-                let item = app
-                    .items
+            let resource = app.live_row("app:id.chess").unwrap();
+            assert!(
+                resource
+                    .operations()
                     .iter()
-                    .find(|item| row.ends_with(&item.id))
-                    .unwrap();
-                assert_eq!(item.remove_action(), Some(remove));
-                assert!(StoreEffect::package(remove, item).is_none());
-                let binding = bindings::package(item, remove).unwrap();
-                let uninstall = bindings::uninstall(item);
-                assert_eq!(binding.address(), uninstall.address());
-                assert_eq!(
-                    binding.invoke(()).unwrap().arguments,
-                    uninstall.invoke(()).unwrap().arguments
-                );
+                    .all(|action| action.id != "flatpak-remove")
+            );
+            let item = app.items.iter().find(|item| item.id == "id.chess").unwrap();
+            assert_eq!(item.remove_action(), Some(ActionKind::FlatpakRemove));
+            assert!(StoreEffect::package(ActionKind::FlatpakRemove, item).is_none());
+            let binding = bindings::package(item, ActionKind::FlatpakRemove).unwrap();
+            let uninstall = bindings::uninstall(item);
+            assert_eq!(binding.address(), uninstall.address());
+            assert_eq!(
+                binding.invoke(()).unwrap().arguments,
+                uninstall.invoke(()).unwrap().arguments
+            );
+        }
+
+        phase uninstalling_a_tilo_app_leaves_the_workspace;
+        {
+            let mut app = seeded_app();
+            for item in &mut app.items {
+                if item.id == "id.notes" {
+                    item.installed = InstalledState::Installed {
+                        version: "1".into(),
+                        available: "1".into(),
+                        pinned: false,
+                        user_managed: true,
+                    };
+                }
             }
+            let item = app.items.iter().find(|item| item.id == "id.notes").unwrap();
+            assert_eq!(item.remove_action(), Some(ActionKind::Remove));
+            assert!(matches!(
+                StoreEffect::package(ActionKind::Remove, item),
+                Some(StoreEffect::UninstallApp { .. })
+            ));
+            let binding = bindings::package(item, ActionKind::Remove).unwrap();
+            assert_eq!(binding.address().action, "uninstall-app");
+            assert_ne!(binding.address(), bindings::uninstall(item).address());
         }
     }
 
@@ -3069,6 +3220,7 @@ mod tests {
                     expired_repositories: Vec::new(),
                     blocks: BlockList::empty(),
                     updating: None,
+                    installs: Default::default(),
                 });
                 assert_eq!(
                     app.focused_detail, selected,
@@ -3124,6 +3276,7 @@ mod tests {
                 expired_repositories: Vec::new(),
                 blocks: BlockList::empty(),
                 updating: None,
+                installs: Default::default(),
             };
             app.apply_worker_snapshot(snapshot(
                 crate::worker::DetailUpdate::Requested {
@@ -3189,12 +3342,13 @@ mod tests {
                 detail: None,
                 remotes: Vec::new(),
                 flatpak_available: false,
-                flatpak_error: Some("App service unavailable.".into()),
-                operation_error: Some("App service unavailable.".into()),
+                flatpak_error: Some("This device's Flatpak installation cannot be read.".into()),
+                operation_error: Some("This device's Flatpak installation cannot be read.".into()),
                 unanswered_repositories: Vec::new(),
                 expired_repositories: Vec::new(),
                 blocks: BlockList::empty(),
                 updating: None,
+                installs: Default::default(),
             });
             assert_eq!(app.operation_error.as_deref(), Some(size_refused.as_str()));
             app.admit(StoreEffect::ShowRemotes).unwrap();
@@ -3227,6 +3381,7 @@ mod tests {
                 expired_repositories: Vec::new(),
                 blocks: BlockList::empty(),
                 updating: None,
+                installs: Default::default(),
             };
             app.apply_worker_snapshot(snapshot("notes", Vec::new(), Some("Earlier search failed")));
             assert_eq!(
@@ -3280,6 +3435,37 @@ mod tests {
         (environment, directory, app)
     }
 
+    /// An app on its way says how far it is, in either theme: the card carries the fetch's
+    /// share rather than a bare "Installing", and the frame is kept when a review directory is
+    /// named.
+    #[test]
+    fn an_installing_app_shows_its_bytes_in_both_themes() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.state().worker = None;
+            store.state().set_operation_error(None);
+            store.state().set_worker_busy(false);
+            store
+                .state()
+                .show_capture_catalogue(crate::fixture::capture_catalog(None));
+            store.state().stage_scene(Some("installing"));
+        })
+        .unwrap();
+        let review = std::env::var_os("TILO_STORE_REVIEW_DIR").map(std::path::PathBuf::from);
+        for theme in ["light", "dark"] {
+            app.harness().set_theme(Theme::named(theme).unwrap());
+            app.harness().resize((1280, 800)).unwrap();
+            let shown = app.harness().inspection_json().unwrap();
+            assert!(shown.contains("Installing Notes"), "{theme}: {shown}");
+            assert!(shown.contains("40%"), "{theme}: the fetch says its share");
+            if let Some(directory) = &review {
+                std::fs::create_dir_all(directory).unwrap();
+                app.harness()
+                    .render_png(&directory.join(format!("installing-{theme}.png")));
+            }
+        }
+    }
+
     #[test]
     fn completed_empty_search_offers_the_declared_filter_reset() {
         let (_environment, _directory, mut app) = inspected_store();
@@ -3311,6 +3497,7 @@ mod tests {
                     expired_repositories: Vec::new(),
                     blocks: BlockList::empty(),
                     updating: None,
+                    installs: Default::default(),
                 });
         })
         .unwrap();
@@ -3426,6 +3613,7 @@ mod tests {
                     expired_repositories: Vec::new(),
                     blocks: BlockList::empty(),
                     updating: None,
+                    installs: Default::default(),
                 });
             store.state().set_worker_busy(true);
         })
@@ -3481,6 +3669,7 @@ mod tests {
                     expired_repositories: vec!["Tilo main".into()],
                     blocks: BlockList::empty(),
                     updating: None,
+                    installs: Default::default(),
                 });
             store.state().set_worker_busy(false);
         })
@@ -3704,10 +3893,7 @@ mod tests {
                 .state()
                 .set_operation_error(Some(crate::flathub_client::remote_error(
                     &remote,
-                    &package_service::client::CatalogueError::Refused {
-                        refusal: package_service::client::Refusal::TimedOut,
-                        detail: "command timed out after 8000 ms".into(),
-                    },
+                    "command timed out after 8000 ms",
                 )));
         })
         .unwrap();
@@ -4117,7 +4303,8 @@ mod tests {
                     catalogue_error: None,
                 }]);
             store.state().set_flatpak_available(false);
-            store.state().flatpak_error = Some("The app service is unavailable.".into());
+            store.state().flatpak_error =
+                Some("This device's Flatpak installation cannot be read.".into());
         })
         .unwrap();
         assert!(
@@ -4132,7 +4319,10 @@ mod tests {
             .unwrap()
             .value
             .unwrap();
-        assert_eq!(snapshot["flatpak_error"], "The app service is unavailable.");
+        assert_eq!(
+            snapshot["flatpak_error"],
+            "This device's Flatpak installation cannot be read."
+        );
         assert_eq!(snapshot["flatpak_checking"], false);
         assert_eq!(snapshot["flatpak_available"], false);
         let flatpak = snapshot["items"]
@@ -4295,6 +4485,7 @@ mod tests {
                 released_at_unix: 0,
                 download_url: None,
                 root_hash_hex: None,
+                surface_hex: None,
                 size_bytes: 0,
                 runtime: None,
             }],
@@ -4350,7 +4541,7 @@ mod tests {
         {
             let mut app = seeded_app();
             app.set_flatpak_available(false);
-            let error = "Could not read Flatpak on this device: app service unavailable";
+            let error = "Could not read Flatpak on this device: its metadata is unreadable";
             app.flatpak_error = Some(error.into());
             assert_eq!(
                 app.package_label(ActionKind::NeedsFlatpakHost),
@@ -5350,7 +5541,10 @@ mod tests {
                 for busy in [false, true] {
                     let mut primary = app.primary(item);
                     primary.key = "primary".into();
-                    primary.progress = busy.then(|| view::progress_label(action, &item.name));
+                    primary.progress = busy.then(|| crate::widgets::app::PrimaryProgress {
+                        label: view::progress_label(action, &item.name),
+                        fraction: None,
+                    });
                     let card = crate::widgets::app::card(
                         item,
                         Some(primary),
@@ -5673,23 +5867,23 @@ mod tests {
 
         {
             let mut app = seeded_app();
-            let open = StoreEffect::OpenApp {
+            let get = StoreEffect::GetApp {
                 app: "id.notes".into(),
             };
-            let job = admitted_job(&mut app, open.clone());
+            let job = admitted_job(&mut app, get.clone());
             assert!(matches!(
                 job.request,
-                Request::Act(ref item, ActionKind::Open) if item.id == "id.notes"
+                Request::Act(ref item, ActionKind::Get) if item.id == "id.notes"
             ));
             assert_eq!(
                 app.active_operation,
-                Some(("id.notes".into(), ActionKind::Open))
+                Some(("id.notes".into(), ActionKind::Get))
             );
-            assert_eq!(app.status_line(), "Opening Notes…");
+            assert_eq!(app.status_line(), "Getting Notes…");
             // Jobs are concurrent by construction: a second operation is a
             // second row, not a refusal that freezes the Store.
             assert!(
-                app.admit(open).is_ok(),
+                app.admit(get).is_ok(),
                 "the Store stays usable while an operation runs"
             );
             assert!(

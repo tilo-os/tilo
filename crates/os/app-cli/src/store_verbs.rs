@@ -1,6 +1,6 @@
 //! The `app` verbs on the package store and the running apps, said with app
 //! names: pin, unpin, verify, inspect, gc, trust, runtimes and what is
-//! running. A change is the package service's action; a read runs the
+//! running. An app's pin is the workspace tree's action; the rest runs the
 //! program that owns it (`tilo-install`, the launcher). So there is one
 //! implementation and `app` is only the way in.
 
@@ -9,8 +9,6 @@ use std::process::{Command, ExitCode, ExitStatus};
 
 use app_cli::install::tilo_install_bin;
 use clap::Subcommand;
-use package_service_client::person;
-use package_service_client::wire::{Change, Uploaded};
 
 /// `app trust …`: whose packages this person accepts without asking.
 #[derive(Debug, Subcommand)]
@@ -111,11 +109,11 @@ where
     exit_code(Command::new(tilo_install_bin()).args(args).status())
 }
 
-/// Make `change` through the package service's action, uploading `file` first, and show what it did.
-pub fn change(change: Change, file: Option<&Path>) -> ExitCode {
-    match person::change(change, file) {
-        Ok(report) => {
-            person::show(&report, "app");
+/// Show what the workspace answered a change from this terminal with, or why it refused.
+pub fn answered(answer: Result<serde_json::Value, String>) -> ExitCode {
+    match answer {
+        Ok(answer) => {
+            println!("{answer}");
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -125,10 +123,13 @@ pub fn change(change: Change, file: Option<&Path>) -> ExitCode {
     }
 }
 
-/// Make the change `make` builds for the installed app `query` names.
-fn on_installed(query: &str, make: impl FnOnce(String) -> Change) -> ExitCode {
+/// `app pin` and `app unpin`: the workspace keeps the app at its version, or lets it update.
+pub fn pin(query: &str, pinned: bool) -> ExitCode {
     match crate::resolve_installed(query) {
-        Ok(id) => change(make(id), None),
+        Ok(app) => answered(app_cli::device::on_app(
+            &app,
+            if pinned { "pin" } else { "unpin" },
+        )),
         Err(error) => {
             eprintln!("app: {error}");
             ExitCode::FAILURE
@@ -136,12 +137,7 @@ fn on_installed(query: &str, make: impl FnOnce(String) -> Change) -> ExitCode {
     }
 }
 
-/// `app pin` and `app unpin`.
-pub fn pin(query: &str, pinned: bool) -> ExitCode {
-    on_installed(query, |app| Change::SetPinned { app, pinned })
-}
-
-/// Run `tilo-install <verb> <id>` for the installed app `query` names: the reads it answers.
+/// Run `tilo-install <verb> <id>` for the installed app `query` names.
 pub fn read_installed(verb: &str, query: &str) -> ExitCode {
     match crate::resolve_installed(query) {
         Ok(id) => installer([verb, id.as_str()]),
@@ -162,24 +158,21 @@ pub fn verify(query: Option<&str>) -> ExitCode {
 }
 
 pub fn gc(dry_run: bool) -> ExitCode {
-    change(
-        Change::Collect {
-            dry_run,
-            grace_secs: runtime_bundle::gc::DEFAULT_GRACE_SECS,
-            max_store_bytes: package_store::DEFAULT_MAX_STORE_BYTES,
-        },
-        None,
-    )
+    if dry_run {
+        installer(["gc", "--dry-run"])
+    } else {
+        installer(["gc"])
+    }
 }
 
 pub fn trust(cmd: TrustCmd) -> ExitCode {
     match cmd {
         TrustCmd::List => installer(["trust", "list"]),
-        TrustCmd::Add { id, pubkey, scope } => {
-            change(Change::AddAttestor { id, pubkey, scope }, None)
-        }
-        TrustCmd::Remove { id } => change(Change::RemoveAttestor { id }, None),
-        TrustCmd::Revoke { pubkey, reason } => change(Change::Revoke { pubkey, reason }, None),
+        TrustCmd::Add { id, pubkey, scope } => installer([
+            "trust", "add", "--id", &id, "--pubkey", &pubkey, "--scope", &scope,
+        ]),
+        TrustCmd::Remove { id } => installer(["trust", "remove", &id]),
+        TrustCmd::Revoke { pubkey, reason } => installer(["revoke", &pubkey, "--reason", &reason]),
         TrustCmd::Revoked => installer(["revoked", "list"]),
     }
 }
@@ -187,45 +180,24 @@ pub fn trust(cmd: TrustCmd) -> ExitCode {
 pub fn runtime(cmd: RuntimeStoreCmd) -> ExitCode {
     match cmd {
         RuntimeStoreCmd::List => installer(["runtime", "list"]),
-        RuntimeStoreCmd::Remove { version } => change(Change::RemoveRuntime { version }, None),
-        RuntimeStoreCmd::Pin { version } => change(
-            Change::PinRuntime {
-                version,
-                pinned: true,
-            },
-            None,
-        ),
-        RuntimeStoreCmd::Unpin { version } => change(
-            Change::PinRuntime {
-                version,
-                pinned: false,
-            },
-            None,
-        ),
+        RuntimeStoreCmd::Remove { version } => installer(["runtime", "remove", &version]),
+        RuntimeStoreCmd::Pin { version } => installer(["runtime", "pin", &version]),
+        RuntimeStoreCmd::Unpin { version } => installer(["runtime", "unpin", &version]),
         RuntimeStoreCmd::Image {
             cmd: ImageCmd::List,
         } => installer(["image", "list"]),
         RuntimeStoreCmd::Image {
             cmd: ImageCmd::Add { tapp, publisher },
-        } => change(
-            Change::AddImage {
-                file: Uploaded {
-                    source: tapp.display().to_string(),
-                },
-                publisher,
-                payload_from: None,
-            },
-            Some(&tapp),
-        ),
+        } => {
+            let mut args = vec!["image".into(), "add".into(), tapp.into_os_string()];
+            if let Some(publisher) = publisher {
+                args.extend(["--publisher".into(), publisher.into()]);
+            }
+            installer::<_, std::ffi::OsString>(args)
+        }
         RuntimeStoreCmd::Image {
             cmd: ImageCmd::Remove { id },
-        } => match package_service_client::image_id(&id) {
-            Ok(id) => change(Change::RemoveImage { id: *id.as_bytes() }, None),
-            Err(error) => {
-                eprintln!("app: {error}");
-                ExitCode::FAILURE
-            }
-        },
+        } => installer(["image", "remove", &id]),
     }
 }
 

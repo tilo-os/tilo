@@ -27,6 +27,8 @@ pub use tilo_app_package::version::{ReleaseChannel, compare as compare_versions}
 pub mod bots;
 pub mod client;
 pub mod config;
+#[cfg(unix)]
+pub mod device;
 pub mod install;
 pub mod model_runtime;
 
@@ -266,65 +268,6 @@ pub fn runtime_offer_from_enabled(runtime: &str) -> Result<Option<CatalogueApp>,
     last_error.map_or(Ok(None), Err)
 }
 
-#[derive(Clone, Debug)]
-pub struct LanguagePackOffer {
-    pub locale: String,
-    pub offer: CatalogueApp,
-}
-
-/// Every language pack the enabled repositories offer, by language, the
-/// first repository that offers a language answering for it.
-///
-/// # Errors
-///
-/// Returns the first repository's error when none could be read.
-pub fn language_pack_offers() -> Result<Vec<LanguagePackOffer>, String> {
-    let registries = config::load_registries();
-    let mut offers: Vec<LanguagePackOffer> = Vec::new();
-    let mut first_error = None;
-    let mut read_any = false;
-    for registry in registries.enabled() {
-        let snapshot = match client::fetch_snapshot(registry) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                first_error.get_or_insert_with(|| error.to_string());
-                continue;
-            }
-        };
-        read_any = true;
-        let packs: Vec<String> = snapshot
-            .entries()
-            .into_iter()
-            .map(|listed| listed.entry.package_id.clone())
-            .filter(|id| registry_types::is_language_pack_package_id(id))
-            .collect();
-        for package_id in packs {
-            let Some(locale) =
-                tilo_app_package::language_pack_locale(&package_id).map(tilo_paths::language_of)
-            else {
-                continue;
-            };
-            if offers.iter().any(|known| known.locale == locale) {
-                continue;
-            }
-            let Ok(verified) = client::all_versions_in(registry, &snapshot, &package_id) else {
-                continue;
-            };
-            if let Some(offer) = installable_versions(&verified.entry, registry.channel)
-                .max_by(|a, b| tilo_app_package::version::compare(&a.version, &b.version))
-                .and_then(|version| app_for_version(&verified, version, &registry.name))
-            {
-                offers.push(LanguagePackOffer { locale, offer });
-            }
-        }
-    }
-    if !read_any && let Some(error) = first_error {
-        return Err(error);
-    }
-    offers.sort_by(|a, b| a.locale.cmp(&b.locale));
-    Ok(offers)
-}
-
 #[must_use]
 pub fn language_pack_id(tag: &str) -> String {
     format!(
@@ -332,11 +275,6 @@ pub fn language_pack_id(tag: &str) -> String {
         tilo_app_package::LANGUAGE_PACK_ID_PREFIX,
         tilo_paths::language_of(tag)
     )
-}
-
-#[must_use]
-pub fn installed_language_pack(tag: &str) -> Option<String> {
-    installed_version(&language_pack_id(tag)).ok().flatten()
 }
 
 fn app_for_version(
@@ -374,6 +312,7 @@ fn app_for_version(
         tapp_root_hash_hex: tapp.tapp_root_hash_hex.clone(),
         tapp_size_bytes: tapp.tapp_size_bytes,
         tapp_blake3_hex: tapp.tapp_blake3_hex.clone(),
+        tapp_surface_hex: tapp.tapp_surface_hex.clone(),
         architecture: target.architecture.clone(),
         isa: target.isa.clone(),
         runtime: target.runtime.clone(),
@@ -759,7 +698,7 @@ pub fn all_offers() -> CatalogueListing {
 /// offers nothing here.
 #[must_use]
 pub fn last_accepted_offers() -> Vec<CatalogueApp> {
-    let registries = config::load_registries_no_seed();
+    let registries = config::load_registries();
     let apps = registries
         .enabled()
         .filter_map(|registry| {
@@ -913,6 +852,7 @@ mod tests {
                     tapp_root_hash_hex: "ab".repeat(32),
                     tapp_size_bytes: 10,
                     tapp_blake3_hex: "ef".repeat(32),
+                    tapp_surface_hex: String::new(),
                     target: registry_types::RegistryTarget {
                         platform: registry_types::TILO_OS_PLATFORM.into(),
                         architecture: std::env::consts::ARCH.into(),

@@ -4844,7 +4844,7 @@ impl Drop for KillOnDrop {
 
 tilo_test_env::scenario! {
     #[cfg(unix)]
-    fn the_dev_loop_starts_restarts_and_reloads_the_package_service;
+    fn the_dev_loop_starts_restarts_and_reloads_the_app;
 
     phase dev_restart_hands_the_checkpoint_to_the_next_process;
     {

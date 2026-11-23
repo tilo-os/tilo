@@ -32,6 +32,10 @@ pub struct CatalogueApp {
     /// BLAKE3 of the exact `.tapp` bytes.
     #[serde(default)]
     pub tapp_blake3_hex: String,
+    /// BLAKE3 of the surface the package carries, in the form it is kept by; empty for one that
+    /// publishes none. What a workspace that runs this version records.
+    #[serde(default)]
+    pub tapp_surface_hex: String,
     #[serde(default)]
     pub architecture: String,
     #[serde(default)]

@@ -117,7 +117,7 @@ fn language_card<R: ui::tilo_resource::Resource<State = R> + ui::tilo_resource::
     languages: Option<&language::LanguageArea>,
 ) -> SettingsSection {
     let offered = languages
-        .and_then(|languages| languages.offered.get())
+        .and_then(|languages| languages.offers.get())
         .unwrap_or_default();
     let names: Vec<String> = std::iter::once(language::name(None))
         .chain(
@@ -138,7 +138,7 @@ fn language_card<R: ui::tilo_resource::Resource<State = R> + ui::tilo_resource::
             ),
     ];
     if let Some(languages) = languages {
-        if let Some(installing) = languages.installing.with(Clone::clone) {
+        if let Some(installing) = languages.installing_locale() {
             items.push(note(&crate::i18n::t_args(
                 "settings-region-language-installing",
                 &[("language", language::name(Some(&installing)).into())],

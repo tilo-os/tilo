@@ -1894,7 +1894,6 @@ dependencies = [
  "landlock",
  "libc",
  "libloading",
- "package-service",
  "package-store",
  "runtime-bundle",
  "runtime-portal",
@@ -2445,26 +2444,6 @@ checksum = "fe42f1670a52a47d448f14b6a5c61dd78fce51856e68edaa38f7ae3a46b8d6b6"
 dependencies = [
  "elliptic-curve",
  "primeorder",
-]
-
-[[package]]
-name = "package-service"
-version = "0.1.0"
-dependencies = [
- "hex",
- "package-store",
- "runtime-portal",
- "serde",
- "serde_json",
- "thiserror",
- "tilo-app-id",
- "tilo-app-package",
- "tilo-files",
- "tilo-lock",
- "tilo-paths",
- "tokio",
- "wire-frame",
- "workspace-hack",
 ]
 
 [[package]]

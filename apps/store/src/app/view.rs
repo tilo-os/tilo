@@ -36,7 +36,7 @@ use crate::bindings;
 use crate::catalogue::{self, Blocker, Permission, Unblocked as _};
 use crate::model::{ActionKind, StoreItem, StoreSource, StoreTrust};
 use crate::resource::{ReportProjection, StoreEffect};
-use crate::widgets::app::{self as app_widget, Primary};
+use crate::widgets::app::{self as app_widget, Primary, PrimaryProgress};
 use crate::widgets::visible_version;
 
 #[derive(Clone, Copy)]
@@ -226,8 +226,33 @@ impl StoreState {
             label,
             binding: bindings::package(item, action),
             enabled: unavailable.is_none(),
-            progress: busy.then(|| progress_label(action, &item.name)),
+            progress: self.fetching(item).or_else(|| {
+                busy.then(|| PrimaryProgress {
+                    label: progress_label(action, &item.name),
+                    fraction: None,
+                })
+            }),
         }
+    }
+
+    /// What an install of `item` on this device is fetching, as the card says it.
+    fn fetching(&self, item: &StoreItem) -> Option<PrimaryProgress> {
+        let progress = self.install_progress(&item.id)?;
+        let fraction = progress.fraction();
+        let label = match fraction {
+            Some(fraction) => CATALOG.t_args(
+                "store-installing-percent",
+                &[
+                    ("name", ui::i18n::ArgValue::Text(item.name.clone())),
+                    (
+                        "percent",
+                        ui::i18n::ArgValue::Number(f64::from(fraction * 100.0).round()),
+                    ),
+                ],
+            ),
+            None => progress_label(ActionKind::Get, &item.name),
+        };
+        Some(PrimaryProgress { label, fraction })
     }
 
     /// An app as a card, opening its page. An app not built for this device
@@ -1491,9 +1516,10 @@ pub(super) struct PageFacts {
     pub homepage: Option<String>,
 }
 
-pub(super) fn progress_label(action: ActionKind, name: &str) -> String {
+pub(crate) fn progress_label(action: ActionKind, name: &str) -> String {
     let key = match action {
         ActionKind::Open | ActionKind::FlatpakOpen => "store-progress-opening",
+        ActionKind::Get => "store-progress-getting",
         ActionKind::Remove | ActionKind::FlatpakRemove => "store-progress-removing",
         ActionKind::Update | ActionKind::FlatpakUpdate => "store-progress-updating",
         ActionKind::MarkInstalled => "store-progress-keeping",

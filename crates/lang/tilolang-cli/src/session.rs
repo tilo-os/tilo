@@ -293,7 +293,7 @@ impl Peer {
     }
 
     /// Install the signed package `tapp`, replacing the installed one of the same id. A development
-    /// session runs no package service, so the install names the session's store and is made in
+    /// session runs no device daemon's package cache, so the install names the session's store and is made in
     /// `tilo-install`'s own process.
     pub(crate) fn install(&self, bin: &Path, tapp: &Path) -> Result<(), String> {
         status(

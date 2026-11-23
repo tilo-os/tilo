@@ -51,7 +51,7 @@ store-package-size-refused = Choose a Tilo app package smaller than 64 MiB.
 store-package-invalid = This file is not a valid signed Tilo package.
 store-package-app-only = Choose an app package. System components and runtimes use the system updater.
 store-package-offer-required = This package does not match a verified offer from your configured Tilo repositories. Refresh the catalogue or choose a published package.
-store-package-unavailable = The package file or app service is unavailable.
+store-package-unavailable = The package file can't be read.
 store-package-ready = Package verified. Review its details before installing.
 store-package-review-required = Review this exact package before installing it.
 store-package-installed = Package installed. Open it from its app details.
@@ -77,6 +77,12 @@ store-package-local-description = Signed local application. Installation require
 store-package-local-source = Local package
 store-app-installed = App installed.
 store-app-updated = App updated.
+store-app-got = Added { $name } to this workspace.
+store-app-removed = Removed { $name } from this workspace.
+store-packages-unavailable = Apps can't be installed or opened here: this computer's package list can't be read.
+store-package-rows-unavailable = Tilo couldn't read this computer's package list.
+store-installing-percent = Installing { $name }… { $percent }%
+store-open-not-installed = { $name } didn't arrive on this computer, so it can't open here.
 
 store-search-empty = No apps found
 store-search-empty-help = Try a different search or category.
@@ -93,7 +99,6 @@ store-runtime-reference = Required runtime
 store-runtime-installed = Installed { $name } { $version }. Open the app again to use it.
 store-runtime-reviewed = Reviewed { $name }. Installation remains a separate step.
 store-runtime-changed = The reviewed runtime package changed; review it again.
-store-runtime-service-unavailable = The app service is unavailable. No runtime operation was attempted.
 store-runtime-offer-mismatch = The signed runtime offer does not match the requested identity.
 store-runtime-offer-ambiguous = More than one repository offers this runtime. Choose one repository before installing.
 store-runtime-unavailable = No enabled repository offers the required runtime for this device.
@@ -174,18 +179,20 @@ store-category-bots = Bots
 ## An app's one action and its progress
 
 store-action-open = Open
+store-action-get = Get
 store-action-install = Install
 store-action-update = Update
 store-action-remove = Uninstall
-store-action-keep = Keep on this device
-store-action-release = Allow cleanup
+store-action-keep = Keep this version
+store-action-release = Allow updates
 store-action-flatpak-setup = Install Flatpak first
 store-action-view = View
 store-action-tooltip = { $action } { $name }
-store-kept = { $name } is kept on this device.
-store-released = { $name } may be cleaned up when it goes unused.
+store-kept = This workspace keeps { $name } at this version.
+store-released = { $name } may update again.
 store-progress-opening = Opening { $name }…
 store-progress-installing = Installing { $name }…
+store-progress-getting = Getting { $name }…
 # Said while a package operation runs: the Store offers no Stop, because the
 # package manager finishes it from another process. So the page says what
 # stopping would mean and what the person can do instead.
@@ -195,8 +202,8 @@ store-progress-continues = This can't be stopped here. Leave it running, or clos
 store-job-continues = This can't be stopped here. It finishes even if you close the window.
 store-progress-updating = Updating { $name }…
 store-progress-removing = Removing { $name }…
-store-progress-keeping = Keeping { $name } on this device…
-store-progress-releasing = Allowing cleanup of { $name }…
+store-progress-keeping = Keeping { $name } at this version…
+store-progress-releasing = Allowing updates of { $name }…
 store-progress-preparing = Preparing Flatpak…
 store-progress-adding = Adding { $name }…
 store-update-all-starting = { $count ->

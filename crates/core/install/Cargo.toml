@@ -16,7 +16,7 @@ path = "src/main.rs"
 # Honour the developer-only environment overrides (`package_store::dev_env`)
 # in a release build: the session's system store and publisher list, by which
 # a developer session installs its own builds. Shipped images never enable it.
-dev-overrides = ["package-store/dev-overrides", "package-service/dev-overrides"]
+dev-overrides = ["package-store/dev-overrides"]
 
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
@@ -26,10 +26,12 @@ tilo-app-package = { path = "../tilo-app-package" }
 # launcher, the shell and the app host.
 package-store = { path = "../package-store", features = ["store"] }
 runtime-bundle = { path = "../runtime-bundle" }
-# Every change is the package service's action: sent to the person's service while the
-# device runs, made in this process for the store an image build names.
-package-service = { path = "../package-service" }
-package-service-client = { path = "../package-service-client" }
+# Every change is an action: the workspace tree's or the device cache's, asked of this
+# computer's daemon while the device runs, made in this process for the store an image build
+# names.
+package-actions = { path = "../package-actions" }
+# The workspace's trust list, read through the desktop's action API.
+tilo-control = { path = "../../session/control-cli" }
 clap.workspace = true
 hex.workspace = true
 serde_json.workspace = true

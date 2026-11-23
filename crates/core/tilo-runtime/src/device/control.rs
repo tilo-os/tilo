@@ -35,7 +35,7 @@ pub const PROVIDER: &str = "so.tilo.devices";
 pub const STEPS_DIR: &str = "/run/tilo/device-steps";
 
 /// The program each step's unit runs, which declares the steps there are.
-const STEP_PROGRAM: &str = "/usr/libexec/tilo/tilo-device-step";
+pub(crate) const STEP_PROGRAM: &str = "/usr/libexec/tilo/tilo-device-step";
 
 /// How much of a step's progress one update carries: the end of what it wrote.
 const PROGRESS_TAIL: usize = 64 * 1024;

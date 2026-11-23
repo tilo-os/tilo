@@ -108,12 +108,11 @@ enum Cmd {
         #[arg(long, conflicts_with = "app")]
         tolerate_unreachable: bool,
     },
-    /// Go back to an older version of an installed app, keeping its saved
-    /// state. An app the system image ships goes back to the image's version
-    /// when that is the next older one.
+    /// Go back to a version of an app the workspace ran before, keeping its
+    /// saved state: the one it ran last, unless `--to` names another.
     Rollback {
         app: String,
-        /// The version to go back to (default: the newest older one).
+        /// The version to go back to (default: the one the workspace ran last).
         #[arg(long)]
         to: Option<String>,
     },
@@ -844,119 +843,73 @@ fn install_version(query: &str, version: &str) -> ExitCode {
 }
 
 fn rollback(query: &str, to: Option<&str>) -> ExitCode {
-    // An app the system image ships can go back to the image's version
-    // without the store, by removing the user's copy above it.
-    if let Ok(id) = resolve_installed(query)
-        && let Some(code) = rollback_to_image(&id, to)
-    {
-        return code;
-    }
-    announce("Finding older versions in the Tilo Store…");
-    let (app, versions) = match offered_versions(query) {
-        Ok(found) => found,
+    let id = match resolve_installed(query) {
+        Ok(id) => id,
         Err(error) => {
             eprintln!("app: {error}");
             return ExitCode::FAILURE;
         }
     };
-    let installed = match app_cli::installed_version(&app.package_id) {
-        Ok(Some(installed)) => installed,
-        Ok(None) => {
-            eprintln!("app: '{}' is not installed", app.display_name);
-            return ExitCode::FAILURE;
-        }
+    // The versions the workspace ran before, from its record's history: going back is an update
+    // to one of them, which every device of the workspace follows.
+    let earlier = match app_cli::device::earlier_versions(&id) {
+        Ok(earlier) => earlier,
         Err(error) => {
             eprintln!("app: {error}");
             return ExitCode::FAILURE;
         }
     };
-    // Newest first, so the first older one is the previous release.
-    let older = |offer: &&CatalogueApp| {
-        tilo_app_package::version::compare(&offer.version, &installed).is_lt()
+    let version_of = |release: &serde_json::Value| {
+        release
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
     };
     let target = match to {
-        Some(version) => versions
+        Some(version) => earlier
             .iter()
-            .filter(older)
-            .find(|offer| offer.version == version),
-        None => versions.iter().find(older),
+            .find(|release| version_of(release) == version),
+        None => earlier.first(),
     };
     let Some(target) = target else {
         eprintln!(
-            "app: '{}' has no {} older than {installed} for this machine",
-            app.display_name,
+            "app: the workspace ran {} of '{id}' before this one",
             to.map_or_else(
-                || "version".to_owned(),
-                |version| format!("version {version}")
+                || "no other version".to_owned(),
+                |version| format!("no version {version}")
             )
         );
         return ExitCode::FAILURE;
     };
-    let mut progress = progress_reporter();
-    let result = app_cli::install::rollback_app_reporting(target, &mut progress);
-    if std::io::stdout().is_terminal() {
-        print!("\r\x1b[2K");
-        let _ = std::io::stdout().flush();
-    }
-    match result {
-        Ok(()) => {
+    let text = |field: &str| {
+        target
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+    };
+    let release = app_cli::device::release(
+        &id,
+        text("version"),
+        text("surface"),
+        text("package"),
+        text("publisher"),
+    );
+    let running = app_cli::installed_version(&id).ok().flatten();
+    match app_cli::device::update_to(&id, &release) {
+        Ok(_) => {
             println!(
-                "rolled back {} {installed} -> {}",
-                target.package_id, target.version
+                "rolled back {id} {} -> {}",
+                running.as_deref().unwrap_or("?"),
+                version_of(target)
             );
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("app: {}", error.user_message());
+            eprintln!("app: {error}");
             ExitCode::FAILURE
         }
     }
-}
-
-/// Go back to the system image's version of `id` when that is the version
-/// asked for, or the next older one when none is named; `None` when the
-/// store decides instead.
-fn rollback_to_image(id: &str, to: Option<&str>) -> Option<ExitCode> {
-    let image = app_cli::image_version_beneath(id).ok()??;
-    let installed = app_cli::installed_version(id).ok()??;
-    if !tilo_app_package::version::compare(&image, &installed).is_lt() {
-        return None;
-    }
-    match to {
-        Some(version) if version != image => return None,
-        Some(_) => {}
-        None => {
-            // Prefer the image when no published version lies between it and
-            // the installed one; an unreachable store leaves the image.
-            let newer_in_store = offered_versions(id).ok().is_some_and(|(_, versions)| {
-                versions.iter().any(|offer| {
-                    tilo_app_package::version::compare(&offer.version, &installed).is_lt()
-                        && tilo_app_package::version::compare(&offer.version, &image).is_gt()
-                })
-            });
-            if newer_in_store {
-                return None;
-            }
-        }
-    }
-    let removed = package_service_client::person::change(
-        package_service_client::wire::Change::Uninstall {
-            app: id.to_owned(),
-            saved_data: package_service_client::wire::SavedData::Keep,
-            dry_run: false,
-        },
-        None,
-    );
-    Some(match removed {
-        Ok(_) => {
-            println!("rolled back {id} {installed} -> {image} (the system image's)");
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("app: could not remove the updated copy of '{id}': {error}");
-            ExitCode::FAILURE
-        }
-    })
 }
 
 fn resolve_installed(query: &str) -> Result<String, String> {
@@ -1101,29 +1054,23 @@ fn update_from_listing(
     );
     let total = outdated.len();
     let mut updated = 0usize;
-    let mut done = 0usize;
-    // Every update downloads at once; each installs as soon as it is ready.
-    let apps: Vec<&CatalogueApp> = outdated.iter().map(|(app, _)| *app).collect();
-    app_cli::install::stage_each(&apps, |index, staged| {
-        let Some((app, version)) = outdated.get(index) else {
-            return;
-        };
-        done = done.saturating_add(1);
+    // Each update is the workspace's: every device fetches the version it names.
+    for (index, (app, version)) in outdated.iter().enumerate() {
         println!(
-            "Updating {} {version} -> {} ({done}/{total})…",
-            app.display_name, app.version,
+            "Updating {} {version} -> {} ({}/{total})…",
+            app.display_name,
+            app.version,
+            index + 1,
         );
         let _ = std::io::stdout().flush();
         let mut progress = progress_reporter();
-        let result = staged.and_then(|staged| {
-            app_cli::install::update_staged_reporting(app, staged, &mut progress)
-        });
+        let result = app_cli::install::update_app_reporting(app, &mut progress);
         if report_change(app, true, result) == ExitCode::SUCCESS {
             updated = updated.saturating_add(1);
         } else {
             failed = true;
         }
-    });
+    }
     println!("{}", bulk_update_summary(installed.len(), checked, updated));
     if failed {
         ExitCode::FAILURE
@@ -1156,14 +1103,7 @@ fn remove(query: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    store_verbs::change(
-        package_service_client::wire::Change::Uninstall {
-            app: id,
-            saved_data: package_service_client::wire::SavedData::Keep,
-            dry_run: false,
-        },
-        None,
-    )
+    store_verbs::answered(app_cli::device::on_app(&id, "uninstall"))
 }
 
 fn report_unreachable(items: &[app_cli::UnreachableRegistry]) {
@@ -1174,101 +1114,110 @@ fn report_unreachable(items: &[app_cli::UnreachableRegistry]) {
 
 fn repo(cmd: RepoCmd) -> ExitCode {
     use app_cli::config;
-    let mut registries = config::load_registries();
-    let confirmation = match cmd {
-        RepoCmd::List { json: true } => {
-            return match serde_json::to_string(&registries) {
-                Ok(value) => {
-                    println!("{value}");
-                    ExitCode::SUCCESS
+    let sockets = tilo_control::client::sockets_from_env();
+    let spelling = tilo_control::front::Spelling::standalone();
+    let call = |action: &str, args: serde_json::Value| {
+        tilo_control::front::call_action(&sockets, action, &args, &spelling)
+    };
+    let fail = |error: String| {
+        eprintln!("app: {error}");
+        ExitCode::FAILURE
+    };
+    match cmd {
+        RepoCmd::List { json: true } => match call("registry.list", serde_json::json!({})) {
+            Ok(value) => {
+                let Some(list) = config::registries_from_rows(&value) else {
+                    return fail("the desktop answered no registry list".into());
+                };
+                match serde_json::to_string(&list) {
+                    Ok(value) => {
+                        println!("{value}");
+                        ExitCode::SUCCESS
+                    }
+                    Err(error) => fail(format!("could not encode the repositories: {error}")),
                 }
-                Err(error) => {
-                    eprintln!("app: could not encode the repositories: {error}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
-        RepoCmd::List { json: false } => {
-            for registry in registries.registries {
-                println!(
-                    "{}  {}  ({}, {}, key pinned)",
-                    registry.name,
-                    registry.base_url,
-                    if registry.enabled {
-                        "enabled"
-                    } else {
-                        "disabled"
-                    },
-                    match registry.channel {
-                        tilo_app_package::version::ReleaseChannel::Stable => "stable",
-                        tilo_app_package::version::ReleaseChannel::Development => "development",
-                    },
-                );
             }
-            return ExitCode::SUCCESS;
-        }
+            Err(error) => fail(error),
+        },
+        RepoCmd::List { json: false } => match call("registry.list", serde_json::json!({})) {
+            Ok(value) => {
+                let Some(list) = config::registries_from_rows(&value) else {
+                    return fail("the desktop answered no registry list".into());
+                };
+                for registry in list.registries {
+                    println!(
+                        "{}  {}  ({}, {}, key pinned)",
+                        registry.name,
+                        registry.base_url,
+                        if registry.enabled {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        },
+                        match registry.channel {
+                            tilo_app_package::version::ReleaseChannel::Stable => "stable",
+                            tilo_app_package::version::ReleaseChannel::Development => "development",
+                        },
+                    );
+                }
+                ExitCode::SUCCESS
+            }
+            Err(error) => fail(error),
+        },
         RepoCmd::Add {
             name,
             url,
             owner_key,
-        } => match config::add_registry(&mut registries, &name, &url, &owner_key) {
-            Ok(()) => format!("added repository '{name}'"),
-            Err(error) => {
-                eprintln!("app: {error}");
-                return ExitCode::FAILURE;
-            }
-        },
-        RepoCmd::Remove { name } => match config::remove_registry(&mut registries, &name) {
-            Ok(()) => format!("removed repository '{name}'"),
-            Err(error) => {
-                eprintln!("app: {error}");
-                return ExitCode::FAILURE;
-            }
-        },
-        RepoCmd::Enable { name } => {
-            match config::set_registry_enabled(&mut registries, &name, true) {
-                Ok(()) => format!("enabled repository '{name}'"),
-                Err(error) => {
-                    eprintln!("app: {error}");
-                    return ExitCode::FAILURE;
+        } => {
+            let answered = call(
+                "registry.add",
+                serde_json::json!({ "name": &name, "url": &url, "owner_key": &owner_key }),
+            );
+            match answered {
+                Ok(_) => {
+                    println!("added repository '{name}'");
+                    ExitCode::SUCCESS
                 }
+                Err(error) => fail(error),
+            }
+        }
+        RepoCmd::Remove { name } => {
+            match call("registry.remove", serde_json::json!({ "name": &name })) {
+                Ok(_) => {
+                    println!("removed repository '{name}'");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => fail(error),
+            }
+        }
+        RepoCmd::Enable { name } => {
+            match call("registry.enable", serde_json::json!({ "name": &name })) {
+                Ok(_) => {
+                    println!("enabled repository '{name}'");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => fail(error),
             }
         }
         RepoCmd::Disable { name } => {
-            match config::set_registry_enabled(&mut registries, &name, false) {
-                Ok(()) => format!("disabled repository '{name}'"),
-                Err(error) => {
-                    eprintln!("app: {error}");
-                    return ExitCode::FAILURE;
+            match call("registry.disable", serde_json::json!({ "name": &name })) {
+                Ok(_) => {
+                    println!("disabled repository '{name}'");
+                    ExitCode::SUCCESS
                 }
+                Err(error) => fail(error),
             }
         }
-        RepoCmd::Channel { name, channel } => {
-            let Some(registry) = registries
-                .registries
-                .iter_mut()
-                .find(|registry| registry.name == name)
-            else {
-                eprintln!("app: repository '{name}' is not configured");
-                return ExitCode::FAILURE;
-            };
-            registry.channel = if channel == "development" {
-                tilo_app_package::version::ReleaseChannel::Development
-            } else {
-                tilo_app_package::version::ReleaseChannel::Stable
-            };
-            format!("selected {channel} releases for '{name}'")
-        }
-    };
-    match config::save_registries(&registries) {
-        Ok(()) => {
-            println!("{confirmation}");
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("app: could not save repositories: {error}");
-            ExitCode::FAILURE
-        }
+        RepoCmd::Channel { name, channel } => match call(
+            "registry.channel",
+            serde_json::json!({ "name": &name, "channel": &channel }),
+        ) {
+            Ok(_) => {
+                println!("selected {channel} releases for '{name}'");
+                ExitCode::SUCCESS
+            }
+            Err(error) => fail(error),
+        },
     }
 }
 

@@ -378,23 +378,27 @@ class InstallerTests(unittest.TestCase):
             self.assertIn("Environment=TILO_USH_BIN=/usr/libexec/tilo-ush", unit.read_text())
             self.assertEqual(unit.stat().st_mode & 0o777, 0o644)
 
-    def test_package_service_swap_installs_the_exact_confined_service_with_the_binary(self):
+    def test_app_update_swap_installs_the_units_with_the_binary(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             out = self.build_outputs(root)
-            (out / "tilo-package-service").write_bytes(b"fixture-package-service")
+            (out / "app").write_bytes(b"fixture-app")
             layer = root / "layer"
-            self.assertEqual(self.run_installer("--from", str(out), "--dest", str(layer), "package-service"), 0)
-            self.assertEqual((layer / "usr/libexec/tilo-package-service").read_bytes(), b"fixture-package-service")
-            unit = layer / "usr/lib/systemd/user/tilo-package-service.service"
-            self.assertEqual(unit.read_bytes(), (REPO / "os/usr/lib/systemd/user/tilo-package-service.service").read_bytes())
+            self.assertEqual(self.run_installer("--from", str(out), "--dest", str(layer), "app-cli"), 0)
+            self.assertEqual((layer / "usr/bin/app").read_bytes(), b"fixture-app")
+            unit = layer / "usr/lib/systemd/user/tilo-app-update.service"
+            self.assertEqual(unit.read_bytes(), (REPO / "os/usr/lib/systemd/user/tilo-app-update.service").read_bytes())
             self.assertEqual(unit.stat().st_mode & 0o777, 0o644)
-            self.assertIn("ProtectHome=read-only", unit.read_text())
-            self.assertIn("ProtectSystem=strict", unit.read_text())
-            self.assertIn("%h/.config/tilo-store/registry-checkpoints", unit.read_text())
-            self.assertIn("%h/.local/share/flatpak %h/.cache/flatpak", unit.read_text())
+            self.assertIn("Slice=background.slice", unit.read_text())
+            self.assertIn("NoNewPrivileges=yes", unit.read_text())
+            timer = layer / "usr/lib/systemd/user/tilo-app-update.timer"
+            self.assertEqual(timer.read_bytes(), (REPO / "os/usr/lib/systemd/user/tilo-app-update.timer").read_bytes())
+            self.assertEqual(timer.stat().st_mode & 0o777, 0o644)
             manifest = installer.load_manifest(REPO / "os/components.toml")
-            self.assertEqual(manifest.component("package-service").user_units, ("tilo-package-service.service",))
+            self.assertEqual(
+                manifest.component("app-cli").user_units,
+                ("tilo-app-update.service", "tilo-app-update.timer"),
+            )
 
     def test_installer_selects_manifest_layers_and_keeps_dev_and_production_apart(self):
         with self.subTest(phase='image layers match manifest'):

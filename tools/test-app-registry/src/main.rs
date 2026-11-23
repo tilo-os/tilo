@@ -256,6 +256,7 @@ fn signed_entry(
                     tapp_root_hash_hex: p.root_hex.clone(),
                     tapp_size_bytes: p.bytes.len() as u64,
                     tapp_blake3_hex: blake3::hash(&p.bytes).to_hex().to_string(),
+                    tapp_surface_hex: String::new(),
                     target: RegistryTarget {
                         platform: registry_types::TILO_OS_PLATFORM.into(),
                         architecture: std::env::consts::ARCH.into(),

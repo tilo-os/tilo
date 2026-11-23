@@ -284,13 +284,13 @@ mod tests {
 
     /// An image built before interfaces had one version each: its declaration lists versions.
     fn list_format_image() -> Declaration {
-        Declaration::parse("[interfaces]\nsystem = [1]\npackage-service = [1]\nshell-ui = [1]\n")
+        Declaration::parse("[interfaces]\nsystem = [1]\nruntime = [1]\nshell-ui = [1]\n")
     }
 
     tilo_test_env::scenario! {
         fn interface_conflicts_are_judged_by_what_each_layer_and_image_declares;
 
-        phase a_session_swap_over_an_image_whose_package_service_reads_another_declaration_is_refused;
+        phase a_session_swap_over_an_image_declaring_interfaces_in_another_format_is_refused;
         {
             let image = list_format_image();
             assert!(matches!(image, Declaration::Unreadable { .. }));
@@ -302,7 +302,7 @@ mod tests {
             let refused = conflict(Some(&image), &stack, &[]).expect("the swap is refused");
             assert!(refused.contains("the tilo-session layer's"), "{refused}");
             assert!(refused.contains("shell-ui 11"), "{refused}");
-            for from_image in ["package-service", "ush"] {
+            for from_image in ["app-cli", "ush"] {
                 assert!(
                     refused.contains(from_image),
                     "names {from_image} to swap together: {refused}"
@@ -326,13 +326,13 @@ mod tests {
         {
             let image = declared(&current());
             assert_eq!(
-                conflict(Some(&image), &[member("package-service", &current(), false)], &[]),
+                conflict(Some(&image), &[member("install", &current(), false)], &[]),
                 None
             );
             let older = versions(&[("runtime", 2), ("shell-ui", 10), ("system", 1)]);
-            let refused = conflict(Some(&image), &[member("package-service", &older, false)], &[])
-                .expect("an app host built for shell-ui 10 is refused on a shell-ui 11 image");
-            assert!(refused.contains("the package-service layer"), "{refused}");
+            let refused = conflict(Some(&image), &[member("install", &older, false)], &[])
+                .expect("a layer built for shell-ui 10 is refused on a shell-ui 11 image");
+            assert!(refused.contains("the install layer"), "{refused}");
             assert!(refused.contains("shell-ui 10"), "{refused}");
         }
 
@@ -361,7 +361,7 @@ mod tests {
                 Some(&image),
                 &[
                     member("tilo-session", &current(), true),
-                    member("package-service", &current(), true),
+                    member("install", &current(), true),
                 ],
                 &[],
             )
@@ -383,13 +383,13 @@ mod tests {
             assert_eq!(
                 conflict(
                     Some(&Declaration::Absent),
-                    &[member("package-service", &older, false)],
+                    &[member("install", &older, false)],
                     &[],
                 ),
                 None
             );
             assert_eq!(
-                conflict(None, &[member("package-service", &older, false)], &[]),
+                conflict(None, &[member("install", &older, false)], &[]),
                 None
             );
         }

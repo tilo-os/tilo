@@ -1640,6 +1640,133 @@ impl Workspaces {
             .app_versions())
     }
 
+    /// Change the trust `workspace` keeps for packages — adding or replacing an
+    /// attestor, removing one, or refusing a publisher — as a member the
+    /// workspace lets install apps. Every member reads
+    /// the lists ([`Self::package_trust`]) and verifies against them.
+    ///
+    /// # Errors
+    /// Refuses another command, a malformed row, and a member the workspace
+    /// does not let install apps.
+    pub async fn change_package_trust(
+        &self,
+        workspace: &str,
+        member: &DeviceCert,
+        request_id: [u8; 32],
+        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
+        if !matches!(
+            command,
+            Command::AddAttestor(_)
+                | Command::RemoveAttestor { .. }
+                | Command::RevokePublisher { .. }
+        ) {
+            return Err(CollaborationError::new(
+                "only a trust list change governs the packages a workspace trusts",
+            ));
+        }
+        self.govern_as_member(
+            workspace,
+            member,
+            request_id,
+            command,
+            governance::INSTALL_APP,
+            "package.trust",
+        )
+        .await
+    }
+
+    /// Change the registries `workspace` fetches apps from, as a member the
+    /// workspace lets install apps. Every member reads
+    /// the list ([`Self::registries`]) and fetches from it.
+    ///
+    /// # Errors
+    /// Refuses another command, a malformed row, and a member the workspace
+    /// does not let install apps.
+    pub async fn change_package_registries(
+        &self,
+        workspace: &str,
+        member: &DeviceCert,
+        request_id: [u8; 32],
+        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
+        if !matches!(
+            command,
+            Command::AddRegistry(_)
+                | Command::RemoveRegistry { .. }
+                | Command::SetRegistryEnabled { .. }
+                | Command::SetRegistryChannel { .. }
+        ) {
+            return Err(CollaborationError::new(
+                "only a registry change governs where a workspace fetches apps",
+            ));
+        }
+        self.govern_as_member(
+            workspace,
+            member,
+            request_id,
+            command,
+            governance::INSTALL_APP,
+            "package.registries",
+        )
+        .await
+    }
+
+    /// The trust `workspace` keeps for packages: the attestors it accepts and
+    /// the publisher keys it refuses, as its tree records them now.
+    pub async fn package_trust(
+        &self,
+        workspace: &str,
+    ) -> Result<
+        (
+            Vec<tilo_peer_state::TrustAttestor>,
+            Vec<tilo_peer_state::RevokedPublisher>,
+        ),
+        CollaborationError,
+    > {
+        let workspace = self.workspace(workspace).await?;
+        let locked = workspace.lock().await;
+        let peer = locked.peer();
+        Ok((
+            peer.governance().trusted_attestors(),
+            peer.governance().revoked_publishers(),
+        ))
+    }
+
+    /// The releases of `app` `workspace` ran before the one it runs, the most recent first.
+    pub async fn earlier_app_versions_of(
+        &self,
+        workspace: &str,
+        app: &str,
+    ) -> Result<Vec<tilo_peer_state::workspace_membership::AppRelease>, CollaborationError> {
+        Ok(self
+            .workspace(workspace)
+            .await?
+            .lock()
+            .await
+            .peer()
+            .governance()
+            .earlier_app_versions(app))
+    }
+
+    /// The registries `workspace` fetches apps from, as its tree records
+    /// them now.
+    pub async fn registries(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<tilo_peer_state::PackageRegistry>, CollaborationError> {
+        Ok(self
+            .workspace(workspace)
+            .await?
+            .lock()
+            .await
+            .peer()
+            .governance()
+            .package_registries())
+    }
+
     /// Change what the call in `channel` of `workspace` allows, as `member`, whom the workspace
     /// must grant `call`: a governed change every member's live session holds the call to.
     ///

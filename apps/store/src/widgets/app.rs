@@ -47,6 +47,14 @@ fn row_art(item: &StoreItem, images: Option<&ui::ImageStore>) -> MediaSource {
     }
 }
 
+/// What a running install shows in place of its action: the bytes it has, as a bar when the
+/// total is known.
+#[derive(Clone, Debug)]
+pub struct PrimaryProgress {
+    pub label: String,
+    pub fraction: Option<f32>,
+}
+
 pub struct Primary {
     /// Names the control for keyboard traversal, tests and agents; never
     /// written to the document.
@@ -56,16 +64,17 @@ pub struct Primary {
     pub tooltip: String,
     pub binding: Option<ActionBinding<()>>,
     pub enabled: bool,
-    pub progress: Option<String>,
+    pub progress: Option<PrimaryProgress>,
 }
 
 impl Primary {
     #[must_use]
     pub fn control(self, size: ControlSize, role: ButtonRole) -> Element {
         if let Some(progress) = self.progress {
-            return ProgressBar::indeterminate()
-                .with_label(progress)
-                .into_widget();
+            let bar = progress
+                .fraction
+                .map_or_else(ProgressBar::indeterminate, ProgressBar::new);
+            return bar.with_label(progress.label).into_widget();
         }
         Box::new(self.button(size, role))
     }
@@ -132,9 +141,12 @@ pub fn card(
     card = match primary {
         None => card,
         Some(primary) if primary.progress.is_some() => {
-            let progress = primary.progress.clone().unwrap_or_default();
+            let label = primary
+                .progress
+                .as_ref()
+                .map_or("", |progress| progress.label.as_str());
             card.with_footer(Actions::new(
-                Button::new(&primary.key, &progress)
+                Button::new(&primary.key, label)
                     .control_size(ControlSize::Small)
                     .with_enabled(false),
             ))

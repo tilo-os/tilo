@@ -1,17 +1,8 @@
-//! Store action dispatch. Every privileged operation crosses the
-//! launcher-issued package-service capability; this sandbox never discovers or
-//! executes host package-management binaries.
-//!
-//! The Tilo side deliberately has **no "Install" button**. `Open`
-//! fetches the package the first time and launches it every time;
-//! `Keep on device` (pin) is the separate, optional step that keeps an
-//! app and ranks it first. package-service binds the download to the signed
-//! catalogue's root, publisher, app id, version, and size before extracting.
-
-use crate::resource::CATALOG;
-use std::io::Read;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+//! The Store's effects that need nothing from the workspace's tree or this computer's package
+//! cache: opening a Flatpak the device has. Every change is the worker's
+//! ([`crate::worker`]), through the session's action API: a Tilo app's version and a Flatpak are
+//! named on the workspace's tree (`workspace/apps`), which every device of the workspace follows,
+//! and a runtime is fetched into this computer's package cache (`devices/<device>/packages`).
 
 use crate::model::{ActionKind, StoreItem, StoreSource};
 
@@ -29,14 +20,15 @@ pub struct ApplicationLaunch {
 }
 
 impl ActionOutcome {
-    fn ok(msg: impl Into<String>) -> Self {
+    pub(crate) fn ok(msg: impl Into<String>) -> Self {
         Self {
             ok: true,
             status_line: msg.into(),
             launch: None,
         }
     }
-    fn fail(msg: impl Into<String>) -> Self {
+
+    pub(crate) fn fail(msg: impl Into<String>) -> Self {
         Self {
             ok: false,
             status_line: msg.into(),
@@ -45,156 +37,13 @@ impl ActionOutcome {
     }
 }
 
-/// The staging directory for downloaded `.tapp`s. Lives under the
-/// store's cache dir so a container-mounted read-only home isn't a
-/// problem. Best-effort creation.
-pub fn tapp_staging_dir() -> Option<PathBuf> {
-    let base = crate::config::cache_dir()?;
-    let staged = base.join("staged-tapp");
-    let _ = std::fs::create_dir_all(&staged);
-    Some(staged)
-}
-
-/// HTTP-download a `.tapp` to `dest`. Blocking — runs on the worker
-/// thread. The bytes are *not* trusted here: package-service
-/// re-verifies the content hash + publisher signature before it
-/// extracts anything, so a truncated or tampered download fails
-/// closed at the install step.
-pub fn download_tapp(url: &str, dest: &Path, expected_size: u64) -> Result<u64, String> {
-    const MAX_PACKAGE_BYTES: u64 = 512 * 1024 * 1024;
-    if expected_size == 0 || expected_size > MAX_PACKAGE_BYTES {
-        return Err(format!(
-            "registry package size {expected_size} is outside the accepted range"
-        ));
-    }
-    let parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid package URL: {e}"))?;
-    if parsed.scheme() != "https"
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.fragment().is_some()
-    {
-        return Err("package URL must be HTTPS without credentials or a fragment".into());
-    }
-    let client = tilo_net::http::blocking_client()
-        .user_agent("tilo-store/0.1")
-        .timeout(Duration::from_secs(120))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| format!("http client: {e}"))?;
-    let mut response = client
-        .get(parsed)
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|e| format!("download {url}: {e}"))?;
-    if response.status().is_redirection() {
-        return Err(format!("download {url}: redirects are not allowed"));
-    }
-    if let Some(actual) = response.content_length()
-        && actual != expected_size
-    {
-        return Err(format!(
-            "download {url}: expected {expected_size} bytes, server announced {actual}"
-        ));
-    }
-    let mut bytes = Vec::new();
-    response
-        .by_ref()
-        .take(expected_size.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("download {url}: {e}"))?;
-    if bytes.len() as u64 != expected_size {
-        return Err(format!(
-            "download {url}: expected {expected_size} bytes, received {}",
-            bytes.len()
-        ));
-    }
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
-    }
-    tilo_files::native::atomic::write(dest, &bytes)
-        .map_err(|e| format!("write {}: {e}", dest.display()))?;
-    Ok(bytes.len() as u64)
-}
-
-pub fn execute(item: &StoreItem, action: ActionKind, staging_dir: &Path) -> ActionOutcome {
-    execute_with_host(None, item, action, staging_dir)
-}
-
-/// Execute through the launcher-issued host capability. Production always
-/// supplies `host`; the optional form keeps pure error-path tests independent
-/// of a live session daemon.
-pub fn execute_with_host(
-    host: Option<&package_service::client::BlockingClient>,
-    item: &StoreItem,
-    action: ActionKind,
-    staging_dir: &Path,
-) -> ActionOutcome {
+/// Carry out `action` on `item` when it changes nothing: opening a Flatpak, or saying why the
+/// action cannot run here. Every change goes through the worker.
+pub fn execute(item: &StoreItem, action: ActionKind) -> ActionOutcome {
     if let Some((_, reason)) = item.unavailable_action(action) {
         return ActionOutcome::fail(reason);
     }
     match (action, &item.source) {
-        (ActionKind::Open, StoreSource::Tilo { .. })
-        | (ActionKind::Update, StoreSource::Tilo { .. })
-        | (ActionKind::RuntimeInstall, StoreSource::Tilo { .. }) => {
-            open_tilo(host, item, action, staging_dir)
-        }
-        (ActionKind::MarkInstalled, StoreSource::Tilo { .. }) if item.installed.is_installed() => {
-            tilo_existing(host, item, |host, id| {
-                host.pin(id, true)
-                    .map(|()| CATALOG.t_args("store-kept", &[("name", item.name.clone().into())]))
-            })
-        }
-        (ActionKind::MarkInstalled, StoreSource::Tilo { .. }) => keep_new_tilo(host, item),
-        (ActionKind::Unmark, StoreSource::Tilo { .. }) => tilo_existing(host, item, |host, id| {
-            host.pin(id, false)
-                .map(|()| CATALOG.t_args("store-released", &[("name", item.name.clone().into())]))
-        }),
-        (ActionKind::FlatpakInstall, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
-            let reference = match item.install_ref_path.as_deref() {
-                Some(path) => match std::fs::read(path) {
-                    Ok(bytes) if bytes.len() <= 64 * 1024 => Some(bytes),
-                    Ok(_) => return ActionOutcome::fail("Flatpak reference exceeds 64 KiB"),
-                    Err(error) => {
-                        return ActionOutcome::fail(format!(
-                            "Could not read Flatpak reference: {error}"
-                        ));
-                    }
-                },
-                None => None,
-            };
-            host_result(host, |host| {
-                if let StoreSource::FlatpakRemote {
-                    name,
-                    branch,
-                    user_managed,
-                    ..
-                } = &item.source
-                {
-                    if !*user_managed {
-                        return Err("This repository belongs to the device. Ask its administrator to install the app.".into());
-                    }
-                    host.flatpak_install_remote(name, &item.id, branch)
-                        .map(|_| CATALOG.t("store-app-installed"))
-                } else {
-                    host.flatpak(
-                        package_service::client::FlatpakAction::Install,
-                        &item.id,
-                        reference.as_deref(),
-                    )
-                    .map(|_| CATALOG.t("store-app-installed"))
-                }
-            })
-        }
-        (ActionKind::FlatpakUpdate, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
-            host_result(host, |host| {
-                host.flatpak(
-                    package_service::client::FlatpakAction::Update,
-                    &item.id,
-                    None,
-                )
-                .map(|_| CATALOG.t("store-app-updated"))
-            })
-        }
         (ActionKind::FlatpakOpen, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
             ActionOutcome {
                 ok: true,
@@ -208,175 +57,27 @@ pub fn execute_with_host(
         (ActionKind::NeedsFlatpakHost, _) => {
             ActionOutcome::fail("Install flatpak on the host to use this action.")
         }
-        // Nonsensical (source, action) pairings never issue a
-        // subprocess — silent no-op rather than a wrong spawn.
+        // A change, or a nonsensical (source, action) pairing: nothing runs here.
         _ => ActionOutcome::fail("unsupported action for this item"),
     }
 }
 
-fn open_tilo(
-    host: Option<&package_service::client::BlockingClient>,
-    item: &StoreItem,
-    action: ActionKind,
-    _staging_dir: &Path,
-) -> ActionOutcome {
-    let Some(host) = host else {
-        return ActionOutcome::fail("App service is unavailable; no host command was attempted.");
+/// The record of a Flatpak on the workspace's tree: the app id (its application id, lowercased)
+/// and the `install-app` arguments that name its reference, for the device's daemon to install
+/// into the system Flatpak installation.
+#[must_use]
+pub fn flatpak_release(item: &StoreItem) -> (String, serde_json::Map<String, serde_json::Value>) {
+    let app = item.id.to_ascii_lowercase();
+    let branch = match &item.source {
+        StoreSource::FlatpakRemote { branch, .. } => branch.clone(),
+        _ => "stable".to_owned(),
     };
-    let already_cached = item.installed.is_installed() && action == ActionKind::Open;
-
-    let mut package_root = host.list().ok().and_then(|packages| {
-        packages
-            .into_iter()
-            .find(|listed| listed.package.id == item.id)
-            .and_then(|listed| listed.package.package_id())
-    });
-
-    if !already_cached {
-        let (registry_name, expected) = match install_expectation(item) {
-            Ok(found) => found,
-            Err(error) => return ActionOutcome::fail(error),
-        };
-        let Some(version) = item.versions.first() else {
-            return ActionOutcome::fail("registry entry has no version");
-        };
-        match host.install_offer(&registry_name, &expected) {
-            Ok(installed) => package_root = Some(installed),
-            Err(error) => {
-                return ActionOutcome::fail(format!("{}: install refused: {error}", item.name));
-            }
-        }
-        // An update replaces what runs at the app's next launch; it does
-        // not open the app.
-        if action == ActionKind::RuntimeInstall {
-            return ActionOutcome::ok(crate::resource::CATALOG.t_args(
-                "store-runtime-installed",
-                &[
-                    ("name", ui::i18n::ArgValue::Text(item.name.clone())),
-                    ("version", ui::i18n::ArgValue::Text(version.version.clone())),
-                ],
-            ));
-        }
-        if action == ActionKind::Update {
-            return ActionOutcome::ok(format!("Updated {} to {}", item.name, version.version));
-        }
-    }
-
-    // Launch. A launch failure (e.g. no sandbox on this host) is
-    // surfaced but doesn't undo the successful fetch/cache.
-    let Some(package_root) = package_root else {
-        return ActionOutcome::fail("installed package could not be resolved");
-    };
-    ActionOutcome {
-        ok: true,
-        status_line: format!("Opening {}…", item.name),
-        launch: Some(ApplicationLaunch {
-            app_id: item.id.clone(),
-            package_root: Some(package_root.to_string()),
-        }),
-    }
-}
-
-/// The repository and the exact signed identity of `item`'s newest version,
-/// which the host checks every byte it downloads against.
-fn install_expectation(
-    item: &StoreItem,
-) -> Result<(String, package_service::install::InstallExpectation), String> {
-    let version = item
-        .versions
-        .first()
-        .ok_or_else(|| "registry entry has no version".to_owned())?;
-    let root = version
-        .root_hash_hex
-        .as_deref()
-        .filter(|root| root.len() == 64 && root.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .ok_or_else(|| "registry entry has an invalid package root".to_owned())?;
-    let publisher = item
-        .publisher_pubkey_hex
-        .as_deref()
-        .ok_or_else(|| "registry entry has no publisher identity".to_owned())?;
-    let expected = match (format!("tapp:{root}").parse(), hex::decode(publisher)) {
-        (Ok(package_root), Ok(key)) if key.len() == 32 => {
-            let mut publisher = [0u8; 32];
-            publisher.copy_from_slice(&key);
-            package_service::install::InstallExpectation {
-                package_root,
-                publisher,
-                app_id: item.id.clone(),
-                version: version.version.clone(),
-                size_bytes: version.size_bytes,
-            }
-        }
-        _ => {
-            return Err("registry entry has an invalid package or publisher identity".into());
-        }
-    };
-    let StoreSource::Tilo { registry_name } = &item.source else {
-        return Err("This package has no Tilo repository.".into());
-    };
-    Ok((registry_name.clone(), expected))
-}
-
-/// Keep on this device, for a Tilo app not downloaded yet: download its
-/// newest version through the host's verified install and keep it, without
-/// opening it.
-fn keep_new_tilo(
-    host: Option<&package_service::client::BlockingClient>,
-    item: &StoreItem,
-) -> ActionOutcome {
-    let Some(host) = host else {
-        return ActionOutcome::fail("App service is unavailable; no host command was attempted.");
-    };
-    let (registry, expected) = match install_expectation(item) {
-        Ok(found) => found,
-        Err(error) => return ActionOutcome::fail(error),
-    };
-    match host
-        .install_offer(&registry, &expected)
-        .and_then(|installed| host.pin(installed, true))
-    {
-        Ok(()) => {
-            ActionOutcome::ok(CATALOG.t_args("store-kept", &[("name", item.name.clone().into())]))
-        }
-        Err(error) => ActionOutcome::fail(format!("{}: {error}", item.name)),
-    }
-}
-
-fn host_result(
-    host: Option<&package_service::client::BlockingClient>,
-    action: impl FnOnce(&package_service::client::BlockingClient) -> Result<String, String>,
-) -> ActionOutcome {
-    let Some(host) = host else {
-        return ActionOutcome::fail("App service is unavailable; no host command was attempted.");
-    };
-    match action(host) {
-        Ok(status) => ActionOutcome::ok(status),
-        Err(error) => ActionOutcome::fail(error),
-    }
-}
-
-fn tilo_existing(
-    host: Option<&package_service::client::BlockingClient>,
-    item: &StoreItem,
-    action: impl FnOnce(
-        &package_service::client::BlockingClient,
-        package_service::PackageId,
-    ) -> Result<String, String>,
-) -> ActionOutcome {
-    let Some(host) = host else {
-        return ActionOutcome::fail("App service is unavailable; no host command was attempted.");
-    };
-    let id = match host.list().and_then(|packages| {
-        packages
-            .into_iter()
-            .find(|listed| listed.package.id == item.id)
-            .and_then(|listed| listed.package.package_id())
-            .ok_or_else(|| "installed package could not be resolved".into())
-    }) {
-        Ok(id) => id,
-        Err(error) => return ActionOutcome::fail(error),
-    };
-    host_result(Some(host), |host| action(host, id))
+    let reference = format!("app/{}/{}/{branch}", item.id, std::env::consts::ARCH);
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("app".into(), app.clone().into());
+    arguments.insert("version".into(), branch.into());
+    arguments.insert("flatpak".into(), reference.into());
+    (app, arguments)
 }
 
 #[cfg(test)]
@@ -409,6 +110,7 @@ mod tests {
                 released_at_unix: 0,
                 download_url: Some("https://x/y.tapp".into()),
                 root_hash_hex: Some("de".repeat(32)),
+                surface_hex: None,
                 size_bytes: 0,
                 runtime: None,
             }],
@@ -440,6 +142,7 @@ mod tests {
                 released_at_unix: 0,
                 download_url: None,
                 root_hash_hex: None,
+                surface_hex: None,
                 size_bytes: 0,
                 runtime: None,
             }],
@@ -448,20 +151,64 @@ mod tests {
         }
     }
 
+    /// Without Flatpak on the host, and for a Flatpak install, nothing runs here.
     #[test]
     fn actions_without_a_flatpak_host_fail_without_spawning() {
-        {
-            let item = flatpak_item("Chess", InstalledState::Not);
-            let out = execute(&item, ActionKind::NeedsFlatpakHost, Path::new("/tmp"));
-            assert!(!out.ok);
+        let item = flatpak_item("Chess", InstalledState::Not);
+        let out = execute(&item, ActionKind::NeedsFlatpakHost);
+        assert!(!out.ok);
+        assert!(out.launch.is_none());
+        for action in [
+            ActionKind::FlatpakInstall,
+            ActionKind::FlatpakUpdate,
+            ActionKind::FlatpakRemove,
+        ] {
+            let out = execute(&item, action);
+            assert!(!out.ok, "{action:?} is the worker's change");
+            assert!(out.launch.is_none());
         }
+    }
 
-        {
-            let mut item = tilo_item("Notes", InstalledState::Not);
-            item.versions[0].download_url = None;
-            let out = execute(&item, ActionKind::Open, Path::new("/tmp"));
-            assert!(!out.ok);
-            assert!(out.status_line.contains("service is unavailable"));
+    /// An installed Flatpak opens through the host, and its record names its reference.
+    #[test]
+    fn an_installed_flatpak_opens_on_the_host_and_names_its_reference() {
+        let installed = InstalledState::Installed {
+            version: "1.0".into(),
+            available: "1.0".into(),
+            pinned: false,
+            user_managed: false,
+        };
+        let item = flatpak_item("Chess", installed);
+        let out = execute(&item, ActionKind::FlatpakOpen);
+        assert!(out.ok, "{}", out.status_line);
+        assert_eq!(
+            out.launch.map(|launch| launch.app_id).as_deref(),
+            Some("host:org.example.Chess")
+        );
+        let (app, release) = flatpak_release(&item);
+        assert_eq!(app, "org.example.chess");
+        assert_eq!(release["version"], "stable");
+        assert_eq!(
+            release["flatpak"],
+            format!("app/org.example.Chess/{}/stable", std::env::consts::ARCH)
+        );
+    }
+
+    /// A Tilo app's version is chosen by the workspace's tree, never here.
+    #[test]
+    fn a_tilo_app_is_not_installed_here() {
+        let item = tilo_item("Notes", InstalledState::Not);
+        for action in [
+            ActionKind::Get,
+            ActionKind::Open,
+            ActionKind::Update,
+            ActionKind::Remove,
+            ActionKind::MarkInstalled,
+            ActionKind::Unmark,
+            ActionKind::RuntimeInstall,
+        ] {
+            let out = execute(&item, action);
+            assert!(!out.ok, "{action:?} is the worker's");
         }
     }
 }

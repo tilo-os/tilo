@@ -1152,10 +1152,10 @@ def app_output(ctx, ws: dict, app: str) -> str:
     return "switch: " + debug_switch(ctx)[-600:] + "\n" + ctx.vm.root_exec(
         "find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name launcher-debug-output.log "
         f"-path '*{app}*' -print 2>/dev/null | head -n 3 | while read -r f; do echo \"== $f\"; "
-        "tail -c 5000 \"$f\"; done", timeout=300, check=False) + "\n" + package_servicees(ctx, app)[-3000:]
+        "tail -c 5000 \"$f\"; done", timeout=300, check=False) + "\n" + app_processes(ctx, app)[-3000:]
 
 
-def package_servicees(ctx, app: str) -> str:
+def app_processes(ctx, app: str) -> str:
     """`app`'s running processes: each one's threads, what they wait in, and what its scope
     logged, whatever words it used. For an app whose window never came."""
     return ctx.vm.root_exec(

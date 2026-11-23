@@ -16,6 +16,11 @@ title = "Installed apps"
 invoke = { resource = "store.catalog", action = "show-view", args = { view = "installed" } }
 
 [[situation]]
+name = "installing"
+title = "An app on its way to this device"
+scenario = "installing"
+
+[[situation]]
 name = "updates"
 title = "Updates"
 

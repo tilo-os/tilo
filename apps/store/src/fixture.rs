@@ -106,7 +106,7 @@ const TILO_PUBLISHER_KEY: &str = "3f9ac1d27b8e4455a0c6e1f2d93b7a08c4e5f61729ab3d
 /// A hand-written catalogue that shows every card variant:
 ///
 ///   * a Tilo app that is not on the device: **Open**
-///   * a Tilo app that is cached and kept: **Open**, plus **Allow cleanup** and Remove
+///   * a Tilo app that is cached and kept: **Open**, plus **Allow updates** and Remove
 ///   * a Tilo app that is cached with an update available: **Update**
 ///   * Flatpak apps: **Install**, and **Open** with Remove once installed
 #[allow(
@@ -163,6 +163,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
             released_at_unix: 0,
             download_url: Some(format!("https://apps.tilo.so/{name}/{version}.tapp")),
             root_hash_hex: Some(digest.into()),
+            surface_hex: None,
             size_bytes: 4_718_592,
             runtime: None,
         }],
@@ -225,6 +226,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
             released_at_unix: 0,
             download_url: None,
             root_hash_hex: None,
+            surface_hex: None,
             size_bytes: 0,
             runtime: None,
         }],
@@ -257,7 +259,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
             "Files",
             "Browse, organise, and share files across your workspaces.",
             "System",
-            // Cached with a newer version listed: Update and Keep on device.
+            // Cached with a newer version listed: Update and Keep this version.
             InstalledState::Installed {
                 version: "0.3.0".into(),
                 available: "0.4.0".into(),

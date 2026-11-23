@@ -30,13 +30,13 @@ fn session_with_a_window() -> (
         ..Options::default()
     });
     session.step(Duration::from_millis(1)).expect("a frame");
-    let package_service = std::process::Command::new("sleep")
+    let app_process = std::process::Command::new("sleep")
         .arg("120")
         .spawn_locked()
         .expect("a launched app's process");
-    launches.started(package_service.id(), APP, "private", false);
+    launches.started(app_process.id(), APP, "private", false);
     let _client = mapped(&mut session, APP);
-    let mut window = Window::open(&launches, APP, package_service.id());
+    let mut window = Window::open(&launches, APP, app_process.id());
     window.hello();
     window.say(&FloatingSurfaceClientMessage::SelectionCapable);
     // The pass that takes the window's word answers its hello, so the box is asked for after the
@@ -47,7 +47,7 @@ fn session_with_a_window() -> (
             break;
         }
     }
-    (session, launches, window, package_service)
+    (session, launches, window, app_process)
 }
 
 /// Press the send key over the window in front.
@@ -83,7 +83,7 @@ fn asked_for_box(app: &mut Window, session: &mut Session) -> Option<(Vec<Recipie
 fn the_send_key_asks_the_window_in_front_to_open_its_box() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let _settled = ui::motion::testing::settled();
-    let (mut session, _launches, mut app, mut package_service) = session_with_a_window();
+    let (mut session, _launches, mut app, mut app_process) = session_with_a_window();
 
     press_send_key(&mut session);
     assert!(
@@ -96,8 +96,8 @@ fn the_send_key_asks_the_window_in_front_to_open_its_box() {
         "Chat opens no window: the box stands in the window the person works in"
     );
 
-    let _ = package_service.kill();
-    let _ = package_service.wait();
+    let _ = app_process.kill();
+    let _ = app_process.wait();
 }
 
 /// The apps whose windows the shell holds now, tab by tab.
@@ -179,7 +179,7 @@ fn press_report_key(session: &mut Session) {
 fn a_report_asks_the_window_in_front_for_its_box_at_the_destination() {
     let _home = told_where_reports_go();
     let _settled = ui::motion::testing::settled();
-    let (mut session, _launches, mut app, mut package_service) = session_with_a_window();
+    let (mut session, _launches, mut app, mut app_process) = session_with_a_window();
 
     press_report_key(&mut session);
     let (asked, pointing) =
@@ -196,8 +196,8 @@ fn a_report_asks_the_window_in_front_for_its_box_at_the_destination() {
         "Chat opens no window: the box stands in the window the person works in"
     );
 
-    let _ = package_service.kill();
-    let _ = package_service.wait();
+    let _ = app_process.kill();
+    let _ = app_process.wait();
 }
 
 /// The report chord over a computer told nowhere still points at what is wrong: the box says it is
@@ -206,7 +206,7 @@ fn a_report_asks_the_window_in_front_for_its_box_at_the_destination() {
 fn a_computer_told_nowhere_points_and_says_so_in_the_box() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let _settled = ui::motion::testing::settled();
-    let (mut session, _launches, mut app, mut package_service) = session_with_a_window();
+    let (mut session, _launches, mut app, mut app_process) = session_with_a_window();
 
     press_report_key(&mut session);
     let (asked, pointing) =
@@ -231,8 +231,8 @@ fn a_computer_told_nowhere_points_and_says_so_in_the_box() {
         "Chat opens no window: the box stands in the window the person works in"
     );
 
-    let _ = package_service.kill();
-    let _ = package_service.wait();
+    let _ = app_process.kill();
+    let _ = app_process.wait();
 }
 
 /// The tab the shell gives `app`'s window `surface`.

@@ -1,6 +1,6 @@
-//! Installing a `.tapp`: the one implementation every entry shares. The package service's install
-//! actions call it on a running device, and an image build calls it in-process for the image's
-//! store, where no device or service exists yet.
+//! Installing a `.tapp`: the one implementation every entry shares. The device daemon's package
+//! cache calls it on a running device, and an image build calls it in-process for the image's
+//! store, where no device exists yet.
 //!
 //! It reads and verifies the archive before anything is stored (signature, trust chain, the policy
 //! the caller asks for, the size the target permits), refuses a package this system could not run
@@ -18,10 +18,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tilo_app_package::trust::{
-    RevocationList, TrustFile, TrustedAttestors, default_revoked_keys_path,
-    default_trusted_attestors_path,
-};
+use tilo_app_package::trust::{RevocationList, RevokedKey, TrustedAttestor};
 use tilo_app_package::{
     BlobFetcher, DiscardBlobs, PackageId, PackageMeta, Verification, verify_with_trust,
 };
@@ -43,6 +40,22 @@ pub struct Trust {
     /// Accept a publisher no trusted attestor vouches for. With
     /// [`Trust::require_attestor`], only when that attestor's match fails.
     pub allow_self_signed: bool,
+    /// The attestors the workspace trusts, as its trust list reads them.
+    #[serde(default)]
+    pub attestors: Vec<TrustedAttestor>,
+    /// The publisher keys the workspace refuses.
+    #[serde(default)]
+    pub revoked: Vec<RevokedKey>,
+}
+
+impl Trust {
+    /// The revocation list, as the installer's verification takes it.
+    #[must_use]
+    pub fn revocation(&self) -> RevocationList {
+        RevocationList {
+            revoked: self.revoked.clone(),
+        }
+    }
 }
 
 /// What an install does when the package is already installed.
@@ -207,6 +220,8 @@ pub enum Error {
     RuntimeBundleExists(String),
     #[error("runtime bundle tilo-runtime/{0} is not installed")]
     RuntimeBundleNotInstalled(String),
+    #[error("Flatpak: {0}")]
+    Flatpak(String),
     #[error(
         "{package} needs runtime `{runtime}`, the exact runtime build it was linked against, \
          and this device does not have it. It would not start: its libraries would not load.\n  \
@@ -272,38 +287,6 @@ pub fn store_error(error: StoreError) -> Error {
         StoreError::NotInstalled(id) => Error::NotInstalled(id),
         other => Error::Store(other.to_string()),
     }
-}
-
-/// The device's trusted-attestor registry file.
-///
-/// # Errors
-/// [`Error::NoConfigDir`] without a configuration directory.
-pub fn trusted_attestors_path() -> Result<PathBuf, Error> {
-    default_trusted_attestors_path().ok_or(Error::NoConfigDir)
-}
-
-/// The device's revoked-keys file.
-///
-/// # Errors
-/// [`Error::NoConfigDir`] without a configuration directory.
-pub fn revoked_keys_path() -> Result<PathBuf, Error> {
-    default_revoked_keys_path().ok_or(Error::NoConfigDir)
-}
-
-/// The attestors this device trusts.
-///
-/// # Errors
-/// An unreadable or malformed registry.
-pub fn load_trusted_attestors() -> Result<TrustedAttestors, Error> {
-    TrustedAttestors::load(&trusted_attestors_path()?).map_err(|e| Error::Trust(e.to_string()))
-}
-
-/// The publisher keys this device refuses.
-///
-/// # Errors
-/// An unreadable or malformed list.
-pub fn load_revocation_list() -> Result<RevocationList, Error> {
-    RevocationList::load(&revoked_keys_path()?).map_err(|e| Error::Trust(e.to_string()))
 }
 
 /// The person's data home (parent of `tilo-workspaces/`): it follows `XDG_DATA_HOME` like the
@@ -449,15 +432,9 @@ fn verify_and_check(
     trust: &Trust,
     report: &mut Report,
 ) -> Result<Checked, Error> {
-    let attestors = load_trusted_attestors()?;
-    let revocation = load_revocation_list()?;
+    let revocation = trust.revocation();
     let required_publishers = validate_registry_constraints(meta.id, meta, trust)?;
-    let outcome = verify_with_trust(
-        meta,
-        &required_publishers,
-        attestors.as_slice(),
-        &revocation,
-    );
+    let outcome = verify_with_trust(meta, &required_publishers, &trust.attestors, &revocation);
     let (manifest, publisher, attested_by, verified) = match outcome {
         Verification::AttestedBy { attestor, manifest } => {
             if let Some(required) = &trust.require_attestor

@@ -61,13 +61,13 @@ if (( run_cargo )); then
     # separate below. Explicit bins avoid developer-only server/launcher tools.
     ( cd "$repo_root" && cargo build --release --locked --lib \
         -p launcher -p tilo-unlock-helper -p tilo-flight-log -p tilo-app-package-cli -p install -p runtime-bundle \
-        -p cli-shim -p package-service -p app-cli -p ush -p local-model-service -p tilo-model-gateway \
+        -p cli-shim -p app-cli -p ush -p local-model-service -p tilo-model-gateway \
         -p tilo-server -p tilo-fs -p linux-vm -p tilo-cli -p tilolang-process \
         --features tilo-model-gateway/local-models,tilo-model-gateway/host-backend \
         --bin tilo --bin tilo-launcher --bin tilo-signal-provider --bin tilo-unlock-helper \
         --bin tilo-flight-recorder --bin tilo-session-report \
         --bin tilo-app-package --bin tilo-install --bin tilo-runtime-bundle \
-        --bin tilo-cli-shim --bin tilo-package-service --bin app --bin tilo-ush \
+        --bin tilo-cli-shim --bin app --bin tilo-ush \
         --bin tilo-model-catalog --bin tilo-model-manager --bin tilo-speech-worker \
         --bin tilo-model-gateway \
         --bin fs --bin tilo-linux-vm --bin tilolang-process )
@@ -89,7 +89,7 @@ target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 target_dir=$(realpath -m "$target_dir")
 rel=${TILO_BIN_DIR:-$target_dir/release}
 for bin in tilo-session tilo-runtime tilolang-process fs tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report tilo-install tilo-runtime-bundle \
-           tilo-cli-shim tilo-package-service tilo-ush tilo-model-manager tilo-model-gateway \
+           tilo-cli-shim tilo-ush tilo-model-manager tilo-model-gateway \
            tilo-linux-vm app; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
 done
@@ -149,18 +149,15 @@ install -pm 0755 "$rel/tilo-runtime-bundle" "$app_stage/bin/tilo-runtime-bundle"
 install -pm 0755 "$rel/tilo-model-manager" "$app_stage/bin/tilo-model-manager"
 install -pm 0755 "$rel/tilo-model-gateway" "$app_stage/bin/tilo-model-gateway"
 install -pm 0755 "$rel/tilo-cli-shim" "$app_stage/libexec/tilo-cli-shim"
-install -pm 0755 "$rel/tilo-package-service" "$app_stage/libexec/tilo-package-service"
 install -pm 0755 "$rel/tilo-ush" "$app_stage/libexec/tilo-ush"
 install -pm 0755 "$rel/tilo-linux-vm" "$app_stage/bin/tilo-linux-vm"
-install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-package-service.service" \
-    "$app_stage/systemd-user/tilo-package-service.service"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-models.service" \
     "$app_stage/systemd-user/tilo-models.service"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-model-gateway.service" \
     "$app_stage/systemd-user/tilo-model-gateway.service"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-ush.service" \
     "$app_stage/systemd-user/tilo-ush.service"
-for socket in tilo-package-service tilo-models tilo-model-gateway tilo-ush; do
+for socket in tilo-models tilo-model-gateway tilo-ush; do
     install -pm 0644 "$repo_root/os/usr/lib/systemd/user/$socket.socket" \
         "$app_stage/systemd-user/$socket.socket"
 done

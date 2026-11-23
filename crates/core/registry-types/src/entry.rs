@@ -180,11 +180,11 @@ impl EntryKind {
 
 /// One released version: its number, its date and the artifact it binds.
 ///
-/// A version binding a `.tapp` encodes with the fields every released client
-/// reads (`version`, `tapp_url`, `tapp_root_hash_hex`, `tapp_size_bytes`,
-/// `released_at_unix`, `tapp_blake3_hex`, `target`, in that order, which the
-/// signing form depends on); a bot version encodes as `version`,
-/// `released_at_unix` and `bot`.
+/// A version binding a `.tapp` encodes with the fields every client reads
+/// (`version`, `tapp_url`, `tapp_root_hash_hex`, `tapp_size_bytes`,
+/// `released_at_unix`, `tapp_blake3_hex`, `target`, `tapp_surface_hex`, in that
+/// order, which the signing form depends on); a bot version encodes as
+/// `version`, `released_at_unix` and `bot`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegistryVersion {
     /// Semver string, or `CalVer` YYYY.MM as some publishers use; treated
@@ -205,6 +205,7 @@ struct TappVersionOut<'a> {
     released_at_unix: u64,
     tapp_blake3_hex: &'a str,
     target: &'a RegistryTarget,
+    tapp_surface_hex: &'a str,
 }
 
 #[derive(Serialize)]
@@ -231,6 +232,7 @@ enum VersionIn {
         released_at_unix: u64,
         tapp_blake3_hex: String,
         target: RegistryTarget,
+        tapp_surface_hex: String,
     },
 }
 
@@ -245,6 +247,7 @@ impl Serialize for RegistryVersion {
                 released_at_unix: self.released_at_unix,
                 tapp_blake3_hex: &tapp.tapp_blake3_hex,
                 target: &tapp.target,
+                tapp_surface_hex: &tapp.tapp_surface_hex,
             }
             .serialize(serializer),
             VersionArtifact::Bot(bot) => BotVersionOut {
@@ -277,6 +280,7 @@ impl<'de> Deserialize<'de> for RegistryVersion {
                 released_at_unix,
                 tapp_blake3_hex,
                 target,
+                tapp_surface_hex,
             } => Self {
                 version,
                 released_at_unix,
@@ -286,6 +290,7 @@ impl<'de> Deserialize<'de> for RegistryVersion {
                     tapp_size_bytes,
                     tapp_blake3_hex,
                     target,
+                    tapp_surface_hex,
                 }),
             },
         })
@@ -316,6 +321,10 @@ pub struct TappArtifact {
     /// transport artifact fetched by clients and reviewed by moderators.
     pub tapp_blake3_hex: String,
     pub target: RegistryTarget,
+    /// BLAKE3 of the surface the package carries, in the form it is kept by (hex), which a
+    /// workspace running this version records and decides its changes against; empty for a
+    /// package that publishes no surface.
+    pub tapp_surface_hex: String,
 }
 
 /// A bot program: a Shortcut's canonical JSON, stored by the registry as a
@@ -553,6 +562,7 @@ fn validate_tapp(v: &TappArtifact) -> Result<(), EntryValidationError> {
         && valid_artifact_url(&v.tapp_url)
         && is_hex_64(&v.tapp_root_hash_hex)
         && is_hex_64(&v.tapp_blake3_hex)
+        && (v.tapp_surface_hex.is_empty() || is_hex_64(&v.tapp_surface_hex))
         && v.tapp_size_bytes != 0
         && v.target.validate().is_ok();
     if ok {
@@ -879,8 +889,8 @@ mod tests {
 
     #[test]
     fn app_entries_sign_and_encode_exactly_as_before_bots() {
-        // The shape every released client decodes and re-encodes to check a
-        // publisher's signature, declared here as it was before bots.
+        // The shape every client decodes and re-encodes to check a
+        // publisher's signature, declared here apart from the bot form.
         #[derive(Serialize)]
         struct V1Version<'a> {
             version: &'a str,
@@ -890,6 +900,7 @@ mod tests {
             released_at_unix: u64,
             tapp_blake3_hex: &'a str,
             target: &'a RegistryTarget,
+            tapp_surface_hex: &'a str,
         }
         #[derive(Serialize)]
         struct V1Payload<'a> {
@@ -920,6 +931,7 @@ mod tests {
                     released_at_unix: v.released_at_unix,
                     tapp_blake3_hex: &tapp.tapp_blake3_hex,
                     target: &tapp.target,
+                    tapp_surface_hex: &tapp.tapp_surface_hex,
                 }
             })
             .collect();
@@ -948,7 +960,7 @@ mod tests {
         let version = json["versions"][0].as_object().unwrap();
         assert_eq!(
             version.len(),
-            7,
+            8,
             "an app version keeps exactly its released fields: {version:?}"
         );
         assert!(version["tapp_url"].is_string());

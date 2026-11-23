@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A failure in session, collaboration and package-service code is heard.
+"""A failure in session, collaboration and app-install code is heard.
 
 A message from a peer, a stored record, a surface file or a write that fails
 is an error: the caller is told, the person is refused or notified, or the

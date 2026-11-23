@@ -84,11 +84,21 @@ impl FleetApp {
     }
 }
 
+mod default_apps;
 mod generated;
 
 #[must_use]
 pub fn apps() -> &'static [FleetApp] {
     generated::APPS
+}
+
+/// The apps a workspace is created with: the default collection's package ids, the same list
+/// the release's `package-apps` builds and the OS image bakes (`dist/apps/app-collections.toml`,
+/// via `tools/apps/generate_default_apps.py`). [`metadata`] has each one's name, keywords and
+/// closed actions.
+#[must_use]
+pub fn default_apps() -> &'static [&'static str] {
+    default_apps::DEFAULT
 }
 
 /// The fleet's metadata for `package_id`. A development build publishes the same apps under

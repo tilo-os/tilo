@@ -88,7 +88,7 @@ for program in /usr/libexec/tilo-ush /usr/libexec/tilo/tilo-linux-vm; do
     test -x "$program"
     test "$(rpm -qf "$program")" = "$(rpm -q tilo-session-apps)"
 done
-for unit in tilo-package-service tilo-models tilo-model-gateway tilo-ush; do
+for unit in tilo-models tilo-model-gateway tilo-ush; do
     test -f "/usr/lib/systemd/user/$unit.service"
     test -f "/usr/lib/systemd/user/$unit.socket"
     grep -q "^Service=$unit.service$" "/usr/lib/systemd/user/$unit.socket"

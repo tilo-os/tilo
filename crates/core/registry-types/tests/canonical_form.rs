@@ -33,6 +33,7 @@ fn sample_entry(pubkey_hex: String) -> RegistryEntry {
                 tapp_root_hash_hex: "cd".repeat(32),
                 tapp_size_bytes: 12_345,
                 tapp_blake3_hex: "ef".repeat(32),
+                tapp_surface_hex: String::new(),
                 target: registry_types::RegistryTarget {
                     platform: registry_types::TILO_OS_PLATFORM.into(),
                     architecture: "x86_64".into(),

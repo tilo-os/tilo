@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use tilo_app_package::trust::{RevocationList, TrustFile, TrustedAttestor, TrustedAttestors};
+use tilo_app_package::trust::{RevocationList, TrustedAttestor};
 use tilo_app_package::{
     BlobFetcher, BlobHash, BlobSink, Kind, PackageFetcher, PackageId, PackageMeta, Verification,
 };
@@ -142,39 +142,26 @@ impl ImageTrust {
         Self::default()
     }
 
-    /// The installation's trust configuration: the user's trusted attestors
-    /// and revocation list (the files `tilo-install trust` and
-    /// `tilo-install revoke` keep) and the publishers the system store
-    /// names.
+    /// The publishers the system store names: what an image may be signed by
+    /// before a workspace adds its own trust.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::Refused`] when a configuration file exists but
-    /// does not parse; a broken trust file is never read as "trust nothing
-    /// revoked".
+    /// An unreadable publisher list.
     pub fn from_env(system: Option<&SystemStore>) -> Result<Self, StoreError> {
-        let refused = |error: tilo_app_package::TrustLoadError| {
-            StoreError::Refused(format!("image trust configuration: {error}"))
-        };
-        let attestors = match tilo_app_package::default_trusted_attestors_path() {
-            Some(path) => TrustedAttestors::load(&path).map_err(refused)?,
-            None => TrustedAttestors::default(),
-        };
-        let revoked = match tilo_app_package::default_revoked_keys_path() {
-            Some(path) => RevocationList::load(&path).map_err(refused)?,
-            None => RevocationList::default(),
-        };
-        let mut trust = Self {
-            publishers: Vec::new(),
-            attestors: attestors.as_slice().to_vec(),
-            revoked,
-            fleet: None,
-        };
+        let mut trust = Self::default();
         if let Some(system) = system {
             trust.publishers =
                 read_publishers(&system.data_dir.join(SYSTEM_IMAGE_PUBLISHERS_FILE))?;
         }
         Ok(trust)
+    }
+
+    /// The attestors the workspace trusts beside the image's own roots.
+    #[must_use]
+    pub fn with_attestors(mut self, attestors: &[TrustedAttestor]) -> Self {
+        self.attestors = attestors.to_vec();
+        self
     }
 
     #[must_use]

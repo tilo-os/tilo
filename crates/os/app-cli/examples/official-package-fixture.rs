@@ -41,9 +41,16 @@ fn prepare(output: &Path) -> Result<()> {
         enabled: true,
         channel: tilo_app_package::version::ReleaseChannel::Stable,
     };
-    app_cli::config::save_registries(&app_cli::config::RegistriesFile {
-        registries: vec![registry.clone()],
-    })?;
+    // The fixture reads what a workspace's list would say, from the config
+    // directory this example names for the run.
+    let dir = app_cli::config::config_dir().ok_or("no config dir")?;
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("registries.toml"),
+        toml::to_string(&app_cli::config::RegistriesFile {
+            registries: vec![registry.clone()],
+        })?,
+    )?;
     save_snapshot(&registry, output)?;
     let entry = client::fetch_all_versions(&registry, APP)?;
     std::fs::write(

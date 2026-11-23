@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """One version number per interface, bumped whenever the interface breaks.
 
-Tilo has eight interfaces between separately updated parts: app and shell
-(``shell-ui``), app and runtime (``runtime``), app and app host
-(``package-service``, the few apps handed it), app and messaging service
+Tilo has seven interfaces between separately updated parts: app and shell
+(``shell-ui``), app and runtime (``runtime``), app and messaging service
 (``messaging``), device and device (``peer``), session and app keeper
 (``app-keeper``), host CLI and guest daemon (``vm``) and the store's package
 formats (``package``). Each one has a single version
@@ -925,7 +924,7 @@ def service_versions(root: Path = ROOT) -> dict[str, int]:
         service: interfaces["runtime"]
         for service in data.get("runtime", {}).get("services", [])
     }
-    for name in ("shell-ui", "package-service", "messaging"):
+    for name in ("shell-ui", "messaging"):
         if name in interfaces:
             versions[name] = interfaces[name]
     return versions

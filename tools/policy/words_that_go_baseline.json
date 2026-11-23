@@ -1953,7 +1953,6 @@
    "write_compat_handoff",
    "write_handoff",
    "write_model_gateway_handoff",
-   "write_package_service_handoff",
    "write_setup_wifi_and_owner_key_stage_without_identity_enrollment",
    "write_ush_handoff"
   ],

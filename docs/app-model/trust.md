@@ -56,10 +56,12 @@ Consequences:
 
 ## The attestor registry
 
-Users have a per-machine `~/.config/tilo/trusted-attestors.toml`:
+The attestors a person trusts are the workspace's, not a machine's: the
+`workspace/trust` resource of the shared tree. Every member's device reads
+the same list and verifies against it, and a change to it is an action the
+workspace's install grant admits. A row carries:
 
-```toml
-[[attestor]]
+```text
 id         = "tilo-curated/2026.07"
 pubkey_hex = "…"
 scope      = "all"                        # or "mime:<a>,<b>" / "prefix:<a>,<b>"
@@ -88,7 +90,6 @@ $ tilo app trust add \
     --pubkey "0000000000000000000000000000000000000000000000000000000000000001" \
     --scope "all"
 trust: added test-attestor/2026 (scope: all)
-  file: /tmp/tilo-install-demo-config/tilo/trusted-attestors.toml
 
 $ tilo app trust list
 id                        scope         pubkey
@@ -202,13 +203,8 @@ fallback entirely.
 
 ## Revocation
 
-`~/.config/tilo/revoked-keys.toml`:
-
-```toml
-[[revoked]]
-pubkey_hex = "deadbeef…"
-reason     = "compromised 2026-07-05"
-```
+The refused publisher keys are the workspace's too: the revoked list of its
+`workspace/trust` resource. A row carries `pubkey_hex` and a `reason`.
 
 Add via CLI:
 
@@ -217,7 +213,6 @@ $ tilo app trust revoke deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
     --reason "test revocation"
 revoked: ed25519:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
   reason: test revocation
-  file: /tmp/tilo-install-demo-config/tilo/revoked-keys.toml
 
 $ tilo app trust revoked
 pubkey                                                              reason
@@ -236,13 +231,12 @@ This is why the launcher re-reads the revocation list at every launch —
 not just at install. There is no "trust the install-time verification
 forever" cache.
 
-## Sharing keys across a fleet
+## Sharing trust across a workspace
 
-The two config files (`trusted-attestors.toml`, `revoked-keys.toml`) are
-plain TOML and can be provisioned by any config-management tool — a
-first-run script, Ansible, systemd-tmpfiles, etc. There is no
-mutable-network component in the model today; every machine reads its
-own on-disk trust config.
+The trust list is the workspace's own: it reaches every device that
+keeps the workspace as the tree does, so a new device trusts what its
+workspace trusts without a file to provision. A machine reads no trust list
+of its own.
 
 ## `tilo package verify` and trust
 

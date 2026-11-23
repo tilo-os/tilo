@@ -25,6 +25,18 @@ pub(crate) fn connection_metadata_is_current() -> bool {
     connection_owner().is_ok_and(|owner| owner.is_none_or(|pid| pid == std::process::id()))
 }
 
+/// This computer's runtime host, for the program at `program`: `TILO_RUNTIME_BINARY`, else beside
+/// the program, else on `PATH` (`/usr/bin` on a Tilo or RPM install), else a checkout's build.
+/// What an app attaches to, and what the host's search providers start.
+///
+/// # Errors
+///
+/// No host in any of those places, or a `TILO_RUNTIME_BINARY` that names no executable.
+#[cfg(unix)]
+pub fn locate_host(program: &std::path::Path) -> io::Result<std::path::PathBuf> {
+    unix::locate_host(program)
+}
+
 /// Join the shared native runtime, or retain an inherited launcher connection.
 /// `TILO_RUNTIME_STANDALONE=1` explicitly disables automatic attachment.
 ///
@@ -185,7 +197,7 @@ mod unix {
     /// Tilo desktop and anywhere else, so an app never reaches a second authority beside it.
     const HOST: &str = "tilo-runtime";
 
-    fn locate_host(app: &Path) -> io::Result<PathBuf> {
+    pub(super) fn locate_host(app: &Path) -> io::Result<PathBuf> {
         if let Some(path) = env::var_os("TILO_RUNTIME_BINARY") {
             let path = PathBuf::from(path);
             if !path.is_absolute() || !executable(&path) {

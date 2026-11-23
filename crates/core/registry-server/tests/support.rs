@@ -83,6 +83,7 @@ pub fn tapp(
         tapp_root_hash_hex: root_hash_hex.into(),
         tapp_size_bytes: size,
         tapp_blake3_hex: blake3_hex.into(),
+        tapp_surface_hex: String::new(),
         target: target(runtime),
     }
 }

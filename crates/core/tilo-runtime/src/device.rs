@@ -26,7 +26,8 @@ pub mod compute;
 #[cfg(target_os = "macos")]
 mod confirm;
 mod content;
-#[cfg(target_os = "linux")]
+// The device's content, and on Tilo OS the steps that change it; elsewhere a device offers no steps.
+#[cfg(unix)]
 pub mod control;
 mod files_tree;
 pub(crate) mod first_workspace;
@@ -38,6 +39,8 @@ mod keep;
 pub(crate) mod local;
 #[cfg(target_os = "linux")]
 pub mod package_runs;
+#[cfg(unix)]
+pub mod packages;
 pub mod peer;
 mod person;
 pub(crate) mod presence;

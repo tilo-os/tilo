@@ -5,6 +5,8 @@
 //! `name` as a Flathub app wins.** Duplicates on the Flathub side
 //! are dropped. Case-insensitive matching, whitespace-trimmed.
 
+use std::collections::BTreeMap;
+
 use ui::registry::{RegistryImageKind, RegistryVersion, TappArtifact};
 
 use crate::flathub_client::AppStreamRecord;
@@ -12,7 +14,74 @@ use crate::model::{
     BotListing, InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust,
 };
 use crate::registry_client::VerifiedEntry;
-use package_store::InstalledPackage;
+
+use package_actions::PackageRow;
+
+/// One app a workspace runs, as its tree says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkspaceApp {
+    /// The workspace keeps this version: it refuses an update until a member releases it.
+    pub pinned: bool,
+}
+
+/// What the Store knows of the workspace's apps and this device's packages.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Installed {
+    /// The apps the workspace runs, by app id.
+    pub workspace: BTreeMap<String, WorkspaceApp>,
+    /// This device's package rows, by app id.
+    pub device: BTreeMap<String, PackageRow>,
+}
+
+impl Installed {
+    /// The installed state of `app`, whose source's newest version is `available`.
+    #[must_use]
+    pub fn state(&self, app: &str, available: &str) -> InstalledState {
+        let row = self.device.get(app);
+        let Some(workspace) = self.workspace.get(app) else {
+            // A package this device holds that the workspace runs no version
+            // of: a runtime, or one a command of the person's installed here.
+            let Some(row) = row.filter(|row| row.installed()) else {
+                return InstalledState::Not;
+            };
+            return InstalledState::Installed {
+                version: row.version.clone(),
+                available: if available.is_empty() {
+                    row.version.clone()
+                } else {
+                    available.to_owned()
+                },
+                pinned: false,
+                user_managed: true,
+            };
+        };
+        // The workspace chose a version; this device may still be fetching it.
+        let version = row
+            .map(|row| row.version.clone())
+            .filter(|version| !version.is_empty())
+            .unwrap_or_else(|| available.to_owned());
+        InstalledState::Installed {
+            version,
+            available: available.to_owned(),
+            pinned: workspace.pinned,
+            user_managed: true,
+        }
+    }
+
+    /// The app's fetch progress on this device, when it is on its way.
+    #[must_use]
+    pub fn progress(&self, app: &str) -> Option<ui::arriving::Progress> {
+        let (bytes, total) = self.device.get(app)?.fetching()?;
+        Some(ui::arriving::Progress::new(bytes, total))
+    }
+
+    /// The package root the app runs from here, when it is installed.
+    #[must_use]
+    pub fn root(&self, app: &str) -> Option<&str> {
+        let row = self.device.get(app).filter(|row| row.installed())?;
+        Some(row.root.as_str())
+    }
+}
 
 /// Convert a Tilo registry entry into the unified store item shape.
 ///
@@ -20,17 +89,17 @@ use package_store::InstalledPackage;
 /// the user's `registries.toml`, not the wire — the registry
 /// doesn't publish its own name to a fetched entry).
 ///
-/// `installed_index` is the package service's install snapshot — passed by-ref so the merge can cheaply
-/// look up install state per package id.
+/// `installed` is what the workspace runs and what this device has fetched, passed by-ref so the
+/// merge can cheaply look up install state per app id.
 pub fn tilo_to_store_item(
     verified: &VerifiedEntry,
     registry_name: &str,
-    installed_index: &[InstalledPackage],
+    installed: &Installed,
 ) -> StoreItem {
     tilo_to_store_item_on_channel(
         verified,
         registry_name,
-        installed_index,
+        installed,
         app_cli::ReleaseChannel::Stable,
     )
 }
@@ -43,7 +112,7 @@ pub fn tilo_to_store_item(
 pub fn tilo_to_store_item_on_channel(
     verified: &VerifiedEntry,
     registry_name: &str,
-    installed_index: &[InstalledPackage],
+    installed: &Installed,
     channel: app_cli::ReleaseChannel,
 ) -> StoreItem {
     if let Some(bot) = app_cli::bots::bot_offer(verified, registry_name) {
@@ -60,15 +129,7 @@ pub fn tilo_to_store_item_on_channel(
         .first()
         .map(|v| v.version.clone())
         .unwrap_or_default();
-    let installed = installed_index
-        .iter()
-        .find(|e| e.id == entry.package_id)
-        .map_or(InstalledState::Not, |e| InstalledState::Installed {
-            version: e.version.clone(),
-            available: latest.clone(),
-            pinned: e.pinned,
-            user_managed: e.user_managed(),
-        });
+    let installed = installed.state(&entry.package_id, &latest);
     let locale = preferred_locale();
     let localized_images = entry.images.resolve(&locale);
     StoreItem {
@@ -175,34 +236,39 @@ pub(crate) fn preferred_locale() -> String {
 
 pub const INSTALLED_ON_DEVICE: &str = "Installed on this device";
 
-/// Turn an installed Tilo package into a local-only Store row.
+/// Turn an app the workspace runs that no enabled source lists into a local-only Store row.
 ///
 /// A verified catalogue entry normally supplies the description, artwork and
 /// update metadata. That entry is not guaranteed to be reachable forever,
-/// though: a user must still be able to launch, pin, or remove software that
-/// is already on their device while its registry is offline or has withdrawn
-/// it. The package's own signed manifest (`about`) still names and files the
-/// app, and the installed tree has a size, so the row says what the app is.
-/// It publishes no download URL or claimed latest version, so the UI cannot
-/// offer an update based on stale or invented metadata.
-pub fn installed_tilo_to_store_item(
-    entry: &InstalledPackage,
-    about: Option<&package_service::client::PackageAbout>,
-) -> StoreItem {
+/// though: a person must still be able to open, keep, or remove an app the
+/// workspace runs while the registry that lists it is offline or has withdrawn
+/// it. The installed package's signed manifest names it, says what it does and
+/// what it may ask for; the version and the workspace's keeping it come from
+/// the tree and this device's row. The row publishes no download URL or
+/// claimed latest version, so the UI cannot offer an update based on stale or
+/// invented metadata.
+pub fn installed_tilo_to_store_item(app: &str, installed: &Installed) -> StoreItem {
+    let row = installed.device.get(app);
+    let about = row.and_then(|row| row.about.as_ref());
     let locale = preferred_locale();
+    let version = row.map_or_else(String::new, |row| row.version.clone());
+    let pinned = installed
+        .workspace
+        .get(app)
+        .is_some_and(|workspace| workspace.pinned);
     StoreItem {
         bot: None,
         awaiting_developer: false,
         listing: crate::model::Listing {
-            developer: tilo_developer(&entry.id),
+            developer: tilo_developer(app),
             capabilities: about
                 .map(|about| about.capabilities.clone())
                 .unwrap_or_default(),
             ..crate::model::Listing::default()
         },
-        id: entry.id.clone(),
+        id: app.to_owned(),
         name: about.map_or_else(
-            || package_store::display_name_for_package_id(&entry.id),
+            || package_store::display_name_for_package_id(app),
             |about| about.name_for(&locale).to_owned(),
         ),
         // The manifest has no description. Saying so on every row is noise;
@@ -222,28 +288,32 @@ pub fn installed_tilo_to_store_item(
         source: StoreSource::Tilo {
             registry_name: INSTALLED_ON_DEVICE.into(),
         },
-        // package-service accepts only packages whose signature and declared package
-        // identity verified at installation. This is not a current registry
-        // review claim; the detail sheet spells that distinction out.
+        // The workspace recorded this version only after checking the package's
+        // signature and the root and publisher it names. This is not a current
+        // registry review claim; the detail sheet spells that distinction out.
         trust: StoreTrust::PublisherSigned,
-        versions: vec![StoreItemVersion {
-            version: entry.version.clone(),
-            released_at_unix: 0,
-            download_url: None,
-            root_hash_hex: None,
-            size_bytes: entry.payload_bytes,
-            runtime: None,
-        }],
-        publisher_pubkey_hex: (!entry.publisher_key_hex.trim().is_empty())
-            .then(|| entry.publisher_key_hex.clone()),
+        versions: row
+            .map(|row| {
+                vec![StoreItemVersion {
+                    version: row.version.clone(),
+                    released_at_unix: 0,
+                    download_url: None,
+                    root_hash_hex: None,
+                    surface_hex: None,
+                    size_bytes: row.size_bytes,
+                    runtime: None,
+                }]
+            })
+            .unwrap_or_default(),
+        publisher_pubkey_hex: None,
         installed: InstalledState::Installed {
-            version: entry.version.clone(),
+            version: version.clone(),
             // The only truthful available version while offline is unknown.
             // Keeping it equal to the installed version prevents a fake
             // "Update" affordance.
-            available: entry.version.clone(),
-            pinned: entry.pinned,
-            user_managed: entry.user_managed(),
+            available: version,
+            pinned,
+            user_managed: true,
         },
     }
 }
@@ -254,6 +324,7 @@ fn tilo_version_to_store(v: &RegistryVersion, tapp: &TappArtifact) -> StoreItemV
         released_at_unix: v.released_at_unix,
         download_url: Some(tapp.tapp_url.clone()),
         root_hash_hex: Some(tapp.tapp_root_hash_hex.clone()),
+        surface_hex: (!tapp.tapp_surface_hex.is_empty()).then(|| tapp.tapp_surface_hex.clone()),
         size_bytes: tapp.tapp_size_bytes,
         runtime: tapp.target.runtime.clone(),
     }
@@ -286,6 +357,7 @@ pub fn installed_flatpak_to_item(app_id: &str, version: &str) -> StoreItem {
             released_at_unix: 0,
             download_url: None,
             root_hash_hex: None,
+            surface_hex: None,
             size_bytes: 0,
             runtime: None,
         }],
@@ -443,6 +515,7 @@ pub fn flathub_resource_to_item(
             released_at_unix: 0,
             download_url: None,
             root_hash_hex: None,
+            surface_hex: None,
             size_bytes: 0,
             runtime: None,
         }],
@@ -606,7 +679,7 @@ pub(crate) mod tests {
             prerelease.version = "3.0.0-beta.1".into();
             entry.versions = vec![foreign, entry.versions[0].clone(), prerelease, newest];
             let verified = verified(entry);
-            let item = tilo_to_store_item(&verified, "Tilo main", &[]);
+            let item = tilo_to_store_item(&verified, "Tilo main", &Installed::default());
             assert_eq!(item.latest_version(), "2.0.0");
             assert_eq!(item.versions.len(), 2);
             assert_eq!(
@@ -676,13 +749,7 @@ pub(crate) mod tests {
         {
             {
                 let entry = tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
-                let installed = vec![installed_package(
-                    "so.tilo.notes",
-                    "0.1.0",
-                    entry.publisher_pubkey_hex.clone(),
-                    true,
-                    true,
-                )];
+                let installed = installed_package("so.tilo.notes", "0.1.0", true);
                 let item = tilo_to_store_item(&verified(entry), "Tilo main", &installed);
                 assert!(matches!(item.installed, InstalledState::Installed { .. }));
                 // The pin flag from tilo-install's registry must survive the
@@ -694,37 +761,28 @@ pub(crate) mod tests {
 
             {
                 let entry = tilo_entry("so.tilo.notes", "Notes", "0.2.0", [1u8; 32]);
-                let installed = vec![installed_package(
-                    "so.tilo.notes",
-                    "0.1.0",
-                    entry.publisher_pubkey_hex.clone(),
-                    false,
-                    true,
-                )];
+                let installed = installed_package("so.tilo.notes", "0.1.0", false);
                 let item = tilo_to_store_item(&verified(entry), "Tilo main", &installed);
                 assert!(item.installed.update_available());
             }
 
             {
                 let entry = tilo_entry("so.tilo.settings", "Settings", "1.0.0", [2u8; 32]);
-                let installed = vec![installed_package(
-                    entry.package_id.clone(),
-                    "1.0.0",
-                    entry.publisher_pubkey_hex.clone(),
-                    false,
-                    false,
-                )];
+                let installed = installed_package(&entry.package_id, "1.0.0", false);
                 let item = tilo_to_store_item(&verified(entry), "Tilo system", &installed);
                 assert!(item.installed.is_installed());
                 assert_eq!(item.action_kind(true), crate::model::ActionKind::Open);
-                assert!(item.pin_action().is_none());
-                assert!(item.remove_action().is_none());
+                assert_eq!(
+                    item.pin_action(),
+                    Some(crate::model::ActionKind::MarkInstalled)
+                );
+                assert_eq!(item.remove_action(), Some(crate::model::ActionKind::Remove));
             }
 
             {
                 let item = installed_tilo_to_store_item(
-                    &installed_package("so.tilo.offline", "1.2.3", "ab".repeat(32), true, true),
-                    None,
+                    "so.tilo.offline",
+                    &installed_package("so.tilo.offline", "1.2.3", true),
                 );
                 // Without a manifest the id still yields a readable name, never
                 // the raw reverse-DNS id or a sentence about missing metadata.
@@ -781,6 +839,7 @@ pub(crate) mod tests {
                     tapp_root_hash_hex: "cd".repeat(32),
                     tapp_size_bytes: 100,
                     tapp_blake3_hex: "ef".repeat(32),
+                    tapp_surface_hex: String::new(),
                     target: ui::registry::RegistryTarget {
                         platform: ui::registry::TILO_OS_PLATFORM.into(),
                         architecture: std::env::consts::ARCH.into(),
@@ -799,31 +858,39 @@ pub(crate) mod tests {
         e
     }
 
-    pub(crate) fn installed_package(
-        id: impl Into<String>,
-        version: impl Into<String>,
-        publisher_key_hex: impl Into<String>,
-        pinned: bool,
-        user_managed: bool,
-    ) -> InstalledPackage {
-        InstalledPackage {
-            id: id.into(),
-            version: version.into(),
-            package_id_hex: String::new(),
-            payload_root: std::path::PathBuf::new(),
-            manifest_path: std::path::PathBuf::new(),
-            publisher_key_hex: publisher_key_hex.into(),
-            pinned,
-            installed_at: 0,
-            last_used: 0,
-            attested_by: String::new(),
-            cli_commands: Vec::new(),
-            runtime: String::new(),
-            source: String::new(),
-            held: false,
-            payload_bytes: 0,
-            system: !user_managed,
+    /// A workspace running `id` at `version`, which this device has installed, `pinned` or not.
+    pub(crate) fn installed_package(id: &str, version: &str, pinned: bool) -> Installed {
+        let mut installed = Installed::default();
+        installed
+            .workspace
+            .insert(id.to_owned(), WorkspaceApp { pinned });
+        installed.device.insert(
+            id.to_owned(),
+            package_actions::PackageRow {
+                app: id.to_owned(),
+                version: version.to_owned(),
+                root: "ab".repeat(32),
+                state: package_actions::RowState::Installed,
+                about: None,
+                size_bytes: 0,
+            },
+        );
+        installed
+    }
+
+    /// `installed`, its package of `id` described by its manifest as `about` and taking
+    /// `size_bytes`.
+    pub(crate) fn described(
+        mut installed: Installed,
+        id: &str,
+        about: package_actions::PackageAbout,
+        size_bytes: u64,
+    ) -> Installed {
+        if let Some(row) = installed.device.get_mut(id) {
+            row.about = Some(about);
+            row.size_bytes = size_bytes;
         }
+        installed
     }
 
     pub(crate) fn verified(entry: RegistryEntry) -> VerifiedEntry {

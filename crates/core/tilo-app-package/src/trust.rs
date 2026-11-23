@@ -1,9 +1,7 @@
 //! Consumer-side trust policy — trusted attestors + revoked publisher
-//! keys, loaded from user config by the caller (usually `tilo-install`)
-//! and threaded into [`crate::verify::verify`]. The foundation crate
-//! itself never touches `$HOME`.
-
-use std::path::{Path, PathBuf};
+//! keys, read from the workspace's trust list by the caller and threaded
+//! into [`crate::verify::verify`]. The foundation crate itself never
+//! touches a file or a workspace.
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -168,8 +166,7 @@ impl TrustedAttestors {
     }
 }
 
-/// A trust list kept as a TOML file in user config. A missing file is an
-/// empty list: nothing trusted, nothing revoked.
+/// A trust list, as its TOML shape spells it.
 pub trait TrustFile: Default + Serialize + DeserializeOwned {
     /// Decode from TOML source.
     ///
@@ -188,36 +185,6 @@ pub trait TrustFile: Default + Serialize + DeserializeOwned {
     /// Returns [`TrustLoadError::Encode`] if serialisation fails.
     fn to_toml_string(&self) -> Result<String, TrustLoadError> {
         toml::to_string(self).map_err(|e| TrustLoadError::Encode(e.to_string()))
-    }
-
-    /// Load from disk; the empty list if the file doesn't exist.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TrustLoadError::Io`] if the file exists but can't be read
-    /// or isn't valid UTF-8, or [`TrustLoadError::Parse`] if it isn't valid
-    /// TOML for this shape.
-    fn load(path: &Path) -> Result<Self, TrustLoadError> {
-        let Some(text) = read_optional_policy(path)? else {
-            return Ok(Self::default());
-        };
-        Self::from_toml_str(&text)
-    }
-
-    /// Atomic-rename-based save.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TrustLoadError::Io`] if the parent directory can't be
-    /// created or the write fails, or [`TrustLoadError::Encode`] if
-    /// serialisation fails.
-    fn save(&self, path: &Path) -> Result<(), TrustLoadError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| TrustLoadError::Io(e.to_string()))?;
-        }
-        let text = self.to_toml_string()?;
-        tilo_files::native::atomic::write(path, text.as_bytes())
-            .map_err(|e| TrustLoadError::Io(e.to_string()))
     }
 }
 
@@ -274,28 +241,6 @@ impl RevocationList {
     }
 }
 
-/// Only absence means an empty policy. Metadata lookup failures must not
-/// disable revocations by pretending the file is absent.
-fn read_optional_policy(path: &Path) -> Result<Option<String>, TrustLoadError> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(TrustLoadError::Io(format!("{}: {error}", path.display()))),
-    }
-}
-
-pub fn default_trusted_attestors_path() -> Option<PathBuf> {
-    config_dir().map(|d| d.join("trusted-attestors.toml"))
-}
-
-pub fn default_revoked_keys_path() -> Option<PathBuf> {
-    config_dir().map(|d| d.join("revoked-keys.toml"))
-}
-
-fn config_dir() -> Option<PathBuf> {
-    Some(tilo_paths::xdg::config_home()?.join("tilo"))
-}
-
 fn parse_pubkey_hex(s: &str) -> Result<[u8; 32], TrustLoadError> {
     let bytes = hex::decode(s).map_err(|e| TrustLoadError::BadHex(e.to_string()))?;
     if bytes.len() != 32 {
@@ -326,22 +271,6 @@ pub enum TrustLoadError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(unix)]
-    #[test]
-    fn policy_lookup_errors_are_not_empty_policies() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("policy.toml");
-        // A symlink loop produces a metadata/read error even when run as root.
-        std::os::unix::fs::symlink("policy.toml", &path).unwrap();
-        for error in [
-            TrustedAttestors::load(&path).unwrap_err(),
-            RevocationList::load(&path).unwrap_err(),
-        ] {
-            assert!(matches!(error, TrustLoadError::Io(ref detail)
-                if detail.contains(path.to_str().unwrap())));
-        }
-    }
 
     tilo_test_env::scenario! {
         fn attestation_scopes_parse_round_trip_and_match;
@@ -388,36 +317,18 @@ mod tests {
     tilo_test_env::scenario! {
         fn trust_lists_round_trip_and_attestations_are_domain_separated;
 
-        phase missing_policy_files_are_optional;
+        phase malformed_revocation_keys_are_rejected_at_parse;
         {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("absent.toml");
-            assert_eq!(
-                TrustedAttestors::load(&path).unwrap(),
-                TrustedAttestors::default()
-            );
-            assert_eq!(
-                RevocationList::load(&path).unwrap(),
-                RevocationList::default()
-            );
-        }
-
-        phase malformed_revocation_keys_are_rejected_at_load;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("revoked-keys.toml");
             for key in ["not-hex".to_string(), "ab".repeat(31), "ab".repeat(33)] {
                 let text = format!("[[revoked]]\npubkey_hex = {key:?}\n");
-                std::fs::write(&path, &text).unwrap();
                 assert!(matches!(
-                    RevocationList::load(&path),
+                    RevocationList::from_toml_str(&text),
                     Err(TrustLoadError::BadHex(_) | TrustLoadError::BadPubkeyLength { .. })
                 ));
             }
             let text = format!("[[revoked]]\npubkey_hex = {:?}\n", "ab".repeat(32));
-            std::fs::write(&path, text).unwrap();
             assert!(
-                RevocationList::load(&path)
+                RevocationList::from_toml_str(&text)
                     .unwrap()
                     .find(&[0xab; 32])
                     .is_some()

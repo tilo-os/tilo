@@ -797,6 +797,17 @@ impl Daemon {
                 .provide(super::control::PROVIDER, control),
             Err(why) => tracing::info!(%why, "this device offers no device control"),
         }
+        // So is its package cache, the one it answered before the login too.
+        #[cfg(unix)]
+        match super::packages::PackageCache::this_device(&identity.cert.device_public_key) {
+            Ok(cache) => {
+                super::packages::follow(&cache, Arc::clone(&workspaces));
+                workspaces
+                    .copies()
+                    .provide(super::packages::PROVIDER, cache);
+            }
+            Err(why) => tracing::warn!(%why, "this device keeps no packages"),
+        }
         stage("serving the workspaces' trees to the files daemon");
         let files_tree = super::files_tree::serve(
             &tilo_device_identity::login::files_tree_socket().map_err(io::Error::other)?,

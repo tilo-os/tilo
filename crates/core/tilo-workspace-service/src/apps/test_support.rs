@@ -126,6 +126,20 @@ impl WorkspaceAuthority for WorkspaceTreeHandle {
         crate::apps::services::workspace_in(&self.read().desktop, workspace)
             .map(|_| tilo_user_identity::RevocationList::new())
     }
+    /// A test tree keeps no workspace document: its registry list is the one the test writes
+    /// as `registries.toml` under `TILO_STORE_CONFIG_DIR`.
+    fn package_registries(&self, _workspace: &str) -> Option<serde_json::Value> {
+        let listed = app_cli::config::load_registries();
+        Some(serde_json::json!({
+            "registries": listed.registries.iter().map(|registry| serde_json::json!({
+                "name": registry.name,
+                "base_url": registry.base_url,
+                "owner_pubkey_hex": registry.owner_pubkey_hex,
+                "enabled": registry.enabled,
+                "channel": registry.channel,
+            })).collect::<Vec<_>>(),
+        }))
+    }
     fn with_tree(&self, read: &mut dyn FnMut(&tilo_desktop_model::Layout)) -> Result<(), String> {
         read(&self.read().desktop);
         Ok(())

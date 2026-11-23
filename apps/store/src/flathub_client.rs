@@ -77,32 +77,16 @@ pub fn refreshed_remotes(rows: &str, previous: &[Remote]) -> Vec<Remote> {
     remotes
 }
 
-/// What the Store says when the Flatpak repository `remote` could not be
-/// read: decided by the host's typed refusal, never by an error's text.
-pub fn remote_error(remote: &Remote, error: &package_service::client::CatalogueError) -> String {
-    use package_service::client::Refusal;
+/// What the Store says when the Flatpak repository `remote` could not be read.
+pub fn remote_error(remote: &Remote, error: &str) -> String {
     tracing::warn!(repository = %remote.name, %error, "could not read Flatpak repository");
-    match error.refusal() {
-        Some(Refusal::DeviceRepositoryStale) => crate::resource::CATALOG.t_args(
-            "store-device-repository-refresh",
-            &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
-        ),
-        Some(Refusal::TimedOut) => crate::resource::CATALOG.t_args(
-            "store-repository-timeout",
-            &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
-        ),
-        Some(Refusal::SystemUpdateNeeded) => crate::resource::CATALOG.t_args(
-            "store-system-update-needed",
-            &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
-        ),
-        Some(Refusal::Expired) | None => crate::resource::CATALOG.t_args(
-            "store-repository-read-error",
-            &[
-                ("name", ui::i18n::ArgValue::Text(remote.title.clone())),
-                ("error", ui::i18n::ArgValue::Text(error.to_string())),
-            ],
-        ),
-    }
+    crate::resource::CATALOG.t_args(
+        "store-repository-read-error",
+        &[
+            ("name", ui::i18n::ArgValue::Text(remote.title.clone())),
+            ("error", ui::i18n::ArgValue::Text(error.to_owned())),
+        ],
+    )
 }
 
 /// Trimmed `AppStream` resource — only the fields the store surfaces.
@@ -465,7 +449,7 @@ pub fn installed_origins(output: &str) -> std::collections::HashMap<String, (Str
     installed
 }
 
-/// Decode remote rows read outside the app sandbox by package-service.
+/// Decode remote rows, one `name\turl\ttitle\toptions` line per remote.
 pub fn list_remotes(output: &str) -> Vec<Remote> {
     output
         .lines()
@@ -520,7 +504,7 @@ mod tests {
             assert!(refreshed_remotes("", &old).is_empty());
         }
 
-        phase repository_timeout_explains_retry_without_rpc_internals;
+        phase a_failed_read_names_the_repository_and_what_failed;
         {
             crate::resource::CATALOG.ensure();
             let remote = Remote {
@@ -531,46 +515,9 @@ mod tests {
                 user_managed: false,
                 catalogue_error: None,
             };
-            let message = remote_error(
-                &remote,
-                &package_service::client::CatalogueError::Refused {
-                    refusal: package_service::client::Refusal::TimedOut,
-                    detail: "Flatpak repository query: command timed out after 8000 ms".into(),
-                },
-            );
-            // Only the refusal decides: any wording of the detail reads the same.
-            for detail in ["", "it took too long", "Flatpak repository query timed out"] {
-                assert_eq!(
-                    remote_error(
-                        &remote,
-                        &package_service::client::CatalogueError::Refused {
-                            refusal: package_service::client::Refusal::TimedOut,
-                            detail: detail.into(),
-                        },
-                    ),
-                    message
-                );
-            }
-            // And text alone never makes a refusal.
-            assert_ne!(
-                remote_error(
-                    &remote,
-                    &package_service::client::CatalogueError::Failed(
-                        "command timed out after 8000 ms GenerateOciSummary".into()
-                    ),
-                ),
-                message
-            );
-            assert_eq!(
-                message,
-                crate::resource::CATALOG.t_args(
-                    "store-repository-timeout",
-                    &[("name", ui::i18n::ArgValue::Text("Fedora Flatpaks".into()))],
-                )
-            );
-            assert!(message.contains("Fedora Flatpaks"));
-            assert!(!message.contains("remote exception"));
-            assert!(!message.contains("8000"));
+            let message = remote_error(&remote, "the summary is not here");
+            assert!(message.contains("Fedora Flatpaks"), "{message}");
+            assert!(message.contains("the summary is not here"), "{message}");
         }
 
         phase installed_account_copy_wins_over_device_copy_in_either_row_order;

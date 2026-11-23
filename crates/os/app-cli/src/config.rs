@@ -1,9 +1,6 @@
-//! The registries this machine pulls app entries from: one `registries.toml` under
-//! `$XDG_CONFIG_HOME/tilo-store/`, which the store app and the desktop also read.
-//!
-//! [`load_registries`] seeds a default file when none exists; [`load_registries_no_seed`] never
-//! writes, since the compositor consults the catalogue on a timer and must not materialise config
-//! files as a side effect.
+//! The registries the workspace this device keeps fetches app entries from: its
+//! `workspace/registries` resource, read through the desktop's action API and changed by its
+//! actions. A device keeps no list of its own.
 
 use std::fs;
 use std::path::PathBuf;
@@ -136,181 +133,203 @@ pub fn cache_dir() -> Option<PathBuf> {
     tilo_paths::AppDirs::new("tilo-store").cache()
 }
 
-pub fn registries_path() -> Option<PathBuf> {
-    config_dir().map(|d| d.join("registries.toml"))
-}
-
-/// Read `registries.toml` without ever writing one.
+/// The registries the desktop answers for the workspace this process belongs
+/// to ([`tilo_control::front::call_action`]), as its `registry.list` reading
+/// reports them.
 ///
-/// A missing file means "no registries configured", which is a valid
-/// answer rather than an error: a machine that has not been
-/// pointed at a registry has nothing available to offer.
-pub fn load_registries_no_seed() -> RegistriesFile {
-    let Some(path) = registries_path() else {
-        return RegistriesFile::default();
-    };
-    let Ok(text) = fs::read_to_string(&path) else {
-        return RegistriesFile::default();
-    };
-    let mut registries = toml::from_str::<RegistriesFile>(&text).unwrap_or_default();
-    refresh_official_pin(&mut registries);
-    registries
-}
-
-/// Read `registries.toml`, seeding a default file if none exists.
+/// A reading that cannot be made — no desktop session, or no workspace — is
+/// no registries: a machine with nothing configured has nothing available to
+/// offer, and an empty list offers nothing rather than trusting something
+/// nobody configured.
 ///
-/// The seed is written to disk on first read so users can hand-edit
-/// it. If the write fails (e.g. a read-only home in a sandbox) we
-/// still return the seeded shape from memory. A file that cannot be
-/// read or parsed is the user's to fix: it answers with the seed
-/// too, but is never overwritten, so a typo cannot cost them their
-/// registries.
+/// `TILO_STORE_CONFIG_DIR` names a `registries.toml` a test or a development
+/// build reads instead; production reads the workspace alone.
+#[must_use]
 pub fn load_registries() -> RegistriesFile {
-    let Some(dir) = config_dir() else {
-        return RegistriesFile::seeded();
-    };
-    let path = dir.join("registries.toml");
-    let seed_on_disk = match fs::read_to_string(&path) {
-        Ok(text) => match toml::from_str::<RegistriesFile>(&text) {
-            Ok(parsed) if parsed.registries.is_empty() => true,
-            Ok(mut parsed) => {
-                if refresh_official_pin(&mut parsed)
-                    && let Ok(updated) = toml::to_string_pretty(&parsed)
-                {
-                    let _ = tilo_files::native::atomic::write(&path, updated.as_bytes());
-                }
-                return parsed;
-            }
-            Err(_) => false,
-        },
-        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
-    };
-    let seeded = RegistriesFile::seeded();
-    if seed_on_disk
-        && !seeded.registries.is_empty()
-        && let Ok(text) = toml::to_string_pretty(&seeded)
-    {
-        let _ = tilo_files::native::atomic::write_creating_parent(&path, text.as_bytes());
+    if let Some(registries) = ONCE_FOR_THIS_CALL.with(|slot| slot.borrow().clone()) {
+        return registries;
     }
-    seeded
+    if let Some(dir) = std::env::var_os("TILO_STORE_CONFIG_DIR") {
+        let path = PathBuf::from(dir).join("registries.toml");
+        return fs::read_to_string(path)
+            .ok()
+            .and_then(|text| toml::from_str::<RegistriesFile>(&text).ok())
+            .unwrap_or_default();
+    }
+    RegistriesFile {
+        registries: tilo_control::packages::registries()
+            .into_iter()
+            .map(|registry| RegistryConfig {
+                name: registry.name,
+                base_url: registry.base_url,
+                owner_pubkey_hex: registry.owner_pubkey_hex,
+                enabled: registry.enabled,
+                channel: channel(&registry.channel),
+            })
+            .collect(),
+    }
 }
 
-fn refresh_official_pin(registries: &mut RegistriesFile) -> bool {
-    let owner = official_owner_pubkey();
-    let mut changed = false;
-    for registry in &mut registries.registries {
-        if registry.name == "Tilo main"
-            && registry.base_url.trim_end_matches('/') == DEFAULT_REGISTRY_BASE_URL
-            && (registry.owner_pubkey_hex.is_empty()
-                || registry.owner_pubkey_hex == placeholder_owner_pubkey())
-            && let Some(owner) = &owner
-        {
-            registry.owner_pubkey_hex.clone_from(owner);
-            changed = true;
+fn channel(channel: &str) -> tilo_app_package::version::ReleaseChannel {
+    match channel {
+        "development" => tilo_app_package::version::ReleaseChannel::Development,
+        _ => tilo_app_package::version::ReleaseChannel::Stable,
+    }
+}
+
+/// The trust a workspace keeps for packages: the attestors it accepts and the
+/// publisher keys it refuses.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TrustList {
+    #[serde(default)]
+    pub attestors: Vec<TrustAttestorRow>,
+    #[serde(default)]
+    pub revoked: Vec<RevokedRow>,
+}
+
+/// An attestor a workspace trusts, as its trust list reads it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TrustAttestorRow {
+    pub id: String,
+    pub pubkey_hex: String,
+    pub scope: String,
+}
+
+/// A publisher key a workspace refuses.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RevokedRow {
+    pub pubkey_hex: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// The workspace's trust list, as its `trust.list` reading answers it.
+///
+/// A reading that cannot be made — no desktop session, or no workspace — is
+/// an empty list: nothing trusted beyond what a package's own signature and
+/// the image's roots say, which is the safe reading of "nothing configured".
+/// `TILO_WORKSPACE_TRUST` names the list (its JSON) a test or a development
+/// build reads instead.
+#[must_use]
+pub fn trust() -> TrustList {
+    let (attestors, revoked) = tilo_control::packages::trust();
+    TrustList {
+        attestors: attestors
+            .into_iter()
+            .map(|attestor| TrustAttestorRow {
+                id: attestor.id,
+                pubkey_hex: attestor.pubkey_hex,
+                scope: attestor.scope,
+            })
+            .collect(),
+        revoked: revoked
+            .into_iter()
+            .map(|key| RevokedRow {
+                pubkey_hex: key.pubkey_hex,
+                reason: key.reason,
+            })
+            .collect(),
+    }
+}
+
+/// Run the workspace action `name` with `args`, through the desktop's action
+/// API, and answer what it answered.
+///
+/// # Errors
+/// No desktop answered, the action is unknown or ambiguous, or it failed.
+pub fn workspace_call(name: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+    tilo_control::packages::call(name, &args)
+}
+
+thread_local! {
+    /// The list a caller hands [`load_registries`] for the duration of one call:
+    /// a daemon reads one repository's catalogue with the row its caller named.
+    static ONCE_FOR_THIS_CALL: std::cell::RefCell<Option<RegistriesFile>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `read` with `registries` as the list every [`load_registries`] inside it
+/// answers: a catalogue read made for one registry the workspace names.
+pub fn with_registries<T>(registries: RegistriesFile, read: impl FnOnce() -> T) -> T {
+    struct PutBack(Option<RegistriesFile>);
+    impl Drop for PutBack {
+        fn drop(&mut self) {
+            ONCE_FOR_THIS_CALL.with(|slot| *slot.borrow_mut() = self.0.take());
         }
     }
-    changed
+    let previous = ONCE_FOR_THIS_CALL.with(|slot| slot.borrow_mut().replace(registries));
+    let _put_back = PutBack(previous);
+    read()
 }
 
-pub fn save_registries(registries: &RegistriesFile) -> Result<(), ConfigError> {
-    let path = registries_path().ok_or(ConfigError::NoConfigDir)?;
-    match fs::read_to_string(&path) {
-        Ok(text) => {
-            toml::from_str::<RegistriesFile>(&text)?;
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(ConfigError::Read(error)),
-    }
-    let text = toml::to_string_pretty(registries)?;
-    tilo_files::native::atomic::write_creating_parent(&path, text.as_bytes())?;
-    Ok(())
+/// The registry list a `registry.list` reading answered: `{"registries": [...]}`
+/// in the workspace's spelling, as this module's list.
+#[must_use]
+pub fn registries_from_rows(value: &serde_json::Value) -> Option<RegistriesFile> {
+    let rows = value.get("registries")?.as_array()?;
+    Some(RegistriesFile {
+        registries: rows
+            .iter()
+            .filter_map(|row| {
+                let name = row.get("name")?.as_str()?.to_owned();
+                let base_url = row.get("base_url")?.as_str()?.to_owned();
+                let owner_pubkey_hex = row.get("owner_pubkey_hex")?.as_str()?.to_owned();
+                let channel = match row.get("channel").and_then(serde_json::Value::as_str) {
+                    Some("development") => tilo_app_package::version::ReleaseChannel::Development,
+                    _ => tilo_app_package::version::ReleaseChannel::Stable,
+                };
+                Some(RegistryConfig {
+                    name,
+                    base_url,
+                    owner_pubkey_hex,
+                    enabled: row
+                        .get("enabled")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(true),
+                    channel,
+                })
+            })
+            .collect(),
+    })
 }
 
-pub fn add_registry(
-    registries: &mut RegistriesFile,
-    name: &str,
-    base_url: &str,
-    owner_pubkey_hex: &str,
-) -> Result<(), ConfigError> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(ConfigError::EmptyName);
-    }
-    if registries.registries.iter().any(|r| r.name == name) {
-        return Err(ConfigError::DuplicateName(name.to_string()));
-    }
-    let url = reqwest::Url::parse(base_url).map_err(|_| ConfigError::InvalidUrl)?;
-    if !tilo_net::secure_endpoint(&url) || url.query().is_some() || url.fragment().is_some() {
-        return Err(ConfigError::InvalidUrl);
-    }
-    if owner_pubkey_hex.len() != 64
-        || owner_pubkey_hex == placeholder_owner_pubkey()
-        || hex::decode(owner_pubkey_hex).is_err()
-    {
-        return Err(ConfigError::InvalidOwnerKey);
-    }
-    registries.registries.push(RegistryConfig {
-        name: name.to_string(),
-        base_url: base_url.trim_end_matches('/').to_string(),
-        owner_pubkey_hex: owner_pubkey_hex.to_ascii_lowercase(),
-        enabled: true,
-        channel: tilo_app_package::version::ReleaseChannel::Stable,
-    });
-    Ok(())
-}
-
-pub fn remove_registry(registries: &mut RegistriesFile, name: &str) -> Result<(), ConfigError> {
-    if !registries.registries.iter().any(|r| r.name == name) {
-        return Err(ConfigError::NotFound(name.to_string()));
-    }
-    if registries.registries.len() == 1 {
-        return Err(ConfigError::LastRegistry(name.to_string()));
-    }
-    registries.registries.retain(|r| r.name != name);
-    Ok(())
-}
-
-pub fn set_registry_enabled(
-    registries: &mut RegistriesFile,
-    name: &str,
-    enabled: bool,
-) -> Result<(), ConfigError> {
-    let registry = registries
-        .registries
-        .iter_mut()
-        .find(|r| r.name == name)
-        .ok_or_else(|| ConfigError::NotFound(name.to_string()))?;
-    registry.enabled = enabled;
-    Ok(())
-}
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn add_registry_checks_secure_endpoint_and_refuses_query_and_fragment() {
-        let key = "ab".repeat(32);
-        let mut regs = RegistriesFile::default();
-        add_registry(&mut regs, "ipv6", "http://[::1]:8080/", &key).unwrap();
-        assert_eq!(regs.registries[0].base_url, "http://[::1]:8080");
-        add_registry(&mut regs, "local-sub", "http://tilo.localhost:8080", &key).unwrap();
-        assert_eq!(regs.registries[1].base_url, "http://tilo.localhost:8080");
-        for unsafe_url in [
-            "http://example.test/",
-            "http://localhost.example.test/",
-            "https://placeholder:placeholder@example.test/",
-            "http://placeholder:placeholder@[::1]:8080/",
-            "https://example.test/?token=1",
-            "https://example.test/#frag",
-            "file:///tmp/apps",
-        ] {
-            assert!(
-                matches!(
-                    add_registry(&mut regs, "rejected", unsafe_url, &key),
-                    Err(ConfigError::InvalidUrl)
-                ),
-                "unsafe registry URL was accepted: {unsafe_url}"
-            );
-        }
+    fn a_registry_list_reading_reads_as_the_list_the_cli_uses() {
+        let value = serde_json::json!({
+            "registries": [
+                {
+                    "name": "Tilo main",
+                    "base_url": "https://apps.tilo.so",
+                    "owner_pubkey_hex": "ab".repeat(32),
+                    "enabled": true,
+                    "channel": "stable"
+                },
+                {
+                    "name": "nightly",
+                    "base_url": "http://localhost:8080",
+                    "owner_pubkey_hex": "cd".repeat(32),
+                    "enabled": false,
+                    "channel": "development"
+                }
+            ]
+        });
+        let registries = registries_from_rows(&value).expect("a registry list");
+        assert_eq!(registries.registries.len(), 2);
+        assert_eq!(registries.registries[0].name, "Tilo main");
+        assert_eq!(
+            registries.registries[0].channel,
+            tilo_app_package::version::ReleaseChannel::Stable
+        );
+        assert!(!registries.registries[1].enabled);
+        assert_eq!(
+            registries.registries[1].channel,
+            tilo_app_package::version::ReleaseChannel::Development
+        );
+        assert_eq!(registries.enabled().count(), 1);
+        assert!(registries_from_rows(&serde_json::json!({})).is_none());
     }
 }

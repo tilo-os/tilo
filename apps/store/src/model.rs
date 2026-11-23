@@ -78,9 +78,9 @@ pub enum InstalledState {
         available: String,
         #[serde(default)]
         pinned: bool,
-        /// Whether this package can be changed through the package-service
-        /// capability. Immutable system RPM packages are launchable but
-        /// cannot be pinned or removed from the user store.
+        /// Whether the workspace's tree can change this package. Immutable
+        /// system RPM packages are launchable but cannot be pinned or
+        /// removed from the Store.
         #[serde(default = "default_user_managed")]
         user_managed: bool,
     },
@@ -121,15 +121,17 @@ impl InstalledState {
 /// in [`crate::actions`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionKind {
-    /// Tilo registry → **Open**. Fetch-on-demand (if not already
-    /// cached) + launch. The Tilo path never shows a separate
-    /// "Install" step — opening an app *is* adding it.
+    /// Tilo registry, the workspace already runs the app → **Open** it.
     Open,
+    /// Tilo registry, the workspace runs no version yet → **Get** one: the
+    /// newest offer, recorded in the workspace at once, which every device of
+    /// it then fetches.
+    Get,
     RuntimeInstall,
     Remove,
     /// Tilo registry, installed but older version available → **Update**.
     Update,
-    /// Tilo registry, cached but not pinned → **Keep on device** (pin).
+    /// Tilo registry, the workspace runs it but does not keep it → **Keep this version**.
     MarkInstalled,
     Unmark,
     /// Flatpak, not installed → **Install** (spawns `flatpak install`).
@@ -159,10 +161,11 @@ impl ActionKind {
     pub fn label(self) -> &'static str {
         match self {
             ActionKind::Open | ActionKind::FlatpakOpen => "Open",
+            ActionKind::Get => "Get",
             ActionKind::Remove | ActionKind::FlatpakRemove => "Uninstall",
             ActionKind::Update | ActionKind::FlatpakUpdate => "Update",
-            ActionKind::MarkInstalled => "Keep on device",
-            ActionKind::Unmark => "Allow cleanup",
+            ActionKind::MarkInstalled => "Keep this version",
+            ActionKind::Unmark => "Allow updates",
             ActionKind::FlatpakInstall | ActionKind::RuntimeInstall => "Install",
             ActionKind::NeedsFlatpakHost => "Install flatpak first",
             ActionKind::AddBot => "Add to this workspace…",
@@ -176,10 +179,11 @@ impl ActionKind {
     pub fn progress_label(self) -> &'static str {
         match self {
             Self::Open | Self::FlatpakOpen => "Starting",
+            Self::Get => "Getting",
             Self::Remove | Self::FlatpakRemove => "Removing",
             Self::Update | Self::FlatpakUpdate => "Updating",
-            Self::MarkInstalled => "Keeping on device",
-            Self::Unmark => "Allowing cleanup",
+            Self::MarkInstalled => "Keeping this version",
+            Self::Unmark => "Allowing updates",
             Self::FlatpakInstall | Self::RuntimeInstall => "Installing",
             Self::NeedsFlatpakHost => "Preparing Flatpak",
             Self::AddBot => "Adding",
@@ -250,6 +254,10 @@ pub struct StoreItemVersion {
     /// BLAKE3 hex root hash of the download. Only meaningful for Tilo
     /// entries.
     pub root_hash_hex: Option<String>,
+    /// BLAKE3 hex of the surface the package publishes, as a workspace
+    /// records it with the version; `None` for a package that publishes none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_hex: Option<String>,
     /// Byte size. `0` when unknown.
     pub size_bytes: u64,
 }
@@ -362,11 +370,10 @@ impl StoreItem {
 
     /// Which primary action the card should offer this frame.
     ///
-    /// For Tilo apps the primary is always **Open** — it fetches the
-    /// package on demand the first time and launches it every time
-    /// (never a distinct "Install" step). **Update** takes its place
-    /// when a newer version is available. Flatpak apps keep the
-    /// legacy Install / Remove semantics.
+    /// A Tilo app the workspace runs offers **Open**; one it does not offers
+    /// **Get**, which records the newest offer in the workspace. **Update**
+    /// takes Open's place when the workspace's version is older than the
+    /// source's. Flatpak apps keep the legacy Install / Remove semantics.
     pub fn action_kind(&self, flatpak_available: bool) -> ActionKind {
         if self.bot.is_some() {
             return ActionKind::AddBot;
@@ -377,7 +384,7 @@ impl StoreItem {
             return ActionKind::RuntimeInstall;
         }
         match (&self.source, &self.installed, flatpak_available) {
-            (StoreSource::Tilo { .. }, InstalledState::Not, _) => ActionKind::Open,
+            (StoreSource::Tilo { .. }, InstalledState::Not, _) => ActionKind::Get,
             (StoreSource::Tilo { .. }, InstalledState::Installed { .. }, _) => {
                 if self.installed.update_available() {
                     ActionKind::Update
@@ -430,11 +437,8 @@ impl StoreItem {
             return None;
         }
         match (&self.source, &self.installed) {
-            (StoreSource::Tilo { .. }, InstalledState::Not)
-                if !self.versions.is_empty() && !self.awaiting_developer =>
-            {
-                Some(ActionKind::MarkInstalled)
-            }
+            // Keeping a version is the workspace's: an app it runs none of has
+            // nothing to keep.
             (
                 StoreSource::Tilo { .. },
                 InstalledState::Installed {
@@ -514,7 +518,10 @@ impl StoreItem {
         } else if self.awaiting_developer
             && matches!(
                 action,
-                ActionKind::Open | ActionKind::Update | ActionKind::RuntimeInstall
+                ActionKind::Open
+                    | ActionKind::Get
+                    | ActionKind::Update
+                    | ActionKind::RuntimeInstall
             )
         {
             Some((
@@ -523,7 +530,7 @@ impl StoreItem {
             ))
         } else if matches!(
             action,
-            ActionKind::Open | ActionKind::Update | ActionKind::RuntimeInstall
+            ActionKind::Open | ActionKind::Get | ActionKind::Update | ActionKind::RuntimeInstall
         ) && matches!(self.source, StoreSource::Tilo { .. })
             && self.versions.is_empty()
             && !self.installed.is_installed()
@@ -685,6 +692,7 @@ mod tests {
                 released_at_unix: 0,
                 download_url: Some("https://x/y.tapp".into()),
                 root_hash_hex: Some("de".repeat(32)),
+                surface_hex: None,
                 size_bytes: 100,
                 runtime: None,
             }],
@@ -716,6 +724,7 @@ mod tests {
                 released_at_unix: 0,
                 download_url: None,
                 root_hash_hex: None,
+                surface_hex: None,
                 size_bytes: 0,
                 runtime: None,
             }],
@@ -739,11 +748,11 @@ mod tests {
         phase item_actions_follow_source_and_install_state;
         {
             {
-                // Tilo not-installed → Open (fetch-on-demand + run), with Keep
-                // on this device beside it as the opt-in.
+                // Tilo not-installed → Get, which adds the workspace's version; a version
+                // the workspace runs opens, and an app it runs none of has nothing to keep.
                 let not_installed = tilo_item("Notes", InstalledState::Not, "0.1.0");
-                assert_eq!(not_installed.action_kind(true), ActionKind::Open);
-                assert_eq!(not_installed.pin_action(), Some(ActionKind::MarkInstalled));
+                assert_eq!(not_installed.action_kind(true), ActionKind::Get);
+                assert_eq!(not_installed.pin_action(), None);
 
                 let up_to_date = tilo_item("Notes", qinstalled("0.1.0", "0.1.0", false), "0.1.0");
                 assert_eq!(up_to_date.action_kind(true), ActionKind::Open);
@@ -813,11 +822,11 @@ mod tests {
 
             {
                 let not_installed = tilo_item("Notes", InstalledState::Not, "1");
-                assert!(not_installed.allows_action(ActionKind::Open, true));
+                assert!(not_installed.allows_action(ActionKind::Get, true));
                 assert!(!not_installed.allows_action(ActionKind::Remove, true));
                 assert!(
-                    not_installed.allows_action(ActionKind::MarkInstalled, true),
-                    "keeping an app not downloaded yet downloads it to keep"
+                    !not_installed.allows_action(ActionKind::MarkInstalled, true),
+                    "an app the workspace runs none of has nothing to keep"
                 );
 
                 let cached = tilo_item("Notes", qinstalled("1", "1", false), "1");

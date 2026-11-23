@@ -192,6 +192,9 @@ struct Playing {
     where_played: HashMap<String, (HostKey, u64)>,
 }
 
+/// What records that an app was started from the cache: its id.
+type Opened = dyn Fn(&str) + Send + Sync;
+
 /// The tilolang processes this device runs, by workspace, app and runtimes.
 pub struct Processes {
     /// Where processes keep what their instances keep, and where windows kept it before.
@@ -199,6 +202,8 @@ pub struct Processes {
     /// The platform's launcher, which starts each process in its sandbox ([`spawn_host`]).
     launcher: PathBuf,
     verifies: Box<Verifies>,
+    /// Records each app started, through the device's package cache ([`super::packages::opened`]).
+    opened: Box<Opened>,
     running: Mutex<HashMap<HostKey, Host>>,
     generations: AtomicU64,
     /// Whether the app store is watched for reinstalls.
@@ -220,10 +225,26 @@ impl Processes {
     /// Processes over `data_home`, started through `launcher` and running what `verifies` verified.
     #[must_use]
     pub fn with(data_home: PathBuf, launcher: PathBuf, verifies: Box<Verifies>) -> Arc<Self> {
+        Self::recording(
+            data_home,
+            launcher,
+            verifies,
+            Box::new(super::packages::opened),
+        )
+    }
+
+    /// [`Self::with`], recording each app it starts with `opened`.
+    fn recording(
+        data_home: PathBuf,
+        launcher: PathBuf,
+        verifies: Box<Verifies>,
+        opened: Box<Opened>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             data_home,
             launcher,
             verifies,
+            opened,
             running: Mutex::new(HashMap::new()),
             generations: AtomicU64::new(1),
             follows_reinstalls: AtomicBool::new(false),
@@ -406,6 +427,7 @@ impl Processes {
             |what: String| std::io::Error::new(std::io::ErrorKind::PermissionDenied, what);
         let began = std::time::Instant::now();
         let verified = (self.verifies)(&instance.workspace, &instance.app).map_err(refused)?;
+        (self.opened)(&instance.app);
         let key = HostKey {
             workspace: instance.workspace.clone(),
             app: instance.app.clone(),
@@ -722,6 +744,7 @@ impl Processes {
         view: crate::apps::OpenedView,
     ) -> std::io::Result<std::os::unix::net::UnixStream> {
         let verified = (self.verifies)(workspace, app).map_err(std::io::Error::other)?;
+        (self.opened)(app);
         let key = HostKey {
             workspace: workspace.to_owned(),
             app: app.to_owned(),
@@ -1408,7 +1431,8 @@ mod tests {
         .expect("the launcher is written");
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755))
             .expect("the launcher runs");
-        let processes = Processes::with(
+        let opened = Arc::new(Mutex::new(Vec::new()));
+        let processes = Processes::recording(
             home.path().to_path_buf(),
             launcher,
             Box::new(|_, app| {
@@ -1419,6 +1443,10 @@ mod tests {
                     module: runtime_portal::process_link::Module::default(),
                 })
             }),
+            {
+                let opened = Arc::clone(&opened);
+                Box::new(move |app: &str| opened.lock().unwrap().push(app.to_owned()))
+            },
         );
 
         let (patch, mut instance) =
@@ -1439,6 +1467,11 @@ mod tests {
         link.read_exact(&mut answered)
             .expect("the window answers its page");
         assert_eq!(&answered, b"drawn");
+        assert_eq!(
+            *opened.lock().unwrap(),
+            [NOTES],
+            "starting the app marks it used in the cache, once"
+        );
         instance
             .read_exact(&mut answered)
             .expect("the window holds the view's patch connection");

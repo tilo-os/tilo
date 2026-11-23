@@ -8,7 +8,7 @@ use registry_types::{
 };
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use crate::registry_to_installed::{
+use crate::registry_fixture::{
     Device, Registry, author_tapp_version, native_target, registry_config, signed_entry_version,
     test_publisher,
 };

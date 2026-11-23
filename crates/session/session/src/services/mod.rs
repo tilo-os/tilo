@@ -189,11 +189,6 @@ pub(crate) const TABLE: &[Row] = &[
         owner: Owner::Elsewhere("tilo-model-manager"),
     },
     Row {
-        name: launcher::services::PACKAGE_SERVICE,
-        reach: Reach::Launcher,
-        owner: Owner::Elsewhere("tilo-package-service"),
-    },
-    Row {
         name: launcher::services::USH_SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Elsewhere("tilo-supervisor"),

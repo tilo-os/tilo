@@ -52,7 +52,6 @@ NATIVE_TEST_FEATURES = {
     # (`FakeDocumentNet`) is a feature, so a package that wants only the
     # environment does not link a CRDT.
     "tilo-test-env": ("document",),
-    "package-service": ("test-support",),
     "package-store": ("store",),
     "cloud-source": ("conformance",),
     "browser-continuity": ("native",),

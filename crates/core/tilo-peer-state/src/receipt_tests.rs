@@ -924,6 +924,8 @@ tilo_test_env::scenario! {
             publisher: hex::encode([10; 32]),
             file: None,
             dev: true,
+            pinned: false,
+            payload: crate::workspace_membership::AppPayload::Tapp,
         };
         let install = WorkspaceMembershipCommand::InstallApp(release.clone());
         let refused = peer

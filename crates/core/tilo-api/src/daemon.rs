@@ -34,8 +34,6 @@ pub const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Where the system unit keeps the daemon's sockets on Tilo OS.
 const SYSTEM_SOCKETS: &str = tilo_paths::machine::DAEMON_SOCKETS;
-/// The system unit Tilo OS ships: where it is installed, the daemon is the system's.
-const SYSTEM_UNIT: &str = "/usr/lib/systemd/system/tilo-runtime.service";
 /// The system unit's profile: the daemon's home and state on Tilo OS.
 pub const SYSTEM_PROFILE: &str = "/var/lib/tilo/state";
 /// The longest a socket's path may be: a socket's address holds 104 bytes on macOS (108 on
@@ -46,12 +44,7 @@ const SOCKET_PATH_MAX: usize = 103;
 /// every command's action frames and agents' `tilo mcp`.
 const NATIVE: &str = tilo_paths::machine::DAEMON_NATIVE;
 
-/// Whether this computer's daemon is the system's: Tilo OS runs it from boot as its own
-/// account for every person of the computer, where other computers run it as the person.
-#[must_use]
-pub fn system_daemon() -> bool {
-    cfg!(target_os = "linux") && Path::new(SYSTEM_UNIT).is_file()
-}
+pub use tilo_paths::machine::system_daemon;
 
 /// Where this computer's daemon listens: the one place every client finds it, and the daemon
 /// binds. Under Tilo OS's system unit its sockets are in its runtime directory; a person's own
@@ -102,54 +95,13 @@ pub fn socket_fits(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// This account's temporary directory on macOS (`/var/folders/…/T/`), as the system names it:
-/// private to the account, and short whatever the home folder is.
-#[cfg(target_os = "macos")]
-fn darwin_temp_dir() -> Result<PathBuf, String> {
-    use std::os::unix::ffi::OsStringExt as _;
-    let mut buf = vec![0_u8; 1024];
-    // SAFETY: `buf` is writable for `buf.len()` bytes; confstr writes at most that many, its
-    // NUL included.
-    let len = unsafe {
-        libc::confstr(
-            libc::_CS_DARWIN_USER_TEMP_DIR,
-            buf.as_mut_ptr().cast(),
-            buf.len(),
-        )
-    };
-    if len == 0 || len > buf.len() {
-        return Err(format!(
-            "this account has no temporary directory: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    buf.truncate(len.saturating_sub(1));
-    Ok(PathBuf::from(std::ffi::OsString::from_vec(buf)))
-}
-
 /// The directory a person's own service keeps its sockets in, made private to this account.
 fn own_sockets(login: &Path) -> Result<PathBuf, String> {
     use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
-    #[cfg(target_os = "macos")]
-    let _ = login;
-    #[cfg(target_os = "macos")]
-    let dir = darwin_temp_dir()?.join("tilo");
-    // A command run where the login's runtime directory is not said (over ssh, from cron) finds
-    // the one the service has, which systemd names by the account.
-    #[cfg(not(target_os = "macos"))]
-    let dir = {
-        let uid = std::fs::metadata(login)
-            .map_err(|error| format!("{} is not readable: {error}", login.display()))?
-            .uid();
-        std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .filter(|runtime| runtime.is_absolute() && runtime.is_dir())
-            .or_else(|| Some(PathBuf::from(format!("/run/user/{uid}"))).filter(|run| run.is_dir()))
-            .map_or_else(
-                || std::env::temp_dir().join(format!("tilo-{uid}")),
-                |runtime| runtime.join("tilo"),
-            )
-    };
+    let uid = std::fs::metadata(login)
+        .map_err(|error| format!("{} is not readable: {error}", login.display()))?
+        .uid();
+    let dir = tilo_paths::machine::daemon_sockets(uid)?;
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -496,7 +448,6 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let login = tempfile::tempdir().unwrap();
         let sockets = own_sockets(login.path()).unwrap();
-        assert_eq!(sockets, darwin_temp_dir().unwrap().join("tilo"));
         assert!(sockets.starts_with("/var/folders"), "{}", sockets.display());
         let mode = std::fs::metadata(&sockets).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700, "{mode:o}");

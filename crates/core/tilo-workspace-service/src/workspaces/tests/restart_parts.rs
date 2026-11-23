@@ -76,9 +76,16 @@ fn restart_with_chain_of(parts: usize) -> Restart {
     use automerge::transaction::Transactable as _;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let mut workspace =
-        GovernedWorkspace::create(dir.path(), "Team", &cert, &key, None, SystemTime::now())
-            .unwrap();
+    let mut workspace = GovernedWorkspace::create(
+        dir.path(),
+        "Team",
+        &cert,
+        &key,
+        None,
+        (&[], &[]),
+        SystemTime::now(),
+    )
+    .unwrap();
     let state = workspace.collaboration().clone();
     let chain = collab_types::document::DocumentId::parse(
         "derived:pages@derived:default@tab:0000000000000000",

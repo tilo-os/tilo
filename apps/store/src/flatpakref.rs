@@ -108,6 +108,7 @@ impl FlatpakRef {
                 released_at_unix: 0,
                 download_url: None,
                 root_hash_hex: None,
+                surface_hex: None,
                 size_bytes: 0,
                 runtime: None,
             }],

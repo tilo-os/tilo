@@ -151,6 +151,7 @@ mod tests {
                     tapp_root_hash_hex: "cd".repeat(32),
                     tapp_size_bytes: 1024,
                     tapp_blake3_hex: "ef".repeat(32),
+                    tapp_surface_hex: String::new(),
                     target: crate::entry::RegistryTarget {
                         platform: crate::entry::TILO_OS_PLATFORM.into(),
                         architecture: "x86_64".into(),

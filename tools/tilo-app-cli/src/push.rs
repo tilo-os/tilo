@@ -1,7 +1,7 @@
 //! `tilo-app push`: run a build of an app in a workspace that is running
 //! now, for everyone in it.
 //!
-//! The workspace records which version of the app it runs (its `install-app`
+//! The workspace records which version of the app it runs (its `install`
 //! governance action); every member is to run it, and a change
 //! made with another version waits until its author has.
 //!
@@ -19,7 +19,7 @@ use tilo_api::calls::{Calls, Reach};
 
 /// The path of a workspace's apps in its action API.
 const APPS: &str = "workspace/apps";
-/// The bytes of a package file one `upload-app-file` piece carries: the most
+/// The bytes of a package file one `upload` piece carries: the most
 /// the workspace's server takes in one call.
 const UPLOAD_PIECE: usize = 256 * 1024;
 
@@ -99,7 +99,7 @@ pub fn run_push(args: PushArgs) -> Result<Value> {
 }
 
 /// Hand the package `bytes` to `workspace`'s server in the pieces it takes,
-/// naming it by its BLAKE3 hash: what `install-app` names as the version's
+/// naming it by its BLAKE3 hash: what `install` names as the version's
 /// `file`.
 async fn upload_app_file(calls: &Calls, workspace: &str, bytes: &[u8]) -> Result<String> {
     if bytes.is_empty() {
@@ -118,7 +118,7 @@ async fn upload_app_file(calls: &Calls, workspace: &str, bytes: &[u8]) -> Result
         Box::pin(calls.act(
             workspace,
             APPS,
-            "upload-app-file",
+            "upload",
             &argument,
             "hand the workspace an app version's package",
         ))
@@ -166,7 +166,7 @@ fn newest_package(dist: &Path) -> Result<PathBuf> {
     })
 }
 
-/// The workspace's `install-app` for the package `package` built from the app in
+/// The workspace's `install` for the package `package` built from the app in
 /// `app_dir`: the surface its changes name (the BLAKE3 of the app's
 /// `surface.toml` in the form it is kept by), the package's `tapp:` hash and
 /// the key that signed it.
@@ -209,7 +209,7 @@ pub fn app_push(app_dir: &Path, package: &Path, dev: bool) -> Result<Push> {
         ("dev", json!(dev)),
     ]);
     Ok(Push {
-        action: "install-app",
+        action: "install",
         argument,
         upload: Some(package.to_path_buf()),
     })

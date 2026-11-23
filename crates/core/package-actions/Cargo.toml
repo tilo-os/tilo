@@ -1,0 +1,35 @@
+[package]
+name = "package-actions"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The changes a device makes to its package cache: its daemon's published actions, the apps its workspaces name, and an OS image build's offline store, through one implementation."
+
+[dependencies]
+tilo-actions = { path = "../actions" }
+tilo-app-package = { path = "../tilo-app-package" }
+package-store = { path = "../package-store", features = ["store"] }
+runtime-bundle = { path = "../runtime-bundle" }
+# Payload blobs a thin package does not carry, from a registry server.
+app-registry = { path = "../app-registry" }
+# An update resolves the registries' offer as `app update` does.
+app-cli = { path = "../../os/app-cli" }
+runtime-portal = { path = "../runtime-portal", default-features = false }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-paths.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+# Registers the runtime's GNOME Shell and KRunner search providers after an install.
+tilo-os-search = { path = "../../integrations/os-search" }
+
+[lints]
+workspace = true

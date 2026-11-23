@@ -36,7 +36,6 @@
 "notes" = 1   # 0.6 MB
 "osk" = 23   # 19.9 MB
 "tilo" = 1   # 0.7 MB
-"tilo-package-service" = 4   # 3.1 MB
 "app" = 5   # 4.1 MB
 "tilo-cli-shim" = 1   # 0.5 MB
 "tilo-collab-probe" = 3   # 2.4 MB

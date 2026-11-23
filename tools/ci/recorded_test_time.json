@@ -5,7 +5,6 @@
  "agent-provider-config": 1,
  "api-tester": 4,
  "app-cli": 4,
- "package-service": 2,
  "backups": 3,
  "browser": 8,
  "calculator": 5,

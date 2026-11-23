@@ -157,6 +157,18 @@ launcher = { path = "../launcher" }
 libc.workspace = true
 # The log a daemon keeps trims, and the socket it stops taking connections at.
 rustix = { workspace = true, features = ["fs", "net", "std"] }
+# The device's package cache: its published actions are this library's changes.
+package-actions = { path = "../package-actions" }
+# The repositories a version the workspaces run is fetched from.
+app-cli = { path = "../../os/app-cli" }
+# The surface a package carries, checked against the one the workspace records.
+app-registry = { path = "../app-registry" }
+# Whether a package names a runtime build, which the cache installs before the app.
+registry-types = { path = "../registry-types" }
+# Where a fetched package is staged before the cache installs it.
+tempfile.workspace = true
+# How long a runtime build nothing runs on is kept before the cache collects it.
+runtime-bundle = { path = "../runtime-bundle" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -171,6 +183,8 @@ ush = { path = "../../vm/ush", features = ["quic"] }
 
 # App Sandbox or Seatbelt: how every app launches on stock macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
+# The workspace's trust list, read through the desktop's action API.
+tilo-control = { path = "../../session/control-cli" }
 launcher-macos = { path = "../launcher-macos" }
 # The file chooser a confined app asks this runtime to show.
 tilo-dialogs = { path = "../../platform/tilo-dialogs" }
@@ -190,6 +204,8 @@ tilo-workspace-service = { path = "../tilo-workspace-service", features = ["apps
 tilo-peer-state = { path = "../tilo-peer-state", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path verifies.
 ed25519-dalek.workspace = true
+# The signed catalogue a follower test's registry serves.
+registry-types = { path = "../registry-types" }
 # The cluster of a person's own records, which their store's key is.
 collab-types = { path = "../collab-types" }
 tempfile.workspace = true

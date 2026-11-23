@@ -146,7 +146,6 @@ quick-xml.workspace = true
 uuid.workspace = true
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 # The installer service's client, for the language packs Region & formats offers.
-package-service = { path = "../../crates/core/package-service", default-features = false }
 tilo-capture = { path = "../../crates/engines/tilo-capture", features = ["scanner"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

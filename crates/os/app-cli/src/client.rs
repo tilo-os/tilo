@@ -226,6 +226,39 @@ pub fn fetch_snapshot(reg: &RegistryConfig) -> Result<CatalogueSnapshot, Registr
     Ok(snapshot)
 }
 
+/// The entries `reg` offers now, fetched and verified as [`fetch_snapshot`] verifies them, without
+/// advancing the checkpoint or keeping the snapshot: a read for a caller that must not change what
+/// this device accepted. A catalogue signed with a lower sequence than the one this device already
+/// accepted is refused, as the checkpoint would refuse it.
+///
+/// # Errors
+///
+/// The registry could not be reached, or its catalogue does not verify or walks backwards.
+pub fn fresh_entries(reg: &RegistryConfig) -> Result<Vec<VerifiedEntry>, RegistryError> {
+    let mut url = registry_url(reg, "entries")?;
+    url.set_query(Some("format=compact"));
+    let now = tilo_clock::unix_now();
+    let Some(bytes) = fetch_revalidated(&url, MAX_INDEX_RESPONSE_BYTES, "snapshot", None)? else {
+        return Err(RegistryError::NotStored);
+    };
+    let snapshot =
+        CatalogueSnapshot::from_json(&bytes).map_err(|e| RegistryError::Decode(e.to_string()))?;
+    let entries = classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now)
+        .map_err(|error| expired_or(error, &snapshot, &reg.owner_pubkey_hex, now))?;
+    if let Some(accepted) = checkpoint_path(reg).and_then(|path| held_snapshot(&path))
+        && snapshot.sequence() < accepted.sequence()
+    {
+        return Err(RegistryError::Checkpoint(format!(
+            "{} offers a catalogue signed with sequence {}, behind the sequence {} this device \
+             already accepted",
+            reg.name,
+            snapshot.sequence(),
+            accepted.sequence()
+        )));
+    }
+    Ok(entries)
+}
+
 fn expired_or(
     error: RegistryError,
     snapshot: &CatalogueSnapshot,
@@ -641,6 +674,7 @@ mod tests {
                     tapp_root_hash_hex: "cd".repeat(32),
                     tapp_size_bytes: 1024,
                     tapp_blake3_hex: "ef".repeat(32),
+                    tapp_surface_hex: String::new(),
                     target: registry_types::RegistryTarget {
                         platform: registry_types::TILO_OS_PLATFORM.into(),
                         architecture: std::env::consts::ARCH.into(),

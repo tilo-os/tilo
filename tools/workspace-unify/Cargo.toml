@@ -749,8 +749,6 @@ doc = false
 "p384-0_13_1" = { package = "p384", version = "^0.13.1", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "pem", "pkcs8", "sha2", "sha384", "std"] }
 "p384-0_14_0" = { package = "p384", version = "^0.14.0", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "getrandom", "pem", "pkcs8", "precomputed-tables", "sha2", "sha384", "std"] }
 "p521-0_14_0" = { package = "p521", version = "^0.14.0", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "getrandom", "pem", "pkcs8", "precomputed-tables", "sha512", "std"] }
-"package-service" = { path = "../../crates/core/package-service", default-features = false, features = ["default", "service", "test-support"] }
-"package-service-client" = { path = "../../crates/core/package-service-client", default-features = false, features = [] }
 "package-store" = { path = "../../crates/core/package-store", default-features = false, features = ["default", "lease", "store"] }
 "page_size-0_6_0" = { package = "page_size", version = "^0.6.0", default-features = false, features = [] }
 "palette-0_7_6" = { package = "palette", version = "^0.7.6", default-features = false, features = ["approx", "libm"] }
@@ -2137,8 +2135,6 @@ doc = false
 "p384-0_13_1" = { package = "p384", version = "^0.13.1", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "pem", "pkcs8", "sha2", "sha384", "std"] }
 "p384-0_14_0" = { package = "p384", version = "^0.14.0", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "getrandom", "pem", "pkcs8", "precomputed-tables", "sha2", "sha384", "std"] }
 "p521-0_14_0" = { package = "p521", version = "^0.14.0", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "getrandom", "pem", "pkcs8", "precomputed-tables", "sha512", "std"] }
-"package-service" = { path = "../../crates/core/package-service", default-features = false, features = ["service", "test-support"] }
-"package-service-client" = { path = "../../crates/core/package-service-client", default-features = false, features = [] }
 "package-store" = { path = "../../crates/core/package-store", default-features = false, features = ["default", "lease", "store"] }
 "page_size-0_6_0" = { package = "page_size", version = "^0.6.0", default-features = false, features = [] }
 "palette_derive-0_7_6" = { package = "palette_derive", version = "^0.7.6", default-features = false, features = [] }
@@ -3379,7 +3375,6 @@ doc = false
 "p384-0_13_1" = { package = "p384", version = "^0.13.1", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "pem", "pkcs8", "sha2", "sha384", "std"] }
 "p384-0_14_0" = { package = "p384", version = "^0.14.0", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "getrandom", "pem", "pkcs8", "precomputed-tables", "sha2", "sha384", "std"] }
 "p521-0_14_0" = { package = "p521", version = "^0.14.0", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "getrandom", "pem", "pkcs8", "precomputed-tables", "sha512", "std"] }
-"package-service" = { path = "../../crates/core/package-service", default-features = false, features = ["default", "service", "test-support"] }
 "package-store" = { path = "../../crates/core/package-store", default-features = false, features = ["default", "lease", "store"] }
 "page_size-0_6_0" = { package = "page_size", version = "^0.6.0", default-features = false, features = [] }
 "palette-0_7_6" = { package = "palette", version = "^0.7.6", default-features = false, features = ["approx", "libm"] }
@@ -4757,7 +4752,6 @@ doc = false
 "p384-0_13_1" = { package = "p384", version = "^0.13.1", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "pem", "pkcs8", "sha2", "sha384", "std"] }
 "p384-0_14_0" = { package = "p384", version = "^0.14.0", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "getrandom", "pem", "pkcs8", "precomputed-tables", "sha2", "sha384", "std"] }
 "p521-0_14_0" = { package = "p521", version = "^0.14.0", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "getrandom", "pem", "pkcs8", "precomputed-tables", "sha512", "std"] }
-"package-service" = { path = "../../crates/core/package-service", default-features = false, features = ["service", "test-support"] }
 "package-store" = { path = "../../crates/core/package-store", default-features = false, features = ["default", "lease", "store"] }
 "page_size-0_6_0" = { package = "page_size", version = "^0.6.0", default-features = false, features = [] }
 "palette_derive-0_7_6" = { package = "palette_derive", version = "^0.7.6", default-features = false, features = [] }

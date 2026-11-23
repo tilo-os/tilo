@@ -3,8 +3,7 @@
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
-// The package service's client and the catalogue come from their engine library,
-// not the tapp.
+// The catalogue comes from its engine library, not the tapp.
 #[cfg(feature = "runtime-engine")]
 extern crate tilo_app_process_engine;
 

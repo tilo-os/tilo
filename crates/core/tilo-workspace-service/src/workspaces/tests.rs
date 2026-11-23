@@ -661,9 +661,16 @@ async fn an_app_record_authored_here_survives_its_changes_rolling_over() {
 fn a_created_workspace_restores_with_its_governance_and_publication() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let created =
-        GovernedWorkspace::create(dir.path(), "Team", &cert, &key, None, SystemTime::now())
-            .unwrap();
+    let created = GovernedWorkspace::create(
+        dir.path(),
+        "Team",
+        &cert,
+        &key,
+        None,
+        (&[], &[]),
+        SystemTime::now(),
+    )
+    .unwrap();
     assert!(!created.record.outgoing.is_empty());
     assert!(created.record.outgoing.iter().all(|entry| entry.checkpoint));
     let restored = GovernedWorkspace::open(created.path.clone(), None).unwrap();
@@ -690,9 +697,16 @@ fn kept_peer_state(path: &std::path::Path) -> (document_format::StoredResource, 
 fn a_peer_state_of_an_older_layout_opens_and_is_written_again_in_todays() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let created =
-        GovernedWorkspace::create(dir.path(), "Team", &cert, &key, None, SystemTime::now())
-            .unwrap();
+    let created = GovernedWorkspace::create(
+        dir.path(),
+        "Team",
+        &cert,
+        &key,
+        None,
+        (&[], &[]),
+        SystemTime::now(),
+    )
+    .unwrap();
     let path = created.path.clone();
     drop(created);
     // The same state as the version before kept it: what an earlier build wrote.
@@ -741,9 +755,16 @@ fn changes_an_earlier_build_kept_to_send_open_in_todays_layout() {
     use neighbour_wire::NeighbourMsg;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let created =
-        GovernedWorkspace::create(dir.path(), "Team", &cert, &key, None, SystemTime::now())
-            .unwrap();
+    let created = GovernedWorkspace::create(
+        dir.path(),
+        "Team",
+        &cert,
+        &key,
+        None,
+        (&[], &[]),
+        SystemTime::now(),
+    )
+    .unwrap();
     let path = created.path.clone();
     drop(created);
     let write = |seq: u64, readers: Option<&str>| NeighbourMsg::AppDocument {
@@ -851,8 +872,15 @@ fn a_workspace_name_must_be_printable_and_short() {
     ];
     for (name, founded, what) in names {
         let dir = tempfile::tempdir().unwrap();
-        let created =
-            GovernedWorkspace::create(dir.path(), name, &cert, &key, None, SystemTime::now());
+        let created = GovernedWorkspace::create(
+            dir.path(),
+            name,
+            &cert,
+            &key,
+            None,
+            (&[], &[]),
+            SystemTime::now(),
+        );
         assert_eq!(
             created.is_ok(),
             founded,
@@ -866,9 +894,16 @@ fn a_workspace_name_must_be_printable_and_short() {
 fn a_long_tail_compacts_into_a_fresh_checkpoint() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let mut workspace =
-        GovernedWorkspace::create(dir.path(), "Team", &cert, &key, None, SystemTime::now())
-            .unwrap();
+    let mut workspace = GovernedWorkspace::create(
+        dir.path(),
+        "Team",
+        &cert,
+        &key,
+        None,
+        (&[], &[]),
+        SystemTime::now(),
+    )
+    .unwrap();
     workspace.record.published = workspace.record.outgoing.len();
     for index in 0..=MAX_PUBLICATION_TAIL {
         workspace.record.outgoing.push(Publication {
@@ -2306,6 +2341,68 @@ async fn a_workspace_moved_here_keeps_its_identity() {
     );
     let fresh = workspaces.create_workspace("Fresh", None).await.unwrap();
     assert_ne!(fresh.workspace, workspace);
+    server.shutdown().await;
+}
+
+/// A workspace made on a device no registry has answered yet — fresh from its install, or offline
+/// at first use — starts with the default apps its package cache already holds, each recorded as
+/// the release the cache has: its version, package root and publisher.
+#[tokio::test]
+async fn a_workspace_made_with_no_catalogue_starts_with_the_defaults_the_cache_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("apps");
+    let config = dir.path().join("store-config");
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    let app = app_fleet::default_apps()[0];
+    let (root, publisher) = ("9a".repeat(32), "2b".repeat(32));
+    std::fs::write(
+        store.join("registry.toml"),
+        format!(
+            "[[entry]]\nid = \"{app}\"\nversion = \"3.1.4\"\n\
+             package_id_hex = \"{root}\"\npublisher_key_hex = \"{publisher}\"\n\
+             payload_root = \"{}\"\nmanifest_path = \"{}\"\n",
+            store.join("payloads").join(&root).display(),
+            store
+                .join("pkgs")
+                .join(&root)
+                .join("manifest.toml")
+                .display(),
+        ),
+    )
+    .unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    // The cache is this test's whole store, and no registry is configured to answer.
+    env.remove("TILO_APPS_SYSTEM_DIR")
+        .set("TILO_APPS_DATA_DIR", &store)
+        .set("TILO_STORE_CONFIG_DIR", &config)
+        .set("TILO_WORKSPACE_REGISTRIES", r#"{"registries": []}"#);
+    let (key, cert) = governor();
+    let server = test_host(&dir.path().join("host"), &key, &cert).await;
+    let made = server
+        .workspaces()
+        .create_workspace("First", None)
+        .await
+        .unwrap();
+    let running = server
+        .workspaces()
+        .app_versions(&made.workspace)
+        .await
+        .unwrap();
+    let release = running
+        .iter()
+        .map(|installed| &installed.release)
+        .find(|release| release.app == app)
+        .unwrap_or_else(|| panic!("the default {app} the cache holds is recorded: {running:?}"));
+    assert_eq!(release.version, "3.1.4");
+    assert_eq!(release.package, root);
+    assert_eq!(release.publisher, publisher);
+    assert_eq!(release.file, None, "the workspace keeps no file of it");
+    assert_eq!(
+        running.len(),
+        1,
+        "only what the cache holds is recorded with no catalogue: {running:?}"
+    );
     server.shutdown().await;
 }
 

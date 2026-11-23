@@ -11,7 +11,6 @@
   "app-catalogue": {"libraries": 2934247, "tests": 66509952},
   "app-cli": {"libraries": 6280012, "tests": 107123720},
   "app-fleet": {"libraries": 593214, "tests": 2961328},
-  "package-service": {"libraries": 22569947, "tests": 220071656},
   "app-registry": {"libraries": 9225874, "tests": 64280072},
   "backups": {"libraries": 17036501, "tests": 1356517744},
   "block-devices": {"libraries": 6208621, "tests": 11941392},
