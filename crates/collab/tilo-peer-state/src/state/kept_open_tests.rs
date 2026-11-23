@@ -498,11 +498,21 @@ tilo_test_env::scenario! {
         let plaintext = caller_edit(&f.replica, &caller, &f.owner, f.now, "forged", false);
         let message = write(&f.replica, &f.owner, &keys, &plaintext, f.now);
         admit(&mut f.replica, &f.owner, message, f.now);
-        let read = read_kept(&f.replica, reader, &[&keys], &mut KeptDocument::default());
+        let mut kept = KeptDocument::default();
+        let (document, _) = read_kept(&f.replica, reader, &[&keys], &mut kept)
+            .expect("the record reads without the change its caller did not sign");
+        assert_eq!(
+            document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("base"),
+            "the unsigned caller's change is not read"
+        );
         assert!(
-            matches!(read, Err(crate::PeerDocumentReadError::Refused(_))),
-            "an unsigned caller's sealed change is refused when it is opened: {:?}",
-            read.map(|_| ())
+            matches!(
+                kept.refused(),
+                [UnmergedWrite { seq: 1, reason: UnmergedReason::Refused { .. }, .. }]
+            ),
+            "the refusal is named: {:?}",
+            kept.refused()
         );
 
         let mut f = fixture();
@@ -540,12 +550,36 @@ fn caller_edit(
     value: &str,
     signed: bool,
 ) -> Vec<u8> {
+    caller_change(
+        &mut Author::new(peer),
+        peer,
+        (cert, key),
+        now,
+        (value, None),
+        signed,
+    )
+    .encode()
+    .unwrap()
+}
+
+/// [`caller_edit`] made by `author`, on from what it wrote, with `file` beside the value when
+/// given: unencoded, as a write too large for one frame is.
+pub(super) fn caller_change(
+    author: &mut Author,
+    peer: &StatePeer,
+    (cert, key): (&DeviceCert, &SigningKey),
+    now: SystemTime,
+    (value, file): (&str, Option<Vec<u8>>),
+    signed: bool,
+) -> DocumentMutation {
     use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget, SignedCall};
     use tilo_actions::{ActionAddress, ActionContext, ActionInvoker, InvocationId, InvokerDevice};
 
-    let mut author = Author::new(peer);
     let heads = author.0.get_heads();
     author.0.put(ROOT, "value", value).unwrap();
+    if let Some(file) = file {
+        author.0.put(ROOT, "file", file).unwrap();
+    }
     let invocation = InvocationId::new();
     let mut request = InvokeRequest {
         invocation,
@@ -597,8 +631,6 @@ fn caller_edit(
             .with_message(context.change_message().unwrap()),
     );
     DocumentMutation::Incremental(author.0.save_after(&heads))
-        .encode()
-        .unwrap()
 }
 
 /// What one read of the document made within a turn did.
@@ -759,4 +791,275 @@ fn a_long_history_read_in_turns_opens_a_few_writes_a_turn_and_reads_as_a_whole_r
         at_once.took
     );
     same(&mut document, &mut whole);
+}
+
+/// The owner's device as the caller a change names.
+fn owner_caller(f: &Fixture) -> DeviceCert {
+    f.replica
+        .owner_certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == f.owner.verifying_key().to_bytes())
+        .unwrap()
+}
+
+/// A sealed history in which the owner's device writes a change for a caller who never signed
+/// it, the other members write on from the record as it reads, and the owner's device then
+/// writes on from what it wrote: its forged change and its follow-up are refused, the rest reads.
+pub(super) fn write_refused_history(f: &mut Fixture, keys: &ContentKeys) {
+    let caller = owner_caller(f);
+    let mut forger = Author::new(&f.replica);
+    let forged = caller_change(
+        &mut forger,
+        &f.replica,
+        (&caller, &f.owner),
+        f.now,
+        ("forged", None),
+        false,
+    )
+    .encode()
+    .unwrap();
+    let message = write(&f.replica, &f.owner, keys, &forged, f.now);
+    admit(&mut f.replica, &f.owner, message, f.now);
+    let message = write(
+        &f.replica,
+        &f.other,
+        keys,
+        &Author::new(&f.replica).edit("other", "kept"),
+        f.now,
+    );
+    admit(&mut f.replica, &f.other, message, f.now);
+    let message = write(
+        &f.replica,
+        &f.editor,
+        keys,
+        &Author::new(&f.replica).edit("editor", "kept"),
+        f.now,
+    );
+    admit(&mut f.replica, &f.editor, message, f.now);
+    let message = write(
+        &f.replica,
+        &f.owner,
+        keys,
+        &forger.edit("follow", "up"),
+        f.now,
+    );
+    admit(&mut f.replica, &f.owner, message, f.now);
+}
+
+/// That `document` reads as [`write_refused_history`]'s record reads without the forged change
+/// and its follow-up.
+pub(super) fn reads_without_the_refused(document: &AutoCommit) {
+    let text = |key: &str| {
+        document
+            .get(ROOT, key)
+            .unwrap()
+            .and_then(|(value, _)| value.as_str().map(str::to_owned))
+    };
+    assert_eq!(
+        text("value").as_deref(),
+        Some("base"),
+        "the forged value is not read"
+    );
+    assert_eq!(
+        text("follow"),
+        None,
+        "what its author built on it is not read"
+    );
+    assert_eq!(text("other").as_deref(), Some("kept"));
+    assert_eq!(text("editor").as_deref(), Some("kept"));
+}
+
+/// The writes `refused` names, as who wrote them, at which sequence, and whether each was refused
+/// itself (else it builds on one that was).
+pub(super) fn named(refused: &[UnmergedWrite]) -> Vec<([u8; 32], u64, bool)> {
+    let mut named: Vec<([u8; 32], u64, bool)> = refused
+        .iter()
+        .map(|write| match &write.reason {
+            UnmergedReason::Refused { .. } => (write.author, write.seq, true),
+            UnmergedReason::BuiltOnRefused { .. } => (write.author, write.seq, false),
+            other => panic!("{} is left out for another reason: {other}", write.seq),
+        })
+        .collect();
+    named.sort_unstable();
+    named
+}
+
+/// A member's sealed change made for a caller who never signed it is refused by every reader on
+/// its own, together with what its author built on it. The record reads without them, every
+/// reader names them, and a kept read, a whole read and the workspace's own read agree.
+#[test]
+fn a_refused_sealed_change_is_read_without_together_with_what_its_author_built_on_it() {
+    let mut f = fixture();
+    let keys = f.keys();
+    let reader = f.authority.device_public_key;
+    write_refused_history(&mut f, &keys);
+    let owner = f.owner.verifying_key().to_bytes();
+    let refused = vec![(owner, 1, true), (owner, 2, false)];
+
+    let capture = f
+        .replica
+        .capture_document(
+            reader,
+            (APP, RECORD),
+            peer_now(),
+            1024 * 1024,
+            Some(&mut |op| open(&keys, op)),
+        )
+        .expect("the record reads without the refused change");
+    assert_eq!(named(capture.refused()), refused, "the refusals are named");
+    let mut whole = AutoCommit::load(&capture.into_bytes()).unwrap();
+    reads_without_the_refused(&whole);
+
+    let mut kept = KeptDocument::default();
+    let (mut document, _) = read_kept(&f.replica, reader, &[&keys], &mut kept).unwrap();
+    same(&mut document, &mut whole);
+    assert_eq!(named(kept.refused()), refused);
+    // A write after them reads on from what is kept, still without them.
+    let message = write(
+        &f.replica,
+        &f.editor,
+        &keys,
+        &Author::new(&f.replica).edit("later", "kept"),
+        f.now,
+    );
+    admit(&mut f.replica, &f.editor, message, f.now);
+    let (mut document, opened) = read_kept(&f.replica, reader, &[&keys], &mut kept).unwrap();
+    assert_eq!(opened, 1, "only the new write is opened");
+    reads_without_the_refused(&document);
+    let mut whole = read_whole(&f.replica, reader, &[&keys]);
+    same(&mut document, &mut whole);
+    assert_eq!(named(kept.refused()), refused);
+
+    // The workspace's own reader, which compacts and serves the record, reads it alike.
+    let opened = f
+        .replica
+        .publication()
+        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+        .unwrap()
+        .unwrap();
+    assert_eq!(named(&opened.unmerged), refused);
+    same(&mut AutoCommit::load(&opened.document).unwrap(), &mut whole);
+    let stored = f.replica.publication().held_document(APP, RECORD).unwrap();
+    let (opened, _) = stored.opened_over(&mut |op| open(&keys, op), None).unwrap();
+    assert_eq!(named(&opened.unmerged), refused);
+    same(&mut AutoCommit::load(&opened.document).unwrap(), &mut whole);
+}
+
+/// A change made for a caller is judged by the revocations as of when it was written: a caller's
+/// device revoked afterwards does not take back what it asked for, on any device reading the
+/// history afresh, while one revoked before it asked is refused.
+#[test]
+fn a_callers_later_revocation_leaves_what_it_asked_for_before_readable() {
+    use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+    let mut f = fixture();
+    let keys = f.keys();
+    let reader = f.authority.device_public_key;
+    let caller = f
+        .replica
+        .owner_certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == f.other.verifying_key().to_bytes())
+        .unwrap();
+    let plaintext = caller_edit(&f.replica, &caller, &f.other, f.now, "asked", true);
+    let message = write(&f.replica, &f.owner, &keys, &plaintext, f.now);
+    admit(&mut f.replica, &f.owner, message, f.now);
+    let revoked = |at: SystemTime| {
+        let mut entry = RevocationEntry {
+            user_public_key: caller.user_public_key,
+            revoked_device_public_key: caller.device_public_key,
+            revoked_at_ns: crate::state::now_ns(at),
+            reason: RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut entry, &SigningKey::from_bytes(&[1; 32])).unwrap();
+        let mut peer = f.replica.clone();
+        assert!(peer.core.revocations.insert(entry).unwrap());
+        peer
+    };
+    let value = |peer: &StatePeer| {
+        let mut kept = KeptDocument::default();
+        let (document, _) = read_kept(peer, reader, &[&keys], &mut kept).unwrap();
+        let value = document
+            .get(ROOT, "value")
+            .unwrap()
+            .and_then(|(value, _)| value.as_str().map(str::to_owned));
+        (value, kept.refused().len())
+    };
+    assert_eq!(value(&f.replica), (Some("asked".to_owned()), 0));
+    let after = revoked(f.now.checked_add(Duration::from_secs(1)).unwrap());
+    assert_eq!(
+        value(&after),
+        (Some("asked".to_owned()), 0),
+        "a revocation after the write leaves it readable"
+    );
+    let before = revoked(f.now.checked_sub(Duration::from_secs(1)).unwrap());
+    assert_eq!(
+        value(&before),
+        (Some("base".to_owned()), 1),
+        "a caller revoked before it asked is refused, on its own"
+    );
+}
+
+/// A write too large for one frame goes as segments, none carrying its changes whole: a reader
+/// decides it on the changes it assembles, grants included, as admission decides a small one.
+/// One made for a caller who may not write the record is refused, and the record reads without.
+#[test]
+fn a_write_too_large_for_one_frame_is_decided_by_its_callers_grants() {
+    let mut f = fixture();
+    let keys = f.keys();
+    let reader = f.authority.device_public_key;
+    // Someone who is no member of the workspace, who signs the invocation the write was made for.
+    let (outsider_key, outsider) = device(50, 51);
+    let file = noise(
+        collab_types::MAX_DOCUMENT_MUTATION_BYTES
+            + collab_types::document_transfer::DOCUMENT_SEGMENT_BYTES / 2,
+        9,
+    );
+    let mutation = caller_change(
+        &mut Author::new(&f.replica),
+        &f.replica,
+        (&outsider, &outsider_key),
+        f.now,
+        ("asked", Some(file)),
+        true,
+    );
+    assert!(
+        mutation.encode().is_err(),
+        "the write is too large for one frame"
+    );
+    for frame in mutation.encode_frames().unwrap() {
+        let message = write(&f.replica, &f.owner, &keys, &frame, f.now);
+        admit(&mut f.replica, &f.owner, message, f.now);
+    }
+    let message = write(
+        &f.replica,
+        &f.editor,
+        &keys,
+        &Author::new(&f.replica).edit("editor", "kept"),
+        f.now,
+    );
+    admit(&mut f.replica, &f.editor, message, f.now);
+    let mut kept = KeptDocument::default();
+    let (read, _) = read_large(&f.replica, reader, &keys, &mut kept);
+    let document = read.expect("the record reads without the write its caller may not make");
+    assert_eq!(
+        document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+        Some("base")
+    );
+    assert!(document.get(ROOT, "file").unwrap().is_none());
+    assert_eq!(
+        document.get(ROOT, "editor").unwrap().unwrap().0.as_str(),
+        Some("kept")
+    );
+    assert!(
+        matches!(
+            kept.refused(),
+            [UnmergedWrite {
+                reason: UnmergedReason::Refused { .. },
+                ..
+            }]
+        ),
+        "the refusal is named: {:?}",
+        kept.refused()
+    );
 }

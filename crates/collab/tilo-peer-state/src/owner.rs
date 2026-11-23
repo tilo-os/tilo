@@ -219,6 +219,10 @@ pub(crate) struct SharedOwner {
     /// The channel keys that keep this device's sealed record histories within
     /// their bound ([`NativeWorkspaceOwner::keep_sealed_histories`]).
     history_keys: Mutex<Option<Arc<dyn SealedHistoryKeys>>>,
+    /// The workspaces whose history this device's admission defines: it hosts them, and what it
+    /// admits is what its members take. A sealed change it opens and finds refused is refused
+    /// here outright ([`NativeWorkspaceOwner::define_history`]).
+    defines_history: Mutex<std::collections::BTreeSet<WorkspaceId>>,
 }
 #[derive(Default)]
 pub(crate) struct Current {
@@ -538,6 +542,7 @@ impl NativeWorkspaceOwner {
             current: RwLock::new(Current::default()),
             listeners: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
+            defines_history: Mutex::default(),
         }))
     }
     /// Restore every enrolled workspace of `authority`, the record `store` last
@@ -569,6 +574,7 @@ impl NativeWorkspaceOwner {
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
+            defines_history: Mutex::default(),
         })))
     }
     #[must_use]
@@ -801,7 +807,7 @@ impl NativeWorkspaceOwner {
         let replica = candidate.replica.clone();
         let mut reports = Vec::with_capacity(inputs.len());
         for (origin, message) in inputs {
-            let report = Self::admit_with_keys(&candidate, origin, message, now);
+            let report = self.admit_opened(&candidate, origin, message, now);
             reports.push(report);
         }
         if reports.iter().all(Result::is_err) {
@@ -840,6 +846,80 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<AdmissionReport, crate::AdmissionError> {
         Self::admit_input(candidate, origin, message, now)
+    }
+    /// [`Self::admit_with_keys`], with a sealed change this device holds the keys of opened and
+    /// decided on its contents first, by the check every reader of the record runs on it
+    /// ([`StatePeer::check_opened_write`]). Refused where this device's admission defines the
+    /// record's history ([`Self::define_history`]), it is refused outright and never kept;
+    /// elsewhere it is kept, as every device without the keys keeps it, and the report says the
+    /// refusal ([`crate::AdmissionReport::opened_refusal`]), which this device keeps as its
+    /// verdict on the write.
+    fn admit_opened(
+        &self,
+        candidate: &NativeCommittedView,
+        origin: TransportOrigin,
+        message: NeighbourMsg,
+        now: SystemTime,
+    ) -> Result<AdmissionReport, crate::AdmissionError> {
+        let defines = self
+            .0
+            .defines_history
+            .lock()
+            .contains(&candidate.workspace_id());
+        let refused = match self.opened_verdict(candidate, &message) {
+            Some(refused) if defines => return Err(crate::AdmissionError::ChangeRefused(refused)),
+            refused => refused,
+        };
+        let mut report = Self::admit_with_keys(candidate, origin, message, now)?;
+        if matches!(report.primary, crate::InputDisposition::Accepted(_)) {
+            report.opened_refusal = refused;
+        }
+        Ok(report)
+    }
+    /// What the workspace's rules refuse in `message`, a sealed change of one frame whose record
+    /// this device holds the keys of, as its readers decide it. `None` for anything else, for a
+    /// change it cannot open, and for one it cannot decide yet: a reader of the record waits for
+    /// that one as it waits for any write still arriving.
+    fn opened_verdict(
+        &self,
+        candidate: &NativeCommittedView,
+        message: &NeighbourMsg,
+    ) -> Option<Box<crate::ChangeRefused>> {
+        let NeighbourMsg::AppDocument {
+            app_id,
+            document_id,
+            envelope,
+            ..
+        } = message
+        else {
+            return None;
+        };
+        if envelope.kind != collab_types::OpKind::Change || envelope.encryption.is_none() {
+            return None;
+        }
+        let keys = self.0.history_keys.lock().clone()?;
+        let plaintext = keys.open(candidate.workspace_id(), envelope).ok()?;
+        // A segment of a write too large for one frame is decided by the record's readers once
+        // all of it is here.
+        let collab_types::DocumentFrame::Whole(mutation) =
+            collab_types::DocumentFrame::decode(&plaintext).ok()?
+        else {
+            return None;
+        };
+        match candidate.live().check_opened_write(
+            (app_id.as_str(), document_id.as_str()),
+            envelope,
+            &mutation,
+        ) {
+            Err(crate::state::OpenedRefusal::Refused(refused)) => Some(refused),
+            Ok(()) | Err(crate::state::OpenedRefusal::CannotDecide(_)) => None,
+        }
+    }
+    /// Mark `workspace` as one whose history this device's admission defines: this device hosts
+    /// it, and its members take what it admits. A sealed change it holds the keys of and finds
+    /// refused is refused outright from then on, never kept ([`Self::admit_opened`]).
+    pub(crate) fn define_history(&self, workspace: WorkspaceId) {
+        self.0.defines_history.lock().insert(workspace);
     }
     /// Decide one input into the workspace's live replica: refused, it changes nothing.
     ///

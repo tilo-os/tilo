@@ -143,7 +143,7 @@ pub fn draft_local_write(
         }
     });
     let envelope = peer
-        .draft_write(
+        .draft_checked_write(
             (app, document),
             readers,
             &frame,
@@ -152,7 +152,10 @@ pub fn draft_local_write(
             0,
             now,
         )
-        .map_err(WriteRefusal::Refused)?;
+        .map_err(|refusal| match refusal {
+            crate::state::DraftRefusal::Change(change) => WriteRefusal::ChangeRefused(change),
+            crate::state::DraftRefusal::Refused(reason) => WriteRefusal::Refused(reason),
+        })?;
     Ok((envelope, author))
 }
 

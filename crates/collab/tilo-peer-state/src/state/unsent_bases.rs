@@ -122,7 +122,7 @@ pub(super) fn behind_unsent(
             DocumentMutation::Incremental(bytes) => {
                 tilo_failure::ignored!(
                     "an unparsed write stays waiting, as it would without this rule",
-                    automerge::Automerge::parse_changes(bytes).unwrap_or_default()
+                    tilo_automerge_isolate::parse_changes(bytes).unwrap_or_default()
                 )
             }
             DocumentMutation::Snapshot(_) => Vec::new(),
@@ -165,7 +165,7 @@ pub(super) fn behind_unsent(
         }
         true
     };
-    let mut stuck: Vec<bool> = waiting
+    let stuck: Vec<bool> = waiting
         .iter()
         .zip(&changes)
         .map(|((signed, _), changes)| {
@@ -174,30 +174,62 @@ pub(super) fn behind_unsent(
         })
         .collect();
     // Everything built on a stuck write is stuck behind the same hole.
+    spread(&changes, stuck, &mut HashSet::new())
+}
+
+/// Which of `writes` build on a change of `behind`, directly or through another of `writes`,
+/// in `writes`' order: the writes a reader leaves out with a write the workspace's rules refuse
+/// (see [`super::sealed_compaction::RefusedChanges`]). `behind` grows by the changes of each.
+/// A write whose changes do not parse builds on nothing this tells.
+pub(super) fn built_on(
+    behind: &mut HashSet<ChangeHash>,
+    writes: &[&DocumentMutation],
+) -> Vec<bool> {
+    let changes: Vec<Vec<automerge::Change>> = writes
+        .iter()
+        .map(|mutation| match mutation {
+            DocumentMutation::Incremental(bytes) => tilo_failure::ignored!(
+                "a write whose changes do not parse builds on nothing this tells",
+                tilo_automerge_isolate::parse_changes(bytes).unwrap_or_default()
+            ),
+            DocumentMutation::Snapshot(_) => Vec::new(),
+        })
+        .collect();
+    spread(&changes, vec![false; writes.len()], behind)
+}
+
+/// `marked`, grown by every write of `changes` that builds on a change of `behind` or of a write
+/// marked, directly or through another; `behind` grows by the changes of each write marked.
+fn spread(
+    changes: &[Vec<automerge::Change>],
+    mut marked: Vec<bool>,
+    behind: &mut HashSet<ChangeHash>,
+) -> Vec<bool> {
     loop {
-        let behind: HashSet<ChangeHash> = changes
-            .iter()
-            .zip(&stuck)
-            .filter(|(_, stuck)| **stuck)
-            .flat_map(|(changes, _)| changes.iter().map(automerge::Change::hash))
-            .collect();
+        behind.extend(
+            changes
+                .iter()
+                .zip(&marked)
+                .filter(|(_, marked)| **marked)
+                .flat_map(|(changes, _)| changes.iter().map(automerge::Change::hash)),
+        );
         let mut grew = false;
         for (index, changes) in changes.iter().enumerate() {
-            if stuck.get(index).copied().unwrap_or(true) {
+            if marked.get(index).copied().unwrap_or(true) {
                 continue;
             }
             if changes
                 .iter()
                 .any(|change| change.deps().iter().any(|dep| behind.contains(dep)))
             {
-                if let Some(entry) = stuck.get_mut(index) {
+                if let Some(entry) = marked.get_mut(index) {
                     *entry = true;
                 }
                 grew = true;
             }
         }
         if !grew {
-            return stuck;
+            return marked;
         }
     }
 }

@@ -267,7 +267,6 @@ impl<'peer> PeerPublication<'peer> {
             None => merge_sealed(document, open, &mut |write, mutation| {
                 self.peer
                     .check_opened_write((app, document_id), write, mutation)
-                    .map_err(|refusal| refusal.to_string())
             })?,
         };
         AutoCommit::load(&rebuilt).map_err(err)?;
@@ -612,7 +611,9 @@ impl PeerPublicationMut<'_> {
         if sealed_under_a_stale_epoch(&compaction, &replaced) {
             return Err("sealed compaction is sealed under a stale epoch".into());
         }
-        holds_every_change(&pieces, &replaced, open)?;
+        holds_every_change(&pieces, &replaced, open, &mut |write, mutation| {
+            candidate.check_opened_write((app, document), write, mutation)
+        })?;
         candidate.publication_mut().take_sealed_compaction(
             (app, document),
             &compaction,
@@ -632,14 +633,17 @@ pub(crate) const LACKS_HELD_WRITES: &str =
 
 /// Check that `pieces`, a compaction and the segments it names, hold every change of `replaced`,
 /// the writes a replica holds that the compaction would take the place of: merged over what the
-/// compaction opens to, they change nothing.
+/// compaction opens to, they change nothing. A write `check` refuses, and every write built on
+/// one, is no change the compaction need hold: every reader leaves it out.
 ///
 /// # Errors
-/// Something does not open, or a change of `replaced` is not in the compaction.
+/// Something does not open, a write cannot be decided here and now, or a change of `replaced`
+/// is not in the compaction.
 fn holds_every_change(
     pieces: &[SignedOp],
     replaced: &[SignedOp],
     open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+    check: &mut CheckOpened<'_>,
 ) -> Result<(), String> {
     let Some(DocumentMutation::Snapshot(snapshot)) = opened_whole(pieces, open)? else {
         return Err("the sealed compaction does not open to a whole snapshot".into());
@@ -649,16 +653,31 @@ fn holds_every_change(
         return Err("the sealed compaction's snapshot is not complete".into());
     }
     let mut transfers = crate::document_frame::Transfers::default();
-    let mut changes = Vec::new();
-    for write in replaced {
-        if let Some(DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes)) =
-            transfers.take(*write.author.as_bytes(), &open(write)?)?
-        {
-            changes.extend_from_slice(&bytes);
+    let mut refused = RefusedChanges::default();
+    let mut writes = Vec::new();
+    for (index, write) in replaced.iter().enumerate() {
+        let Some(mutation) = transfers.take(*write.author.as_bytes(), &open(write)?)? else {
+            continue;
+        };
+        match check(write, &mutation) {
+            Ok(()) => writes.push((index, mutation)),
+            Err(super::document_capture::OpenedRefusal::Refused(_)) => refused.refuse(&mutation),
+            Err(refusal @ super::document_capture::OpenedRefusal::CannotDecide(_)) => {
+                return Err(refusal.to_string());
+            }
         }
     }
     if transfers.waits_for_changes() {
         return Err("a segmented write of the sealed history is incomplete".into());
+    }
+    let (_, writes) = refused.left_out(writes);
+    let mut changes = Vec::new();
+    for (_, mutation) in writes {
+        match mutation {
+            DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => {
+                changes.extend_from_slice(&bytes);
+            }
+        }
     }
     if !changes.is_empty()
         && holds_after(&mut folded, &DocumentMutation::Incremental(changes))? != Some(false)
@@ -690,17 +709,23 @@ fn holds_after(
 /// and merged over it, saved. A replica without the key admits sealed writes
 /// in arrival order, not causal order: they merge until nothing more applies.
 /// Strict: a compaction replaces the writes it covers, so one that left any
-/// of them out would lose it.
+/// of them out would lose it. The exception is a write `check` refuses, and
+/// every write built on one: every reader leaves those out, so the compaction
+/// folds them away for good. A write `check` cannot decide here and now stops
+/// the compaction.
 pub(super) fn merge_sealed(
     document: &super::Document,
     open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
-    check: &mut dyn FnMut(&SignedOp, &DocumentMutation) -> Result<(), String>,
+    check: &mut dyn FnMut(
+        &SignedOp,
+        &DocumentMutation,
+    ) -> Result<(), super::document_capture::OpenedRefusal>,
 ) -> Result<Vec<u8>, String> {
     // One isolated merge of every write, which takes them in causal order
     // whatever order they were admitted in: a merge per write copied the
     // whole record into the isolate each time.
-    let mut history = Vec::new();
     let mut writes = Vec::new();
+    let mut refused = RefusedChanges::default();
     // A write too large for one op, a compaction's snapshot among them, is
     // read once all of its segments are.
     let mut transfers = crate::document_frame::Transfers::default();
@@ -710,18 +735,27 @@ pub(super) fn merge_sealed(
         };
         // A write this device opened is decided as admission decides the same
         // write in the clear, before the compaction folds it in.
-        check(write, &mutation)?;
-        match &mutation {
-            DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => {
-                history.extend_from_slice(bytes);
+        match check(write, &mutation) {
+            Ok(()) => writes.push((index, mutation)),
+            Err(super::document_capture::OpenedRefusal::Refused(_)) => refused.refuse(&mutation),
+            Err(refusal @ super::document_capture::OpenedRefusal::CannotDecide(_)) => {
+                return Err(refusal.to_string());
             }
         }
-        writes.push((index, mutation));
     }
     // A checkpoint whose segments stopped coming only states again what the writes hold; a
     // compaction leaves it out. Changes still arriving are not left out.
     if transfers.waits_for_changes() {
         return Err("a segmented write of the sealed history is incomplete".into());
+    }
+    let (_, writes) = refused.left_out(writes);
+    let mut history = Vec::new();
+    for (_, mutation) in &writes {
+        match mutation {
+            DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => {
+                history.extend_from_slice(bytes);
+            }
+        }
     }
     let base = (*document.doc).clone();
     let mut merged = base.clone();
@@ -744,7 +778,7 @@ pub(super) fn merge_sealed(
             }
         }
     }
-    let (mut merged, _) = merge_writes(base, writes, LeftOut::ForkOnly, None)?;
+    let (mut merged, _) = merge_writes(base, writes, LeftOut::ForkOnly, None, &mut refused)?;
     Ok(merged.save())
 }
 
@@ -791,6 +825,20 @@ pub enum UnmergedReason {
         /// The first missing change hash of each path back, hex.
         missing: Vec<String>,
     },
+    /// The workspace's rules refuse it, as they refuse the same write sent in the clear: what it
+    /// changes, or who it says asked for it, is not its author's to write. Every reader that opens
+    /// it reaches the same verdict, and reads the record without it.
+    Refused {
+        /// Why, in the refusing device's words.
+        refusal: String,
+    },
+    /// It builds on a write the workspace's rules refuse, directly or through another write that
+    /// does: only that write's author ever took the refused changes in, so these are its own
+    /// follow-ups, read without along with it.
+    BuiltOnRefused {
+        /// The refused changes it builds on, hex.
+        on: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for UnmergedReason {
@@ -811,6 +859,10 @@ impl std::fmt::Display for UnmergedReason {
                 "builds on a change its writer never sent: {}",
                 missing.join(", ")
             ),
+            UnmergedReason::Refused { refusal } => write!(f, "is refused: {refusal}"),
+            UnmergedReason::BuiltOnRefused { on } => {
+                write!(f, "builds on a refused change: {}", on.join(", "))
+            }
         }
     }
 }
@@ -894,7 +946,10 @@ fn already_held(record: &mut AutoCommit, mutation: &DocumentMutation) -> Option<
     let DocumentMutation::Incremental(bytes) = mutation else {
         return None;
     };
-    let changes = automerge::Automerge::parse_changes(bytes).ok()?;
+    let changes = tilo_failure::ignored!(
+        "change bytes that do not parse are no second write of a sequence",
+        tilo_automerge_isolate::parse_changes(bytes).ok()
+    )?;
     if changes.is_empty() {
         return None;
     }
@@ -929,6 +984,89 @@ pub(super) enum LeftOut {
 /// writes.
 pub(super) type LeftWrite = (usize, UnmergedReason, DocumentMutation);
 
+/// The changes of the writes of a history that the workspace's rules refuse, and of every write
+/// built on one of them: a reader leaves each such write out, and the record reads without them.
+/// The verdict on a write is the same on every device that opens it, so every reader leaves out
+/// the same writes, and a compaction folds them away.
+#[derive(Clone, Debug, Default)]
+pub(super) struct RefusedChanges(std::collections::HashSet<automerge::ChangeHash>);
+
+impl RefusedChanges {
+    /// Leave out `mutation`, a write the workspace's rules refuse: what is built on its changes is
+    /// left out with it. A whole document names no change of its own apart from those it folds,
+    /// which other writes build on; it is left out alone.
+    pub(super) fn refuse(&mut self, mutation: &DocumentMutation) {
+        if let DocumentMutation::Incremental(bytes) = mutation
+            && let Some(hashes) = tilo_automerge_isolate::change_hashes(bytes)
+        {
+            self.0.extend(hashes);
+        }
+    }
+
+    /// `writes` parted into those built on a refused change ([`UnmergedReason::BuiltOnRefused`]),
+    /// whose changes are refused from then on too, and the rest, each in `writes`' order.
+    pub(super) fn left_out(
+        &mut self,
+        writes: Vec<(usize, DocumentMutation)>,
+    ) -> (Vec<LeftWrite>, Vec<(usize, DocumentMutation)>) {
+        if self.0.is_empty() || writes.is_empty() {
+            return (Vec::new(), writes);
+        }
+        let before = self.0.clone();
+        let mutations: Vec<&DocumentMutation> =
+            writes.iter().map(|(_, mutation)| mutation).collect();
+        let built = super::unsent_bases::built_on(&mut self.0, &mutations);
+        let mut left = Vec::new();
+        let mut kept = Vec::new();
+        for ((index, mutation), built) in writes.into_iter().zip(built) {
+            if built {
+                let on = refused_bases(&before, &self.0, &mutation);
+                left.push((index, UnmergedReason::BuiltOnRefused { on }, mutation));
+            } else {
+                kept.push((index, mutation));
+            }
+        }
+        (left, kept)
+    }
+}
+
+/// The refused changes `mutation` builds on directly, hex: those of `before`, the writes refused
+/// to begin with, where it builds on one of them, else any of `refused`.
+fn refused_bases(
+    before: &std::collections::HashSet<automerge::ChangeHash>,
+    refused: &std::collections::HashSet<automerge::ChangeHash>,
+    mutation: &DocumentMutation,
+) -> Vec<String> {
+    let DocumentMutation::Incremental(bytes) = mutation else {
+        return Vec::new();
+    };
+    let changes = tilo_failure::ignored!(
+        "a write whose changes do not parse names no base",
+        tilo_automerge_isolate::parse_changes(bytes).unwrap_or_default()
+    );
+    let own: std::collections::HashSet<automerge::ChangeHash> =
+        changes.iter().map(automerge::Change::hash).collect();
+    let deps = || {
+        changes
+            .iter()
+            .flat_map(|change| change.deps().iter().copied())
+            .filter(|dep| !own.contains(dep))
+    };
+    let mut on: Vec<String> = deps()
+        .filter(|dep| before.contains(dep))
+        .map(|dep| dep.to_string())
+        .collect();
+    if on.is_empty() {
+        on = deps()
+            .filter(|dep| refused.contains(dep))
+            .map(|dep| dep.to_string())
+            .collect();
+    }
+    on.sort();
+    on.dedup();
+    on
+}
+
 /// Who signed each write of a history, by its place in it, and how far each signer's sequence is
 /// held: what tells a write stuck behind a change its writer never sent
 /// ([`super::unsent_bases`]) from one whose base is still on its way.
@@ -944,17 +1082,20 @@ pub(super) struct Signers<'a> {
 /// Returns the record and every write it leaves out with why, sorted in history
 /// order. `policy` decides whether a write left out for any reason other than a
 /// fork aborts. With `signers`, a write still waiting at the end that is stuck behind a change its
-/// writer never sent is named so ([`UnmergedReason::BehindUnsent`]).
+/// writer never sent is named so ([`UnmergedReason::BehindUnsent`]). A write built on a change of
+/// `refused` is left out whatever `policy` is ([`UnmergedReason::BuiltOnRefused`]), and its
+/// changes join `refused`.
 pub(super) fn merge_writes(
     mut merged: AutoCommit,
     writes: Vec<(usize, DocumentMutation)>,
     policy: LeftOut,
     signers: Option<&Signers<'_>>,
+    refused: &mut RefusedChanges,
 ) -> Result<(AutoCommit, Vec<LeftWrite>), String> {
+    let (mut left, writes) = refused.left_out(writes);
     if merged_at_once(&mut merged, &writes) {
-        return Ok((merged, Vec::new()));
+        return Ok((merged, left));
     }
-    let mut left = Vec::new();
     let mut waiting = writes;
     let mut stuck = Vec::new();
     // Writes refused for writing a sequence the record holds that also wait for a change it
@@ -1106,7 +1247,7 @@ fn missing_of(record: &AutoCommit, mutation: &DocumentMutation) -> Vec<String> {
     };
     let changes = tilo_failure::ignored!(
         "a write whose changes do not parse waits for nothing this names",
-        automerge::Automerge::parse_changes(bytes).unwrap_or_default()
+        tilo_automerge_isolate::parse_changes(bytes).unwrap_or_default()
     );
     let own: std::collections::HashSet<automerge::ChangeHash> =
         changes.iter().map(automerge::Change::hash).collect();
@@ -1156,15 +1297,23 @@ fn missing_dependencies(
         .collect())
 }
 
-/// [`merge_sealed`] for reading: every write that opens and merges is in the
-/// record, and the rest are named instead of refusing the whole record. One
-/// write that never arrived (or does not open) must not leave a workspace unable
-/// to read its record, and the writes after it are kept, not dropped.
+/// What decides each write a reader opened before it is merged: the check admission runs on the
+/// same write in the clear ([`StatePeer::check_opened_write`]).
+pub(super) type CheckOpened<'a> = dyn FnMut(&SignedOp, &DocumentMutation) -> Result<(), super::document_capture::OpenedRefusal>
+    + 'a;
+
+/// [`merge_sealed`] for reading: every write that opens, passes `check` and merges is in the
+/// record, and the rest are named instead of refusing the whole record. One write that never
+/// arrived, does not open, or that the workspace's rules refuse must not leave a workspace unable
+/// to read its record, and the writes after it are kept, not dropped. A write `check` cannot
+/// decide here and now fails the read: it is still arriving, and leaving it out would read the
+/// record as no other device does.
 pub(super) fn open_sealed(
     document: &super::Document,
     open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+    check: &mut CheckOpened<'_>,
 ) -> Result<OpenedDocument, String> {
-    open_sealed_after(document, open, None).map(|(opened, _)| opened)
+    open_sealed_after(document, open, None, check).map(|(opened, _)| opened)
 }
 
 /// [`open_sealed`] over what `prior`, an earlier opening of the document, merged: where the
@@ -1177,6 +1326,7 @@ pub(super) fn open_sealed_after(
     document: &super::Document,
     open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
     prior: Option<MergedDocument>,
+    check: &mut CheckOpened<'_>,
 ) -> Result<(OpenedDocument, Option<MergedDocument>), String> {
     let sealed: Vec<&SignedOp> = document.sealed.iter().collect();
     let base = document.doc.committed_document().get_heads();
@@ -1200,10 +1350,25 @@ pub(super) fn open_sealed_after(
     };
     let mut unmerged = Vec::new();
     let mut writes = Vec::new();
+    let mut refused = RefusedChanges::default();
     let mut transfers = crate::document_frame::Transfers::default();
     for (index, write) in sealed.iter().enumerate().skip(from) {
         match open(write).and_then(|plain| transfers.take(*write.author.as_bytes(), &plain)) {
-            Ok(Some(mutation)) => writes.push((index, mutation)),
+            Ok(Some(mutation)) => match check(write, &mutation) {
+                Ok(()) => writes.push((index, mutation)),
+                Err(super::document_capture::OpenedRefusal::Refused(refusal)) => {
+                    refused.refuse(&mutation);
+                    unmerged.push((
+                        index,
+                        UnmergedReason::Refused {
+                            refusal: refusal.reason,
+                        },
+                    ));
+                }
+                Err(refusal @ super::document_capture::OpenedRefusal::CannotDecide(_)) => {
+                    return Err(refusal.to_string());
+                }
+            },
             Ok(None) => {}
             Err(why) => unmerged.push((index, UnmergedReason::Unreadable(why))),
         }
@@ -1219,7 +1384,8 @@ pub(super) fn open_sealed_after(
         of: &|index| signed.get(index).copied(),
         held: &|| super::unsent_bases::HeldThrough::of(document),
     };
-    let (mut merged, left) = merge_writes(merged, writes, LeftOut::Named, Some(&signers))?;
+    let (mut merged, left) =
+        merge_writes(merged, writes, LeftOut::Named, Some(&signers), &mut refused)?;
     unmerged.extend(left.into_iter().map(|(index, reason, _)| (index, reason)));
     unmerged.sort_by_key(|(index, _)| *index);
     let saved = merged.save_with_options(automerge::SaveOptions {
@@ -1324,8 +1490,13 @@ impl Mark {
 }
 
 /// A document as a state held it once ([`PeerPublication::held_document`]),
-/// opened without the state.
-pub struct HeldDocument(super::backend::StoredDocument);
+/// opened without holding the state: with a copy of the state it was taken from,
+/// whose rules decide each write opened as every other reader's do.
+pub struct HeldDocument {
+    document: super::backend::StoredDocument,
+    route: Route,
+    peer: Box<StatePeer>,
+}
 
 impl HeldDocument {
     /// The document as its key holder reads it
@@ -1339,13 +1510,25 @@ impl HeldDocument {
         &self,
         open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
     ) -> Result<OpenedDocument, String> {
-        if !self.0.encryption_required {
+        if !self.document.encryption_required {
             return Ok(OpenedDocument {
-                document: self.0.doc.saved(),
+                document: self.document.doc.saved(),
                 unmerged: Vec::new(),
             });
         }
-        open_sealed(&self.0, open)
+        open_sealed(&self.document, open, &mut |write, mutation| {
+            self.check(write, mutation)
+        })
+    }
+
+    /// Decide `write`, opened as `mutation`, as every reader of the document does.
+    fn check(
+        &self,
+        write: &SignedOp,
+        mutation: &DocumentMutation,
+    ) -> Result<(), super::document_capture::OpenedRefusal> {
+        self.peer
+            .check_opened_write((&self.route.app, &self.route.record), write, mutation)
     }
 
     /// [`Self::opened`] over `prior`, what an earlier opening of this document left
@@ -1360,16 +1543,18 @@ impl HeldDocument {
         open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
         prior: Option<MergedDocument>,
     ) -> Result<(OpenedDocument, Option<MergedDocument>), String> {
-        if !self.0.encryption_required {
+        if !self.document.encryption_required {
             return self.opened(open).map(|opened| (opened, None));
         }
-        open_sealed_after(&self.0, open, prior)
+        open_sealed_after(&self.document, open, prior, &mut |write, mutation| {
+            self.check(write, mutation)
+        })
     }
 
     /// Whether its writes are sealed.
     #[must_use]
     pub fn is_sealed(&self) -> bool {
-        self.0.encryption_required
+        self.document.encryption_required
     }
 }
 
@@ -1460,14 +1645,16 @@ impl PeerPublication<'_> {
     /// `None` for a document this state does not hold.
     #[must_use]
     pub fn held_document(self, app: &str, id: &str) -> Option<HeldDocument> {
-        self.peer
-            .core
-            .documents
-            .get(&Route {
-                app: app.into(),
-                record: id.into(),
-            })
-            .map(|document| HeldDocument(document.clone()))
+        let route = Route {
+            app: app.into(),
+            record: id.into(),
+        };
+        let document = self.peer.core.documents.get(&route)?.clone();
+        Some(HeldDocument {
+            document,
+            route,
+            peer: Box::new(self.peer.clone()),
+        })
     }
 
     /// Whether `record` of `app` is encrypted here: its writes are sealed,

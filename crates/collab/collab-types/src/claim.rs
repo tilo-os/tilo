@@ -366,12 +366,13 @@ pub fn invoker_of(change: &automerge::Change) -> Option<tilo_action_policy::Acti
 }
 
 /// The changes an incremental document mutation carries, parsed but merged
-/// into nothing.
+/// into nothing. The bytes are untrusted, so they are read where every
+/// untrusted Automerge input is ([`tilo_automerge_isolate::parse_changes`]).
 ///
 /// # Errors
 /// [`ClaimError::Unparsable`] for bytes that are not change chunks.
 pub fn parse_changes(bytes: &[u8]) -> Result<Vec<automerge::Change>, ClaimError> {
-    automerge::Automerge::parse_changes(bytes)
+    tilo_automerge_isolate::parse_changes(bytes)
         .map_err(|error| ClaimError::Unparsable(error.to_string()))
 }
 

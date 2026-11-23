@@ -1075,7 +1075,7 @@ tilo_test_env::scenario! {
                 "sealed history does not merge into a complete record",
                 "as the workspace service refused to start on it"
             );
-            sealed_compaction::open_sealed(&document, &mut read_write).unwrap()
+            sealed_compaction::open_sealed(&document, &mut read_write, &mut |_, _| Ok(())).unwrap()
         };
         let waiting: Vec<(u64, &UnmergedReason)> = opened
             .unmerged
@@ -1103,7 +1103,7 @@ tilo_test_env::scenario! {
         plaintexts.insert(5, lost.clone());
         document.sealed.push(op(5));
         let mut read_write = |op: &SignedOp| Ok(plaintexts[&op.seq].clone());
-        let opened = sealed_compaction::open_sealed(&document, &mut read_write).unwrap();
+        let opened = sealed_compaction::open_sealed(&document, &mut read_write, &mut |_, _| Ok(())).unwrap();
         assert_eq!(opened.unmerged, []);
         // The same record as the whole history merged at once: the same changes, so the same
         // heads and the same contents. Its bytes may order them otherwise, as a compaction loaded
@@ -3273,4 +3273,153 @@ tilo_test_env::scenario! {
             Some("written")
         );
     }
+}
+
+/// The record as `peer` reads it whole for the owner's device with `keys`, and the writes that
+/// read leaves out for the workspace's rules.
+fn read_refused(
+    peer: &StatePeer,
+    f: &Fixture,
+    keys: &ContentKeys,
+) -> (AutoCommit, Vec<UnmergedWrite>) {
+    let capture = peer
+        .capture_document(
+            f.authority.device_public_key,
+            (APP, RECORD),
+            f.now,
+            1024 * 1024,
+            Some(&mut |op| open(keys, op)),
+        )
+        .expect("the record reads");
+    let refused = capture.refused().to_vec();
+    (AutoCommit::load(&capture.into_bytes()).unwrap(), refused)
+}
+
+/// A history holding a write the workspace's rules refuse, and its author's follow-up to it,
+/// compacts without them: a device with the key folds what every reader reads, a device without
+/// the key takes the compaction in their place, and the record then reads as before, with nothing left to
+/// name, and takes writes again rather than filling.
+#[test]
+fn a_history_with_a_refused_write_compacts_without_it_and_takes_writes_again() {
+    let mut f = fixture();
+    let keys = f.keys();
+    kept_open::write_refused_history(&mut f, &keys);
+    let (before, refused) = read_refused(&f.replica, &f, &keys);
+    kept_open::reads_without_the_refused(&before);
+    assert_eq!(
+        refused.len(),
+        2,
+        "the forged change and its follow-up are named"
+    );
+
+    let mut keyless = f.replica.clone();
+    let compaction = mint(&mut f.replica, &keys, &f.owner, f.now)
+        .expect("a history with a refused write compacts");
+    keyless
+        .receive_from(origin(&f.owner), compaction, f.now)
+        .expect("a device without the key takes the compaction in place of what it folds");
+    assert_eq!(held(&keyless), held(&f.replica));
+    assert_eq!(
+        held(&f.replica).len(),
+        1,
+        "the history is the compaction alone"
+    );
+    for peer in [&f.replica, &keyless] {
+        let (document, refused) = read_refused(peer, &f, &keys);
+        kept_open::reads_without_the_refused(&document);
+        assert_eq!(refused, [], "nothing refused is left in the history");
+        // The workspace's own reader reads the compacted record alike.
+        let opened = peer
+            .publication()
+            .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+            .unwrap()
+            .unwrap();
+        assert_eq!(opened.unmerged, []);
+        assert_eq!(
+            text(&AutoCommit::load(&opened.document).unwrap(), "editor"),
+            text(&document, "editor")
+        );
+    }
+
+    // The record takes writes again.
+    let message = write(
+        &f.replica,
+        &f.editor,
+        &keys,
+        &Author::new(&f.replica).edit("after", "compacted"),
+        f.now,
+    );
+    admit(&mut f.replica, &f.editor, message.clone(), f.now);
+    admit(&mut keyless, &f.editor, message, f.now);
+    for peer in [&f.replica, &keyless] {
+        let (document, _) = read_refused(peer, &f, &keys);
+        kept_open::reads_without_the_refused(&document);
+        assert_eq!(text(&document, "after").as_deref(), Some("compacted"));
+    }
+}
+
+/// A member may compact a sealed record, and a compaction carries the record whole. What it folds
+/// is never compared with the writes it replaces, so a member can fold in a change it made for a
+/// caller who never signed it, and every reader takes the checkpoint as it is. Readers must decide
+/// what a checkpoint folds as they decide the writes it replaces.
+#[test]
+fn a_change_forged_into_a_members_sealed_checkpoint_is_not_read() {
+    let mut f = fixture();
+    let keys = f.keys();
+    let message = write(
+        &f.replica,
+        &f.other,
+        &keys,
+        &Author::new(&f.replica).edit("other", "kept"),
+        f.now,
+    );
+    admit(&mut f.replica, &f.other, message, f.now);
+    // The editor folds the history into a checkpoint that also holds a change it made for the
+    // owner's device, which never asked for it.
+    let (read, _) = read_refused(&f.replica, &f, &keys);
+    let mut folded = Author(read);
+    let caller = f
+        .replica
+        .owner_certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == f.owner.verifying_key().to_bytes())
+        .unwrap();
+    kept_open::caller_change(
+        &mut folded,
+        &f.replica,
+        (&caller, &f.owner),
+        f.now,
+        ("forged", None),
+        false,
+    );
+    let mut ops = f
+        .replica
+        .publication()
+        .draft_sealed_compaction(
+            (APP, RECORD),
+            None,
+            Some(folded.0.save()),
+            &mut |op| open(&keys, op),
+            &mut |plaintext| {
+                keys.seal_content(artifact(), ContentRetention::of_frame(plaintext), plaintext)
+                    .map_err(|error| error.to_string())
+            },
+            f.editor.verifying_key().to_bytes(),
+            f.now,
+        )
+        .unwrap();
+    for op in &mut ops {
+        collab_types::sign_op(op, &f.editor).unwrap();
+    }
+    f.replica
+        .publication_mut()
+        .admit_sealed_compaction(APP, RECORD, None, ops, f.now)
+        .unwrap();
+    let (document, _) = read_refused(&f.replica, &f, &keys);
+    assert_eq!(text(&document, "other").as_deref(), Some("kept"));
+    assert_eq!(
+        text(&document, "value").as_deref(),
+        Some("base"),
+        "a change forged into a checkpoint is not read"
+    );
 }

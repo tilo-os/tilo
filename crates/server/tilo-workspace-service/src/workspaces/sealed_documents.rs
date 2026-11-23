@@ -141,10 +141,19 @@ impl DocumentKeys {
             .iter()
             .filter(|write| matches!(write.reason, UnmergedReason::BehindUnsent { .. }))
             .count();
+        // A write the workspace's rules refuse, and one built on it, is read without by every
+        // reader, and folds away with the rest.
         let forks = opened
             .unmerged
             .iter()
-            .filter(|write| matches!(write.reason, UnmergedReason::AlreadyHeld { .. }))
+            .filter(|write| {
+                matches!(
+                    write.reason,
+                    UnmergedReason::AlreadyHeld { .. }
+                        | UnmergedReason::Refused { .. }
+                        | UnmergedReason::BuiltOnRefused { .. }
+                )
+            })
             .count();
         if unsent == 0 || unsent.saturating_add(forks) != opened.unmerged.len() {
             return Ok(None);
@@ -458,12 +467,20 @@ pub(super) async fn whole_document(
         .opened_document(app, document, &mut keys.open())
         .map_err(|error| format!("its sealed history does not open: {error}"))?
         .ok_or("its sealed history holds no write")?;
-    // A write stuck behind a change its writer never sent is no part of the document anyone will
-    // ever read: the document is whole without it.
+    // A write stuck behind a change its writer never sent, one the workspace's rules refuse, and
+    // one built on that, are no part of the document anyone will ever read: the document is whole
+    // without them.
     let unmerged: Vec<String> = opened
         .unmerged
         .iter()
-        .filter(|write| !matches!(write.reason, UnmergedReason::BehindUnsent { .. }))
+        .filter(|write| {
+            !matches!(
+                write.reason,
+                UnmergedReason::BehindUnsent { .. }
+                    | UnmergedReason::Refused { .. }
+                    | UnmergedReason::BuiltOnRefused { .. }
+            )
+        })
         .map(ToString::to_string)
         .collect();
     if unmerged.is_empty() {

@@ -1125,7 +1125,7 @@ impl StatePeer {
             app_id,
             record,
             envelope,
-            envelope,
+            (envelope, None),
             authorization_time,
             retained,
         )
@@ -1135,14 +1135,16 @@ impl StatePeer {
     /// plaintext this device opened as `changes`: the write's identity, the
     /// governance heads it names and its author's authority are `envelope`'s,
     /// and what its changes say of who made them, the invocation a caller
-    /// signed included, is `changes`'.
+    /// signed included, is `changes`'. A write too large for one op is
+    /// decided by the changes it opened to (`opened`), which `changes` then
+    /// does not carry.
     pub(super) fn authorize_document_as(
         &self,
         source: &[u8; 32],
         app_id: &str,
         record: &str,
         envelope: &SignedOp,
-        changes: &SignedOp,
+        changes: (&SignedOp, Option<&[automerge::Change]>),
         authorization_time: SystemTime,
         retained: bool,
     ) -> Result<Authorized, AuthorizeRefusal> {
@@ -1200,7 +1202,7 @@ impl StatePeer {
         app_id: &str,
         record: &str,
         envelope: &SignedOp,
-        changes: &SignedOp,
+        (changes, opened): (&SignedOp, Option<&[automerge::Change]>),
         authorization_time: SystemTime,
     ) -> Result<Authorized, AuthorizeRefusal> {
         let written = self
@@ -1232,14 +1234,20 @@ impl StatePeer {
         // A document this peer does not hold yet is read from its first
         // changes: they carry its unit index from the start.
         let held = match document {
-            Some(document) => Some(held_units(&document.doc, changes)),
+            Some(document) => Some(held_units(&document.doc, changes, opened)),
             None => enforced.then(AutoCommit::new),
         };
         let cx = tilo_action_policy::Context::at_time(authorization_time);
         // A change a host made for a caller on another device proves who asked
         // with the invocation the caller signed.
-        let caller =
-            self.recorded_caller(app_id, record, source, changes, &member, authorization_time)?;
+        let caller = self.recorded_caller(
+            app_id,
+            record,
+            source,
+            (changes, opened),
+            &member,
+            authorization_time,
+        )?;
         // What the caller was refused, when the author was granted the claim
         // but the caller was not: the node and kind the claim was decided at,
         // as the one builder of decision nodes names them.
@@ -1280,8 +1288,8 @@ impl StatePeer {
         let imported = self
             .governance()
             .imported_invoker(source, app_id, record, envelope.seq);
-        let decided = collab_types::decide_op_imported(
-            changes,
+        let decided = collab_types::decide_opened(
+            (changes, opened),
             &collab_types::WrittenDocument {
                 workspace: &self.core.workspace,
                 app: app_id,
@@ -1295,7 +1303,7 @@ impl StatePeer {
         )
         .and_then(|receipt| match receipt {
             collab_types::Receipt::Admit => self
-                .recorded_invocations(envelope, app_id)
+                .recorded_invocations((changes, opened), app_id, authorization_time)
                 .map(|()| receipt),
             collab_types::Receipt::Hold => Ok(receipt),
         });
@@ -1337,19 +1345,27 @@ impl StatePeer {
         app_id: &str,
         record: &str,
         source: &[u8; 32],
-        envelope: &SignedOp,
+        (envelope, opened): (&SignedOp, Option<&[automerge::Change]>),
         member: &MemberAccess,
         authorization_time: SystemTime,
     ) -> Result<Option<CallerAccess>, AuthorizeRefusal> {
-        let Some(changes) = cleartext_changes_of(envelope) else {
-            return Ok(None);
+        let parsed;
+        let changes = match opened {
+            Some(opened) => opened,
+            None => {
+                let Some(changes) = cleartext_changes_of(envelope) else {
+                    return Ok(None);
+                };
+                parsed = changes;
+                parsed.as_slice()
+            }
         };
         self.callers_named_in(
             app_id,
             record,
             source,
             envelope,
-            &changes,
+            changes,
             member,
             authorization_time,
         )
@@ -1386,6 +1402,7 @@ impl StatePeer {
                 &context,
                 &self.core.workspace,
                 &self.core.revocations,
+                crate::state::now_ns(authorization_time),
             )
             .map_err(|error| {
                 refused_invocation(
@@ -1473,18 +1490,29 @@ fn refused_no_invoker(route: &Route, source: &[u8; 32], envelope: &SignedOp) -> 
 impl StatePeer {
     /// That every invocation `envelope`'s changes keep shows who asked for it
     /// ([`tilo_server_protocol::invocation::verify_recorded`]), against this workspace's
-    /// revocations: an agent acting with its own key asked under a key its person certified for
-    /// it. What a sealed op keeps is checked by the devices that open it.
+    /// revocations as of `written`, when the change was written: an agent acting with its own key
+    /// asked under a key its person certified for it. What a sealed op keeps is checked by the
+    /// devices that open it, from the changes it opened to (`opened`, for one too large for an op).
     fn recorded_invocations(
         &self,
-        envelope: &SignedOp,
+        (envelope, opened): (&SignedOp, Option<&[automerge::Change]>),
         app: &str,
+        written: SystemTime,
     ) -> Result<(), collab_types::ReceiptRefusal> {
-        for context in collab_types::recorded_contexts(envelope)? {
+        let contexts: Vec<tilo_actions::ActionContext> = match opened {
+            Some(opened) => opened
+                .iter()
+                .filter_map(automerge::Change::message)
+                .filter_map(tilo_actions::ActionContext::from_change_message)
+                .collect(),
+            None => collab_types::recorded_contexts(envelope)?,
+        };
+        for context in contexts {
             tilo_server_protocol::invocation::verify_recorded(
                 &context,
                 &self.core.workspace,
                 &self.core.revocations,
+                crate::state::now_ns(written),
             )
             .map_err(|error| collab_types::ReceiptRefusal::Invocation {
                 code: error.code(),
@@ -1493,7 +1521,15 @@ impl StatePeer {
         }
         // A resource store's change keeps the invocation its caller signed in its stamp: it is
         // that app's, made under the invocation signed for it.
-        for stamp in collab_types::receipt::recorded_stamps(envelope)? {
+        let stamps: Vec<collab_types::Stamp> = match opened {
+            Some(opened) => opened
+                .iter()
+                .filter_map(automerge::Change::message)
+                .filter_map(collab_types::Stamp::of_message)
+                .collect(),
+            None => collab_types::receipt::recorded_stamps(envelope)?,
+        };
+        for stamp in stamps {
             tilo_server_protocol::invocation::verify_stamp(
                 &stamp,
                 &self.core.workspace,

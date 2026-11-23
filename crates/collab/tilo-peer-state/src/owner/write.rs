@@ -258,6 +258,17 @@ impl NativeWorkspaceOwner {
                 let mut unkept = Vec::new();
                 for (message, report) in &heard {
                     let verdict = match report {
+                        // This device opened the sealed change and the workspace's rules refuse
+                        // it: its readers read the record without it, and its author is told.
+                        Ok(report) if let Some(refused) = report.opened_refusal() => {
+                            live.workspace_mut().refuse_write(
+                                &device,
+                                message,
+                                &crate::AdmissionError::ChangeRefused(Box::new(refused.clone())),
+                                signed,
+                                now,
+                            )
+                        }
                         Ok(_) => live
                             .workspace_mut()
                             .clear_landed_write(&device, message, signed, now),

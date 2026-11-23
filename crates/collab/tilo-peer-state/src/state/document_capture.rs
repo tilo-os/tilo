@@ -63,6 +63,9 @@ impl std::fmt::Display for OpenedRefusal {
 pub struct PeerDocumentCapture {
     heads: Vec<ChangeHash>,
     bytes: Vec<u8>,
+    /// The sealed writes the read left out because the workspace's rules
+    /// refuse them, or because they build on one that is.
+    refused: Vec<super::sealed_compaction::UnmergedWrite>,
 }
 
 impl StatePeer {
@@ -120,10 +123,21 @@ impl PeerDocumentCapture {
         self.bytes
     }
 
+    /// The sealed writes this read left out because the workspace's rules
+    /// refuse them ([`super::sealed_compaction::UnmergedReason::Refused`]), or
+    /// because they build on one that is
+    /// ([`super::sealed_compaction::UnmergedReason::BuiltOnRefused`]): the
+    /// record reads without them.
+    #[must_use]
+    pub fn refused(&self) -> &[super::sealed_compaction::UnmergedWrite] {
+        &self.refused
+    }
+
     fn from_document(document: &Automerge, maximum: usize) -> Result<Self, PeerDocumentReadError> {
         Ok(Self {
             heads: document.get_heads(),
             bytes: saved_whole(document, maximum)?,
+            refused: Vec::new(),
         })
     }
 }
@@ -221,6 +235,14 @@ impl KeptDocument {
         self.0 = None;
     }
 
+    /// The sealed writes the reads of what is kept left out because the workspace's rules refuse
+    /// them, or because they build on one that is: the record reads without them, and every
+    /// reader that opens them leaves out the same.
+    #[must_use]
+    pub fn refused(&self) -> &[super::sealed_compaction::UnmergedWrite] {
+        self.0.as_ref().map_or(&[], |opened| &opened.refused)
+    }
+
     /// The kept record captured whole, at most `maximum` bytes: the bytes the last capture made
     /// (the document saved whole) with the changes since appended, rather than the document
     /// saved again. `None` when nothing is kept.
@@ -282,6 +304,11 @@ struct Opened {
     /// wait for a change a write not opened yet may carry: merged with the writes the next read
     /// opens.
     waiting: Vec<(usize, collab_types::DocumentMutation)>,
+    /// The changes of the writes the workspace's rules refuse, and of those built on them: a
+    /// write opened later that builds on one is left out with it.
+    refusing: super::sealed_compaction::RefusedChanges,
+    /// The writes left out for that.
+    refused: Vec<super::sealed_compaction::UnmergedWrite>,
 }
 
 impl Opened {
@@ -310,9 +337,12 @@ impl Opened {
 impl StatePeer {
     /// Decide a sealed `write` this device opened as `mutation` before it is
     /// applied or projected: the checks admission runs on the same write in
-    /// the clear, including the invocation a change made for a caller keeps.
-    /// A refusal names the write as a received change's is named, so the
-    /// reader tells its author.
+    /// the clear, including the invocation a change made for a caller keeps,
+    /// as of when the write was written, so every device that opens it, at any
+    /// time, decides it alike. The claims its envelope made to devices without
+    /// the key must name exactly the changes it carries, as they say them. A
+    /// refusal names the write as a received change's is named, so the reader
+    /// tells its author.
     pub(crate) fn check_opened_write(
         &self,
         (app, record): (&str, &str),
@@ -326,89 +356,86 @@ impl StatePeer {
         if write.kind == OpKind::Compaction {
             return Ok(());
         }
+        // What a device without the key decided the write by must be what it carries: a write
+        // that claims harmless actions to them and carries others is refused here.
+        if !write.claims.is_empty() {
+            collab_types::check_opened_mutation(write, mutation)
+                .map_err(|refusal| self.refused_opened(app, record, write, &refusal))?;
+        }
+        let mut opened = write.clone();
+        // A cleartext op names each change's action in the change itself; the
+        // sealed envelope's claims were what a device without the key decided.
+        opened.claims.clear();
+        opened.encryption = None;
         // A write small enough to carry as itself is decided whole, as
         // admission decides the same write in the clear.
         if let Ok(payload) = mutation.encode() {
-            let mut opened = write.clone();
             opened.payload = payload;
-            opened.encryption = None;
-            // A cleartext op names each change's action in the change itself;
-            // the sealed envelope's claims were what a device without the key
-            // decided.
-            opened.claims.clear();
-            return self.decide_opened(app, record, write, &opened);
+            return self.decide_opened(app, record, write, (&opened, None));
         }
-        // A write past what one mutation carries: what its changes say of who
-        // asked still stands to be checked, and its author's claims were
-        // decided when it was admitted sealed.
-        let Some(changes) = tilo_failure::ignored!(
-            "change bytes that do not parse name no caller",
-            collab_types::claim::parse_changes(mutation.data()).ok()
-        ) else {
-            return Ok(());
-        };
-        let names_a_caller = changes.iter().any(|change| {
-            change
-                .message()
-                .and_then(tilo_actions::ActionContext::from_change_message)
-                .and_then(|context| context.invoker)
-                .is_some_and(|invoker| invoker.device.is_some())
-        });
-        if !names_a_caller {
-            return Ok(());
+        // A write past what one op carries was written as segments, none of
+        // which carries its changes whole: it is decided by the changes it was
+        // assembled into, as admission decides them, grants and callers alike.
+        match mutation {
+            collab_types::DocumentMutation::Snapshot(_) => {
+                // A whole record is decided by who wrote it, never by what it holds: what an
+                // empty one carries decides it as this one.
+                opened.payload = collab_types::DocumentMutation::Snapshot(Vec::new())
+                    .encode()
+                    .map_err(|error| OpenedRefusal::CannotDecide(error.to_string()))?;
+                self.decide_opened(app, record, write, (&opened, None))
+            }
+            collab_types::DocumentMutation::Incremental(bytes) => {
+                let changes = tilo_automerge_isolate::parse_changes(bytes).map_err(|_| {
+                    self.refused_opened(
+                        app,
+                        record,
+                        write,
+                        &collab_types::ReceiptRefusal::Unclaimed,
+                    )
+                })?;
+                opened.payload = Vec::new();
+                self.decide_opened(app, record, write, (&opened, Some(&changes)))
+            }
         }
-        let Some(member) = self
-            .written_as(app, record, write, write.timestamp)
-            .map_err(|error| OpenedRefusal::CannotDecide(error.to_string()))?
-            .map(|(member, _)| member)
-        else {
-            return Err(OpenedRefusal::CannotDecide(
-                "the opened write's author is not decided yet".into(),
-            ));
-        };
-        self.callers_named_in(
+    }
+
+    /// `write` refused by the workspace's rules as `refusal`, named as a received change's
+    /// refusal is.
+    fn refused_opened(
+        &self,
+        app: &str,
+        record: &str,
+        write: &SignedOp,
+        refusal: &collab_types::ReceiptRefusal,
+    ) -> OpenedRefusal {
+        OpenedRefusal::Refused(Box::new(crate::ChangeRefused::of(
+            self.core.workspace.clone(),
+            self.core.workspace.clone(),
             app,
             record,
-            write.author.as_bytes(),
             write,
-            &changes,
-            &member,
-            write.timestamp,
-        )
-        .map(drop)
-        .map_err(|refusal| match refusal {
-            super::authority::AuthorizeRefusal::Rules(refusal, said) => {
-                OpenedRefusal::Refused(Box::new(crate::ChangeRefused::of(
-                    self.core.workspace.clone(),
-                    self.core.workspace.clone(),
-                    app,
-                    record,
-                    write,
-                    &refusal,
-                    said,
-                )))
-            }
-            super::authority::AuthorizeRefusal::Denied(reason) => {
-                OpenedRefusal::CannotDecide(reason.to_string())
-            }
-        })
+            refusal,
+            format!("the opened write is refused: {refusal}"),
+        )))
     }
 
     /// Decide the opened change `opened` of `write` as admission decides a
-    /// change it received in the clear.
+    /// change it received in the clear: by the changes `opened` carries, or by
+    /// those it was assembled into when it is too large to carry them.
     fn decide_opened(
         &self,
         app: &str,
         record: &str,
         write: &SignedOp,
-        opened: &SignedOp,
+        (opened, changes): (&SignedOp, Option<&[automerge::Change]>),
     ) -> Result<(), OpenedRefusal> {
         match self.authorize_document_as(
             write.author.as_bytes(),
             app,
             record,
             write,
-            opened,
+            (opened, changes),
             write.timestamp,
             true,
         ) {
@@ -422,7 +449,7 @@ impl StatePeer {
                     self.core.workspace.clone(),
                     app,
                     record,
-                    opened,
+                    if changes.is_some() { write } else { opened },
                     &refusal,
                     said,
                 ))))
@@ -452,7 +479,9 @@ impl StatePeer {
         let maximum = maximum.min(MAX_CAPTURE_BYTES);
         let mut kept = KeptDocument::default();
         let document = self.open_document(reader, route, now, maximum, open, &mut kept)?;
-        PeerDocumentCapture::from_document(document, maximum)
+        let mut capture = PeerDocumentCapture::from_document(document, maximum)?;
+        capture.refused = kept.refused().to_vec();
+        Ok(capture)
     }
 
     /// Whether the device `reader` may read the resource at `route` now and, for one read through its
@@ -637,6 +666,8 @@ fn open_history<'a>(
             captured: None,
             stuck: Vec::new(),
             waiting: Vec::new(),
+            refusing: super::sealed_compaction::RefusedChanges::default(),
+            refused: Vec::new(),
             // The document's cleartext part as it stands, which is what a sealed history opens
             // onto ([`super::sealed_compaction::open_sealed_after`]): a compaction folds the
             // writes it opened into it and leaves the checkpoint it was covered by behind, so
@@ -696,14 +727,31 @@ fn open_history<'a>(
             .map_err(PeerDocumentReadError::Opening)?
         {
             // A write is decided as admission decides the same write in the
-            // clear before any of it is merged into what the reader reads.
-            peer.check_opened_write((app, record), op, &mutation)
-                .map_err(|refusal| match refusal {
-                    OpenedRefusal::Refused(refused) => PeerDocumentReadError::Refused(refused),
-                    OpenedRefusal::CannotDecide(reason) => PeerDocumentReadError::Opening(reason),
-                })?;
-            writes.push((index, mutation));
-            fresh = fresh.saturating_add(1);
+            // clear before any of it is merged into what the reader reads. One
+            // the workspace's rules refuse is read without, with every write
+            // built on it, and named; one this device cannot decide yet is
+            // still arriving.
+            match peer.check_opened_write((app, record), op, &mutation) {
+                Ok(()) => {
+                    writes.push((index, mutation));
+                    fresh = fresh.saturating_add(1);
+                }
+                Err(OpenedRefusal::Refused(refused)) => {
+                    opened.refusing.refuse(&mutation);
+                    opened
+                        .refused
+                        .push(super::sealed_compaction::UnmergedWrite {
+                            author: *op.author.as_bytes(),
+                            seq: op.seq,
+                            reason: super::sealed_compaction::UnmergedReason::Refused {
+                                refusal: refused.reason,
+                            },
+                        });
+                }
+                Err(OpenedRefusal::CannotDecide(reason)) => {
+                    return Err(PeerDocumentReadError::Opening(reason));
+                }
+            }
         }
         opened.count = index.saturating_add(1);
         opened.last = Some(op.signature);
@@ -713,6 +761,7 @@ fn open_history<'a>(
                 std::mem::take(&mut opened.document),
                 std::mem::take(&mut writes),
                 &signers,
+                (&mut opened.refusing, &mut opened.refused),
             )?;
             opened.document = merged;
             writes = waiting;
@@ -744,12 +793,16 @@ impl Opened {
             writes,
             super::sealed_compaction::LeftOut::Named,
             Some(signers),
+            &mut self.refusing,
         )
         .map_err(PeerDocumentReadError::Opening)?;
         // A write read without before stays so until what it builds on is here: only its arrival
-        // changes that, and the merge tells it.
+        // changes that, and the merge tells it. One built on a refused write is read without for
+        // good.
+        let (built, stuck_before) = self.refusing.left_out(std::mem::take(&mut self.stuck));
+        name_refused(&mut self.refused, built, signers);
         let mut stuck = Vec::new();
-        for (index, mutation) in std::mem::take(&mut self.stuck) {
+        for (index, mutation) in stuck_before {
             match super::sealed_compaction::merge_write(&mut merged, &mutation) {
                 super::sealed_compaction::WriteMerge::Waiting => stuck.push((index, mutation)),
                 super::sealed_compaction::WriteMerge::Applied
@@ -764,6 +817,10 @@ impl Opened {
         for (index, reason, mutation) in left {
             match reason {
                 super::sealed_compaction::UnmergedReason::AlreadyHeld { .. } => {}
+                reason @ (super::sealed_compaction::UnmergedReason::Refused { .. }
+                | super::sealed_compaction::UnmergedReason::BuiltOnRefused { .. }) => {
+                    name_refused(&mut self.refused, vec![(index, reason, mutation)], signers);
+                }
                 super::sealed_compaction::UnmergedReason::BehindUnsent { .. } => {
                     self.stuck.push((index, mutation));
                 }
@@ -794,18 +851,27 @@ fn merge_some(
     document: AutoCommit,
     writes: Vec<(usize, collab_types::DocumentMutation)>,
     signers: &super::sealed_compaction::Signers<'_>,
+    (refusing, refused): (
+        &mut super::sealed_compaction::RefusedChanges,
+        &mut Vec<super::sealed_compaction::UnmergedWrite>,
+    ),
 ) -> Result<(AutoCommit, Vec<(usize, collab_types::DocumentMutation)>), PeerDocumentReadError> {
     let (merged, left) = super::sealed_compaction::merge_writes(
         document,
         writes,
         super::sealed_compaction::LeftOut::Named,
         Some(signers),
+        refusing,
     )
     .map_err(PeerDocumentReadError::Opening)?;
     let mut waiting = Vec::new();
     for (index, reason, mutation) in left {
         match reason {
             super::sealed_compaction::UnmergedReason::AlreadyHeld { .. } => {}
+            reason @ (super::sealed_compaction::UnmergedReason::Refused { .. }
+            | super::sealed_compaction::UnmergedReason::BuiltOnRefused { .. }) => {
+                name_refused(refused, vec![(index, reason, mutation)], signers);
+            }
             super::sealed_compaction::UnmergedReason::BehindUnsent { .. }
             | super::sealed_compaction::UnmergedReason::MissingDependencies { .. } => {
                 waiting.push((index, mutation));
@@ -816,4 +882,21 @@ fn merge_some(
         }
     }
     Ok((merged, waiting))
+}
+
+/// Name `left`, writes a read leaves out for the workspace's rules, in `refused`.
+fn name_refused(
+    refused: &mut Vec<super::sealed_compaction::UnmergedWrite>,
+    left: Vec<super::sealed_compaction::LeftWrite>,
+    signers: &super::sealed_compaction::Signers<'_>,
+) {
+    for (index, reason, _) in left {
+        if let Some(signed) = (signers.of)(index) {
+            refused.push(super::sealed_compaction::UnmergedWrite {
+                author: signed.author,
+                seq: signed.seq,
+                reason,
+            });
+        }
+    }
 }

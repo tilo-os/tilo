@@ -232,7 +232,7 @@ pub fn verify_invocation(
     if !signed.statement().fresh_at(now_ns) {
         return Err(InvocationError::Stale);
     }
-    signer_of(signed, workspace, revocations, now_ns)
+    signer_of(signed, workspace, revocations, (now_ns, None))
 }
 
 /// Check the invocation a change made for it keeps (`context`'s
@@ -249,6 +249,11 @@ pub fn verify_invocation(
 /// invoker. Freshness is the host's to check when it runs the invocation: a
 /// change is read long after.
 ///
+/// A revocation counts from its own time against the earlier of when the
+/// invocation was signed and `at_ns`, when the change was written: every device
+/// that reads the change, now or years later, reaches the same verdict on it, and
+/// a device revoked afterwards does not take back what it asked for before.
+///
 /// # Errors
 ///
 /// The first check that fails, as [`InvocationError`]:
@@ -258,6 +263,7 @@ pub fn verify_recorded(
     context: &tilo_actions::ActionContext,
     workspace: &str,
     revocations: &RevocationList,
+    at_ns: u64,
 ) -> Result<Option<DeviceCert>, InvocationError> {
     let invoker = context.invoker.as_ref().map(|invoker| &invoker.acting);
     let Some(call) = context.signed.as_deref() else {
@@ -297,7 +303,15 @@ pub fn verify_recorded(
     {
         return Err(StatementMismatch::Target.into());
     }
-    let cert = signer_of(signed, workspace, revocations, statement.issued_at_ns)?;
+    let cert = signer_of(
+        signed,
+        workspace,
+        revocations,
+        (
+            statement.issued_at_ns,
+            Some(statement.issued_at_ns.min(at_ns)),
+        ),
+    )?;
     // The signer is a person the change names: the invoker, the person it works for, or one
     // further down its chain who bounds that work (the person an agent belongs to when it
     // answers someone else, the starter's person of a sub-agent). Each of them bounds what the
@@ -349,7 +363,12 @@ pub fn verify_stamp(
     if call.argument_signed() == Some(false) {
         return Err(StatementMismatch::Arguments.into());
     }
-    let cert = signer_of(signed, workspace, revocations, statement.issued_at_ns)?;
+    let cert = signer_of(
+        signed,
+        workspace,
+        revocations,
+        (statement.issued_at_ns, None),
+    )?;
     let person = hex::encode(cert.user_public_key);
     let names_signer = stamp
         .invoked_by()
@@ -415,7 +434,7 @@ pub fn verify_page_call(
     if !statement.fresh_at(now_ns) {
         return Err(InvocationError::Stale);
     }
-    signer_of(signed, workspace, revocations, now_ns)
+    signer_of(signed, workspace, revocations, (now_ns, None))
 }
 
 /// Check `request` in `workspace` as [`verify_invocation`] does, for the agent `agent` acting
@@ -513,19 +532,24 @@ fn check_signature(signed: &SignedInvocation) -> Result<(), InvocationError> {
 
 /// The certificate `signed` carries, checked: it certifies the signing key,
 /// chains to its person's root and is valid at `at_ns`, is not revoked in
-/// `revocations`, and a grant reaches `workspace`.
+/// `revocations` (counted from `revoked_from`, when given, else whenever it
+/// was), and a grant reaches `workspace`.
 fn signer_of(
     signed: &SignedInvocation,
     workspace: &str,
     revocations: &RevocationList,
-    at_ns: u64,
+    (at_ns, revoked_from): (u64, Option<u64>),
 ) -> Result<DeviceCert, InvocationError> {
     let cert = decode_cert(signed.signer_cert())?;
     if cert.device_public_key != signed.statement().signer {
         return Err(InvocationError::SignerMismatch);
     }
     verify_device_cert_at(&cert, at_ns).map_err(InvocationError::Certificate)?;
-    if revocations.refuses(&cert) {
+    let revoked = match revoked_from {
+        Some(from) => revocations.refuses_at(&cert, from),
+        None => revocations.refuses(&cert),
+    };
+    if revoked {
         return Err(InvocationError::Revoked);
     }
     if cert
@@ -885,6 +909,7 @@ mod tests {
                     },
                     WORKSPACE,
                     &RevocationList::new(),
+                    NOW,
                 )
             };
             let scout = for_person(Acting::agent("scout"));
@@ -938,7 +963,7 @@ mod tests {
             let none = RevocationList::new();
             // The call's own resource and action are inside it; another of either is not.
             assert_eq!(
-                verify_recorded(&change("note:1", "note", "rename"), WORKSPACE, &none),
+                verify_recorded(&change("note:1", "note", "rename"), WORKSPACE, &none, NOW),
                 Ok(Some(cert))
             );
             for outside in [
@@ -946,7 +971,7 @@ mod tests {
                 change("note:1", "note", "delete"),
             ] {
                 assert_eq!(
-                    verify_recorded(&outside, WORKSPACE, &none),
+                    verify_recorded(&outside, WORKSPACE, &none, NOW),
                     Err(InvocationError::Mismatch(StatementMismatch::Target))
                 );
             }
@@ -979,6 +1004,7 @@ mod tests {
                     },
                     WORKSPACE,
                     &RevocationList::new(),
+                    NOW,
                 )
             };
             let by_ada = signed(&request(), &ada_device, &laptop, NOW);

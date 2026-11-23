@@ -817,6 +817,38 @@ pub fn decide_op_pinned(
 pub fn decide_op_imported(
     op: &crate::op::SignedOp,
     document: &WrittenDocument<'_>,
+    written: (
+        Option<&str>,
+        Option<automerge::AutoCommit>,
+        Option<[u8; 32]>,
+    ),
+    holding: Option<&automerge::Automerge>,
+    surfaces: &Surfaces,
+    allows: &Allows<'_>,
+    imported: Option<&Acting>,
+) -> Result<Receipt, ReceiptRefusal> {
+    decide_opened(
+        (op, None),
+        document,
+        written,
+        holding,
+        surfaces,
+        allows,
+        imported,
+    )
+}
+
+/// [`decide_op_imported`] for a write a device opened, decided by `opened`, the
+/// changes it opened to, rather than by what `op` carries: a write larger than
+/// one op is written as segments, so no op carries its changes whole, and its
+/// grants are decided on the changes it was assembled into. `None` decides
+/// `op` as [`decide_op_imported`] does.
+///
+/// # Errors
+/// The first [`ReceiptRefusal`].
+pub fn decide_opened(
+    (op, opened): (&crate::op::SignedOp, Option<&[automerge::Change]>),
+    document: &WrittenDocument<'_>,
     (kind, held, pinned): (
         Option<&str>,
         Option<automerge::AutoCommit>,
@@ -828,6 +860,13 @@ pub fn decide_op_imported(
     imported: Option<&Acting>,
 ) -> Result<Receipt, ReceiptRefusal> {
     use tilo_action_policy::roles;
+    let changes_of =
+        |op: &crate::op::SignedOp| -> Result<Option<Vec<automerge::Change>>, ReceiptRefusal> {
+            match opened {
+                Some(opened) => Ok(Some(opened.to_vec())),
+                None => cleartext_changes(op),
+            }
+        };
     let governed = |action: &str| {
         let node = roles::governance_action(document.workspace, action);
         if allows(None, &node, roles::GOVERNANCE_KIND) {
@@ -851,11 +890,12 @@ pub fn decide_op_imported(
                 .as_ref()
                 .filter(|_| op.surface.is_some() || pinned.is_some())
             else {
-                return decide_as_document_edit(op, document, allows, imported);
+                let changes = changes_of(op)?;
+                return decide_as_document_edit(changes.as_deref(), document, allows, imported);
             };
             let surface_for =
                 |kind: Option<&str>| source.surface(document, kind, op.surface.as_ref());
-            let Some(changes) = cleartext_changes(op)? else {
+            let Some(changes) = changes_of(op)? else {
                 // A sealed op: the server decides the claims its envelope
                 // carries; devices check the changes once they open them.
                 return check_claims_by_kind(&op.claims, document, kind, &surface_for, allows);
@@ -938,13 +978,12 @@ pub fn decide_op_imported(
 /// none), decided as an edit of the document by whoever made each of its
 /// changes, as far as the receiver reads them.
 fn decide_as_document_edit(
-    op: &crate::op::SignedOp,
+    changes: Option<&[automerge::Change]>,
     document: &WrittenDocument<'_>,
     allows: &Allows<'_>,
     imported: Option<&Acting>,
 ) -> Result<Receipt, ReceiptRefusal> {
     let node = written_node(document);
-    let changes = cleartext_changes(op)?;
     // A change that carries a resource store's stamp names its invoker there;
     // one whose stamp names none is refused, as any change that names nobody,
     // unless an import step said whose it is. A framework change names itself,

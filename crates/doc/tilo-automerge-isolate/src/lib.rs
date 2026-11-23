@@ -301,6 +301,35 @@ pub fn changes(incoming: &[u8]) -> Option<Vec<automerge::Change>> {
     engine::changes(incoming)
 }
 
+/// Every change `bytes` carries, read as [`automerge::Automerge::parse_changes`]
+/// reads them: change chunks in order, and the changes of each whole document
+/// among them. The framing is checked first ([`precheck`]); a change chunk is
+/// read as [`changes`] reads it, and a whole document is loaded as [`load`]
+/// loads one, never in this process on Linux. Empty input carries no change.
+///
+/// # Errors
+/// A [`Rejected`] reason: framing past the limits or malformed, a change
+/// chunk that does not decode, or a document that does not load.
+pub fn parse_changes(bytes: &[u8]) -> Result<Vec<automerge::Change>, Rejected> {
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    precheck::check(bytes, Isolate::shared().limits())?;
+    let mut parsed = Vec::new();
+    for chunk in precheck::chunks(bytes) {
+        if matches!(chunk.kind, precheck::CHANGE | precheck::COMPRESSED_CHANGE) {
+            parsed.push(
+                automerge::Change::try_from(chunk.bytes)
+                    .map_err(|_| Rejected::Malformed("a change chunk does not decode"))?,
+            );
+        } else {
+            let mut document = load(chunk.bytes)?;
+            parsed.extend(document.get_changes(&[]));
+        }
+    }
+    Ok(parsed)
+}
+
 /// Outside Linux there are no worker processes, so none of their bounds
 /// apply: input that passes [`precheck`] is decoded in this process with no
 /// heap ceiling, deadline or sandbox, and a decoder panic or hang is the

@@ -7,6 +7,10 @@
 )]
 // One test binary instead of one per file; #[path] keeps the files in place.
 
+// A test that reads a whole document's changes loads it in a worker, which
+// this test binary serves.
+tilo_automerge_isolate::test_worker!();
+
 #[path = "canonical.rs"]
 mod canonical;
 #[path = "capability_model.rs"]

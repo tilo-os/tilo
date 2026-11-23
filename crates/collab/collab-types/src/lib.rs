@@ -82,6 +82,10 @@ pub mod validator;
 pub mod workspace_document;
 pub mod workspace_grant;
 pub mod workspace_id;
+// A test that reads a whole document's changes loads it in a worker, which
+// this test binary serves.
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();
 
 /// The URI scheme that asks an app to open one of its own documents
 /// (`tilo-document:<document id>`): how a launch delivers an invocation to the
@@ -144,7 +148,8 @@ pub use receipt::{
     Allows, ChangeAuthor, Receipt, ReceiptRefusal, ReceiptSurface, SurfaceSource, Surfaces,
     WrittenDocument, check_appearances, check_claims, check_claims_by_kind, check_continuations,
     check_opened, check_opened_mutation, check_reassembled, claim_node, claimed_invokers,
-    decide_op, decide_op_imported, decide_op_pinned, recorded_contexts, written_node,
+    decide_op, decide_op_imported, decide_op_pinned, decide_opened, recorded_contexts,
+    written_node,
 };
 pub use record_id::{
     is_personal_cluster, person_document_context, person_document_for_workspace,

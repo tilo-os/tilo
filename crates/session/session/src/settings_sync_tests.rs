@@ -89,6 +89,7 @@ fn a_laptop_writes_its_own_settings_record_and_it_is_taken_in() {
             &context,
             &persons_workspace(&person),
             &tilo_user_identity::RevocationList::new(),
+            u64::MAX,
         ),
         Ok(None),
         "a person's own change carries no invocation and needs none"

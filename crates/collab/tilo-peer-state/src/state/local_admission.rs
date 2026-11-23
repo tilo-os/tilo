@@ -151,7 +151,7 @@ impl StatePeer {
     /// The frame does not decode, sealing failed, or the record refuses the write.
     pub fn draft_write(
         &self,
-        (app, record): (&str, &str),
+        route: (&str, &str),
         readers: Option<&str>,
         frame: &[u8],
         seal: Option<&mut super::SealCheckpoint<'_>>,
@@ -159,15 +159,40 @@ impl StatePeer {
         drafted: u64,
         now: SystemTime,
     ) -> Result<SignedOp, String> {
+        self.draft_checked_write(route, readers, frame, seal, author, drafted, now)
+            .map_err(|refusal| refusal.to_string())
+    }
+
+    /// [`Self::draft_write`], telling a sealed write the workspace's rules refuse
+    /// ([`DraftRefusal::Change`]) from one that could not be drafted at all.
+    ///
+    /// A sealed write is decided here as every device that opens it decides it
+    /// ([`Self::check_opened_write`]): a device without the key cannot, and a
+    /// write every reader would leave out is better never sent.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::draft_write`].
+    pub(crate) fn draft_checked_write(
+        &self,
+        (app, record): (&str, &str),
+        readers: Option<&str>,
+        frame: &[u8],
+        seal: Option<&mut super::SealCheckpoint<'_>>,
+        author: [u8; 32],
+        drafted: u64,
+        now: SystemTime,
+    ) -> Result<SignedOp, DraftRefusal> {
         let route = Route {
             app: app.into(),
             record: record.into(),
         };
-        let mutation =
-            match collab_types::DocumentFrame::decode(frame).map_err(|error| error.to_string())? {
-                collab_types::DocumentFrame::Whole(mutation) => Some(mutation),
-                collab_types::DocumentFrame::Segment(_) => None,
-            };
+        let mutation = match collab_types::DocumentFrame::decode(frame)
+            .map_err(|error| DraftRefusal::Refused(error.to_string()))?
+        {
+            collab_types::DocumentFrame::Whole(mutation) => Some(mutation),
+            collab_types::DocumentFrame::Segment(_) => None,
+        };
         let author = collab_types::Ed25519PublicKey::from_bytes(author);
         let document = self.core.documents.get(&route);
         let seq = document
@@ -175,12 +200,13 @@ impl StatePeer {
             .unwrap_or(0)
             .checked_add(1)
             .and_then(|next| next.checked_add(drafted))
-            .ok_or("sequence exhausted")?;
+            .ok_or_else(|| DraftRefusal::Refused("sequence exhausted".into()))?;
         let artifact = collab_types::document_artifact_id(app, &self.core.workspace, record);
         let attestation = collab_types::document_attestation_id(app, &self.core.workspace, record);
         let surface = self.signed_surface(app);
         let Some(seal) = seal else {
-            self.check_document_key_scope((app, record), readers, None, now, false)?;
+            self.check_document_key_scope((app, record), readers, None, now, false)
+                .map_err(DraftRefusal::Refused)?;
             // A device that starts a record is told now when the workspace does not let it
             // create one, or when the record is there already: a peer's copy of the same start
             // is held or merged as the nothing it is, but its own write would be answered as
@@ -189,14 +215,18 @@ impl StatePeer {
                 && !self.signed_by_governor(author.as_bytes())
             {
                 if document.is_some() {
-                    return Err("the record exists already".into());
+                    return Err(DraftRefusal::Refused("the record exists already".into()));
                 }
                 if !self.may_create_document(
-                    &self.membership(*author.as_bytes(), now)?,
+                    &self
+                        .membership(*author.as_bytes(), now)
+                        .map_err(DraftRefusal::Refused)?,
                     &route,
                     now,
                 ) {
-                    return Err("the workspace does not let this device create the record".into());
+                    return Err(DraftRefusal::Refused(
+                        "the workspace does not let this device create the record".into(),
+                    ));
                 }
             }
             return Ok(SignedOp::new_unsigned(
@@ -209,47 +239,30 @@ impl StatePeer {
                 seq,
             )
             .with_surface(surface)
-            .with_governance(&self.governance_heads()?));
+            .with_governance(&self.governance_heads().map_err(DraftRefusal::Refused)?));
         };
         // A change needs the record it changes, held or drafted before it; a checkpoint is the
         // whole record, so it is all a route it founds needs.
         let retention = collab_types::ContentRetention::of_frame(frame);
         if document.is_none() && drafted == 0 && retention == collab_types::ContentRetention::Delta
         {
-            return Err("sealed write to a record this state does not hold".into());
+            return Err(DraftRefusal::Refused(
+                "sealed write to a record this state does not hold".into(),
+            ));
         }
-        // Readers without the key decide a sealed write by the claims of its changes, as a
-        // member's page names them: each naming the units its action may write by the surface
-        // the op names.
         let claims = mutation
             .as_ref()
-            .and_then(|mutation| {
-                tilo_failure::ignored!(
-                    "a segment of a frame, or changes that name no action, claim nothing",
-                    collab_types::mutation_claims(mutation, collab_types::record_unit).ok()
-                )
-            })
-            .map(|claims| {
-                self.surfaces.with_footprints(
-                    &collab_types::WrittenDocument {
-                        workspace: &self.core.workspace,
-                        app,
-                        document: record,
-                    },
-                    document
-                        .and_then(|held| super::resource_type(&*held.doc))
-                        .as_deref(),
-                    surface.as_ref(),
-                    claims,
-                )
-            })
+            .map(|mutation| self.sealed_claims((app, record), mutation))
             .unwrap_or_default();
-        let (metadata, ciphertext) = seal(frame)?;
-        self.check_document_key_scope((app, record), readers, Some(metadata), now, false)?;
+        let (metadata, ciphertext) = seal(frame).map_err(DraftRefusal::Refused)?;
+        self.check_document_key_scope((app, record), readers, Some(metadata), now, false)
+            .map_err(DraftRefusal::Refused)?;
         if metadata.retention() != Some(retention) {
-            return Err("a sealed write is a delta or a checkpoint of the record".into());
+            return Err(DraftRefusal::Refused(
+                "a sealed write is a delta or a checkpoint of the record".into(),
+            ));
         }
-        Ok(SignedOp::new_unsigned_with_encryption(
+        let op = SignedOp::new_unsigned_with_encryption(
             ciphertext,
             artifact,
             author,
@@ -261,7 +274,52 @@ impl StatePeer {
         )
         .with_claims(claims)
         .with_surface(surface)
-        .with_governance(&self.governance_heads()?))
+        .with_governance(&self.governance_heads().map_err(DraftRefusal::Refused)?);
+        // A write whose segments are still to come is decided by its readers once it is whole;
+        // one written whole is decided now. A write the workspace has not decided the rules for
+        // yet (they are still arriving here) goes, and its readers decide it.
+        if let Some(mutation) = &mutation
+            && let Err(super::document_capture::OpenedRefusal::Refused(refused)) =
+                self.check_opened_write((app, record), &op, mutation)
+        {
+            return Err(DraftRefusal::Change(refused));
+        }
+        Ok(op)
+    }
+
+    /// What a sealed write of `mutation` to `record` of `app` claims: readers without the key
+    /// decide the write by the claims of its changes, as a member's page names them, each naming
+    /// the units its action may write by the app interface the write names. Changes that name no
+    /// action claim nothing.
+    pub(crate) fn sealed_claims(
+        &self,
+        (app, record): (&str, &str),
+        mutation: &collab_types::DocumentMutation,
+    ) -> Vec<collab_types::ChangeClaim> {
+        let Some(claims) = tilo_failure::ignored!(
+            "changes that name no action claim nothing",
+            collab_types::mutation_claims(mutation, collab_types::record_unit).ok()
+        ) else {
+            return Vec::new();
+        };
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        self.surfaces.with_footprints(
+            &collab_types::WrittenDocument {
+                workspace: &self.core.workspace,
+                app,
+                document: record,
+            },
+            self.core
+                .documents
+                .get(&route)
+                .and_then(|held| super::resource_type(&*held.doc))
+                .as_deref(),
+            self.signed_surface(app).as_ref(),
+            claims,
+        )
     }
 
     /// Admit `envelope`, a local app's signed write to `record`, as a new
@@ -473,6 +531,25 @@ impl StatePeer {
             document.doc = rebuilt.into();
         }
         Ok(())
+    }
+}
+
+/// Why a write could not be drafted ([`StatePeer::draft_checked_write`]).
+#[derive(Debug)]
+pub(crate) enum DraftRefusal {
+    /// The workspace's rules refuse the sealed write, as every device that
+    /// opens it would: named as a received change's refusal is.
+    Change(Box<crate::ChangeRefused>),
+    /// It could not be drafted: its frame, its seal or the record refuse it.
+    Refused(String),
+}
+
+impl std::fmt::Display for DraftRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Change(refused) => write!(f, "{refused}"),
+            Self::Refused(reason) => f.write_str(reason),
+        }
     }
 }
 

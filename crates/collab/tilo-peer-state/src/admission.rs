@@ -298,6 +298,11 @@ pub struct AdmissionReport {
     pub(crate) released: Vec<Released>,
     /// The held messages decided again with this input that still wait.
     pub(crate) still_held: Vec<StillHeld>,
+    /// The workspace's rules refused the sealed change this input carries, as this device, holding
+    /// the record's keys, found when it opened it. A device whose admission does not define the
+    /// record's history keeps the change it cannot vouch for, as every device without the keys
+    /// does, and says the refusal: its readers read the record without it.
+    pub(crate) opened_refusal: Option<Box<crate::ChangeRefused>>,
 }
 impl AdmissionReport {
     pub fn primary(&self) -> &InputDisposition {
@@ -320,6 +325,12 @@ impl AdmissionReport {
     pub fn still_held(&self) -> &[StillHeld] {
         &self.still_held
     }
+    /// What the workspace's rules refused in the sealed change this input carries, found by this
+    /// device on opening it with the record's keys. The change was kept all the same: this
+    /// device's admission does not define the record's history.
+    pub fn opened_refusal(&self) -> Option<&crate::ChangeRefused> {
+        self.opened_refusal.as_deref()
+    }
     pub(crate) fn new(primary: InputDisposition, summary: ReceiveOutcome) -> Self {
         let settled = match &primary {
             InputDisposition::Accepted(op) => vec![op.clone()],
@@ -331,6 +342,7 @@ impl AdmissionReport {
             summary,
             released: Vec::new(),
             still_held: Vec::new(),
+            opened_refusal: None,
         }
     }
     /// What deciding the held `message` again took in: the message itself

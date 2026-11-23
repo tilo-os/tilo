@@ -69,6 +69,8 @@ mod schedules_tests;
 pub(crate) mod test_desktops;
 pub use delegates::{ActingAs, DelegateInactive, GovernedAgent, GovernedDelegateRow};
 mod local_admission;
+pub(crate) use document_capture::OpenedRefusal;
+pub(crate) use local_admission::DraftRefusal;
 pub use local_admission::NotAdmitted;
 mod local_outbox;
 mod membership_error;
@@ -452,8 +454,15 @@ type SurfaceOf = dyn Fn(&str) -> Option<[u8; 32]> + Send + Sync;
 /// writes of those after it are told apart by that index. A record without
 /// units is not copied for every change it receives: an empty record stands
 /// in, by which each change writes the record itself, its only unit.
-fn held_units(doc: &crate::cached_document::CachedDocument, envelope: &SignedOp) -> AutoCommit {
+fn held_units(
+    doc: &crate::cached_document::CachedDocument,
+    envelope: &SignedOp,
+    opened: Option<&[automerge::Change]>,
+) -> AutoCommit {
     let brings_index = || {
+        if let Some(opened) = opened {
+            return collab_types::units::brings_index(opened);
+        }
         envelope.encryption.is_none()
             && tilo_failure::ignored!(
                 "change bytes that do not parse bring no index",

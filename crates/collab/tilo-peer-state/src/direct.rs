@@ -1053,6 +1053,19 @@ impl DirectSync {
         }
     }
 
+    /// Make this device the workspace's host on its links: what they bring in
+    /// it sends on to its other links, and what its admission takes is the
+    /// workspace's history, so a sealed change it opens and finds refused is
+    /// refused outright ([`crate::owner::NativeWorkspaceOwner::define_history`]).
+    fn host(&self) {
+        self.0
+            .fan_out
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(admission) = &self.0.admission {
+            admission.owner.define_history(admission.workspace);
+        }
+    }
+
     /// Whether this device is the workspace's host on its links
     /// ([`Serving::serve`]).
     fn fans_out(&self) -> bool {
@@ -2659,9 +2672,7 @@ impl ProtocolHandler for DirectSync {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         // A connection this device accepts is a member's, so this device is
         // the workspace's host on it.
-        self.0
-            .fan_out
-            .store(true, std::sync::atomic::Ordering::Release);
+        self.host();
         self.serve(connection)
             .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))
@@ -2705,9 +2716,7 @@ impl Serving {
     /// The link's replica names no workspace id.
     pub fn serve(&self, link: DirectSync) -> Result<(), String> {
         let workspace = link.workspace()?;
-        link.0
-            .fan_out
-            .store(true, std::sync::atomic::Ordering::Release);
+        link.host();
         self.links.write_recover().insert(workspace, link);
         Ok(())
     }
