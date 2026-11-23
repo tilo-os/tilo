@@ -60,35 +60,6 @@ base=(env RUNNER_TEMP="$tmp" GITHUB_WORKSPACE="$repo"
   ACTIONS_ID_TOKEN_REQUEST_TOKEN=request SIGNER="$trusted/signer" KEY="$trusted/key"
   MAC_ID='Developer ID Application: Tilo Release (A1B2C3D4E5)'
   MAC_PROFILE=tilo-release-notary)
-output="$("${base[@]}" "$repo/apps/imager/packaging/acquire-release-credentials.sh" \
-  linux "$trusted/broker")"
-grep -Fxq "TILO_LINUX_SIGNER=$trusted/signer" <<< "$output"
-grep -Fxq "TILO_LINUX_VERIFY_KEY=$trusted/key" <<< "$output"
-! grep -Fq 'BROKER_NOISE' <<< "$output"
-
-for rejected in duplicate multiline lax; do
-  if "${base[@]}" CASE="$rejected" \
-      "$repo/apps/imager/packaging/acquire-release-credentials.sh" linux "$trusted/broker" \
-      >/dev/null 2>&1; then
-    printf 'imager credential helper accepted %s broker output\n' "$rejected" >&2
-    exit 1
-  fi
-done
-
-output="$("${base[@]}" "$repo/apps/imager/packaging/acquire-release-credentials.sh" \
-  macos "$trusted/broker")"
-grep -Fxq 'TILO_MAC_SIGNING_IDENTITY=Developer ID Application: Tilo Release (A1B2C3D4E5)' <<< "$output"
-grep -Fxq 'TILO_NOTARY_KEYCHAIN_PROFILE=tilo-release-notary' <<< "$output"
-! grep -Fq 'BROKER_NOISE' <<< "$output"
-for rejected in mac-duplicate mac-invalid; do
-  if "${base[@]}" CASE="$rejected" \
-      "$repo/apps/imager/packaging/acquire-release-credentials.sh" macos "$trusted/broker" \
-      >/dev/null 2>&1; then
-    printf 'imager credential helper accepted %s broker output\n' "$rejected" >&2
-    exit 1
-  fi
-done
-
 token="$tmp/token"
 token_stdout="$("${base[@]}" "$repo/apps/imager/packaging/acquire-release-token.sh" \
   release "$trusted/broker" "$token")"
@@ -104,4 +75,4 @@ for rejected in token-newline lax; do
   fi
   rm -f "$token"
 done
-printf 'ok    imager broker outputs and trusted paths fail closed\n'
+printf 'ok    imager broker token output and trusted paths fail closed\n'

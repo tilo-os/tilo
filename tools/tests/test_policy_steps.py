@@ -19,7 +19,6 @@ ENFORCED_ELSEWHERE = {
     "check_commit_policy.py": "t.toml's `changes` check",
     "check_session_copy_contract.py": "this suite's test_session_copy_contract.py",
     "check_wire_enums.py": "t.toml's `changes` check, from check_commit_policy.py",
-    "check_workflow_actions.py": "the workflow-dependencies step's workflow_dependency_invariants.sh",
     "check_workspace_members.py": "scripts/check-workspace-complete.sh",
 }
 

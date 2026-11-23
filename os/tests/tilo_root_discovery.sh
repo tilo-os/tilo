@@ -508,8 +508,9 @@ if edited_preflight 7 'd["signature"] += "!"'; then
 fi
 echo 'ok: relabelled or malformed predictions are rejected'
 
-grep -Fq 'arch: x86_64' "$repo/.forgejo/workflows/release-imager.yml"
-grep -Fq 'arch: aarch64' "$repo/.forgejo/workflows/release-imager.yml"
+# The release ships the installer medium of both architectures.
+grep -Fq 'for arch in x86_64 aarch64; do' "$repo/tools/ci/imager-release/assets.sh"
+grep -Fq 'tilo-installer-linux-$arch.img.zst' "$repo/tools/ci/imager-release/assets.sh"
 # shellcheck source=lib/containerfile.sh
 . "$repo/os/tests/lib/containerfile.sh"
 containerfile_has_copy "$repo/os/Containerfile" \

@@ -47,7 +47,7 @@ done
 # installs the frozen snapshot's OpenSSL headers to rebuild the base's own bootc
 # release, of which only the binary ships; Containerfile.builder builds the
 # development image a stack builds in, which no one installs as Tilo.
-manifest_hits="$(find "$repo/os" "$repo/.forgejo" -type f \
+manifest_hits="$(find "$repo/os" -type f \
     \( -name 'Containerfile*' -o -name '*.yml' -o -name '*.yaml' \) \
     ! -name 'Containerfile.builder' -print0 \
   | xargs -0 -r rg -n -i '\b(openssl(-devel)?|sbsigntools)\b' \

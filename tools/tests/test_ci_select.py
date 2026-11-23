@@ -1300,9 +1300,9 @@ class SelectorTests(unittest.TestCase):
                 self.metadata,
                 self.root,
                 [
-                    "os/tests/imager_ephemeral_runner.sh",
+                    "os/tests/imager_linux_release_trust.sh",
                     "scripts/check-install-contract.py",
-                    "tools/ci/runners/imager-ephemeral-linux.sh",
+                    "tools/ci/imager-release/assets.sh",
                 ],
                 2,
             )
@@ -1372,7 +1372,6 @@ class SelectorTests(unittest.TestCase):
                 "tools/tests/test_ci_select.py",
                 "tools/tests/test_ci_measure.py",
                 "tools/tests/test_suites.py",
-                "tools/tests/test_workflow_timeouts.py",
             ]
             plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
             self.assertFalse(plan["rust_required"])
