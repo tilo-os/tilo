@@ -195,6 +195,8 @@ member_device() {
       --identity-root /var/lib/tilo-hosted/member/profile/identity 2>/dev/null |
       json_field device)
     if [ -n "$device" ]; then printf '%s' "$device"; return 0; fi
+    [ "$(podman inspect --format '{{.State.Running}}' "$host_container" 2>/dev/null)" = true ] \
+      || fail "the host stopped before it joined: $(podman logs --tail 3 "$host_container" 2>&1)"
     sleep 2
   done
   fail "the host joined no identity in 180 s: set TILO_VM_TICKET to a ticket \`tilo device add --capability admin\` printed (podman logs $host_container says why)"

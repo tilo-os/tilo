@@ -88,8 +88,14 @@ tilo-hosted-prepare
 member=$data/member
 pod=${HOSTNAME:-$(hostname)}
 profile=$member/profile
-if [ -s "$profile/identity/device/cert.bin" ]; then
+# The login a ticket leaves: what makes this host one of the person's devices. A
+# device certificate alone does not, since a daemon that never logged in makes
+# one of its own.
+login=$profile/state/tilo/device/login.json
+if [ -s "$login" ]; then
   : # this host is one of the person's devices already; a ticket beside it is left unspent
+elif [ "${TILO_VM_FOUND:-0}" = 1 ] && [ -s "$profile/identity/device/cert.bin" ]; then
+  : # this host founded its own identity before
 elif [ -n "${TILO_VM_TICKET:-}" ]; then
   say "joining the person's devices as $pod"
   mkdir -p -m 0700 "$member" "$member/home" "$profile"
@@ -97,20 +103,23 @@ elif [ -n "${TILO_VM_TICKET:-}" ]; then
   chmod 0700 "$profile"
   # The login reaches this host's own daemon, which founds no identity of its
   # own while it does: it certifies the key with the ticket's issuer, keeps the
-  # login under the profile, and enters the person's workspace.
-  HOME=$member/home TILO_RUNTIME_PROFILE=$profile \
+  # login under the profile, and enters the person's workspace. That daemon
+  # runs in the login's own environment, which names the profile's directories;
+  # it refuses a profile named outright (TILO_RUNTIME_PROFILE), as only the
+  # supervised member below takes one.
+  HOME=$member/home \
     TILO_HOSTED_VM_SOCKET=$run/hosted.sock TILO_HOSTED_PLANS=${TILO_VM_PLANS:-} \
     XDG_CONFIG_HOME=$profile/config XDG_DATA_HOME=$profile/data \
     XDG_CACHE_HOME=$profile/cache XDG_STATE_HOME=$profile/state \
     TILO_IDENTITY_ROOT=$profile/identity \
     setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- \
     tilo login "$TILO_VM_TICKET" \
-    || [ -s "$profile/identity/device/cert.bin" ] \
+    || [ -s "$login" ] \
     || { say "the ticket did not add this host: it may be used already, or have run out"; exit 1; }
   # The login leaves the daemon it reached; the member's one daemon is the
   # supervised one below, so the one login left is stopped here.
   for proc in /proc/[0-9]*; do
-    grep -qz "TILO_RUNTIME_PROFILE=$profile" "$proc/environ" 2>/dev/null \
+    grep -qz "TILO_IDENTITY_ROOT=$profile/identity" "$proc/environ" 2>/dev/null \
       && kill "${proc#/proc/}" 2>/dev/null || true
   done
 elif [ "${TILO_VM_FOUND:-0}" = 1 ]; then
