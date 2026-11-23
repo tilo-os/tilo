@@ -1563,16 +1563,13 @@ impl Hosted {
             Ok(InvokeOutcome::Done(Value::Ref(made))) => {
                 Some(std::rc::Rc::unwrap_or_clone(made.target))
             }
-            Ok(InvokeOutcome::Done(_)) => None,
-            // It calls another app and waits on the answer: the run goes on when it comes, and
-            // the file open answers nobody.
+            // Nothing is made: an action that made no resource, and a call that waits on
+            // another app or on a person, which answers nobody here.
+            Ok(InvokeOutcome::Done(_) | InvokeOutcome::Asked(_)) => None,
             Ok(InvokeOutcome::Waits { run, call }) => {
                 self.waiting(call, Some(run), None, None);
                 None
             }
-            // A person is asked through the dispatch, which runs it once they have: the open
-            // answers nobody.
-            Ok(InvokeOutcome::Asked(_)) => None,
             Ok(other) => {
                 self.instance
                     .failed(format!("{opening} was not opened: {other:?}"));
@@ -2063,8 +2060,7 @@ impl Hosted {
         cancelled: &std::collections::HashSet<u64>,
     ) -> bool {
         if let CollabEvent::Context { apps, .. } = &event {
-            // Apps installed or removed since the last frame: what the views show of who made a
-            // change is published again.
+            // Apps installed or removed since the last frame: what views show of who made a change is published again.
             if collaboration::history_source::authors::set_installed_apps(apps.clone()) {
                 self.instance.person_changed();
             }
@@ -2103,11 +2099,7 @@ impl Hosted {
                 return false;
             }
             CollabEvent::WorkspaceControl { .. } => {
-                tracing::warn!(
-                    app = self.spec.app,
-                    instance = self.spec.instance,
-                    "a task or workspace request reached an app instance, which does not run them"
-                );
+                self.not_ours();
                 return false;
             }
             CollabEvent::ResourcesArrived { records } => {
@@ -2231,6 +2223,15 @@ impl Hosted {
                 served,
                 person,
             },
+        );
+    }
+
+    /// Say that a task or workspace request reached an app's instance, which does not run them.
+    fn not_ours(&self) {
+        tracing::warn!(
+            app = self.spec.app,
+            instance = self.spec.instance,
+            "a task or workspace request reached an app instance, which does not run them"
         );
     }
 
