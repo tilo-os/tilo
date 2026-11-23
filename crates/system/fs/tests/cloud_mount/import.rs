@@ -162,7 +162,8 @@ fn import_mode_browses_and_exports_office_without_a_mount() {
         (
             "drawing",
             "svg",
-            include_bytes!("../../../cloud-source-gdrive/tests/fixtures/empty.svg").as_slice(),
+            include_bytes!("../../../../integrations/cloud-source-gdrive/tests/fixtures/empty.svg")
+                .as_slice(),
         ),
     ] {
         let id = server.put_native(
