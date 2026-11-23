@@ -186,10 +186,6 @@ pub struct Core {
     /// The device's own work (`Runtime::set_engine`): what it answers an app that asks for a
     /// decode, a render or a raster it cannot do itself.
     pub engine_work: RefCell<Option<Box<dyn crate::host_work::EngineHost>>>,
-    /// The page the app's window shows (`Runtime::set_page`): what `page.call` asks, and what a
-    /// replay answers from its journal instead of asking the page again. Until the host sets
-    /// one, a call says this app's window shows no page.
-    pub page: RefCell<Option<Box<dyn crate::page::PageHost>>>,
     /// What names actors; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
@@ -395,7 +391,6 @@ impl Core {
             clipboard: RefCell::new(None),
             notices: RefCell::new(None),
             engine_work: RefCell::new(None),
-            page: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),
             shown_by: RefCell::new(None),
