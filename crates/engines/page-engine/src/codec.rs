@@ -49,6 +49,9 @@ pub enum Ask {
 }
 
 /// Read a request an app's action wrote.
+///
+/// # Errors
+/// The text is no JSON object, or it names no operation this vocabulary has.
 pub fn decode(request: &str) -> Result<Ask, String> {
     let value: serde_json::Value =
         serde_json::from_str(request).map_err(|error| format!("a page request is no object: {error}"))?;
