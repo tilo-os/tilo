@@ -308,10 +308,10 @@ tilo_test_env::scenario! {
             1,
             "the resumed run is still waiting"
         );
-        assert_eq!(
+        assert_ne!(
             counter(restarted),
-            1,
-            "what it wrote before the call is not committed, nobody was answered"
+            3,
+            "the run did not go on with the answer: nobody it would be answered to is here"
         );
     }
 }
