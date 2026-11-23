@@ -35,6 +35,8 @@ TL_APPS = ("chat",)
 CHAT = "so.tilo.chat"
 # The line Ada writes.
 LINE = f"Grace, the tomatoes are planted ({int(time.time()) % 10000:04d})."
+# What Chat says under a line no other device has taken in yet (std.reach_note).
+NOT_REACHED = "Not reached anyone yet"
 # How soon after the join the people list must show the other person.
 PEOPLE_SECONDS = 2.0
 
@@ -157,10 +159,11 @@ def steps(story: Story) -> None:
         ada.session.type(LINE)
         # Enter sends what the composer holds, as Chat's own field and button both do.
         ada.session.key("Enter")
-        # Chat took the line: it stands in Ada's own conversation. A send is a change of the
-        # conversation Ada holds, so there is no moment it is still being sent on her side.
+        # The line stands in Ada's conversation at once, saying it has reached nobody until a
+        # device that keeps the workspace takes it in: the note going is the workspace taking it.
         try:
-            until("Ada's line to be taken by her Chat", lambda: ada.shows(LINE), 60, 0.1)
+            until("Ada's line to reach the workspace",
+                  lambda: ada.shows(LINE) and not ada.shows(NOT_REACHED), 60, 0.1)
         finally:
             story.note("chat-controls-after-send", ada.names())
 

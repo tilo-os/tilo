@@ -1667,6 +1667,7 @@ view message(
     } else {
         said(m)
     }
+    std.reach_note(m)
     if m.turn != "" {
         turn_steps(m)
     }
