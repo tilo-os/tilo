@@ -16660,6 +16660,7 @@ dependencies = [
  "tracing",
  "unicode-normalization",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

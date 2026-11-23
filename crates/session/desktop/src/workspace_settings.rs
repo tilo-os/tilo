@@ -218,15 +218,17 @@ pub fn grant_allows(grant: &tilo_action_policy::Grant, apps: &dyn AppDirectory) 
             "workspace-settings-allows-use",
             &[("what", app_display_name(apps, &app).into())],
         ),
-        Some(AnswerScope::Kind { app, kind: action } | AnswerScope::Action { app, action, .. }) => {
-            t_args(
-                "workspace-settings-allows-action",
-                &[
-                    ("action", action_name(apps, &app, &action).into()),
-                    ("app", app_display_name(apps, &app).into()),
-                ],
-            )
-        }
+        Some(
+            AnswerScope::Kind { app, kind: action }
+            | AnswerScope::Action { app, action, .. }
+            | AnswerScope::Resource { app, action, .. },
+        ) => t_args(
+            "workspace-settings-allows-action",
+            &[
+                ("action", action_name(apps, &app, &action).into()),
+                ("app", app_display_name(apps, &app).into()),
+            ],
+        ),
         None => grant_set_sentence(std::slice::from_ref(grant), apps),
     }
 }
