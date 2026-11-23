@@ -520,9 +520,12 @@ impl Task {
         author: [u8; 32],
     ) {
         match message {
-            // Taken in by a session that settles its own keys; the device's own key service hears
-            // the workspace's governance on its own live session.
-            message @ neighbour_wire::NeighbourMsg::MlsGovernance { .. } => {
+            // A channel's governance, and another device's request to join its group, are taken
+            // in by the key service the session runs: the same entry a link frame takes, so a
+            // member's request is answered from a session as it is from a link. The device's own
+            // key service hears too, when it has a link of its own.
+            message @ (neighbour_wire::NeighbourMsg::MlsGovernance { .. }
+            | neighbour_wire::NeighbourMsg::MlsAccessRequest { .. }) => {
                 if let Some(inbound) = tilo_workspace_keys::InboundGovernance::from_message(message)
                     && let Some(governance) = &self.governance
                 {
