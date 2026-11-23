@@ -287,8 +287,10 @@ tilo-system-stats = { path = "../../system/system-stats" }
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 # The sealed envelope a sibling half is carried in.
 tilo-seal = { path = "../../system/tilo-seal" }
-# The desktop's event sounds (a notification's ring, a screenshot's click).
-media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["voice", "pipewire", "realtime"] }
+# The desktop's event sounds (a notification's ring, a screenshot's click), and the decoder a
+# tilolang app's window plays its song or video on: the window is drawn here from the app's
+# patches, so the decode a native media app used to enable for itself is enabled here once.
+media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["voice", "pipewire", "realtime", "decode"] }
 tilo-compositor = { path = "../compositor" }
 # The clipboard an app's process reaches over its connection to this session.
 tilo-clipboard = { path = "../../platform/tilo-clipboard" }
@@ -304,11 +306,12 @@ tilo-shell-surface = { path = "../shell-surface" }
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the shell's
 # action vocabulary.
 tilolang-tilo = { path = "../../platform/tilolang-tilo" }
-# The outside origins the session's own services keep records in step with: the mail and
-# YouTube connectors' clients, and the registry that makes an origin's connector reachable
+# The outside origins the session's own services keep records in step with: the mail, YouTube and
+# music connectors' clients, and the registry that makes an origin's connector reachable
 # (`tilolang_tilo::origin::remote`).
 tilolang-mail = { path = "../../platform/tilolang-mail", default-features = false }
 tilolang-youtube = { path = "../../platform/tilolang-youtube" }
+tilolang-music = { path = "../../platform/tilolang-music" }
 # The toolkit's words, which what a package the session runs publishes reads through.
 tilo-app-window = { path = "../../platform/tilo-app-window" }
 # `tilolang check` and build as the session's own commands over a package in the person's

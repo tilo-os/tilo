@@ -105,6 +105,43 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
         "Asks YouTube for the videos it lists as trending: (nothing).",
     ),
     (
+        "music.search",
+        "Searches YouTube Music's catalogue for the query, as typed: (the query). Its songs, \
+         albums, artists and playlists are written where the search's field says.",
+    ),
+    (
+        "music.home",
+        "Asks YouTube Music for its home page: (nothing). Its sections are written as \
+         suggestions.",
+    ),
+    (
+        "music.artist",
+        "Asks YouTube Music for an artist's page: (the artist's key).",
+    ),
+    (
+        "music.album",
+        "Asks YouTube Music for an album's songs: (the album's key).",
+    ),
+    (
+        "music.playlist",
+        "Asks YouTube Music for a catalogue playlist's songs: (the playlist's key).",
+    ),
+    (
+        "music.stream",
+        "Asks YouTube Music where a song's bytes play from: (the song's key). The address is \
+         written into the song's `stream`, which the player opens.",
+    ),
+    (
+        "music.lyrics",
+        "Asks for a song's words: (its title and its artist). What was found is written into \
+         the song's `lyrics`, and `lyrics_state` says whether they are timed.",
+    ),
+    (
+        "music.pin",
+        "Keeps a song on this device for playing with no network: (the address its bytes play \
+         from, and its name). The copy's address is written into the song's `offline`.",
+    ),
+    (
         "youtube.stream",
         "Asks YouTube where a video's bytes play from: (the video's key). The address is written \
          into the video's `stream`, which the player opens, and the qualities and caption tracks \
@@ -543,6 +580,143 @@ pub const KINDS: &[OriginKind] = &[
             people("unread", "Bool", "Whether it is unread."),
             people("flagged", "Bool", "Whether it is flagged."),
             people("mailbox", "Text", "The key of the mailbox it is in."),
+        ],
+    },
+    OriginKind {
+        name: "music.track",
+        doc: "A song of a music catalogue, as the service says it is.",
+        derived: false,
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "The song's id: what its stream and its queue entry name it by.",
+            ),
+            field("title", "Text", "Its title."),
+            field("artist", "Text", "Who performs it."),
+            field("artist_key", "Text", "The id of the artist."),
+            field("album", "Text", "The album it is on."),
+            field("album_key", "Text", "The id of the album."),
+            field("seconds", "Int", "How long it runs."),
+            field(
+                "plays",
+                "Int",
+                "How many times the service says it was played.",
+            ),
+            field("cover", "Text", "The address of its cover, empty for none."),
+            field(
+                "found_for",
+                "Text",
+                "The search that found it, empty for none.",
+            ),
+            field(
+                "stream",
+                "Text",
+                "Where its bytes play from, once the service says.",
+            ),
+            people(
+                "offline",
+                "Text",
+                "The address of the copy kept on this device, empty for none.",
+            ),
+            field("lyrics", "Text", "Its words, as LRC."),
+            field(
+                "lyrics_state",
+                "Text",
+                "`synced`, `plain`, or empty when none were found.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "music.section",
+        doc: "One titled section of the catalogue's home page.",
+        derived: false,
+        fields: &[
+            field("key", "Text", "The section's id."),
+            field("title", "Text", "The words it is shown by."),
+            field("order", "Int", "Where it stands on the page."),
+        ],
+    },
+    OriginKind {
+        name: "music.album",
+        doc: "An album of a music catalogue.",
+        derived: false,
+        fields: &[
+            field("key", "Text", "The album's id."),
+            field("title", "Text", "Its title."),
+            field("artist", "Text", "Who made it."),
+            field("artist_key", "Text", "The id of the artist."),
+            field("year", "Int", "The year it came out."),
+            field(
+                "release_kind",
+                "Text",
+                "`album`, `single`, `ep` or `release`.",
+            ),
+            field("cover", "Text", "The address of its cover, empty for none."),
+            field(
+                "found_for",
+                "Text",
+                "The search that found it, empty for none.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "music.artist",
+        doc: "An artist of a music catalogue.",
+        derived: false,
+        fields: &[
+            field("key", "Text", "The artist's id."),
+            field("name", "Text", "Their name."),
+            field("subscribers", "Int", "How many people listen each month."),
+            field(
+                "avatar",
+                "Text",
+                "The address of their picture, empty for none.",
+            ),
+            field(
+                "found_for",
+                "Text",
+                "The search that found them, empty for none.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "music.playlist",
+        doc: "A playlist the catalogue publishes.",
+        derived: false,
+        fields: &[
+            field("key", "Text", "The playlist's id."),
+            field("title", "Text", "Its title."),
+            field("subtitle", "Text", "Who made it, or what it is."),
+            field("track_count", "Int", "How many songs it lists."),
+            field("cover", "Text", "The address of its cover, empty for none."),
+            field(
+                "found_for",
+                "Text",
+                "The search that found it, empty for none.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "music.suggestion",
+        doc: "One row of the catalogue's home page.",
+        derived: false,
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "The row's id, its section and what it names.",
+            ),
+            field("section", "Text", "The section it stands in."),
+            field("kind", "Text", "`track`, `album`, `artist` or `playlist`."),
+            field("target", "Text", "The key of the thing it names."),
+            field("title", "Text", "What the row says."),
+            field("subtitle", "Text", "What stands under it."),
+            field(
+                "cover",
+                "Text",
+                "The address of its picture, empty for none.",
+            ),
         ],
     },
     OriginKind {

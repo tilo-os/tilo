@@ -46,6 +46,10 @@ pub struct NavShellProps {
     /// The content's actions, in its header.
     #[component(part)]
     pub actions: Vec<Element>,
+    /// The band across the window's foot: what plays, and the controls that steer it, under
+    /// every column. An app that shows a player puts it here, as the native shell did.
+    #[component(part)]
+    pub band: Option<Element>,
     /// The overview's actions, in its header: what the list's owner offers.
     #[component(part)]
     pub overview_actions: Vec<Element>,
@@ -139,6 +143,7 @@ impl Described for NavShell {
             inspector,
             actions,
             overview_actions,
+            band,
             pane,
             back,
             search: _,
@@ -164,6 +169,9 @@ impl Described for NavShell {
         }
         if let Some(inspector) = inspector {
             shell = shell.inspector(inspector);
+        }
+        if let Some(band) = band {
+            shell = shell.bottom_band(band);
         }
         if sidebar_title.is_some() || !sidebar_actions.is_empty() {
             shell = shell.sidebar_header(sidebar_title.unwrap_or_default(), sidebar_actions);
@@ -219,6 +227,10 @@ impl Described for NavShell {
 
     fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
         self.finish_part_edit();
+        if part == "band" {
+            self.part_edit = Some(PartEdit::Band);
+            return Some(self);
+        }
         let column = match part {
             "sidebar" => Some(Column::Sidebar),
             "overview" => Some(Column::Overview),
@@ -256,6 +268,8 @@ pub(super) enum PartEdit {
     Column(Column),
     /// A header's actions, out of the header until the change is done.
     Actions(Column, Vec<Element>, ActionsEdit),
+    /// The band across the window's foot: one view, or none.
+    Band,
 }
 
 #[derive(Clone, Copy)]
@@ -339,6 +353,7 @@ impl PartViews for NavShell {
         match &self.part_edit {
             Some(PartEdit::Actions(_, actions, _)) => actions.len(),
             Some(PartEdit::Column(column)) => usize::from(self.has_column_body(*column)),
+            Some(PartEdit::Band) => usize::from(self.band.is_some()),
             None => 0,
         }
     }
@@ -354,11 +369,17 @@ impl PartViews for NavShell {
                 }
             }
             Some(PartEdit::Actions(..)) => self.edit_actions()?.get_mut(index),
+            Some(PartEdit::Band) => (index == 0).then_some(self.band.as_mut()).flatten(),
             None => None,
         }
     }
 
     fn insert(&mut self, index: usize, view: Element) {
+        if matches!(self.part_edit, Some(PartEdit::Band)) {
+            self.band = Some(view);
+            self.structure_dirty = true;
+            return;
+        }
         if let Some(actions) = self.edit_actions() {
             actions.insert(index.min(actions.len()), view);
             self.actions_changed();
@@ -373,6 +394,11 @@ impl PartViews for NavShell {
     }
 
     fn remove(&mut self, index: usize) {
+        if matches!(self.part_edit, Some(PartEdit::Band)) {
+            self.band = None;
+            self.structure_dirty = true;
+            return;
+        }
         if let Some(PartEdit::Actions(_, actions, edit)) = &mut self.part_edit {
             if index < actions.len() {
                 let gone = actions.remove(index);
@@ -404,6 +430,11 @@ impl PartViews for NavShell {
     }
 
     fn replace(&mut self, index: usize, view: Element) {
+        if matches!(self.part_edit, Some(PartEdit::Band)) {
+            self.band = Some(view);
+            self.structure_dirty = true;
+            return;
+        }
         if let Some(PartEdit::Actions(_, actions, edit)) = &mut self.part_edit {
             if let Some(held) = actions.get_mut(index) {
                 let gone = std::mem::replace(held, view);

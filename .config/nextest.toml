@@ -213,7 +213,7 @@ setup = "font-catalog"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "rdeps(compat-service) or rdeps(launcher) or rdeps(music) or rdeps(tilo-app-cli) or rdeps(tilo-capture) or rdeps(tilo-media) or rdeps(tilo-projector) or rdeps(tilo-spotify) or rdeps(tilo-tts) or package(tilo-session) or package(tilo-session-client) or package(tilo-test-env)"
+filter = "rdeps(compat-service) or rdeps(launcher) or rdeps(tilo-app-cli) or rdeps(tilo-capture) or rdeps(tilo-media) or rdeps(tilo-projector) or rdeps(tilo-spotify) or rdeps(tilo-tts) or package(tilo-session) or package(tilo-session-client) or package(tilo-test-env)"
 setup = "headless-audio"
 
 [[profile.ci.scripts]]

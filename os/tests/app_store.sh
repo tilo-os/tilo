@@ -409,8 +409,8 @@ feat_line="$(sed -n 's/^ *&& APP_FEATURES="\([^"]*\)".*/\1/p' "$COMPILE" | head 
 if [ -z "$feat_line" ]; then
   bad "could not read APP_FEATURES from os/image/compile.sh — the declaration it is
       parsed out of moved. Unchecked, the image would build every media app on its
-      default feature set: a music player that cannot produce sound, a video player
-      that synthesises frames, a camera that cannot capture."
+      default feature set: a video editor that cannot decode, a camera that
+      cannot capture."
 else
   bogus="$(python3 - "$REPO" "$feat_line" <<'PY' 2>&1
 import sys, tomllib

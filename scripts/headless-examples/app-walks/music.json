@@ -1,0 +1,244 @@
+{
+  "app": "music",
+  "said": "Music",
+  "tl": {
+    "id": "so.tilo.music",
+    "package": "music"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Music for the first time",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "wait_for": {
+            "shown": "Open audio file"
+          }
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "open-file",
+      "said": "Play a song from this device: open an audio file",
+      "ops": [
+        {
+          "tone": {
+            "name": "First Light.wav",
+            "seconds": 5,
+            "hz": 440
+          }
+        },
+        {
+          "press_any": [
+            "Open audio file"
+          ]
+        },
+        {
+          "choose": {
+            "name": "First Light.wav"
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Pause"
+          }
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "pause",
+      "said": "Pause it",
+      "ops": [
+        {
+          "press_any": [
+            "Pause"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Play"
+          }
+        }
+      ]
+    },
+    {
+      "id": "resume",
+      "said": "Play it again",
+      "ops": [
+        {
+          "press_any": [
+            "Play"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Pause"
+          }
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "seek",
+      "said": "Move to another place in the song",
+      "ops": [
+        {
+          "press_any": [
+            {
+              "prefix": "Position"
+            }
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "Position"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "volume",
+      "said": "Mute it, then unmute it",
+      "ops": [
+        {
+          "press_any": [
+            "Mute"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Unmute"
+          }
+        },
+        {
+          "press_any": [
+            "Unmute"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Mute"
+          }
+        }
+      ]
+    },
+    {
+      "id": "find",
+      "said": "Find a song: search YouTube Music from inside the app",
+      "ops": [
+        {
+          "select_row": "Search"
+        },
+        {
+          "type": "lofi hip hop"
+        },
+        {
+          "key": "Enter"
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "lofi"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "play-result",
+      "said": "Play a result the search found",
+      "ops": [
+        {
+          "press_any": [
+            {
+              "prefix": "lofi"
+            }
+          ]
+        },
+        {
+          "wait_for": "actions"
+        }
+      ]
+    },
+    {
+      "id": "search",
+      "said": "Find the song through the system's search",
+      "ops": [
+        {
+          "search": "lofi hip hop"
+        }
+      ]
+    },
+    {
+      "id": "library",
+      "said": "Browse the library by album and by artist",
+      "ops": [
+        {
+          "key": "Escape"
+        },
+        {
+          "select_row": "Albums"
+        },
+        {
+          "select_row": "Artists"
+        }
+      ]
+    },
+    {
+      "id": "dark",
+      "said": "The same song in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "close",
+      "said": "Close the window: does the song keep playing?",
+      "ops": [
+        {
+          "close": true
+        }
+      ]
+    },
+    {
+      "id": "reopen",
+      "said": "Open Music again: a song still playing would say so",
+      "ops": [
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "offered": [
+            "Pause"
+          ]
+        }
+      ]
+    }
+  ]
+}

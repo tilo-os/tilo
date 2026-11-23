@@ -207,9 +207,9 @@ fn in_process(
         .ok()
 }
 
-/// Keep the types of the package whose origin is a video site in step with it: the client asks,
-/// and the origin, in native code with the network, writes what they answer. A mail server's
-/// types are kept only by the connector the session starts, which the session tells the
+/// Keep the types of the package whose origin is a video or music site in step with it: the
+/// client asks, and the origin, in native code with the network, writes what they answer. A mail
+/// server's types are kept only by the connector the session starts, which the session tells the
 /// workspace's accounts and their sign-ins: a window outside a tilolang host reaches none.
 #[cfg(unix)]
 fn live_origins(window: &mut crate::hosted::HostedWindow) {
@@ -224,5 +224,14 @@ fn live_origins(window: &mut crate::hosted::HostedWindow) {
         );
         let waker = std::sync::Arc::new(move || wake.wake());
         window.add_origin(tilolang_youtube::waking(origin, waker));
+    }
+    if tilolang_tilo::origin::uses_origin(meta, "music") {
+        let wake = ui::wake::WakeHandle::new();
+        let origin = tilolang_music::origin(
+            std::sync::Arc::new(tilolang_music::service::Live::new()),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let waker = std::sync::Arc::new(move || wake.wake());
+        window.add_origin(tilolang_music::waking(origin, waker));
     }
 }

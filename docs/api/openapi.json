@@ -16107,188 +16107,6 @@
         ],
         "description": ""
       },
-      "music.library.set-catalogue.Arguments": {
-        "type": "object",
-        "properties": {
-          "catalogue": {
-            "enum": [
-              "unset",
-              "disabled",
-              "you_tube",
-              "spotify"
-            ],
-            "type": "string"
-          }
-        },
-        "required": [
-          "catalogue"
-        ],
-        "description": ""
-      },
-      "music.library.create-playlist.Arguments": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "track": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "description": ""
-      },
-      "music.library.delete-playlist.Arguments": {
-        "type": "object",
-        "properties": {
-          "playlist": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "playlist"
-        ],
-        "description": ""
-      },
-      "music.library.import-track.Arguments": {
-        "type": "object",
-        "properties": {
-          "song": {
-            "additionalProperties": false,
-            "properties": {
-              "album": {
-                "additionalProperties": false,
-                "properties": {
-                  "artist_id": {
-                    "type": "string"
-                  },
-                  "id": {
-                    "type": "string"
-                  },
-                  "title": {
-                    "type": "string"
-                  },
-                  "year": {
-                    "maximum": 4294967295,
-                    "minimum": 0,
-                    "type": "integer"
-                  }
-                },
-                "required": [
-                  "id",
-                  "title",
-                  "artist_id",
-                  "year"
-                ],
-                "type": "object"
-              },
-              "artist": {
-                "additionalProperties": false,
-                "properties": {
-                  "genre": {
-                    "type": "string"
-                  },
-                  "id": {
-                    "type": "string"
-                  },
-                  "monthly_listeners": {
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "name": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "id",
-                  "name",
-                  "genre",
-                  "monthly_listeners"
-                ],
-                "type": "object"
-              },
-              "track": {
-                "additionalProperties": false,
-                "properties": {
-                  "album_id": {
-                    "type": "string"
-                  },
-                  "artist_id": {
-                    "type": "string"
-                  },
-                  "duration_s": {
-                    "maximum": 4294967295,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "id": {
-                    "type": "string"
-                  },
-                  "plays": {
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "title": {
-                    "type": "string"
-                  },
-                  "track_no": {
-                    "maximum": 4294967295,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "yt_id": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "id",
-                  "title",
-                  "album_id",
-                  "artist_id",
-                  "track_no",
-                  "duration_s",
-                  "yt_id",
-                  "plays"
-                ],
-                "type": "object"
-              }
-            },
-            "required": [
-              "track",
-              "album",
-              "artist"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "song"
-        ],
-        "description": ""
-      },
-      "music.library.spotify-account-status.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "music.library.search.Arguments": {
-        "type": "object",
-        "properties": {
-          "query": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "query"
-        ],
-        "description": ""
-      },
       "osk.keyboard.set-layout.Arguments": {
         "type": "object",
         "properties": {
@@ -25239,152 +25057,6 @@
         ],
         "description": ""
       },
-      "video-player.library.create-playlist.Arguments": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "description": ""
-      },
-      "video-player.library.delete-playlist.Arguments": {
-        "type": "object",
-        "properties": {
-          "playlist": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "playlist"
-        ],
-        "description": ""
-      },
-      "video-player.library.add-to-playlist.Arguments": {
-        "type": "object",
-        "properties": {
-          "playlist": {
-            "type": "string"
-          },
-          "media_ref": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "playlist",
-          "media_ref",
-          "title"
-        ],
-        "description": ""
-      },
-      "video-player.library.add-to-watch-later.Arguments": {
-        "type": "object",
-        "properties": {
-          "media_ref": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "media_ref",
-          "title"
-        ],
-        "description": ""
-      },
-      "video-player.library.add-annotation.Arguments": {
-        "type": "object",
-        "properties": {
-          "media_ref": {
-            "type": "string"
-          },
-          "time_ms": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "text": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "media_ref",
-          "time_ms"
-        ],
-        "description": ""
-      },
-      "video-player.library.delete-annotation.Arguments": {
-        "type": "object",
-        "properties": {
-          "annotation": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "annotation"
-        ],
-        "description": ""
-      },
-      "video-player.library.set-transport.Arguments": {
-        "type": "object",
-        "properties": {
-          "media_ref": {
-            "type": "string"
-          },
-          "playing": {
-            "type": "boolean"
-          },
-          "position_ms": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "rate": {
-            "type": "number"
-          },
-          "epoch_ms": {
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "media_ref",
-          "playing",
-          "position_ms",
-          "rate",
-          "epoch_ms"
-        ],
-        "description": ""
-      },
-      "video-player.library.open-video.Arguments": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [],
-        "description": ""
-      },
-      "video-player.library.clear-recent.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
       "weather.locations.save-location.Arguments": {
         "type": "object",
         "properties": {
@@ -30081,6 +29753,1100 @@
           "d"
         ],
         "description": "Throws a message being written away."
+      },
+      "tl.so.tilo.music.Track.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.music.Track.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "title",
+              "artist",
+              "artist_key",
+              "album",
+              "album_key",
+              "cover",
+              "found_for",
+              "stream",
+              "offline",
+              "lyrics",
+              "lyrics_state"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Track.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "liked"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Track.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.music.Track.play_song.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Plays one song, alone: what a row's press does. The place is the shared session's own\nrecord, so the song continues on this device or another."
+      },
+      "tl.so.tilo.music.Track.like.Arguments": {
+        "type": "object",
+        "properties": {
+          "liked": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "description": "Likes a song, or takes the like back."
+      },
+      "tl.so.tilo.music.Track.keep_offline.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Keeps a song on this device, for playing with no network."
+      },
+      "tl.so.tilo.music.Track.remove_offline.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Takes the kept copy away; the song still plays from the catalogue."
+      },
+      "tl.so.tilo.music.Album.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.music.Album.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "title",
+              "artist",
+              "artist_key",
+              "release_kind",
+              "cover",
+              "found_for"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Album.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "in_library"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Album.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.music.Album.play_album.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Plays an album's songs from the top."
+      },
+      "tl.so.tilo.music.Album.save_album.Arguments": {
+        "type": "object",
+        "properties": {
+          "keep": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "description": "Keeps an album in the library, or takes it out."
+      },
+      "tl.so.tilo.music.Artist.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.music.Artist.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "name",
+              "avatar",
+              "found_for"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Artist.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "followed"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Artist.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.music.Artist.follow_artist.Arguments": {
+        "type": "object",
+        "properties": {
+          "followed": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "description": "Follows an artist."
+      },
+      "tl.so.tilo.music.Artist.refresh_artist.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Asks the catalogue for an artist's page."
+      },
+      "tl.so.tilo.music.Playlist.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.music.Playlist.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "title",
+              "subtitle",
+              "cover",
+              "found_for"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Playlist.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Playlist.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.music.Playlist.open_playlist.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Asks the catalogue for a playlist's songs."
+      },
+      "tl.so.tilo.music.Section.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.music.Section.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "title"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Section.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Section.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.music.Suggestion.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.music.Suggestion.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "section",
+              "kind",
+              "target",
+              "title",
+              "subtitle",
+              "cover"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Suggestion.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Suggestion.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.music.Mixtape.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.music.Mixtape.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name",
+              "cover"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Mixtape.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Mixtape.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.music.Mixtape.play_mixtape.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Plays a mixtape's songs in the person's order."
+      },
+      "tl.so.tilo.music.Mixtape.mixtape_add.Arguments": {
+        "type": "object",
+        "properties": {
+          "t": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.music.Track",
+            "type": "object"
+          }
+        },
+        "required": [
+          "t"
+        ],
+        "description": "Adds a song to a mixtape."
+      },
+      "tl.so.tilo.music.Mixtape.mixtape_remove.Arguments": {
+        "type": "object",
+        "properties": {
+          "t": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.music.Track",
+            "type": "object"
+          }
+        },
+        "required": [
+          "t"
+        ],
+        "description": "Takes a song out of a mixtape."
+      },
+      "tl.so.tilo.music.Mixtape.pick_cover.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Gives a mixtape the cover the person picks."
+      },
+      "tl.so.tilo.music.Mixtape.set_cover.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Sets a mixtape's cover to the picture the person chose."
+      },
+      "tl.so.tilo.music.Taste.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.music.Taste.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Taste.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "similar_artists",
+              "followed_artists",
+              "liked_songs",
+              "saved_albums"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Taste.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.music.Library.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.music.Library.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name",
+              "catalogue",
+              "search_state",
+              "search_trouble",
+              "home_state",
+              "home_trouble",
+              "trouble"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Library.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "online"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.music.Library.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.music.Library.session.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The session this app plays through: the one it has, or one made now. It is kept both in\n`playing`, which a view reads, and in `sessions`, so the record is a resource of its own."
+      },
+      "tl.so.tilo.music.Library.open_audio_file.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Opens an audio file: the file a person picked, or one Files handed over, and plays it. The\nsong it already made opens instead of a second copy, so its place in history stays one."
+      },
+      "tl.so.tilo.music.Library.add_to_queue.Arguments": {
+        "type": "object",
+        "properties": {
+          "t": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.music.Track",
+            "type": "object"
+          }
+        },
+        "required": [
+          "t"
+        ],
+        "description": "Adds a song to what follows."
+      },
+      "tl.so.tilo.music.Library.play_next.Arguments": {
+        "type": "object",
+        "properties": {
+          "t": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.music.Track",
+            "type": "object"
+          }
+        },
+        "required": [
+          "t"
+        ],
+        "description": "Queues a song right after what plays."
+      },
+      "tl.so.tilo.music.Library.lyrics_now.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Asks for the words of what plays, keeping the session it asks for."
+      },
+      "tl.so.tilo.music.Library.search.Arguments": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "description": "Asks the catalogue for the songs, albums, artists and playlists a query finds."
+      },
+      "tl.so.tilo.music.Library.refresh.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Asks the catalogue for its home page."
+      },
+      "tl.so.tilo.music.Library.open_suggestion.Arguments": {
+        "type": "object",
+        "properties": {
+          "row": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.music.Suggestion",
+            "type": "object"
+          }
+        },
+        "required": [
+          "row"
+        ],
+        "description": "Does what a suggestion on the home page names."
+      },
+      "tl.so.tilo.music.Library.lyrics_of.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.playback.Playback",
+            "type": "object"
+          }
+        },
+        "required": [
+          "p"
+        ],
+        "description": "Asks for what plays to be sung, into the song's own record."
+      },
+      "tl.so.tilo.music.Library.note_failure.Arguments": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "description": "Says why the player stopped."
+      },
+      "tl.so.tilo.music.Library.new_mixtape.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "Makes a playlist of the person's own."
+      },
+      "tl.so.tilo.music.Library.set_catalogue.Arguments": {
+        "type": "object",
+        "properties": {
+          "which": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "which"
+        ],
+        "description": "Chooses which catalogue the app asks."
+      },
+      "tl.so.tilo.music.Library.update_taste.Arguments": {
+        "type": "object",
+        "properties": {
+          "which": {
+            "type": "string"
+          },
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "which",
+          "on"
+        ],
+        "description": "Turns one of the recommendations' switches."
+      },
+      "tl.so.tilo.music.Library.dismiss_artist.Arguments": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.music.Artist",
+            "type": "object"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "description": "Leaves an artist out of the recommendations, or brings them back."
+      },
+      "tl.so.tilo.music.Library.prefer_artist.Arguments": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.music.Artist",
+            "type": "object"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "description": "Asks for more of an artist."
+      },
+      "tl.so.tilo.music.queue_moved.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.playback.Playback",
+            "type": "object"
+          },
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "p",
+          "ids"
+        ],
+        "description": "Moves the dragged row where it was dropped: the two ids its reorder carries."
+      },
+      "tl.so.tilo.music.like_playing.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.playback.Playback",
+            "type": "object"
+          },
+          "liked": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "p"
+        ],
+        "description": "Likes what plays."
       },
       "tl.so.tilo.notes.Note.$create.Arguments": {
         "type": "object",
@@ -38810,42 +39576,6 @@
       "arguments": "#/components/schemas/monitor.processes.copy-pid.Arguments"
     },
     {
-      "app": "so.tilo.music",
-      "resource": "music.library",
-      "action": "set-catalogue",
-      "arguments": "#/components/schemas/music.library.set-catalogue.Arguments"
-    },
-    {
-      "app": "so.tilo.music",
-      "resource": "music.library",
-      "action": "create-playlist",
-      "arguments": "#/components/schemas/music.library.create-playlist.Arguments"
-    },
-    {
-      "app": "so.tilo.music",
-      "resource": "music.library",
-      "action": "delete-playlist",
-      "arguments": "#/components/schemas/music.library.delete-playlist.Arguments"
-    },
-    {
-      "app": "so.tilo.music",
-      "resource": "music.library",
-      "action": "import-track",
-      "arguments": "#/components/schemas/music.library.import-track.Arguments"
-    },
-    {
-      "app": "so.tilo.music",
-      "resource": "music.library",
-      "action": "spotify-account-status",
-      "arguments": "#/components/schemas/music.library.spotify-account-status.Arguments"
-    },
-    {
-      "app": "so.tilo.music",
-      "resource": "music.library",
-      "action": "search",
-      "arguments": "#/components/schemas/music.library.search.Arguments"
-    },
-    {
       "app": "so.tilo.osk",
       "resource": "osk.keyboard",
       "action": "set-layout",
@@ -40964,60 +41694,6 @@
       "arguments": "#/components/schemas/video-editor.project.view-frame-content.Arguments"
     },
     {
-      "app": "so.tilo.video-player",
-      "resource": "video-player.library",
-      "action": "create-playlist",
-      "arguments": "#/components/schemas/video-player.library.create-playlist.Arguments"
-    },
-    {
-      "app": "so.tilo.video-player",
-      "resource": "video-player.library",
-      "action": "delete-playlist",
-      "arguments": "#/components/schemas/video-player.library.delete-playlist.Arguments"
-    },
-    {
-      "app": "so.tilo.video-player",
-      "resource": "video-player.library",
-      "action": "add-to-playlist",
-      "arguments": "#/components/schemas/video-player.library.add-to-playlist.Arguments"
-    },
-    {
-      "app": "so.tilo.video-player",
-      "resource": "video-player.library",
-      "action": "add-to-watch-later",
-      "arguments": "#/components/schemas/video-player.library.add-to-watch-later.Arguments"
-    },
-    {
-      "app": "so.tilo.video-player",
-      "resource": "video-player.library",
-      "action": "add-annotation",
-      "arguments": "#/components/schemas/video-player.library.add-annotation.Arguments"
-    },
-    {
-      "app": "so.tilo.video-player",
-      "resource": "video-player.library",
-      "action": "delete-annotation",
-      "arguments": "#/components/schemas/video-player.library.delete-annotation.Arguments"
-    },
-    {
-      "app": "so.tilo.video-player",
-      "resource": "video-player.library",
-      "action": "set-transport",
-      "arguments": "#/components/schemas/video-player.library.set-transport.Arguments"
-    },
-    {
-      "app": "so.tilo.video-player",
-      "resource": "video-player.library",
-      "action": "open-video",
-      "arguments": "#/components/schemas/video-player.library.open-video.Arguments"
-    },
-    {
-      "app": "so.tilo.video-player",
-      "resource": "video-player.library",
-      "action": "clear-recent",
-      "arguments": "#/components/schemas/video-player.library.clear-recent.Arguments"
-    },
-    {
       "app": "so.tilo.weather",
       "resource": "weather.locations",
       "action": "save-location",
@@ -42600,6 +43276,426 @@
       "resource": "tl.so.tilo.mail.Mail",
       "action": "discard",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.discard.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tilolang.personal",
+      "action": "view-state",
+      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tilolang.personal",
+      "action": "seen",
+      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tilolang.personal",
+      "action": "seen-runs",
+      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Track",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Track.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Track",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Track.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Track",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Track.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Track",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Track.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Track",
+      "action": "play_song",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Track.play_song.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Track",
+      "action": "like",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Track.like.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Track",
+      "action": "keep_offline",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Track.keep_offline.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Track",
+      "action": "remove_offline",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Track.remove_offline.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Album",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Album.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Album",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Album.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Album",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Album.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Album",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Album.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Album",
+      "action": "play_album",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Album.play_album.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Album",
+      "action": "save_album",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Album.save_album.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Artist",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Artist.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Artist",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Artist.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Artist",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Artist.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Artist",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Artist.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Artist",
+      "action": "follow_artist",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Artist.follow_artist.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Artist",
+      "action": "refresh_artist",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Artist.refresh_artist.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Playlist",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Playlist.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Playlist",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Playlist.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Playlist",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Playlist.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Playlist",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Playlist.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Playlist",
+      "action": "open_playlist",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Playlist.open_playlist.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Section",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Section.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Section",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Section.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Section",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Section.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Section",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Section.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Suggestion",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Suggestion.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Suggestion",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Suggestion.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Suggestion",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Suggestion.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Suggestion",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Suggestion.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Mixtape",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Mixtape.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Mixtape",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Mixtape.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Mixtape",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Mixtape.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Mixtape",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Mixtape.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Mixtape",
+      "action": "play_mixtape",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Mixtape.play_mixtape.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Mixtape",
+      "action": "mixtape_add",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Mixtape.mixtape_add.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Mixtape",
+      "action": "mixtape_remove",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Mixtape.mixtape_remove.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Mixtape",
+      "action": "pick_cover",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Mixtape.pick_cover.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Mixtape",
+      "action": "set_cover",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Mixtape.set_cover.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Taste",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Taste.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Taste",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Taste.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Taste",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Taste.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Taste",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Taste.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "session",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.session.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "open_audio_file",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.open_audio_file.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "add_to_queue",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.add_to_queue.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "play_next",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.play_next.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "lyrics_now",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.lyrics_now.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "search",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.search.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "refresh",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.refresh.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "open_suggestion",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.open_suggestion.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "lyrics_of",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.lyrics_of.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "note_failure",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.note_failure.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "new_mixtape",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.new_mixtape.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "set_catalogue",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.set_catalogue.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "update_taste",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.update_taste.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "dismiss_artist",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.dismiss_artist.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "prefer_artist",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.prefer_artist.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music",
+      "action": "queue_moved",
+      "arguments": "#/components/schemas/tl.so.tilo.music.queue_moved.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music",
+      "action": "like_playing",
+      "arguments": "#/components/schemas/tl.so.tilo.music.like_playing.Arguments"
     },
     {
       "app": "so.tilo.notes",

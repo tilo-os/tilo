@@ -84,6 +84,7 @@ fn every_app_opens_over_its_first_scenario_as_a_page() {
         ("apps/tl/chat", None),
         ("apps/tl/mail", None),
         ("apps/tl/tube", None),
+        ("apps/tl/music", Some("First Light")),
         ("apps/tl/today", None),
         ("apps/tl/views", None),
         ("apps/tl/gallery", None),

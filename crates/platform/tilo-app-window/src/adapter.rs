@@ -812,10 +812,12 @@ impl Source for NodeSource<'_> {
     fn prop(&mut self, name: &str) -> Option<Prop> {
         let ty = &self.description.prop(name)?.ty;
         let prop = self.value(name, ty)?;
-        // A video's address is Tilo's: a view names it as content (`tilo-blob://…`), and the
-        // window hands the toolkit a medium it plays. Text is the only prop this rewrites.
-        if self.description.name == "VideoPlayer"
-            && name == "source"
+        // A song's or a video's address is Tilo's: a view names it as content (`tilo-blob://…`),
+        // and the window hands the toolkit a medium it plays. Text is the only prop this rewrites.
+        if matches!(
+            self.description.name.as_str(),
+            "VideoPlayer" | "MediaTransport"
+        ) && name == "source"
             && let Prop::Text(address) = &prop
         {
             let title = match self.node.props.get("title") {

@@ -98,6 +98,9 @@ tilolang-mail = { path = "../../crates/platform/tilolang-mail" }
 # YouTube as an outside origin: a live window of an app whose types hold YouTube's resources
 # keeps them in step with it, in native code with the network.
 tilolang-youtube = { path = "../../crates/platform/tilolang-youtube" }
+# YouTube Music as an outside origin: its connector process, and a window outside a host, as
+# YouTube's are.
+tilolang-music = { path = "../../crates/platform/tilolang-music" }
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 # A video plays in the app's window on an Apple silicon Mac, decoded by the GStreamer Tilo.app
@@ -110,6 +113,7 @@ media = { package = "tilo-media", path = "../../crates/platform/tilo-media", fea
 # origins without their connectors.
 tilolang-mail = { path = "../../crates/platform/tilolang-mail", default-features = false }
 tilolang-youtube = { path = "../../crates/platform/tilolang-youtube", default-features = false }
+tilolang-music = { path = "../../crates/platform/tilolang-music", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # A web page installs a package by its address (`src/page.rs`): its files are fetched there.

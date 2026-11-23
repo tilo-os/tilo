@@ -175,7 +175,6 @@ touch. Expanded neighbouring targets must not overlap.
 
 | Crate          | What it is                                                                                                                                                                                                                          |
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `music`        | Streaming + local library: swappable YouTube-Music backend (rustypipe InnerTube under `live`), GStreamer `playbin` audio (`audio`), lrclib synced lyrics, iroh P2P library sync — all off by default over a bundled sample library. |
 | `tube`         | Privacy YouTube client: YouTube through rustypipe, SponsorBlock skip, DeArrow de-clickbait; playback through the shared GStreamer media engine; Grayjay device sync over the Noise protocol.         |
 | `video-editor` | Non-linear editor: multi-track timeline; clips reference FUSE `/var/workspace` paths and hydrate on demand; `ui::VideoPlayer`/GStreamer preview decode and GStreamer export, both feature-dependent.                                    |
 | `camera`       | Camera with QR/barcode and multi-page document scanning; typed SANE capture, reversible crop/rotation, and shared structured OCR; captured photos and videos open in their owning media apps; live v4l2 capture via GStreamer.      |

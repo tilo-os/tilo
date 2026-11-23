@@ -241,9 +241,8 @@ export LC_ALL=C.UTF-8 TZ=UTC CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=0
 # Every media engine in this tree sits behind a cargo feature that is OFF by
 # default, and deliberately so: `--shots`, the offline tests and CI must build
 # without a GStreamer stack, a camera or a network. An image that takes those
-# defaults is the one case where the trade-off is wrong — it ships a music
-# player that cannot produce sound, a video player that synthesises frames
-# instead of decoding them, a camera that cannot capture and clients whose
+# defaults is the one case where the trade-off is wrong — it ships a video
+# editor that cannot decode, a camera that cannot capture and clients whose
 # network backends are compiled out. The features are named here so the image,
 # and only the image, turns them on.
 #
@@ -376,7 +375,7 @@ case "$TILO_RUST_LTO" in \
          *) printf '%s\n' 'TILO_CARGO_FRESHNESS must be cargo, clean or content' >&2; exit 1 ;; \
        esac \
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi \
-    && APP_FEATURES="music/audio,music/live,music/runtime-engine,camera/live-capture,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine,canvas/runtime-engine,settings/runtime-engine,model-providers/runtime-engine,calendar/runtime-engine,clocks/runtime-engine,contacts/runtime-engine,messages/runtime-engine,pdf-viewer/runtime-engine,imager/runtime-engine,file-explorer/runtime-engine,print-centre/runtime-engine,sheets/runtime-engine,browser/runtime-engine,store/runtime-engine,chat/runtime-engine,osk/runtime-engine" \
+    && APP_FEATURES="camera/live-capture,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine,canvas/runtime-engine,settings/runtime-engine,model-providers/runtime-engine,calendar/runtime-engine,clocks/runtime-engine,contacts/runtime-engine,messages/runtime-engine,pdf-viewer/runtime-engine,imager/runtime-engine,file-explorer/runtime-engine,print-centre/runtime-engine,sheets/runtime-engine,browser/runtime-engine,store/runtime-engine,chat/runtime-engine,osk/runtime-engine" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \

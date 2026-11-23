@@ -301,6 +301,10 @@ pub struct VirtualListProps {
     /// left the list.
     #[component(event)]
     pub closed: Event,
+    /// A row was dropped in another place: carries the row's id and the id of the row it was
+    /// dropped on, in that order. The app moves its own list; the list keeps no order of its own.
+    #[component(event(value = Vec<String>))]
+    pub reorder: Event,
 }
 
 /// The items of a described list: read from a host that renders them as they are shown, or
@@ -880,6 +884,26 @@ pub(crate) fn by_hand() -> bool {
     matches!(
         crate::motion::recent_input(crate::time::now()),
         Some(crate::tokens::MotionSource::Pointer | crate::tokens::MotionSource::Gesture)
+    )
+}
+
+/// `list`, reporting a row dropped in another place as the `reorder` event: the row's id and
+/// the id of the row it was dropped on. The commit hands the move to the app, which keeps its
+/// own order, and says it took it.
+fn reorderable(list: VirtualList<DescribedRows>, reorder: &Event) -> VirtualList<DescribedRows> {
+    if reorder.is_none() {
+        return list;
+    }
+    let moved = reorder.clone();
+    list.with_reorder(
+        |_rows, _source, _target| true,
+        move |_rows, dropped| {
+            moved.fire(Some(Value::List(vec![
+                Value::Text(dropped.source),
+                Value::Text(dropped.target.key),
+            ])));
+            true
+        },
     )
 }
 
@@ -1512,6 +1536,7 @@ impl Described for DescribedList {
             opened: opened_changed,
             closed: closed_changed,
             revealed: revealed_changed,
+            reorder,
         } = props;
         rows.removed = removed.0;
         rows.ungrouped = ungrouped_title;
@@ -1547,6 +1572,7 @@ impl Described for DescribedList {
                 let reading = Rc::clone(&reading);
                 list.set_on_revealed(move |key| told.fire(item_of(&reading.borrow(), &key)));
             }
+            let list = reorderable(list, &reorder);
             let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
                 row_menu(list, at, &Event::None)
             })
@@ -1607,6 +1633,7 @@ impl Described for DescribedList {
         if let Some(picked) = picked_rows(chosen, &reading.borrow(), 0) {
             list = list.with_selection(picked);
         }
+        list = reorderable(list, &reorder);
         if !select.is_none() || !activate.is_none() {
             let (on_select, on_pick) = (select.clone(), activate.clone());
             let (selecting, picking) = (Rc::clone(&reading), Rc::clone(&reading));
@@ -2462,6 +2489,51 @@ mod tests {
             "the list takes its items where it stands"
         );
         assert_eq!(list.list().and_then(VirtualList::open_row), None);
+    }
+
+    /// A row dropped in another place is reported as the two ids it moved between: the app keeps
+    /// its own order, and the list never edits a model it does not own.
+    #[test]
+    fn a_reordered_row_reports_the_two_ids_it_moved_between() {
+        let queue = crate::Intents::<Fired>::default();
+        let reorder = Event::View(Intent::new(&queue, "list", "reorder"));
+        let mut list = DescribedList::from_props(
+            "list",
+            VirtualListProps {
+                reorder,
+                ..column_of(rows_with_documents(3))
+            },
+        );
+        let inner = list.list_mut().expect("the list stands");
+        let (taffy, node) = lay_out_tree(inner, 400.0);
+        Widget::set_focus(inner, true);
+        inner.focus_row("row-0".to_owned());
+        let down = crate::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowDown);
+        assert!(
+            crate::testing::Dispatch::new()
+                .modifiers(winit::keyboard::ModifiersState::CONTROL)
+                .layout(&taffy, node)
+                .send(inner, &down)
+                .handled,
+            "the list takes the chord"
+        );
+        let fired: Vec<Fired> = queue
+            .take()
+            .into_iter()
+            .filter(|fired| fired.event == "reorder")
+            .collect();
+        assert_eq!(fired.len(), 1, "the host hears the move once");
+        match &fired[0].value {
+            Some(Value::List(items)) => assert_eq!(
+                items,
+                &vec![
+                    Value::Text("row-0".to_owned()),
+                    Value::Text("row-1".to_owned())
+                ],
+                "the row and where it went"
+            ),
+            other => panic!("the move carries the two ids: {other:?}"),
+        }
     }
 
     /// The person opening and closing the row they read is reported as the item it shows, so a

@@ -2,7 +2,7 @@
 # beside it: `*` is every native app, and a package joins the collection in the
 # change that retires the native app it replaces.
 [collections.default]
-include = ["*", "tl-notes", "tl-tube", "tl-video"]
+include = ["*", "tl-music", "tl-notes", "tl-tube", "tl-video"]
 
 [collections.desktop]
 extends = ["default"]
@@ -20,9 +20,6 @@ extends = ["default"]
 include = ["file-explorer", "settings", "terminal"]
 
 [features]
-# Spotify playback and the YouTube client from their engine libraries beside
-# the runtime.
-music = ["audio", "live", "runtime-engine"]
 camera = ["live-capture"]
 disks = ["live"]
 video-editor = ["decode", "gst"]

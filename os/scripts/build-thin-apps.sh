@@ -413,8 +413,8 @@ done
 # The list written last is what packaging folds into the runtime bundle
 # (dist/apps/package-apps.sh, os/Containerfile, os/dev/assemble-app-runtime.py):
 # one library file name a line, beside libruntime_dylib.so. An engine library
-# chains on another engine library (Typst's highlight and wasm engines, Music's
-# accounts and YouTube ones), and the bundle carries what the built libraries
+# chains on another engine library (Typst's highlight and wasm engines among
+# them), and the bundle carries what the built libraries
 # name: the list is their DT_NEEDED closure, so an engine that only another
 # engine loads ships with it.
 engine_list="$TARGET_DIR/$PROFILE/runtime-engines"

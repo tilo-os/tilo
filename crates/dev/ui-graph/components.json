@@ -3406,6 +3406,14 @@
           "type": {
             "option": "bool"
           }
+        },
+        {
+          "name": "source",
+          "doc": "Where the sound plays from: a file's address or a stream's URL the engine fetches. With one the band plays it and its scrubber follows the sound; without one it only shows what the view declares.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
         }
       ],
       "events": [
@@ -3454,6 +3462,25 @@
         {
           "name": "act_queue",
           "doc": "The queue was asked for."
+        },
+        {
+          "name": "ended",
+          "doc": "What played reached its end: the app moves on to what comes next."
+        },
+        {
+          "name": "progress",
+          "doc": "Where playback got to while it played, as a share of its length (`0..=1`): reported on the first five-second step, then once per step, and once more when it stops or ends, so a view remembers the place a song was left at even when nobody moved the playhead.",
+          "value": "float"
+        },
+        {
+          "name": "length",
+          "doc": "How long the sound runs, in seconds, once the engine has read it: what a song opened from a file is long, which its name does not say.",
+          "value": "float"
+        },
+        {
+          "name": "fail",
+          "doc": "The engine could not play the source: carries what it said.",
+          "value": "text"
         }
       ],
       "semantics": {
@@ -3613,6 +3640,11 @@
           "doc": "The content's actions, in its header.",
           "accepts": "view",
           "many": true
+        },
+        {
+          "name": "band",
+          "doc": "The band across the window's foot: what plays, and the controls that steer it, under every column. An app that shows a player puts it here, as the native shell did.",
+          "accepts": "view"
         },
         {
           "name": "overview_actions",
@@ -6403,6 +6435,13 @@
         {
           "name": "closed",
           "doc": "The row held open closed: pressed again, Escape, a press beside it, or its item left the list."
+        },
+        {
+          "name": "reorder",
+          "doc": "A row was dropped in another place: carries the row's id and the id of the row it was dropped on, in that order. The app moves its own list; the list keeps no order of its own.",
+          "value": {
+            "list": "text"
+          }
         }
       ],
       "state": [

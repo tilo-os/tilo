@@ -223,24 +223,19 @@ impl LiveClient {
             );
             return String::new();
         };
-        let Some(bytes) = (self.fetch)(url) else {
+        let Some(address) = ui::content::keep_fetched(content, &self.fetch, url) else {
+            tracing::warn!(%url, "a YouTube picture could not be fetched or kept");
             return String::new();
         };
-        let hash = match content.put(&bytes) {
-            Ok(hash) => hash,
-            Err(error) => {
-                tracing::warn!(%url, %error, "a YouTube picture could not be kept");
-                return String::new();
-            }
-        };
-        let address = format!("{}{hash}", ui::pictures::BLOB_SCHEME);
         // The address is only readable by a window whose store holds the same content: say
         // where this one put it, and whether reading it back through the store answers.
+        let readable = address
+            .strip_prefix(ui::pictures::BLOB_SCHEME)
+            .is_some_and(|hash| content.read(hash).is_some());
         tracing::debug!(
             %url,
-            len = bytes.len(),
-            hash = %hash,
-            read_back = content.read(&hash).is_some(),
+            %address,
+            read_back = readable,
             "a YouTube picture is kept as this device's content"
         );
         self.held

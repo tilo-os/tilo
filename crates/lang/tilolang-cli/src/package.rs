@@ -82,7 +82,8 @@ fn toml_string(value: &str) -> String {
     toml::Value::String(value.to_owned()).to_string()
 }
 
-/// The outside origins a package's types hold, each once, in a fixed order: `imap`, `youtube`.
+/// The outside origins a package's types hold, each once, in a fixed order: `imap`, `music`,
+/// `youtube`.
 #[must_use]
 pub fn origins_of(meta: &PackageMeta) -> Vec<&'static str> {
     let mut origins: Vec<&'static str> = Vec::new();
@@ -92,7 +93,9 @@ pub fn origins_of(meta: &PackageMeta) -> Vec<&'static str> {
         };
         // Only the origins the platform runs a connector for: the session's own kinds
         // (`session.layout`) are written by the session, never by a process.
-        let connector = ["imap", "youtube"].into_iter().find(|name| *name == origin);
+        let connector = ["imap", "music", "youtube"]
+            .into_iter()
+            .find(|name| *name == origin);
         if let Some(name) = connector
             && !origins.contains(&name)
         {
