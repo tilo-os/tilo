@@ -30,8 +30,7 @@ const ANSWERED_KEPT: usize = 1024;
 pub const MOST_WAITING: usize = 32;
 
 /// What keeping one call more than [`MOST_WAITING`] for a person is refused with.
-pub const TOO_MANY_WAIT: &str =
-    "Too many questions already wait for this person's answer: answer or decline some of them first";
+pub const TOO_MANY_WAIT: &str = "Too many questions already wait for this person's answer: answer or decline some of them first";
 
 /// What a resolve of a record nobody asks the caller is refused with.
 pub const NOT_YOURS: &str = "Only the person this question asks can answer it";

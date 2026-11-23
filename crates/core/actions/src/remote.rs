@@ -2060,21 +2060,8 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         RemoteActionMessage::Invoke(request) if search::is_find(&request.target) => {
             search::searched(provider, caller, &request).map(RemoteActionMessage::Receipt)
         }
-        RemoteActionMessage::Invoke(mut request) => {
-            // How the answer travels is not part of what runs.
-            let until = request.wait_ms.take().map(wait::deadline);
-            let invocation = request.invocation;
-            let receipt = provider.invoke(caller, request).map(move |result| {
-                result.unwrap_or_else(|error| InvocationReceipt {
-                    invocation,
-                    status: ReceiptStatus::Rejected { error },
-                })
-            });
-            match until {
-                Some(until) => wait::settle_receipt(provider, caller, receipt, until),
-                None => receipt,
-            }
-            .map(RemoteActionMessage::Receipt)
+        RemoteActionMessage::Invoke(request) => {
+            invoked(provider, caller, request).map(RemoteActionMessage::Receipt)
         }
         RemoteActionMessage::Observe {
             correlation,
@@ -2118,14 +2105,7 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
             watch::noticed(provider, caller, correlation, scope)
         }
         RemoteActionMessage::HereRequest { correlation } => {
-            Pending::ready(RemoteActionMessage::HereResponse {
-                correlation,
-                result: provider
-                    .here(caller)
-                    .ok_or_else(|| ActionCallError::Unavailable {
-                        reason: watch::HERE_UNAVAILABLE.into(),
-                    }),
-            })
+            Pending::ready(here_of(provider, caller, correlation))
         }
         RemoteActionMessage::SurfaceRequest { correlation, app } => {
             surfaces::surfaced(provider, correlation, &app)
@@ -2151,6 +2131,43 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
     let (completer, answered) = pending();
     answer.then(move |answer| completer.complete(answer.unwrap_or(abandoned)));
     Some(answered)
+}
+
+/// Run `request` at `provider`, answering its receipt once it is ready, or once it moves when it
+/// asks to wait. How the answer travels is not part of what runs.
+fn invoked<H: ActionProvider + Clone + Send + 'static>(
+    provider: &H,
+    caller: &Caller,
+    mut request: InvokeRequest,
+) -> Pending<InvocationReceipt> {
+    let until = request.wait_ms.take().map(wait::deadline);
+    let invocation = request.invocation;
+    let receipt = provider.invoke(caller, request).map(move |result| {
+        result.unwrap_or_else(|error| InvocationReceipt {
+            invocation,
+            status: ReceiptStatus::Rejected { error },
+        })
+    });
+    match until {
+        Some(until) => wait::settle_receipt(provider, caller, receipt, until),
+        None => receipt,
+    }
+}
+
+/// Who is here, as `provider` sees it for `caller`.
+fn here_of<H: ActionProvider>(
+    provider: &H,
+    caller: &Caller,
+    correlation: u64,
+) -> RemoteActionMessage {
+    RemoteActionMessage::HereResponse {
+        correlation,
+        result: provider
+            .here(caller)
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: watch::HERE_UNAVAILABLE.into(),
+            }),
+    }
 }
 
 /// The answer that refuses request `message` with `error` — for a provider that
