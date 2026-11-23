@@ -7,7 +7,6 @@ use super::api::ISSUER;
 use super::api_on_server::{api_on_server, approved_key, json_of};
 use super::key::Key;
 use super::*;
-use base64::Engine as _;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -22,32 +21,30 @@ fn folder() -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
-/// [`folder`]'s contents put into `workspace`, answering each one's
-/// `tilo.content:` reference.
+/// [`folder`]'s contents put into `workspace`, each at its own address as the
+/// command puts a file, answering each one's `tilo.content:` reference.
 async fn uploaded(key: &Key<'_>, workspace: &str, files: &[(&str, Vec<u8>)]) -> Vec<String> {
-    let encoded: Vec<String> = files
-        .iter()
-        .map(|(_, bytes)| base64::engine::general_purpose::STANDARD.encode(bytes))
-        .collect();
-    let body = json!({"files": encoded}).to_string();
-    let (status, kept) = json_of(
-        key.send(
-            hyper::Method::PUT,
-            &format!("/v1/workspaces/{workspace}/contents"),
-            body.as_bytes(),
-            &[],
+    let mut contents = Vec::with_capacity(files.len());
+    for (_, bytes) in files {
+        let hash = blake3::hash(bytes).to_hex().to_string();
+        let (status, put) = json_of(
+            key.send(
+                hyper::Method::PUT,
+                &format!("/v1/workspaces/{workspace}/contents/{hash}"),
+                bytes,
+                &[("content-type", "application/octet-stream")],
+            )
+            .await,
         )
-        .await,
-    )
-    .await;
-    assert_eq!(status, 200, "{kept}");
-    let contents: Vec<String> = kept["contents"]
-        .as_array()
-        .expect("the put answers its contents")
-        .iter()
-        .map(|content| content.as_str().unwrap().to_owned())
-        .collect();
-    assert_eq!(contents.len(), files.len(), "{kept}");
+        .await;
+        assert_eq!(status, 201, "{put}");
+        contents.push(
+            put["content"]
+                .as_str()
+                .expect("the put answers its content")
+                .to_owned(),
+        );
+    }
     contents
 }
 
