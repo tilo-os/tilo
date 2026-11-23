@@ -120,9 +120,7 @@ exclude = [
 # (tools/tests/test_nested_sandboxes.py fails while the two disagree).
 isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-device-steps", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle", "tilo-session", "tilo-net"] }
 # The apps the session's tests start (`tilo_test_env::sibling_binary`), as the session-siblings
-# setup in .config/nextest.toml names them for both packages, and for the session the three the
-# chat-siblings setup names (Chat, the launcher that starts it beside the session, and the
-# runtime it runs on, for `it`'s `chat_2x2`):
+# setup in .config/nextest.toml names them for both packages:
 # built once by this family's build and kept with its test binaries,
 # each shard is handed them (NEXTEST_BIN_EXE_<bin>) and the setups build nothing. The app host's
 # trust test installs with the installer it finds beside its own build (`tilo-install`), which
@@ -133,9 +131,9 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-devi
 # The apps the session opens are built with the `fast` profile, each in an invocation of its own:
 # the app-open budget test times their startup, which only means something for an optimised build.
 # The launcher that starts them is built the same way: its sandbox set-up is part of every open
-# the test counts. The session is not started here: a started build of a package's own binary
-# takes that binary's name in the archive the shards run from, so every other test of the
-# session's would lose the plain build it starts.
+# the test counts, and so is the session, with the overrides its tests sign in with: a started
+# build of a package's own binary reaches the tests as T_STARTED_BIN_<bin>_<profile>_<features>
+# (`tilo_test_env::started_variant`), and its other tests keep the plain build they start.
 # The Lounge tests start the workspace service, which `tilo-server` has only with `agents`, for both
 # packages whose tests start it: a featured artifact is built in an invocation of its own, so it
 # moves no unit of this family's build. The pam-tilo tests load the PAM module as libpam does:
@@ -263,7 +261,7 @@ run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tes
 
 [[check.matrix.set]]
 when = { flow = "laptop-phone-server" }
-run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=pass -p tilo-session-client --test it -E 'test(flow_laptop_phone_server::)'\n"
+run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=pass -p tilo-runtime --lib -E 'test(flow_laptop_phone_server::)'\nbash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=pass -p tilo-session-client --test it -E 'test(flow_laptop_phone_server::)'\n"
 
 # Clippy over the workspace: one driver, one unit per crate, shared with `test` and `check` (t's
 # compiler cache keys a unit by what it was given, whichever family asked for it). Its selection
@@ -1124,7 +1122,7 @@ fix = "cargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I t
 [[check]]
 name = "sdk-linux"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo test --locked -p tilo-caps\ncargo test --locked -p tilo-app-cli --lib targets::\ncargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package\nbin=$CARGO_TARGET_DIR/debug\n\"$bin/tilo-app\" build --target linux apps/calculator\ncargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture\nTILO_PKG=$bin/tilo-app-package CARGO_PROFILE_THIN_APP_OPT_LEVEL=1 CARGO_PROFILE_THIN_APP_CODEGEN_UNITS=16 CARGO_PROFILE_THIN_APP_DEBUG=0 \"$bin/tilo-app\" package --target linux apps/calculator --output \"$TMPDIR/calculator.tapp\" --force\ntest -s \"$TMPDIR/calculator.tapp\"\n"
+run = "cargo test --locked -p tilo-caps\ncargo test --locked -p tilo-app-cli --lib targets::\ncargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package\nbin=$CARGO_TARGET_DIR/debug\n\"$bin/tilo-app\" build --target linux apps/scratchpad\ncargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture\nTILO_PKG=$bin/tilo-app-package CARGO_PROFILE_THIN_APP_OPT_LEVEL=1 CARGO_PROFILE_THIN_APP_CODEGEN_UNITS=16 CARGO_PROFILE_THIN_APP_DEBUG=0 \"$bin/tilo-app\" package --target linux apps/scratchpad --output \"$TMPDIR/scratchpad.tapp\" --force\ntest -s \"$TMPDIR/scratchpad.tapp\"\n"
 on = ["dispatch", "idle"]
 heavy = true
 
@@ -1214,7 +1212,7 @@ heavy = true
 name = "real-fuse-runtime"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-runtime --lib device::take_work::files -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+run = "# Mounting FUSE needs a user namespace where the check is root: the job sandbox gives it no\n# capability, and no_new_privs keeps fusermount3's setuid bit from helping, so a mount from\n# the check itself fails with \"fusermount3: mount failed: Operation not permitted\".\nscript=$(cat <<'REAL_FUSE'\nexport TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts\npython3 -I tools/font-catalog.py root crates/ui/ui-core/assets/fonts --scope fixtures --cache \"$TILO_FONT_ASSET_CACHE\"\nexport TILO_FONT_ASSETS_OFFLINE=1\nbash scripts/ci-fuse-preflight.sh\ncargo test --locked -p tilo-runtime -p workspace-unify --lib device::peer::folder_tests -- --nocapture --test-threads=1\ncargo test --locked -p tilo-runtime -p workspace-unify --lib device::take_work::files -- --nocapture --test-threads=1\nREAL_FUSE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
@@ -1503,7 +1501,7 @@ packages = ["tilo-agent-session"]
 [[check]]
 name = "security-isolation-{part}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_TEST_NTFS_FIXTURES=0\nany() { local e=\"\" t; for t; do e=\"${e:+$e | }test($t)\"; done; printf '%s' \"$e\"; }\nrun() { bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail \"$@\"; }\ncase {part} in\n  server)\n    run -p tilo-server --lib -E \"$(any workspace_access compute_content host_authority)\"\n    run -p tilo-server --test it -E \"$(any tenant_isolation:: governed_workspaces:: governed_workspace_access:: workspace_admission:: auth_reject:: federation_cross_user_reject:: cross_user_workspace_host:: compute_content:: remote_action_routing::)\"\n    ;;\n  server-agents)\n    run -p tilo-server --features agents --test it -E \"$(any tenant_isolation:: governed_workspaces:: governed_workspace_access:: workspace_admission:: auth_reject:: compute_content:: persistent_workspace::)\"\n    run -p tilo-server --features agents --bin tilo-server -E \"test(persistent_workspace_cli::tests::a_fresh_workspace_seeds_its_apps_and_keeps_them)\"\n    ;;\n  agent-session)\n    run -p tilo-agent-session --test it -E \"$(any worker_isolation::)\"\n    run -p tilo-agent-session --test it -E \"$(any workspace_actions::governed_agent::)\"\n    ;;\nesac\n"
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_TEST_NTFS_FIXTURES=0\nany() { local e=\"\" t; for t; do e=\"${e:+$e | }test($t)\"; done; printf '%s' \"$e\"; }\nrun() { bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail \"$@\"; }\ncase {part} in\n  server)\n    run -p tilo-server --lib -E \"$(any workspace_access compute_content host_authority)\"\n    run -p tilo-server --test it -E \"$(any tenant_isolation:: governed_workspaces:: governed_workspace_access:: workspace_admission:: auth_reject:: federation_cross_user_reject:: cross_user_workspace_host:: compute_content:: remote_action_routing::)\"\n    ;;\n  server-agents)\n    run -p tilo-server --features agents --test it -E \"$(any tenant_isolation:: governed_workspaces:: governed_workspace_access:: workspace_admission:: auth_reject:: compute_content::)\"\n    ;;\n  agent-session)\n    run -p tilo-agent-session --test it -E \"$(any worker_isolation::)\"\n    run -p tilo-agent-session --test it -E \"$(any workspace_actions::governed_agent::)\"\n    ;;\nesac\n"
 env = { RUST_BACKTRACE = "1" }
 timeout_secs = 5400
 on = ["dispatch"]
@@ -1562,7 +1560,7 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 # a git dependency on this tree, so it needs cargo's network; t turns it off where it hands a job
 # the state's crates.
 env = { CARGO_NET_OFFLINE = "false" }
-run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\n# The Mac's own tilo test cache, which outlives jobs as the Linux nodes' does (font-catalog.py's\n# default): $TMPDIR is each job's own, and the fonts were downloaded again in every run.\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 -I tools/font-catalog.py root crates/ui/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\ncargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package\nbin=${CARGO_TARGET_DIR:-$PWD/target}/debug\nrustup target add wasm32-unknown-unknown\n# The template takes the SDK from this tree as a git repository (`--sdk-git file://\u2026`, at HEAD):\n# commit the tree here, so HEAD is exactly the files checked, a working tree's changes included.\nif ! git rev-parse --git-dir >/dev/null 2>&1; then\n  git init -q\n  git add -A\n  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@localhost GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@localhost git commit -q -m 'the checked tree'\nfi\nTILO_SDK_SOURCE=git cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture\nfor app in calculator; do\n  bundle=$(\"$bin/tilo-app\" build --target macos \"apps/$app\" | tail -n 1)\n  plutil -lint \"$bundle/Contents/Info.plist\"\n  codesign --verify --deep --strict \"$bundle\"\n  \"$bundle/Contents/MacOS/$app\" --shots \"$TMPDIR/$app.png\"\n  test -s \"$TMPDIR/$app.png\"\ndone\n\"$bin/tilo-app\" package --target macos apps/calculator --output \"$TMPDIR/Calculator-macos.zip\" --force\ntest -s \"$TMPDIR/Calculator-macos.zip\"\ntest -s \"$TMPDIR/Calculator-macos.zip.json\"\n"
+run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\n# The Mac's own tilo test cache, which outlives jobs as the Linux nodes' does (font-catalog.py's\n# default): $TMPDIR is each job's own, and the fonts were downloaded again in every run.\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 -I tools/font-catalog.py root crates/ui/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\ncargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package\nbin=${CARGO_TARGET_DIR:-$PWD/target}/debug\nrustup target add wasm32-unknown-unknown\n# The template takes the SDK from this tree as a git repository (`--sdk-git file://\u2026`, at HEAD):\n# commit the tree here, so HEAD is exactly the files checked, a working tree's changes included.\nif ! git rev-parse --git-dir >/dev/null 2>&1; then\n  git init -q\n  git add -A\n  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@localhost GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@localhost git commit -q -m 'the checked tree'\nfi\nTILO_SDK_SOURCE=git cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture\nfor app in scratchpad; do\n  bundle=$(\"$bin/tilo-app\" build --target macos \"apps/$app\" | tail -n 1)\n  plutil -lint \"$bundle/Contents/Info.plist\"\n  codesign --verify --deep --strict \"$bundle\"\n  \"$bundle/Contents/MacOS/$app\" --shots \"$TMPDIR/$app.png\"\n  test -s \"$TMPDIR/$app.png\"\ndone\n\"$bin/tilo-app\" package --target macos apps/scratchpad --output \"$TMPDIR/Scratchpad-macos.zip\" --force\ntest -s \"$TMPDIR/Scratchpad-macos.zip\"\ntest -s \"$TMPDIR/Scratchpad-macos.zip.json\"\n"
 requires = ["os=macos", "arch=arm64"]
 on = ["dispatch", "idle"]
 heavy = true
@@ -3047,7 +3045,7 @@ arch = ["x86_64", "aarch64"]
 [[check]]
 name = "app-reproducible-{arch}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/apps/check-reproducible-tapp.sh calculator"
+run = "bash tools/apps/check-reproducible-tapp.sh scratchpad"
 needs = ["app-models"]
 env = { TILO_APP_MODELS = "/target/app-models" }
 requires = ["arch={arch}"]
@@ -7023,7 +7021,7 @@ timeout_secs = 2400
 on = ["dispatch", "idle"]
 dispatch_inputs = { only = "", discover = "" }
 [check.matrix]
-app = ["apps", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "devices", "displays-across-devices", "file-explorer", "music", "notes", "settings", "shell", "tube", "video-player"]
+app = ["apps", "calendar", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "contacts", "devices", "displays-across-devices", "file-explorer", "music", "notes", "settings", "shell", "tube", "calculator", "video-player"]
 
 # Every app's open against the product's bar, 100 ms from asking for an app on the device to the
 # frame that shows its window: the cold open and each open after a quit, as the walks of the apps
@@ -7048,7 +7046,7 @@ on = ["dispatch", "idle"]
 [[check]]
 name = "run-headless"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/test-env.sh /target/debug/tilo-local headless --check --no-build --apps calendar"
+run = "bash tools/test-env.sh /target/debug/tilo-local headless --check --no-build --apps activity"
 needs = ["nested-session", "tilo-local-binaries"]
 # The session's apps read no NTFS image, whose set takes a minute to build.
 env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0" }
@@ -7060,7 +7058,7 @@ on = ["idle"]
 [[check]]
 name = "run-desktop"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/test-env.sh /target/debug/tilo-local desktop --check --no-build --apps calendar"
+run = "bash tools/test-env.sh /target/debug/tilo-local desktop --check --no-build --apps activity"
 needs = ["nested-session", "tilo-local-binaries"]
 # The window's apps read no NTFS image, whose set takes a minute to build.
 env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0" }
