@@ -956,6 +956,7 @@ impl WindowShares {
             .filter(|tab| !live.contains(tab))
             .collect();
         let mut changed = false;
+        let mut made_strips = Vec::new();
         for tab in ended {
             let Some(governed) = self.governed.remove(&tab) else {
                 continue;
@@ -968,12 +969,17 @@ impl WindowShares {
             let place = governed.shown_in;
             if placed_for_share(tree, tab, place) {
                 self.end_tab(session, tab, WhyEnded::TabGone);
-                remove_governed_tile(tree, place, governed.strip.then_some(StripId(place)));
-                changed = true;
+                changed |= tree.remove_tab(place).is_some();
+                if governed.strip {
+                    made_strips.push(StripId(place));
+                }
             } else {
                 self.end_tab(session, tab, WhyEnded::SenderStopped);
                 self.changed();
             }
+        }
+        for strip in made_strips {
+            changed |= tree.remove_empty_strip(strip);
         }
         changed
     }
@@ -1294,6 +1300,8 @@ impl WindowShares {
             return;
         }
         let mut tree = session.read(Clone::clone);
+        let mut changed = false;
+        let mut made_strips = Vec::new();
         for (tab, entry) in governed {
             self.watching
                 .retain(|(workspace, watched), _| *watched != tab || *workspace != entry.workspace);
@@ -1302,10 +1310,18 @@ impl WindowShares {
             // stays, and so does a window the workspace's layout lists as running on its host.
             let place = entry.shown_in;
             if placed_for_share(&tree, tab, place) {
-                remove_governed_tile(&mut tree, place, entry.strip.then_some(StripId(place)));
+                changed |= tree.remove_tab(place).is_some();
+                if entry.strip {
+                    made_strips.push(StripId(place));
+                }
             }
         }
-        session.replace_tree(tree);
+        for strip in made_strips {
+            changed |= tree.remove_empty_strip(strip);
+        }
+        if changed {
+            session.replace_tree(tree);
+        }
         self.changed();
     }
 
@@ -2597,30 +2613,6 @@ fn shares_of_unheard(
         .iter()
         .filter_map(|grant| window_of_node(&grant.node))
         .any(|(_, tab)| !owners.contains_key(&peer_salt_of(tab)))
-}
-
-/// The session without the tab `tab` , and without the strip `strip` when that was made for it and
-/// holds nothing else.
-fn remove_governed_tile(tree: &mut Layout, tab: TabId, strip: Option<StripId>) {
-    for workspace in &mut tree.workspaces {
-        for held in &mut workspace.strips {
-            held.window_groups.retain_mut(|group| {
-                group.tabs.retain(|shown| shown.id != tab);
-                group.focus_history.retain(|id| *id != tab);
-                if group.active_tab == tab
-                    && let Some(first) = group.tabs.first()
-                {
-                    group.active_tab = first.id;
-                }
-                !group.tabs.is_empty()
-            });
-        }
-        if let Some(strip) = strip {
-            workspace
-                .strips
-                .retain(|held| held.id != strip || !held.window_groups.is_empty());
-        }
-    }
 }
 
 /// A viewer's pointer, in this device's terms: the point on the picture it watches, in the layout
