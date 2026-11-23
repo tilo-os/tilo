@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.notes@bf1ef65383103ec7";
+export const SURFACE = "so.tilo.notes@8e0b31b4c4399681";
 
 /** The arguments of `pin`. */
 export interface PinArgs {
@@ -59,12 +59,12 @@ export interface AddTextArgs {
 
 /** The arguments of `tag`. */
 export interface TagArgs {
-  t: string;
+  name: string;
 }
 
 /** The arguments of `untag`. */
 export interface UntagArgs {
-  t: string;
+  name: string;
 }
 
 /** The arguments of `react`. */
@@ -75,6 +75,7 @@ export interface ReactArgs {
 /** The arguments of `insert_image`. */
 export interface InsertImageArgs {
   image: unknown;
+  alt?: string;
 }
 
 /** The arguments of `keep_image`. */
@@ -109,6 +110,17 @@ export interface DeleteArgs {
 export interface AppendToNoteArgs {
   title: string;
   text: string;
+}
+
+/** The arguments of `rename_tag`. */
+export interface RenameTagArgs {
+  tag: Tag;
+  wanted: string;
+}
+
+/** The arguments of `delete_tag`. */
+export interface DeleteTagArgs {
+  tag: Tag;
 }
 
 /** The arguments of `import_archive`. */
@@ -180,27 +192,32 @@ export interface Note extends tilo.Resource {
   }): Promise<void>;
   /** Runs `add_text` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   add_textMany(items: AddTextArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Gives a note a tag. */
+  /** Gives a note the tag named `name`, and lists the tag in the notebook when it lists none of that name yet: a name is how a person, an agent and a script know a tag. */
   tag(args: {
-    t: string;
+    name: string;
   }): Promise<void>;
   /** Runs `tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   tagMany(items: TagArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Untags a note. */
+  /** Takes the tag named `name` off a note. The notebook keeps listing it, so a person finds it again for another note; deleting it from the notebook takes it off every note. */
   untag(args: {
-    t: string;
+    name: string;
   }): Promise<void>;
   /** Runs `untag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   untagMany(items: UntagArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Finds the words `text` in one note, the case of their letters aside, and answers each paragraph holding them with its place in the note and its words: what the window's find bar shows, reachable by an agent or the palette that knows the note but not where in it to look. */
+  find_text(args: {
+    text: string;
+  }): Promise<Found[]>;
   /** Adds your reaction with an emoji to a note, or takes it back when you had reacted with it: a press on one of its pills, or the pick of the one its add button opened. */
   react(args: {
     emoji: string;
   }): Promise<void>;
   /** Runs `react` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   reactMany(items: ReactArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Puts a picture in a note, where its words end: the person picks the file, and the note keeps the address of its content rather than the picture, and the name it came in as. */
+  /** Puts a picture in a note, where its words end, described by `alt` for a reader who cannot see it: the person picks the file, and the note keeps the address of its content rather than the picture, and the name it came in as. Nothing in `alt` can end the Markdown a picture is written with, so a description holding brackets or parentheses still reads as one picture. */
   insert_image(args: {
     image: unknown;
+    alt?: string;
   }): Promise<void>;
   /** Runs `insert_image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   insert_imageMany(items: InsertImageArgs[]): Promise<tilo.ActionAnswer[]>;
@@ -218,7 +235,7 @@ export interface Note extends tilo.Resource {
 
 /** The actions `Note` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const NOTE_ACTIONS = ["new_child", "pin", "pinMany", "indent", "indentMany", "outdent", "outdentMany", "move_up", "move_upMany", "move_down", "move_downMany", "retitle", "retitleMany", "add_text", "add_textMany", "tag", "tagMany", "untag", "untagMany", "react", "reactMany", "insert_image", "insert_imageMany", "keep_image", "keep_imageMany", "export_markdown", "export_note"] as const;
+export const NOTE_ACTIONS = ["new_child", "pin", "pinMany", "indent", "indentMany", "outdent", "outdentMany", "move_up", "move_upMany", "move_down", "move_downMany", "retitle", "retitleMany", "add_text", "add_textMany", "tag", "tagMany", "untag", "untagMany", "find_text", "react", "reactMany", "insert_image", "insert_imageMany", "keep_image", "keep_imageMany", "export_markdown", "export_note"] as const;
 
 /** The `tl.so.tilo.notes.Note` kind at `path`. */
 export function note(ws: tilo.Workspace, path: string): Note {
@@ -229,10 +246,13 @@ export function note(ws: tilo.Workspace, path: string): Note {
 export interface Notebook extends tilo.Resource {
   tmqqtkeb: Array<tilo.Entry<Note>>;  // notes
   qgq6mcy7: Array<tilo.Entry<Note>>;  // set_aside
-  /** Starts a note at the top of the tree, titled `title` and saying `body` (Markdown) when the caller knows them already. Started from the notebook both are empty: what is typed first names it. */
+  dq2mnb22: Array<tilo.Entry<Tag>>;  // tags
+  /** Starts a note titled `title` and saying `body` (Markdown) when the caller knows them already. Started from the notebook both are empty: what is typed first names it. It stands under `parent` (at the top of the tree when none) and — where a caller names the note it belongs after (`after`) — at that place among the notes there; without one it comes after the notes already under `parent`, never at the foot of a tree it does not stand in. */
   new_note(args?: {
     title?: string;
     body?: string;
+    parent?: Note;
+    after?: Note;
   }): Promise<Note>;
   /** Moves a note to a place in the tree: at the end of `parent`'s own, or where `before` stands. */
   move_to(args: {
@@ -272,11 +292,28 @@ export interface Notebook extends tilo.Resource {
   }): Promise<void>;
   /** Runs `append_to_note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   append_to_noteMany(items: AppendToNoteArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Files a note titled `title` and tagged `tag` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it. */
+  /** Files a note titled `title` and carrying the tag `name` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it. */
   file_note(args: {
     title: string;
-    tag: string;
+    name: string;
   }): Promise<Note>;
+  /** Makes a tag of the notebook named `name`, or gives the one already named that: the name is what people, agents and scripts know a tag by. */
+  new_tag(args?: {
+    name?: string;
+  }): Promise<Tag>;
+  /** Names a tag of the notebook: every note that carries the old name carries the new one. */
+  rename_tag(args: {
+    tag: Tag;
+    wanted: string;
+  }): Promise<void>;
+  /** Runs `rename_tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  rename_tagMany(items: RenameTagArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Deletes a tag of the notebook: no note carries the name any more, and the notebook stops listing it. */
+  delete_tag(args: {
+    tag: Tag;
+  }): Promise<void>;
+  /** Runs `delete_tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  delete_tagMany(items: DeleteTagArgs[]): Promise<tilo.ActionAnswer[]>;
   /** The notebook as a zip, one Markdown file for each note: a note's own under the folder of the note it stands in, and the pictures it shows in its own `images` folder beside it. That is the shape the import reads, so the notebook comes back as the tree it is, titles, bodies and pictures alike. */
   export_notebook(): Promise<unknown>;
   /** The notebook as one Markdown document: each note a heading one level deeper than the note it stands under (six at the deepest), its body beneath, and the notes under it after it — the notebook read as one text, in the order the tree keeps it. */
@@ -317,11 +354,40 @@ export interface Notebook extends tilo.Resource {
 
 /** The actions `Notebook` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const NOTEBOOK_ACTIONS = ["new_note", "move_to", "move_toMany", "move_after", "move_afterMany", "duplicate", "sort_children", "sort_childrenMany", "delete", "deleteMany", "append_to_note", "append_to_noteMany", "file_note", "export_notebook", "export_notebook_markdown", "import_markdown", "import_page", "import_text", "import_archive", "import_archiveMany", "import_dropped", "import_droppedMany"] as const;
+export const NOTEBOOK_ACTIONS = ["new_note", "move_to", "move_toMany", "move_after", "move_afterMany", "duplicate", "sort_children", "sort_childrenMany", "delete", "deleteMany", "append_to_note", "append_to_noteMany", "file_note", "new_tag", "rename_tag", "rename_tagMany", "delete_tag", "delete_tagMany", "export_notebook", "export_notebook_markdown", "import_markdown", "import_page", "import_text", "import_archive", "import_archiveMany", "import_dropped", "import_droppedMany"] as const;
 
 /** The `tl.so.tilo.notes.Notebook` kind at `path`. */
 export function notebook(ws: tilo.Workspace, path: string): Notebook {
   return resourceProxy(ws, path, SURFACE, NOTEBOOK_ACTIONS) as unknown as Notebook;
+}
+
+/** Tag — `tl.so.tilo.notes.Tag`. */
+export interface Tag extends tilo.Resource {
+  itadoh74: string;  // name
+}
+
+/** The actions `Tag` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const TAG_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.notes.Tag` kind at `path`. */
+export function tag(ws: tilo.Workspace, path: string): Tag {
+  return resourceProxy(ws, path, SURFACE, TAG_ACTIONS) as unknown as Tag;
+}
+
+/** Found — `tl.so.tilo.notes.Found`. */
+export interface Found extends tilo.Resource {
+  dxxdlopq: number;  // at
+  "2vlaqp45": string;  // words
+}
+
+/** The actions `Found` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const FOUND_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.notes.Found` kind at `path`. */
+export function found(ws: tilo.Workspace, path: string): Found {
+  return resourceProxy(ws, path, SURFACE, FOUND_ACTIONS) as unknown as Found;
 }
 
 /** Notes — `tl.so.tilo.notes`. */

@@ -209,12 +209,6 @@ d-6fwsh5ui-text = Text
 
 d-gc34cbhl-title = Titel
 
-d-gc34cbhl-tag = Schlagwort
-
-d-7ow26bju-t = T
-
-d-3u3bevec-t = T
-
 d-4s5iqnfo-image = Bild
 
 d-h3zczsen-file = Datei

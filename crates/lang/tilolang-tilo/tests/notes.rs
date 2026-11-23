@@ -598,3 +598,311 @@ fn a_note_body_edit_says_what_changed_in_the_body() {
         "the words the edit wrote stand under it: {words:?}"
     );
 }
+/// The tags the notebook's sidebar shows, each with the count beside it: its chips, each
+/// followed by the number of notes carrying it.
+fn shown_tags(ada: &Replica) -> Vec<(String, String)> {
+    fn walk(
+        node: &tilolang_runtime::UiNode,
+        holding: &mut Option<String>,
+        out: &mut Vec<(String, String)>,
+    ) {
+        if node.kind == "ui.Chip" {
+            if let Some(Value::Text(label)) = node.props.get("label") {
+                *holding = Some(label.clone());
+            }
+        } else if node.kind == "ui.Text"
+            && let Some(label) = holding.take()
+            && let Some(Value::Text(value)) = node.props.get("value")
+        {
+            out.push((label, value.clone()));
+        }
+        for child in &node.children {
+            walk(child, holding, out);
+        }
+    }
+    let mut view = ada.view(NOTES_APP);
+    view.poll_patches().unwrap();
+    let mut out = Vec::new();
+    walk(view.tree(), &mut None, &mut out);
+    out
+}
+
+/// The count the sidebar shows beside the tag `name`.
+fn tag_count(ada: &Replica, name: &str) -> Option<String> {
+    shown_tags(ada)
+        .into_iter()
+        .find(|(label, _)| label == name)
+        .map(|(_, count)| count)
+}
+
+/// The tag the notebook lists by the name `name`.
+fn listed_tag(ada: &Replica, notebook: &ResourceRef, name: &str) -> ResourceRef {
+    let tags = match ada.host.runtime().read(notebook, "tags").unwrap() {
+        Value::List(items) => items,
+        other => panic!("the notebook's tags read as {other:?}"),
+    };
+    for held in tags {
+        let held = target(&held);
+        let called = match ada.host.runtime().read(&held, "name").unwrap() {
+            Value::Text(called) => called,
+            other => panic!("a tag's name reads as {other:?}"),
+        };
+        if called == name {
+            return held;
+        }
+    }
+    panic!("the notebook lists no tag named {name}");
+}
+
+/// The tag names a note carries, in the order its set holds them.
+fn tags_of(ada: &Replica, note: &ResourceRef) -> Vec<String> {
+    match ada.host.runtime().read(note, "tags").unwrap() {
+        Value::List(items) => items
+            .into_iter()
+            .map(|item| match item {
+                Value::Text(name) => name,
+                other => panic!("a note's tag reads as {other:?}"),
+            })
+            .collect(),
+        other => panic!("a note's tags read as {other:?}"),
+    }
+}
+
+#[test]
+fn the_notebook_names_renames_and_deletes_the_tags_its_notes_carry() {
+    let (ada, notebook) = workspace();
+    let trip = note(&ada, &notebook, "Trip to Lisbon");
+    let groceries = note(&ada, &notebook, "Groceries");
+
+    // A name tags both notes and is listed once, in the spelling the notebook took first.
+    for (n, name) in [(&trip, "travel"), (&groceries, "Travel")] {
+        call(
+            &ada,
+            "ada",
+            NOTES_APP,
+            "tag",
+            vec![Value::resource(n), Value::text(name)],
+        );
+    }
+    ada.commit();
+    let travel = listed_tag(&ada, &notebook, "travel");
+    assert_eq!(tags_of(&ada, &trip), ["travel"]);
+    assert_eq!(tags_of(&ada, &groceries), ["travel"]);
+    assert_eq!(
+        tag_count(&ada, "travel"),
+        Some("2".to_owned()),
+        "the sidebar lists it once, counting the two notes that carry it"
+    );
+
+    // Renaming the tag renames it on every note that carries it.
+    call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "rename_tag",
+        vec![
+            Value::resource(&notebook),
+            Value::resource(&travel),
+            Value::text("journeys"),
+        ],
+    );
+    ada.commit();
+    assert_eq!(tags_of(&ada, &trip), ["journeys"]);
+    assert_eq!(tags_of(&ada, &groceries), ["journeys"]);
+    assert_eq!(
+        tag_count(&ada, "journeys"),
+        Some("2".to_owned()),
+        "the list reads the name the tag has now"
+    );
+
+    // Deleting the tag takes it off every note and out of the list.
+    call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "delete_tag",
+        vec![Value::resource(&notebook), Value::resource(&travel)],
+    );
+    ada.commit();
+    assert!(
+        tags_of(&ada, &trip).is_empty(),
+        "the note carries it no more"
+    );
+    assert!(
+        shown_tags(&ada)
+            .iter()
+            .all(|(label, _)| label != "journeys"),
+        "a deleted tag is nowhere in the list"
+    );
+}
+
+/// A reference or none, as an action's `Option<T>` parameter takes it.
+fn opt(of: Option<&ResourceRef>) -> Value {
+    match of {
+        Some(held) => Value::Opt(Some(Box::new(Value::resource(held)))),
+        None => Value::none(),
+    }
+}
+
+#[test]
+fn a_new_note_takes_a_parent_and_a_place_among_the_notes_there() {
+    let (ada, notebook) = workspace();
+    let plan = note(&ada, &notebook, "Q3 plan");
+    note(&ada, &notebook, "Meetings");
+
+    // A note made under the plan comes after the plan and the notes it already holds, not at
+    // the foot of the tree.
+    let monday = target(&call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "new_note",
+        vec![
+            Value::resource(&notebook),
+            Value::text("Monday"),
+            Value::text("The sync bug."),
+            opt(Some(&plan)),
+            opt(None),
+        ],
+    ));
+    ada.commit();
+    assert_eq!(parent_of(&ada, &monday), Some(plan.clone()));
+    assert_eq!(
+        titles(&ada, &notebook),
+        ["Q3 plan", "Monday", "Meetings"],
+        "under the plan, after it and its own"
+    );
+
+    // A caller that names the note it belongs after lands there, under the same parent.
+    let tuesday = target(&call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "new_note",
+        vec![
+            Value::resource(&notebook),
+            Value::text("Tuesday"),
+            Value::text(""),
+            opt(Some(&plan)),
+            opt(Some(&monday)),
+        ],
+    ));
+    ada.commit();
+    assert_eq!(parent_of(&ada, &tuesday), Some(plan));
+    assert_eq!(
+        titles(&ada, &notebook),
+        ["Q3 plan", "Monday", "Tuesday", "Meetings"]
+    );
+}
+
+#[test]
+fn a_picture_is_added_to_a_note_with_its_description() {
+    let (ada, notebook) = workspace();
+    let garden = note(&ada, &notebook, "Garden");
+    // The picture's bytes are the content store's; what the note keeps is their address.
+    let hash = "0".repeat(64);
+    let picture = Value::file(tilolang_runtime::blob::FileValue::new(
+        "fox.png",
+        "image/png",
+        4,
+        hash,
+    ));
+    call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "insert_image",
+        vec![
+            Value::resource(&garden),
+            picture,
+            Value::text("A fox [in] the (snow)"),
+        ],
+    );
+    ada.commit();
+    let exported = match call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "export_markdown",
+        vec![Value::resource(&garden)],
+    ) {
+        Value::Text(text) => text,
+        other => panic!("a note exports as text: {other:?}"),
+    };
+    assert!(
+        exported.contains("![A fox  in  the  snow ]("),
+        "the picture keeps the description it was given, and nothing in it ends the picture: {exported}"
+    );
+    assert!(exported.contains("Garden/images/fox.png"), "{exported}");
+}
+
+#[test]
+fn a_note_is_searched_by_its_own_words_and_answers_where_they_are() {
+    let (ada, notebook) = workspace();
+    let made = target(&call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "new_note",
+        vec![
+            Value::resource(&notebook),
+            Value::text("Packing"),
+            Value::text("- passport\n- charger\n\nPack the charger cable."),
+            opt(None),
+            opt(None),
+        ],
+    ));
+    ada.commit();
+    let found = call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "find_text",
+        vec![Value::resource(&made), Value::text("CHARGER")],
+    );
+
+    let meta = ada.host.package(NOTES_APP).unwrap().meta;
+    let found_ty = meta
+        .types
+        .iter()
+        .find(|ty| ty.name == "Found")
+        .expect("the found type");
+    let id_of = |name: &str| {
+        found_ty
+            .fields
+            .iter()
+            .find(|field| field.name == name)
+            .unwrap_or_else(|| panic!("a field {name}"))
+            .id
+            .clone()
+    };
+    let (at_id, words_id) = (id_of("at"), id_of("words"));
+    let mut matches: Vec<(i64, String)> = Vec::new();
+    match found {
+        Value::List(items) => {
+            for item in items {
+                let Value::Rec(rec) = item else {
+                    panic!("a match is a Found");
+                };
+                let at = match rec.fields.get(&at_id) {
+                    Some(Value::Int(at)) => *at,
+                    other => panic!("a match's paragraph reads as {other:?}"),
+                };
+                let words = match rec.fields.get(&words_id) {
+                    Some(Value::Text(words)) => words.clone(),
+                    other => panic!("a match's words read as {other:?}"),
+                };
+                matches.push((at, words));
+            }
+        }
+        other => panic!("a search answers its matches as a list: {other:?}"),
+    }
+    assert_eq!(
+        matches,
+        [
+            (2, "charger".to_owned()),
+            (3, "Pack the charger cable.".to_owned()),
+        ],
+        "each paragraph holding the words, in the note's order, the case of the words aside"
+    );
+}

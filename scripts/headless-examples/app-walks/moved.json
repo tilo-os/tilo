@@ -71,6 +71,14 @@
     "to": "so.tilo.notes tl.so.tilo.notes.Notebook#append_to_note",
     "test": "crates/lang/tilolang-runtime/tests/e2e_notes.rs:1087"
   },
+  "so.tilo.notes notes.notebook#delete-tag": {
+    "to": "so.tilo.notes tl.so.tilo.notes.Notebook#delete_tag",
+    "test": "crates/platform/tilolang-tilo/tests/notes.rs:600"
+  },
+  "so.tilo.notes notes.notebook#new-tag": {
+    "to": "so.tilo.notes tl.so.tilo.notes.Notebook#new_tag",
+    "test": "crates/platform/tilolang-tilo/tests/notes.rs:600"
+  },
   "so.tilo.notes notes.notebook#open-resource": {
     "to": "so.tilo.notes tl.so.tilo.notes.Note#open",
     "test": "apps/tilolang/tests/hosted/narrow.rs:194"

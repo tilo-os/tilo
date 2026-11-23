@@ -30249,26 +30249,38 @@
       "tl.so.tilo.notes.Note.tag.Arguments": {
         "type": "object",
         "properties": {
-          "t": {
+          "name": {
             "type": "string"
           }
         },
         "required": [
-          "t"
+          "name"
         ],
-        "description": "Gives a note a tag."
+        "description": "Gives a note the tag named `name`, and lists the tag in the notebook when it lists none of\nthat name yet: a name is how a person, an agent and a script know a tag."
       },
       "tl.so.tilo.notes.Note.untag.Arguments": {
         "type": "object",
         "properties": {
-          "t": {
+          "name": {
             "type": "string"
           }
         },
         "required": [
-          "t"
+          "name"
         ],
-        "description": "Untags a note."
+        "description": "Takes the tag named `name` off a note. The notebook keeps listing it, so a person finds it\nagain for another note; deleting it from the notebook takes it off every note."
+      },
+      "tl.so.tilo.notes.Note.find_text.Arguments": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "description": "Finds the words `text` in one note, the case of their letters aside, and answers each\nparagraph holding them with its place in the note and its words: what the window's find bar\nshows, reachable by an agent or the palette that knows the note but not where in it to look."
       },
       "tl.so.tilo.notes.Note.react.Arguments": {
         "type": "object",
@@ -30285,12 +30297,15 @@
       "tl.so.tilo.notes.Note.insert_image.Arguments": {
         "type": "object",
         "properties": {
-          "image": {}
+          "image": {},
+          "alt": {
+            "type": "string"
+          }
         },
         "required": [
           "image"
         ],
-        "description": "Puts a picture in a note, where its words end: the person picks the file, and the note\nkeeps the address of its content rather than the picture, and the name it came in as."
+        "description": "Puts a picture in a note, where its words end, described by `alt` for a reader who cannot see\nit: the person picks the file, and the note keeps the address of its content rather than the\npicture, and the name it came in as. Nothing in `alt` can end the Markdown a picture is\nwritten with, so a description holding brackets or parentheses still reads as one picture."
       },
       "tl.so.tilo.notes.Note.keep_image.Arguments": {
         "type": "object",
@@ -30368,10 +30383,74 @@
           },
           "body": {
             "type": "string"
+          },
+          "parent": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.notes.Note",
+            "type": "object"
+          },
+          "after": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.notes.Note",
+            "type": "object"
           }
         },
         "required": [],
-        "description": "Starts a note at the top of the tree, titled `title` and saying `body` (Markdown) when the\ncaller knows them already. Started from the notebook both are empty: what is typed first\nnames it."
+        "description": "Starts a note titled `title` and saying `body` (Markdown) when the caller knows them already.\nStarted from the notebook both are empty: what is typed first names it. It stands under\n`parent` (at the top of the tree when none) and — where a caller names the note it belongs\nafter (`after`) — at that place among the notes there; without one it comes after the notes\nalready under `parent`, never at the foot of a tree it does not stand in."
       },
       "tl.so.tilo.notes.Notebook.move_to.Arguments": {
         "type": "object",
@@ -30697,15 +30776,111 @@
           "title": {
             "type": "string"
           },
-          "tag": {
+          "name": {
             "type": "string"
           }
         },
         "required": [
           "title",
+          "name"
+        ],
+        "description": "Files a note titled `title` and carrying the tag `name` in one step: what another app writes\ndown of what it did (Today's morning) without waiting on the note it made to name it."
+      },
+      "tl.so.tilo.notes.Notebook.new_tag.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "description": "Makes a tag of the notebook named `name`, or gives the one already named that: the name is\nwhat people, agents and scripts know a tag by."
+      },
+      "tl.so.tilo.notes.Notebook.rename_tag.Arguments": {
+        "type": "object",
+        "properties": {
+          "tag": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.notes.Tag",
+            "type": "object"
+          },
+          "wanted": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tag",
+          "wanted"
+        ],
+        "description": "Names a tag of the notebook: every note that carries the old name carries the new one."
+      },
+      "tl.so.tilo.notes.Notebook.delete_tag.Arguments": {
+        "type": "object",
+        "properties": {
+          "tag": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.notes.Tag",
+            "type": "object"
+          }
+        },
+        "required": [
           "tag"
         ],
-        "description": "Files a note titled `title` and tagged `tag` in one step: what another app writes down of\nwhat it did (Today's morning) without waiting on the note it made to name it."
+        "description": "Deletes a tag of the notebook: no note carries the name any more, and the notebook stops\nlisting it."
       },
       "tl.so.tilo.notes.Notebook.export_notebook.Arguments": {
         "type": "object",
@@ -30805,6 +30980,92 @@
           "files"
         ],
         "description": "Files dropped on the notebook come in one at a time. A Markdown file becomes a note. An\narchive or a Notion page listing becomes the pages it holds, whether the notebook's own\nwritten out or another app's export. One action, so undo takes the whole drop back at once."
+      },
+      "tl.so.tilo.notes.Tag.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.notes.Tag.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.notes.Tag.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.notes.Found.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.notes.Found.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "words"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.notes.Found.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.shell.Shell.$create.Arguments": {
         "type": "object",
@@ -41396,6 +41657,12 @@
     {
       "app": "so.tilo.notes",
       "resource": "tl.so.tilo.notes.Note",
+      "action": "find_text",
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.find_text.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "react",
       "arguments": "#/components/schemas/tl.so.tilo.notes.Note.react.Arguments"
     },
@@ -41492,6 +41759,24 @@
     {
       "app": "so.tilo.notes",
       "resource": "tl.so.tilo.notes.Notebook",
+      "action": "new_tag",
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.new_tag.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
+      "action": "rename_tag",
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.rename_tag.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
+      "action": "delete_tag",
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.delete_tag.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "export_notebook",
       "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.export_notebook.Arguments"
     },
@@ -41530,6 +41815,42 @@
       "resource": "tl.so.tilo.notes.Notebook",
       "action": "import_dropped",
       "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.import_dropped.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Tag",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Tag.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Tag",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Tag.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Tag",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Tag.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Found",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Found.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Found",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Found.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Found",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Found.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.shell",

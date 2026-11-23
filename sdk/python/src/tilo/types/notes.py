@@ -22,6 +22,8 @@ from tilo import Entry, Invocation, Resource
 __all__ = [
     "Note",
     "Notebook",
+    "Tag",
+    "Found",
     "Notes",
     "PinArgs",
     "IndentArgs",
@@ -40,6 +42,8 @@ __all__ = [
     "SortChildrenArgs",
     "DeleteArgs",
     "AppendToNoteArgs",
+    "RenameTagArgs",
+    "DeleteTagArgs",
     "ImportArchiveArgs",
     "ImportDroppedArgs",
 ]
@@ -78,12 +82,12 @@ AddTextArgs = TypedDict("AddTextArgs", {
 """The arguments of `add_text`."""
 
 TagArgs = TypedDict("TagArgs", {
-    "t": "str",
+    "name": "str",
 })
 """The arguments of `tag`."""
 
 UntagArgs = TypedDict("UntagArgs", {
-    "t": "str",
+    "name": "str",
 })
 """The arguments of `untag`."""
 
@@ -94,6 +98,7 @@ ReactArgs = TypedDict("ReactArgs", {
 
 InsertImageArgs = TypedDict("InsertImageArgs", {
     "image": "Any",
+    "alt": NotRequired["str | None"],
 })
 """The arguments of `insert_image`."""
 
@@ -131,6 +136,17 @@ AppendToNoteArgs = TypedDict("AppendToNoteArgs", {
 })
 """The arguments of `append_to_note`."""
 
+RenameTagArgs = TypedDict("RenameTagArgs", {
+    "tag": "Tag",
+    "wanted": "str",
+})
+"""The arguments of `rename_tag`."""
+
+DeleteTagArgs = TypedDict("DeleteTagArgs", {
+    "tag": "Tag",
+})
+"""The arguments of `delete_tag`."""
+
 ImportArchiveArgs = TypedDict("ImportArchiveArgs", {
     "file": "Any",
 })
@@ -143,7 +159,7 @@ ImportDroppedArgs = TypedDict("ImportDroppedArgs", {
 
 class Note(Resource):
     """Note — `tl.so.tilo.notes.Note`."""
-    __surface__ = "so.tilo.notes@bf1ef65383103ec7"
+    __surface__ = "so.tilo.notes@8e0b31b4c4399681"
     dpj7scfe: str  # title
     olsyp3aw: str  # body
     pmjerv63: dict[str, str]  # images
@@ -251,21 +267,25 @@ class Note(Resource):
         """Runs `add_text` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add_text", items)
 
-    def tag(self, *, t: str) -> None:
-        """Gives a note a tag."""
-        return self.action("tag", t=t)
+    def tag(self, *, name: str) -> None:
+        """Gives a note the tag named `name`, and lists the tag in the notebook when it lists none of that name yet: a name is how a person, an agent and a script know a tag."""
+        return self.action("tag", name=name)
 
     def tag_many(self, items: list[TagArgs]) -> list[dict[str, Any]]:
         """Runs `tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("tag", items)
 
-    def untag(self, *, t: str) -> None:
-        """Untags a note."""
-        return self.action("untag", t=t)
+    def untag(self, *, name: str) -> None:
+        """Takes the tag named `name` off a note. The notebook keeps listing it, so a person finds it again for another note; deleting it from the notebook takes it off every note."""
+        return self.action("untag", name=name)
 
     def untag_many(self, items: list[UntagArgs]) -> list[dict[str, Any]]:
         """Runs `untag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("untag", items)
+
+    def find_text(self, *, text: str) -> list[Found]:
+        """Finds the words `text` in one note, the case of their letters aside, and answers each paragraph holding them with its place in the note and its words: what the window's find bar shows, reachable by an agent or the palette that knows the note but not where in it to look."""
+        return self.action("find_text", text=text)
 
     def react(self, *, emoji: str) -> None:
         """Adds your reaction with an emoji to a note, or takes it back when you had reacted with it: a press on one of its pills, or the pick of the one its add button opened."""
@@ -275,9 +295,17 @@ class Note(Resource):
         """Runs `react` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("react", items)
 
-    def insert_image(self, *, image: Any) -> None:
-        """Puts a picture in a note, where its words end: the person picks the file, and the note keeps the address of its content rather than the picture, and the name it came in as."""
-        return self.action("insert_image", image=image)
+    def insert_image(self,
+        *,
+        image: Any,
+        alt: str | None = None,
+    ) -> None:
+        """Puts a picture in a note, where its words end, described by `alt` for a reader who cannot see it: the person picks the file, and the note keeps the address of its content rather than the picture, and the name it came in as. Nothing in `alt` can end the Markdown a picture is written with, so a description holding brackets or parentheses still reads as one picture."""
+        args: dict[str, Any] = {}
+        args["image"] = image
+        if alt is not None:
+            args["alt"] = alt
+        return self.action("insert_image", **args)
 
     def insert_image_many(self, items: list[InsertImageArgs]) -> list[dict[str, Any]]:
         """Runs `insert_image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
@@ -301,26 +329,33 @@ class Note(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_child", "pin", "pin_many", "indent", "indent_many", "outdent", "outdent_many", "move_up", "move_up_many", "move_down", "move_down_many", "retitle", "retitle_many", "add_text", "add_text_many", "tag", "tag_many", "untag", "untag_many", "react", "react_many", "insert_image", "insert_image_many", "keep_image", "keep_image_many", "export_markdown", "export_note"})
+    __actions__ = frozenset({"new_child", "pin", "pin_many", "indent", "indent_many", "outdent", "outdent_many", "move_up", "move_up_many", "move_down", "move_down_many", "retitle", "retitle_many", "add_text", "add_text_many", "tag", "tag_many", "untag", "untag_many", "find_text", "react", "react_many", "insert_image", "insert_image_many", "keep_image", "keep_image_many", "export_markdown", "export_note"})
 
 
 class Notebook(Resource):
     """Notebook — `tl.so.tilo.notes.Notebook`."""
-    __surface__ = "so.tilo.notes@bf1ef65383103ec7"
+    __surface__ = "so.tilo.notes@8e0b31b4c4399681"
     tmqqtkeb: list[Entry[Note]]  # notes
     qgq6mcy7: list[Entry[Note]]  # set_aside
+    dq2mnb22: list[Entry[Tag]]  # tags
 
     def new_note(self,
         *,
         title: str | None = None,
         body: str | None = None,
+        parent: Note | None = None,
+        after: Note | None = None,
     ) -> Note:
-        """Starts a note at the top of the tree, titled `title` and saying `body` (Markdown) when the caller knows them already. Started from the notebook both are empty: what is typed first names it."""
+        """Starts a note titled `title` and saying `body` (Markdown) when the caller knows them already. Started from the notebook both are empty: what is typed first names it. It stands under `parent` (at the top of the tree when none) and — where a caller names the note it belongs after (`after`) — at that place among the notes there; without one it comes after the notes already under `parent`, never at the foot of a tree it does not stand in."""
         args: dict[str, Any] = {}
         if title is not None:
             args["title"] = title
         if body is not None:
             args["body"] = body
+        if parent is not None:
+            args["parent"] = parent
+        if after is not None:
+            args["after"] = after
         return self.action("new_note", **args)
 
     def move_to(self,
@@ -389,10 +424,40 @@ class Notebook(Resource):
     def file_note(self,
         *,
         title: str,
-        tag: str,
+        name: str,
     ) -> Note:
-        """Files a note titled `title` and tagged `tag` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it."""
-        return self.action("file_note", title=title, tag=tag)
+        """Files a note titled `title` and carrying the tag `name` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it."""
+        return self.action("file_note", title=title, name=name)
+
+    def new_tag(self,
+        *,
+        name: str | None = None,
+    ) -> Tag:
+        """Makes a tag of the notebook named `name`, or gives the one already named that: the name is what people, agents and scripts know a tag by."""
+        args: dict[str, Any] = {}
+        if name is not None:
+            args["name"] = name
+        return self.action("new_tag", **args)
+
+    def rename_tag(self,
+        *,
+        tag: Tag,
+        wanted: str,
+    ) -> None:
+        """Names a tag of the notebook: every note that carries the old name carries the new one."""
+        return self.action("rename_tag", tag=tag, wanted=wanted)
+
+    def rename_tag_many(self, items: list[RenameTagArgs]) -> list[dict[str, Any]]:
+        """Runs `rename_tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rename_tag", items)
+
+    def delete_tag(self, *, tag: Tag) -> None:
+        """Deletes a tag of the notebook: no note carries the name any more, and the notebook stops listing it."""
+        return self.action("delete_tag", tag=tag)
+
+    def delete_tag_many(self, items: list[DeleteTagArgs]) -> list[dict[str, Any]]:
+        """Runs `delete_tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete_tag", items)
 
     def export_notebook(self) -> Any:
         """The notebook as a zip, one Markdown file for each note: a note's own under the folder of the note it stands in, and the pictures it shows in its own `images` folder beside it. That is the shape the import reads, so the notebook comes back as the tree it is, titles, bodies and pictures alike."""
@@ -462,10 +527,30 @@ class Notebook(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_note", "move_to", "move_to_many", "move_after", "move_after_many", "duplicate", "sort_children", "sort_children_many", "delete", "delete_many", "append_to_note", "append_to_note_many", "file_note", "export_notebook", "export_notebook_markdown", "import_markdown", "import_page", "import_text", "import_archive", "import_archive_many", "import_dropped", "import_dropped_many"})
+    __actions__ = frozenset({"new_note", "move_to", "move_to_many", "move_after", "move_after_many", "duplicate", "sort_children", "sort_children_many", "delete", "delete_many", "append_to_note", "append_to_note_many", "file_note", "new_tag", "rename_tag", "rename_tag_many", "delete_tag", "delete_tag_many", "export_notebook", "export_notebook_markdown", "import_markdown", "import_page", "import_text", "import_archive", "import_archive_many", "import_dropped", "import_dropped_many"})
+
+
+class Tag(Resource):
+    """Tag — `tl.so.tilo.notes.Tag`."""
+    __surface__ = "so.tilo.notes@8e0b31b4c4399681"
+    itadoh74: str  # name
+
+
+class Found(Resource):
+    """Found — `tl.so.tilo.notes.Found`."""
+    __surface__ = "so.tilo.notes@8e0b31b4c4399681"
+    dxxdlopq: int  # at
+    @property
+    def _2vlaqp45(self) -> str:
+        """words (`2vlaqp45` on the wire)."""
+        return self.fields["2vlaqp45"]
+
+    @_2vlaqp45.setter
+    def _2vlaqp45(self, value: str) -> None:
+        self.edit("2vlaqp45", value=value)
 
 
 class Notes(Resource):
     """Notes — `tl.so.tilo.notes`."""
-    __surface__ = "so.tilo.notes@bf1ef65383103ec7"
+    __surface__ = "so.tilo.notes@8e0b31b4c4399681"
 

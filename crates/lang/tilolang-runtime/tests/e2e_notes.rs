@@ -518,7 +518,12 @@ mod cases {
             .unwrap();
         view.poll_patches().unwrap();
 
-        let title = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
+        let title = of_kind(
+            part(of_kind(view.tree(), "ui.NavShell")[0], "content"),
+            "ui.TextInput",
+        )[0]
+        .key
+        .clone();
         assert_eq!(
             view.edit(&title, &Value::text("Flat")).unwrap(),
             EditOutcome::Applied
