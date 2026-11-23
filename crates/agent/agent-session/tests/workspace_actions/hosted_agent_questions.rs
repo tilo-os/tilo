@@ -1,52 +1,34 @@
 //! What an agent on the server asks its person before it does it, with no device of theirs on
 //! while it works.
 //!
-//! An action the person's grants leave to them becomes a question in the conversation the turn
-//! is in, and the turn ends. The question waits there: over a restart of the server, for a day.
-//! The person's own answer does what the server kept, once. "Always" lets exactly that action
-//! stand for them, so the next one goes ahead unasked, until they take it back. Nobody else's answer
-//! counts, and a question an agent wrote itself does nothing and lets nothing stand.
+//! An action the person's grants leave to them is kept as its asked record at a page of theirs,
+//! and the turn ends. The record waits there, over a restart of the server. The person's own
+//! approve does what the server kept, once. Approving and granting lets exactly that action stand
+//! for them, so the next one goes ahead unasked. A removal carried inside another action asks by
+//! its own name, and granting the carrier lets no later removal through.
 use super::hosted_agent_turns::{SCOUT, conversation_part, make_agent, write_to_agent};
 use super::*;
-use std::sync::Mutex;
-use tilo_actions::remote::person_asking::{self, ActionName, Asked, Words};
 use tilo_server::workspaces::{
     Workspaces,
-    person_asking::kept_asks::KeptAsk,
     person_model::{
         ProviderProtocol,
         scripted::{Linking, Reply, ScriptedProvider},
     },
 };
-use tilo_workspace_service::agents::{
-    Answered, Carried, Carries, ServerAgents, ServerAsk, WorkspaceActionProvider, invoke_named,
-};
-use ui::tilo_resource::{Id, NonBlank, Resource as _};
+use tilo_workspace_service::agents::{ServerAgents, WorkspaceActionProvider, invoke_named};
+use ui::tilo_resource::{Id, Resource as _};
 use ui::tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 
 const CHAT: &str = "so.tilo.chat";
 const EBOOK: &str = "so.tilo.ebook";
 /// What the agent is told when its person is asked first.
-const ASKED: &str = "Your person is asked about this in the conversation";
+const ASKED: &str = "asked:";
 /// Taking the one book on the shelf off it: Undo cannot give the reader back the book's file,
 /// so the action asks first.
 const REMOVE: &str = "ebook/1 book#remove-from-library";
-/// A day, in seconds.
-const A_DAY: i64 = 24 * 60 * 60 * 1_000;
 
 /// A message as Chat keeps it.
 type Held = chat::chat::Message;
-
-/// Who writes an answer into the conversation's document.
-#[derive(Clone, Copy)]
-enum Who<'a> {
-    /// The person asked, at a device of theirs.
-    Herself,
-    /// Her own agent, acting for her.
-    HerAgent,
-    /// Somebody else, at a device of their own.
-    Another(&'a str),
-}
 
 /// A server with one person, their assistant on it, and the workspace's own model.
 struct Hosted {
@@ -196,198 +178,19 @@ impl Hosted {
     }
 
     /// The questions about an action the conversation holds, oldest first.
-    async fn questions(&self) -> Vec<(Id, Held)> {
-        let part = conversation_part(&self.workspaces, &self.workspace).await;
-        let mut asked: Vec<(Id, Held)> = part
-            .messages
-            .iter()
-            .filter(|(_, held)| {
-                held.question
-                    .as_ref()
-                    .is_some_and(|question| question.kind.0 == chat::question::ACTION)
-            })
-            .map(|(id, held)| (id.clone(), held.clone()))
-            .collect();
-        asked.sort_by_key(|(id, held)| (held.ts, id.to_string()));
-        asked
-    }
-
     /// The questions of any kind that wait in the conversation, oldest first.
-    async fn waits(&self) -> Vec<(Id, Held)> {
-        let part = conversation_part(&self.workspaces, &self.workspace).await;
-        let mut asked: Vec<(Id, Held)> = part
-            .messages
-            .iter()
-            .filter(|(_, held)| {
-                held.question
-                    .as_ref()
-                    .is_some_and(chat::question::Question::waiting)
-            })
-            .map(|(id, held)| (id.clone(), held.clone()))
-            .collect();
-        asked.sort_by_key(|(id, held)| (held.ts, id.to_string()));
-        asked
-    }
-
     /// One change to the conversation's document, written as `who` at `at_ms`: whether the document
     /// took it. Nothing an agent may call answers a question, so an answer is no action of the
     /// server's service: it is written as a device writes it.
-    async fn writes(
-        &self,
-        who: Who<'_>,
-        at_ms: Option<i64>,
-        change: impl Into<ui::tilo_resource::Invoke<chat::parts::ChatMessages>>,
-    ) -> bool {
-        let saved = self
-            .workspaces
-            .resource_document(&self.workspace, CHAT, "")
-            .await
-            .unwrap()
-            .expect("the workspace's chat");
-        let held = chat::chat::Chat::read(&automerge::AutoCommit::load(&saved).unwrap()).unwrap();
-        let person = self.person();
-        let change = change.into();
-        let catalogue = crate::common::catalogue();
-        let governor = self.workspaces.governor().clone();
-        let part = chat::parts::part(0);
-        self.workspaces
-            .author_application(
-                &self.workspace,
-                &governor,
-                &catalogue,
-                CHAT,
-                part.as_str(),
-                |doc| {
-                    chat::demo::apply_part_doc_as(
-                        doc,
-                        &held,
-                        |replica| match who {
-                            Who::Herself => replica.as_invoker(&person),
-                            Who::HerAgent => replica.as_agent_for(SCOUT, &person),
-                            Who::Another(other) => replica.as_invoker(other),
-                        },
-                        at_ms,
-                        change,
-                    )
-                    .map_err(|error| format!("{error:?}"))
-                },
-            )
-            .await
-            .is_ok()
-    }
-
     /// `who` answers the question `message` asks with `answer`, at `at_ms`: whether the document
     /// took the answer.
-    async fn answers(&self, who: Who<'_>, message: &Id, answer: &str, at_ms: Option<i64>) -> bool {
-        let answering = chat::messages::chat_messages::AnswerQuestion {
-            message: message.clone(),
-            answer: answer.to_owned(),
-            device: Some("browser".to_owned()),
-        };
-        self.writes(
-            who,
-            at_ms,
-            chat::parts::ChatMessages::ANSWER_QUESTION.with(answering),
-        )
-        .await
-    }
-
     /// The server looks at the workspace, and the question `message` asks is read once what came
     /// of its answer is said for good.
-    async fn settled(&self, message: &Id) -> chat::question::Question {
-        self.agents.look(&self.workspace).await.unwrap();
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            let question = self.question(message).await;
-            let ended = question.outcome.as_ref().is_some_and(|outcome| {
-                [
-                    chat::question::DONE,
-                    chat::question::DROPPED,
-                    chat::question::FAILED,
-                ]
-                .contains(&outcome.outcome.0.as_str())
-            });
-            if ended {
-                return question;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the server never said what came of the answer: {:?}",
-                question.outcome
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-
     /// The message `message`, as the document holds it now.
-    async fn questions_of_any_kind(&self, message: &Id) -> Held {
-        conversation_part(&self.workspaces, &self.workspace)
-            .await
-            .messages
-            .get(message)
-            .cloned()
-            .expect("the message is in the conversation")
-    }
-
     /// The question `message` asks, as the document holds it now.
-    async fn question(&self, message: &Id) -> chat::question::Question {
-        conversation_part(&self.workspaces, &self.workspace)
-            .await
-            .messages
-            .get(message)
-            .and_then(|held| held.question.clone())
-            .expect("the question is in the conversation")
-    }
-
     /// What stands for the person, as their own device reads it from the server.
-    async fn permissions(&mut self) -> Vec<serde_json::Value> {
-        let listed = self
-            .page
-            .invoke_on(
-                person_asking::PROVIDER,
-                ActionAddress::new(person_asking::PERMISSIONS, person_asking::LIST),
-                InvokeArgument::None,
-            )
-            .await
-            .expect("the server answers the person's own device")
-            .value
-            .unwrap_or_default();
-        listed["permissions"]
-            .as_array()
-            .cloned()
-            .unwrap_or_else(|| panic!("a list of permissions: {listed}"))
-    }
-
     /// The questions that wait for the person, as their own device reads them from the server.
-    async fn waiting(&mut self) -> Vec<serde_json::Value> {
-        let listed = self
-            .page
-            .invoke_on(
-                person_asking::PROVIDER,
-                ActionAddress::new(person_asking::WAITING, person_asking::LIST),
-                InvokeArgument::None,
-            )
-            .await
-            .expect("the server answers the person's own device")
-            .value
-            .unwrap_or_default();
-        listed["questions"]
-            .as_array()
-            .cloned()
-            .unwrap_or_else(|| panic!("a list of questions: {listed}"))
-    }
-
     /// The messages of the conversation that carry the cause `key`.
-    async fn caused(&self, key: &str) -> Vec<(Id, Held)> {
-        conversation_part(&self.workspaces, &self.workspace)
-            .await
-            .messages
-            .iter()
-            .filter(|(_, held)| held.cause.as_ref().is_some_and(|cause| cause.key.0 == key))
-            .map(|(id, held)| (id.clone(), held.clone()))
-            .collect()
-    }
-
     /// The server looks until the agent's reply to `message` ended: the reply.
     async fn replied(&self, message: &Id) -> Held {
         let deadline = tilo_test_env::hang_deadline();
@@ -414,30 +217,6 @@ impl Hosted {
 
     /// The asker of the question `message` asks is told how the server carried its answer out,
     /// once, and its turn about that ends: the message that told it.
-    async fn told_how_it_ended(&self, message: &Id) -> Held {
-        self.model.then(Reply::text("Noted."));
-        let key = format!("question:{message}");
-        let deadline = tilo_test_env::hang_deadline();
-        let (told, held) = loop {
-            if let Some(found) = self.caused(&key).await.into_iter().next() {
-                break found;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "nobody told the agent how {message} ended"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        };
-        assert_eq!(
-            held.cause.as_ref().map(|cause| cause.kind.0.as_str()),
-            Some(chat::cause::NEWS),
-            "news of what the server did with the answer"
-        );
-        self.replied(&told).await;
-        assert_eq!(self.caused(&key).await.len(), 1, "told once");
-        held
-    }
-
     /// What the conversation's newest answer says answered it.
     async fn last_answered(&self) -> chat::chat::Answered {
         let part = conversation_part(&self.workspaces, &self.workspace).await;
@@ -547,29 +326,42 @@ fn does(call: &str, path: &str, args: serde_json::Value) -> Reply {
     Reply::tool_call(call, "tilo_do", serde_json::Value::Object(input))
 }
 
-/// What a question's detail says, as JSON.
-fn detail(question: &chat::question::Question) -> serde_json::Value {
-    question.kept().unwrap_or_default()
-}
-
 /// The one question the conversation holds about an action, once the turn that asked ended.
-async fn the_one_question(hosted: &Hosted) -> (Id, Held) {
-    let asked = hosted.questions().await;
-    assert_eq!(
-        asked.len(),
-        1,
-        "one question about the action; the model was shown:\n{}",
-        hosted.tool_results()
-    );
-    asked.into_iter().next().unwrap()
+/// Whether the book titled `title` stands on the shelf of the workspace's library now, as
+/// the server keeps the library.
+async fn on_the_shelf(hosted: &Hosted, title: &str) -> bool {
+    let saved = hosted
+        .workspaces
+        .resource_document(&hosted.workspace, EBOOK, "")
+        .await
+        .unwrap()
+        .expect("the server keeps the workspace's library");
+    ebook::resource::Ebook::read(&automerge::AutoCommit::load(&saved).unwrap())
+        .unwrap()
+        .entries
+        .values()
+        .any(|book| book.title == title)
 }
 
-/// An action that asks first becomes a question in the conversation, and the turn ends. Nothing
-/// is done while it waits, over a restart of the server and a day. The person's own answer does what
-/// the server kept, once, and lets nothing stand.
+/// Wait, driving the server, until the book `title` is off the shelf.
+async fn until_off_the_shelf(hosted: &Hosted, title: &str) {
+    let deadline = tilo_test_env::hang_deadline();
+    while on_the_shelf(hosted, title).await {
+        assert!(
+            Instant::now() < deadline,
+            "{title} was never taken off the shelf"
+        );
+        hosted.agents.look(&hosted.workspace).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// An action that asks first waits as its asked record at its person's page, and the turn ends.
+/// Nothing is done while it waits, over a restart of the server. Their approve does what the
+/// server kept, once, and lets nothing stand.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_action_that_asks_first_waits_in_the_conversation_and_is_done_once_on_its_persons_answer()
- {
+async fn an_action_that_asks_first_waits_for_its_person_and_is_done_once_on_their_answer() {
+    use tilo_actions::remote::asked::{AskedBy, Offer};
     let mut hosted = Hosted::start().await;
     hosted
         .shelves_then_removes("Put Dusk on the shelf, then take it off again.", "dusk")
@@ -580,302 +372,122 @@ async fn an_action_that_asks_first_waits_in_the_conversation_and_is_done_once_on
         "the agent is told its person is asked, and its turn ended: {told}"
     );
 
-    let (id, held) = the_one_question(&hosted).await;
-    let question = held.question.clone().unwrap();
-    assert_eq!(held.author, MemberId::agent(SCOUT), "its asker wrote it");
+    // The person's own page lists the call as its asked record: who asks, what would be done,
+    // on which record, and that Undo cannot take it back.
+    let asked = hosted.page.asks().await;
     assert_eq!(
-        question.person,
-        MemberId::person(hosted.person()),
-        "it asks the person the turn acted for"
-    );
-    assert!(question.waiting());
-    let offered: Vec<&str> = question
-        .answers
-        .iter()
-        .map(|answer| answer.id.as_str())
-        .collect();
-    assert_eq!(
-        offered,
-        [
-            chat::question::ALLOW,
-            chat::question::ALWAYS,
-            chat::question::DENY
-        ]
-    );
-    let shown = detail(&question);
-    assert_eq!(
-        shown["ask"].as_str().map(str::len),
-        Some(32),
-        "it carries the server's id for what it kept: {shown}"
-    );
-    assert!(
-        question.draft().is_some(),
-        "the invocation as its person reviews it: {shown}"
-    );
-    let always = &shown["always"];
-    assert_eq!(always["agent"]["id"], SCOUT, "{shown}");
-    assert_eq!(always["workspace"], hosted.workspace.as_str(), "{shown}");
-    assert_eq!(always["action"]["provider"], EBOOK, "{shown}");
-    assert_eq!(always["action"]["action"], "remove-from-library", "{shown}");
-    assert!(always["on"]["resource"].is_string(), "{shown}");
-    assert_eq!(always["words"]["place"], "Team", "{shown}");
-    assert_eq!(
-        hosted.workspaces.open_asks(&hosted.workspace).len(),
+        asked.len(),
         1,
-        "the server keeps what was asked"
+        "one question about the action; the model was shown:\n{}",
+        hosted.tool_results()
+    );
+    let question = &asked[0];
+    let AskedBy::Agent(who) = &question.by else {
+        panic!("an agent asks: {question:?}");
+    };
+    assert_eq!((who.id.as_str(), who.name.as_str()), (SCOUT, "Scout"));
+    assert_eq!(question.record.workspace, hosted.workspace);
+    assert_eq!(question.workspace_name, "Team", "{question:?}");
+    assert_eq!(question.name, "Remove from library", "{question:?}");
+    assert!(question.destructive, "Undo cannot bring the book back");
+    assert!(
+        question
+            .facts
+            .iter()
+            .any(|fact| fact.value.contains("book:dusk")),
+        "it names the book: {question:?}"
+    );
+    assert_eq!(
+        question.offers,
+        [Offer::Approve, Offer::ApproveAndGrant, Offer::Decline],
+        "a removal may stand for its person"
     );
 
     // Nobody answered: a look does nothing, however often the server looks.
     hosted.agents.look(&hosted.workspace).await.unwrap();
     hosted.agents.look(&hosted.workspace).await.unwrap();
-    assert!(hosted.question(&id).await.waiting());
+    assert_eq!(hosted.page.asks().await.len(), 1);
+    assert!(on_the_shelf(&hosted, "Dusk").await, "nothing ran");
 
-    // The person's own device lists it among the questions that wait for them: who asked, in
-    // which words, and each answer as the typed action that gives it.
-    let waits = hosted.waiting().await;
-    assert_eq!(waits.len(), 1, "{waits:?}");
-    let one = &waits[0];
-    assert_eq!(one["workspace"], hosted.workspace.as_str(), "{one}");
-    assert_eq!(one["message"], id.as_str(), "{one}");
-    assert_eq!(one["conversation"], held.channel.as_str(), "{one}");
-    assert_eq!(one["kind"], chat::question::ACTION, "{one}");
-    assert_eq!(one["words"], held.text.as_str(), "{one}");
-    assert_eq!(
-        one["by"],
-        serde_json::json!({"id": SCOUT, "name": "Scout"}),
-        "{one}"
-    );
-    assert_eq!(
-        one["askedAtMs"].as_i64(),
-        Some(held.ts),
-        "since when it waits: {one}"
-    );
-    let answers = one["answers"].as_array().unwrap();
-    assert_eq!(answers.len(), 3, "{one}");
-    assert_eq!(answers[0]["target"]["app"], CHAT, "{one}");
-    assert_eq!(answers[0]["target"]["action"], "answer-question", "{one}");
-    assert_eq!(
-        answers[0]["arguments"],
-        serde_json::json!({"message": id.as_str(), "answer": chat::question::ALLOW}),
-        "{one}"
-    );
-
-    // The server restarts, and the person answers a day later.
+    // The server restarts, and the record still waits.
     hosted.restart().await;
     hosted.agents.look(&hosted.workspace).await.unwrap();
-    assert!(hosted.question(&id).await.waiting());
-    let later = held.ts + A_DAY;
-    assert!(
-        hosted
-            .answers(Who::Herself, &id, chat::question::ALLOW, Some(later))
-            .await,
-        "the person asked answers, at a device of theirs"
-    );
-    let settled = hosted.settled(&id).await;
-    hosted.told_how_it_ended(&id).await;
-    assert_eq!(
-        settled
-            .outcome
-            .as_ref()
-            .map(|outcome| outcome.outcome.0.as_str()),
-        Some(chat::question::DONE),
-        "what the server kept ran: {:?}",
-        settled.outcome
-    );
-    assert!(
-        settled
-            .answered
-            .as_ref()
-            .is_some_and(|answered| answered.at >= held.ts + A_DAY),
-        "answered a day after it was asked: {:?}",
-        settled.answered
-    );
+    assert_eq!(hosted.page.asks().await.len(), 1, "the record survives");
 
-    // It ran once: nothing is kept any more, and a later look finds nothing to do.
-    assert!(hosted.workspaces.open_asks(&hosted.workspace).is_empty());
-    hosted.agents.look(&hosted.workspace).await.unwrap();
-    hosted.restart().await;
-    hosted.agents.look(&hosted.workspace).await.unwrap();
-    let after = hosted.question(&id).await;
-    assert_eq!(after.outcome, settled.outcome, "said once, for good");
-    assert_eq!(
-        hosted.questions().await.len(),
-        1,
-        "and nothing was asked again"
-    );
-
+    // The person approves: what the server kept runs, once.
+    let question = hosted.page.asks().await.remove(0);
+    hosted
+        .page
+        .resolve(&question, "approve", None)
+        .await
+        .expect("the person approves it");
     assert!(
-        hosted.waiting().await.is_empty(),
+        hosted.page.asks().await.is_empty(),
         "answered, it waits for nobody any more"
     );
+    until_off_the_shelf(&hosted, "Dusk").await;
 
-    // Allowed once is allowed once: nothing stands.
-    assert!(hosted.permissions().await.is_empty());
-    assert!(
-        hosted
-            .workspaces
-            .permissions_of(&hosted.acts_for())
-            .permissions
-            .is_empty()
+    // Allowed once is allowed once: the next removal asks again.
+    hosted
+        .shelves_then_removes("Put Dusk on the shelf, then take it off again.", "dusk")
+        .await;
+    assert_eq!(
+        hosted.page.asks().await.len(),
+        1,
+        "allowed once, nothing stands: {}",
+        hosted.tool_results()
     );
     hosted.page.peer.close();
 }
 
-/// "Always" lets exactly what was asked stand for its person: the next such action goes ahead with
-/// nobody asked and is counted, the person reads it on their own device with the action that
-/// takes it back, and from the moment they do the action asks again.
+/// Approving and granting lets exactly what was asked stand for its person: the next such action
+/// goes ahead with nobody asked, and what it did is in the workspace.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn always_lets_that_action_stand_until_its_person_takes_it_back() {
+async fn approving_and_granting_lets_that_action_go_ahead_unasked() {
     let mut hosted = Hosted::start().await;
     hosted
         .shelves_then_removes("Put Dusk on the shelf, then take it off again.", "dusk")
         .await;
-    let (id, _) = the_one_question(&hosted).await;
-    assert!(hosted.permissions().await.is_empty(), "nothing stands yet");
-    assert!(
-        hosted
-            .answers(Who::Herself, &id, chat::question::ALWAYS, None)
-            .await
-    );
-    let settled = hosted.settled(&id).await;
-    hosted.told_how_it_ended(&id).await;
-    assert_eq!(
-        settled
-            .outcome
-            .as_ref()
-            .map(|outcome| outcome.outcome.0.as_str()),
-        Some(chat::question::DONE),
-        "{:?}",
-        settled.outcome
-    );
+    let asked = hosted.page.asks().await;
+    assert_eq!(asked.len(), 1, "{}", hosted.tool_results());
+    hosted
+        .page
+        .resolve(&asked[0], "approve_and_grant", None)
+        .await
+        .expect("the person lets it stand");
+    until_off_the_shelf(&hosted, "Dusk").await;
 
-    // The person reads what stands, on their own device: exactly what was asked.
-    let stands = hosted.permissions().await;
-    assert_eq!(stands.len(), 1, "{stands:?}");
-    let one = stands[0].clone();
-    let shown = detail(&settled);
-    assert_eq!(one["source"], "asking");
-    assert_eq!(one["agent"]["id"], SCOUT);
-    assert_eq!(one["workspace"], hosted.workspace.as_str());
-    assert_eq!(one["action"], shown["always"]["action"], "{one}");
-    assert_eq!(one["on"], shown["always"]["on"], "{one}");
-    assert_eq!(one["words"], shown["always"]["words"], "{one}");
-    assert_eq!(one["askedBy"]["message"], id.as_str(), "{one}");
-    assert_eq!(one["usedTimes"], 0, "{one}");
-
-    // The next such action goes ahead unasked, and is counted.
+    // The next removal goes ahead unasked.
     hosted
         .shelves_then_removes("Put Dawn on the shelf, then take it off again.", "dawn")
         .await;
-    let told = hosted.last_tool_result();
     assert!(
-        !hosted.tool_results().contains("dawn-remove") || !told.contains(ASKED),
-        "nobody is asked a second time: {told}"
+        !hosted.tool_results().contains(ASKED),
+        "nobody is asked a second time: {}",
+        hosted.tool_results()
     );
-    assert_eq!(
-        hosted.questions().await.len(),
-        1,
+    assert!(
+        hosted.page.asks().await.is_empty(),
         "no second question: {}",
         hosted.tool_results()
     );
-    let stands = hosted.permissions().await;
-    assert_eq!(stands[0]["usedTimes"], 1, "{stands:?}");
-    assert!(stands[0]["lastUsedMs"].as_u64().is_some(), "{stands:?}");
-
-    // The person takes it back with the action its listing names, and the action asks again.
-    let take_back = &one["takeBack"];
-    let left = hosted
-        .page
-        .invoke_on(
-            take_back["provider"].as_str().unwrap(),
-            ActionAddress::new(
-                take_back["resource"].as_str().unwrap(),
-                take_back["action"].as_str().unwrap(),
-            ),
-            InvokeArgument::Json(take_back["arguments"].as_object().unwrap().clone()),
-        )
-        .await
-        .expect("the person takes back what stood for them")
-        .value
-        .unwrap_or_default();
-    assert_eq!(left["permissions"], serde_json::json!([]), "{left}");
-    hosted
-        .shelves_then_removes("Put Noon on the shelf, then take it off again.", "noon")
-        .await;
-    let asked = hosted.questions().await;
-    assert_eq!(
-        asked.len(),
-        2,
-        "taken back, it asks again: {}",
-        hosted.tool_results()
-    );
-    assert!(asked[1].1.question.as_ref().unwrap().waiting());
-    assert!(hosted.permissions().await.is_empty());
+    until_off_the_shelf(&hosted, "Dawn").await;
     hosted.page.peer.close();
-}
-
-/// The agent asks its person `words`, offering `answers` (each an id and what its button
-/// says), in a turn of its own: the person writes `request` to it, and its model takes Chat's
-/// own `ask` through the turn's tools and ends. The question's message.
-async fn agent_asks(hosted: &Hosted, request: &str, words: &str, answers: &[(&str, &str)]) -> Id {
-    let conversation =
-        chat::Chat::direct_id([MemberId::person(hosted.person()), MemberId::agent(SCOUT)]);
-    let offered: Vec<serde_json::Value> = answers
-        .iter()
-        .map(|(id, label)| serde_json::json!({"id": id, "label": label}))
-        .collect();
-    let asking = serde_json::json!({
-        "channel": conversation.as_str(),
-        "text": words,
-        "answers": offered,
-    });
-    hosted
-        .turn(
-            request,
-            vec![
-                does("ask", "chat/Messages#ask", asking),
-                Reply::text("I asked you, and go on when you have answered."),
-            ],
-        )
-        .await;
-    let part = conversation_part(&hosted.workspaces, &hosted.workspace).await;
-    let (id, held) = part
-        .messages
-        .iter()
-        .find(|(_, held)| held.text == words)
-        .unwrap_or_else(|| panic!("the agent asks its person: {}", hosted.tool_results()));
-    assert_eq!(held.author, MemberId::agent(SCOUT), "its asker wrote it");
-    assert_eq!(
-        held.question
-            .as_ref()
-            .map(|question| question.person.clone()),
-        Some(MemberId::person(hosted.person())),
-        "and it asks its own person"
-    );
-    id.clone()
 }
 
 /// What the person asked for in the turn that asks them back.
 const WORK: &str = "Send the deck to the board.";
 
-/// A person's stop of a turn takes back what that turn asked them and still waits: the question
-/// its model asked, and the question this server put for an action that asks first. An answer
-/// after that is refused, nothing the server kept is done, and nobody is woken.
+/// A person's stop of a turn takes back what that turn asked them: the asked record the server
+/// kept for an action that asks first leaves their waiting list, nothing the server kept is done,
+/// and no model is asked again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_persons_stop_takes_back_what_the_stopped_turn_asked() {
     let mut hosted = Hosted::start().await;
-    let conversation =
-        chat::Chat::direct_id([MemberId::person(hosted.person()), MemberId::agent(SCOUT)]);
-    let asking = serde_json::json!({
-        "channel": conversation.as_str(),
-        "text": "Which shelf?",
-        "answers": [{"id": "top", "label": "The top one"}, {"id": "low", "label": "The low one"}],
-    });
     let shelved = super::api_questions::shelved("dusk", "dusk", "");
-    // The turn asks its person, asks to take a book off the shelf, and works on: the next call
-    // of its model never answers.
+    // The turn asks to take a book off the shelf, and works on: the next call of its model
+    // never answers.
     for step in [
-        does("ask", "chat/Messages#ask", asking),
         does("open", "ebook#open", serde_json::json!({})),
         does("shelve", "ebook#shelve", shelved),
         does("remove", REMOVE, serde_json::json!({"book": "book:dusk"})),
@@ -888,7 +500,7 @@ async fn a_persons_stop_takes_back_what_the_stopped_turn_asked() {
         &hosted.workspaces,
         &hosted.workspace,
         (&hosted.root, &hosted.browser),
-        "Tidy my shelf.",
+        WORK,
     )
     .await;
     let turns = hosted.agents.turns(&hosted.workspace).await.unwrap();
@@ -900,17 +512,14 @@ async fn a_persons_stop_takes_back_what_the_stopped_turn_asked() {
     );
     let working = tokio::spawn(async move { agents.answer(&workspace, &turn).await });
     let deadline = tilo_test_env::hang_deadline();
-    while hosted.model.asked().len() < 5 || hosted.waits().await.len() < 2 {
+    while hosted.model.asked().len() < 4 || hosted.page.asks().await.is_empty() {
         assert!(
             Instant::now() < deadline,
-            "the turn never asked twice and went on: {}",
+            "the turn never asked and went on: {}",
             hosted.tool_results()
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let asked = hosted.waits().await;
-    assert_eq!(asked.len(), 2, "what it asked and what the server put");
-    assert_eq!(hosted.workspaces.open_asks(&hosted.workspace).len(), 1);
 
     // She stops it, as her page does.
     let herself = tilo_actions::remote::Caller::authenticated(
@@ -945,45 +554,25 @@ async fn a_persons_stop_takes_back_what_the_stopped_turn_asked() {
         .expect("and did not panic")
         .unwrap();
 
-    // Both are taken back, and say why; neither takes her answer any more.
-    for (id, _) in &asked {
-        let question = hosted.question(id).await;
-        let chat::question::QuestionState::Withdrawn(taken) = question.state() else {
-            panic!("{id} still stands: {question:?}");
-        };
-        assert!(taken.why.contains("stopped"), "{}", taken.why);
-        let answer = if question.kind.0 == chat::question::ACTION {
-            chat::question::ALLOW
-        } else {
-            "top"
-        };
-        assert!(
-            !hosted.answers(Who::Herself, id, answer, None).await,
-            "a question taken back takes no answer"
-        );
-    }
-
-    // Nothing the server kept is done, nothing waits for her, nobody is woken, no model is asked.
+    // What it asked is taken back, nothing waits for her, and no model is asked again.
+    assert!(
+        hosted.page.asks().await.is_empty(),
+        "the stopped turn's ask is taken back"
+    );
+    assert!(on_the_shelf(&hosted, "dusk").await, "nothing was done");
     hosted.agents.look(&hosted.workspace).await.unwrap();
     hosted.agents.look(&hosted.workspace).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(
-        hosted.workspaces.open_asks(&hosted.workspace).is_empty(),
-        "what the server kept for the action is gone"
-    );
-    assert!(hosted.waiting().await.is_empty());
-    for (id, _) in &asked {
-        assert!(hosted.caused(&format!("question:{id}")).await.is_empty());
-    }
-    assert_eq!(hosted.model.asked().len(), 5, "and no model is asked again");
+    assert_eq!(hosted.model.asked().len(), 4, "no model is asked again");
     hosted.page.peer.close();
 }
 
 /// The assistant shelves a book and takes it off again, the removal carried inside the
 /// library's `carrier` (`apply` or `group`): what Undo cannot take back becomes one question
-/// to its person, whatever carries it, and the agent is told its person is asked.
+/// to its person, whatever carries it, and grants nothing for a later removal.
 async fn the_removal_asks_first_inside(carrier: &str) {
-    let hosted = Hosted::start().await;
+    use tilo_actions::remote::asked::Offer;
+    let mut hosted = Hosted::start().await;
     let carried =
         serde_json::json!({"action": "remove-from-library", "args": {"book": "book:dusk"}});
     let args = if carrier == "apply" {
@@ -1011,17 +600,50 @@ async fn the_removal_asks_first_inside(carrier: &str) {
         told.contains(ASKED),
         "inside {carrier} the agent is told its person is asked: {told}"
     );
-    let (_, held) = the_one_question(&hosted).await;
+    let asked = hosted.page.asks().await;
+    assert_eq!(
+        asked.len(),
+        1,
+        "inside {carrier} the removal is one question: {told}"
+    );
+    let question = &asked[0];
+    assert_eq!(
+        question.name, "Remove from library",
+        "inside {carrier} the question says what would be done, not what carries it: {question:?}"
+    );
     assert!(
-        held.question
-            .as_ref()
-            .is_some_and(chat::question::Question::waiting),
-        "inside {carrier} the question waits for its person"
+        question
+            .facts
+            .iter()
+            .any(|fact| fact.value.contains("book:dusk")),
+        "inside {carrier} it names the book: {question:?}"
+    );
+    assert!(
+        question.destructive,
+        "inside {carrier} it does not say Undo takes it back"
     );
     assert_eq!(
-        hosted.workspaces.open_asks(&hosted.workspace).len(),
+        question.offers,
+        [Offer::Approve, Offer::Decline],
+        "inside {carrier} the question offers no always"
+    );
+
+    // Approving and granting the carrier does not let a later removal through unasked.
+    let question = hosted.page.asks().await.remove(0);
+    hosted
+        .page
+        .resolve(&question, "approve_and_grant", None)
+        .await
+        .expect("the person lets the call it was shown stand");
+    until_off_the_shelf(&hosted, "dusk").await;
+    hosted
+        .shelves_then_removes("Put Dusk on the shelf, then take it off again.", "dusk")
+        .await;
+    assert_eq!(
+        hosted.page.asks().await.len(),
         1,
-        "inside {carrier} the server keeps what was asked"
+        "inside {carrier} a later removal asks again: {}",
+        hosted.tool_results()
     );
     hosted.page.peer.close();
 }
@@ -1037,10 +659,6 @@ async fn what_undo_cannot_take_back_asks_its_person_first_inside_apply() {
 async fn what_undo_cannot_take_back_asks_its_person_first_inside_a_group() {
     Box::pin(the_removal_asks_first_inside("group")).await;
 }
-
-/// An action that asks its person, carried inside another.
-#[path = "hosted_question_in_carrier.rs"]
-mod in_a_carrier;
 
 /// Which model wrote each answer stays with the answer: a person switches the agent's model
 /// between two turns, and every reply names the provider and model that wrote it, what it cost
@@ -1078,7 +696,7 @@ async fn each_reply_names_the_model_that_wrote_it_across_a_switch() {
 /// words it can tell its person, and no book is started.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_approved_without_books_starts_no_book() {
-    let hosted = Hosted::approved_for(&[CHAT]).await;
+    let mut hosted = Hosted::approved_for(&[CHAT]).await;
     hosted
         .turn(
             "Open a book.",
@@ -1093,5 +711,5 @@ async fn an_agent_approved_without_books_starts_no_book() {
         told.contains("this agent was not approved to change"),
         "{told}"
     );
-    assert!(hosted.questions().await.is_empty(), "nobody was asked");
+    assert!(hosted.page.asks().await.is_empty(), "nobody was asked");
 }
