@@ -303,14 +303,14 @@ impl DeviceOnly {
     /// here and certifies this device's key, and the daemon serves them from then on. Answers the
     /// person's id.
     fn found(&self) -> Result<String, String> {
+        if self.claimed() {
+            return Err(format!("{ALREADY_A_PERSONS}: it serves them"));
+        }
         let own = self.1.as_ref().is_some_and(|seated| {
             seated.seat.admitted == tilo_api::daemon::admission::Admitted::Device
         });
         if !own {
             return Err("only this device's own account starts a person on it".to_owned());
-        }
-        if self.claimed() {
-            return Err(format!("{ALREADY_A_PERSONS}: it serves them"));
         }
         super::services::found_a_person(self.keys())
             .map_err(|error| format!("this device could not make a new person: {error}"))?;

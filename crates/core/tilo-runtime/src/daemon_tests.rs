@@ -886,9 +886,10 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
     let admission: &'static tilo_api::daemon::admission::Admission = Box::leak(Box::new(
         tilo_api::daemon::admission::Admission::new(OWN, false),
     ));
+    let answers = crate::device::unclaimed::DeviceOnly::new(key, place);
     let native = std::sync::Arc::new(super::Native::new(
-        crate::device::unclaimed::DeviceOnly::new(key, place),
-        test_peer,
+        answers.clone(),
+        founding_peer,
         admission,
     ));
     let sockets = root.join("sockets");
@@ -902,7 +903,7 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
     }
     let daemon = tilo_api::daemon::DaemonPlace::at(&sockets, &root.join("login"));
     let ask = |uid: u32, request: Value| {
-        PEER.store(uid, Ordering::SeqCst);
+        FOUNDING_PEER.store(uid, Ordering::SeqCst);
         let stream = std::os::unix::net::UnixStream::connect(daemon.native()).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(30)))
@@ -942,8 +943,28 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
     assert_eq!(ask(OWN, json!({"native": "account#who"}))["claimed"], false);
 
     // The laptop's first command: through the place every client finds the daemon at.
-    PEER.store(OWN, Ordering::SeqCst);
+    FOUNDING_PEER.store(OWN, Ordering::SeqCst);
     daemon.found().unwrap();
+    // The person's certificate names the device now, so the daemon starts their services; the
+    // device's own actions stand in for them here.
+    native.serve_the_person(super::Endpoint {
+        session_factory: std::sync::Arc::new(move || {
+            Ok(tilo_mcp::McpServer::for_agent(
+                answers.clone(),
+                String::new(),
+                "agent",
+                "",
+            ))
+        }),
+        status: super::Status {
+            version: 1,
+            pid: std::process::id(),
+            workspace: "home".into(),
+        },
+        search: std::sync::Arc::new(std::sync::OnceLock::new()),
+        media: None,
+        other_devices: None,
+    });
     let who = ask(OWN, json!({"native": "account#who"}));
     let person = who["person"].as_str().expect("a person now").to_owned();
     assert_eq!(who["claimed"], true, "{who}");
@@ -963,6 +984,18 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
         person,
         "the person stays the one first started"
     );
+}
+
+/// The account the founding test's next native connection comes from, apart from [`PEER`]: the
+/// tests run side by side.
+static FOUNDING_PEER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "it stands in for the kernel's answer, which can fail"
+)]
+fn founding_peer(_: &std::os::unix::net::UnixStream) -> io::Result<u32> {
+    Ok(FOUNDING_PEER.load(std::sync::atomic::Ordering::SeqCst))
 }
 
 /// The account a test's next native connection comes from, as the daemon reads it.
