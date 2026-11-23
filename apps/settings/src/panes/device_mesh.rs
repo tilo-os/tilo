@@ -576,10 +576,6 @@ impl MeshStatus {
     }
 }
 
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent facts: what is being saved, paired and delivered, and whether it changed"
-)]
 pub struct DeviceMeshModel {
     config_path: PathBuf,
     config: ServerConfig,
