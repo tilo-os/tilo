@@ -140,36 +140,28 @@
     "test": "crates/desktop/session/tests/questions.rs:340"
   },
   "so.tilo.settings settings.mcp-server#apply": {
-    "to": "the two switches it edited: see set-accept-own-devices and set-act-without-asking",
-    "test": "crates/core/tilo-workspace-service/src/workspaces/actions/host/asking_tests.rs:437"
+    "to": "tilo.invocations workspace.invocations#resolve",
+    "test": "crates/core/actions/tests/asked_resolve.rs:362"
   },
   "so.tilo.settings settings.mcp-server#field-edit": {
-    "to": "the two switches it edited: see set-accept-own-devices and set-act-without-asking",
-    "test": "crates/core/tilo-workspace-service/src/workspaces/actions/host/asking_tests.rs:437"
+    "to": "tilo.invocations workspace.invocations#resolve",
+    "test": "crates/core/actions/tests/asked_resolve.rs:362"
   },
   "so.tilo.settings settings.mcp-server#group": {
-    "to": "the two switches it edited: see set-accept-own-devices and set-act-without-asking",
-    "test": "crates/core/tilo-workspace-service/src/workspaces/actions/host/asking_tests.rs:437"
+    "to": "tilo.invocations workspace.invocations#resolve",
+    "test": "crates/core/actions/tests/asked_resolve.rs:362"
   },
   "so.tilo.settings settings.mcp-server#redo": {
-    "to": "the two switches it edited: see set-accept-own-devices and set-act-without-asking",
-    "test": "crates/core/tilo-workspace-service/src/workspaces/actions/host/asking_tests.rs:437"
-  },
-  "so.tilo.settings settings.mcp-server#set-accept-own-devices": {
-    "to": "an agent with its own key is let in by the grant its person's device made with that key, on every device of the person; the person lists, stops and revokes it",
-    "test": "crates/core/session-client/tests/mcp_server.rs:213"
+    "to": "tilo.invocations workspace.invocations#resolve",
+    "test": "crates/core/actions/tests/asked_resolve.rs:362"
   },
   "so.tilo.settings settings.mcp-server#set-act-without-asking": {
-    "to": "an agent's ask on the person's device: an answer to always allow stands for that agent, that action and that workspace, listed with the person's permissions and taken back there",
-    "test": "crates/core/tilo-workspace-service/src/workspaces/actions/host/asking_tests.rs:437"
+    "to": "tilo.invocations workspace.invocations#resolve",
+    "test": "crates/core/actions/tests/asked_resolve.rs:362"
   },
   "so.tilo.settings settings.mcp-server#undo": {
-    "to": "the two switches it edited: see set-accept-own-devices and set-act-without-asking",
-    "test": "crates/core/tilo-workspace-service/src/workspaces/actions/host/asking_tests.rs:437"
-  },
-  "so.tilo.terminal tilo.ui.control#activate": {
-    "to": "so.tilo.terminal terminal.session#restart",
-    "test": "apps/terminal/src/chrome_tests.rs:48"
+    "to": "tilo.invocations workspace.invocations#resolve",
+    "test": "crates/core/actions/tests/asked_resolve.rs:362"
   },
   "so.tilo.tasks tasks.issues#add-label": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#label",
@@ -302,6 +294,10 @@
   "so.tilo.tasks tasks.tracker#set-kind": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Project#set_kind",
     "test": "crates/lang/tilolang-tilo/tests/tasks_features.rs:201"
+  },
+  "so.tilo.terminal tilo.ui.control#activate": {
+    "to": "so.tilo.terminal terminal.session#restart",
+    "test": "apps/terminal/src/chrome_tests.rs:48"
   },
   "so.tilo.tube tube.library#open-creator": {
     "to": "so.tilo.tube tl.so.tilo.tube.Channel#open",
