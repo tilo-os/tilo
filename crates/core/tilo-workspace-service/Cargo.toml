@@ -17,7 +17,7 @@ test-support = ["tilo-peer-state/test-support", "dep:tilo-test-env", "tilo-accou
 # Agents on the host: workspaces keep apps' confined replicas and hand their
 # records' channel keys to pages, and the agents themselves run here
 # ([`agents`]).
-agents = ["device-keys", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilolang-calendar", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:runtime-collab", "dep:tilo-web-search", "dep:feed-rs", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
+agents = ["device-keys", "dep:tilolang-tilo", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilolang-calendar", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:runtime-collab", "dep:tilo-web-search", "dep:feed-rs", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
 # A device's own workspace service and the key service beside it: what every device and
 # the server open, whether or not they serve apps. A key holder keeps the records its members
 # write sealed and opens them with the channels' keys it holds.
@@ -87,6 +87,8 @@ key-group = { path = "../key-group" }
 neighbour-wire = { path = "../neighbour-wire" }
 sha2.workspace = true
 tilo-agent-session = { path = "../agent-session", optional = true }
+# A tilolang app's record read and changed through its own package on this device ([`tl_records`]).
+tilolang-tilo = { path = "../../lang/tilolang-tilo", optional = true }
 # A person's own provider, asked through the gateway's transport with the key
 # their vault keeps: the wires, the stream reading and the price table are its.
 tilo-model-gateway = { path = "../../integrations/model-gateway", default-features = false, features = ["host-backend"], optional = true }

@@ -35,11 +35,13 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
 pub mod provided;
+#[cfg(test)]
+mod tests;
 
 use tilo_lock::MutexRecover as _;
 
 use serde_json::{Map, Value as Json};
-use tilo_actions::remote::CatalogueRow;
+use tilo_actions::remote::{CataloguePage, CatalogueQuery, CatalogueRow};
 use tilo_actions::{
     ActionAddress, ActionContext, ActionInvoker, ActionOutput, ApiError, ResourceSpec,
 };
@@ -65,22 +67,31 @@ pub use tilolang_tilo::resources::ResourceStore;
 pub use tilolang_tilo::runtime;
 
 /// The packages a record is read and changed through, compiled once: those the app uses first,
-/// the app itself last.
+/// the app itself last, and the platform's packages any of them uses (the workspace's contact
+/// directory), which the session publishes and a host holds by their published types.
 #[derive(Clone)]
-pub struct Packages(Arc<Vec<tilolang_tilo::tilolang::Compiled>>);
+pub struct Packages(
+    Arc<Vec<tilolang_tilo::tilolang::Compiled>>,
+    Arc<Vec<tilolang_tilo::tilolang::PackageMeta>>,
+);
 
 impl Packages {
-    /// Compile `sources` (each a package's `app.tl` and its `app.ids`), each against those
-    /// before it.
+    /// Compile `sources` (each a package's source and its `app.ids`), each against those before
+    /// it and the platform's packages.
     ///
     /// # Errors
     /// A source does not compile: its diagnostics.
     pub fn compile(sources: &[(&str, &str)]) -> Result<Self, String> {
+        let platform = tilolang_tilo::platform_apps::platform_packages()?;
         let mut compiled: Vec<tilolang_tilo::tilolang::Compiled> = Vec::new();
         for (source, ids) in sources {
             let lock =
                 tilolang_tilo::tilolang::IdsLock::parse(ids).map_err(|error| error.to_string())?;
-            let imports: Vec<_> = compiled.iter().map(|done| done.meta.clone()).collect();
+            let imports: Vec<_> = compiled
+                .iter()
+                .map(|done| done.meta.clone())
+                .chain(platform.iter().cloned())
+                .collect();
             let package = tilolang_tilo::tilolang::compile_package(source, &lock, &imports)
                 .map_err(|diagnostics| {
                     diagnostics
@@ -91,7 +102,15 @@ impl Packages {
                 })?;
             compiled.push(package);
         }
-        Ok(Self(Arc::new(compiled)))
+        let used: Vec<_> = platform
+            .into_iter()
+            .filter(|meta| {
+                compiled
+                    .iter()
+                    .any(|package| package.meta.uses.contains(&meta.app))
+            })
+            .collect();
+        Ok(Self(Arc::new(compiled), Arc::new(used)))
     }
 
     /// The app the record is of: the last package's.
@@ -163,20 +182,26 @@ pub struct Declared {
 
 /// The sources of the packages built into this build, each app after those it uses.
 const BUILT_IN: &[&[(&str, &str)]] = &[
-    &[
-        (
-            include_str!("../../../../apps/tl/agent/app.tl"),
-            include_str!("../../../../apps/tl/agent/app.ids"),
-        ),
-        (
-            include_str!("../../../../apps/tl/chat/app.tl"),
-            include_str!("../../../../apps/tl/chat/app.ids"),
-        ),
-    ],
+    &[(
+        include_str!("../../../../apps/tl/chat/app.tl"),
+        include_str!("../../../../apps/tl/chat/app.ids"),
+    )],
     &[
         (
             include_str!("../../../../apps/tl/discussion/app.tl"),
             include_str!("../../../../apps/tl/discussion/app.ids"),
+        ),
+        (
+            include_str!("../../../../apps/tl/notes/app.tl"),
+            include_str!("../../../../apps/tl/notes/app.ids"),
+        ),
+        (
+            concat!(
+                include_str!("../../../../apps/tl/contacts/app.tl"),
+                "\n",
+                include_str!("../../../../apps/tl/contacts/identities.tl")
+            ),
+            include_str!("../../../../apps/tl/contacts/app.ids"),
         ),
         (
             include_str!("../../../../apps/tl/tasks/app.tl"),
@@ -442,6 +467,13 @@ impl Opened {
             access.as_ref().map(|access| (**access).clone())
         })
         .map_err(|error| error.to_string())?;
+        // The platform's packages the app uses are the session's, held here by the types they
+        // publish, as a window holds them.
+        for meta in packages.1.iter() {
+            host.runtime()
+                .load_foreign(meta.clone())
+                .map_err(|error| format!("{} does not load: {error:?}", meta.app))?;
+        }
         for package in packages.0.iter() {
             host.load_compiled(package)
                 .map_err(|error| error.to_string())?;
@@ -586,9 +618,6 @@ impl Opened {
             store.set_run(None);
         }
         let answer = answer?;
-        // The agents what the viewer wrote mentions are asked, as their device's window asks
-        // them each frame.
-        self.host.ask_from_mentions();
         match store.take_refusal() {
             Some(refused) => Err(refused),
             None => Ok(answer),
@@ -820,6 +849,21 @@ impl Opened {
             .into_iter()
             .map(|placed| CatalogueRow::for_placed_action("", &self.app, placed))
             .collect()
+    }
+
+    /// The page of [`Self::rows`] `query` asks for: the rows it admits from its cursor on, at
+    /// most its page size, and a cursor past them while more follow. What a caller listing the
+    /// record a level at a time is answered.
+    #[must_use]
+    pub fn page(&self, query: &CatalogueQuery) -> CataloguePage {
+        let mut admitted = self
+            .rows()
+            .into_iter()
+            .filter(|row| query.admits(row))
+            .skip(query.offset());
+        let rows: Vec<CatalogueRow> = admitted.by_ref().take(query.page_size()).collect();
+        let more = admitted.next().is_some();
+        CataloguePage::window(String::new(), rows, query, more)
     }
 
     /// Run the published action `address` with `arguments` as `invoker`: found among the
@@ -1135,6 +1179,18 @@ impl crate::workspaces::Workspaces {
         person: &str,
     ) -> Option<Vec<CatalogueRow>> {
         Some(self.opened_to_read(workspace, route, person)?.rows())
+    }
+
+    /// The page of what `route`'s record of `workspace` publishes that `query` asks for, read as
+    /// `person` reads it ([`Opened::page`]). `None` as for [`Self::record_rows`].
+    pub fn record_page(
+        &self,
+        workspace: &str,
+        route: &tilo_peer_state::document_frame::DocumentRoute,
+        person: &str,
+        query: &CatalogueQuery,
+    ) -> Option<CataloguePage> {
+        Some(self.opened_to_read(workspace, route, person)?.page(query))
     }
 
     /// Apply `call`, a published action of an app's record of `workspace`, through the app's

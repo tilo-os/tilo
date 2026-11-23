@@ -22832,6 +22832,7 @@ dependencies = [
  "tilo-workspace-agent",
  "tilo-workspace-keys",
  "tilolang-calendar",
+ "tilolang-tilo",
  "tokio",
  "tokio-rustls",
  "tracing",

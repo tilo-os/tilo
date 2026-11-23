@@ -165,16 +165,19 @@ impl ActionProvider for BuiltInRecords {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        let rows = self
-            .rows(caller)
-            .into_iter()
-            .filter(|row| query.admits(row))
-            .collect();
-        Pending::ready(Ok(CataloguePage {
-            rows,
+        // A page of what the record publishes, as the person the caller acts for reads it: the
+        // rows the query admits from its cursor on, never every row of the record at once.
+        let page = match (caller.workspace(), person_of(caller)) {
+            (Some(workspace), Some(person)) => {
+                self.workspaces
+                    .record_page(workspace, &self.route(workspace), &person, &query)
+            }
+            _ => None,
+        };
+        Pending::ready(Ok(page.unwrap_or_else(|| CataloguePage {
             exhausted: true,
             ..CataloguePage::default()
-        }))
+        })))
     }
 
     fn invoke(

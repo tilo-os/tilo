@@ -40,16 +40,10 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 tilo_agent_session::app_worker!();
 
-#[path = "action_cost.rs"]
-mod action_cost;
 #[path = "ai_transforms.rs"]
 mod ai_transforms;
 #[path = "app_coverage.rs"]
 mod app_coverage;
-#[path = "article_listing.rs"]
-mod article_listing;
-#[path = "article_reads.rs"]
-mod article_reads;
 #[path = "empty_state_actions.rs"]
 mod empty_state_actions;
 #[path = "messages_for_agents.rs"]
