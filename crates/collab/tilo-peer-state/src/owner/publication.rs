@@ -27,12 +27,6 @@ pub fn ownership_run_name(workspace: super::WorkspaceId, hash: [u8; 32]) -> Stri
     kept_name(workspace, "custody", hash)
 }
 
-/// The name builds kept the same writes under for a while.
-#[must_use]
-pub fn ownership_name_between(workspace: super::WorkspaceId, hash: [u8; 32]) -> String {
-    kept_name(workspace, "ownership", hash)
-}
-
 fn kept_name(workspace: super::WorkspaceId, kept_as: &str, hash: [u8; 32]) -> String {
     format!(
         "{workspace}.{kept_as}.{}",

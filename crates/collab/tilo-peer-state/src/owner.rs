@@ -43,7 +43,7 @@ pub use history_content::HistoryContent;
 pub use history_keys::SealedHistoryKeys;
 #[cfg(not(target_arch = "wasm32"))]
 pub use journaled::{JournalParts, Journaled};
-pub use publication::{ownership_name_between, ownership_run_name};
+pub use publication::ownership_run_name;
 pub use stored::{
     NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus, StoredPendingEnrollment,
 };
