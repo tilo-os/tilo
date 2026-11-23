@@ -369,6 +369,12 @@ pub struct ChangeNote {
     /// nothing that names its readers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub readers: Option<Vec<tilo_actions::policy::MemberId>>,
+    /// The facets the change carries, as the executor writes them for an action
+    /// ([`tilo_actions::ActionFacet`]): what says a change brings a message someone received, and
+    /// who sent it. A store keeps no `ActionContext`, so the facets are kept here and carried by
+    /// the change's stamp.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub facets: Vec<tilo_actions::ActionFacet>,
     /// The run it was made in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<Run>,

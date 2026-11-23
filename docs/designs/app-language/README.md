@@ -101,6 +101,21 @@ type Draft (title: subject, untitled: "New message", readers: author until sent)
 Those lines give collaborative, synced, searchable, undoable notes with a native default UI,
 which people, agents and automations can find, read and pin.
 
+A type that keeps an outside service's records says `(origin: imap.message)`, and when the
+records it receives are messages someone received, `incoming` says so; `incoming: from` names the
+field that says who sent one. The change that takes one in carries the incoming-message facet,
+with the sender as its value, so an automation's incoming-message trigger answers mail as it
+answers a chat message, and a record changed trigger can narrow on `incoming_message`. A message
+the app itself writes is not one:
+
+```
+type Message (origin: imap.message, title: subject, incoming: from) {
+    from: Text
+    subject: Text
+    body: Text
+}
+```
+
 `(readers: people)` makes privacy between members a rule on the record: only the actors its
 `List<Actor>` field `people` holds read a record of the type and everything under it, whatever the
 workspace's grants say, the owner's included. `std.may_read`, `members(r)`, opening it and search

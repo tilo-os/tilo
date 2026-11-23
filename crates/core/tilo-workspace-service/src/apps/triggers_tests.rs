@@ -823,6 +823,15 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
             invoker: Stamp::by(by),
             invocation: invocation.0.to_string(),
             at: jiff::Timestamp::now().to_string(),
+            // A message the mailbox received, as Mail's `incoming` type marks it.
+            facets: if verb == Stamp::ORIGIN_VERB && kind == MESSAGE {
+                vec![tilo_actions::ActionFacet::new(
+                    tilo_actions::INCOMING_MESSAGE_FACET,
+                    "true",
+                )]
+            } else {
+                Vec::new()
+            },
             ..Stamp::default()
         };
         let command = Command::Put {

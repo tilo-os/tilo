@@ -800,7 +800,7 @@ impl Opened {
                     before: None,
                     after: None,
                     caused_by: None,
-                    incoming_message: false,
+                    incoming_message: stamp.incoming_message(),
                     housekeeping: false,
                     shortcut: None,
                     invocation: stamp.group.map(|group| group.id),

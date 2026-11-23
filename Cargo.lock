@@ -23142,6 +23142,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app-id",
  "tilo-app-window",
+ "tilo-automation",
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-desktop-model",

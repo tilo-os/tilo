@@ -146,8 +146,19 @@ pub struct TypeDecl {
     pub untitled: Option<UntitledDecl>,
     /// `(readers: author)`: who reads a record of the type, when not every member.
     pub readers: Option<ReadersDecl>,
+    /// `(incoming)` or `(incoming: from)`: the origin's records of the type are messages someone
+    /// received, named with the sender's field when it says one.
+    pub incoming: Option<IncomingDecl>,
     pub fields: Vec<FieldDecl>,
     pub search: Option<SearchBlock>,
+    pub span: Span,
+}
+
+/// Which records an origin makes are messages someone received (`incoming`), and the field that
+/// names who sent one (`incoming: from`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct IncomingDecl {
+    pub sender: Option<Ident>,
     pub span: Span,
 }
 

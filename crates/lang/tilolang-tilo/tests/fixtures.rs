@@ -164,6 +164,26 @@ impl Workspace {
     pub fn store(&self) -> ResourceStore {
         ResourceStore::new(Rc::clone(&self.0) as Rc<dyn tilolang_tilo::resources::Port>)
     }
+
+    /// Every stamped change the store holds, with the document it is in: what a test reads of
+    /// what a write stamped, oldest first within each document.
+    pub fn stamps(&self) -> Vec<(String, collab_types::Stamp)> {
+        let mut out = Vec::new();
+        for doc in self.0.documents() {
+            let Some(bytes) = self.0.save(&doc) else {
+                continue;
+            };
+            let Ok(loaded) = automerge::Automerge::load(&bytes) else {
+                continue;
+            };
+            for change in loaded.get_changes(&[]) {
+                if let Some(stamp) = collab_types::Stamp::of(&change) {
+                    out.push((doc.clone(), stamp));
+                }
+            }
+        }
+        out
+    }
 }
 
 impl Default for Workspace {

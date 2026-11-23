@@ -32,6 +32,9 @@ pub struct TypeInfo {
     /// `(readers: people)`: the field holding who reads a record and everything under it, by
     /// name.
     pub readers: Option<String>,
+    /// `(incoming)` or `(incoming: from)`: the origin's records of the type are messages someone
+    /// received, and the field that names who sent one, when it says a field.
+    pub incoming: Option<String>,
 }
 
 impl TypeInfo {
@@ -242,6 +245,7 @@ fn type_info(t: &TypeMeta, app: &str) -> Result<TypeInfo, String> {
         fields,
         title: t.title.clone(),
         readers: t.readers.clone(),
+        incoming: t.incoming.clone(),
     })
 }
 

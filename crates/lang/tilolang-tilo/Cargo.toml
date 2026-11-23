@@ -81,6 +81,8 @@ passwords = { path = "../../../apps/passwords" }
 tilolang-youtube = { path = "../../integrations/tilolang-youtube", default-features = false }
 # The sample mail server Mail's seed stands on, taken in through the real mail origin.
 tilolang-mail = { path = "../../integrations/tilolang-mail", default-features = false }
+# The automation matching a change: what a received message's change fires.
+tilo-automation = { version = "0.1.0", path = "../../core/automation" }
 
 [[test]]
 name = "it"

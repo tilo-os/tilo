@@ -991,6 +991,12 @@ impl Printer<'_> {
                 if let Some(readers) = &t.readers {
                     options.push(format!("readers: {}", readers.rule));
                 }
+                if let Some(incoming) = &t.incoming {
+                    options.push(match &incoming.sender {
+                        Some(sender) => format!("incoming: {}", sender.name),
+                        None => "incoming".to_owned(),
+                    });
+                }
                 let options = if options.is_empty() {
                     String::new()
                 } else {

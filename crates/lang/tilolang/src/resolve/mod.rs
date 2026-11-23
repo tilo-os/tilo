@@ -368,6 +368,7 @@ impl Env {
                 title: t.title.clone(),
                 untitled: t.untitled.clone(),
                 readers: t.readers.clone(),
+                incoming: t.incoming.clone(),
             });
         }
         let params = |ps: &[crate::meta::ParamMeta]| -> Vec<ParamInfo> {
@@ -795,10 +796,21 @@ impl Resolver<'_> {
     }
 
     /// Each type with an origin names a kind the platform has, and declares the kind's fields with
-    /// the kind's types (`crate::origin`).
+    /// the kind's types (`crate::origin`). A type whose records are messages someone received says
+    /// so with `incoming`, and names the field that says who sent one.
     fn check_origins(&mut self, decls: &[&ast::TypeDecl]) {
         for t in decls {
             let Some(origin) = &t.origin else {
+                if let Some(incoming) = &t.incoming {
+                    self.err(
+                        "E112",
+                        incoming.span,
+                        format!(
+                            "`{}` says `incoming`, and only a type with an outside service (`origin:`) receives its records from one",
+                            t.name.name
+                        ),
+                    );
+                }
                 continue;
             };
             let Some(kind) = crate::origin::kind(&origin.name) else {
@@ -822,6 +834,18 @@ impl Resolver<'_> {
             else {
                 continue;
             };
+            if let Some(sender) = t.incoming.as_ref().and_then(|i| i.sender.as_ref())
+                && info.field(&sender.name).is_none()
+            {
+                self.err(
+                    "E112",
+                    sender.span,
+                    format!(
+                        "`{}` says `{}` names who sent a record it receives, and it has no such field",
+                        t.name.name, sender.name
+                    ),
+                );
+            }
             for f in &t.fields {
                 let Some(want) = kind.field(&f.name.name) else {
                     continue;

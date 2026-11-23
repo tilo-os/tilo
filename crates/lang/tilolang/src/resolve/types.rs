@@ -149,6 +149,11 @@ impl Resolver<'_> {
                 title: t.title.as_ref().map(|title| title.field.name.clone()),
                 untitled: t.untitled.as_ref().map(|u| u.words.clone()),
                 readers: t.readers.as_ref().map(|r| r.rule.clone()),
+                incoming: t.incoming.as_ref().map(|i| {
+                    i.sender
+                        .as_ref()
+                        .map_or_else(String::new, |f| f.name.clone())
+                }),
             });
         }
         self.check_title(&decls);

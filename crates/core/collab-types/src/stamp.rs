@@ -59,6 +59,11 @@ pub struct Stamp {
     /// root ([`tilo_actions::remote::SignedCall`]); the host never makes one up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signed: Option<Box<tilo_actions::remote::SignedCall>>,
+    /// The facets the change carries, as an action's executor writes them on its change
+    /// ([`tilo_actions::ActionContext::facets`]). A store keeps no context beside its changes, so
+    /// what a trigger reads of one — a message someone received, and who sent it — travels here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub facets: Vec<tilo_actions::ActionFacet>,
 }
 
 #[allow(
@@ -87,9 +92,18 @@ pub struct Group {
 
 impl Stamp {
     /// The verb of a change an app's outside origin wrote (`$origin`): what its service said,
-    /// taken into the resources of the types it keeps. A store keeps no facets, so a change
-    /// stamped with it is how a received message reaches a trigger.
+    /// taken into the resources of the types it keeps. A change stamped with it that makes a
+    /// record of an origin type that receives messages carries the incoming-message facet.
     pub const ORIGIN_VERB: &str = "$origin";
+
+    /// Whether the change records a message someone received: its executor or origin marked it
+    /// with the incoming-message facet.
+    #[must_use]
+    pub fn incoming_message(&self) -> bool {
+        self.facets
+            .iter()
+            .any(|facet| facet.key == tilo_actions::INCOMING_MESSAGE_FACET)
+    }
 
     /// The text a stamp names `actor` by as its invoker.
     #[must_use]

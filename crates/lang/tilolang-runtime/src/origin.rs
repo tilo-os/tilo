@@ -132,6 +132,10 @@ impl OriginChange<'_> {
     /// Write `writes` into the change. Each insert's new item is returned in its place; other
     /// writes give `None`.
     ///
+    /// A write that makes a record of a type whose origin says its records are messages someone
+    /// received marks the change with the incoming-message facet, carrying the sender the type
+    /// names; a write of fields of a record already held is no arrival.
+    ///
     /// # Errors
     ///
     /// An unknown type or field, a value that does not fit its field, or a store failure; then
@@ -147,6 +151,13 @@ impl OriginChange<'_> {
         }
         let mut made = Vec::with_capacity(writes.len());
         for w in writes {
+            let sender = match self.sender_of(&w) {
+                Ok(sender) => sender,
+                Err(error) => {
+                    self.take_back();
+                    return Err(error);
+                }
+            };
             match self.runtime.origin_write(self.txn, w) {
                 Ok(r) => made.push(r),
                 Err(error) => {
@@ -154,8 +165,47 @@ impl OriginChange<'_> {
                     return Err(error);
                 }
             }
+            if let Some(sender) = sender {
+                self.received(sender);
+            }
         }
         Ok(made)
+    }
+
+    /// Who sent the message `w` records, when it makes a record of a type whose origin says its
+    /// records are messages someone received. `Some("true")` when the type names no sender field,
+    /// or the record holds none.
+    fn sender_of(&self, w: &OriginWrite) -> Result<Option<String>, RuntimeError> {
+        let OriginWrite::Insert { ty, fields, .. } = w else {
+            return Ok(None);
+        };
+        let info = self.runtime.type_of(ty)?;
+        let Some(sender) = &info.incoming else {
+            return Ok(None);
+        };
+        let sent = info
+            .field_by_id_or_name(sender)
+            .and_then(|field| {
+                fields
+                    .iter()
+                    .find(|(name, _)| *name == field.id || *name == field.name)
+            })
+            .and_then(|(_, value)| match value {
+                Value::Text(text) if !text.is_empty() => Some(text.clone()),
+                Value::Int(number) => Some(number.to_string()),
+                _ => None,
+            });
+        Ok(Some(sent.unwrap_or_else(|| "true".to_owned())))
+    }
+
+    /// The change records a message someone received, from `sender`.
+    fn received(&mut self, sender: String) {
+        let key = tilo_actions::INCOMING_MESSAGE_FACET;
+        if !self.note.facets.iter().any(|facet| facet.key == key) {
+            self.note
+                .facets
+                .push(tilo_actions::ActionFacet::new(key, sender));
+        }
     }
 
     /// Nothing of the change stays.

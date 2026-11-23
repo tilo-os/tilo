@@ -107,7 +107,7 @@ type Label {
 }
 
 /// A message.
-type Message (origin: imap.message, title: subject) {
+type Message (origin: imap.message, title: subject, incoming: from) {
     key: Text merge register
     account: Text merge register
     subject: Text

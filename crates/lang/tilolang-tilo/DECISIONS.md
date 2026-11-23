@@ -188,3 +188,11 @@ Each entry is the closest working design to `docs/designs/app-language`.
 - **Today an origin runs while a window of its package is open**, in that window's process. A
   connector the system runs without a window (sync, push and sends with Mail closed), a broker
   that hands it credentials, and the connector compiled to wasm are the platform's next steps.
+- **A received message says so on its change.** A type whose origin makes records that are
+  messages someone received says `incoming` (and `incoming: from` when a field names the
+  sender). The change that inserts one carries the incoming-message facet, with the sender as its
+  value, where the automation's incoming-message trigger and a change filter read it. A write of
+  fields of a record already held is no arrival, and a record the app itself writes is never one.
+  A store keeps no `ActionContext`, so the facet travels in the change's `Stamp`; the surface of
+  the package's origin verb says the verb records received messages, and the executor's
+  `#[action(incoming_message)]` keeps marking an action's change where one records it.

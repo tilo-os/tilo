@@ -30,6 +30,9 @@ pub struct TypeInfo {
     pub title: Option<String>,
     pub untitled: Option<String>,
     pub readers: Option<crate::meta::ReaderRule>,
+    /// `(incoming)` or `(incoming: from)`: the origin's records of the type are messages someone
+    /// received, the sender named by this field when it says one.
+    pub incoming: Option<String>,
 }
 
 impl TypeInfo {

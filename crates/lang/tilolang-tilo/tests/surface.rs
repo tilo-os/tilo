@@ -823,7 +823,7 @@ action attach(b: Board, list: todo.TodoList) {
     {
         const INBOX: &str = r#"app so.tilo.lang.inbox "Inbox"
 
-type Mailbox (origin: imap.mailbox) {
+type Mailbox (origin: imap.mailbox, incoming) {
   key: Text merge register
   name: Text
   role: Text merge register
@@ -859,6 +859,16 @@ view inbox(i: Inbox) {
             [meta.kind_of("Mailbox"), meta.kind_of("Inbox")],
             "every resource the origin writes into names its verb"
         );
+        // The type says its origin receives messages, so the verb says its change may record one.
+        for surface in package_surfaces(meta, &SourceWords) {
+            if let Some(verb) = surface.verb(tilolang_tilo::action::ORIGIN_ACTION) {
+                assert!(
+                    verb.incoming_message,
+                    "{} says its origin's write records a received message",
+                    surface.kind
+                );
+            }
+        }
         let (_, plain) = Replica::new("ada", Workspace::new(), &[(TODO, "")]);
         assert!(
             package_surfaces(&plain[0].meta, &SourceWords)

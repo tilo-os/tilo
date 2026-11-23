@@ -299,23 +299,6 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet, targeted: bool) -
     } else {
         declared
     };
-/// Whether `ty` is or contains a `Duration`: its return schema carries the unit (`whole seconds`)
-/// so a caller reading the surface knows the wire unit of the integer result.
-fn mentions_duration(ty: &Ty) -> bool {
-    match ty {
-        Ty::Duration => true,
-        Ty::Option(inner)
-        | Ty::List(inner)
-        | Ty::Set(inner)
-        | Ty::Collection(inner)
-        | Ty::Map(inner) => mentions_duration(inner),
-        Ty::Tuple(items) => items.iter().any(mentions_duration),
-        Ty::Result(ok, err) => mentions_duration(ok) || mentions_duration(err),
-        _ => false,
-    }
-}
-
-fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
         // The action as the document names it, which is what a change's claim names too
         // ([`crate::action::DynAction::describe`]): its id, the one its words keep
@@ -359,6 +342,22 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
         }),
         writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,
+    }
+}
+
+/// Whether `ty` is or contains a `Duration`: its return schema carries the unit (`whole seconds`)
+/// so a caller reading the surface knows the wire unit of the integer result.
+fn mentions_duration(ty: &Ty) -> bool {
+    match ty {
+        Ty::Duration => true,
+        Ty::Option(inner)
+        | Ty::List(inner)
+        | Ty::Set(inner)
+        | Ty::Collection(inner)
+        | Ty::Map(inner) => mentions_duration(inner),
+        Ty::Tuple(items) => items.iter().any(mentions_duration),
+        Ty::Result(ok, err) => mentions_duration(ok) || mentions_duration(err),
+        _ => false,
     }
 }
 
@@ -541,8 +540,9 @@ fn block_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
 
 /// The verb of what an outside origin writes: its service's answer, taken into the resources the
 /// package keeps in step with it, as one change of the host's own. Receivers decide that change
-/// against this verb.
-fn origin_verb() -> VerbSurface {
+/// against this verb. `incoming` is whether a type of the package says the origin's records of it
+/// are messages someone received, which a change making one carries.
+fn origin_verb(incoming: bool) -> VerbSurface {
     VerbSurface {
         id: ORIGIN_ACTION.to_owned(),
         name: String::new(),
@@ -550,7 +550,7 @@ fn origin_verb() -> VerbSurface {
         description: Some("What the outside service said is taken in.".to_owned()),
         kind: ActionKind::Undoable,
         destructive: false,
-        incoming_message: false,
+        incoming_message: incoming,
         params: Vec::new(),
         returns: None,
         writes: vec![RESOURCE_UNIT.to_owned()],
@@ -613,11 +613,14 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
     // A package with an outside origin writes what its service says into the resources holding
     // those of the origin's types, the package's root among them: each resource takes that change.
     let kept_in_step = meta.types.iter().any(|ty| ty.origin.is_some());
+    // A package whose origin type says its records are messages someone received writes them
+    // with the incoming-message facet, which its surface says of the origin's verb.
+    let receives = meta.types.iter().any(|ty| ty.incoming.is_some());
     for ty in &meta.types {
         let mut types = TypeSet::new();
         let mut verbs = edit_verbs(ty);
         if kept_in_step {
-            verbs.push(origin_verb());
+            verbs.push(origin_verb(receives));
         }
         // An action on a union of the package's types is one on each of them: the change a call
         // makes is claimed on the kind of the resource it was called on.

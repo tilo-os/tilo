@@ -5,11 +5,11 @@
 
 use crate::ast::{
     ActionDecl, ActionOpt, ActionRole, AliasDecl, AppHeader, Arg, AssignOp, BinOp, Block,
-    DefaultViewDecl, EnumDecl, Expr, ExprKind, FieldDecl, FnDecl, Ident, Item, LetBind, MatchArm,
-    MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, ReadersDecl, RootDecl,
-    ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl, Stmt, StmtKind, StrPart,
-    TitleDecl, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UntitledDecl,
-    UseDecl, VariantDecl, ViewDecl, ViewsDecl,
+    DefaultViewDecl, EnumDecl, Expr, ExprKind, FieldDecl, FnDecl, Ident, IncomingDecl, Item,
+    LetBind, MatchArm, MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, ReadersDecl,
+    RootDecl, ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl, Stmt, StmtKind,
+    StrPart, TitleDecl, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp,
+    UntitledDecl, UseDecl, VariantDecl, ViewDecl, ViewsDecl,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Comment, StrPiece, Tok, Token, lex, lex_at};
@@ -1202,13 +1202,29 @@ impl<'a> Parser<'a> {
         let mut title = None;
         let mut untitled = None;
         let mut readers = None;
+        let mut incoming = None;
         if self.eat(&Tok::LParen) {
             loop {
                 self.skip_nl();
                 if self.eat(&Tok::RParen) {
                     break;
                 }
-                let key = self.ident("`origin`, `title`, `untitled` or `readers`")?;
+                let key = self.ident("`origin`, `title`, `untitled`, `readers` or `incoming`")?;
+                // `incoming` is the one option that needs no value: a bare word says the origin's
+                // records of the type are messages someone received.
+                if key.name == "incoming" {
+                    let span = key.span;
+                    let sender = if self.eat(&Tok::Colon) {
+                        Some(self.ident("the field that names who sent a received record")?)
+                    } else {
+                        None
+                    };
+                    incoming = Some(IncomingDecl { sender, span });
+                    if !self.eat(&Tok::Comma) && !matches!(self.peek(), Tok::RParen) {
+                        return self.unexpected("`,` or `)` after a type's option");
+                    }
+                    continue;
+                }
                 self.expect(&Tok::Colon)?;
                 match key.name.as_str() {
                     "origin" => origin = Some(self.type_origin()?),
@@ -1251,7 +1267,7 @@ impl<'a> Parser<'a> {
                         return self.fail(
                             key.span,
                             format!(
-                                "a type's options are `origin:`, `title:`, `untitled:` and `readers:`, not `{other}:`"
+                                "a type's options are `origin:`, `title:`, `untitled:`, `readers:` and `incoming`, not `{other}:`"
                             ),
                         );
                     }
@@ -1322,6 +1338,7 @@ impl<'a> Parser<'a> {
             title,
             untitled,
             readers,
+            incoming,
             fields,
             search,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),

@@ -342,6 +342,10 @@ pub struct TypeMeta {
     /// `(readers: author)`: who reads a record of the type, when not every member.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub readers: Option<ReaderRule>,
+    /// `(incoming)` or `(incoming: from)`: the origin's records of the type are messages someone
+    /// received, and the field that names who sent one, when it says a field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incoming: Option<String>,
 }
 
 pub use tilo_action_policy::ReaderRule;

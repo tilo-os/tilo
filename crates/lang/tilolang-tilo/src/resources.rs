@@ -3317,6 +3317,7 @@ impl ResourceStore {
                 note.args.as_array().cloned().unwrap_or_default()
             },
             moment: self.next_moment(note.at.as_deref()),
+            facets: note.facets.clone(),
             signed: self.inner.serving_signed.borrow().clone(),
         }
     }
