@@ -99,6 +99,25 @@ impl EarlierIds {
         })
     }
 
+    /// The kind `kind` names now, when its app was renamed: a saved `tl.<old>.Type` is the
+    /// `tl.<app>.Type` of the app now published under `old`. `None` for any other kind, and for
+    /// a kind of an app never renamed.
+    #[must_use]
+    pub fn current_kind(&self, kind: &str) -> Option<String> {
+        let rest = kind.strip_prefix("tl.")?;
+        for (app, before) in &self.by_app {
+            for old in before {
+                let Some(tail) = rest.strip_prefix(old.as_str()) else {
+                    continue;
+                };
+                if tail.is_empty() || tail.starts_with('.') {
+                    return Some(format!("tl.{app}{tail}"));
+                }
+            }
+        }
+        None
+    }
+
     /// Whether `id` names `app`: it is `app`'s id or one it had before.
     #[must_use]
     pub fn names(&self, id: &str, app: &str) -> bool {
@@ -195,6 +214,13 @@ pub fn held_current(id: &str) -> String {
     with_held(|held| held.current(id).to_owned()).unwrap_or_else(|| id.to_owned())
 }
 
+/// The kind `kind` names now, when its app was renamed, as this process was told
+/// ([`EarlierIds::current_kind`]).
+#[must_use]
+pub fn held_current_kind(kind: &str) -> Option<String> {
+    with_held(|held| held.current_kind(kind)).flatten()
+}
+
 /// `answer` over what this process was told, or `None` when it was told of no renamed app.
 pub(crate) fn with_held<R>(answer: impl FnOnce(&EarlierIds) -> R) -> Option<R> {
     if !ANY.load(Ordering::Acquire) {
@@ -245,6 +271,22 @@ mod tests {
                 &TreePath::workspace("r").app("so.tilo.lang.tasks"),
                 &TreePath::workspace("r").app("so.tilo.lang.todo")
             ));
+        }
+
+        phase a_kind_of_the_renamed_app_reads_under_its_earlier_name;
+        {
+            let ids = tasks();
+            assert_eq!(
+                ids.current_kind("tl.so.tilo.lang.todo.TodoItem"),
+                Some("tl.so.tilo.lang.tasks.TodoItem".to_owned())
+            );
+            assert_eq!(
+                ids.current_kind("tl.so.tilo.lang.todo"),
+                Some("tl.so.tilo.lang.tasks".to_owned())
+            );
+            assert_eq!(ids.current_kind("tl.so.tilo.lang.tasks.TodoItem"), None);
+            assert_eq!(ids.current_kind("tl.so.tilo.lang.todox.Item"), None);
+            assert_eq!(ids.current_kind("mail.message"), None);
         }
 
         phase an_earlier_id_has_one_successor;
