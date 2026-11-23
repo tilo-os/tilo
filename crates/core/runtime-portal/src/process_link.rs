@@ -337,6 +337,33 @@ pub struct InstanceRequest {
     pub link_home: Option<String>,
 }
 
+/// Declares the connections a packet of one shape carries, once: its fields, which the packet
+/// writes and reads in that order, and how many descriptors it carries at most
+/// ([`InstanceFds::CONNECTIONS`]). The link sizes its descriptor buffers from that count, so a
+/// connection added to the list below is one more the buffers hold, never one they leave out.
+macro_rules! connections {
+    ($(#[$doc:meta])* $name:ident {
+        $(
+            $(#[$field_doc:meta])*
+            $field:ident: $ty:ty [with = $with:literal],
+        )*
+    }) => {
+        $(#[$doc])*
+        #[derive(Debug, Serialize, Deserialize)]
+        pub struct $name {
+            $(
+                $(#[$field_doc])*
+                #[serde(with = $with)]
+                pub $field: $ty,
+            )*
+        }
+
+        impl $name {
+            /// The most descriptors a packet of this shape carries: one for each connection, since
+            /// every one of them may be carried.
+            pub const CONNECTIONS: usize = [$(stringify!($field)),*].len();
+        }
+    };
 }
 
 connections! {
