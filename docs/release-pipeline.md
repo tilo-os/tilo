@@ -51,8 +51,8 @@ Pull requests use the cheapest job that proves the affected boundary:
 - Desktop changes run the preflight contracts. Full distribution builds happen
   when `desktop-package-{arch}` is dispatched; the job builds cold, because a
   payload that can be published never compiles through a shared cache. The Arch
-  and Nix packages build on their own too, in `package-arch` and `package-nix`,
-  each in an image of its distribution.
+  and Nix packages also build on their own, in `package-arch` and `package-nix`:
+  one userspace each, install-tested and kept with their checksums.
 - Full OS builds (`tools/ci/publish/os-image.sh`) do not run on ordinary
   `main` pushes. Every OS image carries the Browser's Chromium engine
   runtime, built from the pinned CEF distribution in the image build.

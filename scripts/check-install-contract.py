@@ -228,7 +228,9 @@ assert "wayland-backend" in linux_clipboard_dependencies
 # preflight before it fetches or compiles anything: an absent authority must fail at once,
 # without weakening the staging checks (dist/rpm/stage-app-store.sh).
 package_job = (ROOT / "dist/ci/package-job.sh").read_text()
-job_preflight, job_expensive = package_job.split("\nrequire_registry_owner\n", 1)
+# The Fedora-only setup starts at the condition around its trust root; a run that names only
+# other distributions skips it and needs no key.
+job_preflight, job_expensive = package_job.split("\nif ((needs_app_store)); then\n", 1)
 assert "bash dist/ci/fetch-package-env-runtime.sh" in job_expensive
 assert "dist/ci/run-package-job.sh" in job_expensive
 assert "fetch-package-env-runtime" not in job_preflight
