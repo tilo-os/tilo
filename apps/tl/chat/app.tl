@@ -539,16 +539,22 @@ action send(
     attachments: List<File> = [],
 ) -> Message (icon: .send, label: "Send", did: "wrote a message") {
     let m = Message(body: body, reply_to: reply_to)
-    for f in attachments {
-        m.attachments.insert(Attached(name: f.name, media: f.media, size: f.size(), blob: f.url()))
-    }
-    match to {
+    let sent = match to {
         c: TextChannel => c.messages.insert(m),
         t: Thread => t.messages.insert(m),
+        d: Direct => d.messages.insert(m),
+    }
+    // The files go onto the message once it stands: a collection belongs to a resource, and a
+    // message under construction is none yet.
+    for f in attachments {
+        sent.attachments.insert(
+            Attached(name: f.name, media: f.media, size: f.size(), blob: f.url()),
+        )
+    }
+    // Writing to an agent asks it, made from the message, whose replies stand under it. Nothing
+    // said goes to an agent that may not read it.
+    match to {
         d: Direct => {
-            let sent = d.messages.insert(m)
-            // Writing to an agent asks it, made from the message, whose replies stand under it.
-            // Nothing said goes to an agent that may not read it.
             for p in d.people.filter(p -> p != invoker and p.kind() == .agent) {
                 agent
                     .ask(
@@ -558,9 +564,11 @@ action send(
                     )
                     .made_from(sent)
             }
-            sent
         }
+        c: TextChannel => {}
+        t: Thread => {}
     }
+    sent
 }
 
 /// Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the
@@ -608,14 +616,19 @@ action relay(
         written_in: written_in,
         written: written,
     )
-    for f in attachments {
-        m.attachments.insert(Attached(name: f.name, media: f.media, size: f.size(), blob: f.url()))
-    }
-    match to {
+    let sent = match to {
         c: TextChannel => c.messages.insert(m),
         t: Thread => t.messages.insert(m),
         d: Direct => d.messages.insert(m),
     }
+    // The files go onto the message once it stands: a collection belongs to a resource, and a
+    // message under construction is none yet.
+    for f in attachments {
+        sent.attachments.insert(
+            Attached(name: f.name, media: f.media, size: f.size(), blob: f.url()),
+        )
+    }
+    sent
 }
 
 /// Deletes a channel and what was said in it, from the sidebar or the category it is in.

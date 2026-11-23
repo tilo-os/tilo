@@ -6,10 +6,12 @@
 //!
 //! The reply grows while its model writes it, and what the agent learns about its keeper is
 //! told and kept only where what it was asked about is theirs and the agent's alone.
+use super::super::hosted_documents::{content_in, put};
 use super::*;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tilo_mcp::McpServer;
 use tilo_peer_state::join::decode_and_verify_invitation;
 use tilo_server::workspace_join::WorkspaceJoinClient;
 use tilo_server::workspaces::person_model::{
@@ -17,6 +19,7 @@ use tilo_server::workspaces::person_model::{
     scripted::Linking,
 };
 use tilo_server::workspaces::{IssueInvitationRequest, Workspaces};
+use tilo_session_actions::SessionActions;
 use tilo_workspace_service::agents::{Ask, ServerAgents, Turn};
 use tilo_workspace_service::asks::{self, AskState};
 use tilo_workspace_service::tl_records::runtime::Value;
@@ -97,9 +100,43 @@ async fn mention_in_channel(workspaces: &Workspaces, workspace: &str, person: &s
         .unwrap();
 }
 
+/// A file a test message sends: what it is called, what it is, how many bytes, and the hash of
+/// its content in the workspace.
+struct Sent {
+    name: String,
+    media: String,
+    size: i64,
+    hash: String,
+}
+
+impl Sent {
+    /// The file's value, as the window hands a chosen file's over.
+    fn value(&self) -> Value {
+        Value::File(std::rc::Rc::new(
+            tilo_workspace_service::tl_records::runtime::blob::FileValue::new(
+                self.name.clone(),
+                self.media.clone(),
+                self.size,
+                self.hash.clone(),
+            ),
+        ))
+    }
+}
+
 /// `person` writes `text` to Scout in their direct conversation with it: Chat's `send` asks
 /// it, made from the message.
 async fn write_in_direct(workspaces: &Workspaces, workspace: &str, person: &str, text: &str) {
+    write_in_direct_with(workspaces, workspace, person, text, Vec::new()).await;
+}
+
+/// [`write_in_direct`], sending `files` with the message.
+async fn write_in_direct_with(
+    workspaces: &Workspaces,
+    workspace: &str,
+    person: &str,
+    text: &str,
+    files: Vec<Sent>,
+) {
     let packages = asks::chat_packages().unwrap();
     let who = asks::Actor::Member(MemberId::person(person.to_owned()));
     let chat = packages.app().to_owned();
@@ -119,6 +156,7 @@ async fn write_in_direct(workspaces: &Workspaces, workspace: &str, person: &str,
                 ],
                 None,
             )?;
+            let attachments = files.iter().map(Sent::value).collect();
             opened
                 .invoke(
                     &who,
@@ -127,6 +165,7 @@ async fn write_in_direct(workspaces: &Workspaces, workspace: &str, person: &str,
                         direct,
                         Value::Rich(RichValue::from_text(&text)),
                         Value::Opt(None),
+                        Value::List(attachments),
                     ],
                     None,
                 )
@@ -832,4 +871,127 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     let reply = answered[0].latest().expect("the ask has a reply");
     assert_eq!(reply.state, AskState::Done, "{reply:?}");
     assert!(reply.body.contains("the plan is ready"), "{}", reply.body);
+}
+
+/// What the file a person sends with their message says.
+const SENT_FILE: &[u8] = b"Move the launch to the fifth.\n";
+
+/// A model that reads what the message's file says through Files' `read-text`, then answers;
+/// each request it was sent is kept.
+fn reads_the_sent_file(content: String, asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model {
+    let read = answer(
+        vec![Content::ToolCall(ToolCall {
+            id: "call-1".into(),
+            name: "tilo_do".into(),
+            input: serde_json::json!({"path": "files#read-text", "args": {"content": content}}),
+            extra_content: None,
+        })],
+        StopReason::ToolCalls,
+        1_000,
+    );
+    let said = answer(
+        vec![Content::Text {
+            text: "The launch moves to the fifth.".into(),
+        }],
+        StopReason::EndTurn,
+        1_000,
+    );
+    Arc::new(move || {
+        Some(Box::new(Scripted {
+            answers: vec![read.clone(), said.clone()],
+            asked: Arc::clone(&asked),
+        }) as Box<dyn tilo_agent_session::model::PlanTurns>)
+    })
+}
+
+/// What the last request tells the model its tools answered, in order, each with whether it
+/// failed.
+fn tool_answers(asked: &[ModelRequest]) -> Vec<(String, bool)> {
+    asked
+        .last()
+        .expect("the model was asked")
+        .messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|content| match content {
+            Content::ToolResult(result) => Some((result.content.clone(), result.is_error)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Ada sends a file with the message that asks her agent: the turn's request names the file and
+/// the address Files reads it at, and the turn reads what it says through its tools.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_file_a_message_sends_reaches_the_turn_that_answers_it() {
+    ada_and_scout!(root, host, actions, workspaces, workspace, page, person);
+
+    // Her page puts a plan into the workspace, as the file her message sends.
+    let mcp = McpServer::new(
+        SessionActions::new(&page.peer, page.workspace, host.cert.device_public_key),
+        workspace.clone(),
+        person.clone(),
+    );
+    let content = content_in(&put(&mcp, SENT_FILE).await);
+    let file = Sent {
+        name: "launch.md".into(),
+        media: "text/markdown".into(),
+        size: i64::try_from(SENT_FILE.len()).expect("a small file"),
+        hash: content
+            .strip_prefix("tilo.content:")
+            .expect("the put answers a content address")
+            .to_owned(),
+    };
+    write_in_direct_with(
+        &workspaces,
+        &workspace,
+        &person,
+        "when is the launch?",
+        vec![file],
+    )
+    .await;
+
+    // The server reads the ask as a turn that is told the file it carries.
+    let model_asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = ServerAgents::for_test(
+        workspaces.clone(),
+        actions.clone(),
+        Some(reads_the_sent_file(
+            content.clone(),
+            Arc::clone(&model_asked),
+        )),
+    );
+    let turn = answered_one(&agents, &workspace).await;
+    assert!(
+        turn.request.contains("when is the launch?"),
+        "the turn asks what she wrote: {}",
+        turn.request
+    );
+    assert!(
+        turn.request.contains("launch.md")
+            && turn.request.contains(&content)
+            && turn.request.contains("files#read-text"),
+        "the turn is told the file, where it reads, and how: {}",
+        turn.request
+    );
+
+    // It read the file: what the tool answered the model is what the file says.
+    let asked = model_asked.lock().unwrap().clone();
+    let answers = tool_answers(&asked);
+    assert!(
+        answers
+            .iter()
+            .any(|(answer, failed)| !failed && answer.contains("Move the launch to the fifth.")),
+        "the file's words reached the model: {answers:?}"
+    );
+    let reply = reply_reads(
+        &workspaces,
+        &workspace,
+        &person,
+        "The launch moves to the fifth.",
+    )
+    .await;
+    assert_eq!(reply.state, AskState::Done);
+    let _ = (root, host);
+    page.peer.close();
 }
