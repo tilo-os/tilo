@@ -278,6 +278,7 @@ fn serve_kept<A: ResourceApp>(
 /// Decide in `harness`, as the workspace broker does, the actions of the records `author`'s window
 /// shows that another workspace holds: this host holds the person's own workspace, founded with them
 /// as its owner, which holds their profile records; any other is not held here.
+#[cfg(feature = "test-support")]
 fn decide_held_as_broker(harness: &mut FrameHarness, author: &str) {
     let actor = tilo_broker_core::BrokerActor::person(author);
     let own = tilo_actions::policy::roles::workspace_of_person(author).and_then(|id| {
@@ -943,6 +944,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )?;
         let mut harness = opened.harness;
         serve_kept::<A>(&mut harness, &opened.profile.settings(), author);
+        #[cfg(feature = "test-support")]
         decide_held_as_broker(&mut harness, author);
         Ok(Self {
             harness,
