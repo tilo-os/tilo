@@ -99,17 +99,9 @@ print(paths[0])' "${TMPDIR:-/tmp}/imager-tests.json")"
     sdk="${3:?SDK archive}" out="${4:?output directory}"
     windows_platform_tests="tilo-socket tilo-identity runtime-portal tilo-fs-client"
     use_windows_sdk "$arch" "$sdk"
-    # The daemon and the tilolang runtime programs of a Tilo desktop: cross-built
-    # so that a platform arm which stops compiling is a failed check, and so the
-    # x86_64 daemon can be run under Wine to prove it refuses legibly. The
-    # daemon's Windows port is partial: it compiles, and its CLI answers the
-    # refusal until its services have Windows bodies.
-    cargo xwin build --locked -p tilo-runtime -p tilolang-process --target "$target"
-    mkdir -p "$out"
-    install -m 0644 "${CARGO_TARGET_DIR:-target}/$target/debug/tilo-runtime.exe" "$out/tilo-runtime.exe"
-    digest "$out/tilo-runtime.exe"
     # The unit tests of the platform layer the daemon stands on, for Wine to run:
-    # one executable per crate, named by it.
+    # one executable per crate, named by it. First, so a layer that stops compiling
+    # is named even while something above it does too.
     for crate in $windows_platform_tests; do
       cargo xwin test --locked --no-run -p "$crate" --all-features --lib --target "$target" \
         --message-format json-render-diagnostics > "${TMPDIR:-/tmp}/$crate-tests.json"
@@ -123,6 +115,14 @@ print(paths[0])' "${TMPDIR:-/tmp}/$crate-tests.json")"
       mkdir -p "$out/platform-tests"
       install -m 0644 "$executable" "$out/platform-tests/$crate.exe"
     done
+    # The daemon and the tilolang runtime programs of a Tilo desktop: cross-built
+    # so that a platform arm which stops compiling is a failed check, and so the
+    # x86_64 daemon can be run under Wine to prove it refuses legibly. The
+    # daemon's Windows port is partial: it compiles, and its CLI answers the
+    # refusal until its services have Windows bodies.
+    cargo xwin build --locked -p tilo-runtime -p tilolang-process --target "$target"
+    install -m 0644 "${CARGO_TARGET_DIR:-target}/$target/debug/tilo-runtime.exe" "$out/tilo-runtime.exe"
+    digest "$out/tilo-runtime.exe"
     ;;
   *) printf 'unknown mode: %s\n' "$mode" >&2; exit 2 ;;
 esac

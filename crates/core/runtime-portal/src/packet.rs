@@ -61,8 +61,8 @@ pub const VERSION: u8 = 1;
 
 /// The byte a versioned packet starts with. No message variant has this index, so a packet that
 /// does not start with it was written before the link carried a version. A page has no
-/// descriptors and so no process link: only the Unix side reads and writes it.
-#[cfg(unix)]
+/// descriptors and so no process link: only a Unix or Windows side reads and writes it.
+#[cfg(any(unix, windows))]
 const VERSIONED: u8 = 0xFF;
 
 thread_local! {
