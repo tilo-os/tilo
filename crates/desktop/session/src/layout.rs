@@ -544,8 +544,11 @@ fn write_changes(
 ) -> Result<bool, automerge::AutomergeError> {
     let mut wrote = false;
     for pending in pending {
+        // A step's record is newer than what the device held of the window before it: a place
+        // re-pointed at another resource (`show`, an open of another entry of its root) writes
+        // what it shows now.
         for (tab, shown) in pending.acted.iter().flat_map(|acted| &acted.shows) {
-            windows.shown.entry(*tab).or_insert_with(|| shown.clone());
+            windows.shown.insert(*tab, shown.clone());
         }
         let acted = pending.acted.as_ref().map(|acted| acted.message.as_str());
         wrote |= write_change(
@@ -1654,9 +1657,11 @@ impl Layouts {
             return true;
         }
         if let Some(acted) = &acted {
+            // What the action shows replaces what the window showed before it.
             for (tab, record) in &acted.shows {
-                if !notes.iter().any(|(held, _)| held == tab) {
-                    notes.push((*tab, record.clone()));
+                match notes.iter_mut().find(|(held, _)| held == tab) {
+                    Some((_, held)) => held.clone_from(record),
+                    None => notes.push((*tab, record.clone())),
                 }
             }
         }
@@ -2144,6 +2149,62 @@ impl Layouts {
             }
         }
         pending
+    }
+
+    /// `person`'s view of `workspace_id`'s layout, as this device last read or wrote it.
+    pub(crate) fn view_of(
+        &self,
+        workspace_id: WorkspaceId,
+        person: &str,
+    ) -> Option<automerge::AutoCommit> {
+        // A lookup, never an entry of its own: a held entry is a view this device reads and
+        // writes, and reading the recents must not make one.
+        self.held
+            .borrow()
+            .get(&(workspace_id, Route::view(person)))
+            .and_then(|held| held.kept.clone())
+    }
+
+    /// Write what `edit` changes in `person`'s own view of `workspace_id`'s layout, as one change
+    /// of theirs, and publish it: a mark of theirs the layout's own writes leave alone (when they
+    /// cleared their recents). Whether anything was written.
+    pub(crate) fn edit_view(
+        &self,
+        workspace_id: WorkspaceId,
+        person: &str,
+        edit: impl FnOnce(&mut automerge::AutoCommit) -> bool,
+    ) -> bool {
+        let Some(engine) = self.engine() else {
+            return false;
+        };
+        let key = (workspace_id, Route::view(person));
+        if !self.settle_one(&key) || self.waits(&key) {
+            return false;
+        }
+        let Some(sealed) = self.sealed(&engine, &key) else {
+            return false;
+        };
+        let Some((mut doc, revision)) = self.copy(&key) else {
+            return false;
+        };
+        doc.set_actor(actor(&engine, person));
+        let before = doc.get_heads();
+        if !edit(&mut doc) || doc.pending_ops() == 0 {
+            doc.rollback();
+            return false;
+        }
+        shared_resource::commit_change(&mut doc, person, crate::activity::now_seconds(), None);
+        let written = PersonView::read(&doc);
+        self.keep(&key, doc.clone(), revision);
+        self.publish(
+            &key,
+            doc,
+            Some(Written::View(written)),
+            &before,
+            revision,
+            sealed,
+        );
+        true
     }
 
     /// Write what `edit` changes in `workspace_id`'s layout — what a change of it was, a name over
@@ -3089,11 +3150,27 @@ impl crate::activity::History for LayoutHistory {
 pub(crate) struct Steps {
     layouts: Rc<Layouts>,
     handle: DesktopHandle,
+    /// The opens of each workspace's layout read so far, followed change by change, and what the
+    /// last answer was read at ([`Layouts::moved`]).
+    opens: RefCell<BTreeMap<WorkspaceId, OpensRead>>,
+}
+
+/// The opens of one workspace's layout ([`tilo_desktop_model::recents::Opens`]), as last read.
+#[derive(Default)]
+struct OpensRead {
+    opens: tilo_desktop_model::recents::Opens,
+    /// The answer last given, and the [`Layouts::moved`] and person it was read at.
+    answer: Option<(u64, String, tilo_session_core::layout::RecentOpens)>,
+    revision: u64,
 }
 
 impl Steps {
     pub(crate) fn new(layouts: Rc<Layouts>, handle: DesktopHandle) -> Self {
-        Self { layouts, handle }
+        Self {
+            layouts,
+            handle,
+            opens: RefCell::new(BTreeMap::new()),
+        }
     }
 
     fn workspace_id(&self) -> Option<WorkspaceId> {
@@ -3145,6 +3222,66 @@ impl tilo_session_core::layout::Layouts for Steps {
             shown.entry(*tab).or_insert_with(|| record.clone());
         }
         shown
+    }
+
+    fn recent_opens(&self, person: &str) -> tilo_session_core::layout::RecentOpens {
+        let Some(workspace_id) = self.workspace_id() else {
+            return tilo_session_core::layout::RecentOpens::default();
+        };
+        let moved = self.layouts.moved();
+        let mut all = self.opens.borrow_mut();
+        let read = all.entry(workspace_id).or_default();
+        if let Some((at, whose, answer)) = &read.answer
+            && *at == moved
+            && whose == person
+        {
+            return answer.clone();
+        }
+        if let Some(mut doc) = self.layouts.layout(workspace_id)
+            && read.opens.follow(&mut doc)
+        {
+            read.revision = read.revision.wrapping_add(1);
+        }
+        let hidden = self
+            .layouts
+            .view_of(workspace_id, person)
+            .map(|view| person_view::recents_hidden(&view))
+            .unwrap_or_default();
+        let revision = {
+            use std::hash::{Hash as _, Hasher as _};
+            let mut hasher = std::hash::DefaultHasher::new();
+            (workspace_id.to_string(), read.revision, &hidden, person).hash(&mut hasher);
+            hasher.finish()
+        };
+        let reuse = read
+            .answer
+            .as_ref()
+            .filter(|(_, _, answer)| answer.revision == revision)
+            .map(|(_, _, answer)| Rc::clone(&answer.opened));
+        let answer = tilo_session_core::layout::RecentOpens {
+            opened: reuse.unwrap_or_else(|| Rc::new(read.opens.opened().to_vec())),
+            hidden,
+            revision,
+        };
+        read.answer = Some((moved, person.to_owned(), answer.clone()));
+        answer
+    }
+
+    fn hide_recents(
+        &self,
+        person: &str,
+        scope: &tilo_desktop_model::recents::Scope,
+        at: i64,
+    ) -> bool {
+        let Some(workspace_id) = self.workspace_id() else {
+            return false;
+        };
+        self.layouts.edit_view(workspace_id, person, |view| {
+            person_view::hide_recents(view, scope, at).unwrap_or_else(|error| {
+                tracing::error!(%error, "the person's view did not take their clear of recents");
+                false
+            })
+        })
     }
 }
 

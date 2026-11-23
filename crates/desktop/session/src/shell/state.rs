@@ -231,7 +231,7 @@ pub enum OverlayEffect {
     #[effect(kind = "outside")]
     ShowSurface {
         #[param(
-            "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `quick-settings`, `workspaces`, `composer` or `conversation`"
+            "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `quick-settings`, `workspaces`, `composer`, `conversation` or `history`"
         )]
         surface: String,
     },
@@ -299,7 +299,8 @@ pub fn overlays_surface() -> tilo_resource::surface::Surface {
 )]
 struct OverlaysSurface {
     /// The surface the shell shows over the windows: `none` at rest, or `overview`, `switcher`,
-    /// `launcher`, `centre`, `quick-settings`, `workspaces`, `composer` or `conversation`.
+    /// `launcher`, `centre`, `quick-settings`, `workspaces`, `composer`, `conversation` or
+    /// `history`.
     here: String,
     /// Whether the switcher's panel shows: a quick Alt+Tab switches windows and draws nothing.
     switcher_revealed: bool,
@@ -308,6 +309,11 @@ struct OverlaysSurface {
     switcher_scope: String,
     /// What the person last typed in the shell's search: the launcher opens where they left it.
     spotlight: String,
+    /// The app the history is narrowed to, by its id, when it was opened on one app's recents;
+    /// empty for none.
+    history_app: String,
+    /// The type the history is narrowed to, as its app publishes it; empty for none.
+    history_kind: String,
     /// The question the session puts to the person about themselves; empty when none waits.
     ask: String,
     /// What answering the question brings.
@@ -426,6 +432,8 @@ struct StackReading {
     switcher_revealed: bool,
     switcher_scope: &'static str,
     spotlight: String,
+    history_app: String,
+    history_kind: String,
     ask: String,
     ask_detail: String,
     ask_answer: String,
@@ -901,6 +909,8 @@ impl ShellService {
             switcher_revealed: self.surfaces.overlays.revealed(tilo_clock::now()),
             switcher_scope: self.surfaces.overlays.scope().name(),
             spotlight: self.surfaces.overlays.spotlight(),
+            history_app: self.surfaces.overlays.history_scope().0,
+            history_kind: self.surfaces.overlays.history_scope().1,
             ask_open: ask.as_ref().is_some_and(|ask| ask.open),
             ask: ask
                 .as_ref()

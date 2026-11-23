@@ -1306,6 +1306,7 @@ so-tilo-chrome-pan = Eine Leiste schieben
 so-tilo-chrome-quick-settings = Schnelleinstellungen
 so-tilo-chrome-rename = Umbenennen
 so-tilo-chrome-reopen-closed = Das geschlossene Fenster wieder öffnen
+so-tilo-chrome-recents = Zuletzt geöffnet
 so-tilo-chrome-reveal-top-bar = Die obere Leiste zeigen
 so-tilo-chrome-scroll = Ein Fenster scrollen
 so-tilo-chrome-set-width = Die Breite setzen

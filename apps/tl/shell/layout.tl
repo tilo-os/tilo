@@ -32,6 +32,32 @@ type Layout (origin: session.layout) {
     queries: Collection<LayoutQuery>
     /// The resources those queries found, each naming the query it is of.
     refs: Collection<LayoutRef>
+    /// What the person opened lately in the workspace in front, read off the workspace's history
+    /// of what its windows showed: each resource once, theirs first, newest first. What they
+    /// cleared and what they cannot read is not here.
+    recents: Collection<LayoutRecent>
+}
+
+/// A resource the person opened lately: what it is, its app and type, and who opened it last and
+/// when. The history surface lists them, narrowed to one app or type when an app asked for its
+/// own (`session.recents(app: ...)`).
+type LayoutRecent (origin: session.layout_recent) {
+    /// Its id: the resource's address.
+    key: Text merge register
+    /// The resource, by its address, as `session.open` takes it.
+    resource: Text merge register
+    title: Text merge register
+    /// The app that keeps it, by its canonical id.
+    origin_app: Text merge register
+    /// That app's name.
+    app_title: Text merge register
+    /// Its type, as its app publishes it.
+    kind: Text merge register
+    /// Who opened it last, by name.
+    by: Text merge register
+    at: Time
+    /// Whether the person looking opened it last themselves.
+    mine: Bool
 }
 
 /// A query a place shows while its app answers it: what the person typed, in which app, and what

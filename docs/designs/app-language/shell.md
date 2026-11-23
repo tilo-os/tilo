@@ -87,6 +87,39 @@ view frame_classic(p: Place) {
   size and place; what is shared is the document and their presence on it. Following someone
   opens what they're on, in the follower's shell.
 
+### Recents
+
+What a person opened lately is the system's, like search and history: no app keeps a recents
+list. Every window that shows a resource names it in the workspace's layout record, and each
+change of that record says who made it and when, so the opens are already recorded. A person's
+recents are a reading of that history (`tilo_desktop_model::recents`): each resource once, at its
+latest open, what they opened first and then what others in the workspace opened, newest first.
+A resource the session does not publish to the reader, because they cannot read it or it is gone,
+is not listed. Opening another entry of a root a place already shows (a second note of the
+notebook that place shows) re-points that place at the entry rather than only raising it, so it
+is an open in the history like any other and the place shows what was asked for.
+
+An app reaches its recents the way its search button reaches search scoped to it:
+
+```
+use so.tilo.session as session
+
+ui.Button("Recently opened", icon: .clock, icon_only: true, role: .plain) {
+    on press: session.recents(app: "so.tilo.tube")
+}
+```
+
+`session.recents(app:)`, or `session.recents(kind:)` for one type of the app's, is
+`desktop:chrome#recents` with `app` or `kind`: it opens the shell's history surface narrowed to
+that scope. Opened on nothing, the surface lists every app's. The shell reads the list as
+`layout.recents` (`session.layout_recent`), and a press on a row runs the layout's `open`.
+
+Clearing is `shell:layout#clear-recents` with the same scope (`session.clear_recents(app:)`).
+The layout's history is shared and append-only, so a clear never touches it: it writes a mark
+into the clearing person's own view of the layout (`recents_hidden`, by scope, the time of the
+clear), and their list leaves out what was opened up to then. The workspace's history and every
+other member's list keep it, and what they open after the clear lists again.
+
 ## 5. What a person sees of a task
 
 The resource, marks and seen are task-legibility.md. How a task's work shows up is the person's

@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 /// The person's layout as a host hands it to [`LayoutOrigin`]: what the shell's views read.
 pub use tilo_desktop_model::reading::{LayoutReading, LayoutWorkspaceReading};
 use tilo_desktop_model::reading::{
-    LayoutPersonReading, LayoutPlaceReading, LayoutQueryReading, LayoutRefReading,
-    LayoutRowReading, LayoutStripReading,
+    LayoutPersonReading, LayoutPlaceReading, LayoutQueryReading, LayoutRecentReading,
+    LayoutRefReading, LayoutRowReading, LayoutStripReading,
 };
 
 use crate::origin::{OriginCx, OriginType, origin_types};
@@ -55,6 +55,10 @@ pub const SHELL_FILES: &[(&str, &str)] = &[
     (
         "feedback.tl",
         include_str!("../../../../apps/tl/shell/feedback.tl"),
+    ),
+    (
+        "history.tl",
+        include_str!("../../../../apps/tl/shell/history.tl"),
     ),
     (
         "launcher.tl",
@@ -499,6 +503,7 @@ impl LayoutWriter {
             .flat_map(|query| query.matches.iter().cloned())
             .collect();
         sync!(refs, "refs", "layout_ref", ref_fields);
+        sync!(reading.recents, "recents", "layout_recent", recent_fields);
         writes
     }
 }
@@ -525,6 +530,24 @@ fn ref_fields(r: &LayoutRefReading) -> Vec<(&'static str, Value)> {
         ("address", Value::Text(r.address.clone())),
         ("title", Value::Text(r.title.clone())),
         ("kind", Value::Text(r.kind.clone())),
+    ]
+}
+
+/// The fields of a resource of the person's recents, as it is written into the shell's record.
+fn recent_fields(r: &LayoutRecentReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", Value::Text(r.key.clone())),
+        ("resource", Value::Text(r.resource.clone())),
+        ("title", Value::Text(r.title.clone())),
+        ("origin_app", Value::Text(r.origin_app.clone())),
+        ("app_title", Value::Text(r.app_title.clone())),
+        ("kind", Value::Text(r.kind.clone())),
+        ("by", Value::Text(r.by.clone())),
+        (
+            "at",
+            Value::Text(crate::tilolang::calendar::time_text(r.at)),
+        ),
+        ("mine", Value::Bool(r.mine)),
     ]
 }
 

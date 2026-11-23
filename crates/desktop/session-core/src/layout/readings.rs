@@ -9,8 +9,9 @@ use tilo_desktop_model::{GroupId, Layout as Tree, Tab, TabId, TileContent};
 
 use super::{Names, Target};
 pub use tilo_desktop_model::reading::{
-    LayoutPersonReading, LayoutPlaceReading, LayoutQueryReading, LayoutReading, LayoutRefReading,
-    LayoutRowReading, LayoutStripReading, LayoutWorkspaceReading,
+    LayoutPersonReading, LayoutPlaceReading, LayoutQueryReading, LayoutReading,
+    LayoutRecentReading, LayoutRefReading, LayoutRowReading, LayoutStripReading,
+    LayoutWorkspaceReading,
 };
 
 /// The person's layout as a shell's views read it: what [`Layout::reading`] answers and
@@ -31,6 +32,8 @@ pub type PlaceReading = LayoutPlaceReading;
 #[derive(Default)]
 pub struct Catalog {
     by_id: BTreeMap<String, Target>,
+    /// Moves whenever what it holds may have.
+    revision: u64,
 }
 
 impl Catalog {
@@ -41,6 +44,13 @@ impl Catalog {
             collect_targets(resource, &mut by_id);
         }
         self.by_id = by_id;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Moves whenever what it holds may have.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// The resource `id` as it is published, if it is.
@@ -61,6 +71,7 @@ impl Catalog {
     /// session has just published but the API's tree does not hold yet.
     pub fn remember(&mut self, id: &str, target: Target) {
         self.by_id.insert(id.to_owned(), target);
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Remember `resource` as its app publishes it: the app, the views it publishes, and what it
@@ -69,6 +80,7 @@ impl Catalog {
     /// window.
     pub fn remember_resource(&mut self, resource: &ResourceSpec) {
         collect_targets(resource, &mut self.by_id);
+        self.revision = self.revision.wrapping_add(1);
     }
 }
 

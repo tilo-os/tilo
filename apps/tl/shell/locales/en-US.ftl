@@ -222,6 +222,45 @@ d-dt4vnrqa = Queries
 d-fqirvfzw = Refs
     .doc = The resources those queries found, each naming the query it is of.
 
+d-cswol6ca = Recents
+    .doc = What the person opened lately in the workspace in front, read off the workspace's history of what its windows showed: each resource once, theirs first, newest first.
+
+d-rjnlecke = Layout recent
+    .doc = A resource the person opened lately: what it is, its app and type, and who opened it last and when.
+    .noun = { $count ->
+        [one] layout recent
+       *[other] layout recents
+    }
+
+d-zyqmwz53 = Key
+    .doc = Its id: the resource's address.
+
+d-g5lvltn4 = Resource
+    .doc = The resource, by its address, as `session.open` takes it.
+
+d-33ygyyvo = Title
+
+d-rgnzsrl5 = Origin app
+    .doc = The app that keeps it, by its canonical id.
+
+d-qegnrgvk = App title
+    .doc = That app's name.
+
+d-wpv5ccaw = Kind
+    .doc = Its type, as its app publishes it.
+
+d-nk3qn5vg = By
+    .doc = Who opened it last, by name.
+
+d-n77p6zrw = At
+
+d-5xciib7g = Mine
+    .doc = Whether the person looking opened it last themselves.
+
+d-rjnlecke-filter-at = At
+
+d-rjnlecke-filter-mine = Mine
+
 d-zsaib3op = Layout query
     .doc = A query a place shows while its app answers it: what the person typed, in which app, and what came of it.
     .noun = { $count ->
@@ -742,6 +781,11 @@ d-y6cjt65t-area = Area
 d-zek2dnmp = Cancel
     .doc = Leave the pick with nothing attached: no window, no report.
 
+d-otlw645x = Open
+    .doc = Opens the recent resource `address` again, beside the window in front, and puts the surface away: the same `open` an agent and a reference's press run.
+
+d-otlw645x-address = Address
+
 d-5giytccr = Open first
     .doc = Enter's work on a query: the first app the text finds opens, so typing "no" and pressing Enter opens Notes; a query that names no app is what search everywhere answers, as Enter has always done for what the shell's own rows do not hold.
 d-jjrvri4g = Choose launcher row
@@ -816,6 +860,9 @@ d-5o2gn6hf = A style settings
     .doc = A shell of one note in the style named, with that place in front, and the style's own settings open over it: what a person sees who opens them from the bar's style menu.
 
 d-5o2gn6hf-style = Style
+
+d-d63pkwee = Recents of an afternoon
+    .doc = Ada's opens of an afternoon and two of Mia's, newest first, as the session lists them.
 
 d-u6kdedav = Query show
     .doc = Show `found` in the place `place` while it shows a query: the same place, now the found resource (shell.md §8).
@@ -1044,6 +1091,13 @@ d-7ugeomrq = Report picker
     .w-nothing-is-open-to-report-about-2 = Nothing is open to report about.
     .w-click-the-window-that-isn-t-2 = Click the window that isn't working, or drag over it.
     .w-cancel = Cancel
+
+d-lcq7ufsf = History
+    .w-clear = Clear
+    .w-nothing-opened-lately = Nothing opened lately
+    .w-what-you-open-shows-up-here = What you open shows up here
+
+d-6eidrgir = Recent row
 
 d-dpqvjh2f = Launcher
     .w-search-apps-windows-actions-and-files = Search apps, windows, actions and files

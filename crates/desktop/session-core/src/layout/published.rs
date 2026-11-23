@@ -467,6 +467,19 @@ pub enum LayoutEffect {
         #[param("The row, by its key")]
         row: String,
     },
+    /// Clear the person's recents
+    /// What they opened until now leaves their own list of it, of one app, of one type, or of
+    /// everything when neither is named. The workspace's history keeps every open, and nobody
+    /// else's list changes.
+    #[effect(kind = "outside", label = "session-action-clear-recents")]
+    ClearRecents {
+        /// The app whose recents to clear, by its id
+        #[param("The app whose recents to clear, by its id")]
+        app: Option<String>,
+        /// The type whose recents to clear, as its app publishes it
+        #[param("The type whose recents to clear, as its app publishes it")]
+        kind: Option<String>,
+    },
 }
 
 impl LayoutEffect {
@@ -568,7 +581,7 @@ impl LayoutEffect {
             Self::RetryQuery { place } => LayoutAction::RetryQuery {
                 place: named(Some(place), Item::Place).unwrap_or_default(),
             },
-            Self::Undo | Self::Redo => return None,
+            Self::Undo | Self::Redo | Self::ClearRecents { .. } => return None,
             Self::Pin { place, pinned } => LayoutAction::Pin {
                 place: key_of(place),
                 pinned: pinned.unwrap_or(true),

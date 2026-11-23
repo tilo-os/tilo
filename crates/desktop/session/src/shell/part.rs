@@ -43,8 +43,8 @@ use crate::platform::surfaces::{Placement, WidgetSurface};
 /// so the shell's views and the session use the same names.
 pub use tilo_session_core::shell::{
     Ask, CHROME_RESOURCE, LAYOUT_RESOURCE, LayoutPersonReading, LayoutPlaceReading,
-    LayoutQueryReading, LayoutReading, LayoutRefReading, LayoutRowReading, LayoutStripReading,
-    LayoutWorkspaceReading, ORIGIN, OVERLAYS, SHELL_APP, SHELL_RECORD,
+    LayoutQueryReading, LayoutReading, LayoutRecentReading, LayoutRefReading, LayoutRowReading,
+    LayoutStripReading, LayoutWorkspaceReading, ORIGIN, OVERLAYS, SHELL_APP, SHELL_RECORD,
 };
 
 mod settings;

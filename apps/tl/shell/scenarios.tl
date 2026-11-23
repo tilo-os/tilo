@@ -3193,3 +3193,101 @@ scenario "questions waiting" {
         AskedFact(key: "studio/invocations/alarm-1/0", question: "studio/invocations/alarm-1", label: "At", value: "09:30 every weekday"),
     )
 }
+
+/// What Ada opened lately, every app's: her own opens first, then what Mia opened in the
+/// workspace, each resource once, under its app.
+scenario "the recents" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(device.overlays, device.Overlays(here: "history"))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    recents_of_an_afternoon(d)
+}
+
+/// The recents narrowed to one app, as its recents button opens them.
+scenario "the recents of one app" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(device.overlays, device.Overlays(here: "history", history_app: "so.tilo.notes"))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    recents_of_an_afternoon(d)
+}
+
+/// The recents after Clear: nothing listed until the next open.
+scenario "the recents, cleared" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    stage(device.overlays, device.Overlays(here: "history", history_app: "so.tilo.notes"))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+}
+
+/// Ada's opens of an afternoon and two of Mia's, newest first, as the session lists them.
+action recents_of_an_afternoon(d: Layout) {
+    d.recents.insert(
+        LayoutRecent(
+            key: "notes:quotes",
+            resource: "tl:so.tilo.notes:quotes",
+            title: "Quotes for the release notes",
+            origin_app: "so.tilo.notes",
+            app_title: "Notes",
+            kind: "so.tilo.notes.Note",
+            by: "Ada Lovelace",
+            at: Time("2026-11-23T16:21:00Z"),
+            mine: true,
+        ),
+    )
+    d.recents.insert(
+        LayoutRecent(
+            key: "tasks:release",
+            resource: "tl:so.tilo.lang.tasks:release",
+            title: "Release 4.2",
+            origin_app: "so.tilo.lang.tasks",
+            app_title: "Tasks",
+            kind: "so.tilo.lang.tasks.List",
+            by: "Ada Lovelace",
+            at: Time("2026-11-23T15:47:00Z"),
+            mine: true,
+        ),
+    )
+    d.recents.insert(
+        LayoutRecent(
+            key: "notes:minutes",
+            resource: "tl:so.tilo.notes:minutes",
+            title: "Minutes of the Tuesday design review, with every decision and who owns it",
+            origin_app: "so.tilo.notes",
+            app_title: "Notes",
+            kind: "so.tilo.notes.Note",
+            by: "Ada Lovelace",
+            at: Time("2026-11-23T11:02:00Z"),
+            mine: true,
+        ),
+    )
+    d.recents.insert(
+        LayoutRecent(
+            key: "notes:garden",
+            resource: "tl:so.tilo.notes:garden",
+            title: "Garden plan",
+            origin_app: "so.tilo.notes",
+            app_title: "Notes",
+            kind: "so.tilo.notes.Note",
+            by: "Mia Clayton",
+            at: Time("2026-11-23T16:05:00Z"),
+            mine: false,
+        ),
+    )
+    d.recents.insert(
+        LayoutRecent(
+            key: "chat:launch",
+            resource: "tl:so.tilo.lang.chat:launch",
+            title: "Launch",
+            origin_app: "so.tilo.lang.chat",
+            app_title: "Chat",
+            kind: "so.tilo.lang.chat.Conversation",
+            by: "Mia Clayton",
+            at: Time("2026-11-22T09:30:00Z"),
+            mine: false,
+        ),
+    )
+}

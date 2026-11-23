@@ -760,6 +760,21 @@ pub enum ChromeEffect {
         open: Option<bool>,
     },
 
+    /// Show what the person opened lately
+    /// The shell's history, narrowed to what the person opened lately of one app or of one type:
+    /// theirs first, then what others opened, newest first. Neither named shows everything. An
+    /// app's recents button and a view call this, as an app's search button opens search scoped
+    /// to it.
+    #[effect(view, own_device, idempotent)]
+    Recents {
+        /// The app, by its id.
+        #[param("The app whose recents to show, by its id")]
+        app: Option<String>,
+        /// The type, as its app publishes it.
+        #[param("The type whose recents to show, as its app publishes it")]
+        kind: Option<String>,
+    },
+
     /// Show the top bar over a full screen window
     /// As the Super key and a finger swiped down from the top edge do.
     #[effect(view, own_device, idempotent)]
@@ -1343,6 +1358,7 @@ fn admit_chrome(
         | ChromeEffect::ShowStrips
         | ChromeEffect::ShowPerson { .. }
         | ChromeEffect::Overview { .. }
+        | ChromeEffect::Recents { .. }
         | ChromeEffect::RevealTopBar
         | ChromeEffect::QuickSettings
         | ChromeEffect::WorkspaceMenu

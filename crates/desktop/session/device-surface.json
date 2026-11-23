@@ -3734,6 +3734,18 @@
           "readonly": true
         },
         {
+          "path": "history_app",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "history_kind",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
           "path": "ask",
           "stored": "value",
           "type": "text",

@@ -39,6 +39,10 @@ pub use published::{place_kind_resource, resources, row_kind_resource, strip_kin
 mod queries;
 use queries::{query_resource, query_state_from_outcome, query_target, settle};
 
+/// How many of one app's resources a person's recents list: a list of what was opened lately,
+/// never the app's whole catalogue.
+pub const RECENTS_PER_APP: usize = 100;
+
 /// The size a place made from a resource takes on the canvas when the caller names none: the framed
 /// canvas's window, in canvas pixels.
 const DEFAULT_WIDTH: i64 = 720;
@@ -695,6 +699,88 @@ pub trait Layouts {
     );
     /// The record each window shows, by its tab: what a place put on a record was placed on.
     fn shown(&self) -> BTreeMap<TabId, String>;
+    /// What `person`'s recents are read from in the workspace in front: every open its layout's
+    /// history holds, and when they cleared their recents. A host that keeps no shared history
+    /// has none.
+    fn recent_opens(&self, _person: &str) -> RecentOpens {
+        RecentOpens::default()
+    }
+    /// Clear `person`'s recents of `scope` up to `at` (seconds since the epoch), in their own view
+    /// of the workspace in front's layout: the layout's history is the workspace's and stays whole.
+    /// Whether it was kept.
+    fn hide_recents(
+        &self,
+        _person: &str,
+        _scope: &tilo_desktop_model::recents::Scope,
+        _at: i64,
+    ) -> bool {
+        false
+    }
+}
+
+/// `person`'s recents among `opens`, as a shell reads them: each resource once, at its latest open
+/// after what they cleared of its app or type, theirs first and then the others', newest first,
+/// at most [`RECENTS_PER_APP`] of each app. A resource `catalog` does not hold — one the session
+/// does not publish to this person, because they cannot read it or it is gone — is left out.
+/// `name` gives the name a member goes by.
+#[must_use]
+pub fn recent_readings(
+    opens: &RecentOpens,
+    person: &str,
+    catalog: &Catalog,
+    name: impl Fn(&str) -> String,
+) -> Vec<LayoutRecentReading> {
+    let ranked = tilo_desktop_model::recents::recent(
+        &opens.opened,
+        person,
+        |open| {
+            catalog.get(&open.resource).is_some_and(|target| {
+                open.at
+                    > tilo_desktop_model::recents::hidden_before(
+                        &opens.hidden,
+                        &target.app,
+                        &target.kind,
+                    )
+            })
+        },
+        usize::MAX,
+    );
+    let mut per_app: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut recents = Vec::new();
+    for recent in &ranked {
+        let Some(target) = catalog.get(&recent.resource) else {
+            continue;
+        };
+        let listed = per_app.entry(target.app.as_str()).or_default();
+        if *listed >= RECENTS_PER_APP {
+            continue;
+        }
+        *listed = listed.saturating_add(1);
+        recents.push(LayoutRecentReading {
+            key: recent.resource.clone(),
+            resource: recent.resource.clone(),
+            title: target.title.clone(),
+            origin_app: target.app.clone(),
+            app_title: target.app_title.clone(),
+            kind: target.kind.clone(),
+            by: name(&recent.by),
+            at: recent.at,
+            mine: recent.mine,
+        });
+    }
+    recents
+}
+
+/// What a person's recents are read from ([`Layouts::recent_opens`]).
+#[derive(Clone, Debug, Default)]
+pub struct RecentOpens {
+    /// Every open of the workspace in front's layout, oldest first.
+    pub opened: Rc<Vec<tilo_desktop_model::recents::Opened>>,
+    /// When the person cleared their recents, by scope
+    /// ([`tilo_desktop_model::recents::Scope::key`]).
+    pub hidden: BTreeMap<String, i64>,
+    /// Moves whenever either does.
+    pub revision: u64,
 }
 
 /// What a step of the layout came to.
@@ -783,6 +869,9 @@ pub struct Layout {
     /// app holds now of that kind that it did not then is what the search found — the answer is
     /// told apart from what the app already had without a service's private words (shell.md §8).
     query_held: RefCell<BTreeMap<String, std::collections::BTreeSet<String>>>,
+    /// The person's recents as last read, with the revisions of the opens and the catalogue they
+    /// were read at: a reading made again with neither moved reads none of the history again.
+    recents: RefCell<Option<(u64, u64, Vec<LayoutRecentReading>)>>,
 }
 
 impl Layout {
@@ -811,6 +900,7 @@ impl Layout {
             posted: RefCell::new(None),
             queries: RefCell::new(BTreeMap::new()),
             query_held: RefCell::new(BTreeMap::new()),
+            recents: RefCell::new(None),
         }
     }
 
@@ -1207,7 +1297,8 @@ impl Layout {
     /// The place already showing `resource` or anything of its root, if one stands: what opening a
     /// mailbox, a conversation, a notebook or one of its entries brings forward rather than opening
     /// a second place of the same app's record (`shell.md` §3, "Activating something already shown
-    /// goes to it"). Opening the root and then one view inside it is one thing open, not two.
+    /// goes to it"). Opening the root and then one view inside it is one thing open, not two
+    /// ([`Self::open_place`] re-points that place at the entry asked for).
     #[must_use]
     pub fn place_of_root(&self, resource: &str) -> Option<u64> {
         let records = self.window_resources();
@@ -1264,7 +1355,19 @@ impl Layout {
         if let Some(held) = self.place_of_root(resource) {
             // Opening what is open, or a view of what is open, brings that place forward; one
             // already in front is where it should be, and asking to activate it again would refuse
-            // ("that place is in front already").
+            // ("that place is in front already"). Another entry of the same root — a second note
+            // of the notebook a place shows — is what the person asked to see, so the place shows
+            // it from now on: one place per root still, and the open is in the layout's history
+            // like any other. The root itself asked again keeps what the place shows.
+            let showing = self.window_resources().get(&held).cloned();
+            if showing.as_deref() != Some(resource) && root_of(resource) != Some(resource) {
+                let show = LayoutAction::Show {
+                    place: held,
+                    resource: resource.to_owned(),
+                    view: view.to_owned(),
+                };
+                self.ask(asked, show, Busy::default())?;
+            }
             self.bring_forward(asked, held, Busy::default())?;
             return Ok(None);
         }
@@ -1387,7 +1490,48 @@ impl Layout {
         reading
             .queries
             .extend(self.queries.borrow().values().cloned());
+        reading.recents = self.recents();
         reading
+    }
+
+    /// The person's recents in the workspace in front: each resource a window there came to show,
+    /// once, at its latest open, theirs first and then the others', newest first, and at most
+    /// [`RECENTS_PER_APP`] of each app. A resource the session does not publish to this person —
+    /// one they cannot read, or that is gone — is left out, and so is what they cleared.
+    fn recents(&self) -> Vec<LayoutRecentReading> {
+        let opens = self.layouts.recent_opens(&self.person);
+        let catalog = self.catalog.borrow();
+        if let Some((opened, listed, held)) = self.recents.borrow().as_ref()
+            && *opened == opens.revision
+            && *listed == catalog.revision()
+        {
+            return held.clone();
+        }
+        let recents = recent_readings(&opens, &self.person, &catalog, |person| {
+            self.member_name(person)
+        });
+        *self.recents.borrow_mut() = Some((opens.revision, catalog.revision(), recents.clone()));
+        recents
+    }
+
+    /// Clear the person's recents of `scope` up to now: what they opened before stays in the
+    /// workspace's history and leaves their list. Whether it was kept.
+    pub fn clear_recents(&self, scope: &tilo_desktop_model::recents::Scope) -> bool {
+        self.layouts
+            .hide_recents(&self.person, scope, ui::time::unix_now_i64())
+    }
+
+    /// The name the workspace in front lists `person` by, or their id where it lists none.
+    fn member_name(&self, person: &str) -> String {
+        self.handle
+            .read(|tree| {
+                tree.active_workspace()?
+                    .members
+                    .iter()
+                    .find(|member| member.id.person_id() == Some(person) && !member.name.is_empty())
+                    .map(|member| member.name.clone())
+            })
+            .unwrap_or_else(|| person.to_owned())
     }
 
     /// The person's name as the workspace in front lists them, or their id where it lists no name.

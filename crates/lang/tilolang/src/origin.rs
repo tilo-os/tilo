@@ -351,6 +351,12 @@ pub const KINDS: &[OriginKind] = &[
                 "Collection<session.layout_ref>",
                 "The resources those queries found, each naming the query it is of.",
             ),
+            field(
+                "recents",
+                "Collection<session.layout_recent>",
+                "What the person opened lately in the workspace in front: each resource once, \
+                 theirs first, newest first, without what they cleared or cannot read.",
+            ),
         ],
     },
     OriginKind {
@@ -494,6 +500,44 @@ pub const KINDS: &[OriginKind] = &[
                 "reason",
                 "Text",
                 "Why it failed, in the app's own words; empty while it does better.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.layout_recent",
+        doc: "A resource the person opened lately: read off the workspace's history of what \
+              its windows showed, by whom and when. Clearing recents (`shell:layout` \
+              `clear-recents`) hides what came before for the person alone; the history keeps it.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Its id: the resource's address."),
+            field(
+                "resource",
+                "Text",
+                "The resource, by its address, as the layout's `open` takes it.",
+            ),
+            field("title", "Text", "What it is called."),
+            field(
+                "origin_app",
+                "Text",
+                "The app that keeps it, by its canonical id.",
+            ),
+            field(
+                "app_title",
+                "Text",
+                "That app's name, in the person's language.",
+            ),
+            field(
+                "kind",
+                "Text",
+                "Its type, as its app publishes it (`tube.video`).",
+            ),
+            field("by", "Text", "Who opened it last, by name."),
+            field("at", "Time", "When it was opened."),
+            field(
+                "mine",
+                "Bool",
+                "Whether the person looking opened it last themselves.",
             ),
         ],
     },

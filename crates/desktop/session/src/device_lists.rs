@@ -704,6 +704,16 @@ impl Surfaces {
         self.settled();
     }
 
+    /// Show the history on what the person opened lately of `app` or of `kind` (both empty for
+    /// everything), whether or not it is up.
+    pub(crate) fn history(&self, app: &str, kind: &str) {
+        self.caught_up();
+        self.panel_closes();
+        self.overlays.history(app, kind);
+        self.clear_beside();
+        self.settled();
+    }
+
     /// One surface at a time: the shell's own popovers go down under the shell's view of the surface
     /// just opened.
     fn clear_beside(&self) {

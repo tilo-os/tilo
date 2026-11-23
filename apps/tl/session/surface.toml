@@ -492,6 +492,20 @@ required = false
 type = "bool"
 
 [[resources.verbs]]
+id = "recents"
+kind = "read"
+
+[[resources.verbs.params]]
+name = "app"
+required = false
+type = "text"
+
+[[resources.verbs.params]]
+name = "kind"
+required = false
+type = "text"
+
+[[resources.verbs]]
 id = "reveal-top-bar"
 kind = "read"
 params = []
@@ -818,6 +832,20 @@ kind = "undoable"
 [[resources.verbs.params]]
 name = "row"
 required = true
+type = "text"
+
+[[resources.verbs]]
+id = "clear-recents"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "app"
+required = false
+type = "text"
+
+[[resources.verbs.params]]
+name = "kind"
+required = false
 type = "text"
 
 [[resources]]

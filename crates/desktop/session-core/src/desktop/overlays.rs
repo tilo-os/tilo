@@ -96,6 +96,9 @@ pub enum Overlay {
     QuickSettings,
     /// The conversation with the session's agent.
     Conversation,
+    /// What happened in the workspace, and what the person opened lately: everything, or one
+    /// app's or one type's ([`Overlays::history`]).
+    History,
 }
 
 impl Overlay {
@@ -112,6 +115,7 @@ impl Overlay {
             "composer" => Self::Composer,
             "quick-settings" => Self::QuickSettings,
             "conversation" => Self::Conversation,
+            "history" => Self::History,
             _ => return None,
         })
     }
@@ -129,6 +133,7 @@ impl Overlay {
             Self::Composer => "composer",
             Self::QuickSettings => "quick-settings",
             Self::Conversation => "conversation",
+            Self::History => "history",
         }
     }
 }
@@ -642,6 +647,10 @@ impl Overlays {
             return;
         }
         stack.here = surface;
+        // The history opened as a surface of its own is the whole workspace's; a scoped one is
+        // opened through [`Self::history`], which names its scope after.
+        stack.history_app.clear();
+        stack.history_kind.clear();
         if surface == Overlay::Switcher {
             stack.opened = Some(tilo_clock::now());
             stack.scope = SwitcherScope::Workspace;
@@ -664,6 +673,23 @@ impl Overlays {
         query.clone_into(&mut self.0.borrow_mut().spotlight);
         self.show(Overlay::Launcher);
         self.0.borrow_mut().moved();
+    }
+
+    /// Open the history on what the person opened lately of `app` (its canonical id) or of `kind`
+    /// (a type as its app publishes it); both empty shows everything.
+    pub fn history(&self, app: &str, kind: &str) {
+        self.show(Overlay::History);
+        let mut stack = self.0.borrow_mut();
+        app.clone_into(&mut stack.history_app);
+        kind.clone_into(&mut stack.history_kind);
+        stack.moved();
+    }
+
+    /// The app and the type the history is narrowed to, empty for none.
+    #[must_use]
+    pub fn history_scope(&self) -> (String, String) {
+        let stack = self.0.borrow();
+        (stack.history_app.clone(), stack.history_kind.clone())
     }
 
     /// The walk starts again from the window in front, whichever surface was up.
@@ -1023,6 +1049,9 @@ struct Stack {
     here: Overlay,
     revision: u64,
     spotlight: String,
+    /// The app and the type the history was opened on ([`Overlays::history`]).
+    history_app: String,
+    history_kind: String,
     /// How far Alt+Tab has walked from the window in front.
     walk: i64,
     scope: SwitcherScope,

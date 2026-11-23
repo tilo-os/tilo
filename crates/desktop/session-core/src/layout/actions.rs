@@ -97,6 +97,19 @@ impl LayoutActions {
         let encoded = tilo_actions::api::encode_json(&published, address, arguments)?;
         let effect = LayoutEffect::from_payload(&encoded.payload)
             .map_err(|error| tilo_actions::ApiError::InvalidArguments(error.to_string()))?;
+        // Clearing recents marks the person's own view of the layout, never the layout itself.
+        if let LayoutEffect::ClearRecents { app, kind } = &effect {
+            let scope = tilo_desktop_model::recents::Scope::of(app.as_deref(), kind.as_deref());
+            if !self.layout.borrow().clear_recents(&scope) {
+                return Err(tilo_actions::ApiError::Unavailable {
+                    code: "recents_not_kept".to_owned(),
+                    reason:
+                        "the person's view of this workspace's layout cannot be written here yet"
+                            .to_owned(),
+                });
+            }
+            return Ok(completed());
+        }
         let Some(mut action) = effect.layout() else {
             return self.step(address);
         };

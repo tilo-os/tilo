@@ -1328,6 +1328,19 @@ impl ShellChrome {
                 }
                 true
             }
+            // The history, opened on what the person opened lately of an app or a type: the
+            // scoped way into the one history surface, as a search button is into search.
+            "recents" => {
+                let named = |key: &str| match arguments.get(key) {
+                    None | Some(Value::Null) => Ok(String::new()),
+                    Some(Value::String(text)) => Ok(text.trim().to_owned()),
+                    Some(other) => Err(tilo_actions::ApiError::InvalidArguments(format!(
+                        "`recents` takes `{key}` as text, got {other}"
+                    ))),
+                };
+                self.surfaces.history(&named("app")?, &named("kind")?);
+                true
+            }
             // The workspaces are the shell's one workspace surface: the shell's menu, the workspaces
             // a person switches between and the actions on them.
             "workspace-menu" => {

@@ -465,6 +465,9 @@ session-place = Place
 
 session-action-undo = Undo the last layout change
 session-action-redo = Redo the last layout change
+session-action-clear-recents = Clear the person's recents
+session-action-clear-recents-app = The app whose recents to clear, by its id
+session-action-clear-recents-kind = The type whose recents to clear, as its app publishes it
 session-action-pin = Pin a place, so an agent's changes leave it alone
 session-action-pin-pinned = Whether it is pinned
 session-action-position = Stand a place at a point on the canvas, as a drag that let it go there

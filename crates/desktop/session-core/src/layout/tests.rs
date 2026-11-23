@@ -500,3 +500,95 @@ fn surface_at_falls_back_when_active_strip_is_missing_or_stale() {
         "the created row exists in the workspace"
     );
 }
+
+/// What the catalogue holds of a resource of `app`'s: what the session publishes to the person.
+fn published(app: &str, kind: &str, title: &str) -> Placed {
+    Placed {
+        app: app.into(),
+        views: Vec::new(),
+        title: title.into(),
+        kind: kind.into(),
+        place_view: None,
+        place_title: String::new(),
+        app_title: "Video".into(),
+    }
+}
+
+/// Two members read their recents off the one history of the workspace's layout: each sees their
+/// own opens first; one clearing hides what came before from their list alone, the history and the
+/// other's list keep it; and a resource the session does not publish to the reader never lists.
+#[test]
+fn recents_are_each_readers_own_over_one_history() {
+    use super::{Catalog, RecentOpens, recent_readings};
+    use tilo_desktop_model::recents::{Opened, Scope};
+
+    let opened = |resource: &str, by: &str, at: i64| Opened {
+        resource: resource.into(),
+        by: by.into(),
+        at,
+    };
+    let history = std::rc::Rc::new(vec![
+        opened("tube:a", "ada", 10),
+        opened("tube:b", "bob", 20),
+        opened("tube:secret", "bob", 25),
+        opened("tube:c", "ada", 30),
+    ]);
+    let mut catalog = Catalog::default();
+    for (id, title) in [("tube:a", "A"), ("tube:b", "B"), ("tube:c", "C")] {
+        catalog.remember(id, published("so.tilo.tube", "tube.video", title));
+    }
+    let name = |person: &str| person.to_uppercase();
+    let listed = |opens: &RecentOpens, person: &str| -> Vec<(String, bool)> {
+        recent_readings(opens, person, &catalog, name)
+            .into_iter()
+            .map(|recent| (recent.resource, recent.mine))
+            .collect()
+    };
+    let nothing_cleared = RecentOpens {
+        opened: std::rc::Rc::clone(&history),
+        ..RecentOpens::default()
+    };
+    assert_eq!(
+        listed(&nothing_cleared, "ada"),
+        [
+            ("tube:c".to_owned(), true),
+            ("tube:a".to_owned(), true),
+            ("tube:b".to_owned(), false),
+        ],
+        "her own first, newest first, and never what she cannot read"
+    );
+    assert_eq!(
+        listed(&nothing_cleared, "bob"),
+        [
+            ("tube:b".to_owned(), true),
+            ("tube:c".to_owned(), false),
+            ("tube:a".to_owned(), false),
+        ]
+    );
+    let by = recent_readings(&nothing_cleared, "bob", &catalog, name);
+    assert_eq!(
+        by[1].by, "ADA",
+        "who opened it is named as the workspace names them"
+    );
+
+    // Ada clears YouTube's recents at 25: her list keeps only what she or anyone opened after.
+    let ada_cleared = RecentOpens {
+        opened: std::rc::Rc::clone(&history),
+        hidden: [(Scope::of(Some("so.tilo.tube"), None).key(), 25)].into(),
+        revision: 1,
+    };
+    assert_eq!(listed(&ada_cleared, "ada"), [("tube:c".to_owned(), true)]);
+    assert_eq!(history.len(), 4, "the workspace's history keeps every open");
+    assert_eq!(
+        listed(&nothing_cleared, "bob").len(),
+        3,
+        "Bob's list is his own: Ada's clear is not in his view"
+    );
+    // A clear of another app's recents hides none of YouTube's.
+    let other = RecentOpens {
+        opened: std::rc::Rc::clone(&history),
+        hidden: [(Scope::of(Some("so.tilo.notes"), None).key(), 100)].into(),
+        revision: 2,
+    };
+    assert_eq!(listed(&other, "ada").len(), 3);
+}

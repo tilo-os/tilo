@@ -115,6 +115,33 @@ pub struct LayoutReading {
     /// what it found, or why nothing did (`session.layout_query`, shell.md §8).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queries: Vec<LayoutQueryReading>,
+    /// What the person opened lately in the workspace in front (`session.layout_recent`): each
+    /// resource once, theirs first, newest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recents: Vec<LayoutRecentReading>,
+}
+
+/// A resource in the person's recents: what it is, its app and type, and who opened it last and
+/// when (`session.layout_recent`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayoutRecentReading {
+    /// Its id: the resource's address.
+    pub key: String,
+    /// The resource, by its address, as the layout's `open` takes it.
+    pub resource: String,
+    pub title: String,
+    /// The app that keeps it, by its canonical id.
+    pub origin_app: String,
+    /// That app's name, in the person's language.
+    pub app_title: String,
+    /// Its type, as its app publishes it.
+    pub kind: String,
+    /// Who opened it last, by name.
+    pub by: String,
+    /// When, in seconds since the epoch.
+    pub at: i64,
+    /// Whether the person looking opened it last themselves.
+    pub mine: bool,
 }
 
 /// Someone else here in the workspace in front: a person or an agent, by their presence's key.

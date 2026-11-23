@@ -30,8 +30,9 @@ pub const SHELL_APP: &str = "so.tilo.shell";
 
 /// The layout's readings: what the person arranged.
 pub use crate::layout::{
-    LayoutPersonReading, LayoutPlaceReading, LayoutQueryReading, LayoutReading, LayoutRefReading,
-    LayoutRowReading, LayoutStripReading, LayoutWorkspaceReading,
+    LayoutPersonReading, LayoutPlaceReading, LayoutQueryReading, LayoutReading,
+    LayoutRecentReading, LayoutRefReading, LayoutRowReading, LayoutStripReading,
+    LayoutWorkspaceReading,
 };
 
 /// What a shell asked of the session: an invocation on the action API, its arguments as any caller's

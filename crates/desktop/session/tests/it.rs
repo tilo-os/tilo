@@ -199,6 +199,8 @@ mod power;
 mod primary_display;
 #[path = "profile_name.rs"]
 mod profile_name;
+#[path = "recents.rs"]
+mod recents;
 #[path = "refounded_workspace.rs"]
 mod refounded_workspace;
 #[path = "refused_writes.rs"]

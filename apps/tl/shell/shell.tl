@@ -400,6 +400,8 @@ view surface() {
             quick_settings(fill)
         } else if device.overlays.here == "workspaces" {
             workspaces(fill)
+        } else if device.overlays.here == "history" {
+            history(fill)
         }
     }
 }

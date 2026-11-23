@@ -162,6 +162,7 @@ impl DesktopHandle {
             ChromeEffect::RevealTopBar
             | ChromeEffect::Overview { .. }
             | ChromeEffect::About { .. }
+            | ChromeEffect::Recents { .. }
             | ChromeEffect::QuickSettings
             | ChromeEffect::WorkspaceMenu
             | ChromeEffect::ShowPerson { .. }

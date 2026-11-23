@@ -470,6 +470,9 @@ session-place = Fenster
 
 session-action-undo = Die letzte Änderung am Layout rückgängig machen
 session-action-redo = Die letzte Änderung am Layout wiederholen
+session-action-clear-recents = Den Verlauf der Person leeren
+session-action-clear-recents-app = Die App, deren Verlauf geleert wird, nach ihrer ID
+session-action-clear-recents-kind = Der Typ, dessen Verlauf geleert wird, wie seine App ihn veröffentlicht
 session-action-pin = Einen Platz anheften, damit die Änderungen eines Agenten ihn in Ruhe lassen
 session-action-pin-pinned = Ob er angeheftet ist
 session-action-position = Einen Platz an einen Punkt der Fläche stellen, wie ein Ziehen, das ihn dort losließ

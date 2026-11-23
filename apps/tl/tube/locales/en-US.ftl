@@ -564,6 +564,7 @@ d-mufcicuu = Feed
     .w-watch-later = Watch later
     .w-liked-videos = Liked videos
     .w-history = History
+    .w-recently-opened = Recently opened
     .w-nothing-on-the-watch-queue = Nothing on the watch queue
     .w-videos-you-keep-for-later-wait = Videos you keep for later wait here, oldest first
     .w-videos-oldest-first = { $len } videos, oldest first

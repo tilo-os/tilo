@@ -39,6 +39,57 @@ const FRONT_TAB: &str = "front_tab";
 const WIDTHS: &str = "widths";
 const MAXIMIZED: &str = "maximized";
 const OWN: &str = "own";
+/// When the person last cleared their recents, by the scope they cleared
+/// ([`crate::recents::Scope::key`]): theirs alone, beside the view, and never written by
+/// [`PersonView::write`], which leaves keys it does not know as they are.
+const RECENTS_HIDDEN: &str = "recents_hidden";
+
+/// When the person cleared their recents, by scope ([`crate::recents::Scope::key`]), as `doc`
+/// (their view of a workspace's layout) keeps it.
+#[must_use]
+pub fn recents_hidden(doc: &AutoCommit) -> BTreeMap<String, i64> {
+    let Ok(Some((Value::Object(automerge::ObjType::Map), map))) = doc.get(ROOT, RECENTS_HIDDEN)
+    else {
+        return BTreeMap::new();
+    };
+    doc.keys(&map)
+        .filter_map(
+            |scope| match doc.get(&map, scope.as_str()).ok().flatten()? {
+                (Value::Scalar(value), _) => match value.as_ref() {
+                    automerge::ScalarValue::Int(at) => Some((scope, *at)),
+                    _ => None,
+                },
+                _ => None,
+            },
+        )
+        .collect()
+}
+
+/// Hide what the person's recents of `scope` hold up to `at` (seconds since the epoch), in their
+/// view `doc`: the workspace's history keeps every open, and only this person's list starts again.
+/// A later clear of the same scope moves the mark; an earlier one leaves it.
+///
+/// # Errors
+/// The document refused the write.
+pub fn hide_recents(
+    doc: &mut AutoCommit,
+    scope: &crate::recents::Scope,
+    at: i64,
+) -> Result<bool, automerge::AutomergeError> {
+    let key = scope.key();
+    if recents_hidden(doc)
+        .get(&key)
+        .is_some_and(|held| *held >= at)
+    {
+        return Ok(false);
+    }
+    let map = match doc.get(ROOT, RECENTS_HIDDEN)? {
+        Some((Value::Object(automerge::ObjType::Map), map)) => map,
+        _ => doc.put_object(ROOT, RECENTS_HIDDEN, automerge::ObjType::Map)?,
+    };
+    doc.put(&map, key.as_str(), at)?;
+    Ok(true)
+}
 
 /// Where a window of the person's own stands on the layout, and what opens it again.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

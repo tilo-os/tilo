@@ -106,6 +106,7 @@ fn layout(record: &str, shows: &str, shown_as: &str) -> LayoutReading {
         front: String::new(),
         people: Vec::new(),
         queries: Vec::new(),
+        recents: Vec::new(),
         workspaces: vec![LayoutWorkspaceReading {
             key: "w1".to_owned(),
             name: "Home".to_owned(),

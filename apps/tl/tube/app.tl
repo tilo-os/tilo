@@ -8,6 +8,7 @@ app so.tilo.tube "YouTube" (
 )
 
 use so.tilo.playback as playback
+use so.tilo.session as session
 
 /// A channel someone publishes videos on. The service writes what it says (its name, handle and
 /// numbers); the person's own relation to it is a `Subscription`, so subscribing never depends on
@@ -1152,7 +1153,13 @@ view feed(yt: YouTube) {
             }
         }
         actions: {
-            std.header
+            std.header {
+                // What was opened lately is the system's, as search is: the button opens the
+                // shell's history narrowed to this app, and the app keeps no list of it.
+                ui.Button("Recently opened", icon: .clock, icon_only: true, role: .plain) {
+                    on press: session.recents(app: "so.tilo.tube")
+                }
+            }
         }
         content: {
             scroll {

@@ -1270,6 +1270,7 @@ so-tilo-chrome-pan = Pan a strip
 so-tilo-chrome-quick-settings = Quick Settings
 so-tilo-chrome-rename = Rename
 so-tilo-chrome-reopen-closed = Reopen the closed window
+so-tilo-chrome-recents = Recently opened
 so-tilo-chrome-reveal-top-bar = Show the top bar
 so-tilo-chrome-scroll = Scroll a window
 so-tilo-chrome-set-width = Set the width
