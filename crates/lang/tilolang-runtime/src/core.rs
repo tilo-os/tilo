@@ -57,8 +57,9 @@ use Imp::{
     SeenBy, SetAdd, SetRemove, SheetEdit, SheetEntry, SheetFile, SheetNumbers, SheetOfFile,
     SheetRanges, SheetRecords, SheetValues, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI,
     Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith,
-    StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit,
-    StrStartsWith, StrToFloat, StrToInt, StrTrim, StrUpper, StrWords, Suggest, Take, TimeClock,
+    StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrMisspelled, StrReplace,
+    StrSlice, StrSplit, StrStartsWith, StrSuggestions, StrToFloat, StrToInt, StrTrim, StrUpper,
+    StrWords, Suggest, Take, TimeClock,
     TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse, TimeShift, TimeSpan, TimeWall, Today,
     TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
     UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt, UiChild,
@@ -558,7 +559,9 @@ impl Core {
             StrLit | StrConcat | StrEq | StrLen | StrWords | IntToStr | StrToInt | StrToFloat
             | FloatToStr | StrCmp | StrFind | StrSlice | StrReplace | StrTrim | StrLower
             | StrUpper | StrStartsWith | StrEndsWith | StrContains | StrSplit | StrJoin
-            | StrMatches | DurationText => self.text_import(imp, mem, a),
+            | StrMatches | StrMisspelled | StrSuggestions | DurationText => {
+                self.text_import(imp, mem, a)
+            }
             IntMin | IntMax | IntClamp | IntAbs | FloatMin | FloatMax | FloatClamp | FloatAbs
             | FloatRound | FloatRoundTo | FloatFloor | FloatFloorTo | FloatCeil | FloatCeilTo
             | FloatSqrt | FloatCbrt | FloatPow | FloatExp | FloatLn | FloatLog10 | FloatLog2

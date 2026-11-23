@@ -144,6 +144,22 @@ impl Checker<'_> {
                 let sep = self.one_text(name, args, span)?;
                 Ex::host(Imp::StrSplit, vec![r, sep], Ty::List(Box::new(Ty::Text)))
             }
+            // The words of it no dictionary of the device's language knows, each as it is
+            // written; what a word is most likely meant to be, best first.
+            "misspelled" => {
+                if !self.arity(name, args, 0, span) {
+                    return None;
+                }
+                Ex::host(Imp::StrMisspelled, vec![r], Ty::List(Box::new(Ty::Text)))
+            }
+            "suggestions" => {
+                let word = self.one_text(name, args, span)?;
+                Ex::host(
+                    Imp::StrSuggestions,
+                    vec![r, word],
+                    Ty::List(Box::new(Ty::Text)),
+                )
+            }
             "slice" => {
                 if !self.arity(name, args, 2, span) {
                     return None;

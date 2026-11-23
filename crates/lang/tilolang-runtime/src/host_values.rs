@@ -112,6 +112,28 @@ impl Core {
                 };
                 ret_i32(i32::from(yes))
             }
+            // The words no dictionary of the device's language knows, each as it stands in the
+            // text: what an editor draws a squiggle under and a panel lists.
+            Imp::StrMisspelled => {
+                let text = self.text(a.h(0)?)?;
+                let language = spellcheck::default_language();
+                let words = spellcheck::spans_for_language(&language, &text)
+                    .into_iter()
+                    .filter_map(|(start, end)| text.get(start..end).map(Value::text))
+                    .collect();
+                self.ret_h(Value::List(words))
+            }
+            // What `word` is most likely meant to be, best first: the same dictionaries a text
+            // field's suggestions come from, so a view and a field never disagree.
+            Imp::StrSuggestions => {
+                let word = self.text(a.h(1)?)?;
+                let language = spellcheck::default_language();
+                let suggestions = spellcheck::suggestions_for_language(&language, &word, 3)
+                    .into_iter()
+                    .map(Value::Text)
+                    .collect();
+                self.ret_h(Value::List(suggestions))
+            }
             Imp::StrSplit => {
                 let text = self.text(a.h(0)?)?;
                 let sep = self.text(a.h(1)?)?;

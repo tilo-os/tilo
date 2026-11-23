@@ -23019,6 +23019,7 @@ dependencies = [
  "tilo-reference",
  "tilo-resource",
  "tilo-sheet",
+ "tilo-spellcheck",
  "tilo-test-env",
  "tilo-wasm-host",
  "tilolang",

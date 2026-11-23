@@ -57,6 +57,10 @@ imports! {
     StrSplit = "str_split" ([H, H] -> [H]);
     StrJoin = "str_join" ([H, H] -> [H]);
     StrMatches = "str_matches" ([H, H] -> [I32]);
+    // The device's spelling: the words of a text no dictionary knows (`Text.misspelled`), and
+    // what a word is most likely meant to be (`Text.suggestions`).
+    StrMisspelled = "str_misspelled" ([H] -> [H]);
+    StrSuggestions = "str_suggestions" ([H, H] -> [H]);
 
     IntMin = "int_min" ([I64, I64] -> [I64]);
     IntMax = "int_max" ([I64, I64] -> [I64]);

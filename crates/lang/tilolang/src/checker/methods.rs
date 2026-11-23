@@ -21,6 +21,8 @@ pub const TEXT: &[&str] = &[
     "replace",
     "split",
     "matches",
+    "misspelled",
+    "suggestions",
     "to_int",
     "to_float",
 ];

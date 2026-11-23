@@ -81,6 +81,9 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-content-types = { version = "0.1.0", path = "../../core/content-types" }
 # The one image codec: what a file's pixels are decoded and encoded with, on the device.
 tilo-image-codec = { version = "0.1.0", path = "../../engines/tilo-image-codec" }
+# The device's spelling: the dictionaries a text field checks with, so what a program asks of
+# `Text.misspelled()` is what the field beside it draws.
+spellcheck = { package = "tilo-spellcheck", path = "../../ui/spellcheck" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Native targets only: wasmtime maps executable memory, which no browser has.

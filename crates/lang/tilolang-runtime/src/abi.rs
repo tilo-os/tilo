@@ -47,6 +47,8 @@ imports! {
     (StrSplit, "str_split", "ii", "i"),
     (StrJoin, "str_join", "ii", "i"),
     (StrMatches, "str_matches", "ii", "i"),
+    (StrMisspelled, "str_misspelled", "i", "i"),
+    (StrSuggestions, "str_suggestions", "ii", "i"),
 
     (IntMin, "int_min", "ll", "l"),
     (IntMax, "int_max", "ll", "l"),

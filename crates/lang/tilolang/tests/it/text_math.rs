@@ -32,6 +32,8 @@ fn at(t: Text) -> Option<Int> { return t.find(\"b\") }\n\
 fn cut(t: Text) -> Text { return t.slice(1, t.len()) }\n\
 fn swap(t: Text) -> Text { return t.replace(\"a\", \"b\") }\n\
 fn pieces(t: Text) -> List<Text> { return t.split(\",\") }\n\
+fn wrong(t: Text) -> List<Text> { return t.misspelled() }\n\
+fn nearer(t: Text) -> List<Text> { return t.suggestions(\"teh\") }\n\
 fn tied(xs: List<Text>) -> Text { return xs.join(\", \") }\n\
 fn number(t: Text) -> Option<Int> { return t.to_int() }\n\
 fn lowest(a: Int, b: Int) -> Int { return a.min(b) }\n\
