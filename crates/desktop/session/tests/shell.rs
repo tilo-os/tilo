@@ -2438,6 +2438,85 @@ fn the_banners_stack_and_say_how_many_wait() {
     });
 }
 
+/// A notice posted through the session's own `notify` rises as a banner a person reads and
+/// dismisses while a surface of the shell's stands over the places — the launcher, as a person
+/// leaves it open when a notice arrives: the shell publishes it as a live banner, its title and
+/// its Dismiss stand where the person can read and press them, and pressing Dismiss takes the
+/// notice off the shell and out of the centre. A surface does not hold a notice back: a notice
+/// reaches a person wherever they are.
+#[test]
+fn a_notice_rises_as_a_banner_over_a_surface_with_a_dismiss_that_takes_it_away() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &time(session).clock));
+    show(&mut session, "launcher");
+    session
+        .invoke(
+            "session:notifications",
+            "notify",
+            &serde_json::Map::from_iter([
+                ("title".to_owned(), serde_json::json!("Lunch at one")),
+                (
+                    "body".to_owned(),
+                    serde_json::json!("Table for four at the corner place"),
+                ),
+                ("from".to_owned(), serde_json::json!("Ada")),
+            ]),
+        )
+        .unwrap_or_else(|error| panic!("notify: {error:?}"));
+    // The session publishes it as a live banner, not only as a row the centre keeps.
+    let live = crate::common::wait_maybe(&mut session, |session| {
+        let centre = centre(session);
+        (!centre.banners.is_empty() && centre.banner.is_some()).then_some(())
+    });
+    assert!(
+        live.is_some(),
+        "the notice rises as a live banner: the session publishes {:?}",
+        session.read("session:notifications"),
+    );
+    // The shell draws it where a person reads and presses it: the title and the Dismiss are
+    // controls with bounds on the screen, as the walk reads what stands there.
+    let mut in_tree = false;
+    let mut as_control = false;
+    let found = crate::common::wait_maybe(&mut session, |session| {
+        in_tree |= session.shell_says("Lunch at one");
+        let found = Some((
+            session.shell_control("Lunch at one")?,
+            session.shell_control("Dismiss")?,
+        ));
+        as_control = true;
+        found
+    });
+    let Some((title, dismiss)) = found else {
+        panic!(
+            "the banner's title and Dismiss stand on screen: it was in the tree {in_tree} and a \
+             control {as_control}; the title is at {:?}, the Dismiss at {:?}, the tree says it at \
+             {:?}; the session says {:?}",
+            session.shell_control("Lunch at one"),
+            session.shell_control("Dismiss"),
+            session.shell_text_bounds("Lunch at one"),
+            session.accessible_labels(),
+        );
+    };
+    for (what, (x, y, w, h)) in [("the title", title), ("the Dismiss", dismiss)] {
+        assert!(
+            w > 0.0 && h > 0.0 && x >= 0.0 && y >= 0.0,
+            "{what} stands on the screen: {:?}",
+            (x, y, w, h)
+        );
+    }
+    // Dismissing it from the banner takes it off the shell and out of the centre.
+    press(&mut session, "Dismiss");
+    until(&mut session, |session| {
+        session.shell_control("Lunch at one").is_none() && centre(session).notices.is_empty()
+    });
+    assert!(
+        session.shell_refusals().is_empty(),
+        "the banner's Dismiss reached the centre: {:?}",
+        session.shell_refusals()
+    );
+}
+
 /// The quick settings' Night light tile runs the night light's own `toggle`: the published night
 /// light turns from what it was.
 #[test]

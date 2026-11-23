@@ -45,12 +45,13 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
             if resting {
                 // What the style shows keeps the whole band under the bar, and the banner floats
                 // over it: a notice rising never moves what the person had on screen.
-                layers(fill) {
+                over_band {
                     content
-                    at_rest()
                 }
             } else if device.overlays.here == "switcher" {
-                surface(fill)
+                over_band {
+                    surface(fill)
+                }
             } else if device.overlays.here == "emoji" {
                 // The picker stands over the windows: this layer draws nothing of the style, so
                 // the windows stay live behind its card, which is the only thing that takes the
@@ -65,10 +66,14 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
                 // The keys a held Super reaches stand over the windows. The shell's own work
                 // stays behind them, so nothing of the style is drawn here; the card itself
                 // stands over everything in `shell_around`.
-                at_rest()
+                banners_over()
             } else {
-                scroll(fill) {
-                    surface()
+                // A surface of the shell's own over the places: the launcher, the centre, quick
+                // settings or the workspaces.
+                over_band {
+                    scroll(fill) {
+                        surface()
+                    }
                 }
             }
             if dock_takes_room {
@@ -298,12 +303,26 @@ view top_bar(traditional: Bool) {
     }
 }
 
-/// The banner a notice rose as, floated over what the style shows at rest. A person with windows
-/// sees them through the compositor behind this, and who is here is in the bar's own menu, so the
-/// shell at rest adds nothing to its bar's band: closed, it lays nothing out and draws nothing.
-/// A banner stands the shell's gutter in from the window's edge, as a surface does: its card is
-/// rounded, and a rounded card on the edge has its corners cut by it.
-view at_rest() {
+/// What the shell shows in its band, with the banners a notice rose as over it: the style's own
+/// places, or the surface standing over them. A notice reaches a person wherever they are, so a
+/// surface does not hold one back.
+template view over_band(body: View) {
+    layers(fill) {
+        body
+        banners_over()
+    }
+}
+
+/// The banners a notice rose as, floated over the band: the style's own places at rest, or the
+/// surface standing over them (the launcher, the switcher, quick settings, the centre). The emoji
+/// picker and the About sheet keep the screen: they are the answer to something the person just
+/// asked, and stand over this in `shell_around`.
+///
+/// A person with windows sees them through the compositor behind this, and who is here is in the
+/// bar's own menu, so this adds nothing to the bar's band: with nothing to show it lays nothing
+/// out and draws nothing. A banner stands the shell's gutter in from the window's edge, as a
+/// surface does: its card is rounded, and a rounded card on the edge has its corners cut by it.
+view banners_over() {
     if (device.notifications.banner ?? -1) != -1 {
         stack(at: .top, fill, padding: .group) {
             banner()

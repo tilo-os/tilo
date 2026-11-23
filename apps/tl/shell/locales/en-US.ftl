@@ -1379,7 +1379,7 @@ d-afjfzjl6 = Bar on edge
 
 d-su7ogm3c = Top bar
 
-d-37bjhdfb = At rest
+d-o5w6ulql = Banners over
 
 d-6a3axsap = Surface
 
