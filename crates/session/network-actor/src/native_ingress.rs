@@ -401,7 +401,7 @@ impl ActorState {
                 link.sending.drive(
                     &owner,
                     workspace,
-                    |view| link.scope.authorize(view, identity),
+                    |bytes| owner.sent(workspace, bytes),
                     |write| {
                         NeighbourMsg::decode(write.bytes)
                             .map_err(|error| error.to_string())

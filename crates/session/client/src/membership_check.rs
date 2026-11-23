@@ -696,12 +696,7 @@ mod tests {
         let mut sending = Sending::default();
         for _ in 0..2 {
             assert_eq!(
-                sending.drive(
-                    &owner,
-                    workspace,
-                    |_| Err("its standing does not hold".into()),
-                    |_| panic!("nothing is owed"),
-                ),
+                sending.drive(&owner, workspace, |_| Ok(()), |_| panic!("nothing is owed")),
                 Ok(true),
                 "nothing owed asks nothing of the device's standing"
             );
