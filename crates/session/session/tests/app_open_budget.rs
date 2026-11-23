@@ -11,8 +11,8 @@
 //! for to the app's first presented frame, read from the kernel's scheduler statistics for each of
 //! their threads. A test job shares its node, so the wall clock of an open mostly measures how long
 //! its threads waited for a core; the time they waited, and the wall time, are reported beside the
-//! work for whoever reads a failure. The apps and the session are optimised builds, as they are on
-//! a person's machine (t.toml's `starts`), so the work is the work a person's machine does.
+//! work for whoever reads a failure. The apps and the launcher are optimised builds, as they are on
+//! a person's machine (t.toml's `starts`); the session is the tests' own build of it.
 //!
 //! Each app opens twice: once on an idle machine and once while one busy thread per core
 //! saturates the job, so an app whose open does more work under contention (a spin, a retry, a
@@ -481,12 +481,10 @@ fn descends(pid: u32, session: u32, under: &mut HashMap<u32, bool>) -> bool {
     answer
 }
 
-/// The session as a dev image runs it: the optimised build of it the run made (with
-/// `dev-overrides`, which opens the control socket the test drives it through), in a directory
-/// with the launcher it starts apps through beside it, where an installed session finds its
-/// launcher. The directory is made beside that build, so the programs are linked into it rather
+/// The session the run built, in a directory with the launcher it starts apps through beside it,
+/// where an installed session finds its launcher. The directory is made beside that build, so the programs are linked into it rather
 /// than copied where the file system allows.
-fn optimised_session() -> (tempfile::TempDir, PathBuf) {
+fn session_beside_launcher() -> (tempfile::TempDir, PathBuf) {
     let session = tilo_test_env::sibling_binary("tilo-session", "tilo-session");
     let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
     let directory = session
@@ -548,7 +546,7 @@ impl Drop for Load {
 #[test]
 fn every_installed_app_opens_within_the_budget_its_manifest_declares() {
     let _settled = ui::motion::testing::settled();
-    let (_programs, session) = optimised_session();
+    let (_programs, session) = session_beside_launcher();
     let ada = Person::new("Ada");
 
     let mut idle = ada.device("Ada's laptop");
