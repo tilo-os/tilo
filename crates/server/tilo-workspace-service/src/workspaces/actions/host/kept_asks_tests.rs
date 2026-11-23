@@ -1775,33 +1775,29 @@ mod agents_kinds {
     }
 
     async fn publish_scout_agent(workspaces: &Workspaces, workspace: &str, person: [u8; 32]) {
-        let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let keeper = hex::encode(person);
         workspaces
-            .author_workspace_document(
-                workspace,
-                workspaces.governor(),
-                (tilo_workspace_agent::OWNER, &document),
-                |doc| {
-                    let agents =
-                        tilo_resource::Replica::<tilo_workspace_agent::WorkspaceAgents>::new();
-                    let mut listing = agents
-                        .as_author(&keeper)
-                        .in_app(tilo_workspace_agent::OWNER, "Assistant");
-                    listing
-                        .apply(tilo_workspace_agent::WorkspaceAgents::CREATE_AGENT.with(
-                            tilo_workspace_agent::workspace_agents::CreateAgent {
-                                mcp_client: None,
-                                name: tilo_resource::NonBlank::parse("Scout").unwrap(),
-                                id: Some("scout".to_owned()),
-                                model: None,
-                            },
-                        ))
-                        .map_err(|error| error.to_string())?;
-                    std::mem::swap(doc, listing.doc_mut());
-                    Ok(())
-                },
-            )
+            .author_agents(workspace, |doc| {
+                let agents =
+                    tilo_resource::Replica::<tilo_workspace_agent::WorkspaceAgents>::from_doc(
+                        std::mem::take(doc),
+                    );
+                let mut listing = agents
+                    .as_author(&keeper)
+                    .in_app(tilo_workspace_agent::OWNER, "Assistant");
+                listing
+                    .apply(tilo_workspace_agent::WorkspaceAgents::CREATE_AGENT.with(
+                        tilo_workspace_agent::workspace_agents::CreateAgent {
+                            mcp_client: None,
+                            name: tilo_resource::NonBlank::parse("Scout").unwrap(),
+                            id: Some("scout".to_owned()),
+                            model: None,
+                        },
+                    ))
+                    .map_err(|error| error.to_string())?;
+                std::mem::swap(doc, listing.doc_mut());
+                Ok(())
+            })
             .await
             .unwrap();
     }

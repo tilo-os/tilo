@@ -149,3 +149,94 @@ async fn a_computers_agent_is_listed_once_where_it_acts() {
     let bounded = new_task(&server, "Past the bound").await;
     assert_eq!(bounded["result"]["isError"], true, "{bounded}");
 }
+
+/// A request to make the agent `name` in the workspace's list of its agents, through the
+/// record `provider` names.
+fn make_agent(provider: &str, name: &str) -> InvokeRequest {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("name".into(), name.into());
+    request(
+        provider,
+        ActionAddress::new(ui::tilo_workspace_agent::KIND, "create-agent"),
+        InvokeArgument::Json(arguments),
+    )
+}
+
+/// A request to read the workspace's list of its agents, through the record `provider` names.
+fn read_agents(provider: &str) -> InvokeRequest {
+    request(
+        provider,
+        ActionAddress::new(ui::tilo_workspace_agent::KIND, "read"),
+        InvokeArgument::None,
+    )
+}
+
+/// Make the agent `name` through the workspace's server, as a person's device asks it, and wait
+/// until the server reads it back beside every name of `beside`.
+async fn made_through_the_server(
+    browser: &mut Browser,
+    provider: &str,
+    name: &str,
+    beside: &[&str],
+) {
+    // The server offers Assistant's actions on the list once it has heard what the workspace
+    // holds of it: until then it knows no such action, and nothing was made.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let made = browser
+            .invoke_settled(make_agent(provider, name))
+            .await
+            .status;
+        match made {
+            ReceiptStatus::Completed { .. } => break,
+            ReceiptStatus::Rejected {
+                error: ActionCallError::UnknownAction,
+            } if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            other => panic!("the server makes the agent {name}: {other:?}"),
+        }
+    }
+    loop {
+        let status = browser.invoke_settled(read_agents(provider)).await.status;
+        if let ReceiptStatus::Completed { output } = &status {
+            let agents = output.value.clone().unwrap_or_default().to_string();
+            if beside.iter().chain([&name]).all(|one| agents.contains(one)) {
+                return;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the server never reads {name} beside {beside:?}: {status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A computer of the person's that joins a fresh workspace, whose agent is its first to act
+/// there, starts the workspace's list of its agents. The list it starts names itself as every
+/// reader of it checks, so the workspace's server still offers Assistant's actions on it and
+/// makes the next agent there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_computers_agent_that_starts_the_workspaces_agents_leaves_them_open_to_every_reader() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let server = enrol(&root, "home-server", DeviceCapabilities::member());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let laptop = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = start(&root, &server, state.path()).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &server).await;
+    browser.create(TASKS);
+    let assistant = browser.create(ui::tilo_workspace_agent::OWNER);
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
+    let provider = resource_provider(&assistant);
+
+    // Nobody made an agent yet: the computer's agent is the first the workspace lists.
+    let (_agent, server) = computer_agent(&hosted, &laptop, &server).await;
+    let answer = new_task(&server, "From the laptop").await;
+    assert_ne!(answer["result"]["isError"], true, "{answer}");
+    let id = tilo_actions::remote::device_agent_id(&root.verifying_key().to_bytes(), NAME);
+    listed(&hosted, &id, |_| true).await;
+
+    made_through_the_server(&mut browser, &provider, "Reed", &[NAME]).await;
+}

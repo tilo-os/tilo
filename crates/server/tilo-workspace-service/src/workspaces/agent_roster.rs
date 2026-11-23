@@ -99,6 +99,33 @@ impl Workspaces {
         .await
         .map_err(|error| error.to_string())
     }
+
+    /// Write `change` into Assistant's list of the agents of `workspace` as this host, onto the
+    /// list as the workspace holds it. Where it holds none yet the list starts with the genesis
+    /// every device makes of it ([`started`]): the identity every reader checks before it opens
+    /// the list, the same change as an Assistant that founds it elsewhere, so the two merge as
+    /// one list.
+    ///
+    /// # Errors
+    /// The genesis could not be made, or as [`Self::author_workspace_document_from`].
+    pub async fn author_agents<R>(
+        &self,
+        workspace: &str,
+        change: impl FnOnce(&mut AutoCommit) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+        Box::pin(self.author_workspace_document_from(
+            (workspace, self.governor()),
+            (tilo_workspace_agent::OWNER, &list),
+            // What is written onto it is this host's own change, never the genesis actor's.
+            Some(Box::new(
+                started(workspace)?.with_actor(automerge::ActorId::random()),
+            )),
+            change,
+        ))
+        .await
+        .map_err(|error| error.to_string())
+    }
 }
 
 /// The ids of the agents `doc` lists.

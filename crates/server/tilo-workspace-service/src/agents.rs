@@ -2676,49 +2676,39 @@ async fn list_agent(
     (agent, name): (&str, &str),
     person: &str,
 ) -> Result<(), String> {
-    let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
     let name = tilo_resource::NonBlank::parse(name.trim()).ok_or("the agent has no name")?;
     let (agent, person) = (agent.to_owned(), person.to_owned());
+    // A workspace whose people made no agent yet has no list of them: it starts here, named as
+    // the list every reader opens.
     workspaces
-        .author_workspace_document(
-            workspace,
-            workspaces.governor(),
-            (AGENTS_OWNER, &document),
-            |doc| {
-                // A workspace whose people made no agent yet has no list of them: it starts here.
-                let agents = if doc.get_heads().is_empty() {
-                    tilo_resource::Replica::<WorkspaceAgents>::new()
-                } else {
-                    tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                };
-                // Named as Assistant's change: every receiver decides it against Assistant's surface.
-                let mut listing = agents.as_author(&person).in_app(AGENTS_OWNER, "Assistant");
-                let listed = listing.state().map_err(|error| error.to_string())?;
-                let applied = if listed
-                    .agents
-                    .find(&tilo_resource::Id::from_raw(agent.clone()))
-                    .is_some()
-                {
-                    Ok(())
-                } else {
-                    listing
-                        .apply(WorkspaceAgents::CREATE_AGENT.with(
-                            tilo_workspace_agent::workspace_agents::CreateAgent {
-                                mcp_client: Some(name.as_str().to_owned()),
-                                name,
-                                id: Some(agent),
-                                model: None,
-                            },
-                        ))
-                        .map(drop)
-                        .map_err(|error| error.to_string())
-                };
-                std::mem::swap(doc, listing.doc_mut());
-                applied
-            },
-        )
+        .author_agents(workspace, |doc| {
+            let agents = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc));
+            // Named as Assistant's change: every receiver decides it against Assistant's surface.
+            let mut listing = agents.as_author(&person).in_app(AGENTS_OWNER, "Assistant");
+            let listed = listing.state().map_err(|error| error.to_string())?;
+            let applied = if listed
+                .agents
+                .find(&tilo_resource::Id::from_raw(agent.clone()))
+                .is_some()
+            {
+                Ok(())
+            } else {
+                listing
+                    .apply(WorkspaceAgents::CREATE_AGENT.with(
+                        tilo_workspace_agent::workspace_agents::CreateAgent {
+                            mcp_client: Some(name.as_str().to_owned()),
+                            name,
+                            id: Some(agent),
+                            model: None,
+                        },
+                    ))
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            };
+            std::mem::swap(doc, listing.doc_mut());
+            applied
+        })
         .await
-        .map_err(|error| error.to_string())
 }
 
 /// Invoke `action` on `resource` of the record at `route` as `caller`, and wait for it to end.

@@ -105,6 +105,12 @@ impl Workspaces {
                     .with_message(tilo_actions::FrameworkChange::Native.change_message()),
             );
         }
+        if heads.is_none() && !founds_as_read(&document, (app, name), workspace) {
+            return Err(CollaborationError::new(format!(
+                "{app} {name} would be founded without the identity every reader of the \
+                 workspace's own records checks; it starts from its genesis"
+            )));
+        }
         // Build the change on the workspace as it stands, with its copy locked
         // from the build to the commit, the staging the workspace's other
         // changes use. The link takes members' writes into that same copy
@@ -137,6 +143,26 @@ impl Workspaces {
         self.settle(&mut governed).await?;
         Ok(result)
     }
+}
+
+/// Whether `document`, the first this workspace holds of `name` of `app`, names itself as every
+/// reader of it checks: true for anything but a record each of the workspace's apps makes from
+/// its kind alone ([`collab_types::WORKSPACE_DOCUMENTS`]). Such a record founded without its
+/// identity, or with another workspace's, is refused by every reader that merges it, and
+/// whatever founds the same record properly afterwards cannot make it readable again.
+fn founds_as_read(
+    document: &automerge::AutoCommit,
+    (app, name): (&str, &str),
+    workspace: &str,
+) -> bool {
+    use collab_types::document::identity;
+    let Some(kept) = collab_types::workspace_document(app, name) else {
+        return true;
+    };
+    identity::identity(document)
+        .is_some_and(|found| found.id.as_str() == name && found.kind.as_str() == kept.kind)
+        && identity::home(document).is_some_and(|home| !home.is_empty())
+        && identity::workspace_scope(document).as_deref() == Some(workspace)
 }
 
 /// Publish what `document` holds beyond `heads` (all of it for a record not

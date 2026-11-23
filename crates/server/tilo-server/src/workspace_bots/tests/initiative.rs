@@ -725,33 +725,28 @@ async fn keeps_an_assistant(
     acts_for: &str,
 ) {
     use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
-    let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-    // The document as their device writes it, made before anything is waited
-    // for.
-    let bytes = {
-        let mut made = tilo_resource::Replica::<WorkspaceAgents>::new().as_author(acts_for);
-        made.apply(
-            WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
-                name: tilo_resource::NonBlank::parse("Assistant").unwrap(),
-                id: Some("assistant".into()),
-                model: None,
-                mcp_client: None,
-            }),
-        )
-        .unwrap();
-        std::mem::take(made.doc_mut()).save()
-    };
+    assert!(
+        cert == workspaces.governor(),
+        "the server writes the list as its governor"
+    );
     workspaces
-        .author_workspace_document(
-            workspace,
-            cert,
-            (tilo_workspace_agent::OWNER, document.as_str()),
-            |doc| {
-                tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
-                    .map(drop)
-                    .map_err(|error| error.to_string())
-            },
-        )
+        .author_agents(workspace, |doc| {
+            let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                .as_author(acts_for);
+            let applied = made
+                .apply(
+                    WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                        name: tilo_resource::NonBlank::parse("Assistant").unwrap(),
+                        id: Some("assistant".into()),
+                        model: None,
+                        mcp_client: None,
+                    }),
+                )
+                .map(drop)
+                .map_err(|error| error.to_string());
+            std::mem::swap(doc, made.doc_mut());
+            applied
+        })
         .await
         .unwrap();
 }

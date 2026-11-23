@@ -271,51 +271,40 @@ async fn set_under_agents(
     use tilo_resource::{Id, NonBlank, Replica};
     use tilo_workspace_agent::{Bound, WorkspaceAgents, workspace_agents};
     let person = hex::encode(owner.user_public_key);
-    let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
     let bound = vec![Bound {
         node: format!("workspace:{workspace}/app:{app}"),
         kinds: vec!["outside".into()],
         answer: answer.into(),
     }];
     workspaces
-        .author_workspace_document(
-            workspace,
-            workspaces.governor(),
-            (tilo_workspace_agent::OWNER, &list),
-            |doc| {
-                let agents = if doc.get_heads().is_empty() {
-                    Replica::<WorkspaceAgents>::new()
-                } else {
-                    Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                };
-                let mut agents = agents
-                    .as_author(&person)
-                    .in_app(tilo_workspace_agent::OWNER, "Chat");
-                let listed = agents.state().map_err(|error| error.to_string())?;
-                if listed.agents.find(&Id::from_raw("claude")).is_none() {
-                    agents
-                        .apply(
-                            WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
-                                name: NonBlank::parse("Claude").unwrap(),
-                                id: Some("claude".into()),
-                                model: None,
-                                mcp_client: None,
-                            }),
-                        )
-                        .map_err(|error| error.to_string())?;
-                }
+        .author_agents(workspace, |doc| {
+            let mut agents = Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                .as_author(&person)
+                .in_app(tilo_workspace_agent::OWNER, "Chat");
+            let listed = agents.state().map_err(|error| error.to_string())?;
+            if listed.agents.find(&Id::from_raw("claude")).is_none() {
                 agents
                     .apply(
-                        WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
-                            agent: Id::from_raw("claude"),
-                            bound,
+                        WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                            name: NonBlank::parse("Claude").unwrap(),
+                            id: Some("claude".into()),
+                            model: None,
+                            mcp_client: None,
                         }),
                     )
                     .map_err(|error| error.to_string())?;
-                std::mem::swap(doc, agents.doc_mut());
-                Ok(())
-            },
-        )
+            }
+            agents
+                .apply(
+                    WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
+                        agent: Id::from_raw("claude"),
+                        bound,
+                    }),
+                )
+                .map_err(|error| error.to_string())?;
+            std::mem::swap(doc, agents.doc_mut());
+            Ok(())
+        })
         .await
         .unwrap();
 }

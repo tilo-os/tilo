@@ -130,27 +130,22 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
         .prepare_application(&workspace, &cert, &catalogue, CHAT, &chat_record)
         .await
         .unwrap();
-    let agents_record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
     workspaces
-        .author_workspace_document(
-            &workspace,
-            &cert,
-            (tilo_workspace_agent::OWNER, &agents_record),
-            |doc| {
-                let mut made = tilo_resource::Replica::<WorkspaceAgents>::new().as_author(&person);
-                made.apply(
-                    WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
-                        name: tilo_resource::NonBlank::parse("Scout").unwrap(),
-                        id: Some(SCOUT.into()),
-                        model: None,
-                        mcp_client: None,
-                    }),
-                )
-                .map_err(|error| error.to_string())?;
-                std::mem::swap(doc, made.doc_mut());
-                Ok(())
-            },
-        )
+        .author_agents(&workspace, |doc| {
+            let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                .as_author(&person);
+            made.apply(
+                WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                    name: tilo_resource::NonBlank::parse("Scout").unwrap(),
+                    id: Some(SCOUT.into()),
+                    model: None,
+                    mcp_client: None,
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+            std::mem::swap(doc, made.doc_mut());
+            Ok(())
+        })
         .await
         .unwrap();
 
