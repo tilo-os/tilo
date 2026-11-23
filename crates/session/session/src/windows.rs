@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_desktop::overlays::{Overlay, Overlays, SwitcherScope};
-use tilo_desktop_model::{Layout, Strip, Tab, TileContent, WindowGroup, Workspace};
+use tilo_desktop_model::{Layout, Strip, Tab, TileContent, WindowGroup, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 
 /// The layout's windows as `session:windows` publishes them.
@@ -147,19 +147,11 @@ fn window_reading(tab: &Tab, at: TabPlace<'_>, handle: &DesktopHandle) -> Window
 /// their order. Each window says where it stands (`place`), the workspace, strip and group it is
 /// in, its tab's place in the group and the share of the strip it keeps, so a picture can be drawn
 /// where the window stands.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one walk over the layout's tabs, keeping their order, their share of a strip and the one in front together"
-)]
 pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
     let Some(front) = tree.active_workspace() else {
         return Vec::new();
     };
-    let active_strip = tree
-        .active_strip
-        .get(&front.id())
-        .copied()
-        .or_else(|| front.strips.first().map(|strip| strip.id));
+    let active_strip = tree.active_strip_for(front);
     // The tabs the focus history remembers, most recent first.
     let history: Vec<u64> = front
         .strips
@@ -237,6 +229,13 @@ pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
             }
         }
     }
+    order_by_recency(&mut readings, focused_tab, &history);
+    readings
+}
+
+/// Sort `readings` in the order Alt+Tab walks them: the focused tab first, then the focus
+/// history's tabs most recent first, then the rest in layout order, numbering `recency` from 1.
+fn order_by_recency(readings: &mut [Window], focused_tab: Option<u64>, history: &[u64]) {
     let rank = |key: &str| -> i64 {
         let tab: u64 = tilo_failure::ignored!(
             "a key that is no tab number sorts after every tab",
@@ -263,47 +262,49 @@ pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
     for (at, reading) in readings.iter_mut().enumerate() {
         reading.recency = i64::try_from(at).unwrap_or(i64::MAX).saturating_add(1);
     }
-    readings
 }
 
 /// The windows the switcher's walk crosses, as their places in `windows`, with the place in them
-/// of the window in front: every window of the workspace in front, or the ones the app the front
-/// window shows has. The walk, the mark the reading carries and the commit all count from this one
-/// list.
-pub(crate) fn walked(windows: &[Window], scope: SwitcherScope) -> (Vec<usize>, Option<usize>) {
-    let front = windows.iter().position(|window| window.focused);
-    let here = front.and_then(|front| windows.get(front));
-    let workspace = here.map(|window| window.workspace_key.clone());
-    let application = here.map(|window| window.app_key.clone());
+/// of the window in front: every window of `workspace`, or the ones the app the front window shows
+/// has in `workspace`. The walk, the mark the reading carries and the commit all count from this
+/// one list.
+pub(crate) fn walked(
+    windows: &[Window],
+    workspace: WorkspaceId,
+    scope: SwitcherScope,
+) -> (Vec<usize>, Option<usize>) {
+    let workspace = workspace.to_string();
+    let front = windows
+        .iter()
+        .position(|window| window.focused && window.workspace_key == workspace);
+    let application = front
+        .and_then(|at| windows.get(at))
+        .map(|window| window.app_key.as_str());
     // The walk crosses the workspace in front alone: a window of another workspace is read and
     // searched, but Alt+Tab never takes the person out of the workspace they are in.
-    let here = |window: &Window| {
-        workspace
-            .as_ref()
-            .is_none_or(|workspace| &window.workspace_key == workspace)
+    let in_workspace = |window: &Window| window.workspace_key == workspace;
+    let in_scope = |window: &Window| match scope {
+        SwitcherScope::Workspace => true,
+        SwitcherScope::App => application.is_some_and(|app| window.app_key == app),
     };
-    let walked: Vec<usize> = match (scope, application) {
-        (SwitcherScope::App, Some(application)) => windows
-            .iter()
-            .enumerate()
-            .filter(|(_, window)| window.app_key == application && here(window))
-            .map(|(at, _)| at)
-            .collect(),
-        _ => windows
-            .iter()
-            .enumerate()
-            .filter(|(_, window)| here(window))
-            .map(|(at, _)| at)
-            .collect(),
-    };
+    let walked: Vec<usize> = windows
+        .iter()
+        .enumerate()
+        .filter(|(_, window)| in_workspace(window) && in_scope(window))
+        .map(|(at, _)| at)
+        .collect();
     let front = front.and_then(|front| walked.iter().position(|at| *at == front));
     (walked, front)
 }
 
 /// The window the walk has reached, of `windows`: its place among them, where it stands to be
 /// lifted and where Alt let go lands. `None` while no walk is up.
-pub(crate) fn reaching(overlays: &Overlays, windows: &[Window]) -> Option<usize> {
-    let (walked, front) = walked(windows, overlays.scope());
+pub(crate) fn reaching(
+    overlays: &Overlays,
+    windows: &[Window],
+    workspace: WorkspaceId,
+) -> Option<usize> {
+    let (walked, front) = walked(windows, workspace, overlays.scope());
     overlays
         .reached(walked.len(), front)
         .and_then(|at| walked.get(at).copied())
@@ -331,13 +332,13 @@ pub(crate) fn switcher_view(
     overlays: &Overlays,
     sizes: &std::collections::HashMap<u64, (u32, u32)>,
 ) -> Option<tilo_desktop::window_switcher::SwitcherView> {
-    let (windows, reached, surfaces) = handle.read(|tree| {
+    let (windows, workspace, reached, surfaces) = handle.read(|tree| {
         let windows = windows(tree, handle);
-        let reached = reaching(overlays, &windows);
-        (windows, reached, window_surfaces(tree))
+        let reached = reaching(overlays, &windows, tree.active);
+        (windows, tree.active, reached, window_surfaces(tree))
     });
     let reached = reached?;
-    let (walked, _) = walked(&windows, overlays.scope());
+    let (walked, _) = walked(&windows, workspace, overlays.scope());
     let selected = walked.iter().position(|at| *at == reached)?;
     let cards = walked
         .iter()
@@ -375,8 +376,8 @@ pub(crate) fn switcher_view(
 /// Bring the window the switcher's walk reached to the front, and close the switcher. The walk
 /// counts from the window in front, over the windows its scope crosses, wrapping.
 pub(crate) fn commit_switcher(handle: &DesktopHandle, walk: &Overlays) {
-    let windows = handle.read(|tree| windows(tree, handle));
-    let reached = reaching(walk, &windows).and_then(|at| windows.get(at));
+    let (windows, workspace) = handle.read(|tree| (windows(tree, handle), tree.active));
+    let reached = reaching(walk, &windows, workspace).and_then(|at| windows.get(at));
     if let Some(tab) = tilo_failure::ignored!(
         "a reached window whose key is no tab focuses nothing",
         reached.and_then(|window| window.key.parse::<u64>().ok())
@@ -400,8 +401,8 @@ pub(crate) fn walk_switcher(
     // whichever way its press names.
     let steps = if steps == 0 { 1 } else { steps };
     if !walk.switcher_up() {
-        let windows = handle.read(|tree| windows(tree, handle));
-        let (walked, _) = walked(&windows, scope);
+        let (windows, workspace) = handle.read(|tree| (windows(tree, handle), tree.active));
+        let (walked, _) = walked(&windows, workspace, scope);
         if walked.len() < 2 {
             return;
         }
@@ -415,8 +416,11 @@ pub(crate) fn select_switcher(handle: &DesktopHandle, walk: &Overlays, at: i64) 
     if !walk.switcher_up() {
         return;
     }
-    let windows = handle.read(|tree| windows(tree, handle));
-    let (walked, front) = walked(&windows, walk.scope());
+    let (windows, workspace) = handle.read(|tree| (windows(tree, handle), tree.active));
+    let (walked, front) = walked(&windows, workspace, walk.scope());
+    if walked.is_empty() {
+        return;
+    }
     let count = i64::try_from(walked.len()).unwrap_or(1).max(1);
     let at = if at < 0 {
         count.saturating_add(at)
@@ -425,4 +429,71 @@ pub(crate) fn select_switcher(handle: &DesktopHandle, walk: &Overlays, at: i64) 
     };
     let front = i64::try_from(front.unwrap_or(0)).unwrap_or(0);
     walk.select(at.saturating_sub(front));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_window(key: &str, app_key: &str, workspace: WorkspaceId, focused: bool) -> Window {
+        Window {
+            key: key.to_owned(),
+            app_key: app_key.to_owned(),
+            workspace_key: workspace.to_string(),
+            focused,
+            ..Window::default()
+        }
+    }
+
+    #[test]
+    fn walked_returns_empty_for_empty_active_workspace() {
+        let empty = WorkspaceId::from_u128(1);
+        let elsewhere = WorkspaceId::from_u128(2);
+        let windows = vec![
+            test_window("23", "so.tilo.mail", elsewhere, false),
+            test_window("24", "so.tilo.notes", elsewhere, false),
+        ];
+
+        assert_eq!(
+            walked(&windows, empty, SwitcherScope::Workspace),
+            (vec![], None)
+        );
+        assert_eq!(walked(&windows, empty, SwitcherScope::App), (vec![], None));
+    }
+
+    #[test]
+    fn walked_filters_workspace_and_app_independently() {
+        let work = WorkspaceId::from_u128(1);
+        let elsewhere = WorkspaceId::from_u128(2);
+
+        // No focused window in the active workspace: workspace scope still stays in `work`,
+        // while app scope has no front app to match.
+        let unfocused = vec![
+            test_window("20", "so.tilo.notes", work, false),
+            test_window("21", "so.tilo.mail", work, false),
+            test_window("23", "so.tilo.notes", elsewhere, true),
+            test_window("24", "so.tilo.mail", elsewhere, false),
+        ];
+        assert_eq!(
+            walked(&unfocused, work, SwitcherScope::Workspace),
+            (vec![0, 1], None)
+        );
+        assert_eq!(walked(&unfocused, work, SwitcherScope::App), (vec![], None));
+
+        // Focused window in the active workspace: app scope keeps only that app inside `work`.
+        let focused = vec![
+            test_window("20", "so.tilo.notes", work, true),
+            test_window("21", "so.tilo.mail", work, false),
+            test_window("22", "so.tilo.notes", work, false),
+            test_window("23", "so.tilo.notes", elsewhere, false),
+        ];
+        assert_eq!(
+            walked(&focused, work, SwitcherScope::Workspace),
+            (vec![0, 1, 2], Some(0))
+        );
+        assert_eq!(
+            walked(&focused, work, SwitcherScope::App),
+            (vec![0, 2], Some(0))
+        );
+    }
 }

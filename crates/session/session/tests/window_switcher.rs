@@ -642,6 +642,130 @@ fn the_walked_card_wears_the_accent_at_its_edge() {
     }
 }
 
+/// Alt+Tab in an empty active workspace opens nothing and never selects a window in another
+/// workspace, even when another workspace holds two or more windows.
+#[test]
+fn an_empty_active_workspace_never_walks_to_another_workspace() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let handle = session.handle().clone();
+    let empty_id = WorkspaceId::from_u128(1);
+    let elsewhere_id = WorkspaceId::from_u128(2);
+
+    for with_empty_strip in [false, true] {
+        let mut empty = Workspace::new(empty_id, "Empty");
+        if with_empty_strip {
+            empty.strips = vec![Strip {
+                id: StripId(2),
+                name: "Main".into(),
+                window_groups: Vec::new(),
+            }];
+        }
+        let mut elsewhere = Workspace::new(elsewhere_id, "Elsewhere");
+        elsewhere.strips = vec![Strip {
+            id: StripId(4),
+            name: "Main".into(),
+            window_groups: vec![
+                group(13, window(23, "Away", "so.tilo.mail")),
+                group(14, window(24, "Far", "so.tilo.notes")),
+            ],
+        }];
+        let mut tree = Layout {
+            active: empty_id,
+            workspaces: vec![empty, elsewhere],
+            ..Default::default()
+        };
+        if with_empty_strip {
+            tree.active_strip.insert(empty_id, StripId(2));
+        }
+        handle.replace_tree(tree);
+        session.step(REFRESH).expect("a turn of the session");
+        assert_eq!(crate::common::windows(&session).len(), 2);
+
+        key(&mut session, KEY_LEFTALT, true);
+        key(&mut session, KEY_TAB, true);
+        session
+            .step(Duration::from_millis(200))
+            .expect("a turn of the session");
+        assert!(
+            panel(&session).is_none(),
+            "with_empty_strip={with_empty_strip}: an empty active workspace opens no panel"
+        );
+        assert_eq!(
+            crate::common::shell_here(&session),
+            "none",
+            "with_empty_strip={with_empty_strip}: an empty active workspace starts no walk"
+        );
+        key(&mut session, KEY_TAB, false);
+        key(&mut session, KEY_LEFTALT, false);
+        session.step(REFRESH).expect("a turn of the session");
+        assert_eq!(
+            handle.read(|tree| tree.active),
+            empty_id,
+            "with_empty_strip={with_empty_strip}: Alt+Tab never leaves an empty active workspace"
+        );
+    }
+}
+
+/// A workspace whose recorded strip no longer exists falls back to its first strip for focus and
+/// stays inside that workspace when Alt+Tab walks its windows.
+#[test]
+fn a_stale_recorded_strip_keeps_the_walk_inside_its_workspace() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let handle = session.handle().clone();
+    let work_id = WorkspaceId::from_u128(1);
+    let mut tree = layout_tree();
+    // Record a strip that no longer exists in Work while Work still holds its strips and
+    // Elsewhere holds another window.
+    tree.active_strip.insert(work_id, StripId(99));
+    handle.replace_tree(tree);
+    session.step(REFRESH).expect("a turn of the session");
+
+    assert_eq!(
+        handle.read(|tree| tree.active_strip.get(&work_id).copied()),
+        Some(StripId(99)),
+        "the stale recorded strip is still in the layout when the walk begins"
+    );
+    assert_eq!(
+        front(&session),
+        "Notes",
+        "a stale recorded strip falls back to the workspace's first strip for focus"
+    );
+
+    hold_alt_tab(&mut session);
+    let view = panel(&session).expect("the panel is up while Alt is held");
+    assert_eq!(
+        cards(&view),
+        ["Notes", "Mail", "Budget"],
+        "the walk stays inside the active workspace and omits other workspaces' windows"
+    );
+    assert_eq!(
+        view.selected, 1,
+        "Alt+Tab opens on the window after the fallback strip's focused window"
+    );
+
+    key(&mut session, KEY_END, true);
+    key(&mut session, KEY_END, false);
+    assert_eq!(
+        panel(&session).expect("the panel is up").selected,
+        2,
+        "End reaches the active workspace's last window, never another workspace's"
+    );
+    key(&mut session, KEY_TAB, false);
+    key(&mut session, KEY_LEFTALT, false);
+    until(
+        &mut session,
+        "letting Alt go lands on the active workspace's last window",
+        |session| front(session) == "Budget",
+    );
+    assert_eq!(
+        handle.read(|tree| tree.active),
+        work_id,
+        "Alt+Tab stayed in the active workspace"
+    );
+}
+
 /// How far the frame's pixels along a card's top edge stand from `to` : the least of the rows the
 /// edge's ring covers, at three places across it, as summed channel distance.
 fn nearest_edge_pixel(frame: &tilo_compositor::Screenshot, card: Rect, to: [u8; 3]) -> u32 {

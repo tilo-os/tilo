@@ -188,8 +188,8 @@ mod tests {
     fn walked(walk: &WindowWalk) -> (Vec<String>, Option<usize>, Option<usize>) {
         walk.handle.read(|tree| {
             let windows = crate::windows::windows(tree, &walk.handle);
-            let (walked, front) = crate::windows::walked(&windows, walk.walk.scope());
-            let reached = crate::windows::reaching(&walk.walk, &windows)
+            let (walked, front) = crate::windows::walked(&windows, tree.active, walk.walk.scope());
+            let reached = crate::windows::reaching(&walk.walk, &windows, tree.active)
                 .and_then(|at| walked.iter().position(|place| *place == at));
             let titles = walked
                 .iter()

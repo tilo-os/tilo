@@ -648,7 +648,7 @@ impl DeviceLists {
             window.origin_app = crate::app_names::app_name(&window.app_key);
         }
         if self.surfaces.overlays.revealed(now)
-            && let Some(at) = reaching(&self.surfaces.overlays, &windows)
+            && let Some(at) = reaching(&self.surfaces.overlays, &windows, tree.active)
         {
             for (index, window) in windows.iter_mut().enumerate() {
                 window.focused = index == at;
