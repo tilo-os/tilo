@@ -223,7 +223,8 @@ async fn a_write_is_kept_as_the_frame_a_link_carries() {
     let (_, keys) = rotated_channel();
     owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
     let mut typist = Typist::over(&base(owner, workspace), 1);
-    write(owner, workspace, &keys, typist.change("k0"), now)
+    let changes = typist.change("k0");
+    write(owner, workspace, &keys, changes.clone(), now)
         .await
         .unwrap();
     let frames = owner.frames(workspace);
@@ -233,5 +234,5 @@ async fn a_write_is_kept_as_the_frame_a_link_carries() {
         panic!("a write is a document write")
     };
     assert!(envelope.encryption.is_some(), "the frame is sealed");
-    assert_eq!(open(&keys, &envelope).unwrap(), typist.0.save());
+    assert_eq!(open(&keys, &envelope).unwrap(), changes);
 }

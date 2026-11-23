@@ -6,7 +6,7 @@
 //! checkpoint of the merged history, admitted like any write.
 
 use super::history_keys::{SealedHistoryKeys, seal_for_document};
-use super::{NativeWorkspaceOwner, SystemTime, WorkspaceId, write};
+use super::{NativeWorkspaceOwner, NeighbourMsg, SystemTime, WorkspaceId, write};
 use collab_types::SignedOp;
 use collab_types::signer::DeviceSigner;
 use std::sync::Arc;
@@ -138,23 +138,30 @@ impl NativeWorkspaceOwner {
             drafted = Some(ops);
             signed.settled()?;
             let record_name = record;
-            let ((), record) = candidate.change(|live, record| -> Result<(), String> {
-                live.publication_mut().admit_sealed_compaction(
-                    app,
-                    record_name,
-                    named.as_deref(),
-                    signed_ops,
-                    now,
-                )?;
-                record.generation = record
-                    .generation
-                    .checked_add(1)
-                    .ok_or("native owner generation exhausted")?;
-                Ok(())
-            })?;
+            let (frames, record) =
+                candidate.change(|live, record| -> Result<Vec<NeighbourMsg>, String> {
+                    let frames = live.publication_mut().admit_sealed_compaction(
+                        app,
+                        record_name,
+                        named.as_deref(),
+                        signed_ops,
+                        now,
+                    )?;
+                    record.generation = record
+                        .generation
+                        .checked_add(1)
+                        .ok_or("native owner generation exhausted")?;
+                    Ok(frames)
+                })?;
             self.publish_document(workspace, &candidate, record, None)?;
-            Ok(1)
+            Ok(frames)
         })
-        .await
+        .await?;
+        // The compaction is this device's own write: it is kept as the frame a link
+        // carries, as every write of this device's is.
+        for message in compacted {
+            self.keep_frame(workspace, &message)?;
+        }
+        Ok(1)
     }
 }

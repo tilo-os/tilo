@@ -22,6 +22,10 @@ mod sealed_history;
 #[path = "vouched_tests.rs"]
 mod vouched;
 
+/// A write whose merge makes the automerge worker die: this device failing to
+/// decide it, never the workspace refusing it.
+const CRASHING_CHANGE: &str = "856f4a83a9cba9c000ba020210a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a110b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2014707c716356b85249314a37e0cdff282bd05e090ed2b18595c18a1969a410cbf0701050305130623024006430456020e0106020a110613081527210e230f3403420d560f571080010d81010583010502007e010002017e7f027f0802027f010401800002017f02020002010407000607007f01000603017f0403067f0b000b02000001000a7d00070000017f0561667465720201637d056974656d73016d0374626c0301787f03726f7700037f046465657002007f0105007f0102007d010001720d76077c7b037e07007c02047d040a030102017c0502000605017f0002017d850118140300031402167d001602000000000000f83f05040102037270717e000104007f0203007f0103007c010001007c0a7f000103";
+
 struct Enrolled {
     _directory: tempfile::TempDir,
     path: PathBuf,
@@ -297,7 +301,7 @@ tilo_test_env::scenario! {
         let (intent, mut bootstrap, _, _, now) = raw_fixture();
         bootstrap.governance_messages = vec![
             postcard::to_stdvec(&NeighbourMsg::SyncResp {
-                changes: vec![vec![0xff; 8]],
+                changes: vec![hex::decode(CRASHING_CHANGE).unwrap()],
                 workspace: WORKSPACE.into(),
             })
             .unwrap(),
