@@ -82,6 +82,50 @@ pub trait AgentKeys: Send + Sync {
     }
 }
 
+impl crate::workspaces::Workspaces {
+    /// Sign `shortcut` as saved in `workspace` by `agent` for the person whose root is `root`,
+    /// with the key this device derives for the agent from that root: what the agent saves acts
+    /// as the agent, held to what its record bounds it to.
+    ///
+    /// # Errors
+    /// The workspace's list of its agents names no active agent `agent` acting for that person,
+    /// this device holds no identity store or not that person's root, or the key does not sign.
+    pub async fn sign_shortcut_as_agent(
+        &self,
+        workspace: &str,
+        agent: &str,
+        root: &[u8; 32],
+        shortcut: &mut tilo_automation::Shortcut,
+    ) -> Result<(), String> {
+        let id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
+        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+        let kept = self
+            .read_resource::<tilo_workspace_agent::WorkspaceAgents>(
+                workspace,
+                (tilo_workspace_agent::OWNER, &list),
+            )
+            .await
+            .map_err(|error| format!("the workspace's agents could not be read: {error}"))?
+            .and_then(|agents| {
+                agents
+                    .agents
+                    .find(&tilo_resource::Id::from_raw(agent.to_owned()))
+                    .cloned()
+            })
+            .ok_or("the workspace keeps no such agent")?;
+        let person = tilo_action_policy::PersonId::parse(&kept.acts_for)
+            .ok()
+            .and_then(|person| person.root());
+        if !kept.is_active() || person != Some(*root) {
+            return Err("the agent does not act for that person here".to_owned());
+        }
+        let keys = FleetAgentKeys::from_env()
+            .map_err(|error| format!("this device's identity store is not open: {error}"))?;
+        let key = keys.grant(id, agent, &kept.name, *root)?;
+        keys.sign_shortcut(id, &key, agent, shortcut)
+    }
+}
+
 /// What separates the statement an agent's key is made from from anything else a root signs.
 const KEY_DOMAIN: &[u8] = b"tilo-agent-device-key-v1\0";
 
