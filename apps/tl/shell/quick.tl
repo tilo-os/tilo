@@ -344,24 +344,22 @@ view network_section() {
                     ) {
                         on activate: device.join_wifi(device.network, s.name)
                         trailing: {
-                            ui.Button(
-                                if s.autoconnect {
-                                    "Stop joining by itself"
-                                } else { "Join by itself" },
-                                icon: .refresh,
-                                icon_only: true,
-                                size: .small,
-                                toggled: s.autoconnect,
-                                role: .plain,
-                            ) {
-                                on press: device.set_network_autoconnect(
-                                    device.network,
-                                    s.id,
-                                    on: not s.autoconnect,
-                                )
-                            }
-                            ui.Button("Forget this network", icon: .trash, icon_only: true, size: .small, role: .plain) {
-                                on press: device.forget_network(device.network, s.id)
+                            ui.MenuButton("This network", icon: .more_horizontal, icon_only: true, role: .plain) {
+                                ui.MenuItem(
+                                    if s.autoconnect {
+                                        "Stop joining by itself"
+                                    } else { "Join by itself" },
+                                    icon: .refresh,
+                                ) {
+                                    on choose: device.set_network_autoconnect(
+                                        device.network,
+                                        s.id,
+                                        on: not s.autoconnect,
+                                    )
+                                }
+                                ui.MenuItem("Forget this network", icon: .trash) {
+                                    on choose: device.forget_network(device.network, s.id)
+                                }
                             }
                         }
                     }
