@@ -104,7 +104,7 @@ pub struct Armed {
     pub agent: Option<(String, [u8; 32])>,
     /// The device that saved it: the one its firings start on.
     pub starter: [u8; 32],
-    /// The workspace as its governance describes it.
+    /// The workspace as its own document describes it.
     pub described: tilo_desktop_model::Workspace,
 }
 
@@ -622,7 +622,7 @@ impl Runner {
         use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 
         let mut writes = self.workspaces.document_writes();
-        let mut governance = self.workspaces.governance_changes();
+        let mut settled = self.workspaces.governance_changes();
         // Armed at the start, and again whenever a workspace's own document changed: a shortcut
         // is saved there, so it is armed by following its save, not on a clock.
         let mut changed = true;
@@ -641,7 +641,7 @@ impl Runner {
                 }
             }
             loop {
-                match governance.try_recv() {
+                match settled.try_recv() {
                     Ok(_) | Err(TryRecvError::Lagged(_)) => changed = true,
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Closed) => return,
@@ -657,7 +657,7 @@ impl Runner {
                     Err(RecvError::Lagged(_)) => {}
                     Err(RecvError::Closed) => return,
                 },
-                moved = governance.recv() => match moved {
+                moved = settled.recv() => match moved {
                     Ok(_) | Err(RecvError::Lagged(_)) => changed = true,
                     Err(RecvError::Closed) => return,
                 },
