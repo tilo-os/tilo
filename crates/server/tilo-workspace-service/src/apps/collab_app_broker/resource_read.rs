@@ -40,16 +40,19 @@ enum Reader {
 }
 
 impl AppBrokerState {
-    /// The record read api, when this host keeps a workspace's documents and has a device
-    /// certificate to read them under: its person's, or, before anyone signs in, its own.
+    /// The device's record reader ([`RecordReads`]) for callers inside it, when this host keeps a
+    /// workspace's documents and has a device certificate to read them under: its person's, or,
+    /// before anyone signs in, its own.
+    ///
+    /// [`RecordReads`]: crate::workspaces::RecordReads
     pub fn resource_reads(self: &Arc<Self>) -> Option<Arc<dyn ResourceReads>> {
         self.services.committed_documents.as_ref()?;
         if self.services.local_person.is_none() && self.own_device().is_none() {
             return None;
         }
-        Some(Arc::new(BrokerDocumentReads {
-            state: Arc::downgrade(self),
-        }))
+        Some(Arc::new(crate::workspaces::RecordReads::of_apps(
+            Arc::downgrade(self),
+        )))
     }
 
     /// The certificate this device acts under itself, when it does.
@@ -367,33 +370,17 @@ fn person_reading(caller: &Caller) -> Option<&str> {
     }
 }
 
-struct BrokerDocumentReads {
-    state: Weak<AppBrokerState>,
-}
-
-impl ResourceReads for BrokerDocumentReads {
-    fn answer_read(
+impl AppBrokerState {
+    /// `address` read for `caller` inside this device: decided by who it is
+    /// ([`Self::reader`]), at the record's node, and again before every chunk.
+    pub(crate) fn read_record(
         self: Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: tilo_actions::remote::ResourceReadRequest,
-    ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
-    }
-
-    fn read(
-        &self,
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Result<ResourceCopy, ActionCallError> {
-        let unavailable = |reason: String| ActionCallError::Unavailable { reason };
-        let state = self
-            .state
-            .upgrade()
-            .ok_or_else(|| unavailable("the broker stopped".into()))?;
-        let (decided, reader) = state.reader(caller, &address.workspace)?;
-        state.may_read_document(&decided, address)?;
-        let checked = (Arc::downgrade(&state), decided, address.clone());
+        let (decided, reader) = self.reader(caller, &address.workspace)?;
+        self.may_read_document(&decided, address)?;
+        let checked = (Arc::downgrade(&self), decided, address.clone());
         let revalidate = Arc::new(move || {
             let (state, decided, address) = &checked;
             let state = state.upgrade().ok_or("record read broker ended")?;
@@ -401,34 +388,29 @@ impl ResourceReads for BrokerDocumentReads {
                 .may_read_document(decided, address)
                 .map_err(|_| "record read no longer allowed".to_owned())
         });
-        let certificate = state.certificate_of(reader, &address.workspace)?;
-        read_resource(state, certificate, address, revalidate)
+        let certificate = self.certificate_of(reader, &address.workspace)?;
+        read_resource(self, certificate, address, revalidate)
     }
 
-    fn store_read(
+    /// A store read of `address` for `caller` inside this device, decided as
+    /// [`Self::read_record`] is: it reads, and writes nothing.
+    pub(crate) fn store_read_record(
         &self,
         caller: &Caller,
         address: &ResourceAddress,
         read: serde_json::Value,
     ) -> Result<serde_json::Value, ActionCallError> {
         let invalid = |reason: String| ActionCallError::InvalidRequest { reason };
-        let state = self
-            .state
-            .upgrade()
-            .ok_or_else(|| ActionCallError::Unavailable {
-                reason: "the broker stopped".into(),
-            })?;
-        let (decided, _) = state.reader(caller, &address.workspace)?;
+        let (decided, _) = self.reader(caller, &address.workspace)?;
         let command: tilo_resource_store::wire::Command = serde_json::from_value(read)
             .map_err(|error| invalid(format!("not a store command: {error}")))?;
         // A reader reads: what it changes goes through the app's actions, decided there.
         if command.writes() {
             return Err(invalid("a read of resources writes nothing".into()));
         }
-        state.may_read_document(&decided, address)?;
+        self.may_read_document(&decided, address)?;
         let resources =
-            state
-                .services
+            self.services
                 .resources
                 .clone()
                 .ok_or_else(|| ActionCallError::Unavailable {
@@ -445,21 +427,17 @@ impl ResourceReads for BrokerDocumentReads {
         serde_json::to_value(reply).map_err(|error| invalid(error.to_string()))
     }
 
-    fn watch(
+    /// Wake `wake` on the next write to `address`, for `caller` inside this
+    /// device as [`Self::read_record`] decides it.
+    pub(crate) fn watch_record(
         &self,
         caller: &Caller,
         address: &ResourceAddress,
         wake: &ResourceWake,
     ) -> Result<(), ActionCallError> {
-        let state = self
-            .state
-            .upgrade()
-            .ok_or_else(|| ActionCallError::Unavailable {
-                reason: "the broker stopped".into(),
-            })?;
-        let (decided, _) = state.reader(caller, &address.workspace)?;
-        state.may_read_document(&decided, address)?;
-        state.follow_document_writes(
+        let (decided, _) = self.reader(caller, &address.workspace)?;
+        self.may_read_document(&decided, address)?;
+        self.follow_document_writes(
             &CrdtRoute::record(
                 address.app.clone(),
                 &address.workspace,

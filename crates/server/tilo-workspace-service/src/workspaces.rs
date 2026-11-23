@@ -154,7 +154,8 @@ pub mod hosted_use;
 // The vault items a workspace's machine hands the programs it starts.
 #[cfg(feature = "agents")]
 pub mod machine_secrets;
-mod device_reads;
+mod record_reads;
+pub use record_reads::RecordReads;
 mod personal;
 mod weak;
 pub use weak::WeakWorkspaces;

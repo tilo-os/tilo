@@ -1,12 +1,14 @@
-//! The record API of a device's action service: another device reads a record of a workspace
-//! this device holds, as the certificate this device holds for it in that workspace may.
+//! The device's one record reader: every read of a record, by whoever asks, decided by who
+//! asks.
 //!
 //! A host is a device that stores more, and it answers every workspace it holds alike: one it
-//! founded, the person's own, one it hosts. The read is decided there for the asking device's own
-//! certificate, by that workspace's governance, record by record, as every member's read is: a
-//! device of the person's reads what the person may, an agent's grant what its grants reach, in a
-//! workspace its scope reaches. A caller this device holds no certificate for in the workspace
-//! reads through the apps this device serves, when it serves any.
+//! founded, the person's own, one it hosts. Another device reads for the certificate this device
+//! holds for it in the workspace the record is in, decided by that workspace's governance, record
+//! by record, as every member's read is: a device of the person's reads what the person may, an
+//! agent's grant what its grants reach, in a workspace its scope reaches. A caller inside this
+//! device (an app, the person signed in here, an agent acting for them) reads by the grants the
+//! apps this device serves decide for it. Any other caller's read goes whole to the app action
+//! server this host was given, when it was given one.
 
 use std::sync::Arc;
 
@@ -17,11 +19,29 @@ use tilo_actions::remote::{
 
 use super::{WeakWorkspaces, Workspaces};
 
-/// The record API of a device's action service.
-pub(crate) struct DeviceReads {
-    pub(crate) workspaces: WeakWorkspaces,
-    /// The apps this device serves, which read for callers it holds no certificate for.
-    pub(crate) apps: Option<Arc<dyn ResourceReads>>,
+#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+type Broker = crate::apps::collab_app_broker::AppBrokerState;
+
+/// The device's record reader.
+pub struct RecordReads {
+    /// The workspaces this device holds, read for another device's certificate there.
+    workspaces: Option<WeakWorkspaces>,
+    /// The apps this device serves itself, which decide a caller inside it by its grants.
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+    broker: Option<std::sync::Weak<Broker>>,
+    /// The app action server this host was given, which reads for every other caller.
+    served: Option<Arc<dyn ResourceReads>>,
+}
+
+/// Who reads a record for its caller.
+enum Route {
+    /// Another device, for the certificate this device holds for it there.
+    Certified(Workspaces),
+    /// A caller inside this device, by its grants.
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+    Inside(Arc<Broker>),
+    /// The app action server this host was given.
+    Served(Arc<dyn ResourceReads>),
 }
 
 fn refused() -> ActionCallError {
@@ -30,13 +50,29 @@ fn refused() -> ActionCallError {
     }
 }
 
-impl DeviceReads {
-    fn workspaces(&self) -> Result<Workspaces, ActionCallError> {
-        self.workspaces
-            .upgrade()
-            .ok_or_else(|| ActionCallError::Unavailable {
-                reason: "this device stopped".into(),
-            })
+impl RecordReads {
+    /// The reader of a device's action service: the workspaces it holds, and the app action
+    /// server it was given.
+    pub(crate) fn of_device(
+        workspaces: Option<WeakWorkspaces>,
+        served: Option<Arc<dyn ResourceReads>>,
+    ) -> Self {
+        Self {
+            workspaces,
+            #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+            broker: None,
+            served,
+        }
+    }
+
+    /// The reader of the apps this device serves, for the callers inside it.
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+    pub(crate) fn of_apps(broker: std::sync::Weak<Broker>) -> Self {
+        Self {
+            workspaces: None,
+            broker: Some(broker),
+            served: None,
+        }
     }
 
     /// The certificate this device holds for `caller`'s device in `workspace`, when it holds
@@ -95,37 +131,33 @@ impl DeviceReads {
         .map_err(|_| refused())
     }
 
-    /// Who reads `address` for `caller`: the device this device holds a certificate for, or
-    /// the apps, or nobody.
-    fn decided(
-        &self,
-        caller: &Caller,
-        address: &ResourceAddress,
-    ) -> Result<Option<Workspaces>, ActionCallError> {
-        let workspaces = self.workspaces()?;
-        match Self::certificate(&workspaces, caller, &address.workspace) {
-            Some(certificate) => {
-                Self::may_read(&workspaces, &certificate, address)?;
-                Ok(Some(workspaces))
-            }
-            None if self.apps.is_some() => Ok(None),
-            None => Err(refused()),
+    /// Who reads `address` for `caller`, decided already for another device.
+    fn route(&self, caller: &Caller, address: &ResourceAddress) -> Result<Route, ActionCallError> {
+        if let Some(workspaces) = self.workspaces.as_ref().and_then(WeakWorkspaces::upgrade)
+            && let Some(certificate) = Self::certificate(&workspaces, caller, &address.workspace)
+        {
+            Self::may_read(&workspaces, &certificate, address)?;
+            return Ok(Route::Certified(workspaces));
         }
+        #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+        if let Some(broker) = self.broker.as_ref().and_then(std::sync::Weak::upgrade) {
+            return Ok(Route::Inside(broker));
+        }
+        self.served.clone().map(Route::Served).ok_or_else(refused)
     }
 }
 
-impl ResourceReads for DeviceReads {
+impl ResourceReads for RecordReads {
     fn read(
         &self,
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Result<ResourceCopy, ActionCallError> {
-        let Some(workspaces) = self.decided(caller, address)? else {
-            return self
-                .apps
-                .as_ref()
-                .ok_or_else(refused)?
-                .read(caller, address);
+        let workspaces = match self.route(caller, address)? {
+            Route::Certified(workspaces) => workspaces,
+            #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+            Route::Inside(broker) => return broker.read_record(caller, address),
+            Route::Served(served) => return served.read(caller, address),
         };
         let (workspace, app, record) = (
             address.workspace.clone(),
@@ -149,18 +181,32 @@ impl ResourceReads for DeviceReads {
         correlation: u64,
         read: ResourceReadRequest,
     ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
-        // A caller the apps read for is answered by them whole, waits included.
+        // A read the app action server answers goes to it whole, waits included.
         let address = ResourceAddress {
             workspace: read.workspace.clone(),
             app: read.app.clone(),
             record: read.record.clone(),
         };
-        if let Ok(None) = self.decided(caller, &address)
-            && let Some(apps) = self.apps.clone()
-        {
-            return apps.answer_read(caller, correlation, read);
+        if let Ok(Route::Served(served)) = self.route(caller, &address) {
+            return served.answer_read(caller, correlation, read);
         }
         tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+
+    fn store_read(
+        &self,
+        caller: &Caller,
+        address: &ResourceAddress,
+        read: serde_json::Value,
+    ) -> Result<serde_json::Value, ActionCallError> {
+        match self.route(caller, address)? {
+            Route::Certified(_) => Err(ActionCallError::Unavailable {
+                reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
+            }),
+            #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+            Route::Inside(broker) => broker.store_read_record(caller, address, read),
+            Route::Served(served) => served.store_read(caller, address, read),
+        }
     }
 
     fn watch(
@@ -169,12 +215,11 @@ impl ResourceReads for DeviceReads {
         address: &ResourceAddress,
         wake: &ResourceWake,
     ) -> Result<(), ActionCallError> {
-        let Some(workspaces) = self.decided(caller, address)? else {
-            return self
-                .apps
-                .as_ref()
-                .ok_or_else(refused)?
-                .watch(caller, address, wake);
+        let workspaces = match self.route(caller, address)? {
+            Route::Certified(workspaces) => workspaces,
+            #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+            Route::Inside(broker) => return broker.watch_record(caller, address, wake),
+            Route::Served(served) => return served.watch(caller, address, wake),
         };
         let runtime =
             tokio::runtime::Handle::try_current().map_err(|_| ActionCallError::Unavailable {

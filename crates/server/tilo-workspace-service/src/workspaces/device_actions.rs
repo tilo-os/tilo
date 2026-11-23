@@ -802,18 +802,13 @@ fn governed(provider: &str) -> bool {
 }
 
 impl ActionProvider for Answers {
-    /// Records of the workspaces this device holds, read for the certificate it holds for the
-    /// asking device ([`super::device_reads`]); a caller it holds none for reads through the apps
-    /// it serves.
+    /// Records are read by the device's one reader ([`super::RecordReads`]): the workspaces it
+    /// holds for another device's certificate there, every other caller by the apps it serves.
     fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
-        let apps = self.apps().and_then(ActionProvider::resource_reads);
-        match self.work.turns.get() {
-            Some(workspaces) => Some(Arc::new(super::device_reads::DeviceReads {
-                workspaces: workspaces.clone(),
-                apps,
-            })),
-            None => apps,
-        }
+        Some(Arc::new(super::RecordReads::of_device(
+            self.work.turns.get().cloned(),
+            self.apps().and_then(ActionProvider::resource_reads),
+        )))
     }
 
     fn serves(&self, provider: &str) -> bool {
