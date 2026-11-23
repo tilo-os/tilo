@@ -188,23 +188,20 @@ fn provision_identity() -> io::Result<()> {
 /// The login's device as this computer's enrolment: its certificate filed as this device's, and
 /// its person as the account's identity, so the identity service signs for apps here as the
 /// login's person, as on a device enrolled any other way. A computer that holds the person's root
-/// is theirs already. One whose identity is another person's keeps it: its apps are refused
-/// with why, and the login still serves.
+/// is theirs already. One enrolled for another person (the root it made for itself before it
+/// logged in, or an earlier login's) becomes the login's person's: they just chose it.
 fn adopt_login(place: &tilo_device_identity::login::Place, device: &Device) {
     if device.cert.capabilities.can_admit_devices {
         return;
     }
-    let now = tilo_clock::unix_now_ns();
-    let enrolled =
-        tilo_device_identity::persist::install_device_cert(place.keys(), &device.cert, now)
-            .map_err(|error| io::Error::other(error.to_string()))
-            .and_then(|()| {
-                tilo_identity::provisioning::complete_enrolled_device(
-                    &tilo_identity::store::identity_dir_from_env()?,
-                    place.keys(),
-                    now,
-                )
-            });
+    let enrolled = tilo_identity::store::identity_dir_from_env().and_then(|dir| {
+        tilo_identity::provisioning::adopt_login_enrolment(
+            &dir,
+            place.keys(),
+            &device.cert,
+            tilo_clock::unix_now_ns(),
+        )
+    });
     if let Err(error) = enrolled {
         tracing::warn!(%error, "the login's device is not this computer's enrolment: apps here cannot sign as its person");
     }
@@ -1693,6 +1690,20 @@ pub(super) fn listen_endpoint(key: &SigningKey, listen: Option<u16>) -> io::Resu
             .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns());
     }
     if let Some(port) = listen {
+        // One program on a computer takes its workspaces' work on this port: a second runtime of a
+        // login here is told so, not left with the socket layer's words.
+        if let Err(error) = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, port))
+            && error.kind() == io::ErrorKind::AddrInUse
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!(
+                    "another program on this computer holds UDP port {port}, where a logged-in \
+                     Tilo runtime takes its workspaces' work: most likely another `tilo-runtime` \
+                     of a Tilo login here. Stop it, then start this one again."
+                ),
+            ));
+        }
         // Every interface, on the port a server reaches this member at: IPv4,
         // and IPv6 where the machine has it.
         builder = builder
