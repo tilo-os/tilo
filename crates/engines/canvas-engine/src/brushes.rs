@@ -161,8 +161,12 @@ fn point_of(point: &[f64]) -> (f64, f64, f64) {
     )
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "clamped to f32's range first, so only precision is lost, as a stroke's coordinates allow"
+)]
 fn f32_of_f64(value: f64) -> f32 {
-    value as f32
+    value.clamp(f64::from(f32::MIN), f64::from(f32::MAX)) as f32
 }
 
 #[cfg(test)]
