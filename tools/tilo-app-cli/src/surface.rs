@@ -712,7 +712,13 @@ fn leading<'a>(
 /// The surface file's text for `resources`: each resource's scalars, its
 /// fields one per line, then its verbs, their parameters one per line.
 pub fn render(resources: &[Value]) -> Result<String> {
-    let mut text = String::from(HEADER);
+    render_with(resources, HEADER)
+}
+
+/// [`render`] under `header`, the line that says what wrote the file: a
+/// surface a test writes beside the code that publishes it names its test.
+pub fn render_with(resources: &[Value], header: &str) -> Result<String> {
+    let mut text = String::from(header);
     text.push_str(&format_line());
     for resource in resources.iter().map(filed) {
         let Value::Object(map) = &resource else {

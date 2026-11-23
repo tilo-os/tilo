@@ -219,9 +219,9 @@ pub const fn default_answer(kind: ActionKind, consequential: bool) -> Answer {
     }
 }
 
-/// The provider a workspace's own governance is published under: its members,
-/// roles, invitations and settings.
-pub const WORKSPACE_GOVERNANCE_APP: &str = "tilo.workspace";
+/// The app a workspace's own actions are published under: its members, roles,
+/// invitations and settings.
+pub const WORKSPACE_APP: &str = "tilo.workspace";
 /// The provider a server publishes a person's own workspaces there under:
 /// creating, listing, entering and deleting them.
 pub const ACCOUNT_APP: &str = "tilo.host";
@@ -230,12 +230,12 @@ pub const ACCOUNT_APP: &str = "tilo.host";
 /// answer scope names, such as the whole workspace.
 ///
 /// What the person's own account holds is theirs to allow: their workspaces on
-/// a server ([`ACCOUNT_APP`]) and the governance of a workspace
-/// ([`WORKSPACE_GOVERNANCE_APP`]). The server holds every such call to what the
-/// person may do themselves, so their agent never reaches further than they
-/// do. Any other app's outside effect reaches other people's data, accounts or
-/// machines (it sends, publishes, calls a service or executes a command), so it is
-/// carried out unasked only where its person allowed that one action
+/// a server ([`ACCOUNT_APP`]) and a workspace's own actions ([`WORKSPACE_APP`]).
+/// The server holds every such call to what the person may do themselves, so
+/// their agent never reaches further than they do. Any other app's outside
+/// effect reaches other people's data, accounts or machines (it sends,
+/// publishes, calls a service or executes a command), so it is carried out
+/// unasked only where its person allowed that one action
 /// ([`AnswerScope::Action`], what "Always allow this" gives): never for a whole
 /// app or kind of resource, which would let actions they never looked at go
 /// unasked as well.
@@ -249,7 +249,7 @@ pub fn may_give(scope: Option<&AnswerScope>, kind: ActionKind, answer: Answer) -
         || scope.is_some_and(|scope| match scope {
             AnswerScope::Action { .. } => true,
             AnswerScope::App { app } | AnswerScope::Kind { app, .. } => {
-                [ACCOUNT_APP, WORKSPACE_GOVERNANCE_APP].contains(&app.as_str())
+                [ACCOUNT_APP, WORKSPACE_APP].contains(&app.as_str())
             }
         })
 }

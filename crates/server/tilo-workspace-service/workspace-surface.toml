@@ -1,0 +1,189 @@
+# Written by its test; review like an API change.
+
+format = 2
+
+[[resources]]
+kind = "workspace.members"
+label = "Members"
+version = 1
+
+[[resources.verbs]]
+id = "list"
+kind = "read"
+
+[[resources.verbs]]
+id = "add"
+kind = "outside"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "role", required = true, schema = { type = "string", enum = ["viewer", "commenter", "editor", "moderator", "administrator", "owner"] } },
+  { name = "name", required = false, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "name"
+kind = "outside"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "workspace.roles"
+label = "Roles"
+version = 1
+
+[[resources.verbs]]
+id = "role"
+kind = "outside"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "role", required = true, schema = { type = "string", enum = ["viewer", "commenter", "editor", "moderator", "administrator", "owner"] } },
+  { name = "name", required = false, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove"
+kind = "outside"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "workspace.invitations"
+label = "Invitations"
+version = 1
+
+[[resources.verbs]]
+id = "invite"
+kind = "outside"
+params = [
+  { name = "role", required = true, schema = { type = "string", enum = ["viewer", "commenter", "editor", "moderator", "administrator", "owner"] } },
+  { name = "wait_list_entry", required = false, schema = { type = "string" } },
+  { name = "recipient", required = false, schema = { type = "string" } },
+  { name = "invitee_name", required = false, schema = { type = "string" } },
+  { name = "inviter_name", required = false, schema = { type = "string" } },
+  { name = "expires_in_hours", required = false, schema = { type = "integer" } },
+  { name = "expires_in_seconds", required = false, schema = { type = "integer" } },
+]
+
+[[resources.verbs]]
+id = "list"
+kind = "read"
+
+[[resources.verbs]]
+id = "cancel"
+kind = "outside"
+params = [
+  { name = "invite", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "list"
+kind = "read"
+
+[[resources.verbs]]
+id = "unlist"
+kind = "outside"
+params = [
+  { name = "entry", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "mail"
+kind = "outside"
+params = [
+  { name = "entry", required = true, schema = { type = "string" } },
+  { name = "link", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "workspace.permissions"
+label = "Permissions"
+version = 1
+
+[[resources.verbs]]
+id = "list"
+kind = "read"
+
+[[resources.verbs]]
+id = "add"
+kind = "outside"
+params = [
+  { name = "host", required = true, schema = { type = "string" } },
+  { name = "role", required = false, schema = { type = "string", enum = ["key_holder", "store"] } },
+]
+
+[[resources.verbs]]
+id = "remove"
+kind = "outside"
+params = [
+  { name = "server", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "move"
+kind = "outside"
+params = [
+  { name = "server", required = true, schema = { type = "string" } },
+  { name = "host", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "copies"
+kind = "outside"
+params = [
+  { name = "key_holders", required = false, schema = { type = "integer" } },
+  { name = "stores", required = false, schema = { type = "integer" } },
+]
+
+[[resources.verbs]]
+id = "content"
+kind = "read"
+
+[[resources.verbs]]
+id = "install-app"
+kind = "outside"
+params = [
+  { name = "app", required = true, schema = { type = "string" } },
+  { name = "version", required = true, schema = { type = "string" } },
+  { name = "surface", required = true, schema = { type = "string" } },
+  { name = "package", required = true, schema = { type = "string" } },
+  { name = "publisher", required = true, schema = { type = "string" } },
+  { name = "dev", required = false, schema = { type = "boolean" } },
+  { name = "file", required = false, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "uninstall-app"
+kind = "outside"
+params = [
+  { name = "app", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "upload-app-file"
+kind = "outside"
+params = [
+  { name = "file", required = true, schema = { type = "string" } },
+  { name = "offset", required = true, schema = { type = "integer" } },
+  { name = "total", required = true, schema = { type = "integer" } },
+  { name = "data", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "request-bot"
+kind = "outside"
+params = [
+  { name = "entry", required = true, schema = { type = "string" } },
+  { name = "version", required = true, schema = { type = "string" } },
+  { name = "inputs", required = false, schema = { type = "object" } },
+  { name = "program", required = false, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "withdraw-bot-request"
+kind = "outside"
+params = [
+  { name = "entry", required = true, schema = { type = "string" } },
+]
+

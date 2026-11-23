@@ -204,6 +204,35 @@ pub(super) async fn offered(
     offered
 }
 
+#[tokio::test]
+async fn the_catalogue_root_carries_the_surface_the_workspace_publishes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let (_workspace, workspace_id, host) = governed(server.workspaces()).await;
+    let page = settled(host.in_workspace(workspace_id).query(
+        &caller(&owner),
+        CatalogueQuery {
+            provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
+            max_results: 100,
+            ..CatalogueQuery::default()
+        },
+    ))
+    .await
+    .unwrap();
+    let root = page
+        .rows
+        .iter()
+        .find(|row| row.parent_resource.is_empty())
+        .expect("the workspace's root is catalogued");
+    assert_eq!(
+        root.surface.as_deref().map(str::as_bytes),
+        Some(super::WORKSPACE_SURFACE),
+        "the root row serves the surface the workspace's actions publish"
+    );
+    server.shutdown().await;
+}
+
 /// `request` by `caller`: what it produced, or why not.
 async fn invoke(
     host: &ServiceWorkspaceActions,

@@ -683,6 +683,11 @@ const GOVERNANCE: Publisher = Publisher {
     kind: WORKSPACE_GOVERNANCE_KIND,
 };
 
+/// A workspace's own actions, as the file its test writes beside this crate: what its root
+/// catalogue row carries, so a caller reads the surface its programs compile against from the
+/// workspace itself.
+const WORKSPACE_SURFACE: &[u8] = include_bytes!("../../workspace-surface.toml");
+
 impl Publisher {
     /// The catalogue entry naming this provider, offered on `workspace` (empty
     /// for the holder's own).
@@ -822,9 +827,13 @@ fn governance_tree(mut rows: Vec<CatalogueRow>, name: &str) -> Vec<CatalogueRow>
         rows.insert(0, root);
     }
     let holds = rows.iter().any(|row| !row.parent_resource.is_empty());
+    let surface = String::from_utf8_lossy(WORKSPACE_SURFACE).into_owned();
     for row in &mut rows {
         if row.parent_resource.is_empty() {
             row.has_children = holds;
+            // The workspace's own actions are what its root publishes: a caller reads their
+            // surface from the row it finds them under.
+            row.surface = Some(surface.clone());
         }
     }
     rows
@@ -3442,3 +3451,128 @@ mod person_model_tests;
 mod share_tests;
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// The workspace's own actions as the file beside this crate holds them, written from what the
+/// tree publishes and what each action takes.
+#[cfg(test)]
+mod surface_tests {
+    use serde_json::{Value, json};
+    use tilo_actions::ParamType;
+    use tilo_actions::remote::{
+        WORKSPACE_INVITATIONS, WORKSPACE_MEMBER, WORKSPACE_MEMBERS, WORKSPACE_PUBLISHED,
+        WORKSPACE_WAITING,
+    };
+
+    use super::{VERBS, Verb};
+
+    /// The header the file carries: written by this test, so a change to it reads in review as
+    /// an API change.
+    const HEADER: &str = "# Written by its test; review like an API change.\n\n";
+
+    /// The resources the workspace's actions are grouped by, in file order, each named after
+    /// what it holds.
+    const RESOURCES: [(&str, &str); 4] = [
+        ("members", "Members"),
+        ("roles", "Roles"),
+        ("invitations", "Invitations"),
+        ("permissions", "Permissions"),
+    ];
+
+    /// The resource the action published at `child` acts on: the people, the place each person
+    /// holds, the invitations (and the wait list they are made from), and the workspace's own
+    /// permissions — its servers and the apps it runs.
+    fn resource_of(child: Option<&str>) -> &'static str {
+        match child {
+            Some(WORKSPACE_MEMBERS) => "members",
+            Some(WORKSPACE_MEMBER) => "roles",
+            Some(WORKSPACE_INVITATIONS | WORKSPACE_WAITING) => "invitations",
+            _ => "permissions",
+        }
+    }
+
+    /// The surface file's text: every action a workspace publishes, on the resource it holds,
+    /// with the parameters and kind its action declares.
+    fn surface() -> String {
+        let resources: Vec<Value> = RESOURCES
+            .iter()
+            .map(|(kind, label)| {
+                let verbs: Vec<Value> = WORKSPACE_PUBLISHED
+                    .iter()
+                    .filter(|(_, child, _)| resource_of(*child) == *kind)
+                    .map(|(operation, _, action)| {
+                        let verb = VERBS
+                            .iter()
+                            .find(|verb| verb.id == *operation)
+                            .unwrap_or_else(|| panic!("`{operation}` is no action of a workspace"));
+                        json!({
+                            "id": action,
+                            "kind": verb.kind,
+                            "params": params_of(verb),
+                        })
+                    })
+                    .collect();
+                json!({
+                    "kind": format!("workspace.{kind}"),
+                    "label": label,
+                    "version": 1,
+                    "verbs": verbs,
+                })
+            })
+            .collect();
+        tilo_app_cli::surface::render_with(&resources, HEADER).expect("a surface writes as TOML")
+    }
+
+    /// The parameters the action `verb` takes, each with the schema its type gives and the
+    /// values it accepts.
+    fn params_of(verb: &Verb) -> Vec<Value> {
+        (verb.params)()
+            .into_iter()
+            .map(|param| {
+                let mut schema = param
+                    .schema
+                    .as_deref()
+                    .cloned()
+                    .unwrap_or_else(|| schema_of(param.ty));
+                if !param.choices.is_empty()
+                    && let Some(object) = schema.as_object_mut()
+                {
+                    object.insert("enum".to_owned(), json!(param.choices));
+                }
+                json!({
+                    "name": param.name,
+                    "required": param.required,
+                    "schema": schema,
+                })
+            })
+            .collect()
+    }
+
+    fn schema_of(ty: ParamType) -> Value {
+        match ty {
+            ParamType::Text | ParamType::Secret | ParamType::DateTime => json!({"type": "string"}),
+            ParamType::Integer => json!({"type": "integer"}),
+            ParamType::Number => json!({"type": "number"}),
+            ParamType::Boolean => json!({"type": "boolean"}),
+            ParamType::Array => json!({"type": "array"}),
+            ParamType::Object => json!({"type": "object"}),
+            ParamType::Resource => json!({"type": "string"}),
+        }
+    }
+
+    #[test]
+    fn the_surface_file_is_what_this_crate_publishes() {
+        let text = surface();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("workspace-surface.toml");
+        let committed = std::fs::read_to_string(&path).ok();
+        if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|value| value == "1") {
+            std::fs::write(&path, &text).expect("the surface file is written");
+            return;
+        }
+        assert_eq!(
+            committed.as_deref(),
+            Some(text.as_str()),
+            "crates/server/tilo-workspace-service/workspace-surface.toml is not what a \
+             workspace publishes; regenerate it with UPDATE_SNAPSHOTS=1"
+        );
+    }
+}

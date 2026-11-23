@@ -182,8 +182,7 @@ pub struct RemoteActionTarget {
 /// The provider a workspace's own governance actions (membership, roles, grants,
 /// bans) are answered under. It is the provider's, not an app's, so it is the
 /// one provider a caller names without reading it from a catalogue page.
-pub const WORKSPACE_GOVERNANCE_PROVIDER: &str =
-    tilo_action_policy::agent_answers::WORKSPACE_GOVERNANCE_APP;
+pub const WORKSPACE_GOVERNANCE_PROVIDER: &str = tilo_action_policy::agent_answers::WORKSPACE_APP;
 /// The resource kind of a workspace's governance resource.
 pub const WORKSPACE_GOVERNANCE_KIND: &str = "workspace.permissions";
 
@@ -251,8 +250,7 @@ pub const WORKSPACE_WAITING: &str = "waiting";
 /// person names it. An operation not listed is published on the root under its
 /// own name; one listed on [`WORKSPACE_MEMBER`] is published on each person, who
 /// is its `person`.
-pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 21] = [
-    ("member.list", Some(WORKSPACE_MEMBERS), "list"),
+pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 22] = [    ("member.list", Some(WORKSPACE_MEMBERS), "list"),
     (
         "member.add",
         Some(WORKSPACE_MEMBERS),

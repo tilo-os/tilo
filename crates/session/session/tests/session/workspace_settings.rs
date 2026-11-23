@@ -795,10 +795,7 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     // window.
     let members = listed_app(
         &session,
-        &format!(
-            "app:{}",
-            tilo_action_policy::agent_answers::WORKSPACE_GOVERNANCE_APP
-        ),
+        &format!("app:{}", tilo_action_policy::agent_answers::WORKSPACE_APP),
     );
     assert_eq!(members.label, "Members and settings");
     assert_eq!(members.icon, ui::icons::Icon::Users);

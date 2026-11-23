@@ -176,7 +176,7 @@ fn a_bound_allows_an_outside_effect_unasked_only_within_the_persons_account_or_f
     // governance, the agent may go unasked: the server holds it to what they may.
     for own in [
         tilo_action_policy::agent_answers::ACCOUNT_APP,
-        tilo_action_policy::agent_answers::WORKSPACE_GOVERNANCE_APP,
+        tilo_action_policy::agent_answers::WORKSPACE_APP,
     ] {
         agents
             .apply(set_bound(

@@ -350,7 +350,7 @@ impl Agents {
     /// The mark a row wears: an app's own glyph, and the people's mark where the row governs
     /// the workspace's members and settings.
     fn access_icon(app: &str) -> ui::icons::Icon {
-        if app == tilo_action_policy::agent_answers::WORKSPACE_GOVERNANCE_APP {
+        if app == tilo_action_policy::agent_answers::WORKSPACE_APP {
             ui::icons::Icon::Users
         } else {
             ui::icons::app_glyph(app, None)
