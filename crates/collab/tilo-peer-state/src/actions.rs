@@ -23,15 +23,23 @@
 //! 5. this device holds the workspace it names;
 //! 6. the source is a device of that workspace's roster: certified,
 //!    unrevoked, unexpired, its person a member, its delegation live
-//!    ([`StatePeer::permissions`]).
+//!    ([`StatePeer::permissions`]); or a key the workspace holds no certificate
+//!    for at all, a visitor ([`Caller::visitor`]), which acts for nobody.
+//!
+//! A visitor (a page at a workspace's public entry, which made a key of its own
+//! and signs each call with it) is admitted only to what the workspace's grants
+//! open to any key ([`tilo_action_policy::EntryPolicy::visitor_grants`]),
+//! decided here before any dispatcher meets it, and then handed to the
+//! dispatcher like any caller.
+//! Its calls are counted per client address before any provider runs
+//! ([`visitors`]).
 //!
 //! One request is admitted before the device holds any certificate: a computer
 //! being added to a person's devices asks the device that issued its ticket to
 //! certify it ([`ActionService::admit_uncertified`]). Such a request names that
 //! one scope instead of a workspace, checks 1 to 4 hold for it as for any
 //! other, and it is answered by the provider that serves the scope alone, as
-//! a [`Caller::uncertified_device`]. Every request naming a workspace from such
-//! a device fails check 6, so nothing else is answered on its connection.
+//! a [`Caller::visitor`].
 //!
 //! What is left is the [`Caller`] the local callers of the same dispatcher
 //! get, and the dispatcher's own policy
@@ -63,6 +71,9 @@ use tilo_actions::remote::{
 };
 use tilo_lock::MutexRecover as _;
 use web_time::SystemTime;
+
+mod visitors;
+pub use visitors::{VISITOR_CALLS_PER_DAY, VISITOR_CALLS_PER_TEN_MINUTES};
 
 /// ALPN of the device-to-device action service.
 pub const ACTIONS_ALPN: &[u8] = b"tilo-actions/1";
@@ -258,6 +269,8 @@ struct Inner {
     /// ([`ActionService::admit_uncertified`]).
     uncertified: Mutex<Option<(String, Arc<dyn ActionProvider + Send + Sync>)>>,
     replay: Mutex<ActionReplayWindow>,
+    /// The calls visitors made, per client address ([`visitors`]).
+    visitors: Mutex<visitors::VisitorWindows>,
     bounds: Bounds,
     callers: Mutex<HashMap<[u8; 32], Bucket>>,
     /// Endpoints keyed apart from the device they answer for, by endpoint
@@ -309,6 +322,7 @@ impl ActionService {
             providers: Mutex::default(),
             uncertified: Mutex::default(),
             replay: Mutex::default(),
+            visitors: Mutex::new(visitors::VisitorWindows::new(rand_key())),
             bounds,
             callers: Mutex::default(),
             endpoints: Mutex::default(),
@@ -336,6 +350,7 @@ impl ActionService {
             providers: Mutex::default(),
             uncertified: Mutex::default(),
             replay: Mutex::default(),
+            visitors: Mutex::new(visitors::VisitorWindows::new(rand_key())),
             bounds: Bounds::default(),
             callers: Mutex::default(),
             endpoints: Mutex::default(),
@@ -398,7 +413,7 @@ impl ActionService {
     /// Answer requests naming `scope` (no workspace) from a device that holds no certificate
     /// yet, through `provider` alone: what a device issuing a ticket serves while a computer
     /// asks it to certify that computer. The provider sees each such caller as a
-    /// [`Caller::uncertified_device`] and answers only the call it serves.
+    /// [`Caller::visitor`] and answers only the call it serves.
     pub fn admit_uncertified(
         &self,
         scope: impl Into<String>,
@@ -587,16 +602,18 @@ impl ActionService {
         key_holders
     }
 
-    /// Answer one request: what the device's dispatcher made of it.
+    /// Answer one request from the client address `client` (where the connection says it): what
+    /// the device's dispatcher made of it.
     async fn answer(
         &self,
         remote: [u8; 32],
+        client: Option<std::net::IpAddr>,
         signed: SignedDeviceAction,
     ) -> Option<RemoteActionMessage> {
         let action = signed.action();
         let request = &action.message;
         match self.authorize(remote, &signed).await {
-            Ok((caller, dispatcher)) => self.dispatch(&dispatcher, &caller, request).await,
+            Ok((caller, dispatcher)) => self.dispatch(&dispatcher, &caller, client, request).await,
             Err(error) => tilo_actions::remote::refuse(request, error),
         }
     }
@@ -640,7 +657,7 @@ impl ActionService {
         if let Some((scope, provider)) = uncertified
             && action.workspace == scope
         {
-            return Ok((Caller::uncertified_device(source), provider));
+            return Ok((Caller::visitor(source), provider));
         }
         let now = tilo_clock::wall();
         // A placement that does not decode is no placement: the request is decided as any other.
@@ -650,7 +667,7 @@ impl ActionService {
                 postcard::from_bytes::<crate::join::TransportHint>(bytes).ok()
             )
         });
-        let (authority, certificate) = self
+        let (authority, certificate, opened) = self
             .read_workspace_for(
                 Some((source, placement.as_ref())),
                 &action.workspace,
@@ -660,13 +677,30 @@ impl ActionService {
                         .certificates()
                         .into_iter()
                         .find(|certificate| certificate.device_public_key == source);
-                    (authority, certificate)
+                    let opened = certificate.is_none()
+                        && visitor_may(peer, &action.workspace, source, &action.message);
+                    (authority, certificate, opened)
                 },
             )
             .await
             .ok_or_else(|| ActionCallError::Refused {
                 reason: "this device does not hold that workspace".into(),
             })?;
+        // A key the workspace holds no certificate for is a visitor: it acts for nobody, and is
+        // admitted only to what the workspace's grants to any key open, decided here, so no
+        // dispatcher behind this one ever meets a caller off the roster it did not open to.
+        let Some(certificate) = certificate else {
+            if action.agent.is_some() || !opened {
+                return Err(not_permitted(
+                    source,
+                    "a key the workspace holds no certificate for asks what it opens to no visitor",
+                ));
+            }
+            return Ok((
+                Caller::visitor(source).in_workspace(action.workspace.clone()),
+                Arc::clone(&self.0.dispatcher),
+            ));
+        };
         let authority = authority.map_err(|error| {
             tracing::warn!(
                 device = %hex::encode(&source[..4]),
@@ -675,9 +709,6 @@ impl ActionService {
                 "a device's request is refused: the workspace gives it no authority"
             );
             refusal_of(&error)
-        })?;
-        let certificate = certificate.ok_or_else(|| {
-            not_permitted(source, "the workspace lists no certificate for the device")
         })?;
         // The device is its own actor when its person delegated it: an
         // agent is the agent, a bot the bot, never the person.
@@ -707,6 +738,7 @@ impl ActionService {
         &self,
         dispatcher: &Arc<dyn ActionProvider + Send + Sync>,
         caller: &Caller,
+        client: Option<std::net::IpAddr>,
         request: &RemoteActionMessage,
     ) -> Option<RemoteActionMessage> {
         use tilo_actions::remote::ActionCallError;
@@ -719,10 +751,16 @@ impl ActionService {
                 })
             }
             RemoteActionMessage::Invoke(invoke) => {
-                let provider = self
-                    .alone(dispatcher)
-                    .unwrap_or_else(|| self.provider_for(&invoke.target.provider));
-                let status = match self.spend(caller) {
+                let alone = self.alone(dispatcher);
+                // The ticket admitted for a computer with no certificate yet answers its one
+                // call as before; every other visitor is counted by its network.
+                let spent = if alone.is_some() {
+                    Ok(())
+                } else {
+                    self.spend(caller, client)
+                };
+                let provider = alone.unwrap_or_else(|| self.provider_for(&invoke.target.provider));
+                let status = match spent {
                     Ok(()) => await_answer(provider.invoke(caller, invoke.clone()))
                         .await
                         .map_or_else(
@@ -841,8 +879,28 @@ impl ActionService {
         }
     }
 
-    /// Spend one of `caller`'s changes, or say the caller has none left.
-    fn spend(&self, caller: &Caller) -> Result<(), tilo_actions::remote::ActionCallError> {
+    /// Spend one of `caller`'s changes, or say the caller has none left. A visitor spends one
+    /// of the calls its client address (`client`) may make.
+    fn spend(
+        &self,
+        caller: &Caller,
+        client: Option<std::net::IpAddr>,
+    ) -> Result<(), tilo_actions::remote::ActionCallError> {
+        if caller.acting().visitor_key().is_some() {
+            let now_ms = now_ns() / 1_000_000;
+            return self
+                .0
+                .visitors
+                .lock_recover()
+                .admit(client, now_ms)
+                .map_err(|retry_after_secs| {
+                    tilo_actions::remote::ActionCallError::Refused {
+                        reason: format!(
+                            "too many tries from your network just now; try again in {retry_after_secs} seconds"
+                        ),
+                    }
+                });
+        }
         let Some(person) = caller.user_public_key().copied() else {
             return Ok(());
         };
@@ -878,6 +936,15 @@ impl ActionService {
     /// Serve `connection` until it ends, answering each stream on its own.
     async fn serve(&self, connection: Connection) -> Result<(), String> {
         let remote = self.device_of(*connection.remote_id().as_bytes());
+        // The address the device reaches the caller at directly, when it does: a visitor's
+        // calls are counted by it.
+        let client = connection
+            .paths()
+            .iter()
+            .find_map(|path| match path.remote_addr() {
+                iroh::TransportAddr::Ip(address) => Some(address.ip()),
+                _ => None,
+            });
         loop {
             let (send, recv) = match connection.accept_bi().await {
                 Ok(stream) => stream,
@@ -886,7 +953,10 @@ impl ActionService {
             };
             let action_service = self.clone();
             self.0.runtime.spawn(async move {
-                if let Err(error) = action_service.answer_stream(remote, send, recv).await {
+                if let Err(error) = action_service
+                    .answer_stream(remote, client, send, recv)
+                    .await
+                {
                     tracing::warn!(%error, "a remote action stream ended in error");
                 }
             });
@@ -897,6 +967,7 @@ impl ActionService {
     async fn answer_stream(
         &self,
         remote: [u8; 32],
+        client: Option<std::net::IpAddr>,
         mut send: SendStream,
         mut recv: RecvStream,
     ) -> Result<(), String> {
@@ -906,7 +977,7 @@ impl ActionService {
         let frame: ActionServiceFrame =
             postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
         let ActionServiceFrame::Action(signed) = frame;
-        if let Some(reply) = self.answer(remote, *signed).await {
+        if let Some(reply) = self.answer(remote, client, *signed).await {
             let bytes = RemoteActionFrame::new(reply)
                 .encode()
                 .map_err(|error| error.to_string())?;
@@ -958,6 +1029,50 @@ impl Bucket {
             .mul_add(rate.per_second, self.changes)
             >= rate.capacity
     }
+}
+
+/// Whether the workspace `peer` holds opens `message` to the visitor `key`: an invocation the
+/// grants to any key allow ([`tilo_action_policy::EntryPolicy::visitor_grants`]), or following
+/// one (the dispatcher keeps each invocation for the caller that started it). A visitor browses
+/// and cancels nothing.
+fn visitor_may(
+    peer: &crate::StatePeer,
+    workspace: &str,
+    key: [u8; 32],
+    message: &RemoteActionMessage,
+) -> bool {
+    let invoke = match message {
+        RemoteActionMessage::Invoke(invoke) => invoke,
+        RemoteActionMessage::Observe { .. } => return true,
+        _ => return false,
+    };
+    let Ok(policy) = peer.governance().governed_policy() else {
+        return false;
+    };
+    let node = tilo_action_policy::TreePath::workspace(workspace)
+        .app(invoke.target.provider.as_str())
+        .resource(invoke.target.address.resource.as_str())
+        .action(invoke.target.address.action.as_str());
+    let visitor = tilo_action_policy::Acting::visitor(&key);
+    tilo_action_policy::Authority::of_acting(&visitor, &policy, &[])
+        .decide(
+            &node,
+            tilo_action_policy::ActionKind::Undoable,
+            &tilo_action_policy::Context::at(now_ns() / 1_000_000),
+        )
+        .answer
+        == tilo_action_policy::Answer::Allow
+}
+
+/// A key of the device's own choosing, which the client addresses visitors ask from are counted
+/// under ([`visitors`]).
+fn rand_key() -> [u8; 32] {
+    let mut key = [0; 32];
+    rand_core::Rng::fill_bytes(
+        &mut getrandom::rand_core::UnwrapErr(getrandom::SysRng),
+        &mut key,
+    );
+    key
 }
 
 /// A request from `source` refused for `why`, which the host's log keeps: the caller reads

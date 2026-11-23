@@ -711,7 +711,8 @@ fn grantee_is_person(grantee: &Grantee, user: &UserId) -> bool {
         Grantee::Member(MemberId::Agent(_) | MemberId::Bot(_))
         | Grantee::Role(_)
         | Grantee::CustomRole(_)
-        | Grantee::App(_) => false,
+        | Grantee::App(_)
+        | Grantee::AnyKey => false,
     }
 }
 
@@ -884,6 +885,11 @@ fn classify_grantee(grantee: &Grantee) -> GrantRecipient {
             kind: RecipientKind::Role,
             id: id.clone(),
         },
+        // Listed with the entry that sets it, never here (`listed_capabilities`).
+        Grantee::AnyKey => GrantRecipient {
+            kind: RecipientKind::Role,
+            id: grantee.to_string(),
+        },
     }
 }
 
@@ -911,7 +917,9 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantRecipient, Listed<'_>)> {
                 let admission = grant.grantee.agent_id().is_some()
                     && grant.id.as_str().starts_with("agent-member:");
                 let document_access = grant.id.as_str().starts_with("document-access:");
-                !preset && !admission && !document_access
+                // What visitors may do is the entry's setting, shown there.
+                let entry = grant.grantee == Grantee::AnyKey;
+                !preset && !admission && !document_access && !entry
             })
             .map(|grant| (classify_grantee(&grant.grantee), Listed::Grant(grant))),
     );
@@ -965,7 +973,10 @@ pub fn listed_permissions(
                     ui::format::lifetime(grant.lifetime),
                     match &grant.granted_by {
                         Grantee::Member(who) => Some(given_by_label(who, ws, local_user)),
-                        Grantee::Role(_) | Grantee::App(_) | Grantee::CustomRole(_) => None,
+                        Grantee::Role(_)
+                        | Grantee::App(_)
+                        | Grantee::CustomRole(_)
+                        | Grantee::AnyKey => None,
                     },
                 ),
             };

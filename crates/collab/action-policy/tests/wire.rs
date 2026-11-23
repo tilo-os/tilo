@@ -84,10 +84,15 @@ tilo_test_env::scenario! {
             (Grantee::bot("b"), &[0x00, 0x02, 0x01, b'b']),
             (Grantee::role(Role::Editor), &[0x01, 0x02]),
             (Grantee::app("n"), &[0x02, 0x01, b'n']),
+            (Grantee::AnyKey, &[0x04]),
         ];
         for (grantee, golden) in cases {
             match grantee {
-                Grantee::Member(_) | Grantee::Role(_) | Grantee::App(_) | Grantee::CustomRole(_) => {
+                Grantee::Member(_)
+                | Grantee::Role(_)
+                | Grantee::App(_)
+                | Grantee::CustomRole(_)
+                | Grantee::AnyKey => {
                     stored_as!(grantee, golden);
                 }
             }

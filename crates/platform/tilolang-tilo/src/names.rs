@@ -37,6 +37,8 @@ pub fn named(who: &Actor, names: &dyn MemberNames) -> String {
         Actor::Member(MemberId::Bot(id)) => names.person(id).unwrap_or_else(|| name_words(id)),
         Actor::Automation(id) => name_words(id.as_str()),
         Actor::App(app) => names.app(app.as_str()),
+        // Someone with no identity in the workspace has no name in it.
+        Actor::Visitor(_) => "Visitor".to_owned(),
     }
 }
 

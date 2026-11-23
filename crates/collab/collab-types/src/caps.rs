@@ -392,7 +392,10 @@ impl CapOverride {
             .any(|node| match node.by.member_id() {
                 Some(member) => match &self.grantee {
                     Grantee::Member(named) => named == member,
-                    Grantee::Role(_) | Grantee::App(_) | Grantee::CustomRole(_) => false,
+                    Grantee::Role(_)
+                    | Grantee::App(_)
+                    | Grantee::CustomRole(_)
+                    | Grantee::AnyKey => false,
                 },
                 None => false,
             })

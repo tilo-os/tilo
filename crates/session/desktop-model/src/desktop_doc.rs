@@ -584,13 +584,17 @@ fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
                     .iter()
                     .position(|r| *r == role)
                     .unwrap_or(Role::ALL.len()),
-                Grantee::Member(_) | Grantee::App(_) | Grantee::CustomRole(_) => Role::ALL.len(),
+                Grantee::Member(_) | Grantee::App(_) | Grantee::CustomRole(_) | Grantee::AnyKey => {
+                    Role::ALL.len()
+                }
             }
         }
         fn role_index(grant: &Grant) -> Option<u64> {
             match grant.grantee {
                 Grantee::Role(_) => grant.id.0.rsplit(':').next()?.parse().ok(),
-                Grantee::Member(_) | Grantee::App(_) | Grantee::CustomRole(_) => None,
+                Grantee::Member(_) | Grantee::App(_) | Grantee::CustomRole(_) | Grantee::AnyKey => {
+                    None
+                }
             }
         }
         grants.compact_sort_by(|left, right| {

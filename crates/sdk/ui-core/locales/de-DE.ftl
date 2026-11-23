@@ -72,6 +72,7 @@ window-toolbar-hide-inspector = Inspektor ausblenden
 window-share-to-channel = In Kanal teilen…
 window-stop-sharing-in = Teilen in { $place } beenden
 history-genesis = Erstellt
+history-author-visitor = Besucher
 history-moved = Zwischen Arbeitsbereichen verschoben
 history-review-title = { $resource } wiederherstellen
 history-review-confirm = Version wiederherstellen

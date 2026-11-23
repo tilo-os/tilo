@@ -292,7 +292,8 @@ impl BrokerActor {
             (
                 Some(
                     actor @ (tilo_action_policy::Actor::Automation(_)
-                    | tilo_action_policy::Actor::App(_)),
+                    | tilo_action_policy::Actor::App(_)
+                    | tilo_action_policy::Actor::Visitor(_)),
                 ),
                 _,
             ) => Acting::from(actor),

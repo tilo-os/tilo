@@ -9,7 +9,14 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::Role;
+use crate::{ActionKind, Answer, Grant, GrantId, Grantee, KindSet, Lifetime, Role, TreePath};
+
+/// The app that keeps a workspace's wait list: one resource per address left at its entry.
+pub const WAIT_LIST_APP: &str = "so.tilo.lang.wait-list";
+
+/// What a visitor may do on a wait list, and nothing else of it: leave an address, confirm it
+/// from the link mailed there, and take it off again.
+pub const WAIT_LIST_VISITOR_ACTIONS: [&str; 3] = ["join", "confirm", "leave"];
 
 /// The longest description a listing carries, in characters: what a
 /// directory shows of a workspace, in a sentence or two.
@@ -85,6 +92,32 @@ impl EntryPolicy {
     #[must_use]
     pub const fn keeps_requests(&self) -> bool {
         self.invitation_only && self.wait_list_max > 0
+    }
+
+    /// What the entry opens to any key ([`Grantee::AnyKey`]) in `workspace`: on an entry that
+    /// keeps requests, joining its wait list, confirming and leaving it. Nothing on any other
+    /// entry. Every device derives these from the entry alike, so a visitor's call is admitted,
+    /// and its change taken in, by the same grants everywhere.
+    #[must_use]
+    pub fn visitor_grants(&self, workspace: &str) -> Vec<Grant> {
+        if !self.keeps_requests() {
+            return Vec::new();
+        }
+        WAIT_LIST_VISITOR_ACTIONS
+            .into_iter()
+            .map(|action| Grant {
+                id: GrantId::new(format!("entry:wait-list:{action}")),
+                grantee: Grantee::AnyKey,
+                node: TreePath::workspace(workspace)
+                    .app(WAIT_LIST_APP)
+                    .rest()
+                    .action(action),
+                kinds: KindSet::of(ActionKind::Read).with(ActionKind::Undoable),
+                answer: Answer::Allow,
+                lifetime: Lifetime::UntilRevoked,
+                granted_by: Grantee::role(Role::Owner),
+            })
+            .collect()
     }
 
     /// The entry with its listing's description trimmed, when it may stand.

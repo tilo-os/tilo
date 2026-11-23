@@ -247,6 +247,9 @@ pub enum Refusal {
     /// workspace neither revokes nor gives one; it adjusts a role with grants
     /// of its own.
     BuiltInRole(GrantId),
+    /// A grant to any key: what visitors may do follows the workspace's entry
+    /// ([`crate::EntryPolicy::visitor_grants`]), and nobody writes one.
+    EntryGrant(GrantId),
     /// An id that is no person's root key: a change naming software, or a
     /// spelling no device of ours writes, as a person.
     NotAPerson(String),
@@ -302,6 +305,10 @@ impl std::fmt::Display for Refusal {
             Self::UnknownGrant(id) => write!(f, "no grant {id}"),
             Self::DuplicateGrant(id) => write!(f, "grant {id} already exists"),
             Self::BuiltInRole(id) => write!(f, "{id} is part of a built-in role"),
+            Self::EntryGrant(id) => write!(
+                f,
+                "{id} names any visitor: what visitors may do follows the workspace's entry"
+            ),
             Self::NotAPerson(id) => write!(f, "{id} is not a person's id"),
         }
     }
@@ -1265,8 +1272,13 @@ impl WorkspacePolicy {
         grant: &Grant,
         cx: &Context<'_>,
     ) -> Result<(), Refusal> {
+        // What a visitor may do is the entry's to say ([`crate::EntryPolicy::visitor_grants`]),
+        // never a grant someone writes.
         if roles::is_role_grant(grant) {
             return Err(Refusal::BuiltInRole(grant.id.clone()));
+        }
+        if grant.grantee == Grantee::AnyKey {
+            return Err(Refusal::EntryGrant(grant.id.clone()));
         }
         if grant.node.workspace_id() != Some(self.workspace.as_str()) {
             return Err(Refusal::OutsideWorkspace(grant.node.clone()));

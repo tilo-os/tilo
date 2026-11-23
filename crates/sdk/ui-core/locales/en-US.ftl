@@ -72,6 +72,7 @@ window-toolbar-hide-inspector = Hide inspector
 window-share-to-channel = Share to channel…
 window-stop-sharing-in = Stop sharing in { $place }
 history-genesis = Created
+history-author-visitor = Visitor
 history-moved = Moved between workspaces
 history-review-title = Restore { $resource }
 history-review-confirm = Restore version

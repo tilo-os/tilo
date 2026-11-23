@@ -199,7 +199,14 @@ impl CachedDocument {
         let policy = self.workspace_policy.get_or_init(|| {
             #[cfg(test)]
             WORKSPACE_POLICIES.with(|count| count.set(count.get().saturating_add(1)));
-            crate::members::replay(&self.doc, workspace)
+            let mut policy = crate::members::replay(&self.doc, workspace);
+            // What the workspace's entry opens to visitors is decided by the entry itself, so
+            // every device reading this state admits a visitor's call alike.
+            policy.grants.extend(
+                tilo_desktop_model::projection::workspace_entry_of(&self.doc)
+                    .visitor_grants(workspace),
+            );
+            policy
         });
         debug_assert_eq!(
             policy.workspace, workspace,

@@ -3273,6 +3273,7 @@ fn describe_grantee(grantee: &Grantee, app: Option<&tilo_app_id::AppId>) -> Stri
         Grantee::Role(_) => t("activity-capability-this-workspace"),
         Grantee::CustomRole(id) => id.clone(),
         Grantee::App(app) => app.clone(),
+        Grantee::AnyKey => grantee.to_string(),
     };
     match app {
         Some(app) => t_args(
