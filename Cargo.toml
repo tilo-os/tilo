@@ -396,6 +396,7 @@ members = [
     "crates/platform/tilo-lock",
     "crates/platform/tilo-socket",
     "crates/platform/tilo-sort",
+    "crates/platform/tilo-canonical-json",
     "crates/platform/tilo-selector",
     "crates/platform/tilo-face",
     "crates/platform/tilo-mime",
@@ -733,6 +734,7 @@ must_use_candidate = "allow"
 browser-continuity = { path = "crates/import/browser-continuity", version = "0.1.0" }
 browser-continuity-core = { path = "crates/browser/browser-continuity-core", version = "0.1.0" }
 tilo-app-id = { path = "crates/platform/tilo-app-id", version = "0.1.0" }
+tilo-canonical-json = { path = "crates/platform/tilo-canonical-json", version = "0.1.0" }
 
 # ---------------------------------------------------------------------------
 # UI toolkit stack

@@ -1,0 +1,24 @@
+[package]
+name = "tilo-canonical-json"
+version = "0.1.0"
+edition = "2024"
+# Published: the SDK's platform layer (tools/sdk/publish_check.py).
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "Canonical compact JSON encoding with object keys sorted by UTF-8 bytes."
+
+[lib]
+name = "tilo_canonical_json"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Sorts without a copy of std's sort on wasm32, keeping the browser start module small.
+tilo-sort = { version = "0.1.0", path = "../tilo-sort" }
+
+[lints]
+workspace = true

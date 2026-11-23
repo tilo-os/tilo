@@ -18307,6 +18307,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-canonical-json"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tilo-sort",
+]
+
+[[package]]
 name = "tilo-caps"
 version = "0.1.0"
 dependencies = [
