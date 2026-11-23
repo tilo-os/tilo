@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Relocate a reviewed GStreamer closure beside the binary that loads it.
 
-`tilolang` records the closure tilolang-app and GStreamer's scanner load from
+`tilolang` records the closure tilolang-process and GStreamer's scanner load from
 this Mac's Homebrew, refuses one that differs from the reviewed lists, and
 stages it as the tilolang runtime's libraries (`lib/gstreamer/`).
 `plan`/`stage`/`verify` stage the pinned private macOS 27 helper payload.
@@ -33,7 +33,7 @@ SHIM = 'Contents/Frameworks/libtilo-local-intl.dylib'
 LAUNCHER = 'Contents/MacOS/tilo-runtime'
 LIMIT = 1024**3
 HOMEBREW = Path('/opt/homebrew')
-# The tilolang runtime's libraries, under its bundle: the binary is `bin/tilolang-app`.
+# The tilolang runtime's libraries, under its bundle: the binary is `bin/tilolang-process`.
 GSTREAMER = 'lib/gstreamer'
 TILOLANG_SHIM = GSTREAMER + '/Frameworks/libtilo-local-intl.dylib'
 
@@ -395,7 +395,7 @@ def record_closure(binary, plugins, deadline):
 
 
 def tilolang_closure(binary, out, plugins, libraries, packages):
-    """Stage `binary` (an arm64 tilolang-app) at `out/bin/` and the reviewed GStreamer closure it
+    """Stage `binary` (an arm64 tilolang-process) at `out/bin/` and the reviewed GStreamer closure it
     and the scanner load at `out/lib/gstreamer/`, every load relative to its loader. Fails on an
     image or package the reviewed lists do not name, or one they name that is missing."""
     deadline = time.monotonic() + 300

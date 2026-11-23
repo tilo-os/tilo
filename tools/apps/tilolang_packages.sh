@@ -22,12 +22,14 @@
 #       that declares it (the `tilolang/<version>` every package names in
 #       `optional-runtimes`).
 #
-#   tilolang_bake_runtime BUNDLE_BIN BIN IDENTITY OUT VERSION
+#   tilolang_bake_runtime BUNDLE_BIN BIN IDENTITY OUT VERSION [ARCH [LIBRARIES]]
 #       Build the signed bundle of the thin `tilolang-process` binary BIN into
 #       OUT (which becomes `<runtime root>/<version>`). The bundle holds the
 #       binary alone (`--binaries-only`): the launcher runs it on the Tilo
 #       runtime its libraries come from, so a loader set of its own is never
-#       read.
+#       read. A Mac's runtime names the architectures of its universal binary
+#       in ARCH (`aarch64+x86_64`) and brings the libraries it loads relative
+#       to itself as the directory LIBRARIES, kept as `lib/<its name>/`.
 #
 #   tilolang_build_package TILOLANG_BIN REPO DIR NAME OUT IDENTITY VERSION TILO_RUNTIME [ID]
 #       Compile the package at REPO/DIR with the packages it uses (searching
@@ -53,13 +55,19 @@ tilolang_runtime_version() {
 }
 
 tilolang_bake_runtime() {
-    local bundle_bin=$1 bin=$2 identity=$3 out=$4 version=$5
+    local bundle_bin=$1 bin=$2 identity=$3 out=$4 version=$5 arch=${6:-} libraries=${7:-}
     [ -n "$version" ] || { tilolang_die "a tilolang runtime bundle needs its version"; return 1; }
+    local extra=()
+    [ -z "$arch" ] || extra+=(--arch "$arch")
+    if [ -n "$libraries" ]; then
+        [ -d "$libraries" ] || { tilolang_die "no runtime libraries at $libraries"; return 1; }
+        extra+=(--include "$libraries")
+    fi
     [ -f "$bin" ] || { tilolang_die "no tilolang runtime binary at $bin"; return 1; }
     [ -x "$bin" ] || chmod +x "$bin"
     rm -rf -- "$out"
     "$bundle_bin" build --binaries-only --version "$version" --out "$out" \
-        --include-bin "$bin" --identity "$identity" >/dev/null \
+        --include-bin "$bin" --identity "$identity" "${extra[@]}" >/dev/null \
         || { tilolang_die "could not bake the tilolang runtime bundle $version"; return 1; }
 }
 

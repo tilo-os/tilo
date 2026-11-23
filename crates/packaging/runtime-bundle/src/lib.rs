@@ -1852,7 +1852,7 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             let work = tempfile::tempdir().unwrap();
-            let binary = work.path().join("tilolang-app");
+            let binary = work.path().join("tilolang-process");
             fs::write(&binary, b"universal runtime binary").unwrap();
             fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
             let libraries = work.path().join("gstreamer");
@@ -1878,7 +1878,7 @@ mod tests {
             assert_eq!(
                 paths,
                 [
-                    "bin/tilolang-app",
+                    "bin/tilolang-process",
                     "lib/gstreamer/lib/libgstreamer-1.0.0.dylib",
                     "lib/gstreamer/plugins/libgstplayback.dylib",
                 ]

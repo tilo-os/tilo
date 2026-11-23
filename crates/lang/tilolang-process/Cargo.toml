@@ -157,3 +157,9 @@ workspace = true
 # The window plays a playback's outputs through the one host, so the cast stacks link here.
 media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["cast"], optional = true }
 workspace-hack = { version = "0.1" }
+
+[target.'cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
+# A video a view declares plays in the app's window (`app-launch`): on Linux decoded by the system's
+# GStreamer, on an Apple silicon Mac by the decoders the tilolang runtime package carries beside
+# this binary (dist/macos/build-app.sh). An Intel Mac's slice and Windows build without one.
+media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["decode"], optional = true }

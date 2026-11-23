@@ -3,10 +3,10 @@
 
     runtime_plays.py --tilolang BIN --runtime DIR --work DIR
 
-`--runtime` is a runtime bundle's tree (`bin/tilolang-app`, and on a Mac the GStreamer it
+`--runtime` is a runtime bundle's tree (`bin/tilolang-process`, and on a Mac the GStreamer it
 carries under `lib/gstreamer`, found as the daemon finds it). The clip is made with this
 machine's `gst-launch-1.0` (test pattern and tone, H.264 and AAC in MP4); the app is the test
-package `apps/tilolang/tests/videoplays`, built with `--tilolang`. The runtime runs it headless:
+package `crates/lang/tilolang-process/tests/window/videoplays`, built with `--tilolang`. The runtime runs it headless:
 the clip is named through the app's `play` action, playback must report moving on through the
 app's `reached` action, and the window's picture must show the decoded test pattern.
 """
@@ -23,7 +23,7 @@ import sys
 import zlib
 
 REPO = Path(__file__).resolve().parents[2]
-PACKAGE = REPO / 'apps/tilolang/tests/videoplays'
+PACKAGE = REPO / 'crates/lang/tilolang-process/tests/window/videoplays'
 PACKAGE_ID = 'so.tilo.lang.videoplays'
 # The test pattern's yellow bar, which nothing in the window draws but the decoded clip.
 YELLOW = (192, 192, 0)
@@ -130,7 +130,7 @@ def main():
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     runtime = args.runtime.resolve()
-    app = runtime / 'bin/tilolang-app'
+    app = runtime / 'bin/tilolang-process'
 
     clip(work / 'clip.mp4')
     run(args.tilolang, 'build', PACKAGE, '--out', work / 'built')

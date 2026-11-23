@@ -714,7 +714,7 @@ fn a_runtime_installs_only_where_it_has_code_from_a_publisher_this_device_trusts
     let env = Env::new();
     let (runtime_key, runtime_identity) = identity_file(&env, "runtime-publisher");
     let (_, stranger_identity) = identity_file(&env, "stranger");
-    let binary = env.path("tilolang-app");
+    let binary = env.path("tilolang-process");
     std::fs::write(&binary, b"runtime binary").unwrap();
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
     let host = runtime_bundle::host_arch();
