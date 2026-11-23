@@ -81,7 +81,6 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("bluetooth", "Bluetooth", "bluetooth"),
     ("battery", "Battery", "power:battery"),
     ("power", "Power", "power"),
-    ("printers", "Printers", "printers"),
     ("displays", "Displays", "session:displays"),
     ("notifications", "Notifications", "session:notifications"),
     ("osd", "Osd", "session:osd"),
@@ -102,7 +101,6 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("printers", "Printers", "printers"),
     ("modem", "Modem", "modem"),
     ("tethering", "Tethering", "tethering"),
-    ("speakers", "Speakers", "session:speakers"),
     ("quick_settings", "QuickSettings", "session:quick-settings"),
 ];
 const VISION_ROOTS: &[(&str, &str, &str)] = &[
