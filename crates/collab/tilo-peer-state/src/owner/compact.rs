@@ -92,7 +92,7 @@ impl NativeWorkspaceOwner {
                 .map_err(|error| error.to_string())?;
             let named = keys.named_readers(workspace, record);
             if neighbour_wire::KeyScope::has_named_readers(record) && named.is_none() {
-                return Ok(0);
+                return Ok(Vec::new());
             }
             let ops = match drafted.take() {
                 Some(ops) => ops,
@@ -157,6 +157,9 @@ impl NativeWorkspaceOwner {
             Ok(frames)
         })
         .await?;
+        if compacted.is_empty() {
+            return Ok(0);
+        }
         // The compaction is this device's own write: it is kept as the frame a link
         // carries, as every write of this device's is.
         for message in compacted {
