@@ -20,10 +20,10 @@ use crate::config::ServerConfig;
 use crate::metrics::Metrics;
 use crate::policy::TrustPolicy;
 use crate::service::ServerProtocol;
-use tilo_server_protocol::transport::{ACTIONS_ALPN, DIRECT_ALPN};
 use tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::transport::{ACTIONS_ALPN, DIRECT_ALPN};
 use tilo_workspace_service::Reaching;
 
 /// Failure modes for `Server::start`.
@@ -309,9 +309,8 @@ pub struct ServerHandle {
 /// Verify `cert`'s device's delegation against the person the agent acts for,
 /// the root its certificate names, and put it in the server's agent register,
 /// replacing an earlier one: what confines an agent to its delegated workspaces
-/// from its next envelope on. Both paths that tell a server about an agent come
-/// here ([`Server::register_agent`], `ServerAgentLink::register`), so neither
-/// can register one the other leaves unconfined.
+/// from its next envelope on. [`Server::register_agent`] comes here, so nothing
+/// registers an agent the confinement does not see.
 ///
 /// # Errors
 ///

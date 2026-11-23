@@ -44,8 +44,6 @@
 )]
 
 #[cfg(feature = "agents")]
-pub mod agents;
-#[cfg(feature = "agents")]
 pub mod apple_push;
 #[cfg(feature = "agents")]
 pub mod browser_actions;

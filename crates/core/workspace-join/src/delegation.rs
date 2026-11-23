@@ -247,76 +247,6 @@ impl Delegation {
     }
 }
 
-/// What a person asks a delegate to be allowed before the approver signs:
-/// everything a [`Delegation`] states except the device and the times.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DelegateProposal {
-    pub delegate: Delegate,
-    /// Display name.
-    pub label: String,
-    /// Cursor colour, sRGB.
-    pub color: [u8; 3],
-    /// Where it may act.
-    pub scope: DelegateScope,
-    /// Latest expiry asked for, ns since the epoch.
-    pub expires_at_ns: u64,
-}
-
-impl DelegateProposal {
-    /// The delegation of this proposal for `device_public_key`, signed with
-    /// the person's `root`.
-    ///
-    /// # Errors
-    /// [`DelegationError::Invalid`] for out-of-bounds fields.
-    pub fn sign(
-        &self,
-        root: &dyn StatementSigner,
-        device_public_key: [u8; 32],
-        now_ns: u64,
-    ) -> Result<Delegation, DelegationError> {
-        Delegation::sign(
-            root,
-            device_public_key,
-            self.delegate.clone(),
-            self.label.clone(),
-            self.color,
-            self.scope.clone(),
-            now_ns,
-            self.expires_at_ns,
-        )
-    }
-
-    /// Whether `delegation` grants no more than this proposal: the same
-    /// delegate, label and colour, workspaces and apps within it, and an
-    /// expiry no later.
-    pub fn admits(&self, delegation: &Delegation) -> Result<(), &'static str> {
-        if delegation.delegate != self.delegate
-            || delegation.label != self.label
-            || delegation.color != self.color
-        {
-            return Err("the delegation names another delegate than proposed");
-        }
-        let scope = &delegation.scope;
-        if !scope
-            .workspaces
-            .iter()
-            .all(|workspace| self.scope.workspaces.contains(workspace))
-        {
-            return Err("the delegation names a workspace that was not proposed");
-        }
-        if !self.scope.apps.is_empty()
-            && (scope.apps.is_empty()
-                || !scope.apps.iter().all(|app| self.scope.apps.contains(app)))
-        {
-            return Err("the delegation names an app that was not proposed");
-        }
-        if delegation.expires_at_ns > self.expires_at_ns {
-            return Err("the delegation outlasts the proposal");
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,7 +255,6 @@ mod tests {
 
     const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const OTHER_WORKSPACE: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-    const DAY_NS: u64 = 24 * 3600 * 1_000_000_000;
 
     fn root() -> SigningKey {
         SigningKey::from_bytes(&[1; 32])
@@ -480,27 +409,5 @@ mod tests {
             delegation.verify(&root().verifying_key().to_bytes(), 1),
             Err(DelegationError::Signature)
         );
-    }
-
-    #[test]
-    fn a_proposal_admits_only_what_it_proposed() {
-        let proposal = DelegateProposal {
-            delegate: Delegate::Agent {
-                agent_id: "scribe".into(),
-            },
-            label: "Scribe".into(),
-            color: [88, 101, 242],
-            scope: scope(&[WORKSPACE]),
-            expires_at_ns: 10 * DAY_NS,
-        };
-        let signed = proposal.sign(&root(), [9; 32], DAY_NS).unwrap();
-        proposal.admits(&signed).unwrap();
-        let mut other = proposal.clone();
-        other.delegate = Delegate::Agent {
-            agent_id: "editor".into(),
-        };
-        assert!(other.admits(&signed).is_err());
-        let later = scribe(&[WORKSPACE], DAY_NS, 11 * DAY_NS).unwrap();
-        assert!(proposal.admits(&later).is_err());
     }
 }

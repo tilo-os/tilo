@@ -734,3 +734,18 @@ reason = "the shell link joins a daemon to the shell it started itself, over a c
 file = "crates/core/runtime-collab/src/wire/shell.rs"
 enum = "ShellReply"
 reason = "the daemon's half of the same link: written only to the shell that daemon started, which reads it in the same build, and never kept"
+
+[[break]]
+file = "crates/core/tilo-server-protocol/src/certify.rs"
+enum = "ApproverRequest"
+reason = "spoken only on a live certification connection between a host and one of its person's devices, never stored: the delegate-proposal command is gone, and both ends are the same build, so no bytes of the old layout are read back"
+
+[[break]]
+file = "crates/core/tilo-server-protocol/src/certify.rs"
+enum = "ApproverReply"
+reason = "the host's answer on the same live certification connection, never stored: the delegate-proposal list is gone, and both ends are the same build, so no bytes of the old layout are read back"
+
+[[break]]
+file = "crates/core/tilo-server-protocol/src/certify.rs"
+enum = "ApproverDecision"
+reason = "an approver's answer on the same live certification connection, never stored: an agent's certificate and delegation are no longer issued together here, and both ends are the same build, so no bytes of the old layout are read back"

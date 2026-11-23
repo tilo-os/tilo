@@ -32,7 +32,6 @@
 
 #![deny(rust_2018_idioms)]
 
-pub mod agents;
 pub mod auth;
 pub mod certify;
 pub mod config;

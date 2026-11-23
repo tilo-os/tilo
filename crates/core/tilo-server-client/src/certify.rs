@@ -16,7 +16,7 @@ use iroh_base::EndpointAddr;
 use tilo_server_protocol::auth::{self, Hello, HelloAck};
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_server_protocol::certify::{
-    ApproverDecision, ApproverRequest, CERTIFY_ALPN, PendingCertification, PendingDelegate,
+    ApproverDecision, ApproverRequest, CERTIFY_ALPN, PendingCertification,
 };
 use tilo_server_protocol::certify::{
     ApproverReply, CertifyOpen, CertifyReply, MAX_CERTIFY_FRAME_BYTES, MemberApproval,
@@ -270,19 +270,7 @@ impl Approver {
         match self.call(&ApproverRequest::ListPending).await? {
             ApproverReply::Pending(pending) => Ok(pending),
             ApproverReply::Refused { reason } => Err(codec(&reason)),
-            ApproverReply::Decided
-            | ApproverReply::DelegateProposals(_)
-            | ApproverReply::PushKey(_) => Err(codec(&"unexpected approver reply")),
-        }
-    }
-
-    /// What every pending agent request proposes: shown beside the request
-    /// and approved with [`ApproverDecision::IssueDelegate`].
-    pub async fn list_agent_proposals(&mut self) -> Result<Vec<PendingDelegate>, CertifyError> {
-        match self.call(&ApproverRequest::DelegateProposals).await? {
-            ApproverReply::DelegateProposals(pending) => Ok(pending),
-            ApproverReply::Refused { reason } => Err(codec(&reason)),
-            ApproverReply::Decided | ApproverReply::Pending(_) | ApproverReply::PushKey(_) => {
+            ApproverReply::Decided | ApproverReply::PushKey(_) => {
                 Err(codec(&"unexpected approver reply"))
             }
         }
@@ -473,8 +461,8 @@ impl Drop for KeptAsks {
 }
 
 /// A member's root asking one server its approver commands before the device
-/// holds any session there: what a page runs to pair an agent's device
-/// through a server it is not yet let into. It reaches the server as [`ServerAddress`]
+/// holds any session there: what a page runs to pair a device through a
+/// server it is not yet let into. It reaches the server as [`ServerAddress`]
 /// says, from one endpoint bound on the first command; over WebTransport on
 /// one link it keeps ([`KeptAsks`]), over iroh each command on a connection
 /// of its own.

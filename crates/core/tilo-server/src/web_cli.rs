@@ -608,17 +608,14 @@ impl Admissions {
         self.codes.insert(pairing_code, now);
     }
 
-    /// What to do now, given the host's pending requests and the digests of
-    /// those that are agent grants. A code that one browser request displays
-    /// certifies it; a code that several requests display certifies none and
-    /// denies them all, since the operator cannot tell which one the guest
-    /// meant; a code that only an agent grant displays waits, since agents
-    /// are never approved here; a code nobody displayed within `wait` is
-    /// refused.
+    /// What to do now, given the host's pending requests. A code that one
+    /// browser request displays certifies it; a code that several requests
+    /// display certifies none and denies them all, since the operator cannot
+    /// tell which one the guest meant; a code nobody displayed within `wait`
+    /// is refused.
     fn decide(
         &mut self,
         pending: &[tilo_server::certify::PendingCertification],
-        agents: &[[u8; 32]],
         now: tokio::time::Instant,
     ) -> Vec<Admission> {
         let wait = self.wait;
@@ -634,7 +631,7 @@ impl Admissions {
                 deny,
             };
             match matching.as_slice() {
-                [one] if !agents.contains(&one.request_digest) => {
+                [one] => {
                     decisions.push(Admission::Certify(Box::new((*one).clone())));
                     false
                 }
@@ -659,8 +656,7 @@ impl Admissions {
 
 /// Certify, as the workspace's user root, exactly the pending browsers whose
 /// pairing codes the operator admitted, each once, and `report` the outcome
-/// of every admitted code. Agent grants are never approved. A malformed
-/// operator line is an error.
+/// of every admitted code. A malformed operator line is an error.
 async fn approve_admitted(
     mut approver: tilo_server_client::Approver,
     root: &SigningKey,
@@ -670,18 +666,11 @@ async fn approve_admitted(
 ) -> anyhow::Result<()> {
     loop {
         if !admissions.codes.is_empty() {
-            let agents: Vec<[u8; 32]> = approver
-                .list_agent_proposals()
-                .await
-                .context("list agent proposals")?
-                .iter()
-                .map(|agent| agent.request_digest)
-                .collect();
             let pending = approver
                 .list_pending()
                 .await
                 .context("list certification requests")?;
-            for admission in admissions.decide(&pending, &agents, tokio::time::Instant::now()) {
+            for admission in admissions.decide(&pending, tokio::time::Instant::now()) {
                 let event = match admission {
                     Admission::Certify(pending) => {
                         certify_admitted(&mut approver, root, *pending).await?
@@ -1020,7 +1009,7 @@ mod tests {
             admissions.admit("123456".into(), now);
             let (guest, stranger, unrelated) =
                 (pending("123456"), pending("123456"), pending("654321"));
-            let decisions = admissions.decide(&[guest.clone(), unrelated, stranger.clone()], &[], now);
+            let decisions = admissions.decide(&[guest.clone(), unrelated, stranger.clone()], now);
             assert_eq!(
                 decisions,
                 vec![Admission::Refuse {
@@ -1041,16 +1030,15 @@ mod tests {
             for code in ["111111", "222222", "333333"] {
                 admissions.admit(code.into(), now);
             }
-            let (guest, agent) = (pending("111111"), pending("333333"));
-            let listed = [guest.clone(), agent.clone()];
-            let agents = [agent.request_digest];
+            let (guest, unseen) = (pending("111111"), pending("333333"));
+            let listed = [guest.clone(), unseen];
             assert_eq!(
-                admissions.decide(&listed, &agents, now),
+                admissions.decide(&listed, now),
                 vec![Admission::Certify(Box::new(guest))],
-                "the guest's code certifies it; an unseen code and an agent's code wait"
+                "the guest's code certifies it; an unseen code waits"
             );
             let almost = now.checked_add(wait / 2).unwrap();
-            assert_eq!(admissions.decide(&listed[1..], &agents, almost), vec![]);
+            assert_eq!(admissions.decide(&listed[1..], almost), vec![]);
             let later = now.checked_add(wait).unwrap();
             let refused = |code: &str| Admission::Refuse {
                 pairing_code: code.into(),
@@ -1058,9 +1046,9 @@ mod tests {
                 deny: Vec::new(),
             };
             assert_eq!(
-                admissions.decide(&listed[1..], &agents, later),
+                admissions.decide(&listed[1..], later),
                 vec![refused("222222"), refused("333333")],
-                "agents are never approved, so an agent's code is refused like an unseen one"
+                "an unseen code is refused once the wait passes"
             );
             assert!(admissions.codes.is_empty());
         }

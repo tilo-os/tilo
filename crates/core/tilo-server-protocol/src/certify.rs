@@ -22,14 +22,6 @@
 //! host → member:     ApproverReply
 //! ```
 //!
-//! A request the host itself queued for a delegate device (an agent it
-//! supervises, or a bot) carries a [`DelegateProposal`]: the label, colour, workspaces, apps and expiry the person
-//! asked for. `ApproverRequest::DelegateProposals` lists them, and the one
-//! consent step is `ApproverDecision::IssueDelegate`, a capability-less
-//! certificate together with the root-signed delegation of exactly that
-//! proposal (or a narrower one). A bare `Issue` is refused for such a
-//! request, so a delegate never exists without its delegation.
-//!
 //! A member of a workspace the host serves pairs a new device the same way,
 //! through any host they share: the new device asks on the certification
 //! ALPN and shows its pairing code, and a page holding the member's root
@@ -51,7 +43,6 @@ use tilo_user_identity::canonical::{CanonicalError, signing_digest};
 use tilo_user_identity::{CertificationRequest, DeviceCert};
 
 use crate::auth::Hello;
-use crate::delegation::{DelegateProposal, Delegation};
 
 /// ALPN of the certification exchange. Frozen wire ABI.
 pub const CERTIFY_ALPN: &[u8] = b"tilo-device-certify/2";
@@ -168,15 +159,6 @@ pub enum ApproverDecision {
     Issue(DeviceCert),
     /// Decline.
     Deny,
-    /// A delegate's request (an agent or a bot): its capability-less
-    /// certificate and the root-signed delegation of its proposal, approved
-    /// together.
-    IssueDelegate {
-        /// Root-signed certificate for the delegate's device.
-        cert: DeviceCert,
-        /// Root-signed delegation; no wider than the proposal.
-        delegation: Delegation,
-    },
 }
 
 /// Domain label of a [`MemberApproval`] signature: the signer signs the BLAKE3
@@ -188,9 +170,8 @@ pub const MEMBER_APPROVAL_SKEW_NS: u64 = 5 * 60 * 1_000_000_000;
 
 /// An approver command from a member ([`CertifyOpen::Member`]): only
 /// [`ApproverRequest::ListPending`] and [`ApproverRequest::AwaitPending`]
-/// (that member's own requests), [`ApproverRequest::Decide`] (one of them),
-/// [`ApproverRequest::DelegateProposals`] (the agents they are asked to
-/// approve) and the push requests are answered.
+/// (that member's own requests), [`ApproverRequest::Decide`] (one of them)
+/// and the push requests are answered.
 ///
 /// Their root signs it, or one of their own devices does ([`Self::device`]).
 /// A device signs only [`ApproverRequest::PushKey`] and
@@ -281,15 +262,6 @@ impl MemberApproval {
     }
 }
 
-/// A pending request the host queued for a delegate, and what it proposes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingDelegate {
-    /// [`PendingCertification::request_digest`] of the delegate's request.
-    pub request_digest: [u8; 32],
-    /// What the person asked the delegate to be allowed.
-    pub proposal: DelegateProposal,
-}
-
 /// Approver command after mutual authentication.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(
@@ -305,9 +277,6 @@ pub enum ApproverRequest {
         request_digest: [u8; 32],
         decision: ApproverDecision,
     },
-    /// Read every pending request for an agent the asking person's root
-    /// approves.
-    DelegateProposals,
     /// Read every pending request once they differ from `known`, the digests
     /// the approver holds: answered at once when they already do, and
     /// otherwise as a request arrives or is answered, or after
@@ -376,7 +345,6 @@ pub enum ApproverReply {
         /// Human-readable reason.
         reason: String,
     },
-    DelegateProposals(Vec<PendingDelegate>),
     /// The key this host signs its pushes with, the uncompressed P-256
     /// point a browser subscribes with; empty where it pushes nothing.
     PushKey(Vec<u8>),
