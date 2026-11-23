@@ -7131,6 +7131,13 @@
           "data": true
         },
         {
+          "name": "glyph",
+          "doc": "The glyph the frame's own bar shows before the window's name, by its icon name (the app's own, `w.icon`): a window whose content has no header row still says what it shows.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "focused",
           "doc": "Whether it is the window in front, the one the keyboard goes to.",
           "type": "bool"

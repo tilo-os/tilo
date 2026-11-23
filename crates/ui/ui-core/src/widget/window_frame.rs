@@ -30,6 +30,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::chrome::HeaderRowMetrics;
 use crate::component::{Component, Described, Event, PartViews};
+use crate::icons::Icon;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -39,7 +40,7 @@ use crate::widget::arrange::{Align, At, Fit, Layers, Length, Part, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};
 use crate::widget::tabs::{TAB_BAR_HEIGHT, TabStrip};
 use crate::widget::window_controls::WindowControls;
-use crate::widget::{Decorator, Element, Spacer, Text, Widget, WindowBar};
+use crate::widget::{Decorator, Element, IconSize, IconWidget, Spacer, Text, Widget, WindowBar};
 
 /// A window on a shell: the window surface with its edge and shadow, holding the
 /// window's content and its controls, clipped to its radius.
@@ -54,6 +55,9 @@ pub struct WindowFrameProps {
     /// bar when the content has no header row to hold the controls.
     #[component(data)]
     pub name: Option<String>,
+    /// The glyph the frame's own bar shows before the window's name, by its icon name (the app's
+    /// own, `w.icon`): a window whose content has no header row still says what it shows.
+    pub glyph: Option<String>,
     /// Whether it is the window in front, the one the keyboard goes to.
     pub focused: bool,
     /// The shell lists this window's actions where the person reaches them (the shell
@@ -118,6 +122,10 @@ pub struct WindowFrame {
     /// The name the frame's own bar shows, and whether the window was in front: pressing the
     /// bar again is nothing, so the name is built again only when it says something else.
     title: Option<(String, bool)>,
+    /// The glyph the frame's own bar stands before the name: the app's own.
+    glyph: Option<Icon>,
+    /// The glyph the bar last built.
+    shown_glyph: Option<Icon>,
     /// The name the bar last built: the window's name elided to one line in the width the bar
     /// has, and nothing while the bar cannot fit a name at all.
     shown: Option<(String, bool)>,
@@ -232,6 +240,7 @@ impl Described for WindowFrame {
         let WindowFrameProps {
             key,
             name,
+            glyph,
             focused,
             lists_actions,
             controls,
@@ -276,6 +285,8 @@ impl Described for WindowFrame {
                 BarShape::Merged
             },
             title: None,
+            glyph: glyph.as_deref().and_then(Icon::from_name),
+            shown_glyph: None,
             shown: None,
             controls_width: 0.0,
             relayout: false,
@@ -299,11 +310,13 @@ impl Described for WindowFrame {
         if props.tabs.as_deref().is_some_and(holds_tabs) != self.tabbed {
             return false;
         }
-        if self.name != props.name {
+        let glyph = props.glyph.as_deref().and_then(Icon::from_name);
+        if self.name != props.name || self.glyph != glyph {
             self.title = None;
         }
         self.key = props.key;
         self.name = props.name;
+        self.glyph = glyph;
         self.focused = props.focused;
         self.lists_actions = props.lists_actions;
         self.carries = props.carries;
@@ -464,11 +477,12 @@ impl WindowFrame {
         let shown = title
             .clone()
             .map(|(name, focused)| (self.elided(&name, m, theme, spare), focused));
-        if title == self.title && shown == self.shown {
+        if title == self.title && shown == self.shown && self.glyph == self.shown_glyph {
             return;
         }
         self.title = title;
         self.shown = shown;
+        self.shown_glyph = self.glyph;
         let element = self.name_element(m);
         if let Some(own) = self.own_bar_row() {
             let _ = own.replace(NAME, element);
@@ -498,25 +512,33 @@ impl WindowFrame {
     /// The name the frame's own bar shows: nothing while the bar cannot fit it, so a window
     /// too narrow for its name shows its decorations alone instead of a name folded into a column.
     fn name_element(&self, m: &HeaderRowMetrics) -> Element {
-        let Some((name, focused)) = self.shown.clone().filter(|(name, _)| !name.is_empty()) else {
+        let glyph = self
+            .shown_glyph
+            .map(|icon| Box::new(IconWidget::new(icon).sized(IconSize::Small)) as Element);
+        let name = self.shown.clone().filter(|(name, _)| !name.is_empty());
+        if glyph.is_none() && name.is_none() {
             return empty();
-        };
-        let mut title = Text::new(&name).with_role(TextRole::Label);
-        if !focused {
-            title = title.dimmed();
         }
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a header row measure fits f32"
         )]
         let gutter = Spacer::fixed(m.gutter as f32);
-        let row = Stack::row()
+        let mut row = Stack::row()
             .align(Align::Center)
             .gap(Rhythm::None)
-            .push(Box::new(gutter))
-            .push(Box::new(title))
-            .push_part(part(empty(), Fit::fill(1.0)));
-        Box::new(row)
+            .push(Box::new(gutter));
+        if let Some(glyph) = glyph {
+            row = row.push(glyph);
+        }
+        if let Some((name, focused)) = name {
+            let mut title = Text::new(&name).with_role(TextRole::Label);
+            if !focused {
+                title = title.dimmed();
+            }
+            row = row.push(Box::new(title));
+        }
+        Box::new(row.push_part(part(empty(), Fit::fill(1.0))))
     }
 
     /// The bar's row: the content's header row when it holds the bar, else the frame's own.
@@ -1066,6 +1088,74 @@ mod tests {
     fn parts(frame: &WindowFrame) -> (Rect, Rect) {
         let content = frame.layers.children()[CONTENT].children();
         (content[OWN_BAR].get_rect(), content[BODY].get_rect())
+    }
+
+    /// `frame` drawn on the 240 square's ground, rendered.
+    fn drawn(theme: &Theme, frame: &mut WindowFrame) -> Vec<u8> {
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &Rect::new(0.0, 0.0, 240.0, 240.0),
+        );
+        let mut text = crate::font_catalog::fixture_renderer();
+        Widget::draw(
+            frame,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            theme,
+            &PresenceCtx::empty(),
+        );
+        crate::offscreen::OffscreenRenderer::new(240, 240)
+            .render(&scene, vello::peniko::Color::BLACK)
+    }
+
+    /// The app's glyph stands before the window's name in the bar the frame draws itself, so a
+    /// window whose content has no header row still says what it shows.
+    #[test]
+    fn the_frames_own_bar_stands_the_apps_glyph_before_its_name() {
+        let rect = Rect::new(40.0, 40.0, 200.0, 160.0);
+        let frame = |glyph: Option<crate::icons::Icon>| {
+            WindowFrame::from_props(
+                "w",
+                WindowFrameProps {
+                    name: Some("A window".to_owned()),
+                    glyph: glyph.map(|icon| icon.name().to_owned()),
+                    focused: true,
+                    ..WindowFrameProps::default()
+                },
+            )
+        };
+        let mut with = frame(Some(crate::icons::Icon::Inbox));
+        let mut without = frame(None);
+        laid_out(&mut with, rect);
+        laid_out(&mut without, rect);
+        let (bar, _) = parts(&with);
+        assert!(bar.height() > 0.0, "the frame draws a bar of its own");
+        for theme in [Theme::dark(), Theme::light()] {
+            let seen = drawn(&theme, &mut with);
+            let plain = drawn(&theme, &mut without);
+            let sample = |rgba: &[u8], x: u32, y: u32| {
+                crate::offscreen::OffscreenRenderer::sample(rgba, 240, x, y)
+            };
+            let differing = (bar.x0.max(0.0) as u32..bar.x1 as u32)
+                .flat_map(|x| (bar.y0.max(0.0) as u32..bar.y1 as u32).map(move |y| (x, y)))
+                .filter(|&(x, y)| {
+                    let (r1, g1, b1, _) = sample(&seen, x, y);
+                    let (r2, g2, b2, _) = sample(&plain, x, y);
+                    (i32::from(r1) - i32::from(r2)).abs() > 8
+                        || (i32::from(g1) - i32::from(g2)).abs() > 8
+                        || (i32::from(b1) - i32::from(b2)).abs() > 8
+                })
+                .count();
+            assert!(
+                differing > 10,
+                "the glyph stands in the bar: {differing} pixels differ from the bar without one"
+            );
+        }
     }
 
     #[test]

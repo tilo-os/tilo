@@ -1,5 +1,4 @@
 # Shell auf Deutsch. Keys are the declarations' stable ids (app.ids); see locales/en-US.ftl.
-
 d-so-tilo-shell = Shell
 
 d-nkjtmr33 = Sicht
@@ -467,6 +466,11 @@ d-3ezewqgy = Leiste
     .w-top-bar = Obere Leiste
 
 d-pvl6wwx6 = Leistenteil
+    .w-overview = Übersicht
+    .w-undo-layout-change = Layoutänderung zurücknehmen
+    .w-redo-layout-change = Layoutänderung wiederholen
+    .w-settings = Einstellungen
+    .w-about-this-computer = Über diesen Computer
     .w-tilo = Tilo
 
 d-vidcax4k = Arbeitsbereichsmenü
@@ -705,6 +709,37 @@ d-7nxhynyj = Bild
 d-nxpbvfox = Fensterplatz
 
 d-6l3wldtm = Fenstermenü
+    .w-reveal = Einblenden
+    .w-it-is-in-front-already = Es ist schon vorn
+    .w-exit-full-screen = Vollbild verlassen
+    .w-full-screen = Vollbild
+    .w-restore = Wiederherstellen
+    .w-fill-the-strip = Streifen füllen
+    .w-snap-back = Zurückdocken
+    .w-float-this-window = Fenster schweben lassen
+    .w-half-the-strip = Halber Streifen
+    .w-narrow = Schmal
+    .w-normal = Normal
+    .w-wide = Breit
+    .w-every-window-the-same = Alle Fenster gleich
+    .w-wider = Breiter
+    .w-as-wide-as-it-gets = Breiter geht nicht
+    .w-narrower = Schmaler
+    .w-as-narrow-as-it-gets = Schmaler geht nicht
+    .w-move-left = Nach links
+    .w-move-right = Nach rechts
+    .w-new-tab-of-this-app = Neuer Tab dieser App
+    .w-move-to-a-new-strip = In einen neuen Streifen
+    .w-rename = Umbenennen
+    .w-split-right = Rechts teilen
+    .w-new-group = Neue Gruppe
+    .w-unpin-window = Fenster lösen
+    .w-pin-window = Fenster anheften
+    .w-stop-controlling-the-desktop = Desktop-Steuerung beenden
+    .w-close-tab = Tab schließen
+    .w-close-this-window = Fenster schließen
+    .w-rename-this-window = Fenster umbenennen
+    .w-a-new-name = Ein neuer Name
     .w-this-window = Dieses Fenster
     .w-go-there = Dorthin
     .w-close = Schließen
@@ -1389,3 +1424,48 @@ d-qivd66vw = Leistenliste
     .w-strips = Leisten
     .w-new-strip = Neue Leiste
     .w-done = Fertig
+d-2izlmelg = Fenster nach links verschieben
+    .doc = Verschiebt das Fenster `w` vor das Fenster `before` seines Streifens: einen Platz weiter.
+
+d-dmy5qp2f = Fenster nach rechts verschieben
+    .doc = Verschiebt das Fenster `w` einen Platz nach hinten: vor das übernächste Fenster oder ans Ende seines Streifens.
+
+d-t3wvsnsd = Gleiche Breiten
+    .doc = Gibt jedem Fenster der Zeile denselben Anteil: was „alle Fenster gleich“ tut, wenn die Fenster nebeneinander stehen.
+
+d-upqjhbml = Streifenmenü
+    .w-new-strip = Neuer Streifen
+    .w-move-left = Nach links
+    .w-move-right = Nach rechts
+    .w-delete-this-strip = Diesen Streifen löschen
+    .w-the-workspace-keeps-its-last-strip = Der Arbeitsbereich behält seinen letzten Streifen
+
+d-t52klmxp = Hinweis
+    .w-dismiss = Verwerfen
+
+d-spqug252 = Startkarten
+    .w-start-something = Fang etwas an
+    .w-only-you-see-what-you-make = Nur du siehst, was du hier machst, bis du jemanden einlädst.
+    .w-notes = Notizen
+    .w-write-ideas-down = Schreib Ideen auf
+    .w-tasks = Aufgaben
+    .w-write-down-what-needs-doing = Schreib auf, was getan werden muss
+    .w-invite-people = Leute einladen
+    .w-work-on-this-with-someone = Arbeite mit jemandem daran
+    .w-catch-up = Aufholen
+    .w-see-what-changed-and-why = Sieh, was sich geändert hat und warum
+    .w-arrows = Pfeile
+    .w-move = Bewegen
+    .w-enter = Eingabe
+    .w-open = Öffnen
+    .w-super = Super
+    .w-n = N
+    .w-every-app = Jede App
+    .w-open-an-app = Eine App öffnen
+
+d-7aze4rqi = Fensterleisten-Aktionen
+    .w-new-tab-of-this-window = Neuer Tab in diesem Fenster
+    .w-search-this-window = Dieses Fenster durchsuchen
+    .w-history-of-this-window = Verlauf dieses Fensters
+    .w-back-in-this-window = In diesem Fenster zurück
+    .w-forward-in-this-window = In diesem Fenster vorwärts

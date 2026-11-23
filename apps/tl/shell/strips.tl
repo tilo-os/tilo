@@ -320,6 +320,7 @@ view strip_window(a: Layout, s: LayoutStrip, lists: Bool) {
         on drop(target: host.Resource): tab_place_here(a, s, target)
         ui.WindowFrame(
             name: window_name(shown),
+            glyph: window_glyph(shown),
             focused: in_front,
             lists_actions: lists_the_shown(shown),
             carries: window_resource(shown),
@@ -382,6 +383,18 @@ view strip_window(a: Layout, s: LayoutStrip, lists: Bool) {
 /// lifted, so a foreign window's bar is no drag at all.
 fn window_resource(shown: Option<LayoutPlace>) -> Text {
     if let p = shown { p.resource } else { "" }
+}
+
+/// The glyph a window's own bar stands before its name: the app's own, so a window whose content
+/// has no header row of its own still says what it shows. An empty window wears the shell's own
+/// window mark.
+fn window_glyph(shown: Option<LayoutPlace>) -> Text {
+    if let p = shown {
+        if let w = shown_window(p) {
+            return w.icon
+        }
+    }
+    return "app-window"
 }
 
 /// Tab the place whose window's bar was dragged onto the strip `s` into that strip: a person drags
