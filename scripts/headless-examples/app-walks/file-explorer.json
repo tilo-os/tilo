@@ -1,0 +1,274 @@
+{
+  "app": "file-explorer",
+  "said": "Files",
+  "native": "file-explorer word-processor",
+  "rust": {
+    "id": "so.tilo.file-explorer"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Files on the person's home folder",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "new-folder",
+      "said": "Make a folder: choose New folder",
+      "ops": [
+        {
+          "press": "New folder"
+        }
+      ]
+    },
+    {
+      "id": "name-folder",
+      "said": "Name the new folder",
+      "ops": [
+        {
+          "type": "Archive"
+        },
+        {
+          "key": "Enter"
+        },
+        {
+          "wait_for": {
+            "shown": "Archive"
+          }
+        }
+      ]
+    },
+    {
+      "id": "bring-a-file",
+      "said": "The person has a file in their home folder: choose it and copy it",
+      "ops": [
+        {
+          "file": {
+            "name": "notes.md",
+            "text": "# Packing\n\n- passport\n- charger\n"
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "notes.md"
+          }
+        },
+        {
+          "click": "notes.md"
+        },
+        {
+          "chord": [
+            "Control",
+            "c"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "open-folder",
+      "said": "Open a folder",
+      "ops": [
+        {
+          "press": "Archive"
+        }
+      ]
+    },
+    {
+      "id": "paste",
+      "said": "Paste the file into the folder",
+      "ops": [
+        {
+          "chord": [
+            "Control",
+            "v"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "notes.md"
+          }
+        }
+      ]
+    },
+    {
+      "id": "open-file",
+      "said": "Open a file in the app that opens it",
+      "ops": [
+        {
+          "press": "notes.md"
+        },
+        {
+          "wait_for": {
+            "shown": "Margins"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rename",
+      "said": "Rename a file: open its menu and choose Rename",
+      "ops": [
+        {
+          "context_menu": "notes.md"
+        },
+        {
+          "press": {
+            "menuitem": "Rename"
+          }
+        }
+      ]
+    },
+    {
+      "id": "name-file",
+      "said": "Type the file's new name",
+      "ops": [
+        {
+          "type": "trip"
+        },
+        {
+          "key": "Enter"
+        },
+        {
+          "wait_for": {
+            "shown": "trip.md"
+          }
+        }
+      ]
+    },
+    {
+      "id": "move",
+      "said": "Move a file into another folder",
+      "ops": [
+        {
+          "press": "New folder"
+        }
+      ]
+    },
+    {
+      "id": "name-trips",
+      "said": "Name the folder it moves into",
+      "ops": [
+        {
+          "type": "Trips"
+        },
+        {
+          "key": "Enter"
+        },
+        {
+          "wait_for": {
+            "shown": "Trips"
+          }
+        },
+        {
+          "click": "trip.md"
+        },
+        {
+          "chord": [
+            "Control",
+            "x"
+          ]
+        },
+        {
+          "press": "Trips"
+        }
+      ]
+    },
+    {
+      "id": "paste-moved",
+      "said": "Paste the file in the folder it moves to",
+      "ops": [
+        {
+          "chord": [
+            "Control",
+            "v"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "trip.md"
+          }
+        }
+      ]
+    },
+    {
+      "id": "trash",
+      "said": "Move a file to the Trash and find it there",
+      "ops": [
+        {
+          "click": "trip.md"
+        },
+        {
+          "key": "Delete"
+        },
+        {
+          "select_row": "Trash"
+        },
+        {
+          "wait_for": {
+            "shown": "trip.md"
+          }
+        }
+      ]
+    },
+    {
+      "id": "restore",
+      "said": "Restore the file from the Trash",
+      "ops": [
+        {
+          "context_menu": "trip.md"
+        },
+        {
+          "press": {
+            "menuitem": "Restore"
+          }
+        }
+      ]
+    },
+    {
+      "id": "places",
+      "said": "The places down the left: Root, Recent, Applications",
+      "ops": [
+        {
+          "select_row": "Root"
+        },
+        {
+          "select_row": "Home"
+        }
+      ]
+    },
+    {
+      "id": "search",
+      "said": "Find a place with the system's search",
+      "ops": [
+        {
+          "search": "Home"
+        }
+      ]
+    },
+    {
+      "id": "dark",
+      "said": "The home folder in the dark theme",
+      "dark": true,
+      "ops": [
+        {
+          "select_row": "Home"
+        }
+      ]
+    }
+  ]
+}
