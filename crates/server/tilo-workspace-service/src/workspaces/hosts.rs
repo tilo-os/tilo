@@ -52,6 +52,10 @@ use tilo_server_protocol::WorkspaceId;
 /// ([`CATCH_UP_ABSENT`]).
 const ABSENT_PER_ASK: usize = 4096;
 
+/// How long a server taking a workspace in waits for its content to move before it answers what
+/// it still lacks ([`Workspaces::content_settled`]).
+const CONTENT_SETTLES_WITHIN: Duration = Duration::from_secs(60);
+
 /// How many cursors of where a store stands one answer carries: under a
 /// hundred and fifty bytes each in its frame, so an answer stays well within
 /// [`tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES`] however many
@@ -567,7 +571,8 @@ impl Workspaces {
             if !narrowed && !caught_up.fetched {
                 return Err(format!(
                     "the server {} still lacks {lacked} of the changes this device keeps and \
-                     {content_missing} blobs of the content they name",
+                     {content_missing} blobs of the content they name (each resource still waiting \
+                     for its keys there counts as one)",
                     hex::encode(server)
                 ));
             }
@@ -775,7 +780,8 @@ impl Workspaces {
     /// asked again for all this device lacks first, and each count after that
     /// follows an answer to those asks, a write to the workspace, or a change
     /// to its member list. Says too whether that count is below the first:
-    /// content arrived while it waited.
+    /// content arrived while it waited. A count that has not dropped within
+    /// [`CONTENT_SETTLES_WITHIN`] is answered as it stands.
     async fn content_settled(
         &self,
         workspace: &str,
@@ -793,8 +799,25 @@ impl Workspaces {
         drop(self.inner.reached.send(workspace.to_owned()));
         let asked = self.content_lacking(workspace, names_content, absent).await;
         let mut lacking = asked;
+        // Nothing moving for this long ends the wait, with what is still lacked: the device handing
+        // the workspace over then hears that nothing narrowed, and says so, rather than waiting
+        // on a resource whose keys never come.
+        let quiet = tokio::time::sleep(CONTENT_SETTLES_WITHIN);
+        tokio::pin!(quiet);
         while lacking > 0 {
             let lacked_by_it = tokio::select! {
+                () = &mut quiet => {
+                    tracing::warn!(
+                        %workspace,
+                        from = %hex::encode(from),
+                        lacking,
+                        waits_for_keys = names_content,
+                        "a hand-over's content did not move for {} s: it still lacks this many \
+                         blobs, counting each resource still waiting for its keys as one",
+                        CONTENT_SETTLES_WITHIN.as_secs()
+                    );
+                    break;
+                }
                 answer = answers.recv() => match answer {
                     Ok(answer) if answer.workspace == workspace => {
                         answer.lacks && answer.from == from
