@@ -1772,6 +1772,366 @@ async fn workspace_tree_requests_naming_another_workspace_are_refused() {
     assert!(tree_if_kept(&workspaces, &other).await.is_none());
 }
 
+/// Invoke `target` with empty JSON arguments against `served`, returning either the answered JSON
+/// value or the exact [`tilo_actions::remote::ActionCallError`] refusal.
+async fn invoke_target(
+    actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
+    served: tilo_server_protocol::WorkspaceId,
+    caller: &Caller,
+    target: RemoteActionTarget,
+) -> Result<Value, tilo_actions::remote::ActionCallError> {
+    let request = InvokeRequest {
+        invocation: InvocationId::new(),
+        target,
+        argument: InvokeArgument::Json(serde_json::Map::new()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let invocation = request.invocation;
+    let (actions, caller) = (actions.clone(), caller.clone());
+    tokio::task::spawn_blocking(move || {
+        let answer = actions
+            .serve(served, &caller, RemoteActionMessage::Invoke(request))
+            .expect("the service answers an invoke")
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()
+            .expect("the invoke answered in time");
+        let RemoteActionMessage::Receipt(receipt) = answer else {
+            panic!("expected a receipt, got {answer:?}");
+        };
+        match receipt.status {
+            ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
+            ReceiptStatus::Rejected { error } => Err(error),
+            ReceiptStatus::Accepted => {
+                let started = std::time::Instant::now();
+                loop {
+                    match actions
+                        .observe(&caller, &invocation)
+                        .map(|state| state.update)
+                    {
+                        Some(InvocationUpdate::Succeeded { output, .. }) => {
+                            return Ok(output.value.unwrap_or(Value::Null));
+                        }
+                        Some(other) if other.is_terminal() => {
+                            panic!("expected completion or rejection, got {other:?}");
+                        }
+                        _ => {}
+                    }
+                    assert!(
+                        started.elapsed() <= tilo_test_env::hang_bound(),
+                        "the invocation did not settle in time"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+            other => panic!("expected completion or rejection, got {other:?}"),
+        }
+    })
+    .await
+    .unwrap()
+}
+
+/// Request a catalogue page from `actions` for `served`.
+async fn catalogue_page(
+    actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
+    served: tilo_server_protocol::WorkspaceId,
+    caller: &Caller,
+    query: tilo_actions::remote::CatalogueQuery,
+) -> Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError> {
+    let (actions, caller) = (actions.clone(), caller.clone());
+    tokio::task::spawn_blocking(move || {
+        let answer = actions
+            .serve(
+                served,
+                &caller,
+                RemoteActionMessage::CatalogueRequest {
+                    correlation: 1,
+                    query,
+                },
+            )
+            .expect("the service answers a catalogue request")
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()
+            .expect("the catalogue request answered in time");
+        match answer {
+            RemoteActionMessage::CatalogueResponse { result, .. } => result,
+            other => panic!("expected a catalogue response, got {other:?}"),
+        }
+    })
+    .await
+    .unwrap()
+}
+
+/// Opening an app or placing its window when the provider spells the served workspace's UUID in
+/// upper case or braces writes under the canonical lower-case hyphenated workspace id and reuses
+/// the same single record for apps that keep one per workspace, while another workspace stays
+/// refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn opening_an_app_with_another_uuid_spelling_uses_canonical_workspace_id() {
+    use tilo_actions::remote::{
+        APPLICATION_OPEN_ACTION, ActionCallError, CatalogueQuery, application_resource_target,
+        provider_workspace, workspace_provider,
+    };
+
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let (server, actions) = tilo_server::agents::start_serving_documents(
+        crate::harness::hosted::on_this_machine(state.path()),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: device.key.clone(),
+            device_cert: device.cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+        },
+        Some(std::sync::Arc::new(crate::common::catalogue)),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let workspaces = server.workspaces().unwrap().clone();
+    let served = workspaces.create("Served").await.unwrap().workspace;
+    let other = workspaces.create("Other").await.unwrap().workspace;
+    let served_id = tilo_server_protocol::WorkspaceId::parse(&served).unwrap();
+    assert_eq!(served, served_id.to_string());
+    let upper = served.to_ascii_uppercase();
+    let braced = format!("{{{served}}}");
+    let person = Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        device.cert.device_public_key,
+    )
+    .in_workspace(&served);
+
+    let apps = crate::common::catalogue();
+    assert!(apps.get("so.tilo.chat").unwrap().keeps_workspace_resource());
+    assert!(
+        !apps
+            .get("so.tilo.word-processor")
+            .unwrap()
+            .keeps_workspace_resource()
+    );
+
+    // Another workspace is still refused regardless of UUID spelling.
+    for foreign in [
+        other.clone(),
+        other.to_ascii_uppercase(),
+        format!("{{{other}}}"),
+    ] {
+        assert_eq!(
+            invoke_on_workspace(
+                &actions,
+                served_id,
+                &person,
+                &foreign,
+                ("app.so.tilo.chat", "open"),
+                json!({}),
+            )
+            .await,
+            Err(ActionCallError::UnknownAction)
+        );
+    }
+
+    // An app that keeps one record per workspace opens under the canonical workspace id for both
+    // upper-case and braced UUID spellings, and a later open with the usual spelling returns the
+    // same record without creating a second one.
+    let chat_upper = invoke_on_workspace(
+        &actions,
+        served_id,
+        &person,
+        &upper,
+        ("app.so.tilo.chat", "open"),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        chat_upper["provider"], "record:so.tilo.chat:",
+        "{chat_upper}"
+    );
+    assert_eq!(chat_upper["record"], "", "{chat_upper}");
+    let chat_bytes = workspaces
+        .resource_document(&served, "so.tilo.chat", "")
+        .await
+        .unwrap()
+        .expect("chat record stored under canonical workspace id");
+
+    let chat_braced = invoke_on_workspace(
+        &actions,
+        served_id,
+        &person,
+        &braced,
+        ("app.so.tilo.chat", "open"),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(chat_braced, chat_upper, "{chat_braced}");
+
+    let chat_canonical = invoke_on_workspace(
+        &actions,
+        served_id,
+        &person,
+        &served,
+        ("app.so.tilo.chat", "open"),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(chat_canonical, chat_upper, "{chat_canonical}");
+    assert_eq!(
+        workspaces
+            .resource_document(&served, "so.tilo.chat", "")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(chat_bytes.as_slice()),
+    );
+    let chat_routes: Vec<_> = workspaces
+        .document_routes(&served)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|(app, record)| app == "so.tilo.chat" && record.is_empty())
+        .collect();
+    assert_eq!(chat_routes.len(), 1, "{chat_routes:?}");
+
+    // Per-record apps also land under the canonical workspace id for upper-case and braced
+    // spellings.
+    let writer_upper = invoke_on_workspace(
+        &actions,
+        served_id,
+        &person,
+        &upper,
+        ("app.so.tilo.word-processor", "open"),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    let upper_record = writer_upper["record"].as_str().unwrap();
+    assert!(!upper_record.is_empty(), "{writer_upper}");
+    assert_eq!(
+        writer_upper["provider"],
+        format!("record:so.tilo.word-processor:{upper_record}"),
+        "{writer_upper}"
+    );
+    assert!(
+        workspaces
+            .resource_document(&served, "so.tilo.word-processor", upper_record)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    let writer_braced = invoke_on_workspace(
+        &actions,
+        served_id,
+        &person,
+        &braced,
+        ("app.so.tilo.word-processor", "open"),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    let braced_record = writer_braced["record"].as_str().unwrap();
+    assert!(
+        !braced_record.is_empty() && braced_record != upper_record,
+        "{writer_braced}"
+    );
+    assert_eq!(
+        writer_braced["provider"],
+        format!("record:so.tilo.word-processor:{braced_record}"),
+        "{writer_braced}"
+    );
+    assert!(
+        workspaces
+            .resource_document(&served, "so.tilo.word-processor", braced_record)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    // Placing a window via an application provider also accepts alternate UUID spellings for the
+    // served workspace without poisoning workspace state, while still refusing another workspace.
+    assert_eq!(
+        invoke_target(
+            &actions,
+            served_id,
+            &person,
+            application_resource_target(
+                &other,
+                "so.tilo.word-processor",
+                upper_record,
+                "",
+                APPLICATION_OPEN_ACTION,
+            ),
+        )
+        .await,
+        Err(ActionCallError::UnknownAction)
+    );
+    invoke_target(
+        &actions,
+        served_id,
+        &person,
+        application_resource_target(
+            &upper,
+            "so.tilo.word-processor",
+            upper_record,
+            "",
+            APPLICATION_OPEN_ACTION,
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(
+        workspaces
+            .resource_document(
+                &served,
+                tilo_desktop_model::ownership::DESKTOP_APP,
+                tilo_desktop_model::ownership::DESKTOP_DOCUMENT,
+            )
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    // Every provider advertised by the workspace catalogue carries the lower-case hyphenated id.
+    let page = catalogue_page(&actions, served_id, &person, CatalogueQuery::default())
+        .await
+        .unwrap();
+    assert!(!page.providers.is_empty());
+    for entry in &page.providers {
+        assert_eq!(entry.workspace, served, "{entry:?}");
+    }
+    let own = page
+        .providers
+        .iter()
+        .find(|entry| provider_workspace(&entry.provider).is_some())
+        .expect("workspace provider is listed");
+    assert_eq!(own.provider, workspace_provider(&served));
+    assert!(
+        page.providers
+            .iter()
+            .any(|entry| entry.provider == "record:so.tilo.chat:" && entry.workspace == served)
+    );
+    assert!(page.providers.iter().any(|entry| {
+        entry.provider == format!("record:so.tilo.word-processor:{upper_record}")
+            && entry.workspace == served
+    }));
+    assert!(page.providers.iter().any(|entry| {
+        entry.provider == format!("record:so.tilo.word-processor:{braced_record}")
+            && entry.workspace == served
+    }));
+}
+
 /// What the folder's files say and what the folder lists reach a turn's model labelled as content
 /// from outside.
 #[path = "put_files_outside.rs"]
