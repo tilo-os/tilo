@@ -841,7 +841,6 @@ d-nd2mftjh = Window
     .w-upcoming = Upcoming
     .w-done = Done
     .w-projects = Projects
-    .w-pick-a-day = Pick a day
     .w-calendars = Calendars
     .w-all-calendars = All calendars
     .w-previous-day = Previous day
@@ -853,6 +852,7 @@ d-nd2mftjh = Window
     .w-repeats = { $title } repeats
     .w-only-this-date = Only this date
     .w-this-and-all-following = This and all following
+    .w-pick-a-day = Einen Tag wählen
 
 d-uc6iwdpn = Agenda
     .w-new-event = New event

@@ -75,9 +75,7 @@
         ],
         "tl": [
           {
-            "press_any": [
-              "Today"
-            ]
+            "select_row": "Month"
           }
         ]
       },
@@ -110,9 +108,7 @@
         ],
         "tl": [
           {
-            "press_any": [
-              "Week"
-            ]
+            "select_row": "Week"
           },
           {
             "must": [
@@ -152,9 +148,7 @@
         ],
         "tl": [
           {
-            "press_any": [
-              "Day"
-            ]
+            "select_row": "Day"
           },
           {
             "must": [
@@ -196,9 +190,7 @@
         ],
         "tl": [
           {
-            "press_any": [
-              "Month"
-            ]
+            "select_row": "Month"
           },
           {
             "must": [
@@ -309,7 +301,7 @@
               "app": "so.tilo.calendar",
               "operation": "read",
               "is": {
-                "events#len": 1
+                "fields.events.count": 1
               },
               "contains": "Dentist"
             }
@@ -400,7 +392,7 @@
               "app": "so.tilo.calendar",
               "operation": "read",
               "is": {
-                "events#len": 1
+                "fields.events.count": 1
               },
               "contains": "Dentist appointment"
             }
@@ -468,7 +460,7 @@
               "app": "so.tilo.calendar",
               "operation": "read",
               "is": {
-                "events#len": 0
+                "fields.events.count": 0
               }
             }
           }
@@ -721,7 +713,7 @@
               "app": "so.tilo.calendar",
               "operation": "read",
               "is": {
-                "events#len": 1
+                "fields.events.count": 1
               },
               "contains": "FREQ=WEEKLY"
             }
@@ -802,7 +794,7 @@
               "app": "so.tilo.calendar",
               "operation": "read",
               "is": {
-                "events#len": 2
+                "fields.events.count": 2
               }
             }
           }
@@ -867,7 +859,7 @@
               "app": "so.tilo.calendar",
               "operation": "read",
               "is": {
-                "events#len": 3
+                "fields.events.count": 3
               },
               "contains": "Dentist appointment"
             }

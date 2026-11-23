@@ -1546,7 +1546,7 @@ view window(c: Calendars) {
     // The day the sidebar's own calendar shows ringed, which is where the window goes.
     state picked: Option<Date> = .none
     // A window asked to show an event shows the week it stands on and opens it.
-    on show(e: Event): set(place, "week").then(go_to(e)).then(open(e))
+    on show(e: Event): set(place, "week").then(open(e))
     let day = c.anchor_at.day()
     let week_start = day.start_of_week()
     let period = if place == "month" {
@@ -1566,23 +1566,21 @@ view window(c: Calendars) {
             ui.SearchButton()
         }
         sidebar: {
-            stack {
-                ui.NavList(selected: place) {
-                    ui.NavItem("week", std.say("Week"), icon: .columns_2) {
-                        on select: set(place, "week")
-                    }
-                    ui.NavItem("month", std.say("Month"), icon: .calendar) {
-                        on select: set(place, "month")
-                    }
-                    ui.NavItem("agenda", std.say("Agenda"), icon: .list) {
-                        on select: set(place, "agenda")
-                    }
-                    ui.NavItem("day", std.say("Day"), icon: .calendar) {
-                        on select: set(place, "day")
-                    }
-                    ui.NavItem("tasks", std.say("Tasks"), icon: .list_checks) {
-                        on select: set(place, "tasks")
-                    }
+            ui.NavList(selected: place) {
+                ui.NavItem("week", std.say("Week"), icon: .columns_2) {
+                    on select: set(place, "week")
+                }
+                ui.NavItem("month", std.say("Month"), icon: .calendar) {
+                    on select: set(place, "month")
+                }
+                ui.NavItem("agenda", std.say("Agenda"), icon: .list) {
+                    on select: set(place, "agenda")
+                }
+                ui.NavItem("day", std.say("Day"), icon: .calendar) {
+                    on select: set(place, "day")
+                }
+                ui.NavItem("tasks", std.say("Tasks"), icon: .list_checks) {
+                    on select: set(place, "tasks")
                 }
                 if place == "tasks" {
                     ui.NavSection(std.say("Task lists")) {
@@ -1606,13 +1604,6 @@ view window(c: Calendars) {
                             }
                         }
                     }
-                }
-                ui.DatePicker(
-                    bind: picked,
-                    label: std.say("Pick a day"),
-                    marked: c.events.filter(e -> not e.cancelled).map(e -> e.day.iso()),
-                ) {
-                    on change(at): go_to_day(c, at)
                 }
                 ui.NavSection(std.say("Calendars"), add: new_calendar(c)) {
                     ui.NavItem("all", std.say("All calendars"), icon: .calendar) {
@@ -1641,7 +1632,7 @@ view window(c: Calendars) {
             } else if place == "tasks" {
                 tasks(c, smart, task_project, searched)
             } else {
-                timeline(c, chosen, searched, hidden, place)
+                timeline(c, chosen, searched, hidden, place, picked)
             }
         }
     }
@@ -1658,6 +1649,7 @@ view timeline(
     searched: Text,
     hidden: Text,
     place: State<Text>,
+    picked: State<Option<Date>>,
 ) {
     state zoom: Float = 1.0
     // A repeating event that is moved or resized asks where it was dropped whether the change is
@@ -1739,6 +1731,13 @@ view timeline(
                 ) {
                     on press: next_week(c)
                 }
+            }
+            ui.DatePicker(
+                bind: picked,
+                label: std.say("Pick a day"),
+                marked: c.events.filter(e -> not e.cancelled).map(e -> e.day.iso()),
+            ) {
+                on change(at): go_to_day(c, at)
             }
         }
         // The timeline draws the hours, the all-day lane, the month's bars and the now line.
