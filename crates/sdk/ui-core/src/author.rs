@@ -243,7 +243,7 @@ impl<'a> Author<'a> {
     /// The mark of the service a bridged person writes from, where the
     /// toolkit has one: shown in place of the `via Discord` chip.
     #[must_use]
-    pub fn service_mark(&self) -> Option<crate::icons::ServiceMark> {
+    pub fn service_mark(&self) -> Option<crate::icons::Icon> {
         crate::icons::service_mark(&self.persona()?.service)
     }
 
@@ -431,7 +431,7 @@ impl<'a> Author<'a> {
         {
             // Monochrome, in the line's quiet ink: it says where the person
             // is without competing with their name.
-            mark.draw(ctx.scene, ctx.transform, badge, ctx.theme.text_dim);
+            mark.draw_filled(ctx.scene, ctx.transform, badge, ctx.theme.text_dim);
         }
     }
 }
