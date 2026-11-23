@@ -62,7 +62,8 @@ impl Fact {
     }
 }
 
-/// What a person's agents learned about them, oldest first.
+/// What a person's agents learned about them, oldest first: each fact with its
+/// source, its time and who wrote it down.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 #[model(check = Learned::valid)]
 pub struct Learned {
@@ -84,16 +85,6 @@ impl Learned {
                     .anchored(item_resource_id::<Self>("facts", id))
             })
             .collect()
-    }
-
-    /// What the record holds: each fact with its source, its time and who wrote it down. It
-    /// answers through [`fields`](tilo_resource::read::fields), so a caller with no window open
-    /// reads it like any record, and only the person it belongs to is such a caller.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
     }
 
     fn valid(&self) -> Result<(), Refusal> {
@@ -125,7 +116,7 @@ impl Learned {
 #[resource(
     kind = "chat.learned",
     search = Learned::search,
-    read_content = Learned::read_document
+    read_content = tilo_resource::read::fields
 )]
 impl Learned {
     /// Keep a fact.
@@ -483,7 +474,7 @@ mod tests {
         let state = record.state().unwrap();
         let read = Learned::from_json(&state.to_json()).expect("the record reads");
         assert_eq!(read, state);
-        let content = state.read_document(None).unwrap();
+        let content = tilo_resource::read::fields(&state, None).unwrap();
         assert!(
             content.to_string().contains("Works from Graz."),
             "{content}"

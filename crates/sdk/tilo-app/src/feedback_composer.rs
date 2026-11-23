@@ -266,25 +266,9 @@ impl FeedbackDraft {
     }
 }
 
-impl FeedbackDraft {
-    /// What the record holds: what a person reports — their words about the issue,
-    /// and which of the context, the screenshot and the recording they include.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
 #[resource(
     kind = "tilo.feedback-draft",
-    read_content = FeedbackDraft::read_document
+    read_content = tilo_resource::read::fields
 )]
 impl FeedbackDraft {}
 

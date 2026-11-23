@@ -35,20 +35,10 @@ mod schema_rows {
         pub title: String,
     }
 
-    impl Note {
-        /// What the note holds, read whole as any app's record is.
-        pub fn read_document(
-            &self,
-            item: Option<&tilo_resource::Id>,
-        ) -> Result<serde_json::Value, String> {
-            tilo_resource::read::fields(self, item)
-        }
-    }
-
     #[resource(
         kind = "test.note",
         catalogue = "tests/locales",
-        read_content = Note::read_document
+        read_content = tilo_resource::read::fields
     )]
     impl Note {
         /// Rename the note.

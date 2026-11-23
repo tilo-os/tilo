@@ -42,18 +42,7 @@ pub struct Network {
     pub credential: String,
 }
 
-impl Devices {
-    /// What the record holds, as any app's record answers: a caller with no
-    /// window open reads it through [`fields`](tilo_resource::read::fields).
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<tilo_resource::__private::serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(kind = "tilo.devices", read_content = Devices::read_document)]
+#[resource(kind = "tilo.devices", read_content = tilo_resource::read::fields)]
 impl Devices {
     /// Keep `certificate` as what `device` is, adding its entry when the
     /// person's root certified it and it is not there yet.

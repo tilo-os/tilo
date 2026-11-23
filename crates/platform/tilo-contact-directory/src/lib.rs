@@ -35,6 +35,8 @@ mod tests;
 
 pub mod routing;
 
+/// The identities Contacts keeps for the workspace: each person's label,
+/// contacts, confirmed endpoints and whether it was removed.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct ContactDirectory {
     pub people: Collection<Person>,
@@ -95,24 +97,11 @@ fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
     Ok(())
 }
 
-impl ContactDirectory {
-    /// What the record holds: the identities Contacts keeps for the workspace, each
-    /// person's label, contacts and whether it was removed. A caller with no window
-    /// open reads it through [`fields`](tilo_resource::read::fields) like any app's
-    /// record.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<tilo_resource::__private::serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
 #[resource(
     kind = "tilo.contacts.identities",
     version = 2,
     migrate = upgrade,
-    read_content = ContactDirectory::read_document
+    read_content = tilo_resource::read::fields
 )]
 impl ContactDirectory {
     /// Update the label of a Contacts identity, without merging similar names or

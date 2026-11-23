@@ -125,20 +125,9 @@ pub struct WorkspaceEmoji {
     pub emoji: Map<Emoji>,
 }
 
-impl WorkspaceEmoji {
-    /// The record's emoji, by name, read through
-    /// [`fields`](tilo_resource::read::fields).
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
 #[resource(
     kind = "tilo.workspace.emoji",
-    read_content = WorkspaceEmoji::read_document
+    read_content = tilo_resource::read::fields
 )]
 impl WorkspaceEmoji {
     /// Add emoji.

@@ -300,7 +300,7 @@ impl Agent {
     }
 }
 
-/// The workspace's agents, by id.
+/// The workspace's agents, by id: each agent's name, who made it and its model.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 #[model(check = WorkspaceAgents::valid)]
 pub struct WorkspaceAgents {
@@ -333,21 +333,10 @@ impl WorkspaceAgents {
     }
 }
 
-impl WorkspaceAgents {
-    /// What the record holds: each agent's name, who made it and its model. It answers through [`fields`](tilo_resource::read::fields), so a
-    /// caller with no window open reads it like any app's record.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
 #[resource(
     kind = "tilo.workspace.agent",
     search = WorkspaceAgents::search,
-    read_content = WorkspaceAgents::read_document
+    read_content = tilo_resource::read::fields
 )]
 impl WorkspaceAgents {
     /// Make an agent of the workspace: a name people read (at most 64 characters), and

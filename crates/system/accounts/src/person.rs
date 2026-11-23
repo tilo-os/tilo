@@ -45,8 +45,8 @@ pub struct PersonAccount {
     pub tint: u8,
 }
 
-/// Every account the workspace has. Which one a member's window shows is
-/// that member's own preference, kept beside their Mail settings.
+/// Every account the workspace has, without their secrets. Which one a member's
+/// window shows is that member's own preference, kept beside their Mail settings.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct PersonAccounts {
     /// Keyed by the account's id, the id its secret is kept under.
@@ -87,21 +87,13 @@ impl PersonAccounts {
     pub fn kind() -> &'static str {
         <Self as tilo_resource::Resource>::KIND
     }
-
-    /// What the record holds: the accounts the workspace has, without their secrets.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
 }
 
 #[resource(
     kind = "tilo.accounts",
     version = 3,
     migrate = upgrade,
-    read_content = PersonAccounts::read_document
+    read_content = tilo_resource::read::fields
 )]
 impl PersonAccounts {
     /// Project public browser choices from the existing typed account document.
