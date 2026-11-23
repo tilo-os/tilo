@@ -41,6 +41,7 @@ imports! {
     StrWords = "str_words" ([H] -> [I64]);
     IntToStr = "int_to_str" ([I64] -> [H]);
     StrToInt = "str_to_int" ([H] -> [H]);
+    StrToFloat = "str_to_float" ([H] -> [H]);
     FloatToStr = "float_to_str" ([F64] -> [H]);
     DurationText = "duration_text" ([I64] -> [H]);
     StrCmp = "str_cmp" ([H, H] -> [I32]);
@@ -71,6 +72,33 @@ imports! {
     FloatFloorTo = "float_floor_to" ([F64, I64] -> [F64]);
     FloatCeil = "float_ceil" ([F64] -> [I64]);
     FloatCeilTo = "float_ceil_to" ([F64, I64] -> [F64]);
+    // The elementary functions, in radians where an angle is one: a value asks its unit itself
+    // with `to_radians` and `to_degrees`.
+    FloatSqrt = "float_sqrt" ([F64] -> [F64]);
+    FloatCbrt = "float_cbrt" ([F64] -> [F64]);
+    FloatPow = "float_pow" ([F64, F64] -> [F64]);
+    FloatExp = "float_exp" ([F64] -> [F64]);
+    FloatLn = "float_ln" ([F64] -> [F64]);
+    FloatLog10 = "float_log10" ([F64] -> [F64]);
+    FloatLog2 = "float_log2" ([F64] -> [F64]);
+    FloatSin = "float_sin" ([F64] -> [F64]);
+    FloatCos = "float_cos" ([F64] -> [F64]);
+    FloatTan = "float_tan" ([F64] -> [F64]);
+    FloatAsin = "float_asin" ([F64] -> [F64]);
+    FloatAcos = "float_acos" ([F64] -> [F64]);
+    FloatAtan = "float_atan" ([F64] -> [F64]);
+    FloatSinh = "float_sinh" ([F64] -> [F64]);
+    FloatCosh = "float_cosh" ([F64] -> [F64]);
+    FloatTanh = "float_tanh" ([F64] -> [F64]);
+    FloatGamma = "float_gamma" ([F64] -> [F64]);
+    FloatToRadians = "float_to_radians" ([F64] -> [F64]);
+    FloatToDegrees = "float_to_degrees" ([F64] -> [F64]);
+    FloatSign = "float_sign" ([F64] -> [F64]);
+    FloatTrunc = "float_trunc" ([F64] -> [F64]);
+    FloatFract = "float_fract" ([F64] -> [F64]);
+    // Whether a number is one at all: a calculation that went past a float's range says so.
+    FloatIsFinite = "float_is_finite" ([F64] -> [I32]);
+    FloatIsNan = "float_is_nan" ([F64] -> [I32]);
     ListSumI = "list_sum_i" ([H] -> [I64]);
     ListSumF = "list_sum_f" ([H] -> [F64]);
     ListAvg = "list_avg" ([H] -> [F64]);

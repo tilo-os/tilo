@@ -29,29 +29,32 @@ use Imp::{
     Describe, DescribeRef, DurationText, Earlier, EditField, EntryParts, EnumGetF, EnumGetH,
     EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged,
     FileAt, FileFiles, FileOfBytes, FileOfText, FilePart, FileSize, FileText, FileZip, FilterLit,
-    Filters, Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor,
-    FloatFloorTo, FloatMax, FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef, Grep,
-    GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush,
-    Invoke, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, Links,
-    ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious,
-    ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom,
-    MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
-    MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf,
-    MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PersonNamed, Phrase,
-    Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
-    RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
-    RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
-    ResTextSet, ResourceRef, RichEmbed, RichEmpty, RichFromMarkdown, RichMarkdown, RichNew,
-    RichPart, RichRelinked, RichTime, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, Single,
-    SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, Steps,
-    StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
-    StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper,
-    StrWords, Suggest, Take, TimeClock, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today,
-    TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
-    UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiChild, UiNode, UiOn,
-    UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
-    Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
-    WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
+    Filters, Find, FirstUnseen, FloatAbs, FloatAcos, FloatAsin, FloatAtan, FloatCbrt, FloatCeil,
+    FloatCeilTo, FloatClamp, FloatCos, FloatCosh, FloatExp, FloatFloor, FloatFloorTo, FloatFract,
+    FloatGamma, FloatIsFinite, FloatIsNan, FloatLn, FloatLog2, FloatLog10, FloatMax, FloatMin,
+    FloatPow, FloatRound, FloatRoundTo, FloatSign, FloatSin, FloatSinh, FloatSqrt, FloatTan,
+    FloatTanh, FloatToDegrees, FloatToRadians, FloatToStr, FloatTrunc, ForeignRef, Grep, GroupBy,
+    IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke,
+    Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, Links, ListAvg,
+    ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF,
+    ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom, MapGetH,
+    MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove, MapRemoveValue,
+    MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf, MissingV,
+    ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PersonNamed, Phrase, Print,
+    PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt,
+    RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs,
+    RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
+    ResourceRef, RichEmbed, RichEmpty, RichFromMarkdown, RichMarkdown, RichNew, RichPart,
+    RichRelinked, RichTime, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH,
+    SomeI, SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, Steps, StrCmp,
+    StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
+    StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToFloat, StrToInt, StrTrim,
+    StrUpper, StrWords, Suggest, Take, TimeClock, TimeDay, TimeOfDay, TimeParse, TimeShift,
+    TimeSpan, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
+    TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiChild, UiNode,
+    UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+    VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost,
+    WebStatus, WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -497,13 +500,17 @@ impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::Delivery;
         match imp {
-            StrLit | StrConcat | StrEq | StrLen | StrWords | IntToStr | StrToInt | FloatToStr
-            | StrCmp | StrFind | StrSlice | StrReplace | StrTrim | StrLower | StrUpper
-            | StrStartsWith | StrEndsWith | StrContains | StrSplit | StrJoin | StrMatches
-            | DurationText => self.text_import(imp, mem, a),
+            StrLit | StrConcat | StrEq | StrLen | StrWords | IntToStr | StrToInt | StrToFloat
+            | FloatToStr | StrCmp | StrFind | StrSlice | StrReplace | StrTrim | StrLower
+            | StrUpper | StrStartsWith | StrEndsWith | StrContains | StrSplit | StrJoin
+            | StrMatches | DurationText => self.text_import(imp, mem, a),
             IntMin | IntMax | IntClamp | IntAbs | FloatMin | FloatMax | FloatClamp | FloatAbs
             | FloatRound | FloatRoundTo | FloatFloor | FloatFloorTo | FloatCeil | FloatCeilTo
-            | ListSumI | ListSumF | ListAvg => self.num_import(imp, a),
+            | FloatSqrt | FloatCbrt | FloatPow | FloatExp | FloatLn | FloatLog10 | FloatLog2
+            | FloatSin | FloatCos | FloatTan | FloatAsin | FloatAcos | FloatAtan | FloatSinh
+            | FloatCosh | FloatTanh | FloatGamma | FloatToRadians | FloatToDegrees | FloatSign
+            | FloatTrunc | FloatFract | FloatIsFinite | FloatIsNan | ListSumI | ListSumF
+            | ListAvg => self.num_import(imp, a),
             ListNew | ListPushI | ListPushF | ListPushH | ListLen | CollCount | CollCounted
             | CollEmpty | ListGetI | ListGetF | ListSortByKey | ListReverse | ListGetH
             | ListEnd | ListIndexOf | ListPrevious | TupleNew | TupleSetI | TupleSetF
@@ -552,9 +559,9 @@ impl Core {
                 self.clipboard_import(imp, a)
             }
             JsonParse | JsonDecode | JsonEncode | StageReading => self.json_import(imp, a),
-            UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiBindBegin
-            | UiOn | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt
-            | ArgAt | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView
+            UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
+            | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt | ArgAt
+            | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView
             | UiActions | UiAction | ActChoose | ActSave => self.ui_import(imp, a),
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
             | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd

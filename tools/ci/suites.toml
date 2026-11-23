@@ -787,6 +787,7 @@ inputs = [
 readers = [
   "crates/lang/tilolang-runtime/tests/e2e_apps.rs",
   "crates/lang/tilolang-runtime/tests/e2e_blocks.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_calculator.rs",
   "crates/lang/tilolang-runtime/tests/e2e_cleanup.rs",
   "crates/lang/tilolang-runtime/tests/e2e_counter.rs",
   "crates/lang/tilolang-runtime/tests/e2e_mail_files.rs",

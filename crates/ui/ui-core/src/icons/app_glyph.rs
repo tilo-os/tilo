@@ -34,7 +34,6 @@ fn named(name: &str) -> Option<Icon> {
         "mail" => Icon::Mail,
         "contacts" => Icon::Users,
         "chat" | "messages" => Icon::MessageSquare,
-        "calculator" => Icon::Hash,
         "sheets" | "db-client" => Icon::Table,
         "slides" => Icon::PictureInPicture2,
         "pdf-viewer" | "ebook" | "publisher" => Icon::File,

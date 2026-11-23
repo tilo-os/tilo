@@ -3,7 +3,7 @@
 
 Every thin app maps the shared runtime. gstreamer-rs is part of it (tilo-media
 sits under tilo-ui), so a plain link lists libgstreamer, libglib, libgobject,
-libgio and the GStreamer helper libraries as DT_NEEDED, and a calculator maps
+libgio and the GStreamer helper libraries as DT_NEEDED, and a small app maps
 and initialises a media framework before `main`.
 
 `tools/ci/rustc-thin-app-wrapper.sh` makes this script rustc's linker for the

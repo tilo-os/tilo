@@ -64,7 +64,6 @@ word-processor = { path = "../../../apps/word-processor" }
 # (`tests/typing_desktop`, `examples/typing_perf`): what a keystroke in one of
 # them costs with the others open beside it.
 sheets = { path = "../../../apps/sheets" }
-calculator = { path = "../../../apps/calculator" }
 slides = { path = "../../../apps/slides" }
 tilo-tts = { path = "../../engines/tts" }
 tilo-activities = { path = "../activities" }

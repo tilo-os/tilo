@@ -233,6 +233,84 @@ tilo_test_env::scenario! {
         assert!(!still.is_moving(start));
     }
 
+    phase a_pointer_drags_wheels_pinches_and_says_where_it_is;
+    {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use winit::event::{DeviceId, ElementState, MouseButton, MouseScrollDelta};
+
+        let heard: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let mut drawing = Drawing {
+            rect: Rect::new(0.0, 0.0, 100.0, 50.0),
+            ..Drawing::default()
+        };
+        let note = |label: &'static str, two: bool| {
+            let heard = Rc::clone(&heard);
+            let boxed: Box<dyn FnMut(f64, f64)> = if two {
+                Box::new(move |x: f64, y: f64| {
+                    heard.borrow_mut().push(format!("{label} {x:.2} {y:.2}"));
+                })
+            } else {
+                Box::new(move |x: f64, _y: f64| {
+                    heard.borrow_mut().push(format!("{label} {x:.2}"));
+                })
+            };
+            boxed
+        };
+        drawing.on_pointer = Some(note("pointer", true));
+        drawing.on_drag_start = Some(note("start", true));
+        drawing.on_drag = Some(note("drag", true));
+        drawing.on_drag_end = Some(note("end", true));
+        drawing.on_wheel = Some(note("wheel", true));
+        drawing.on_pinch = Some(note("pinch", false));
+
+        let moved = |x: f64, y: f64| WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        };
+        let click = |state: ElementState| WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state,
+            button: MouseButton::Left,
+        };
+
+        // A pointer move inside reports its place as fractions of the box.
+        assert!(!drawing.gesture(&moved(50.0, 25.0), 1.0));
+        // A press begins a drag; the moves under it are the drawing's, so a page does not scroll.
+        assert!(!drawing.gesture(&click(ElementState::Pressed), 1.0));
+        assert!(drawing.gesture(&moved(75.0, 25.0), 1.0));
+        assert!(drawing.gesture(&click(ElementState::Released), 1.0));
+        // A wheel and a pinch over it are its own too.
+        let wheel = WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, -20.0)),
+            phase: winit::event::TouchPhase::Moved,
+        };
+        assert!(drawing.gesture(&wheel, 1.0));
+        let pinch = WindowEvent::PinchGesture {
+            device_id: DeviceId::dummy(),
+            delta: 0.5,
+            phase: winit::event::TouchPhase::Moved,
+        };
+        assert!(drawing.gesture(&pinch, 1.0));
+        // Away from the drawing, they are no one's here.
+        assert!(!drawing.gesture(&moved(500.0, 500.0), 1.0));
+        assert!(!drawing.gesture(&click(ElementState::Pressed), 1.0));
+
+        assert_eq!(
+            *heard.borrow(),
+            [
+                "pointer 0.50 0.50",
+                "start 0.50 0.50",
+                "pointer 0.75 0.50",
+                "drag 0.75 0.50",
+                "end 0.75 0.50",
+                "wheel 0.00 -20.00",
+                "pinch 1.50",
+            ]
+        );
+    }
+
     phase the_first_reading_and_a_new_form_land_at_once;
     {
         let start = crate::time::now();

@@ -426,15 +426,15 @@ fn the_palette_reads_native_and_tilolang_actions_in_german() {
 
     let (host, package) = notes("de-DE");
     let notebook = notebook(&host, &package);
-    let calculator = calculator::actions::CalculatorEffect::declarations()
+    let contacts = contacts::actions::ContactsEffect::declarations()
         .iter()
-        .map(EffectDecl::spec_of::<calculator::actions::CalculatorEffect>)
+        .map(EffectDecl::spec_of::<contacts::actions::ContactsEffect>)
         .fold(
-            tilo_actions::ResourceSpec::new("calculator", "calculator.effect", "Rechner"),
+            tilo_actions::ResourceSpec::new("contacts", "contacts.effect", "Kontakte"),
             tilo_actions::ResourceSpec::with_action,
         );
     let palette = Published(vec![
-        PublishedActions::of("so.tilo.calculator", "workspace", &[calculator]),
+        PublishedActions::of("so.tilo.contacts", "workspace", &[contacts]),
         PublishedActions::of(NOTES, "workspace", &[notebook]),
     ]);
     let rows = |query: &str| -> Vec<String> {
@@ -444,10 +444,10 @@ fn the_palette_reads_native_and_tilolang_actions_in_german() {
             .map(|hit| hit.title)
             .collect()
     };
-    let native = rows("Bogenmaß");
+    let native = rows("Gruppe");
     assert!(
-        native.iter().any(|title| title == "Bogenmaß verwenden"),
-        "the calculator's action reads in German: {native:?}"
+        native.iter().any(|title| title == "Gruppe öffnen"),
+        "the contacts app's action reads in German: {native:?}"
     );
     let notes = rows("Notiz");
     assert!(
@@ -455,7 +455,7 @@ fn the_palette_reads_native_and_tilolang_actions_in_german() {
         "the notes app's action reads in German: {notes:?}"
     );
     assert!(
-        rows("radians").is_empty() && rows("new note").is_empty(),
+        rows("open group").is_empty() && rows("new note").is_empty(),
         "and neither reads in English"
     );
 }

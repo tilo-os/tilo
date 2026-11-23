@@ -173,46 +173,6 @@ pub enum Shape {
         anchor: Anchor,
         strong: bool,
     },
-    /// A rectangle filled in a colour the content brings (`#rrggbb`, `#rrggbbaa`): a highlight,
-    /// a selection or a find hit over a page. Its colour is the content's, never the theme's, so
-    /// what a reader marked there shows as the person marked it in every theme.
-    Area {
-        x: f64,
-        y: f64,
-        w: f64,
-        h: f64,
-        round: f64,
-        colour: String,
-    },
-    /// A line through `points` (x and y in turn), `width` of the box's shorter side thick, in a
-    /// colour the content brings: an ink stroke, an underline, a signature.
-    Stroke {
-        points: Vec<f64>,
-        colour: String,
-        width: f64,
-    },
-    /// Words at (x, y) in a colour the content brings, `size` of the box's height: a page's own
-    /// text, a signature's name.
-    Label {
-        x: f64,
-        y: f64,
-        text: String,
-        colour: String,
-        size: f64,
-        anchor: Anchor,
-    },
-}
-
-/// The colour a shape's own text names (`#rrggbb` or `#rrggbbaa`); black for one nothing reads.
-#[must_use]
-pub fn colour_of(text: &str) -> Color {
-    let hex = text.trim().trim_start_matches('#');
-    let byte = |at: usize| u8::from_str_radix(hex.get(at..at + 2).unwrap_or("00"), 16).unwrap_or(0);
-    if hex.len() < 6 {
-        return Color::from_rgba8(0, 0, 0, 255);
-    }
-    let alpha = if hex.len() >= 8 { byte(6) } else { 255 };
-    Color::from_rgba8(byte(0), byte(2), byte(4), alpha)
 }
 
 enum Lowered {
@@ -268,29 +228,6 @@ impl Shape {
             Self::Line { x1, y1, x2, y2, .. } => Some(Lowered::Outline(
                 Line::new(at(*x1, *y1), at(*x2, *y2)).to_path(0.1),
             )),
-            Self::Area {
-                x, y, w, h, round, ..
-            } => {
-                let rect = Rect::from_points(at(*x, *y), at(x + w, y + h));
-                let radius = round.clamp(0.0, 0.5) * rect.width().min(rect.height());
-                Some(Lowered::Area(
-                    RoundedRect::from_rect(rect, radius).to_path(0.1),
-                ))
-            }
-            Self::Stroke { points, .. } => {
-                let pts: Vec<Point> = points.chunks_exact(2).map(|p| at(p[0], p[1])).collect();
-                if pts.len() < 2 {
-                    return None;
-                }
-                let mut path = BezPath::new();
-                path.move_to(pts[0]);
-                for pair in pts.windows(2) {
-                    path.line_to(pair[1]);
-                }
-                Some(Lowered::Outline(path))
-            }
-            // Only the path's own lowered form, never the arms before it: this one comes after
-            // the text's, so a shape is lowered once.
             Self::Path {
                 points,
                 smooth,
@@ -323,7 +260,7 @@ impl Shape {
                     Lowered::Outline(path)
                 })
             }
-            Self::Text { .. } | Self::Label { .. } => None,
+            Self::Text { .. } => None,
         }
     }
 
@@ -344,11 +281,7 @@ impl Shape {
             } => out.extend([*cx, *cy, *radius, *from, *to]),
             Self::Line { x1, y1, x2, y2, .. } => out.extend([*x1, *y1, *x2, *y2]),
             Self::Path { points, .. } => out.extend(points.iter().copied()),
-            Self::Text { x, y, .. } | Self::Label { x, y, .. } => out.extend([*x, *y]),
-            Self::Area {
-                x, y, w, h, round, ..
-            } => out.extend([*x, *y, *w, *h, *round]),
-            Self::Stroke { points, .. } => out.extend(points.iter().copied()),
+            Self::Text { x, y, .. } => out.extend([*x, *y]),
         }
     }
 
@@ -392,19 +325,11 @@ impl Shape {
                 }
             }
             Self::Path { points, .. } => points.iter_mut().for_each(next),
-            Self::Text { x, y, .. } | Self::Label { x, y, .. } => {
+            Self::Text { x, y, .. } => {
                 for slot in [x, y] {
                     next(slot);
                 }
             }
-            Self::Area {
-                x, y, w, h, round, ..
-            } => {
-                for slot in [x, y, w, h, round] {
-                    next(slot);
-                }
-            }
-            Self::Stroke { points, .. } => points.iter_mut().for_each(next),
         }
     }
 
@@ -413,7 +338,6 @@ impl Shape {
     fn same_form(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Path { points: a, .. }, Self::Path { points: b, .. }) => a.len() == b.len(),
-            (Self::Stroke { points: a, .. }, Self::Stroke { points: b, .. }) => a.len() == b.len(),
             _ => std::mem::discriminant(self) == std::mem::discriminant(other),
         }
     }
@@ -421,12 +345,7 @@ impl Shape {
     fn fill(&self) -> Option<Ink> {
         match self {
             Self::Rect { fill, .. } | Self::Ellipse { fill, .. } | Self::Path { fill, .. } => *fill,
-            Self::Arc { .. }
-            | Self::Line { .. }
-            | Self::Text { .. }
-            | Self::Area { .. }
-            | Self::Stroke { .. }
-            | Self::Label { .. } => None,
+            Self::Arc { .. } | Self::Line { .. } | Self::Text { .. } => None,
         }
     }
 
@@ -438,7 +357,7 @@ impl Shape {
             Self::Arc { stroke, weight, .. } | Self::Line { stroke, weight, .. } => {
                 Some((*stroke, *weight))
             }
-            Self::Text { .. } | Self::Area { .. } | Self::Stroke { .. } | Self::Label { .. } => None,
+            Self::Text { .. } => None,
         }
     }
 
@@ -475,28 +394,24 @@ pub struct Drawing {
     pub(crate) layout_dirty: bool,
     pub(crate) on_press: Option<Box<dyn FnMut(usize)>>,
     pub(crate) on_hover: Option<Box<dyn FnMut(Option<usize>)>>,
-    /// The pointer pressed on the drawing, moved while pressed and let go: each is handed the
-    /// point as fractions of the box, x first (`drawing_point`).
-    pub(crate) on_press_at: Option<Box<dyn FnMut(f64, f64)>>,
-    pub(crate) on_drag_at: Option<Box<dyn FnMut(f64, f64)>>,
-    pub(crate) on_release_at: Option<Box<dyn FnMut(f64, f64)>>,
-    /// Whether the pointer is down on the drawing, so a move is a drag.
-    pressed: bool,
+    /// The pointer moved over the drawing, at fractions of its box.
+    pub(crate) on_pointer: Option<Box<dyn FnMut(f64, f64)>>,
+    /// A drag began, moved and ended over the drawing, each at fractions of its box.
+    pub(crate) on_drag_start: Option<Box<dyn FnMut(f64, f64)>>,
+    pub(crate) on_drag: Option<Box<dyn FnMut(f64, f64)>>,
+    pub(crate) on_drag_end: Option<Box<dyn FnMut(f64, f64)>>,
+    /// The wheel turned over the drawing: across and down, in logical pixels.
+    pub(crate) on_wheel: Option<Box<dyn FnMut(f64, f64)>>,
+    /// A pinch over the drawing: the scale factor it asks for (1 is none).
+    pub(crate) on_pinch: Option<Box<dyn FnMut(f64)>>,
+    /// Whether a drag is under way: the pointer moves it until the button comes up.
+    dragging: bool,
 }
 
-impl Drawing {
-    /// `p` as the drawing's own point: fractions of its box, x then y, from its top-left
-    /// corner. A point outside the box is told as it is, so a drag that leaves the box keeps
-    /// following the pointer.
-    fn point_of(&self, p: Point) -> (f64, f64) {
-        let w = self.rect.width();
-        let h = self.rect.height();
-        if w <= 0.0 || h <= 0.0 {
-            return (0.0, 0.0);
-        }
-        ((p.x - self.rect.x0) / w, (p.y - self.rect.y0) / h)
-    }
+/// How far a wheel notch scrolls, in logical pixels: what a line of a mouse wheel is worth here.
+const WHEEL_LINE: f64 = 40.0;
 
+impl Drawing {
     /// The index of the topmost shape at `point`: inside an area or a text, or within reach of an
     /// outline's line.
     #[must_use]
@@ -637,61 +552,10 @@ impl Drawing {
                     );
                     return Some(Rect::new(left, top, left + width, top + height));
                 }
-                // Words in a colour the content brings are set where the shape says, at its
-                // own size, and are no path: a page's text, a signature's name.
-                if let Shape::Label {
-                    x,
-                    y,
-                    text,
-                    colour,
-                    size,
-                    anchor,
-                } = shape
-                {
-                    let mut style = theme.text(TextRole::Body);
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "a size inside a drawing's box, far below f32's range"
-                    )]
-                    let set = (size * bounds.height()) as f32;
-                    style.size = set;
-                    style.line_height = set * 1.2;
-                    let (width, height) = text_renderer.measure_style(text, None, &style);
-                    let (width, height) = (f64::from(width), f64::from(height));
-                    let px = bounds.x0 + x * bounds.width();
-                    let left = match anchor {
-                        Anchor::Start => px,
-                        Anchor::Middle => px - width / 2.0,
-                        Anchor::End => px - width,
-                    };
-                    let top = bounds.y0 + y * bounds.height() - height / 2.0;
-                    text_renderer.draw_style(
-                        scene,
-                        text,
-                        colour_of(colour),
-                        transform.pre_translate((left, top).into()),
-                        None,
-                        &style,
-                    );
-                    return Some(Rect::new(left, top, left + width, top + height));
-                }
                 let Some(Lowered::Area(path) | Lowered::Outline(path)) = shape.lowered(bounds)
                 else {
                     return None;
                 };
-                // A shape whose colour the content brings is filled and stroked in it, and one
-                // of the theme's inks otherwise.
-                if let Shape::Area { colour, .. } = shape {
-                    scene.fill(Fill::NonZero, transform, colour_of(colour), None, &path);
-                    return None;
-                }
-                if let Shape::Stroke { colour, width, .. } = shape {
-                    let stroke = Stroke::new(width.clamp(0.0, 1.0) * bounds.width().min(bounds.height()))
-                        .with_caps(vello::kurbo::Cap::Round)
-                        .with_join(vello::kurbo::Join::Round);
-                    scene.stroke(&stroke, transform, colour_of(colour), None, &path);
-                    return None;
-                }
                 if let Some(ink) = shape.fill() {
                     let colour = ink.colour(theme);
                     if shape.washed() {
@@ -719,6 +583,94 @@ impl Drawing {
                 None
             })
             .collect()
+    }
+}
+
+impl Drawing {
+    /// The point as a fraction of the drawing's box: how shapes are placed, so a gesture reads
+    /// plainly against them.
+    fn fraction(&self, point: Point) -> (f64, f64) {
+        let width = self.rect.width().max(1.0);
+        let height = self.rect.height().max(1.0);
+        (
+            (point.x - self.rect.x0) / width,
+            (point.y - self.rect.y0) / height,
+        )
+    }
+
+    /// The gesture `event` makes on the drawing, when the pointer is over it: a pointer's move, a
+    /// drag from press to release, a wheel turn, a pinch. Answers whether it is one this drawing
+    /// takes, so a window can stop the event there instead of scrolling or panning under it.
+    pub(crate) fn gesture(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let (x, y) = self.fraction(self.last_cursor);
+                if self.rect.contains(self.last_cursor)
+                    && let Some(pointer) = self.on_pointer.as_mut()
+                {
+                    pointer(x, y);
+                }
+                // A drag goes on where the pointer goes, past the drawing's edge as well: what
+                // it moves follows the hand.
+                if self.dragging {
+                    if let Some(drag) = self.on_drag.as_mut() {
+                        drag(x, y);
+                    }
+                    return true;
+                }
+                false
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.rect.contains(self.last_cursor) => {
+                self.dragging = true;
+                let (x, y) = self.fraction(self.last_cursor);
+                if let Some(start) = self.on_drag_start.as_mut() {
+                    start(x, y);
+                }
+                // A press is also the shape under the pointer's: what `press` reports.
+                false
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if !self.dragging {
+                    return false;
+                }
+                self.dragging = false;
+                let (x, y) = self.fraction(self.last_cursor);
+                if let Some(end) = self.on_drag_end.as_mut() {
+                    end(x, y);
+                }
+                true
+            }
+            WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.last_cursor) => {
+                let (across, down) = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                        (f64::from(*x) * WHEEL_LINE, f64::from(*y) * WHEEL_LINE)
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(delta) => (delta.x, delta.y),
+                };
+                let Some(wheel) = self.on_wheel.as_mut() else {
+                    return false;
+                };
+                wheel(across, down);
+                true
+            }
+            WindowEvent::PinchGesture { delta, .. } if self.rect.contains(self.last_cursor) => {
+                let Some(pinch) = self.on_pinch.as_mut() else {
+                    return false;
+                };
+                pinch(1.0 + *delta);
+                true
+            }
+            _ => false,
+        }
     }
 }
 
@@ -780,17 +732,16 @@ impl Widget for Drawing {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.gesture(event, ctx.scale_factor) {
+            // A drag, a wheel or a pinch over the drawing is the drawing's: the window under it
+            // must not scroll or pan as well.
+            *ctx.handled = true;
+            return;
+        }
         match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                if self.pressed
-                    && let Some(drag) = self.on_drag_at.as_mut()
-                {
-                    let (x, y) = self.point_of(self.last_cursor);
-                    drag(x, y);
-                    *ctx.handled = true;
-                }
+            // The place it came to is the gesture's, read before this: what is left is the shape
+            // under it.
+            WindowEvent::CursorMoved { .. } => {
                 if self.on_hover.is_some() {
                     let under = if self.rect.contains(self.last_cursor) {
                         self.shape_at(self.last_cursor, 1.0)
@@ -806,32 +757,12 @@ impl Widget for Drawing {
                 button: MouseButton::Left,
                 ..
             } if self.rect.contains(self.last_cursor) => {
-                self.pressed = true;
-                if let Some(press) = self.on_press_at.as_mut() {
-                    let (x, y) = self.point_of(self.last_cursor);
-                    press(x, y);
-                    *ctx.handled = true;
-                }
                 if let Some(index) = self.shape_at(self.last_cursor, 1.0)
                     && let Some(press) = self.on_press.as_mut()
                 {
                     press(index);
                     *ctx.handled = true;
                 }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if self.pressed
-                    && let Some(release) = self.on_release_at.as_mut()
-                {
-                    let (x, y) = self.point_of(self.last_cursor);
-                    release(x, y);
-                    *ctx.handled = true;
-                }
-                self.pressed = false;
             }
             _ => {}
         }

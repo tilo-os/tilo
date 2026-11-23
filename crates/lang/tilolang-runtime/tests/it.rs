@@ -28,6 +28,8 @@ mod e2e_abi;
 mod e2e_apps;
 #[path = "e2e_blocks.rs"]
 mod e2e_blocks;
+#[path = "e2e_calculator.rs"]
+mod e2e_calculator;
 #[path = "e2e_call_fn.rs"]
 mod e2e_call_fn;
 #[path = "e2e_cleanup.rs"]

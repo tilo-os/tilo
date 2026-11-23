@@ -215,6 +215,7 @@ fn the_gallery_s_surface_admits_the_root_its_host_creates() {
                     vec![Received {
                         change: write.change.clone(),
                         author: [7; 32],
+                        claimed: None,
                     }],
                     &|_: &Proposal<'_>| true,
                 )

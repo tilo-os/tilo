@@ -2078,6 +2078,41 @@
           "value": {
             "option": "int"
           }
+        },
+        {
+          "name": "pointer",
+          "doc": "The pointer moved over the drawing, at (x, y): fractions of its box, so the place is the one its shapes are placed at.",
+          "value": "float",
+          "at": "float"
+        },
+        {
+          "name": "drag_start",
+          "doc": "A drag began over the drawing, at (x, y) in fractions of its box.",
+          "value": "float",
+          "at": "float"
+        },
+        {
+          "name": "drag",
+          "doc": "The pointer moved while dragging, to (x, y) in fractions of its box.",
+          "value": "float",
+          "at": "float"
+        },
+        {
+          "name": "drag_end",
+          "doc": "A drag ended at (x, y) in fractions of its box.",
+          "value": "float",
+          "at": "float"
+        },
+        {
+          "name": "wheel",
+          "doc": "The wheel turned over the drawing: across it and down it, in logical pixels, positive down and to the end.",
+          "value": "float",
+          "at": "float"
+        },
+        {
+          "name": "pinch",
+          "doc": "A pinch over the drawing: the scale factor the fingers ask for, 1 for none.",
+          "value": "float"
         }
       ],
       "semantics": {

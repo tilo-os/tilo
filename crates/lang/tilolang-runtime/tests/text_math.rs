@@ -42,6 +42,31 @@ action down_to(f: Float, places: Int) -> Float { return f.floor(places) }\n\
 action up_to(f: Float, places: Int) -> Float { return f.ceil(places) }\n\
 action as_int(f: Float) -> Int { return f.to_int() }\n\
 action float_text(f: Float) -> Text { return f.to_text() }\n\
+action real(t: Text) -> Float { return match t.to_float() { .some(n) => n, .none => -1.0 } }\n\
+action root(f: Float) -> Float { return f.sqrt() }\n\
+action cube(f: Float) -> Float { return f.cbrt() }\n\
+action raised(f: Float, by: Float) -> Float { return f.pow(by) }\n\
+action power_of_e(f: Float) -> Float { return f.exp() }\n\
+action natural(f: Float) -> Float { return f.ln() }\n\
+action ten(f: Float) -> Float { return f.log10() }\n\
+action two(f: Float) -> Float { return f.log2() }\n\
+action sine(f: Float) -> Float { return f.sin() }\n\
+action cosine(f: Float) -> Float { return f.cos() }\n\
+action tangent(f: Float) -> Float { return f.tan() }\n\
+action arcsine(f: Float) -> Float { return f.asin() }\n\
+action arccosine(f: Float) -> Float { return f.acos() }\n\
+action arctangent(f: Float) -> Float { return f.atan() }\n\
+action hsinh(f: Float) -> Float { return f.sinh() }\n\
+action hcosh(f: Float) -> Float { return f.cosh() }\n\
+action htanh(f: Float) -> Float { return f.tanh() }\n\
+action gamma_of(f: Float) -> Float { return f.gamma() }\n\
+action radians(f: Float) -> Float { return f.to_radians() }\n\
+action degrees(f: Float) -> Float { return f.to_degrees() }\n\
+action sign_of(f: Float) -> Float { return f.sign() }\n\
+action truncated(f: Float) -> Float { return f.trunc() }\n\
+action fraction(f: Float) -> Float { return f.fract() }\n\
+action finite(f: Float) -> Bool { return f.is_finite() }\n\
+action nan(f: Float) -> Bool { return f.is_nan() }\n\
 action total(xs: List<Int>) -> Int { return xs.sum() }\n\
 action total_f(xs: List<Float>) -> Float { return xs.sum() }\n\
 action mean(xs: List<Int>) -> Float { return xs.avg() }\n\
@@ -238,6 +263,48 @@ action flag(b: Bool) -> Text { return b.to_text() }";
 
             assert_eq!(s.text("flag", vec![Value::Bool(true)]), "true");
             assert_eq!(s.text("flag", vec![Value::Bool(false)]), "false");
+        }
+
+        phase the_elementary_functions_answer_their_float;
+        {
+            let s = surface();
+            let near = |got: Value, want: f64| match got {
+                Value::Float(f) => (f - want).abs() < 1e-12,
+                other => panic!("not a float: {other:?}"),
+            };
+            let one = |x: f64| vec![Value::Float(x)];
+            assert_eq!(s.ask("real", vec![t("1.5")]), Value::Float(1.5));
+            assert_eq!(s.ask("real", vec![t("two")]), Value::Float(-1.0));
+            assert!(near(s.ask("root", one(2.0)), std::f64::consts::SQRT_2));
+            assert!(!near(s.ask("root", one(-2.0)), 0.0), "the root of a negative is not one");
+            assert!(near(s.ask("cube", one(27.0)), 3.0));
+            assert!(near(
+                s.ask("raised", vec![Value::Float(2.0), Value::Float(10.0)]),
+                1024.0
+            ));
+            assert!(near(s.ask("power_of_e", one(0.0)), 1.0));
+            assert!(near(s.ask("natural", one(std::f64::consts::E)), 1.0));
+            assert!(near(s.ask("ten", one(1000.0)), 3.0));
+            assert!(near(s.ask("two", one(8.0)), 3.0));
+            assert!(near(s.ask("sine", one(0.0)), 0.0));
+            assert!(near(s.ask("cosine", one(0.0)), 1.0));
+            assert!(near(s.ask("tangent", one(0.0)), 0.0));
+            assert!(near(s.ask("arcsine", one(1.0)), std::f64::consts::FRAC_PI_2));
+            assert!(near(s.ask("arccosine", one(1.0)), 0.0));
+            assert!(near(s.ask("arctangent", one(1.0)), std::f64::consts::FRAC_PI_4));
+            assert!(near(s.ask("hsinh", one(0.0)), 0.0));
+            assert!(near(s.ask("hcosh", one(0.0)), 1.0));
+            assert!(near(s.ask("htanh", one(0.0)), 0.0));
+            assert!(near(s.ask("gamma_of", one(5.0)), 24.0));
+            assert!(near(s.ask("radians", one(180.0)), std::f64::consts::PI));
+            assert!(near(s.ask("degrees", one(std::f64::consts::PI)), 180.0));
+            assert!(near(s.ask("sign_of", one(-3.0)), -1.0));
+            assert!(near(s.ask("truncated", one(-2.7)), -2.0));
+            assert!(near(s.ask("fraction", one(-2.7)), -0.7));
+            assert_eq!(s.yes("finite", one(1.0)), true);
+            assert_eq!(s.yes("finite", one(f64::INFINITY)), false);
+            assert_eq!(s.yes("nan", one(f64::NAN)), true);
+            assert_eq!(s.yes("nan", one(1.0)), false);
         }
 
         phase a_list_of_numbers_sums_and_averages;

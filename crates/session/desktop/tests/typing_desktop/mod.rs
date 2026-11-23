@@ -47,7 +47,6 @@ pub const DEMO: [DemoApp; 5] = [
     ("word_processor", "Writer", word_processor::definition),
     ("sheets", "Sheets", sheets::definition),
     ("calendar", "Calendar", calendar::definition),
-    ("calculator", "Calculator", calculator::definition),
     ("slides", "Slides", slides::definition),
 ];
 

@@ -65,6 +65,10 @@ impl Core {
                 let number = self.text(a.h(0)?)?.trim().parse::<i64>().ok();
                 self.ret_h(Value::Opt(number.map(|n| Box::new(Value::Int(n)))))
             }
+            Imp::StrToFloat => {
+                let number = self.text(a.h(0)?)?.trim().parse::<f64>().ok();
+                self.ret_h(Value::Opt(number.map(|n| Box::new(Value::Float(n)))))
+            }
             Imp::FloatToStr => self.ret_h(Value::Text(a.float(0)?.to_string())),
             Imp::DurationText => self.ret_h(Value::Text(tilolang::duration::text(a.long(0)?))),
             Imp::StrCmp => {
@@ -158,6 +162,30 @@ impl Core {
             Imp::FloatRoundTo => ret_f64(crate::num::round_to(a.float(0)?, a.long(1)?)),
             Imp::FloatFloorTo => ret_f64(crate::num::floor_to(a.float(0)?, a.long(1)?)),
             Imp::FloatCeilTo => ret_f64(crate::num::ceil_to(a.float(0)?, a.long(1)?)),
+            Imp::FloatSqrt => ret_f64(a.float(0)?.sqrt()),
+            Imp::FloatCbrt => ret_f64(a.float(0)?.cbrt()),
+            Imp::FloatPow => ret_f64(a.float(0)?.powf(a.float(1)?)),
+            Imp::FloatExp => ret_f64(a.float(0)?.exp()),
+            Imp::FloatLn => ret_f64(a.float(0)?.ln()),
+            Imp::FloatLog10 => ret_f64(a.float(0)?.log10()),
+            Imp::FloatLog2 => ret_f64(a.float(0)?.log2()),
+            Imp::FloatSin => ret_f64(a.float(0)?.sin()),
+            Imp::FloatCos => ret_f64(a.float(0)?.cos()),
+            Imp::FloatTan => ret_f64(a.float(0)?.tan()),
+            Imp::FloatAsin => ret_f64(a.float(0)?.asin()),
+            Imp::FloatAcos => ret_f64(a.float(0)?.acos()),
+            Imp::FloatAtan => ret_f64(a.float(0)?.atan()),
+            Imp::FloatSinh => ret_f64(a.float(0)?.sinh()),
+            Imp::FloatCosh => ret_f64(a.float(0)?.cosh()),
+            Imp::FloatTanh => ret_f64(a.float(0)?.tanh()),
+            Imp::FloatGamma => ret_f64(crate::num::gamma(a.float(0)?)),
+            Imp::FloatToRadians => ret_f64(a.float(0)?.to_radians()),
+            Imp::FloatToDegrees => ret_f64(a.float(0)?.to_degrees()),
+            Imp::FloatSign => ret_f64(a.float(0)?.signum()),
+            Imp::FloatTrunc => ret_f64(a.float(0)?.trunc()),
+            Imp::FloatFract => ret_f64(a.float(0)?.fract()),
+            Imp::FloatIsFinite => ret_i32(i32::from(a.float(0)?.is_finite())),
+            Imp::FloatIsNan => ret_i32(i32::from(a.float(0)?.is_nan())),
             Imp::ListSumI => {
                 let mut sum: i64 = 0;
                 for item in self.list_items(a.h(0)?)? {

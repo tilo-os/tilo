@@ -26,7 +26,7 @@ architectures = ["x86_64", "aarch64"]
 # Apps that play no media. the app release fails when a built one, or the
 # runtime itself, loads a library of needed_absent at exec. Only
 # grows.
-apps_without_media = ["calculator", "clocks", "notes", "totp", "weather"]
+apps_without_media = ["clocks", "notes", "totp", "weather"]
 
 # What the runtime should cost: at most 150 MB, relocation tables
 # under 1 MB, at most 4 MB of relocation-dirtied memory per app process, and

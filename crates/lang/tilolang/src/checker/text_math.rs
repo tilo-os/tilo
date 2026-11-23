@@ -169,6 +169,7 @@ impl Checker<'_> {
             // The number a text writes: an id another app gave as text, passed where its action takes the
             // number.
             "to_int" => Ex::host(Imp::StrToInt, vec![r], Ty::Option(Box::new(Ty::Int))),
+            "to_float" => Ex::host(Imp::StrToFloat, vec![r], Ty::Option(Box::new(Ty::Float))),
             _ => return None,
         })
     }
@@ -263,6 +264,14 @@ impl Checker<'_> {
                 }
                 Ex::host(Imp::FloatAbs, vec![r], Ty::Float)
             }
+            "pow" => {
+                if !self.arity(name, args, 1, span) {
+                    return None;
+                }
+                let by = args.first()?;
+                let by = self.expr_as(&by.value, &Ty::Float);
+                Ex::host(Imp::FloatPow, vec![r, by], Ty::Float)
+            }
             // `f.round()`: the nearest whole number, as an Int; `f.round(2)`: that many places, as a Float.
             "round" | "floor" | "ceil" => {
                 match args.len() {
@@ -309,7 +318,47 @@ impl Checker<'_> {
                 }
                 self.text_of(r, span)
             }
+            // The elementary functions. An angle is in radians; a value that holds degrees says
+            // so itself with `to_radians` and `to_degrees`.
+            _ if elementary(m).is_some() => {
+                if !self.arity(name, args, 0, span) {
+                    return None;
+                }
+                let (imp, ty) = elementary(m)?;
+                Ex::host(imp, vec![r], ty)
+            }
             _ => return None,
         })
     }
+}
+
+/// The elementary numeric functions, each a host import and the type it answers: a Float, or a
+/// Bool for the two that ask what a number is. `None` for a name that is no such function.
+fn elementary(m: &str) -> Option<(Imp, Ty)> {
+    Some(match m {
+        "sqrt" => (Imp::FloatSqrt, Ty::Float),
+        "cbrt" => (Imp::FloatCbrt, Ty::Float),
+        "exp" => (Imp::FloatExp, Ty::Float),
+        "ln" => (Imp::FloatLn, Ty::Float),
+        "log10" => (Imp::FloatLog10, Ty::Float),
+        "log2" => (Imp::FloatLog2, Ty::Float),
+        "sin" => (Imp::FloatSin, Ty::Float),
+        "cos" => (Imp::FloatCos, Ty::Float),
+        "tan" => (Imp::FloatTan, Ty::Float),
+        "asin" => (Imp::FloatAsin, Ty::Float),
+        "acos" => (Imp::FloatAcos, Ty::Float),
+        "atan" => (Imp::FloatAtan, Ty::Float),
+        "sinh" => (Imp::FloatSinh, Ty::Float),
+        "cosh" => (Imp::FloatCosh, Ty::Float),
+        "tanh" => (Imp::FloatTanh, Ty::Float),
+        "gamma" => (Imp::FloatGamma, Ty::Float),
+        "to_radians" => (Imp::FloatToRadians, Ty::Float),
+        "to_degrees" => (Imp::FloatToDegrees, Ty::Float),
+        "sign" => (Imp::FloatSign, Ty::Float),
+        "trunc" => (Imp::FloatTrunc, Ty::Float),
+        "fract" => (Imp::FloatFract, Ty::Float),
+        "is_finite" => (Imp::FloatIsFinite, Ty::Bool),
+        "is_nan" => (Imp::FloatIsNan, Ty::Bool),
+        _ => return None,
+    })
 }

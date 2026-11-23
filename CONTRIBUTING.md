@@ -78,8 +78,8 @@ t cargo build --locked -p example-counter
 t cargo test --locked -p example-counter
 ```
 
-For an app, `t cargo build --locked -p calculator` builds it on the server, and
-`cargo desktop --apps "calculator"` opens the desktop with it here (replace `calculator`
+For an app, `t cargo build --locked -p scratchpad` builds it on the server, and
+`cargo desktop --apps "scratchpad"` opens the desktop with it here (replace `scratchpad`
 with the package name of the app you changed). Append a test name to `t cargo
 test` to select only that test.
 

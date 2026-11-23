@@ -1,0 +1,211 @@
+{
+  "app": "calculator",
+  "said": "Calculator",
+  "tl": {
+    "id": "so.tilo.calculator",
+    "package": "calculator"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Calculator on a fresh desktop",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "keyboard",
+      "said": "Type 12*(4+3) on the keyboard and press Enter",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Expression",
+              "Type a calculation"
+            ]
+          },
+          {
+            "type": "12*(4+3)"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait_for": {
+              "prefix": "Result"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "keys",
+      "said": "Clear, then work out 7 × 8 with the keys",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Clear expression",
+              "AC"
+            ]
+          },
+          {
+            "press_any": [
+              "Calculator key 7",
+              "7"
+            ]
+          },
+          {
+            "press_any": [
+              "Multiply",
+              "×"
+            ]
+          },
+          {
+            "press_any": [
+              "Calculator key 8",
+              "8"
+            ]
+          },
+          {
+            "press_any": [
+              "Evaluate expression",
+              "="
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "scientific",
+      "said": "Work out sin(pi/6) with the scientific keys",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Clear expression",
+              "AC"
+            ]
+          },
+          {
+            "press_any": [
+              "Sine",
+              "sin"
+            ]
+          },
+          {
+            "press_any": [
+              "Pi",
+              "π"
+            ]
+          },
+          {
+            "press_any": [
+              "Divide",
+              "÷"
+            ]
+          },
+          {
+            "press_any": [
+              "Calculator key 6",
+              "6"
+            ]
+          },
+          {
+            "press_any": [
+              "Calculator key )",
+              ")"
+            ]
+          },
+          {
+            "press_any": [
+              "Evaluate expression",
+              "="
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "factorial",
+      "said": "Work out 5 factorial",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Clear expression",
+              "AC"
+            ]
+          },
+          {
+            "press_any": [
+              "Calculator key 5",
+              "5"
+            ]
+          },
+          {
+            "press_any": [
+              "Calculator key !",
+              "!"
+            ]
+          },
+          {
+            "press_any": [
+              "Evaluate expression",
+              "="
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "copy",
+      "said": "Copy the result",
+      "ops": {
+        "tl": [
+          {
+            "offered": [
+              "Copy result",
+              "Result"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "history",
+      "said": "The calculations just worked out stand in the app's record",
+      "ops": {
+        "tl": [
+          {
+            "wait_for": "actions"
+          },
+          {
+            "actions": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "dark",
+      "said": "The same calculator in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        }
+      ],
+      "dark": true
+    }
+  ]
+}

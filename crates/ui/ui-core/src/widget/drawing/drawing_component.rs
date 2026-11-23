@@ -35,20 +35,26 @@ pub struct DrawingProps {
     /// `shapes`, or none.
     #[component(event(value = Option<i64>))]
     pub hover: Event,
-    /// The pointer pressed on the drawing, on a shape or between them: carries the point, its x
-    /// then its y, as fractions of the box from its top-left corner. What a page's readers place
-    /// there (a note, a signature, a selection's start) is placed by what answers it.
-    #[component(event(value = Vec<f64>))]
-    pub press_at: Event,
-    /// The pointer moved with the button down: carries the point, its x then its y, as fractions
-    /// of the box, past its edges as far as the pointer goes — a drag that draws ink or marks
-    /// a selection.
-    #[component(event(value = Vec<f64>))]
-    pub drag_at: Event,
-    /// The pointer let go: carries the point, its x then its y, as fractions of the box, so what
-    /// a drag made is finished where the person let go.
-    #[component(event(value = Vec<f64>))]
-    pub release_at: Event,
+    /// The pointer moved over the drawing, at (x, y): fractions of its box, so the place is the
+    /// one its shapes are placed at.
+    #[component(event(value = f64, at = f64))]
+    pub pointer: Event,
+    /// A drag began over the drawing, at (x, y) in fractions of its box.
+    #[component(event(value = f64, at = f64))]
+    pub drag_start: Event,
+    /// The pointer moved while dragging, to (x, y) in fractions of its box.
+    #[component(event(value = f64, at = f64))]
+    pub drag: Event,
+    /// A drag ended at (x, y) in fractions of its box.
+    #[component(event(value = f64, at = f64))]
+    pub drag_end: Event,
+    /// The wheel turned over the drawing: across it and down it, in logical pixels, positive
+    /// down and to the end.
+    #[component(event(value = f64, at = f64))]
+    pub wheel: Event,
+    /// A pinch over the drawing: the scale factor the fingers ask for, 1 for none.
+    #[component(event(value = f64))]
+    pub pinch: Event,
 }
 
 impl Described for Drawing {
@@ -84,21 +90,30 @@ impl Described for Drawing {
         self.on_hover = (!hover.is_none()).then(|| -> Box<dyn FnMut(Option<usize>)> {
             Box::new(move |at| hover.fire(Some(at.map_or(Value::None, index))))
         });
-        let point = |x: f64, y: f64| Value::List(vec![Value::Float(x), Value::Float(y)]);
-        let press_at = props.press_at;
-        self.on_press_at = (!press_at.is_none()).then(|| {
-            let fire = press_at;
-            Box::new(move |x: f64, y: f64| fire.fire(Some(point(x, y)))) as Box<dyn FnMut(f64, f64)>
-        });
-        let drag_at = props.drag_at;
-        self.on_drag_at = (!drag_at.is_none()).then(|| {
-            let fire = drag_at;
-            Box::new(move |x: f64, y: f64| fire.fire(Some(point(x, y)))) as Box<dyn FnMut(f64, f64)>
-        });
-        let release_at = props.release_at;
-        self.on_release_at = (!release_at.is_none()).then(|| {
-            let fire = release_at;
-            Box::new(move |x: f64, y: f64| fire.fire(Some(point(x, y)))) as Box<dyn FnMut(f64, f64)>
+        let pair = |event: &Event| -> Option<Box<dyn FnMut(f64, f64)>> {
+            (!event.is_none()).then(|| {
+                let event = event.clone();
+                Box::new(move |x: f64, y: f64| {
+                    event.fire(Some(Value::List(vec![Value::Float(x), Value::Float(y)])));
+                }) as Box<dyn FnMut(f64, f64)>
+            })
+        };
+        // Shadowing the props so the closure can take the event by value.
+        let (pointer, drag_start, drag, drag_end, wheel) = (
+            &props.pointer,
+            &props.drag_start,
+            &props.drag,
+            &props.drag_end,
+            &props.wheel,
+        );
+        self.on_pointer = pair(pointer);
+        self.on_drag_start = pair(drag_start);
+        self.on_drag = pair(drag);
+        self.on_drag_end = pair(drag_end);
+        self.on_wheel = pair(wheel);
+        self.on_pinch = (!props.pinch.is_none()).then(|| {
+            let pinch = props.pinch.clone();
+            Box::new(move |scale: f64| pinch.fire(Some(Value::Float(scale)))) as Box<dyn FnMut(f64)>
         });
         true
     }
@@ -128,12 +143,6 @@ pub fn shape_description() -> EnumDescription {
         ty: Weight::ty(),
         default: Some(Value::Choice("regular".to_owned())),
         doc: "How heavy its line is.".to_owned(),
-    };
-    let text_field = |name: &str, doc: &str| FieldDescription {
-        name: name.to_owned(),
-        ty: Type::Text,
-        default: None,
-        doc: doc.to_owned(),
     };
     let flag = |name: &str, doc: &str| FieldDescription {
         name: name.to_owned(),
@@ -227,52 +236,6 @@ pub fn shape_description() -> EnumDescription {
                 ],
             ),
             case(
-                "area",
-                "A rectangle filled in a colour the content brings (`#rrggbb`, `#rrggbbaa`): a highlight, a selection or a find hit over a page.",
-                vec![
-                    float("x", ""),
-                    float("y", ""),
-                    float("w", ""),
-                    float("h", ""),
-                    FieldDescription {
-                        default: Some(Value::Float(0.0)),
-                        ..float("round", "")
-                    },
-                    text_field("colour", "Its colour, `#rrggbb` or `#rrggbbaa`; the content's own, never the theme's."),
-                ],
-            ),
-            case(
-                "stroke",
-                "A line through `points`, `width` of the box's shorter side thick, in a colour the content brings.",
-                vec![
-                    FieldDescription {
-                        name: "points".to_owned(),
-                        ty: Type::List(Box::new(Type::Float)),
-                        default: None,
-                        doc: "x and y in turn.".to_owned(),
-                    },
-                    text_field("colour", "Its colour, `#rrggbb` or `#rrggbbaa`."),
-                    float("width", "How thick its line is, of the box's shorter side."),
-                ],
-            ),
-            case(
-                "label",
-                "Words at (x, y) in a colour the content brings, `size` of the box's height: a page's own text, a signature's name.",
-                vec![
-                    float("x", ""),
-                    float("y", ""),
-                    text_field("text", ""),
-                    text_field("colour", "Its colour, `#rrggbb` or `#rrggbbaa`."),
-                    float("size", "How tall its letters stand, of the box's height."),
-                    FieldDescription {
-                        name: "anchor".to_owned(),
-                        ty: Anchor::ty(),
-                        default: Some(Value::Choice("middle".to_owned())),
-                        doc: "Which side of it stands at (x, y).".to_owned(),
-                    },
-                ],
-            ),
-            case(
                 "text",
                 "A text at (x, y), set in one of the theme's type roles.",
                 vec![
@@ -340,29 +303,6 @@ impl PropType for Shape {
         };
         let must = |name: &str| -> Result<Ink, String> {
             ink(name)?.ok_or_else(|| format!("`{case}` needs `{name}`, an ink"))
-        };
-        let word = |name: &str| -> Result<String, String> {
-            match field(name) {
-                Some(Value::Text(text)) => Ok(text.clone()),
-                _ => Err(format!("`{case}` needs `{name}`, a text")),
-            }
-        };
-        let numbers = |name: &str| -> Result<Vec<f64>, String> {
-            match field(name) {
-                Some(Value::List(items)) => items
-                    .iter()
-                    .map(|item| match item {
-                        Value::Float(v) => Ok(*v),
-                        #[expect(
-                            clippy::cast_precision_loss,
-                            reason = "a fraction written as a whole number"
-                        )]
-                        Value::Int(v) => Ok(*v as f64),
-                        _ => Err(format!("`{name}` is a list of numbers")),
-                    })
-                    .collect(),
-                _ => Err(format!("`{case}` needs `{name}`, a list of numbers")),
-            }
         };
         let weight = match field("weight") {
             None | Some(Value::None) => Weight::Regular,
@@ -446,34 +386,9 @@ impl PropType for Shape {
                 },
                 strong: flag("strong"),
             },
-            "area" => Shape::Area {
-                x: float("x")?,
-                y: float("y")?,
-                w: float("w")?,
-                h: float("h")?,
-                round: float("round")?,
-                colour: word("colour")?,
-            },
-            "stroke" => Shape::Stroke {
-                points: numbers("points")?,
-                colour: word("colour")?,
-                width: float("width")?,
-            },
-            "label" => Shape::Label {
-                x: float("x")?,
-                y: float("y")?,
-                text: word("text")?,
-                colour: word("colour")?,
-                size: float("size")?,
-                anchor: match field("anchor") {
-                    None | Some(Value::None) => Anchor::Middle,
-                    Some(v) => Anchor::from_value(v)?,
-                },
-            },
             other => {
                 return Err(format!(
-                    "a shape is rect, ellipse, arc, line, path, text, area, stroke or label, not \
-                     `{other}`"
+                    "a shape is rect, ellipse, arc, line, path or text, not `{other}`"
                 ));
             }
         })

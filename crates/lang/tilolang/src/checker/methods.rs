@@ -22,12 +22,45 @@ pub const TEXT: &[&str] = &[
     "split",
     "matches",
     "to_int",
+    "to_float",
 ];
 
 pub const INT: &[&str] = &["min", "max", "clamp", "abs", "to_float", "to_text"];
 
 pub const FLOAT: &[&str] = &[
-    "min", "max", "clamp", "abs", "round", "floor", "ceil", "to_int", "to_text",
+    "min",
+    "max",
+    "clamp",
+    "abs",
+    "round",
+    "floor",
+    "ceil",
+    "sqrt",
+    "cbrt",
+    "pow",
+    "exp",
+    "ln",
+    "log10",
+    "log2",
+    "sin",
+    "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "sinh",
+    "cosh",
+    "tanh",
+    "gamma",
+    "to_radians",
+    "to_degrees",
+    "sign",
+    "trunc",
+    "fract",
+    "is_finite",
+    "is_nan",
+    "to_int",
+    "to_text",
 ];
 
 pub const BOOL: &[&str] = &["to_text"];

@@ -102,3 +102,40 @@ pub fn ceil_whole(x: f64) -> i64 {
 pub fn int_to_float(n: i64) -> f64 {
     n as f64
 }
+
+/// The gamma function: Lanczos' approximation, g = 7, n = 9, with the reflection formula below
+/// a half so the negative half-line answers too. Its poles (zero and the negative integers)
+/// answer infinity or not-a-number, as a float's own division does.
+pub fn gamma(x: f64) -> f64 {
+    const G: f64 = 7.0;
+    const C: [f64; 9] = [
+        0.999_999_999_999_809_9,
+        676.520_368_121_885_1,
+        -1_259.139_216_722_402_8,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
+        12.507_343_278_686_905,
+        -0.138_571_095_265_720_12,
+        9.984_369_578_019_572e-6,
+        1.505_632_735_149_311_6e-7,
+    ];
+    if x <= 0.0 && x.fract().abs() < 1e-12 {
+        // The integers at and below zero are its poles.
+        return f64::NAN;
+    }
+    if x < 0.5 {
+        // The reflection formula, for the negative half-line.
+        std::f64::consts::PI / ((std::f64::consts::PI * x).sin() * gamma(1.0 - x))
+    } else {
+        let x = x - 1.0;
+        let t = x + G + 0.5;
+        // The series is `C[0] + sum(C[i] / (x + i))`.
+        let [head, tail @ ..] = C;
+        let mut a = head;
+        for (i, coef) in (1u32..).zip(tail) {
+            a += coef / (x + f64::from(i));
+        }
+        // In log space: the power alone overflows before gamma's result does.
+        ((x + 0.5) * t.ln() - t + (std::f64::consts::TAU.sqrt() * a).ln()).exp()
+    }
+}

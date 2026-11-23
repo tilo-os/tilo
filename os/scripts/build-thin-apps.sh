@@ -92,7 +92,7 @@ for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/apps/*/tilo-runtime.toml ${
     # Package overrides reach both the executable and app-owned libraries.
     # They are visible to Cargo and compiler caches before the wrapper runs;
     # matching only the binary crate name misses differently named libraries.
-    # An app's own library beside it (apps/calculator -> apps/calculator-model,
+    # An app's own library beside it (apps/api-tester -> apps/api-tester-model,
     # the resource its package also carries as a model module) is app code that
     # only the tapp links, so it is compiled as the app is: the size profile
     # here, and the wrapper's size flags through TILO_THIN_BIN_CRATES. Left at

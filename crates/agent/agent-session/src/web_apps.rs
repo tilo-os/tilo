@@ -10,7 +10,6 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         activity::definition(),
         api_tester::definition(),
         assistant::definition(),
-        calculator::definition(),
         camera::definition(),
         canvas::definition(),
         chip_design::definition(),

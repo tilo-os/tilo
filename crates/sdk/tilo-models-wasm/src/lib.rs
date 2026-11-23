@@ -17,7 +17,6 @@ extern crate api_tester_model_wasm;
 extern crate assistant_model_wasm;
 extern crate backups_model_wasm;
 extern crate browser_model_wasm;
-extern crate calculator_model_wasm;
 extern crate calendar_model_wasm;
 extern crate camera_model_wasm;
 extern crate clocks_model_wasm;

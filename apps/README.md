@@ -165,7 +165,6 @@ touch. Expanded neighbouring targets must not overlap.
 | `calendar`       | Calendar + task manager (Planify-style): month/week/day/agenda, recurrence, tasks; iCalendar interop and live CalDAV sync (PROPFIND/REPORT/ETag PUT, worker thread, `live` on by default). |
 | `contacts`       | Address book with vCard import/export.                                                                                                                                                     |
 | `typst-editor`   | Split-view Typst editor: source pane + live compiled preview (`typst` / `typst-render` / tiny-skia), diagnostics panel, page thumbnails, background compile.                               |
-| `calculator`     | Scientific calculator with 2D/3D function graphing.                                                                                                                                        |
 | `shortcuts`      | Build and run shortcuts: pipelines of the actions your apps publish, typed bindings between steps, a grant review before saving.                                                           |
 | `snippets`       | Snippet manager: taggable library, `${placeholder}` expansion, syntax-highlighted preview.                                                                                                 |
 | `ebook`          | EPUB reader ("Books"): in-tree ZIP+OPF+XHTML parser, reflowable pagination, embedded cover art, shared annotation model.                                                                   |
@@ -239,7 +238,7 @@ All apps are workspace members; build from the repo root. See
 
 ```bash
 cargo build -p terminal -p file-explorer -p browser
-cargo run -p calculator -- --shots out.png        # headless offscreen frame
+cargo run -p scratchpad -- --shots out.png        # headless offscreen frame
 ```
 
 Each app depends on the public SDK under the concise source name

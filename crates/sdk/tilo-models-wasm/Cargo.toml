@@ -22,7 +22,6 @@ api-tester-model-wasm = { path = "../../../apps/api-tester-model-wasm" }
 assistant-model-wasm = { path = "../../../apps/assistant-model-wasm" }
 backups-model-wasm = { path = "../../../apps/backups-model-wasm" }
 browser-model-wasm = { path = "../../../apps/browser-model-wasm" }
-calculator-model-wasm = { path = "../../../apps/calculator-model-wasm" }
 calendar-model-wasm = { path = "../../../apps/calendar-model-wasm" }
 camera-model-wasm = { path = "../../../apps/camera-model-wasm" }
 clocks-model-wasm = { path = "../../../apps/clocks-model-wasm" }
