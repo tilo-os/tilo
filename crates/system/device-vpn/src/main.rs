@@ -13,9 +13,6 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-    use std::os::unix::net::UnixListener;
     use std::path::Path;
     use std::process::ExitCode;
     use std::sync::atomic::AtomicBool;
@@ -37,38 +34,10 @@ mod linux {
         }
     }
 
-    /// The listening socket: the one systemd passes (`tilo-device-vpn.socket`),
-    /// or one bound here when started by hand.
-    fn listener() -> std::io::Result<UnixListener> {
-        use std::os::fd::FromRawFd;
-        let activated = std::env::var("LISTEN_PID")
-            .ok()
-            .and_then(|pid| pid.parse::<u32>().ok())
-            == Some(std::process::id())
-            && std::env::var("LISTEN_FDS").as_deref() == Ok("1");
-        if activated {
-            // SAFETY: systemd passes the socket as descriptor 3 and nothing
-            // else in this process has claimed it.
-            let listener = unsafe { UnixListener::from_raw_fd(3) };
-            // The programs the helper runs must never inherit it.
-            // SAFETY: setting a flag on the descriptor just adopted.
-            unsafe { libc::fcntl(3, libc::F_SETFD, libc::FD_CLOEXEC) };
-            return Ok(listener);
-        }
-        let socket = Path::new(SOCKET_PATH);
-        if let Some(parent) = socket.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let _ = fs::remove_file(socket);
-        let listener = tilo_files::native::socket::bind(socket)?;
-        // Who may ask is decided per connection, from the kernel's account
-        // of the caller; the socket itself is open to every local process.
-        fs::set_permissions(socket, fs::Permissions::from_mode(0o666))?;
-        Ok(listener)
-    }
-
     fn serve() -> ExitCode {
-        let listener = match listener() {
+        // SAFETY: called at startup before any thread is spawned, so nothing
+        // else touches the environment while systemd activation is adopted.
+        let listener = match unsafe { peer_facts::server::listen(Path::new(SOCKET_PATH)) } {
             Ok(listener) => listener,
             Err(error) => {
                 eprintln!("tilo-device-vpn: listening on {SOCKET_PATH}: {error}");
@@ -84,11 +53,7 @@ mod linux {
         server::serve(
             &listener,
             &mut service,
-            |stream| {
-                peer_facts::facts(stream)
-                    .map_err(|error| format!("unidentified caller: {error}"))
-                    .and_then(|facts| peer::decide(&seat, &facts))
-            },
+            |stream| peer_facts::server::identify_peer(stream, |facts| peer::decide(&seat, facts)),
             server::Pacing {
                 housekeeping: Duration::from_secs(2),
                 idle_exit: Some(Duration::from_secs(60)),

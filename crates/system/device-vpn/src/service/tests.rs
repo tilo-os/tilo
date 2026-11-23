@@ -641,3 +641,120 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+tilo_test_env::scenario! {
+    fn the_socket_loop_answers_with_descriptors_and_stops_promptly;
+
+    phase requests_carry_descriptors_and_refuse_bad_callers_or_envelopes;
+    {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("control.sock");
+        let listener = tilo_files::native::socket::bind(&socket).unwrap();
+        let allow = Arc::new(Mutex::new(Ok(PERSON)));
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut service = service();
+
+        let thread = std::thread::spawn({
+            let allow = Arc::clone(&allow);
+            let stop = Arc::clone(&stop);
+            move || {
+                super::server::serve(
+                    &listener,
+                    &mut service,
+                    |_| allow.lock().unwrap().clone(),
+                    super::server::Pacing {
+                        // Far longer than the 500 ms poll ceiling so a stop
+                        // cannot hide behind a short housekeeping period.
+                        housekeeping: Duration::from_secs(10),
+                        idle_exit: None,
+                    },
+                    &stop,
+                );
+            }
+        });
+
+        let bound = tilo_test_env::hang_bound();
+        let (response, fd) = crate::protocol::call(
+            &socket,
+            &Request::OpenClient {
+                link: crate::protocol::tests::link(),
+            },
+            bound,
+        )
+        .unwrap();
+        assert!(matches!(response, Response::Opened { .. }));
+        assert!(fd.is_some(), "opening a tunnel returns its descriptor");
+
+        let (response, fd) = crate::protocol::call(&socket, &Request::CloseClient, bound).unwrap();
+        assert_eq!(response, Response::Done);
+        assert!(fd.is_none());
+
+        // Unauthorized caller is refused before sending a request byte. Because
+        // the server refuses without reading and closes, writing the request
+        // can race with the close and see a broken pipe; ignore the write
+        // result and read the refusal line directly.
+        *allow.lock().unwrap() = Err("not the seat shell".into());
+        {
+            let mut stream = tilo_files::native::socket::connect(&socket).unwrap();
+            stream.set_read_timeout(Some(bound)).unwrap();
+            stream.set_write_timeout(Some(bound)).unwrap();
+            let mut line = serde_json::to_vec(&crate::protocol::Envelope {
+                protocol: crate::protocol::PROTOCOL_VERSION,
+                request: Request::Status,
+            })
+            .unwrap();
+            line.push(b'\n');
+            let _ = stream.write_all(&line);
+            let (answer, fd) =
+                crate::fdpass::read_line_with_fd(&stream, crate::protocol::MAX_LINE_BYTES).unwrap();
+            let response: Response = serde_json::from_slice(&answer).unwrap();
+            assert_eq!(
+                response,
+                Response::Refused {
+                    reason: "not the seat shell".into()
+                }
+            );
+            assert!(fd.is_none());
+        }
+
+        // Wrong protocol version and malformed JSON are refused.
+        *allow.lock().unwrap() = Ok(PERSON);
+        for (raw, expected) in [
+            (
+                r#"{"protocol":99,"request":{"op":"status"}}"#,
+                "unsupported protocol version",
+            ),
+            ("{not json", "malformed request"),
+        ] {
+            let mut stream = tilo_files::native::socket::connect(&socket).unwrap();
+            stream.set_read_timeout(Some(bound)).unwrap();
+            stream.set_write_timeout(Some(bound)).unwrap();
+            stream.write_all(raw.as_bytes()).unwrap();
+            stream.write_all(b"\n").unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Response>(&line).unwrap(),
+                Response::Refused {
+                    reason: expected.into()
+                }
+            );
+        }
+
+        // Stopping must wake within the 500 ms poll ceiling rather than waiting
+        // out the 10 s housekeeping interval.
+        let stopping = Instant::now();
+        stop.store(true, Ordering::Release);
+        thread.join().unwrap();
+        assert!(
+            stopping.elapsed() < Duration::from_secs(2),
+            "server took {:?} to stop with a 10 s housekeeping interval",
+            stopping.elapsed()
+        );
+    }
+}
