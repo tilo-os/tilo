@@ -223,6 +223,11 @@ pub struct VideoPlayer {
     buffering: u8,
     volume: f32,
     muted: bool,
+    /// How fast it plays: 1.0 is normal.
+    rate: f32,
+    /// The words of the caption track that is on, drawn over the picture as the playhead
+    /// reaches them; empty when captions are off or the track has none.
+    captions: Vec<CaptionCue>,
     transport_enabled: bool,
     fullscreen: bool,
     fullscreen_touched: bool,
@@ -334,6 +339,8 @@ impl VideoPlayer {
             buffering: 100,
             volume: 0.8,
             muted: false,
+            rate: 1.0,
+            captions: Vec::new(),
             transport_enabled: true,
             fullscreen: false,
             fullscreen_touched: false,
@@ -545,6 +552,9 @@ impl VideoPlayer {
     pub fn set_engine(&mut self, engine: media::MediaEngine) {
         self.volume = engine.volume();
         self.engine = Some(engine);
+        if let Some(engine) = self.engine.as_mut() {
+            engine.set_rate(self.rate);
+        }
         self.describe_now_playing();
         self.dirty = true;
     }
@@ -561,9 +571,11 @@ impl VideoPlayer {
         build: impl FnOnce() -> media::MediaEngine,
     ) -> &mut media::MediaEngine {
         let volume = self.effective_volume();
+        let rate = self.rate;
         let engine = self.engine.get_or_insert_with(|| {
             let mut engine = build();
             engine.set_volume(volume);
+            engine.set_rate(rate);
             engine
         });
         self.dirty = true;
@@ -759,6 +771,83 @@ impl VideoPlayer {
 
     pub fn volume(&self) -> f32 {
         self.volume
+    }
+
+    /// Play at `rate`: 1.0 is normal, 0.25 the slowest and 4.0 the fastest the engine takes.
+    pub fn set_rate(&mut self, rate: f32) {
+        let rate = rate.clamp(0.25, 4.0);
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact-change detection for a dirty flag, not numerical comparison"
+        )]
+        if self.rate == rate {
+            return;
+        }
+        self.rate = rate;
+        if let Some(engine) = self.engine.as_mut() {
+            engine.set_rate(self.rate);
+        }
+        self.dirty = true;
+    }
+
+    /// How fast it plays: 1.0 is normal.
+    pub fn rate(&self) -> f32 {
+        self.rate
+    }
+
+    /// Show the words of `vtt`, a WebVTT document, over the picture; `None` turns captions off.
+    pub fn set_captions(&mut self, vtt: Option<&str>) {
+        let cues = vtt.map(parse_vtt).unwrap_or_default();
+        if cues != self.captions {
+            self.captions = cues;
+            self.dirty = true;
+        }
+    }
+
+    /// The words of the track that is on, in time order.
+    pub fn captions(&self) -> &[CaptionCue] {
+        &self.captions
+    }
+
+    /// Choose option `index` of the setting `id`, as a press on it in its menu does, and report
+    /// it as the setting's event.
+    #[must_use]
+    pub fn choose_setting(&mut self, id: &str, index: usize) -> bool {
+        let Some(setting) = self.settings.iter().find(|s| s.id == id) else {
+            return false;
+        };
+        let PlayerSettingControl::Choice { options, .. } = &setting.control else {
+            return false;
+        };
+        let index = index.min(options.len().saturating_sub(1));
+        self.set_choice_selection(id, index);
+        self.setting_events.push(PlayerSettingEvent::Chose {
+            id: id.to_owned(),
+            index,
+        });
+        true
+    }
+
+    /// Move the choice `id` one option up or down, as pressing it again in its menu does, and
+    /// report the option it lands on. At the end of the list it stays, and nothing is reported.
+    #[must_use]
+    pub fn step_choice(&mut self, id: &str, up: bool) -> bool {
+        let Some(setting) = self.settings.iter().find(|s| s.id == id) else {
+            return false;
+        };
+        let PlayerSettingControl::Choice { options, selected } = &setting.control else {
+            return false;
+        };
+        let last = options.len().saturating_sub(1);
+        let next = if up {
+            selected.saturating_add(1).min(last)
+        } else {
+            selected.saturating_sub(1)
+        };
+        if next == *selected || options.is_empty() {
+            return false;
+        }
+        self.choose_setting(id, next)
     }
 
     pub fn toggle_mute(&mut self) {
@@ -1100,6 +1189,8 @@ impl VideoPlayer {
             self.paint_empty_placeholder(scene, transform, theme);
         }
 
+        self.paint_captions(scene, transform, text_renderer, theme);
+
         // Controls overlay, or whenever a settings menu is open (so it can't
         // vanish under the user's cursor).
         if !self.controls_visible_now() && self.open_menu.is_none() {
@@ -1157,6 +1248,58 @@ impl VideoPlayer {
             .into_iter()
             .filter(|(_, _, rect)| rect.width() > 0.0 && rect.height() > 0.0)
             .collect()
+    }
+
+    /// The words of the caption track that is on, as a plate near the bottom of the picture or
+    /// above the transport while the controls are up. Nothing is drawn between cues.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a measured text width, in pixels, capped at the picture's width"
+    )]
+    fn paint_captions(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.captions.is_empty() || self.rect.width() <= 0.0 {
+            return;
+        }
+        let Some(cue) = active_cue(&self.captions, self.position_ms) else {
+            return;
+        };
+        let style = theme.text(crate::tokens::TextRole::Body);
+        let inset = f64::from(theme.tokens.spacing.s3);
+        let pad_x = inset;
+        let pad_y = f64::from(theme.tokens.spacing.s1);
+        let max_text = (self.rect.width() * 0.86).max(1.0);
+        let (width, height) = text_renderer.measure_style(&cue.text, Some(max_text as f32), &style);
+        if width <= 0.0 || height <= 0.0 {
+            return;
+        }
+        let floor = if self.controls_visible_now() {
+            (self.controls_bar_rect(theme).y0 - inset).max(self.rect.y0)
+        } else {
+            (self.rect.y1 - inset).max(self.rect.y0)
+        };
+        let y1 = floor;
+        let y0 = (y1 - f64::from(height) - 2.0 * pad_y).max(self.rect.y0);
+        let x0 = (self.rect.center().x - f64::from(width) / 2.0 - pad_x).max(self.rect.x0);
+        let x1 = (self.rect.center().x + f64::from(width) / 2.0 + pad_x).min(self.rect.x1);
+        let plate = Rect::new(x0, y0, x1, y1);
+        if plate.width() <= 0.0 || plate.height() <= 0.0 {
+            return;
+        }
+        crate::overlay::scrim::text_plate(scene, transform, plate, theme);
+        text_renderer.draw_style(
+            scene,
+            &cue.text,
+            theme.tokens.colors.media.ink,
+            transform.then_translate(vello::kurbo::Vec2::new(plate.x0 + pad_x, plate.y0 + pad_y)),
+            Some(max_text as f32),
+            &style,
+        );
     }
 
     fn paint_controls(
@@ -2516,6 +2659,9 @@ impl Widget for VideoPlayer {
     }
 }
 
+pub mod captions;
+pub use captions::{CaptionCue, active_cue, parse_vtt};
+
 mod input;
 
 #[cfg(test)]
@@ -2523,4 +2669,4 @@ mod tests;
 
 #[path = "video_player_component.rs"]
 mod component;
-pub use component::{DeclaredVideo, VideoPlayerProps};
+pub use component::{DeclaredVideo, PLAYBACK_RATES, VideoPlayerProps};

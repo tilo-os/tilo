@@ -36,6 +36,25 @@ impl VideoPlayer {
                 self.seek_to_ms(self.position_ms.saturating_add(step));
                 self.show_controls();
             }
+            // Captions cycle through their tracks and off; `<` and `>` walk the speed menu.
+            Key::Character(c) if c.eq_ignore_ascii_case("c") && self.has_media() => {
+                if !self.step_choice("captions", true) {
+                    return false;
+                }
+                self.show_controls();
+            }
+            Key::Character(c) if (c.as_str() == "<" || c.as_str() == ",") && self.has_media() => {
+                if !self.step_choice("playback-rate", false) {
+                    return false;
+                }
+                self.show_controls();
+            }
+            Key::Character(c) if (c.as_str() == ">" || c.as_str() == ".") && self.has_media() => {
+                if !self.step_choice("playback-rate", true) {
+                    return false;
+                }
+                self.show_controls();
+            }
             Key::Character(c) if c.eq_ignore_ascii_case("f") => self.toggle_fullscreen(),
             Key::Character(c) if c.eq_ignore_ascii_case("m") && self.has_media() => {
                 self.toggle_mute();

@@ -63,6 +63,24 @@ d-l25oorez = Vorschaubild
 d-pkbzjs7l = Stream
     .doc = Die Adresse, von der seine Daten abgespielt werden, wie der Dienst sie geantwortet hat: leer, bis sie gefragt wird.
 
+d-pg3b5q77 = Stream-Qualitäten
+    .doc = Die Qualitäten als ganze Dateien, die es anbietet, die beste zuerst; leer bei einem Live-Stream, der nur eine hat.
+
+d-cguf3iuj = Streams
+    .doc = Wo jede seiner Qualitäten abgespielt wird, nach der Bezeichnung, die das Menü zeigt.
+
+d-rqu22dm2 = Untertitelspuren
+    .doc = Die Untertitelspuren, die es anbietet, nach Sprachcode: die Bezeichnung, die jede zeigt.
+
+d-t2nrrkbl = Untertitelsprache
+    .doc = Die Sprache der eingeschalteten Untertitel, leer für aus.
+
+d-z7fpspku = Untertitel
+    .doc = Die Worte der gewählten Untertitelspur, wie der Dienst sie geholt hat.
+
+d-b4x52fj3 = Qualität
+    .doc = Die Qualität, in der es abgespielt wird, leer für die beste.
+
 d-jfam7tjf = Live
     .doc = Ob es ein Live-Stream statt einer Aufnahme ist.
 
@@ -196,6 +214,13 @@ d-6p3uylcd = Wiedergabestelle merken
 
 d-6p3uylcd-at = Position
 
+d-kbi6kunb = Geschwindigkeit
+    .doc = Die Geschwindigkeit, in der Videos abgespielt werden: 1.0 ist normal.
+
+d-thwdswkk-filter-online = Online
+
+d-thwdswkk-filter-rate = Geschwindigkeit
+
 d-tmam46un = Abonnieren
     .doc = Abonniert den Kanal oder kündigt das Abonnement: der Knopf sagt, was er tun wird.
 
@@ -230,6 +255,21 @@ d-jxokfijg = Fortschritt
     .doc = Hält fest, wie weit die Person im Video ist, und dass sie es gerade gesehen hat: der Eintrag rückt an den Anfang des Verlaufs und fragt den Dienst nach der Adresse, von der seine Daten abgespielt werden, solange sie nicht bekannt ist.
 
 d-jxokfijg-at = Bei
+
+d-kkuil6ek = Wiedergabegeschwindigkeit
+    .doc = Spielt Videos mit `speed` ab: langsamer für einen dichten Vortrag, schneller für einen langen Bericht.
+
+d-kkuil6ek-speed = Geschwindigkeit
+
+d-iwdgdauq = Qualität
+    .doc = Spielt das Video in einer anderen seiner Qualitäten ab, von der Stelle aus, an der es gerade ist: die Ansicht spielt die Adresse, die diese Qualität hat.
+
+d-iwdgdauq-chosen = Gewählt
+
+d-pie2tnpa = Untertitel
+    .doc = Zeigt die Worte des Videos in `language`, oder schaltet sie aus, wenn es leer ist: der Dienst holt die Worte der Spur, die der Player zeichnet, wenn das Video sie erreicht.
+
+d-pie2tnpa-language = Sprache
 
 d-oqumfxkj = Aus dem Verlauf löschen
     .doc = Nimmt ein Video aus dem eigenen Verlauf.

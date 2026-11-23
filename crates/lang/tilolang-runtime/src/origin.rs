@@ -13,10 +13,12 @@
 use crate::error::RuntimeError;
 use crate::host_res::to_scalar;
 use crate::ids::AppId;
-use crate::meta::FieldKind;
-use crate::registry::TypeInfo;
+use crate::meta::{FieldKind, Ty};
+use crate::registry::{FieldInfo, TypeInfo};
 use crate::runtime::Runtime;
-use crate::store::{Applied, ChangeNote, FieldSpec, FieldValue, Mutation, NewResource, Txn};
+use crate::store::{
+    Applied, ChangeNote, FieldSpec, FieldValue, Mutation, NewResource, Scalar, Txn,
+};
 use crate::value::{ResourceRef, Value};
 
 /// One write of a batch.
@@ -29,7 +31,9 @@ pub enum OriginWrite {
         ty: String,
         fields: Vec<(String, Value)>,
     },
-    /// Fields of a resource. A `Set<Text>` field takes a `Value::List` of its texts.
+    /// Fields of a resource. A `Set<Text>` field takes a `Value::List` of its texts, and a
+    /// `Map<Text>` field a `Value::Map` of its entries: what is not in the write is removed, as
+    /// the service saying the field now holds what it sent.
     Set {
         target: ResourceRef,
         fields: Vec<(String, Value)>,
@@ -385,6 +389,9 @@ impl Runtime {
                     }));
                     ms
                 }
+                (FieldKind::Map, Value::Map(entries)) => {
+                    self.map_mutations(info, f, target, entries)?
+                }
                 (kind, v) => {
                     return Err(RuntimeError::BadArgs(format!(
                         "an origin cannot write a {} into the {kind:?} field `{}` of `{}`",
@@ -399,5 +406,62 @@ impl Runtime {
             }
         }
         Ok(())
+    }
+
+    /// What writing `entries` into the map field `f` of `target` changes: the entries it does
+    /// not hold, and the ones it holds that the write leaves out.
+    fn map_mutations(
+        &self,
+        info: &TypeInfo,
+        f: &FieldInfo,
+        target: &ResourceRef,
+        entries: Vec<(Value, Value)>,
+    ) -> Result<Vec<Mutation>, RuntimeError> {
+        let Ty::Map(value_ty) = &f.ty else {
+            return Err(RuntimeError::BadArgs(format!(
+                "the field `{}` of `{}` is not a map",
+                f.name, info.name
+            )));
+        };
+        let spec = FieldSpec {
+            id: f.id.clone(),
+            kind: f.kind,
+        };
+        let have = match self.core.store.borrow().read(target, &spec)? {
+            FieldValue::Entries(entries) => entries,
+            _ => Vec::new(),
+        };
+        let mut want: Vec<(String, Scalar)> = Vec::with_capacity(entries.len());
+        for (key, value) in entries {
+            let Value::Text(key) = key else {
+                return Err(RuntimeError::BadArgs(format!(
+                    "an origin writes a map's keys as text, not {}",
+                    key.kind_name()
+                )));
+            };
+            let value = to_scalar(&value, value_ty).map_err(RuntimeError::BadArgs)?;
+            want.push((key, value));
+        }
+        let mut ms: Vec<Mutation> = have
+            .iter()
+            .filter(|(key, _)| !want.iter().any(|(wanted, _)| wanted == key))
+            .map(|(key, _)| Mutation::MapRemove {
+                field: f.id.clone(),
+                key: key.clone(),
+            })
+            .collect();
+        for (key, value) in &want {
+            if !have
+                .iter()
+                .any(|(held, held_value)| held == key && held_value == value)
+            {
+                ms.push(Mutation::MapPut {
+                    field: f.id.clone(),
+                    key: key.clone(),
+                    value: value.clone(),
+                });
+            }
+        }
+        Ok(ms)
     }
 }

@@ -158,6 +158,11 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
         "youtube.votes",
         "Asks Return YouTube Dislike how many people disliked a video: (the video's key). The \
          count is written into the video.",
+    (
+        "youtube.captions",
+        "Asks YouTube for a caption track's words: (the video's key, the track's language). The \
+         words are written into the video's `captions`, which the player draws.",
+    ),
     ),
 ];
 

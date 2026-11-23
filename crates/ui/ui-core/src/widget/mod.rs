@@ -2633,7 +2633,7 @@ pub use function_plane::FunctionPlane;
 pub mod resizable_split;
 pub use resizable_split::{ResizableSplit, SplitHandle, SplitOrientation, SplitRatio};
 pub mod video_player;
-pub use video_player::{DeclaredVideo, VideoPlayer, VideoPlayerProps};
+pub use video_player::{DeclaredVideo, PLAYBACK_RATES, VideoPlayer, VideoPlayerProps};
 pub mod webview;
 pub use webview::{WebView, WebViewProps};
 pub mod image_viewer;

@@ -1401,3 +1401,97 @@ fn a_live_stream_has_no_place_to_scrub_and_its_jump_goes_to_its_edge() {
         "a jump on a live stream goes to its live edge, not to the start of a recording"
     );
 }
+
+tilo_test_env::scenario! {
+    fn the_player_offers_speeds_captions_and_their_shortcuts;
+
+    phase choosing_a_speed_or_a_caption_track_reports_the_setting_that_changed;
+    {
+        let mut vp = VideoPlayer::new().with_engine(media::MediaEngine::new_synthesized());
+        vp.set_setting(PlayerSetting::choice(
+            "playback-rate",
+            Icon::Gauge,
+            "Playback speed",
+            0,
+            vec!["0.5×".into(), "1×".into(), "2×".into()],
+            1,
+        ));
+        vp.set_setting(PlayerSetting::choice(
+            "captions",
+            Icon::Captions,
+            "Captions",
+            0,
+            vec!["Off".into(), "English".into()],
+            0,
+        ));
+        assert!(vp.step_choice("playback-rate", true));
+        assert!(vp.step_choice("captions", true));
+        assert_eq!(
+            vp.take_setting_events(),
+            [
+                PlayerSettingEvent::Chose {
+                    id: "playback-rate".into(),
+                    index: 2
+                },
+                PlayerSettingEvent::Chose {
+                    id: "captions".into(),
+                    index: 1
+                },
+            ]
+        );
+        assert!(
+            !vp.step_choice("playback-rate", true),
+            "the fastest speed is the last"
+        );
+    }
+
+    phase the_keys_step_through_captions_and_speed;
+    {
+        let mut engine = media::MediaEngine::new_synthesized();
+        engine.open(media::Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
+        let mut vp = VideoPlayer::new().with_engine(engine);
+        vp.set_setting(PlayerSetting::choice(
+            "playback-rate",
+            Icon::Gauge,
+            "Playback speed",
+            0,
+            vec!["0.5×".into(), "1×".into(), "2×".into()],
+            1,
+        ));
+        vp.set_setting(PlayerSetting::choice(
+            "captions",
+            Icon::Captions,
+            "Captions",
+            0,
+            vec!["Off".into(), "English".into()],
+            0,
+        ));
+        vp.set_focus(true);
+        assert!(vp.handle_key_input(&Key::Character("c".into()), ElementState::Pressed));
+        assert!(vp.handle_key_input(&Key::Character(">".into()), ElementState::Pressed));
+        assert!(vp.handle_key_input(&Key::Character("<".into()), ElementState::Pressed));
+        assert_eq!(
+            vp.take_setting_events().len(),
+            3,
+            "c, > and < each chose a setting"
+        );
+    }
+
+    phase the_playhead_speaks_the_cue_it_is_inside;
+    {
+        let mut vp = VideoPlayer::new();
+        vp.set_captions(Some(
+            "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\nHello\n\n00:00:04.000 --> 00:00:06.000\nAgain\n",
+        ));
+        assert_eq!(vp.captions().len(), 2);
+        vp.seek_to_ms(2_000);
+        assert_eq!(
+            active_cue(vp.captions(), vp.position_ms()).map(|cue| cue.text.as_str()),
+            Some("Hello")
+        );
+        vp.set_captions(None);
+        assert!(vp.captions().is_empty(), "off shows no words");
+    }
+}

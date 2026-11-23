@@ -228,3 +228,85 @@ tilo_test_env::scenario! {
     }
 
 }
+
+tilo_test_env::scenario! {
+    fn a_views_video_player_offers_its_controls_and_reports_what_the_person_chooses;
+
+    phase a_player_reads_its_speed_quality_and_captions_and_reports_the_menu_choices;
+    {
+        let queue = crate::Intents::default();
+        let mut node = Node::new("VideoPlayer", "watch", &queue)
+            .prop("playing", Value::Bool(false))
+            .prop("rate", Value::Float(1.0))
+            .prop(
+                "qualities",
+                Value::List(vec![text("1080p"), text("720p")]),
+            )
+            .prop(
+                "caption_tracks",
+                Value::Map(vec![
+                    (text("en"), text("English")),
+                    (text("fr"), text("Français")),
+                ]),
+            )
+            .prop(
+                "captions",
+                text("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n"),
+            )
+            .on("set_rate")
+            .on("select_quality")
+            .on("select_captions");
+        let props = crate::widget::VideoPlayerProps::from_source(&mut node).expect("reads");
+        assert_eq!(props.qualities, ["1080p", "720p"]);
+        assert_eq!(
+            props.caption_tracks.get("en").map(String::as_str),
+            Some("English")
+        );
+        let mut video = crate::widget::DeclaredVideo::from_props("watch", props);
+        assert!(
+            video.player().setting("playback-rate").is_some(),
+            "the player offers a speed"
+        );
+        assert!(video.player().setting("quality").is_some());
+        assert!(video.player().setting("captions").is_some());
+        let twice = crate::widget::PLAYBACK_RATES
+            .iter()
+            .position(|rate| (*rate - 2.0).abs() < f64::EPSILON)
+            .expect("2× is one of the speeds");
+        assert!(video.player().choose_setting("playback-rate", twice));
+        assert!(video.player().choose_setting("quality", 1));
+        assert!(video.player().choose_setting("captions", 1));
+        let doc = automerge::AutoCommit::new();
+        crate::widget::Widget::sync(&mut video, &doc, &automerge::ROOT);
+        assert_eq!(
+            queue.take(),
+            [
+                fired("watch", "set_rate", Some(Value::Float(2.0))),
+                fired("watch", "select_quality", Some(text("720p"))),
+                fired("watch", "select_captions", Some(text("en"))),
+            ],
+            "the view is told the speed, the quality and the track the person chose"
+        );
+    }
+
+    phase turning_captions_off_reports_the_empty_track;
+    {
+        let queue = crate::Intents::default();
+        let mut node = Node::new("VideoPlayer", "watch", &queue)
+            .prop(
+                "caption_tracks",
+                Value::Map(vec![(text("en"), text("English"))]),
+            )
+            .prop("caption_language", text("en"))
+            .on("select_captions");
+        let props = crate::widget::VideoPlayerProps::from_source(&mut node).expect("reads");
+        let mut video = crate::widget::DeclaredVideo::from_props("watch", props);
+        assert!(video.player().choose_setting("captions", 0));
+        let doc = automerge::AutoCommit::new();
+        crate::widget::Widget::sync(&mut video, &doc, &automerge::ROOT);
+        assert_eq!(
+            queue.take(),
+            [fired("watch", "select_captions", Some(text("")))]
+        );
+    }
+}
