@@ -761,7 +761,6 @@ action attach(b: Board, list: todo.TodoList) {
                     include_str!("../../../../apps/tl/discussion/app.tl"),
                     include_str!("../../../../apps/tl/discussion/app.ids"),
                 ),
-                crate::fixtures::AGENT,
                 (
                     include_str!("../../../../apps/tl/chat/app.tl"),
                     include_str!("../../../../apps/tl/chat/app.ids"),

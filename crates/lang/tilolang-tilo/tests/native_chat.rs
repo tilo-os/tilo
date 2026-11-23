@@ -40,11 +40,7 @@ fn native_documents() -> Vec<(String, AutoCommit)> {
 /// Ada's workspace with the tilolang Chat, the native app's `documents` beside it, and its
 /// conversations as the window opens them.
 fn opened(documents: &[(String, AutoCommit)]) -> (Replica, ResourceRef) {
-    let (ada, _) = Replica::new(
-        "ada",
-        crate::fixtures::Workspace::new(),
-        &[crate::fixtures::AGENT, CHAT],
-    );
+    let (ada, _) = Replica::new("ada", crate::fixtures::Workspace::new(), &[CHAT]);
     ada.host.runtime().set_earlier(CHAT_APP, documents);
     let all = ada.host.root_of(CHAT_APP).expect("the conversations");
     ada.commit();
@@ -261,7 +257,7 @@ fn a_native_chat_is_carried_over_once_as_one_change() {
 
     assert_eq!(ada.host.migrate(), 0, "it runs once");
     assert_eq!(ada.commit(), 0);
-    let grace = ada.fork("grace", &[crate::fixtures::AGENT, CHAT]);
+    let grace = ada.fork("grace", &[CHAT]);
     grace.host.runtime().set_earlier(CHAT_APP, &documents);
     assert_eq!(
         grace.host.migrate(),

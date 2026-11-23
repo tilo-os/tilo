@@ -353,10 +353,7 @@ const CHAT: (&str, &str) = (
 /// text.
 #[test]
 fn each_argument_is_sent_as_its_published_parameter_takes_it() {
-    let api = Rc::new(Apps::new(&[
-        &[crate::fixtures::AGENT, CHAT],
-        &[DISCUSSION, TODO],
-    ]));
+    let api = Rc::new(Apps::new(&[&[CHAT], &[DISCUSSION, TODO]]));
     let task = Task {
         session: api.task(),
         api,

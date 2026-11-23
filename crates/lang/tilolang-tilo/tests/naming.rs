@@ -30,7 +30,7 @@ impl Planner for Refusing {
 /// The seeded Chat workspace: the team's channels and their messages, as its first scenario makes
 /// them, and the root document's id.
 fn seeded_chat() -> (Replica, String) {
-    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[crate::fixtures::AGENT, CHAT]);
+    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[CHAT]);
     let meta = loaded.last().unwrap().meta.clone();
     let root = ada.host.root_of(APP).unwrap();
     ada.commit();

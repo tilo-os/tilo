@@ -14,11 +14,6 @@ use tilolang_tilo::resources::{LocalPort, ResourceStore, Watch};
 pub const COUNTER: &str = include_str!("../../../../apps/tl/counter/app.tl");
 
 /// The Tasks package (`apps/tl/tasks`): its app and the scenarios staged beside it.
-/// The agents' package: what Chat and every app that asks an agent `use`s.
-pub const AGENT: (&str, &str) = (
-    include_str!("../../../../apps/tl/agent/app.tl"),
-    include_str!("../../../../apps/tl/agent/app.ids"),
-);
 pub const TASKS_SOURCE: &str = concat!(
     include_str!("../../../../apps/tl/tasks/app.tl"),
     "\n",
@@ -205,8 +200,6 @@ impl Replica {
         if let Some(refused) = self.host.store().take_refusal() {
             panic!("the store refused a write: {refused}");
         }
-        // The agents what was written mentions are asked, as a window's frame asks them.
-        self.host.ask_from_mentions();
         let moved = self.watch.take();
         moved
             .docs

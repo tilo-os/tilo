@@ -150,7 +150,6 @@ fn workspace() -> (Replica, ResourceRef, ResourceRef) {
         "ada",
         Workspace::new(),
         &[
-            crate::fixtures::AGENT,
             (CHAT, CHAT_IDS),
             (DISCUSSION, DISCUSSION_IDS),
             (TASKS, TASKS_IDS),

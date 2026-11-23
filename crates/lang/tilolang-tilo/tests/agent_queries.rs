@@ -63,7 +63,7 @@ struct World {
 fn world() -> World {
     let apps = Apps::new(&[
         &[app!("discussion"), app!("tasks"), (JOURNAL, "")],
-        &[app!("notes"), app!("agent"), app!("chat"), app!("board")],
+        &[app!("notes"), app!("chat"), app!("board")],
     ]);
     {
         let todo = apps.replica(TODO);

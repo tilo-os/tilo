@@ -185,8 +185,6 @@ pub(crate) struct HostInner {
     /// Whether a migration waits for its turn: another device runs it, or none may yet
     /// ([`Host::migrate`]).
     migrations_wait: Cell<bool>,
-    /// What the asks made from mentions of agents follow ([`crate::asks`]).
-    asking: crate::asks::Asking,
     /// Whether the next plan is the run of an invocation the document applies next
     /// ([`Host::carrying_out`]): what it writes stays, as the change the document commits.
     carried: Cell<bool>,
@@ -975,7 +973,6 @@ impl Host {
         runtime.set_clock(system_time);
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
         let triggers = crate::triggers::Schedule::new(store.watch());
-        let asking = crate::asks::Asking::new(store.watch());
         let inner = Rc::new(HostInner {
             handle,
             runtime,
@@ -988,7 +985,6 @@ impl Host {
             returned: RefCell::default(),
             triggers,
             migrations_wait: Cell::new(false),
-            asking,
             carried: Cell::new(false),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
@@ -1343,14 +1339,6 @@ impl Host {
             .borrow()
             .iter()
             .find_map(|package| find(package))
-    }
-
-    /// Ask the agents the rich text written here since the last call mentions, and withdraw or ask
-    /// again where a mention went or came back ([`crate::asks`]): the asks are this device's
-    /// person's actions, written as the runtime writes any. Returns how many it invoked. Each
-    /// frame of a window runs it.
-    pub fn ask_from_mentions(&self) -> usize {
-        crate::asks::run(self, &self.inner.asking)
     }
 
     /// The package's root resource: the one per-workspace resource of its root type, created the

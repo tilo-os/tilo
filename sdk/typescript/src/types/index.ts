@@ -74,7 +74,6 @@ export * as videoPlayer from "./video_player.ts";
 export * as weather from "./weather.ts";
 export * as windows from "./windows.ts";
 export * as wordProcessor from "./word_processor.ts";
-export * as agent from "./agent.ts";
 export * as board from "./board.ts";
 export * as langChat from "./lang_chat.ts";
 export * as counter from "./counter.ts";

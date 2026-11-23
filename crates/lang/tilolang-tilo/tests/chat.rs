@@ -158,14 +158,14 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
     let (ada, loaded) = Replica::new(
         "ada",
         Workspace::new(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
+        &[(CHAT, CHAT_IDS)],
     );
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     let team = call(&ada, "new_category", vec![all, Value::text("Team")]);
     let design = call(&ada, "add_channel", vec![team, Value::text("design")]);
     ada.commit();
-    let ben = ada.fork("ben", &[crate::fixtures::AGENT, (CHAT, &loaded[1].ids)]);
+    let ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
     // Phrases say their id and arguments, so a count shows in what a chip says.
     for r in [&ada, &ben] {
         r.host.set_words(EchoWords);
@@ -304,7 +304,7 @@ fn two_people_reacting_at_once_both_stay_and_a_second_press_takes_yours_back() {
     let (ada, loaded) = Replica::new(
         "ada",
         Workspace::new(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
+        &[(CHAT, CHAT_IDS)],
     );
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
@@ -316,7 +316,7 @@ fn two_people_reacting_at_once_both_stay_and_a_second_press_takes_yours_back() {
         vec![design.clone(), rich("Shots are up."), Value::Opt(None)],
     );
     ada.commit();
-    let ben = ada.fork("ben", &[crate::fixtures::AGENT, (CHAT, &loaded[1].ids)]);
+    let ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
     let mut ada_design = ada.host.open_resource(&target(&design), None).unwrap();
     let mut ben_design = ben.host.open_resource(&target(&design), None).unwrap();
     assert!(
@@ -382,7 +382,7 @@ tilo_test_env::scenario! {
 
     phase enter_in_the_composer_sends_and_empties_it;
     {
-        let (ada, _) = Replica::new("ada", Workspace::new(), &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)]);
+        let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
         let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
@@ -411,12 +411,12 @@ tilo_test_env::scenario! {
 
     phase its_author_edits_a_message_in_place_and_anyone_pins_it;
     {
-        let (ada, loaded) = Replica::new("ada", Workspace::new(), &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)]);
+        let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
         let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
         ada.commit();
-        let ben = ada.fork("ben", &[crate::fixtures::AGENT, (CHAT, &loaded[1].ids)]);
+        let ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
         let mut ada_design = ada.host.open_resource(&target(&design), None).unwrap();
         let mut ben_design = ben.host.open_resource(&target(&design), None).unwrap();
         post(&ada, &ada_design, "The bulid is on the test machines.");
@@ -522,7 +522,7 @@ tilo_test_env::scenario! {
     // the document keeps (so undo brings it back). The thread it started goes with it, and no
     // message of another channel is touched.
     {
-        let (ada, loaded) = Replica::new("ada", Workspace::new(), &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)]);
+        let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
         let design = call(
@@ -544,7 +544,7 @@ tilo_test_env::scenario! {
         );
         call(&ada, "send", vec![other, rich("Not here."), Value::none()]);
         ada.commit();
-        let ben = ada.fork("ben", &[crate::fixtures::AGENT, (CHAT, &loaded[1].ids)]);
+        let ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
 
         // A holder's action on a message is in the message's menu (`std.transcript` puts every
         // action offered on an item there), as a destructive one.
@@ -653,7 +653,7 @@ fn the_conversations_of_chat_before_channels_open_as_channels_saying_what_they_s
     let (later, _) = Replica::new(
         "ada",
         ada.doc.fork(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
+        &[(CHAT, CHAT_IDS)],
     );
     let sidebar = later.view(APP);
     let shown = texts(sidebar.tree());
@@ -690,7 +690,7 @@ tilo_test_env::scenario! {
     // channel takes the divider away. A message of your own is never unseen to you, and nothing
     // outside the channel is counted.
     {
-        let (ada, loaded) = Replica::new("ada", Workspace::new(), &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)]);
+        let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
         let design = call(
@@ -700,7 +700,7 @@ tilo_test_env::scenario! {
         );
         let random = call(&ada, "new_channel", vec![all, Value::text("random")]);
         ada.commit();
-        let ben = ada.fork("ben", &[crate::fixtures::AGENT, (CHAT, &loaded[1].ids)]);
+        let ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
         let first = call(
             &ben,
             "send",
@@ -801,12 +801,12 @@ tilo_test_env::scenario! {
     // shows and is not counted beside them, and reading the channel clears the row and the header
     // alike — one number, read from one place.
     {
-        let (ada, loaded) = Replica::new("ada", Workspace::new(), &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)]);
+        let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
         let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
         ada.commit();
-        let ben = ada.fork("ben", &[crate::fixtures::AGENT, (CHAT, &loaded[1].ids)]);
+        let ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
         let first = call(
             &ben,
             "send",
@@ -854,12 +854,12 @@ tilo_test_env::scenario! {
     // and shows that person's face on the one line their reading ends at. A reader's mark moves
     // their face down the conversation, and the person looking never sees their own.
     {
-        let (ada, loaded) = Replica::new("ada", Workspace::new(), &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)]);
+        let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
         let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
         ada.commit();
-        let ben = ada.fork("ben", &[crate::fixtures::AGENT, (CHAT, &loaded[1].ids)]);
+        let ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
         let first = call(
             &ben,
             "send",
@@ -974,7 +974,7 @@ fn a_workspace_held_by_one_version_of_chat_is_read_and_changed_by_that_version_w
     let (current, _) = Replica::new(
         "ada",
         Workspace::new(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
+        &[(CHAT, CHAT_IDS)],
     );
     let channels = Value::resource(&current.host.root_of(APP).unwrap());
     current.commit();
@@ -1056,13 +1056,13 @@ fn the_transcript_marks_the_first_message_the_person_had_not_seen() {
     let (ada, loaded) = Replica::new(
         "ada",
         Workspace::new(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
+        &[(CHAT, CHAT_IDS)],
     );
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
     ada.commit();
-    let ben = ada.fork("ben", &[crate::fixtures::AGENT, (CHAT, &loaded[1].ids)]);
+    let ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
     let one = call(
         &ben,
         "send",
@@ -1116,12 +1116,12 @@ tilo_test_env::scenario! {
         let (ada, loaded) = Replica::access(
             "ada",
             Workspace::new(),
-            &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
+            &[(CHAT, CHAT_IDS)],
             Some(tilo_action_policy::MemberAccess::person(policy, "ada")),
         );
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
-        let ben = ada.fork("ben", &[crate::fixtures::AGENT, (CHAT, &loaded[1].ids)]);
+        let ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
         // The workspace's membership, as the host hands it to the runtime.
         ada.host.runtime().set_members(
             vec![
@@ -1208,7 +1208,7 @@ tilo_test_env::scenario! {
     // what it says. The line goes when they stop, and a lens that is only open (not composing)
     // says nothing.
     {
-        let (ada, _) = Replica::new("ada", Workspace::new(), &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)]);
+        let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
         let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
@@ -1259,7 +1259,7 @@ tilo_test_env::scenario! {
         let (ada, _loaded) = Replica::access(
             "ada",
             Workspace::new(),
-            &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
+            &[(CHAT, CHAT_IDS)],
             Some(tilo_action_policy::MemberAccess::person(policy, "ada")),
         );
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
@@ -1394,7 +1394,7 @@ tilo_test_env::scenario! {
         let (ada, _) = Replica::new(
             "ada",
             Workspace::new(),
-            &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
+            &[(CHAT, CHAT_IDS)],
         );
         ada.commit();
         // With no channel yet the places say so, with the line that says what a channel is for,
@@ -1505,7 +1505,7 @@ tilo_test_env::scenario! {
         let (ada, _) = Replica::new(
             "ada",
             Workspace::new(),
-            &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
+            &[(CHAT, CHAT_IDS)],
         );
         ada.commit();
         let sidebar = ada.view(APP);
@@ -1660,7 +1660,7 @@ fn a_message_is_found_by_search_and_a_read_holds_what_it_says() {
     let (ada, _) = Replica::new(
         "ada",
         Workspace::new(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
+        &[(CHAT, CHAT_IDS)],
     );
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
@@ -1747,7 +1747,7 @@ fn a_message_sent_in_a_channel_names_a_verb_the_channels_surface_publishes() {
     let (ada, _) = Replica::new(
         "ada",
         Workspace::new(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
+        &[(CHAT, CHAT_IDS)],
     );
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
@@ -1791,103 +1791,3 @@ fn a_message_sent_in_a_channel_names_a_verb_the_channels_surface_publishes() {
     );
 }
 
-/// The asks the agents' package lists, each as its row names the agent asked.
-fn asks(r: &Replica) -> Vec<String> {
-    let mut view = r.view(AGENT_APP);
-    rows(&mut view)
-        .iter()
-        .map(|row| texts(row).join(" "))
-        .collect()
-}
-
-const AGENT_APP: &str = "so.tilo.agent";
-
-/// Writing to an agent asks it: each message sent in a direct conversation with one makes one
-/// ask of it, made from the message by whoever wrote it, whether a person presses Send or a
-/// script invokes `send`, and a conversation with a person asks nobody.
-#[test]
-fn each_message_to_an_agent_asks_it_once() {
-    let (ada, _) = Replica::new(
-        "ada",
-        crate::fixtures::Workspace::new(),
-        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
-    );
-    let all = Value::resource(&ada.host.root_of(APP).unwrap());
-    ada.host.root_of(AGENT_APP).unwrap();
-    ada.commit();
-    let member = |m| Value::Actor(Actor::from(m));
-    let tide = call(
-        &ada,
-        "message_person",
-        vec![
-            all.clone(),
-            member(tilolang_tilo::runtime::ids::MemberId::agent("tide")),
-        ],
-    );
-    let ben = call(
-        &ada,
-        "message_person",
-        vec![
-            all,
-            member(tilolang_tilo::runtime::ids::MemberId::person("ben")),
-        ],
-    );
-    ada.commit();
-    let tide_view = ada.host.open_resource(&target(&tide), None).unwrap();
-    let ben_view = ada.host.open_resource(&target(&ben), None).unwrap();
-    post(&ada, &tide_view, "What changed in the build?");
-    post(&ada, &ben_view, "Lunch at one?");
-    assert_eq!(
-        asks(&ada).len(),
-        1,
-        "one ask, of the agent: {:?}",
-        asks(&ada)
-    );
-
-    post(&ada, &tide_view, "And the tests?");
-    assert_eq!(
-        asks(&ada).len(),
-        2,
-        "a second message asks again: {:?}",
-        asks(&ada)
-    );
-    // Each ask is made from its message, which its row names.
-    for message in ["What changed in the build?", "And the tests?"] {
-        assert_eq!(
-            asks(&ada).iter().filter(|a| a.contains(message)).count(),
-            1,
-            "one ask made from {message:?}: {:?}",
-            asks(&ada)
-        );
-    }
-
-    // A script's send asks as a person's does, made from the message it sent.
-    let sent = call(&ada, "send", vec![tide, rich("Any news?"), Value::none()]);
-    call(&ada, "send", vec![ben, rich("Coffee?"), Value::none()]);
-    ada.commit();
-    assert_eq!(
-        asks(&ada).len(),
-        3,
-        "the script's message asks too: {:?}",
-        asks(&ada)
-    );
-    let made: Vec<_> = ada
-        .host
-        .store()
-        .linked(&target(&sent))
-        .unwrap()
-        .into_iter()
-        .filter(|link| link.how == tilolang_runtime::store::LinkHow::CreatedFrom)
-        .collect();
-    assert_eq!(
-        made.len(),
-        1,
-        "one ask is made from the sent message: {made:?}"
-    );
-
-    let mut tide_view = tide_view;
-    assert_eq!(
-        said(&mut tide_view),
-        ["What changed in the build?", "And the tests?", "Any news?"]
-    );
-}

@@ -19,6 +19,11 @@ mod app_ids;
 
 pub use app_ids::*;
 
+/// The app an agent's own work acts under: what an agent's turns, tools and programs name as
+/// their caller when they ask a model, call an action or write a record. No package declares it;
+/// an agent is a member, not an app it installs.
+pub const AGENT: &str = "so.tilo.agent";
+
 /// The package namespace every first-party app is registered under.
 pub const FIRST_PARTY_PREFIX: &str = "so.tilo";
 

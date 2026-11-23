@@ -825,7 +825,6 @@ readers = [
   "crates/lang/tilolang-tilo/tests/link_editor.rs",
   "crates/lang/tilolang-tilo/tests/links.rs",
   "crates/lang/tilolang-tilo/tests/make_from.rs",
-  "crates/lang/tilolang-tilo/tests/mention_asks.rs",
   "crates/lang/tilolang-tilo/tests/naming.rs",
   "crates/lang/tilolang-tilo/tests/native_chat.rs",
   "crates/lang/tilolang-tilo/tests/native_mail.rs",

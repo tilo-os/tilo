@@ -323,7 +323,7 @@ sends on Enter (Shift+Enter breaks the line).
 
 **Collections.** An item is its id: a reference to it names its document and id
 (`@board.Card:root-x/i3`), wherever the item is. An insert gives the item a fresh id, or, with
-a key, the id the collection and the key name: `all.asks.insert(a, key: "{from.id()}|{mention}")`
+a key, the id the collection and the key name: `all.days.insert(d, key: "{date}")`
 makes the same item on every device that inserts it under that key, so two devices that do it
 apart merge into one, and an insert where the item already stands is that item, unchanged.
 `items.remove(x)` removes an item with

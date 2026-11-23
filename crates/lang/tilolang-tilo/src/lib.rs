@@ -13,7 +13,6 @@
 //!   its window component patches and taking what the person did;
 
 pub mod action;
-pub mod asks;
 pub mod authority;
 pub mod background;
 pub mod bundle;
