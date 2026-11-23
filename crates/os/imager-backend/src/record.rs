@@ -6,7 +6,7 @@ use tilo_files::native::atomic::{Privacy, PublishMode, StorageDirectory};
 
 /// Read all of `reader`, refusing it with `exceeded` when it holds more than
 /// `limit` bytes.
-pub use migration_sources::bounded::{read_bounded, read_bounded_string};
+pub use tilo_migrate::bounded::{read_bounded, read_bounded_string};
 
 /// Whether `value` spells a lowercase 64-character SHA-256 digest.
 pub fn is_hex_sha256(value: &str) -> bool {

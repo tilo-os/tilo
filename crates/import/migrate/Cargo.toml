@@ -1,13 +1,13 @@
 [package]
-name = "migration-sources"
+name = "tilo-migrate"
 version = "0.1.0"
-description = "Reading another computer's Outline, Linear, Forgejo and mail accounts and its Thunderbird profiles, for the installer and for a laptop CLI"
+description = "The one migration engine: every source a person brings things from (folders, browsers, Thunderbird, mail, cloud drives, Outline, Linear, Forgejo), reviewed, chosen and brought into the workspace through its apps' own actions"
 edition = "2024"
 publish = false
 license.workspace = true
 
 [lib]
-name = "migration_sources"
+name = "tilo_migrate"
 path = "src/lib.rs"
 
 [features]
@@ -19,6 +19,21 @@ test-support = []
 
 [dependencies]
 accounts = { path = "../../integrations/accounts", features = ["person"] }
+anyhow.workspace = true
+# Cloud drives sign in, refresh and resolve their storage as Settings does.
+account-credentials = { path = "../../integrations/account-credentials" }
+cloud-source = { path = "../../integrations/cloud-source" }
+# A cloud drive is opened as the filesystem opens it.
+tilo-fs = { package = "tilo-fs", path = "../../system/fs" }
+# A browser profile's bookmarks and history.
+browser-continuity = { workspace = true, features = ["native"] }
+# The accounts record a migration connects an account in, and the edit Settings makes of it.
+collab-types = { path = "../../collab/collab-types" }
+tilo-actions = { path = "../../collab/actions" }
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+rand.workspace = true
+# Whether a run's process still runs.
+rustix = { workspace = true, features = ["process"] }
 # What a typo-free edit to the workspace's accounts record is.
 tilo-resource = { path = "../../sdk/tilo-resource" }
 base64.workspace = true
@@ -74,6 +89,10 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tempfile.workspace = true
+# Fake cloud drives for the cloud sources.
+cloud-source-dav = { path = "../../integrations/cloud-source-dav", features = ["fake-server"] }
+cloud-source-gdrive = { path = "../../integrations/cloud-source-gdrive", features = ["fake-server"] }
 # A local service that answers slowly, so a fetch's request count and wall time can be checked.
 test-http = { path = "../../../tools/test-http" }
 tilo-test-env = { path = "../../../tools/test-env" }

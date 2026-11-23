@@ -11,7 +11,7 @@ capture-worker = []
 capture-worker-applications = ["capture-worker"]
 host-media-writer = []
 native-capture-qualification = ["installation", "flatpak-media-writer", "launcher/native-home-alias-qualification"]
-test-support = ["dep:tilo-install-helpers", "dep:tilo-test-env", "dep:tilo-oauth", "migration-sources/test-support"]
+test-support = ["dep:tilo-install-helpers", "dep:tilo-test-env", "dep:tilo-oauth", "tilo-migrate/test-support"]
 flatpak-media-writer = ["block-devices/udisks", "dep:zbus"]
 # The guided installation's capture of the old system's Discord session from
 # its Chromium Local Storage, the only reader of LevelDB. LevelDB is C++, so it
@@ -59,7 +59,7 @@ cap-std = "3.4.6"
 accounts = { path = "../../integrations/accounts", features = ["person"] }
 # The source readers live in a crate a plain laptop can build, so the CLI can
 # drive the same code without this crate's desktop stack.
-migration-sources = { path = "../../import/migration-sources" }
+tilo-migrate = { path = "../../import/migrate" }
 account-credentials = { path = "../../integrations/account-credentials" }
 zeroize.workspace = true
 block-devices = { path = "../block-devices" }
@@ -137,7 +137,7 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Stora
 
 [dev-dependencies]
 # The destination namespace checks recognise the fixture roots the tests build in.
-migration-sources = { path = "../../import/migration-sources", features = ["test-support"] }
+tilo-migrate = { path = "../../import/migrate", features = ["test-support"] }
 tilo-oauth = { path = "../../integrations/tilo-oauth", features = ["fake"] }
 test-http = { path = "../../../tools/test-http" }
 tilo-test-env = { path = "../../../tools/test-env" }

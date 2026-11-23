@@ -451,10 +451,10 @@ pub(crate) fn firefox_index(root: &Arc<PinnedDirectory>) -> io::Result<Vec<(Stri
     })?;
     firefox_sections(std::str::from_utf8(&bytes).map_err(invalid)?)
 }
-/// The profiles a Firefox `profiles.ini` lists ([`migration_sources::browsers::firefox_sections`]),
+/// The profiles a Firefox `profiles.ini` lists ([`tilo_migrate::browsers::firefox_sections`]),
 /// each inside the granted source: one with an absolute path, or past the bound, is refused.
 pub(crate) fn firefox_sections(content: &str) -> io::Result<Vec<(String, String)>> {
-    let sections = migration_sources::browsers::firefox_sections(content);
+    let sections = tilo_migrate::browsers::firefox_sections(content);
     if sections.len() > browser_continuity::MAX_PROFILES {
         return Err(invalid("Too many Firefox profiles"));
     }

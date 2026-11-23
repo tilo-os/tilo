@@ -678,7 +678,7 @@ doc = false
 "memmap2-0_9_11" = { package = "memmap2", version = "^0.9.11", default-features = false, features = [] }
 "memoffset-0_9_1" = { package = "memoffset", version = "^0.9.1", default-features = false, features = ["default"] }
 "messages" = { path = "../../apps/messages", default-features = false, features = [] }
-"migration-sources" = { path = "../../crates/import/migration-sources", default-features = false, features = ["fixture", "test-support"] }
+"tilo-migrate" = { path = "../../crates/import/migrate", default-features = false, features = ["fixture", "test-support"] }
 "mime-0_3_17" = { package = "mime", version = "^0.3.17", default-features = false, features = [] }
 "mime_guess-2_0_5" = { package = "mime_guess", version = "^2.0.5", default-features = false, features = ["default", "rev-mappings"] }
 "minimal-lexical-0_2_1" = { package = "minimal-lexical", version = "^0.2.1", default-features = false, features = ["std"] }
@@ -3343,7 +3343,7 @@ doc = false
 "memmap2-0_9_11" = { package = "memmap2", version = "^0.9.11", default-features = false, features = [] }
 "memoffset-0_9_1" = { package = "memoffset", version = "^0.9.1", default-features = false, features = ["default"] }
 "messages" = { path = "../../apps/messages", default-features = false, features = [] }
-"migration-sources" = { path = "../../crates/import/migration-sources", default-features = false, features = ["fixture", "test-support"] }
+"tilo-migrate" = { path = "../../crates/import/migrate", default-features = false, features = ["fixture", "test-support"] }
 "mime-0_3_17" = { package = "mime", version = "^0.3.17", default-features = false, features = [] }
 "mime_guess-2_0_5" = { package = "mime_guess", version = "^2.0.5", default-features = false, features = ["default", "rev-mappings"] }
 "minimal-lexical-0_2_1" = { package = "minimal-lexical", version = "^0.2.1", default-features = false, features = ["std"] }

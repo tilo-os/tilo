@@ -9,7 +9,7 @@ use anyhow::Result;
 use super::Stopped;
 use super::state::{Journal, Place, RunState};
 use super::thunderbird;
-use super::workspace::{Call, Invocation, Status, Workspace};
+use super::writer::{Call, Invocation, Status, Workspace};
 
 pub(super) mod test_env;
 
@@ -46,7 +46,7 @@ fn migrate_saying(
 /// The sample profile, reviewed, and where a run keeps its state.
 fn sample(dir: &Path) -> (std::path::PathBuf, Place, super::state::Review) {
     let home = dir.join("home");
-    migration_sources::thunderbird::fixture::write_sample_profile(&home);
+    crate::thunderbird::fixture::write_sample_profile(&home);
     let place = Place::at(&dir.join("state"));
     let review = thunderbird::review(&home, None).unwrap();
     (home, place, review)
@@ -121,7 +121,7 @@ fn a_live_account_is_connected_and_nothing_is_copied_from_its_cache() {
     assert_eq!(added["outgoingPort"], 465);
     assert_eq!(
         added["password"],
-        migration_sources::thunderbird::fixture::WORK_PASSWORD
+        crate::thunderbird::fixture::WORK_PASSWORD
     );
     assert!(
         added.get("identities").is_none(),
@@ -144,7 +144,7 @@ fn a_live_account_is_connected_and_nothing_is_copied_from_its_cache() {
         "{:?}",
         told.lines
     );
-    let secret = migration_sources::thunderbird::fixture::WORK_PASSWORD;
+    let secret = crate::thunderbird::fixture::WORK_PASSWORD;
     for said in told.asked.iter().chain(&told.lines) {
         assert!(!said.contains(secret), "{said}");
     }
@@ -170,9 +170,9 @@ fn a_live_account_is_connected_and_nothing_is_copied_from_its_cache() {
 fn an_account_that_signs_in_with_google_is_left_to_google_s_sign_in() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
-    migration_sources::thunderbird::fixture::write_live_profile(
+    crate::thunderbird::fixture::write_live_profile(
         &home,
-        &migration_sources::thunderbird::fixture::LiveAccount {
+        &crate::thunderbird::fixture::LiveAccount {
             name: "Ada Lovelace".into(),
             email: "ada@gmail.com".into(),
             also_sends_as: None,
@@ -314,7 +314,7 @@ fn an_address_book_and_calendar_chosen_later_come_over_alone() {
 fn a_stopped_run_resumes_where_it_stopped() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
-    migration_sources::thunderbird::fixture::write_sample_profile(&home);
+    crate::thunderbird::fixture::write_sample_profile(&home);
     let place = Place::at(&dir.path().join("state"));
     let mut review = thunderbird::review(&home, None).unwrap();
     let book = review
@@ -426,7 +426,7 @@ fn a_step_that_waits_for_its_person_answers_pending_not_failed() {
         "an app's refusal is read by its code, never its words"
     );
     assert!(
-        !super::workspace::Refused::coded("x", "y").asks_again(),
+        !super::writer::Refused::coded("x", "y").asks_again(),
         "an app's own refusal is not asked again"
     );
 }
@@ -452,13 +452,16 @@ fn a_call_that_ran_answers_its_value_and_the_records_it_names() {
 fn starting_without_a_review_reviews_the_source_and_takes_everything() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
-    migration_sources::thunderbird::fixture::write_sample_profile(&home);
+    crate::thunderbird::fixture::write_sample_profile(&home);
     let place = Place::at(&dir.path().join("state"));
     assert!(
         place.review(thunderbird::SOURCE).unwrap().is_none(),
         "nothing reviewed yet"
     );
-    let review = super::reviewed_for_start(&place, &home, thunderbird::SOURCE).unwrap();
+    let review = test_env::with_cx(&place, &home, |cx| {
+        super::reviewed_for_start(cx, thunderbird::SOURCE)
+    })
+    .unwrap();
     assert!(
         review
             .chosen()
@@ -481,11 +484,11 @@ fn starting_without_a_review_reviews_the_source_and_takes_everything() {
 fn a_review_names_what_it_could_not_read() {
     use std::os::unix::ffi::OsStrExt as _;
 
-    let server = migration_sources::thunderbird::fixture::WORK_SERVER;
+    let server = crate::thunderbird::fixture::WORK_SERVER;
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
-    migration_sources::thunderbird::fixture::write_sample_profile(&home);
-    migration_sources::thunderbird::fixture::write_stale_mail_directories(&home);
+    crate::thunderbird::fixture::write_sample_profile(&home);
+    crate::thunderbird::fixture::write_stale_mail_directories(&home);
 
     let review = thunderbird::review(&home, None).unwrap();
     assert!(review.unreadable.is_empty(), "{:?}", review.unreadable);

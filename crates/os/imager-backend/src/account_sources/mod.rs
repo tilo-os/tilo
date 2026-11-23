@@ -6,7 +6,7 @@ mod nextcloud;
 mod tests;
 #[cfg(test)]
 mod thunderbird_tests;
-pub use migration_sources::thunderbird;
+pub use tilo_migrate::thunderbird;
 mod tilo;
 
 #[cfg(target_os = "linux")]
@@ -152,15 +152,15 @@ fn append_thunderbird(home: &Path, inventory: &mut Inventory) {
     inventory.unreadable_sources.extend(
         scan.problems
             .iter()
-            .map(migration_sources::thunderbird::Unreadable::source),
+            .map(tilo_migrate::thunderbird::Unreadable::source),
     );
 }
 
-/// The browsers [`migration_sources::browsers::LOCATIONS`] lists: under the config directory
+/// The browsers [`tilo_migrate::browsers::LOCATIONS`] lists: under the config directory
 /// when one is given (a refused one is never replaced by the home's), under the home and in its
 /// Flatpaks.
 fn append_browsers(home: &Path, config: Option<&Path>, inventory: &mut Inventory) {
-    use migration_sources::browsers::{Engine, LOCATIONS, Root};
+    use tilo_migrate::browsers::{Engine, LOCATIONS, Root};
     for location in LOCATIONS {
         let provider = match location.engine {
             Engine::Chromium => Provider::Chromium,

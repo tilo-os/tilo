@@ -17,7 +17,7 @@
 //! A file the workspace has at its place with the same size is already there: starting again copies
 //! only what is new or changed, and a stopped migration resumes.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -27,7 +27,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
 
-use crate::folders::size;
+use super::size;
 
 use super::Lander;
 use super::state::{Item, Place, Review};
@@ -169,24 +169,24 @@ fn walk_local(
 
 /// `tilo migrate review home`: the familiar folders and the other visible folders of `home`, and
 /// any folder chosen by its path before. The familiar ones are chosen until the person chooses.
-pub fn review(home: &Path, kept: Option<&Review>) -> Review {
+pub fn review(home: &Path, kept: Option<&Review>, folders: &BTreeMap<String, PathBuf>) -> Review {
     let mut items = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
-    for folder in migration_sources::known_folders::discover() {
+    for folder in crate::known_folders::discover() {
         let Some(path) = folder.path else { continue };
         let key = key_of(home, &path);
         if seen.insert(key.clone()) {
             items.push(item(home, &key, folder.kind.label(), true));
         }
     }
-    let workspaces = mounted_folders();
+    let workspaces: Vec<&PathBuf> = folders.values().collect();
     if let Ok(entries) = std::fs::read_dir(home) {
         let mut others: Vec<String> = entries
             .filter_map(std::result::Result::ok)
             .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .filter(|name| !name.starts_with('.'))
-            .filter(|name| !workspaces.contains(&home.join(name)))
+            .filter(|name| !workspaces.contains(&&home.join(name)))
             .collect();
         others.sort();
         for name in others {
@@ -294,28 +294,78 @@ pub enum Sink {
     Upload(String),
 }
 
-/// The folder the workspace `id` has on this computer, when the peer has it mounted.
+/// The folder the workspace `id` has on this computer, among `folders`, when it is mounted.
 #[must_use]
-pub fn mounted_folder(id: &str) -> Option<PathBuf> {
-    let login = crate::login::Place::here(crate::identity::paths()).ok()?;
-    let folders = tilo_api::daemon::folders::Folders::load(login.dir()).ok()?;
-    let folder = folders.workspaces.get(id)?;
-    (!folder.removed && is_mounted(&folder.path)).then(|| folder.path.clone())
+pub fn mounted_folder(folders: &BTreeMap<String, PathBuf>, id: &str) -> Option<PathBuf> {
+    let folder = folders.get(id)?;
+    is_mounted(folder).then(|| folder.clone())
 }
 
-/// Every workspace folder this computer keeps, so a home review does not list them.
-fn mounted_folders() -> Vec<PathBuf> {
-    crate::login::Place::here(crate::identity::paths())
-        .ok()
-        .and_then(|login| tilo_api::daemon::folders::Folders::load(login.dir()).ok())
-        .map(|folders| {
-            folders
-                .workspaces
-                .into_values()
-                .map(|folder| folder.path)
-                .collect()
-        })
-        .unwrap_or_default()
+/// Folders on this computer.
+pub struct Folders;
+
+impl super::Source for Folders {
+    fn here(&self, _: &super::Cx<'_>, row: &'static super::registry::Row) -> super::Here {
+        super::Here {
+            next: Some(format!("tilo migrate review {}", row.key)),
+            ..super::Here::default()
+        }
+    }
+
+    fn review(
+        &self,
+        cx: &super::Cx<'_>,
+        row: &'static super::registry::Row,
+        _: Option<&str>,
+    ) -> Result<Review> {
+        Ok(review(
+            cx.home,
+            cx.place.review(row.key)?.as_ref(),
+            cx.folders,
+        ))
+    }
+
+    fn summary(&self, row: &'static super::registry::Row, review: &Review) -> String {
+        summary(review, row.title)
+    }
+
+    fn files_under(&self, _: &'static super::registry::Row) -> Option<&'static str> {
+        Some("")
+    }
+
+    fn land(
+        &self,
+        cx: &super::Cx<'_>,
+        _: &'static super::registry::Row,
+        review: &Review,
+        sink: Option<&Sink>,
+        lander: &mut Lander<'_>,
+    ) -> Result<()> {
+        let sink = sink.ok_or_else(|| anyhow!("files have nowhere to go"))?;
+        land(
+            &Local {
+                home: cx.home.to_path_buf(),
+            },
+            review,
+            sink,
+            cx.place,
+            lander,
+        )
+    }
+
+    fn landed(
+        &self,
+        _: &super::Cx<'_>,
+        _: &'static super::registry::Row,
+        journal: &super::state::Journal,
+    ) -> Result<usize> {
+        // Files are counted as the last run found them: brought, or there already.
+        Ok(journal
+            .brought
+            .values()
+            .sum::<usize>()
+            .saturating_add(journal.already_there))
+    }
 }
 
 /// Whether `path` is a mount point: its device differs from its parent's.
@@ -713,8 +763,13 @@ pub fn undo_written(place: &Place, source: &str, invocation: &str) -> Result<Opt
 ///
 /// # Errors
 /// It lands in this computer's workspace, which has no folder mounted here.
-pub fn sink(workspace: &str, hosted: bool, under: &str) -> Result<Sink> {
-    if let Some(folder) = mounted_folder(workspace) {
+pub fn sink(
+    folders: &BTreeMap<String, PathBuf>,
+    workspace: &str,
+    hosted: bool,
+    under: &str,
+) -> Result<Sink> {
+    if let Some(folder) = mounted_folder(folders, workspace) {
         return Ok(Sink::Folder(if under.is_empty() {
             folder
         } else {

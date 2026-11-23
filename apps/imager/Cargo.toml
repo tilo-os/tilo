@@ -90,7 +90,7 @@ install-profile-model = { path = "../../crates/os/install-profile-model" }
 # `tilo machine add` so the window and the command write the same document.
 install-plan = { path = "../../crates/os/install-plan" }
 imager-backend = { path = "../../crates/os/imager-backend" }
-migration-sources = { path = "../../crates/import/migration-sources" }
+tilo-migrate = { path = "../../crates/import/migrate" }
 # The shared native preflight the prepared-setup extractor runs without the
 # installer backend, whose test-support dependency would cycle back here.
 tilo-handoff = { path = "../../crates/os/tilo-handoff" }

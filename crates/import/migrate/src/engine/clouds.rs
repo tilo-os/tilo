@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 
 use super::Lander;
 use super::files::{self, Entry, Tree};
-use super::registry::Source;
+use super::registry::Row as Source;
 use super::state::{Item, Place, Review};
 
 /// The most folders a review lists to count what a drive holds; past it, counts are "at least".
@@ -55,28 +55,28 @@ fn credentials(root: &Path) -> CredentialStore {
 ///
 /// # Errors
 /// What the person typed or approved did not sign in; the error says what to do.
-pub fn connect(
-    place: &Place,
-    source: &Source,
-    url: Option<&str>,
-    login: Option<&str>,
-    secret_file: Option<&Path>,
-) -> Result<Value> {
+pub fn connect(cx: &super::Cx<'_>, source: &Source, how: super::Connecting<'_>) -> Result<Value> {
+    let place = cx.place;
+    let super::Connecting {
+        url,
+        login,
+        secret_file,
+    } = how;
     let root = config_root()?;
     let store = credentials(&root);
     let type_id = type_of(source.key)?;
     let (mut account, secret) = if let Some(cloud) = OAuthCloud::from_type_id(type_id) {
         sign_in(&store, cloud, source, login)?
     } else if type_id == cloud_types::ICLOUD_DRIVE {
-        icloud(&store, login, secret_file)?
+        icloud(cx, &store, login, secret_file)?
     } else {
-        password_account(source, type_id, url, login, secret_file)?
+        password_account(cx, source, type_id, url, login, secret_file)?
     };
     cloud_types::set_files_mode(&mut account.config, FilesMode::Import);
-    let mut workspace = super::workspace::Held::connect()?;
-    let id = migration_sources::vault::persist::<anyhow::Error>(&root, &account, secret)?;
+    let mut workspace = cx.open()?;
+    let id = crate::vault::persist::<anyhow::Error>(&root, &account, secret)?;
     let saving = accounts::person::AccountList::saving(&account);
-    super::workspace::change_accounts(&mut workspace, (&saving.address(), &saving.arguments))?;
+    super::writer::change_accounts(&mut *workspace, (&saving.address(), &saving.arguments))?;
     place.keep(&place.path(source.key, "account.json"), &id.as_str())?;
     Ok(json!({
         "source": source.key,
@@ -144,6 +144,7 @@ fn open_browser(link: &str) {
 
 /// Sign in to iCloud with the Apple ID, its password and, when Apple asks, the code it sent.
 fn icloud(
+    cx: &super::Cx<'_>,
     store: &CredentialStore,
     login: Option<&str>,
     secret_file: Option<&Path>,
@@ -156,7 +157,7 @@ fn icloud(
     if !store.icloud().is_available() {
         bail!("this Tilo can't sign in to iCloud");
     }
-    let password = super::secret(
+    let password = cx.secret(
         &format!("Password of {apple_id} (it is not shown): "),
         secret_file,
     )?;
@@ -167,7 +168,7 @@ fn icloud(
     {
         ICloudSignIn::Complete(session) => session,
         ICloudSignIn::NeedsCode(challenge) => {
-            let code = super::secret("The code Apple sent to your devices: ", None)?;
+            let code = cx.secret("The code Apple sent to your devices: ", None)?;
             store
                 .icloud()
                 .verify_code(&challenge, &code)
@@ -181,6 +182,7 @@ fn icloud(
 
 /// A `WebDAV` or Nextcloud account, checked by listing its files before it is kept.
 fn password_account(
+    cx: &super::Cx<'_>,
     source: &Source,
     type_id: &str,
     url: Option<&str>,
@@ -208,7 +210,7 @@ fn password_account(
     } else {
         "Password (it is not shown): "
     };
-    let password = super::secret(what, secret_file)?;
+    let password = cx.secret(what, secret_file)?;
     if password.is_empty() {
         bail!("nothing was typed");
     }
@@ -235,8 +237,9 @@ fn password_account(
 }
 
 /// The account `source` was connected with last.
-fn account(place: &Place, source: &Source) -> Result<Account> {
-    let record = super::workspace::accounts(&mut super::workspace::Held::connect()?)?;
+fn account(cx: &super::Cx<'_>, source: &Source) -> Result<Account> {
+    let place = cx.place;
+    let record = super::writer::accounts(&mut *cx.open()?)?;
     let type_id = type_of(source.key)?;
     let kept: Option<String> = place.read(&place.path(source.key, "account.json"))?;
     record
@@ -280,8 +283,8 @@ pub(super) fn open_with(
 
 /// The drive the connected `source` is, reached with the credential the vault keeps, refreshed
 /// as Files refreshes it.
-fn open(place: &Place, source: &Source) -> Result<Arc<dyn CloudSource>> {
-    let account = account(place, source)?;
+fn open(cx: &super::Cx<'_>, source: &Source) -> Result<Arc<dyn CloudSource>> {
+    let account = account(cx, source)?;
     let root = config_root()?;
     let credential = account_credentials::DriveSignIn::new(credentials(&root), account.clone());
     open_with(&account, Arc::new(credential))
@@ -320,8 +323,8 @@ impl Drive {
     ///
     /// # Errors
     /// It is not connected, or did not answer.
-    pub fn open(place: &Place, named: &'static Source) -> Result<Self> {
-        Self::of(open(place, named)?, named)
+    pub fn open(cx: &super::Cx<'_>, named: &'static Source) -> Result<Self> {
+        Self::of(open(cx, named)?, named)
     }
 
     /// The drive `source` is, with its top level read.
@@ -462,9 +465,9 @@ impl Tree for Drive {
 ///
 /// # Errors
 /// It is not connected, or did not answer.
-pub fn review(place: &Place, named: &'static Source) -> Result<Review> {
-    let drive = Drive::open(place, named)?;
-    let kept = place.review(named.key)?;
+pub fn review(cx: &super::Cx<'_>, named: &'static Source) -> Result<Review> {
+    let drive = Drive::open(cx, named)?;
+    let kept = cx.place.review(named.key)?;
     let mut items = Vec::new();
     let mut unreadable = Vec::new();
     // Each top-level entry gets an equal share of the folders a review lists; a drive with no
@@ -488,7 +491,7 @@ pub fn review(place: &Place, named: &'static Source) -> Result<Review> {
             counts: format!(
                 "{}files, {}",
                 if partial { "or more " } else { "" },
-                crate::folders::size(bytes)
+                super::size(bytes)
             ),
             within: None,
             chosen: kept
@@ -512,12 +515,75 @@ pub fn review(place: &Place, named: &'static Source) -> Result<Review> {
 /// # Errors
 /// The migration was stopped, the drive or the workspace refused.
 pub fn land(
-    place: &Place,
+    cx: &super::Cx<'_>,
     named: &'static Source,
     review: &Review,
     sink: &files::Sink,
     lander: &mut Lander<'_>,
 ) -> Result<()> {
-    let drive = Drive::open(place, named)?;
-    files::land(&drive, review, sink, place, lander)
+    let drive = Drive::open(cx, named)?;
+    files::land(&drive, review, sink, cx.place, lander)
+}
+
+/// A cloud drive.
+pub struct Clouds;
+
+impl super::Source for Clouds {
+    fn here(&self, cx: &super::Cx<'_>, row: &'static Source) -> super::Here {
+        super::Here {
+            next: if cx.place.path(row.key, "account.json").is_file() {
+                Some(format!("tilo migrate review {}", row.key))
+            } else {
+                row.connect_command()
+            },
+            ..super::Here::default()
+        }
+    }
+
+    fn connect(
+        &self,
+        cx: &super::Cx<'_>,
+        row: &'static Source,
+        how: super::Connecting<'_>,
+    ) -> Result<Value> {
+        connect(cx, row, how)
+    }
+
+    fn review(&self, cx: &super::Cx<'_>, row: &'static Source, _: Option<&str>) -> Result<Review> {
+        review(cx, row)
+    }
+
+    fn summary(&self, row: &'static Source, review: &Review) -> String {
+        files::summary(review, row.title)
+    }
+
+    fn files_under(&self, row: &'static Source) -> Option<&'static str> {
+        Some(row.title)
+    }
+
+    fn land(
+        &self,
+        cx: &super::Cx<'_>,
+        row: &'static Source,
+        review: &Review,
+        sink: Option<&files::Sink>,
+        lander: &mut Lander<'_>,
+    ) -> Result<()> {
+        let sink = sink.ok_or_else(|| anyhow!("files have nowhere to go"))?;
+        land(cx, row, review, sink, lander)
+    }
+
+    fn landed(
+        &self,
+        _: &super::Cx<'_>,
+        _: &'static Source,
+        journal: &super::state::Journal,
+    ) -> Result<usize> {
+        // Files are counted as the last run found them: brought, or there already.
+        Ok(journal
+            .brought
+            .values()
+            .sum::<usize>()
+            .saturating_add(journal.already_there))
+    }
 }

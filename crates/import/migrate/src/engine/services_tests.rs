@@ -12,17 +12,17 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{Result, bail};
-use migration_sources::service::{
+use crate::service::{
     self, IncomingAuthor, IncomingComment, IncomingGroup, IncomingIssue, IncomingRelation,
     ServiceJournal, ServiceKind, ServiceReport, ServiceReview,
 };
+use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
 use super::services::{self as services_source, LINEAR};
 use super::state::Place;
 use super::tests::test_env::{Told, land_as};
-use super::workspace::{Answer, Invocation, Refused, Workspace};
+use super::writer::{Answer, Invocation, Refused, Workspace};
 
 /// An issue as the fake Tasks keeps it.
 #[derive(Clone, Debug, Default)]

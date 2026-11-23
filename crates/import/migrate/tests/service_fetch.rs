@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-use migration_sources::service::{IN_FLIGHT, forgejo};
+use tilo_migrate::service::{IN_FLIGHT, forgejo};
 use serde_json::{Value, json};
 use test_http::{Reply, Responder};
 

@@ -1,7 +1,7 @@
 //! Thunderbird on this computer as a migration source.
 //!
 //! The profile is read where it is, by the same reader the Tilo OS installer's migration uses
-//! ([`migration_sources::thunderbird`]), and never written: the stores it keeps in databases
+//! ([`crate::thunderbird`]), and never written: the stores it keeps in databases
 //! (its saved sign-ins' key, address books, calendars) are read from a private copy.
 //!
 //! Each account Thunderbird reads from a server is **connected**: its incoming and outgoing
@@ -24,8 +24,59 @@ use std::path::Path;
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
+use super::registry::Row;
 use super::state::{Item, Review};
-use super::{Landed, Lander};
+use super::{Cx, Here, Landed, Lander, Source};
+
+/// Thunderbird on this computer.
+pub struct Thunderbird;
+
+impl Source for Thunderbird {
+    fn here(&self, cx: &Cx<'_>, row: &'static Row) -> Here {
+        match crate::thunderbird::discover(cx.home) {
+            Ok(profiles) if !profiles.is_empty() => {
+                let accounts: usize = profiles.iter().map(|profile| profile.accounts.len()).sum();
+                Here {
+                    here: Some(json!(format!(
+                        "{} profile(s), {accounts} account(s)",
+                        profiles.len()
+                    ))),
+                    next: Some(format!("tilo migrate review {}", row.key)),
+                    unavailable: None,
+                }
+            }
+            Ok(_) => Here {
+                unavailable: Some("no Thunderbird profile on this computer".to_owned()),
+                ..Here::default()
+            },
+            Err(why) => Here {
+                unavailable: Some(why),
+                ..Here::default()
+            },
+        }
+    }
+
+    fn review(&self, cx: &Cx<'_>, row: &'static Row, profile: Option<&str>) -> Result<Review> {
+        let mut review = review(cx.home, profile)?;
+        super::keep_chosen(&mut review, cx.place.review(row.key)?.as_ref());
+        Ok(review)
+    }
+
+    fn summary(&self, _: &'static Row, review: &Review) -> String {
+        summary(review)
+    }
+
+    fn land(
+        &self,
+        cx: &Cx<'_>,
+        _: &'static Row,
+        review: &Review,
+        _: Option<&super::files::Sink>,
+        lander: &mut Lander<'_>,
+    ) -> Result<()> {
+        land(cx.home, review, lander)
+    }
+}
 
 /// The source name `tilo migrate` uses.
 pub const SOURCE: &str = "thunderbird";
@@ -45,7 +96,7 @@ const CONTACTS_PER_ACTION: usize = 100;
 /// No Thunderbird profile is here, or none that is here could be read; the
 /// message names what could not be read and why.
 pub fn review(home: &Path, profile: Option<&str>) -> Result<Review> {
-    let scan = migration_sources::thunderbird::scan(home);
+    let scan = crate::thunderbird::scan(home);
     let reviewed = readable_profile(&scan, profile)?;
     let found = reviewed.profile();
     let mut items = Vec::new();
@@ -91,10 +142,7 @@ pub fn review(home: &Path, profile: Option<&str>) -> Result<Review> {
 }
 
 /// What `account` offers: connecting it, when Mail can sync it from its server.
-fn account_items(
-    account: &migration_sources::thunderbird::ThunderbirdAccount,
-    items: &mut Vec<Item>,
-) {
+fn account_items(account: &crate::thunderbird::ThunderbirdAccount, items: &mut Vec<Item>) {
     let key = account_key(account);
     let servers = servers(account);
     let provider = signs_in_with(account);
@@ -131,9 +179,9 @@ fn account_items(
 /// The reviewed profile `profile` names by its id or label, or the first one
 /// that could be read.
 fn readable_profile<'a>(
-    scan: &'a migration_sources::thunderbird::Scan,
+    scan: &'a crate::thunderbird::Scan,
     profile: Option<&str>,
-) -> Result<&'a migration_sources::thunderbird::ReviewedThunderbird> {
+) -> Result<&'a crate::thunderbird::ReviewedThunderbird> {
     if scan.reviewed.is_empty() {
         return if scan.problems.is_empty() {
             Err(anyhow!("no Thunderbird profile on this computer"))
@@ -169,7 +217,7 @@ fn readable_profile<'a>(
 }
 
 /// What `tilo migrate choose` names an account by: its address, else its name.
-fn account_key(account: &migration_sources::thunderbird::ThunderbirdAccount) -> String {
+fn account_key(account: &crate::thunderbird::ThunderbirdAccount) -> String {
     account
         .email
         .clone()
@@ -217,7 +265,7 @@ pub fn summary(review: &Review) -> String {
 /// The profile could not be read, the person said no to connecting an account, or the server or
 /// the workspace refused; what landed before stays landed.
 pub fn land(home: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()> {
-    let profiles = migration_sources::thunderbird::discover(home).map_err(|why| anyhow!(why))?;
+    let profiles = crate::thunderbird::discover(home).map_err(|why| anyhow!(why))?;
     let profile = profiles
         .iter()
         .find(|profile| profile.source_id == review.handle)
@@ -227,7 +275,7 @@ pub fn land(home: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()>
         .into_iter()
         .map(|item| item.key.as_str())
         .collect();
-    let mut saved: Option<Vec<migration_sources::thunderbird::SavedLogin>> = None;
+    let mut saved: Option<Vec<crate::thunderbird::SavedLogin>> = None;
     for account in &profile.accounts {
         let key = account_key(account);
         if !chosen.contains(key.as_str()) {
@@ -235,9 +283,9 @@ pub fn land(home: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()>
         }
         if saved.is_none() {
             saved = Some(
-                match migration_sources::thunderbird::saved_logins(home, &profile.source_id) {
+                match crate::thunderbird::saved_logins(home, &profile.source_id) {
                     Ok(logins) => logins,
-                    Err(migration_sources::thunderbird::LoginsError::NoneSaved) => Vec::new(),
+                    Err(crate::thunderbird::LoginsError::NoneSaved) => Vec::new(),
                     Err(why) => {
                         lander.say(&format!(
                             "{why}: each account is connected without its password, and Mail \
@@ -255,9 +303,8 @@ pub fn land(home: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()>
             continue;
         }
         lander.open("contacts");
-        let contacts =
-            migration_sources::thunderbird::contacts(home, &profile.source_id, &book.source_id)
-                .map_err(|why| anyhow!(why))?;
+        let contacts = crate::thunderbird::contacts(home, &profile.source_id, &book.source_id)
+            .map_err(|why| anyhow!(why))?;
         for batch in contacts.chunks(CONTACTS_PER_ACTION) {
             lander.batch(
                 batch,
@@ -275,9 +322,8 @@ pub fn land(home: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()>
             continue;
         }
         lander.open("calendar");
-        let events =
-            migration_sources::thunderbird::events(home, &profile.source_id, &calendar.source_id)
-                .map_err(|why| anyhow!(why))?;
+        let events = crate::thunderbird::events(home, &profile.source_id, &calendar.source_id)
+            .map_err(|why| anyhow!(why))?;
         for event in events {
             let key = format!("event:{}", text(&event, "id"));
             lander.once(&key, "events", |workspace, run| {
@@ -299,8 +345,8 @@ pub fn land(home: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()>
 /// The account has no server settings Mail can use, the person said no, or the server refused
 /// (its mail server did not take the password, say), in its words.
 fn connect_account(
-    account: &migration_sources::thunderbird::ThunderbirdAccount,
-    logins: &[migration_sources::thunderbird::SavedLogin],
+    account: &crate::thunderbird::ThunderbirdAccount,
+    logins: &[crate::thunderbird::SavedLogin],
     lander: &mut Lander<'_>,
 ) -> Result<()> {
     if let Some(provider) = signs_in_with(account) {
@@ -321,7 +367,7 @@ fn connect_account(
 /// Thunderbird keeps, which Thunderbird's own sign-in made for Thunderbird alone. Told as such,
 /// and noted nowhere, so a later migration looks again; one the server lists already is.
 fn through_provider(
-    account: &migration_sources::thunderbird::ThunderbirdAccount,
+    account: &crate::thunderbird::ThunderbirdAccount,
     provider: &str,
     lander: &mut Lander<'_>,
 ) -> Result<()> {
@@ -344,9 +390,7 @@ fn through_provider(
 
 /// The provider whose own sign-in `account` uses (Google, Microsoft), when Thunderbird signs in
 /// to it that way rather than with a password.
-fn signs_in_with(
-    account: &migration_sources::thunderbird::ThunderbirdAccount,
-) -> Option<&'static str> {
+fn signs_in_with(account: &crate::thunderbird::ThunderbirdAccount) -> Option<&'static str> {
     let candidate = account.settings.as_ref()?.candidate.as_ref()?;
     candidate
         .requires_oauth()
@@ -448,7 +492,7 @@ struct Servers {
 
 /// The servers of `account`, when it is one Mail syncs from a server (IMAP), not a local or
 /// POP one.
-fn servers(account: &migration_sources::thunderbird::ThunderbirdAccount) -> Option<Servers> {
+fn servers(account: &crate::thunderbird::ThunderbirdAccount) -> Option<Servers> {
     let config = config(account)?;
     Some(Servers {
         imap_host: config.imap_host,
@@ -461,7 +505,7 @@ fn servers(account: &migration_sources::thunderbird::ThunderbirdAccount) -> Opti
 /// The settings Mail would keep for `account`, checked: `None` for an account Mail cannot reach
 /// (local folders, POP) or whose settings do not check.
 fn config(
-    account: &migration_sources::thunderbird::ThunderbirdAccount,
+    account: &crate::thunderbird::ThunderbirdAccount,
 ) -> Option<accounts::email::AccountConfig> {
     use accounts::email::AuthMethod;
     let candidate = account.settings.as_ref()?.candidate.as_ref()?;
@@ -475,19 +519,14 @@ fn config(
 /// Thunderbird saved for it: `None` for an account Mail cannot reach (local folders, POP) or
 /// whose settings do not check.
 fn account_arguments(
-    account: &migration_sources::thunderbird::ThunderbirdAccount,
-    logins: &[migration_sources::thunderbird::SavedLogin],
+    account: &crate::thunderbird::ThunderbirdAccount,
+    logins: &[crate::thunderbird::SavedLogin],
 ) -> Option<Value> {
     use accounts::email::AuthMethod;
     let config = config(account)?;
     let password = (config.auth == AuthMethod::Password)
         .then(|| {
-            migration_sources::thunderbird::password_for(
-                logins,
-                "imap",
-                &config.imap_host,
-                &config.username,
-            )
+            crate::thunderbird::password_for(logins, "imap", &config.imap_host, &config.username)
         })
         .flatten();
     let identities: Vec<String> = account

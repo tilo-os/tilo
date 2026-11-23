@@ -378,7 +378,7 @@ members = [
     "crates/integrations/account-probe",
     "crates/integrations/mail-engine",
     "crates/integrations/mail-session",
-    "crates/import/migration-sources",
+    "crates/import/migrate",
     "crates/platform/pc-keyboard-geometry",
     "crates/platform/tilo-app-id",
     "crates/platform/tilo-appearance",

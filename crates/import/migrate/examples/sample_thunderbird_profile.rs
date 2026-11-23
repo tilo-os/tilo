@@ -28,9 +28,9 @@ fn main() {
         let (imap_host, imap_port) = at(imap);
         let (smtp_host, smtp_port) = at(smtp);
         let password = std::fs::read_to_string(password_file).unwrap_or_default();
-        migration_sources::thunderbird::fixture::write_live_profile(
+        tilo_migrate::thunderbird::fixture::write_live_profile(
             home,
-            &migration_sources::thunderbird::fixture::LiveAccount {
+            &tilo_migrate::thunderbird::fixture::LiveAccount {
                 name: "Ada Lovelace".into(),
                 email: email.clone(),
                 also_sends_as: Some(("Ada at the lab".into(), "ada.lab@example.test".into())),
@@ -43,5 +43,5 @@ fn main() {
         );
         return;
     }
-    migration_sources::thunderbird::fixture::write_sample_profile(home);
+    tilo_migrate::thunderbird::fixture::write_sample_profile(home);
 }

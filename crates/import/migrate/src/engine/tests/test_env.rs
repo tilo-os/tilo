@@ -8,7 +8,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 use super::super::state::{Journal, Place, RunState};
-use super::super::workspace::{Answer, Invocation, Refused, Workspace};
+use super::super::writer::{Answer, Invocation, Refused, Workspace};
 use super::super::{Lander, Stopped, thunderbird};
 
 /// What the person was told and asked during a migration, and whether they said yes.
@@ -87,6 +87,27 @@ impl Recorded {
             .map(|(_, _, args)| args)
             .collect()
     }
+}
+
+/// Run `f` with what a migration of `home` into `place` runs with, reaching no workspace and
+/// asking nobody for a secret.
+pub fn with_cx<T>(
+    place: &Place,
+    home: &std::path::Path,
+    f: impl FnOnce(&super::super::Cx<'_>) -> T,
+) -> T {
+    let folders = std::collections::BTreeMap::new();
+    let open = || -> Result<Box<dyn Workspace>> { anyhow::bail!("this test reaches no workspace") };
+    let secret = |_: &str, _: Option<&std::path::Path>| -> Result<zeroize::Zeroizing<String>> {
+        anyhow::bail!("nobody types a secret in this test")
+    };
+    f(&super::super::Cx {
+        place,
+        home,
+        folders: &folders,
+        open: &open,
+        secret: &secret,
+    })
 }
 
 /// One landing of `source`, as `tilo migrate start` makes it: the journal it leaves behind, its

@@ -7,13 +7,13 @@
 //! actions, so the person gets real contacts and events rather than an unused
 //! copy under `mail-import`.
 //!
-//! What the file holds is read by `migration_sources::thunderbird::personal_data`,
+//! What the file holds is read by `tilo_migrate::thunderbird::personal_data`,
 //! which the laptop command reads the same way.
 
 use std::io;
 use std::path::Path;
 
-pub(super) use migration_sources::thunderbird::personal_data::{Sidecar, canonical};
+pub(super) use tilo_migrate::thunderbird::personal_data::{Sidecar, canonical};
 
 /// Publish `bytes` for the owning app when they carry canonical personal data.
 /// Returns whether a pending import was written.

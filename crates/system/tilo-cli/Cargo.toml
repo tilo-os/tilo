@@ -65,7 +65,6 @@ rustls.workspace = true
 ed25519-dalek.workspace = true
 postcard.workspace = true
 hex.workspace = true
-rand.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "io-std", "signal"] }
 # `tilo mcp`: the MCP projection of a workspace, its actions asked of the
 # workspace's host through this device's session, as the person their
@@ -101,21 +100,11 @@ tracing-subscriber = { workspace = true, features = ["fmt", "registry", "std"] }
 # The person's workspace list, as the peer asks for the folders it keeps.
 tilo-server-session = { path = "../../server/tilo-server-session" }
 
-# `tilo migrate`: the migration sources the Tilo OS installer reads (Thunderbird, Outline,
-# Linear), brought into the workspace from this computer.
-migration-sources = { path = "../../import/migration-sources" }
-# An email account's settings as Mail keeps them, for the person's accounts.
-accounts = { path = "../../integrations/accounts" }
-# Cloud drives sign in, refresh and resolve their storage as the installer and Settings do.
-account-credentials = { path = "../../integrations/account-credentials" }
-cloud-source = { path = "../../integrations/cloud-source" }
-# A browser profile's bookmarks and history, read by the installer's readers.
-browser-continuity = { workspace = true, features = ["native"] }
+# `tilo migrate`: the terminal's view of the one migration engine.
+tilo-migrate = { path = "../../import/migrate" }
 url.workspace = true
 blake3.workspace = true
-uuid.workspace = true
 zeroize.workspace = true
-tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 # The person's root, kept in their identity store.
 tilo-identity = { path = "../../runtime/tilo-identity" }
@@ -132,11 +121,6 @@ tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 test-http = { path = "../../../tools/test-http" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
-# A server a ticket's computer enters, as the person's device.
-migration-sources = { path = "../../import/migration-sources", features = ["fixture"] }
-# Fake cloud drives for `tilo migrate`'s cloud sources.
-cloud-source-dav = { path = "../../integrations/cloud-source-dav", features = ["fake-server"] }
-cloud-source-gdrive = { path = "../../integrations/cloud-source-gdrive", features = ["fake-server"] }
 
 [[test]]
 name = "it"

@@ -10,7 +10,7 @@ use crate::account_store::Accounts;
 use crate::migration_store::MigrationStore;
 use accounts::AccountId;
 use accounts::person::AccountList;
-use migration_sources::service::*;
+use tilo_migrate::service::*;
 use tilo_resource::Replica;
 
 /// The destination's accounts record, read so a landed edit can be kept and projected, as the
@@ -32,7 +32,7 @@ fn project(config_root: &Path, record: &mut Replica<AccountList>) {
 fn connect(config_root: &Path, address: ServiceAddress) -> Result<AccountId, ServiceError> {
     let mut record = record(config_root);
     let (id, edit) =
-        migration_sources::service::connect(config_root, &record.state().unwrap(), address)?;
+        tilo_migrate::service::connect(config_root, &record.state().unwrap(), address)?;
     record
         .apply_confirmed(edit)
         .map_err(|_| ServiceError::Storage)?;
@@ -42,12 +42,12 @@ fn connect(config_root: &Path, address: ServiceAddress) -> Result<AccountId, Ser
 
 fn connected(config_root: &Path) -> Vec<(AccountId, ServiceKind, String)> {
     let record = record(config_root);
-    migration_sources::service::connected(&record.state().unwrap())
+    tilo_migrate::service::connected(&record.state().unwrap())
 }
 
 fn review(config_root: &Path, account: &str) -> Result<ServiceReview, ServiceError> {
     let record = record(config_root);
-    migration_sources::service::review(config_root, &record.state().unwrap(), account)
+    tilo_migrate::service::review(config_root, &record.state().unwrap(), account)
 }
 
 fn run(
@@ -60,13 +60,13 @@ fn run(
     let mut record = record(config_root);
     let state = record.state().unwrap();
     let mut publish = |account: &str| {
-        let edit = migration_sources::service::publish_mail(&record.state().unwrap(), account)?;
+        let edit = tilo_migrate::service::publish_mail(&record.state().unwrap(), account)?;
         record
             .apply_confirmed(edit)
             .map_err(|error| error.to_string())?;
         Ok(())
     };
-    let result = migration_sources::service::run(
+    let result = tilo_migrate::service::run(
         config_root,
         &state,
         journal,

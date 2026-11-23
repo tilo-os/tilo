@@ -17,9 +17,9 @@ use std::sync::atomic::AtomicBool;
 use accounts::AccountId;
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, OpenOptions};
-use migration_sources::pinned::PinnedDirectory;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use tilo_migrate::pinned::PinnedDirectory;
 use tilo_seal::{Context, FrameError, Label, SymmetricKey, content, envelope};
 
 use crate::account_sources::thunderbird::{

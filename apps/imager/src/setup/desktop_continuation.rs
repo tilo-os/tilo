@@ -416,7 +416,7 @@ impl Continuation {
 
 pub(super) fn offer_familiar_folders() {
     std::thread::spawn(|| {
-        let sources: Vec<PathBuf> = migration_sources::known_folders::discover()
+        let sources: Vec<PathBuf> = tilo_migrate::known_folders::discover()
             .into_iter()
             .filter_map(|folder| folder.path)
             .collect();

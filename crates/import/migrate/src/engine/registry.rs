@@ -1,5 +1,5 @@
-//! Every source `tilo migrate` brings things from, in one table: its name, what it is, how it is
-//! connected, which engine reads it and where History keeps what it brought. `sources`, the help text,
+//! Every source the engine brings things from, in one table: its name, what it is, how it is
+//! connected, which [`super::Source`] reads it and where History keeps what it brought. `sources`, the help text,
 //! the names commands accept and `undo` all read it, so a new source is one row here and one
 //! engine arm.
 
@@ -22,7 +22,7 @@ pub enum Engine {
 
 /// One source.
 #[derive(Debug)]
-pub struct Source {
+pub struct Row {
     /// The name commands take (`tilo migrate start gdrive`).
     pub key: &'static str,
     /// Other names commands accept for it.
@@ -36,7 +36,7 @@ pub struct Source {
     pub resources: &'static [&'static str],
 }
 
-impl Source {
+impl Row {
     /// The command that connects it, when it needs one.
     #[must_use]
     pub fn connect_command(&self) -> Option<String> {
@@ -53,8 +53,8 @@ impl Source {
 /// Files a migration puts into the workspace's tree go in the tree's History.
 const FILES: &[&str] = &["files/files.tree"];
 
-pub const SOURCES: &[Source] = &[
-    Source {
+pub const SOURCES: &[Row] = &[
+    Row {
         key: "home",
         aliases: &["folders", "files"],
         title: "Folders on this computer (Documents, Pictures, … or any folder)",
@@ -62,7 +62,7 @@ pub const SOURCES: &[Source] = &[
         connect: None,
         resources: FILES,
     },
-    Source {
+    Row {
         key: "browsers",
         aliases: &["browser", "firefox", "chrome", "chromium"],
         title: "Browsers on this computer: bookmarks, history and saved passwords",
@@ -74,7 +74,7 @@ pub const SOURCES: &[Source] = &[
             "passwords/passwords.vault",
         ],
     },
-    Source {
+    Row {
         key: "thunderbird",
         aliases: &[],
         title: "Thunderbird on this computer: mail, address books, calendars",
@@ -87,7 +87,7 @@ pub const SOURCES: &[Source] = &[
             "calendar/calendar.calendar",
         ],
     },
-    Source {
+    Row {
         key: "mail",
         aliases: &["imap"],
         title: "A mail account on its server (IMAP)",
@@ -95,7 +95,7 @@ pub const SOURCES: &[Source] = &[
         connect: Some("--login you@example.com"),
         resources: &["mail/mail.mailbox"],
     },
-    Source {
+    Row {
         key: "gdrive",
         aliases: &["google-drive", "drive"],
         title: "Google Drive",
@@ -103,7 +103,7 @@ pub const SOURCES: &[Source] = &[
         connect: Some(""),
         resources: FILES,
     },
-    Source {
+    Row {
         key: "onedrive",
         aliases: &[],
         title: "OneDrive",
@@ -111,7 +111,7 @@ pub const SOURCES: &[Source] = &[
         connect: Some(""),
         resources: FILES,
     },
-    Source {
+    Row {
         key: "dropbox",
         aliases: &[],
         title: "Dropbox",
@@ -119,7 +119,7 @@ pub const SOURCES: &[Source] = &[
         connect: Some(""),
         resources: FILES,
     },
-    Source {
+    Row {
         key: "icloud",
         aliases: &["icloud-drive"],
         title: "iCloud Drive",
@@ -127,7 +127,7 @@ pub const SOURCES: &[Source] = &[
         connect: Some("--login you@icloud.com"),
         resources: FILES,
     },
-    Source {
+    Row {
         key: "nextcloud",
         aliases: &[],
         title: "Nextcloud",
@@ -135,7 +135,7 @@ pub const SOURCES: &[Source] = &[
         connect: Some("--url https://cloud.example.com --login you"),
         resources: FILES,
     },
-    Source {
+    Row {
         key: "webdav",
         aliases: &["dav"],
         title: "A WebDAV server",
@@ -143,7 +143,7 @@ pub const SOURCES: &[Source] = &[
         connect: Some("--url https://dav.example.com/files --login you"),
         resources: FILES,
     },
-    Source {
+    Row {
         key: "outline",
         aliases: &[],
         title: "Outline",
@@ -151,7 +151,7 @@ pub const SOURCES: &[Source] = &[
         connect: Some("--url https://your-team.getoutline.com"),
         resources: &["notes"],
     },
-    Source {
+    Row {
         key: "linear",
         aliases: &[],
         title: "Linear",
@@ -159,7 +159,7 @@ pub const SOURCES: &[Source] = &[
         connect: Some(""),
         resources: &["tasks/tasks.tracker"],
     },
-    Source {
+    Row {
         key: "forgejo",
         aliases: &["gitea"],
         title: "Forgejo (or Gitea) issues",
@@ -173,7 +173,7 @@ pub const SOURCES: &[Source] = &[
 ///
 /// # Errors
 /// No source goes by that name; the error lists them.
-pub fn named(name: &str) -> Result<&'static Source> {
+pub fn named(name: &str) -> Result<&'static Row> {
     let name = name.trim().to_ascii_lowercase();
     if let Some(source) = SOURCES
         .iter()

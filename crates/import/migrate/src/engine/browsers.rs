@@ -1,5 +1,5 @@
 //! Browsers on this computer as a migration source: each profile's bookmarks, history and saved
-//! passwords, read by the installer's readers ([`migration_sources::browsers`],
+//! passwords, read by the installer's readers ([`crate::browsers`],
 //! [`browser_continuity`]) and landed through the apps' own actions: bookmarks into the person's
 //! library in Browser (`import-bookmarks`), history into their private history
 //! (`import-history-bundle`), each password into their vault in Passwords (`save-login`, whose
@@ -9,11 +9,45 @@ use std::path::Path;
 
 use anyhow::{Result, anyhow};
 use browser_continuity::imports::{ImportBatch, ImportBundle};
-use migration_sources::browsers::{self, BrowserProfile, Engine};
 use serde_json::json;
 
+use super::registry::Row;
 use super::state::{Item, Review};
-use super::{Landed, Lander};
+use super::{Cx, Here, Landed, Lander, Source};
+use crate::browsers::{self, BrowserProfile, Engine};
+
+/// The browsers on this computer.
+pub struct Browsers;
+
+impl Source for Browsers {
+    fn here(&self, _: &Cx<'_>, row: &'static Row) -> Here {
+        Here {
+            next: Some(format!("tilo migrate review {}", row.key)),
+            ..Here::default()
+        }
+    }
+
+    fn review(&self, cx: &Cx<'_>, row: &'static Row, _: Option<&str>) -> Result<Review> {
+        let mut review = review(cx.home);
+        super::keep_chosen(&mut review, cx.place.review(row.key)?.as_ref());
+        Ok(review)
+    }
+
+    fn summary(&self, _: &'static Row, review: &Review) -> String {
+        summary(review)
+    }
+
+    fn land(
+        &self,
+        cx: &Cx<'_>,
+        _: &'static Row,
+        review: &Review,
+        _: Option<&super::files::Sink>,
+        lander: &mut Lander<'_>,
+    ) -> Result<()> {
+        land(cx.home, review, lander)
+    }
+}
 
 const IMPORT_BOOKMARKS: &str = "browser/browser.personal-bookmarks#import-bookmarks";
 const IMPORT_HISTORY: &str = "browser/browser.browsing-history#import-history-bundle";
@@ -25,7 +59,7 @@ const ROWS_PER_CALL: usize = 4_000;
 struct Read {
     bookmarks: Option<ImportBundle>,
     history: Option<ImportBundle>,
-    logins: Result<Vec<migration_sources::thunderbird::SavedLogin>, String>,
+    logins: Result<Vec<crate::thunderbird::SavedLogin>, String>,
 }
 
 fn config_dir(home: &Path) -> std::path::PathBuf {

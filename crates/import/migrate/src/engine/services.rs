@@ -1,5 +1,5 @@
 //! Outline, Linear and Forgejo as migration sources, through the installer's own service sources
-//! ([`migration_sources::service`]): the same connection check, review, journal and resume.
+//! ([`crate::service`]): the same connection check, review, journal and resume.
 //!
 //! Their keys are typed by the person and kept in this computer's account vault; the review,
 //! the journal and every request to the service happen here. What comes over lands as the
@@ -16,11 +16,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
-use anyhow::{Result, anyhow, bail};
-use migration_sources::service::{
+use crate::service::{
     self, Delivered, IncomingAuthor, IncomingGroup, IncomingIssue, IncomingPage, RefusedItem,
     ServiceAddress, ServiceJournal, ServiceKind, ServiceReview,
 };
+use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -65,6 +65,88 @@ const TITLE_CHARS: usize = 240;
 const ISSUE_KIND: &str = "tasks.tracker.issues";
 use tilo_app_id::apps::TASKS as TASKS_APP;
 
+/// A service reached with a key or a password: Outline, Linear, Forgejo, a mail account.
+pub struct Services;
+
+impl super::Source for Services {
+    fn here(&self, cx: &super::Cx<'_>, row: &'static super::registry::Row) -> super::Here {
+        let connected = sources(cx);
+        let service = connected
+            .iter()
+            .find(|service| service.get("source").and_then(Value::as_str) == Some(row.key));
+        match service
+            .and_then(|service| service.get("next"))
+            .and_then(Value::as_str)
+        {
+            Some(next) if next.contains("review") => super::Here {
+                here: service.and_then(|service| service.get("title")).cloned(),
+                next: Some(next.to_owned()),
+                unavailable: None,
+            },
+            _ => super::Here {
+                next: row.connect_command(),
+                ..super::Here::default()
+            },
+        }
+    }
+
+    fn connect(
+        &self,
+        cx: &super::Cx<'_>,
+        row: &'static super::registry::Row,
+        how: super::Connecting<'_>,
+    ) -> Result<Value> {
+        connect(cx, row.key, how)
+    }
+
+    fn review(
+        &self,
+        cx: &super::Cx<'_>,
+        row: &'static super::registry::Row,
+        _: Option<&str>,
+    ) -> Result<Review> {
+        review(cx, row.key)
+    }
+
+    fn chose(&self, cx: &super::Cx<'_>, review: &Review) -> Result<()> {
+        choose(cx.place, review)
+    }
+
+    fn summary(&self, _: &'static super::registry::Row, review: &Review) -> String {
+        summary(review)
+    }
+
+    fn land(
+        &self,
+        _: &super::Cx<'_>,
+        _: &'static super::registry::Row,
+        review: &Review,
+        _: Option<&super::files::Sink>,
+        lander: &mut Lander<'_>,
+    ) -> Result<()> {
+        land(review, lander)
+    }
+
+    fn landed(
+        &self,
+        cx: &super::Cx<'_>,
+        row: &'static super::registry::Row,
+        _: &super::state::Journal,
+    ) -> Result<usize> {
+        landed(cx.place, row.key)
+    }
+
+    fn forget(
+        &self,
+        cx: &super::Cx<'_>,
+        row: &'static super::registry::Row,
+        run: &str,
+        keys: &std::collections::BTreeSet<String>,
+    ) -> Result<()> {
+        forget(cx.place, row.key, run, keys)
+    }
+}
+
 fn kind(source: &str) -> Result<ServiceKind> {
     ServiceKind::from_key(source)
         .ok_or_else(|| anyhow!("{source:?} is not a service `tilo migrate` connects"))
@@ -75,8 +157,8 @@ fn config_root() -> Result<std::path::PathBuf> {
 }
 
 /// The workspace's accounts, as this computer's held session reads them.
-fn record() -> Result<AccountList> {
-    super::workspace::accounts(&mut super::workspace::Held::connect()?)
+fn record(cx: &super::Cx<'_>) -> Result<AccountList> {
+    super::writer::accounts(&mut *cx.open()?)
 }
 
 /// The account a connected `source` is reached with among the workspace's `record`: for mail,
@@ -105,13 +187,13 @@ fn account(place: &Place, source: &str, record: &AccountList) -> Result<String> 
 }
 
 /// `tilo migrate connect`: check the key or password the person types and keep it in the vault.
-pub fn connect(
-    place: &Place,
-    source: &str,
-    url: Option<&str>,
-    login: Option<&str>,
-    secret_file: Option<&Path>,
-) -> Result<Value> {
+pub fn connect(cx: &super::Cx<'_>, source: &str, how: super::Connecting<'_>) -> Result<Value> {
+    let place = cx.place;
+    let super::Connecting {
+        url,
+        login,
+        secret_file,
+    } = how;
     let kind = kind(source)?;
     let server = url.unwrap_or_default().to_owned();
     if kind == ServiceKind::Outline && server.is_empty() {
@@ -132,12 +214,12 @@ pub fn connect(
         ServiceKind::Forgejo => "Forgejo access token".to_owned(),
         ServiceKind::Mail => format!("Password of {login}"),
     };
-    let secret = super::secret(&format!("{what} (it is not shown): "), secret_file)?;
+    let secret = cx.secret(&format!("{what} (it is not shown): "), secret_file)?;
     if secret.is_empty() {
         bail!("nothing was typed");
     }
-    let mut workspace = super::workspace::Held::connect()?;
-    let record = super::workspace::accounts(&mut workspace)?;
+    let mut workspace = cx.open()?;
+    let record = super::writer::accounts(&mut *workspace)?;
     let (account, saving) = service::connect(
         &config_root()?,
         &record,
@@ -149,7 +231,7 @@ pub fn connect(
         },
     )
     .map_err(|error| anyhow!("{source}: {error}"))?;
-    super::workspace::change_accounts(&mut workspace, (&saving.address(), &saving.arguments))?;
+    super::writer::change_accounts(&mut *workspace, (&saving.address(), &saving.arguments))?;
     if kind == ServiceKind::Mail {
         place.keep(&place.path(source, "account.json"), &account.as_str())?;
     }
@@ -166,9 +248,9 @@ pub fn connect(
 }
 
 /// The connected services, as `tilo migrate sources` lists them.
-pub fn sources() -> Vec<Value> {
+pub fn sources(cx: &super::Cx<'_>) -> Vec<Value> {
     // Without the workspace's accounts nothing reads as connected: each source says how to.
-    let record = record().unwrap_or_default();
+    let record = record(cx).unwrap_or_default();
     let mut found: Vec<Value> = service::connected(&record)
         .into_iter()
         .map(|(_, kind, title)| {
@@ -243,8 +325,9 @@ pub fn forget(
 const NOTED: &str = "service:";
 
 /// Review the connected `source` now, keeping what was chosen and what already came over.
-pub fn review(place: &Place, source: &str) -> Result<Review> {
-    let record = record()?;
+pub fn review(cx: &super::Cx<'_>, source: &str) -> Result<Review> {
+    let place = cx.place;
+    let record = record(cx)?;
     let account = account(place, source, &record)?;
     let mut fresh = service::review(&config_root()?, &record, &account)
         .map_err(|error| anyhow!("{source}: {error}"))?;
@@ -356,7 +439,7 @@ pub fn land(review: &Review, lander: &mut Lander<'_>) -> Result<()> {
         return land_mail(review, lander);
     }
     let root = config_root()?;
-    let record = super::workspace::accounts(lander.workspace)?;
+    let record = super::writer::accounts(lander.workspace)?;
     // A mail account lands as `land_mail` lands it: nothing else publishes one.
     let mut publish = |account: &str| Err(format!("{account} is no source to publish"));
     land_with(&review.source, lander, |journal, landing, save, cancel| {
@@ -432,7 +515,7 @@ fn land_mail(review: &Review, lander: &mut Lander<'_>) -> Result<()> {
     if !review.chosen().iter().any(|item| item.key == review.handle) {
         return Ok(());
     }
-    let record = super::workspace::accounts(lander.workspace)?;
+    let record = super::writer::accounts(lander.workspace)?;
     let (config, password) = service::mail_account(&config_root()?, &record, &review.handle)
         .map_err(|error| anyhow!("mail: {error}"))?;
     let mut adding = json!({
@@ -573,8 +656,8 @@ fn calls<T>(members: &[T], count: usize, bytes: usize, size: impl Fn(&T) -> usiz
 /// # Errors
 /// The workspace could not be reached: what was answered before is landed.
 fn grouped(
-    workspace: &mut dyn super::workspace::Workspace,
-    invocation: &super::workspace::Invocation,
+    workspace: &mut dyn super::writer::Workspace,
+    invocation: &super::writer::Invocation,
     resource: &str,
     members: &[Member],
 ) -> Result<Vec<Option<anyhow::Error>>> {
@@ -588,8 +671,8 @@ fn grouped(
 }
 
 fn settle(
-    workspace: &mut dyn super::workspace::Workspace,
-    invocation: &super::workspace::Invocation,
+    workspace: &mut dyn super::writer::Workspace,
+    invocation: &super::writer::Invocation,
     resource: &str,
     members: &[Member],
     outcomes: &mut Vec<Option<anyhow::Error>>,
@@ -632,7 +715,7 @@ fn settle(
 }
 
 /// The ids a call that made items answered, in the order it made them.
-fn made_ids(answer: &super::workspace::Answer) -> Vec<String> {
+fn made_ids(answer: &super::writer::Answer) -> Vec<String> {
     answer
         .result()
         .and_then(|value| value.get("made"))
@@ -651,7 +734,7 @@ fn made_ids(answer: &super::workspace::Answer) -> Vec<String> {
 /// is never taken as a refusal of the items asked (a list halved down to single issues, each
 /// made without its parent).
 fn refused_for_good(error: &anyhow::Error) -> bool {
-    super::workspace::Refused::of(error).is_some_and(|refused| !refused.asks_again())
+    super::writer::Refused::of(error).is_some_and(|refused| !refused.asks_again())
 }
 
 fn refusal(key: &str, name: &str, error: &anyhow::Error) -> RefusedItem {
@@ -1276,13 +1359,13 @@ fn millis(at: &str) -> Option<i64> {
 
 /// Whether `error` is the refusal that says a note from this source is in the notebook already.
 fn already_imported(error: &anyhow::Error) -> bool {
-    super::workspace::Refused::of(error)
+    super::writer::Refused::of(error)
         .is_some_and(|refused| refused.code() == tilo_actions::codes::NOTE_ALREADY_IMPORTED)
 }
 
 /// The id Tasks answered for the issue it made, as the record its answer names
 /// (`tasks.issues/issues/<id>`) or the id in its value.
-fn created_id(answer: &super::workspace::Answer) -> Option<String> {
+fn created_id(answer: &super::writer::Answer) -> Option<String> {
     let value = answer.result()?;
     // What the write made, per item: its id and the address it is published
     // under. Nothing reads an id out of what the answer says it touched.

@@ -577,23 +577,7 @@ fn say_answered_late(peer: &Value) {
     );
 }
 
-/// `n` bytes as a person reads them: one decimal in the largest unit that
-/// holds a whole one.
-pub(crate) fn size(n: u64) -> String {
-    let units = [
-        ("TB", 1_000_000_000_000_u64),
-        ("GB", 1_000_000_000),
-        ("MB", 1_000_000),
-        ("KB", 1_000),
-    ];
-    units.iter().find(|(_, scale)| n >= *scale).map_or_else(
-        || format!("{n} B"),
-        |(unit, scale)| {
-            let tenths = n.saturating_mul(10).checked_div(*scale).unwrap_or(0);
-            format!("{}.{} {unit}", tenths / 10, tenths % 10)
-        },
-    )
-}
+use tilo_migrate::engine::size;
 
 /// What `tilo status` prints of the peer's answer to its status request.
 pub(crate) fn describe(status: &serde_json::Value) -> String {

@@ -10,10 +10,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use accounts::person::{self, AccountList};
 use accounts::{Account, AccountId, Secret, SecretVault};
-use migration_sources::vault::VaultError;
+use tilo_migrate::vault::VaultError;
 use tilo_resource::{Invoke, Replica};
 
-pub use migration_sources::vault::PrivateSecret;
+pub use tilo_migrate::vault::PrivateSecret;
 
 /// `config_root`'s accounts as the record it stages, or none where it keeps none.
 #[must_use]
@@ -239,6 +239,6 @@ fn seal_and_edit(
 ) -> Result<Vec<Invoke<AccountList>>, ConnectionError> {
     // The vault write must succeed before the account is landed. A crash between the two leaves
     // a sealed orphan, never a plaintext credential or an account without its grant.
-    migration_sources::vault::seal(root, &account.id, secret)?;
+    tilo_migrate::vault::seal(root, &account.id, secret)?;
     Ok(vec![AccountList::saving(account)])
 }

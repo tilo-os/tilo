@@ -204,11 +204,11 @@ pub fn sync_directory(file: &File) -> io::Result<()> {
     sync_file(&reopened)
 }
 
-pub use migration_sources::pinned::readable_directory;
+pub use tilo_migrate::pinned::readable_directory;
 
 /// The persistent volume identity of a pinned directory itself.
 pub fn directory_identity(
-    directory: &migration_sources::pinned::PinnedDirectory,
+    directory: &tilo_migrate::pinned::PinnedDirectory,
 ) -> io::Result<Identity> {
     identity(&readable_directory(&directory.file)?)
 }
