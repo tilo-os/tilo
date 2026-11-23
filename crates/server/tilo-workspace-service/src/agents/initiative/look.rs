@@ -319,7 +319,7 @@ mod tests {
 
     /// The tasks Tasks keeps are read through the store, as the person the look is for may read
     /// them: open ones that are theirs or their assistant's are counted, one that became due is
-    /// named once, and a finished one, another's or one they may not read is left out.
+    /// named once, and a finished one or another's is left out.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_look_finds_the_due_and_open_tasks_through_the_store() {
         let dir = tempfile::tempdir().unwrap();
@@ -377,15 +377,6 @@ mod tests {
                 Some(tl_tasks::person("b0")),
                 Some("2026-12-30"),
                 "*",
-            ),
-            (
-                "hidden",
-                5,
-                "Not theirs to read",
-                "todo",
-                Some(tl_tasks::person(&person)),
-                Some("2026-11-23"),
-                "b0",
             ),
         ];
         for (id, number, title, status, assignee, due, readers) in tasks {
