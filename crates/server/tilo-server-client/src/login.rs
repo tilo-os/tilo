@@ -216,6 +216,12 @@ pub struct Admission {
     pub name: String,
     /// What the device's person may do there.
     pub role: tilo_server_protocol::workspaces::Role,
+    /// The host's own signed address for the workspace (a
+    /// `tilo_peer_state::join::TransportHint`, postcard): where this device's
+    /// workspace service takes the workspace in as a member. `None` from a host
+    /// that has no such address.
+    #[serde(skip)]
+    pub host: Option<Vec<u8>>,
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

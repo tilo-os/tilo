@@ -428,14 +428,12 @@ impl Peer {
         (folder_name, at): (&str, &Path),
     ) -> anyhow::Result<Held> {
         let workspace = entry.workspace;
-        let link = device.session().clone();
-        // Every write is the workspace's to take, as its policy reads on this device now: a
+        // Every write is the workspace's to take, as its policy reads on this device's copy now: a
         // role changed or a grant taken back answers at the next write, never at mount time.
-        let engine = Arc::clone(link.engine());
         let admission = Arc::new(
             tilo_fs::admission::FileAdmission::new(
                 &hex::encode(device.cert().user_public_key),
-                Box::new(move || engine.policy(&workspace.to_string()).ok()),
+                Box::new(own.policy_of(workspace)),
             )
             .ok_or_else(|| anyhow::anyhow!("this device's person has no valid key"))?,
         );

@@ -160,17 +160,8 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
     .await
     .expect("the login enters");
 
-    let engine = entered.session().engine();
+    // The device's one copy of the workspace is its service's: the session keeps none.
     let id = tilo_server_protocol::WorkspaceId::parse(&workspace).unwrap();
-    assert!(
-        engine.workspaces().contains(&id),
-        "the session holds the workspace it entered: {:?}",
-        engine.workspaces()
-    );
-    assert!(
-        engine.member_of(id).is_some(),
-        "the session names where the workspace is served"
-    );
     tilo_test_env::within(
         "the device's service holds the workspace",
         own.hold(&entered),
@@ -179,6 +170,13 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
     assert!(
         own.copies().is_member(&workspace).await.unwrap(),
         "the workspace the login entered is a member copy here"
+    );
+    let copy = own
+        .peer(id)
+        .expect("the service holds the workspace it entered");
+    assert!(
+        copy.is_member(&laptop_cert.user_public_key),
+        "the copy names the person a member"
     );
     tilo_test_env::within("the member copy opens the server's sealed layout", async {
         loop {

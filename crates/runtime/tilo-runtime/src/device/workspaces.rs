@@ -178,16 +178,12 @@ impl ServiceWorkspaces {
         }
     }
 
-    /// Hold each workspace `device` takes part in as a member copy here, synced with the server
-    /// that hosts it: those not held yet.
+    /// Hold each workspace `device` entered as a member copy here, synced with the server that
+    /// hosts it: those not held yet, each at the address its host signed as it let this device in.
+    /// This service is the device's one copy of them; the session keeps none of its own.
     pub(crate) async fn hold(&self, device: &Entered) {
         let _ = self.session.set(device.clone());
-        let engine = device.session().engine();
-        let held = engine
-            .workspaces()
-            .into_iter()
-            .filter_map(|workspace| Some((workspace, engine.member_of(workspace)?)));
-        own_device::hold_as_members(self.service.workspaces(), held).await;
+        own_device::hold_as_members(self.service.workspaces(), device.hosts()).await;
     }
 
     /// Close the service and its endpoint, as the process ending would: what the service holds
@@ -246,6 +242,20 @@ impl ServiceWorkspaces {
     pub(crate) fn holds(&self, workspace: WorkspaceId) -> bool {
         let copies = self.copies().clone();
         block_on_owned(async move { copies.member_ids().await.contains(&workspace) })
+    }
+
+    /// What reads `workspace`'s policy as this device's copy of it holds it now, `None` while the
+    /// copy is not here or its policy does not read.
+    pub(crate) fn policy_of(
+        &self,
+        workspace: WorkspaceId,
+    ) -> impl Fn() -> Option<tilo_action_policy::WorkspacePolicy> + Send + Sync + 'static {
+        let copies = self.copies().clone();
+        move || {
+            let copies = copies.clone();
+            block_on_owned(async move { copy_of(&copies, workspace).await })
+                .and_then(|(_, peer)| peer.governance().governed_policy().ok())
+        }
     }
 
     /// `workspace`'s replica as this device holds it: its member copy, or the

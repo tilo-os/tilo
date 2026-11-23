@@ -128,7 +128,7 @@ impl Task {
                 workspace_id,
                 name,
                 role,
-                ..
+                host,
             } => {
                 self.config.entering = None;
                 self.reports.change(|status| {
@@ -137,6 +137,7 @@ impl Task {
                         workspace_id,
                         name,
                         role,
+                        host,
                     });
                 });
                 None
