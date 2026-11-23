@@ -48,7 +48,8 @@ configuration; none lives in the repository or on a build machine:
 
 | Secret | Check | What |
 |---|---|---|
-| `TILO_LINUX_SIGNING_KEY_ASC`, `TILO_LINUX_EXPECTED_FINGERPRINT` | `sign/linux-{arch}`, `publish-github-release` | the Linux release key and its full fingerprint |
+| `TILO_LINUX_SIGNING_KEY_ASC`, `TILO_LINUX_EXPECTED_FINGERPRINT` | `sign/linux-{arch}`, `sign/medium-{arch}`, `publish-github-release` | the Linux release key and its full fingerprint |
+| `TILO_PACKAGES_TOKEN` | `publish-internal-bundle-{arch}`, `publish-target-policy-{arch}` | `write:package` on `code.tilo.so` for the internal installer and target policy packages |
 | `TILO_AUTHENTICODE_CERT_CHAIN`, `TILO_WINDOWS_PUBLISHER` | `sign/windows-{arch}` | with the KMS key t's identity token reaches |
 | `GITHUB_RELEASE_TOKEN` | `publish-github-release` | write access to `tilo-os/releases` |
 | `WINGET_GITHUB_TOKEN`, `WINGET_GITHUB_USER` | `publish-winget` | the WinGet submission bot and its login |
@@ -78,8 +79,8 @@ just been built and checksummed:
    `tilo-internal-installer-ARCH{.json,-esp.img,-root.img}` plus the catalog
    entry `internal-catalog-ARCH.json`. Tag builds record the tag as
    `release_id`; rehearsals record `rehearsal-<sha>`.
-3. **Publish** (`publish`, tags only): `publish-internal-bundle.sh` uploads
-   components first and the manifest last to the Forgejo generic package
+3. **Publish** (tag only): t's `publish-internal-bundle-{arch}` check runs
+   `publish-internal-bundle.sh`, which uploads components first and the manifest last to the Forgejo generic package
    `https://code.tilo.so/api/packages/OWNER/generic/tilo-internal-installer/TAG/`,
    then downloads each file anonymously and compares digests. Existing files
    are never replaced; a rerun only verifies them.
@@ -108,10 +109,11 @@ just been built and checksummed:
    the deterministic archive and fragment. `publish-target-policy.sh` uploads
    the archive first and the fragment last to the `tilo-target-policy` generic
    package, then downloads both anonymously and compares their digests and
-   sizes. It reuses the existing `internal-bundle` broker exchange, so no new
-   issuer, channel or package scope is needed; if that broker is not
-   configured, the tag job is skipped and the catalog omits the entry rather
-   than naming a package nobody published. `build-release-catalog.sh`
+   sizes. t's `publish-target-policy-{arch}` check does this for a dispatch
+   that names the published OS image and the release; it reads the package
+   token from `TILO_PACKAGES_TOKEN` like the internal bundle's publish, and the
+   catalog omits the entry until one is published rather than naming a package
+   nobody published. `build-release-catalog.sh`
    verifies the fragment and its archive with the same producer before merging
    the `tilo-target-policy` / `target-policy-bundle-v1` entry. Until such an
    entry is published, the source installer honestly defers destination-bound

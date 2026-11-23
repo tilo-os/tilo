@@ -2,7 +2,7 @@
 # Publish one architecture's signed target policy bundle to the Forgejo generic
 # package registry on code.tilo.so, then prove it is publicly served there.
 #
-#   CREDENTIAL_BROKER=/abs/broker GITHUB_REF_NAME=imager-vX.Y.Z \
+#   FORGEJO_TOKEN=<write:package token> GITHUB_REF_NAME=imager-vX.Y.Z \
 #     apps/imager/packaging/publish-target-policy.sh BUNDLE_DIR
 #
 # BUNDLE_DIR is export-target-policy.py's output directory: one
@@ -11,9 +11,8 @@
 #
 #   https://code.tilo.so/api/packages/OWNER/generic/tilo-target-policy/TAG/NAME
 #
-# The write:package token comes from the existing internal-bundle credential
-# broker exchange, lives in RUNNER_TEMP only for this run, and is sent to
-# code.tilo.so only. FORGEJO_TOKEN may be given instead for a manual run.
+# The write:package token is a t secret for this check, sent to code.tilo.so
+# only.
 #
 # Idempotent and immutable: an existing file is never replaced; it is accepted
 # only when the public bytes equal the local ones. The archive goes first and
@@ -43,19 +42,9 @@ mapfile -t archives < <(find "$bundle" -maxdepth 1 -type f -name 'tilo-target-po
 [ "$(find "$bundle" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 2 ] \
   || { printf 'bundle directory holds files the fragment does not name\n' >&2; exit 1; }
 
+: "${FORGEJO_TOKEN:?FORGEJO_TOKEN is not set: the check needs secrets = [\"TILO_PACKAGES_TOKEN\"] and passes it here}"
 work="$(mktemp -d "${TMPDIR:-/var/tmp}/tilo-target-policy-publish.XXXXXX")"
-token_file=""
-trap 'find "$work" -depth -delete; [ -z "$token_file" ] || rm -f "$token_file"' EXIT
-if [ -z "${FORGEJO_TOKEN:-}" ]; then
-  [ -n "${CREDENTIAL_BROKER:-}" ] || {
-    printf 'configure IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER for target policy publication\n' >&2
-    exit 1
-  }
-  : "${RUNNER_TEMP:?RUNNER_TEMP is required to hold the brokered token}"
-  token_file="$RUNNER_TEMP/tilo-target-policy-token"
-  "$(dirname "${BASH_SOURCE[0]}")/acquire-release-token.sh" internal-bundle "$CREDENTIAL_BROKER" "$token_file"
-  FORGEJO_TOKEN="$(cat "$token_file")"
-fi
+trap 'find "$work" -depth -delete' EXIT
 base="$server/api/packages/$owner/generic/$package/$GITHUB_REF_NAME"
 
 public_bytes() {

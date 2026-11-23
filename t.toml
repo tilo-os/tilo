@@ -4610,6 +4610,23 @@ secrets = ["TILO_LINUX_SIGNING_KEY_ASC", "TILO_LINUX_EXPECTED_FINGERPRINT"]
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
+# The internal bundle published to the generic package the Imager stages onto a machine's own
+# disk from: the manifest and its two component images go first and the manifest last, and the
+# check downloads each one anonymously and compares its bytes. Only a tag publishes.
+[[check]]
+name = "publish-internal-bundle-{arch}"
+# Publishes with a stored token, to the forge's package registry.
+egress = { to = ["code.tilo.so:443"] }
+run = "GITHUB_REF_NAME=${T_REF#tag:} FORGEJO_TOKEN=$TILO_PACKAGES_TOKEN bash apps/imager/packaging/publish-internal-bundle.sh /target/imager-medium/{arch}/bundle"
+needs = ["medium/imager-{arch}"]
+requires = ["arch={arch}"]
+cache = false
+timeout_secs = 3600
+on = ["tag:imager-v*"]
+secrets = ["TILO_PACKAGES_TOKEN"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
 [[check]]
 name = "release-assets/imager"
 run = """set -eu
@@ -5404,7 +5421,7 @@ name = "target-policy/imager-{arch}"
 # The registry redirects each blob to its object store, and the verifier reads the transparency
 # log; no fixed host list names them.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "[[ -n $T_INPUT_PUBLISHED_OS_IMAGE && -n $T_INPUT_SOURCE_REVISION ]] || { echo 'target-policy/imager-{arch} needs --input published_os_image=...,source_revision=... from a published, signed release' >&2; exit 2; }\n[[ $T_INPUT_SOURCE_REVISION =~ ^[0-9a-f]{40}$ ]] || { echo 'source_revision must be a full commit' >&2; exit 2; }\nexport RUNNER_TEMP=$TMPDIR GITHUB_PATH=$TMPDIR/github-path TILO_GITHUB_ASSET_CACHE=/target/signing-tools TILO_ASSET_OFFLINE=1\nbash os/dev/install-cached-cosign.sh\nexport PATH=$(cat \"$GITHUB_PATH\"):$PATH\nout=/target/imager-target-policy/{arch}\nrm -rf \"$out\"\npython3 apps/imager/packaging/export-target-policy.py export --image \"$T_INPUT_PUBLISHED_OS_IMAGE\" --arch {arch} --release-id \"$T_INPUT_RELEASE_ID\" --expected-source \"$T_INPUT_SOURCE_REVISION\" --output \"$out\"\ntest -s \"$out/tilo-target-policy-{arch}.tar\" && test -s \"$out/target-policy-catalog-{arch}.json\"\npython3 apps/imager/packaging/export-target-policy.py verify --bundle \"$out\" --release-id \"$T_INPUT_RELEASE_ID\"\n(cd \"$out\" && sha256sum tilo-target-policy-{arch}.tar target-policy-catalog-{arch}.json) > \"$out/artifacts.sha256\"\n(cd \"$out\" && sha256sum --check --strict artifacts.sha256)\n"
+run = "[[ -n $T_INPUT_PUBLISHED_OS_IMAGE && -n $T_INPUT_SOURCE_REVISION ]] || { echo 'target-policy/imager-{arch} needs --input published_os_image=...,source_revision=... from a published, signed release' >&2; exit 2; }\nbash tools/ci/linux-imager/target-policy.sh export {arch} \"$T_INPUT_PUBLISHED_OS_IMAGE\" \"$T_INPUT_SOURCE_REVISION\" \"$T_INPUT_RELEASE_ID\" /target/imager-target-policy/{arch}"
 needs = ["signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 requires = ["arch={arch}"]
@@ -5412,6 +5429,26 @@ isolation = "vm"
 outputs = ["/target/imager-target-policy/{arch}/**"]
 timeout_secs = 3600
 default = false
+on = ["dispatch"]
+dispatch_inputs = { published_os_image = "", source_revision = "", release_id = "imager-v0.0.0" }
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# The same bundle published to the generic package the Imager reads it from. A dispatch names the
+# published OS image and the release; the check exports the bundle again, so what it uploads is
+# what the dry-run check reads, and then verifies the public bytes it uploaded.
+[[check]]
+name = "publish-target-policy-{arch}"
+# Publishes with a stored token, to the forge's package registry and the release hosts it reads.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "[[ -n $T_INPUT_PUBLISHED_OS_IMAGE && -n $T_INPUT_SOURCE_REVISION ]] || { echo 'publish-target-policy-{arch} needs --input published_os_image=...,source_revision=... from a published, signed release' >&2; exit 2; }\nFORGEJO_TOKEN=$TILO_PACKAGES_TOKEN bash tools/ci/linux-imager/target-policy.sh publish {arch} \"$T_INPUT_PUBLISHED_OS_IMAGE\" \"$T_INPUT_SOURCE_REVISION\" \"$T_INPUT_RELEASE_ID\" \"${TMPDIR:-/var/tmp}/target-policy-{arch}\""
+needs = ["signing-tools"]
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+secrets = ["TILO_PACKAGES_TOKEN"]
+requires = ["arch={arch}"]
+isolation = "vm"
+cache = false
+timeout_secs = 3600
 on = ["dispatch"]
 dispatch_inputs = { published_os_image = "", source_revision = "", release_id = "imager-v0.0.0" }
 [check.matrix]
