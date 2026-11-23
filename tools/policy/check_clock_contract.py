@@ -48,6 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from clock_imports import CLOCK_PATTERN, clock_imports  # noqa: E402
 from judged import Judged, add_staged_argument, judged  # noqa: E402
 from rust_source import code_only, is_test_file, line_number, production_source  # noqa: E402
 
@@ -117,12 +118,6 @@ DIRECT = {
     ),
 }
 
-# The clock types `tilo_clock::time` names. They are `std::time`'s (or the
-# page's) own, so `now()` on one is a machine reading whatever path it is
-# reached by.
-REEXPORTED = ("Instant", "SystemTime")
-CLOCK = "|".join(REEXPORTED)
-
 # The tree's own Rust sources; `vendor` is other people's code and is not ours
 # to hold to a contract, and `tilo-clock` defines the re-export.
 SOURCE_ROOTS = ("crates", "apps", "examples", "tools", "fuzz", "os")
@@ -130,12 +125,16 @@ REEXPORT_CRATE = Path("crates/platform/tilo-clock")
 
 # `tilo_clock::time::Instant::now()`, at any depth of module path.
 QUALIFIED_READ = re.compile(
-    rf"\btilo_clock\s*::\s*(?:[A-Za-z_]\w*\s*::\s*)*(?P<clock>{CLOCK})\s*::\s*now\s*\("
+    rf"\btilo_clock\s*::\s*(?:[A-Za-z_]\w*\s*::\s*)*(?P<clock>{CLOCK_PATTERN})\s*::\s*now\s*\("
 )
 # The bare name, once a `use` has brought it into scope.
-BARE_READ = re.compile(rf"(?<![\w:])(?P<clock>{CLOCK})\s*::\s*now\s*\(")
-TILO_IMPORT_STATEMENT = re.compile(r"\buse\s+[^;]*;", re.DOTALL)
-RENAMED = re.compile(rf"\b({CLOCK})\s+as\b")
+BARE_READ = re.compile(rf"(?<![\w:])(?P<clock>{CLOCK_PATTERN})\s*::\s*now\s*\(")
+TILO_CLOCK_MODULE = re.compile(r"\btilo_clock\s*::")
+# `tilo_clock::time::*` (or `tilo_clock::{..., time::*}`) brings both clock
+# types into scope; `tilo_clock::*` does not re-export them.
+TILO_TIME_GLOB = re.compile(
+    r"\btilo_clock\s*::(?:\s*\{[^}]*\b|\s*)time\s*::\s*(?:\*|\{[^}]*\*(?!\w))"
+)
 
 REEXPORT_REASON = {
     "Instant": (
@@ -199,24 +198,6 @@ def audit_sources(files: Judged, scope: Path) -> list[Violation]:
     return violations
 
 
-def clock_imports(text: str) -> list[tuple[int, str, bool]]:
-    """The clock types this file's `use` statements bring into scope.
-
-    ``(offset, type, from tilo_clock)`` per statement. A renamed import
-    (`Instant as Clock`) binds another name, and a bare `Instant::now()` after
-    it is not tilo_clock's.
-    """
-    found: list[tuple[int, str, bool]] = []
-    for statement in TILO_IMPORT_STATEMENT.finditer(text):
-        body = statement.group()
-        tilo = re.search(r"\btilo_clock\s*::", body) is not None
-        renamed = set(RENAMED.findall(body))
-        for name in REEXPORTED:
-            if name not in renamed and re.search(rf"\b{name}\b", body):
-                found.append((statement.start(), name, tilo))
-    return found
-
-
 def audit_reexport(relative: Path, source: str) -> list[Violation]:
     """A machine clock read through a type `tilo_clock` only names."""
     violations: list[Violation] = []
@@ -230,7 +211,11 @@ def audit_reexport(relative: Path, source: str) -> list[Violation]:
         )
     # The bare name is whichever import of it is in scope: the nearest one
     # before the read, which is the file's or the test module's own.
-    imports = clock_imports(whole)
+    imports = clock_imports(
+        whole,
+        lambda body: TILO_CLOCK_MODULE.search(body) is not None,
+        lambda body: TILO_TIME_GLOB.search(body) is not None,
+    )
     for found in BARE_READ.finditer(whole):
         clock = found.group("clock")
         in_scope = [entry for entry in imports if entry[1] == clock and entry[0] < found.start()]

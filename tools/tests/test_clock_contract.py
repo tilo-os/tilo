@@ -63,6 +63,18 @@ class ClockContractTests(unittest.TestCase):
              "fn at() -> Instant { Instant::now() }\n"),
             ("the bare name of a braced import", "use tilo_clock::time::{Duration, SystemTime};\n"
              "fn at() -> SystemTime { SystemTime::now() }\n"),
+            ("a glob import of Instant", "use tilo_clock::time::*;\n"
+             "fn at() -> Instant { Instant::now() }\n"),
+            ("a glob import of SystemTime", "use tilo_clock::time::*;\n"
+             "fn at() -> SystemTime { SystemTime::now() }\n"),
+            ("a braced glob import", "use tilo_clock::{now, time::*};\n"
+             "fn at() -> Instant { Instant::now() }\n"),
+            ("a renamed std Instant does not shadow tilo_clock", "use tilo_clock::time::Instant;\n"
+             "use std::time::Instant as StdInstant;\n"
+             "fn at() -> Instant { Instant::now() }\n"),
+            ("a renamed std SystemTime does not shadow tilo_clock", "use tilo_clock::time::SystemTime;\n"
+             "use std::time::SystemTime as StdSystemTime;\n"
+             "fn at() -> SystemTime { SystemTime::now() }\n"),
             ("a test's own", "use tilo_clock::time::Instant;\n"
              "#[test]\nfn held() { let now = Instant::now(); }\n"),
             ("a read in a test file", "fn held() { tilo_clock::time::Instant::now(); }\n"),
@@ -71,6 +83,28 @@ class ClockContractTests(unittest.TestCase):
                 path = anywhere if "test file" not in phase else "crates/system/anything/tests/deadline.rs"
                 root = self.fixture({path: source})
                 self.assertEqual(self.paths(root), [path])
+
+    def test_renamed_and_root_glob_imports_do_not_bind_the_bare_clock_names(self):
+        root = self.fixture(
+            {
+                "crates/system/anything/src/renamed_instant.rs": (
+                    "use std::time::Instant;\n"
+                    "use tilo_clock::time::Instant as Clock;\n"
+                    "fn at() -> Instant { Instant::now() }\n"
+                ),
+                "crates/system/anything/src/renamed_wall.rs": (
+                    "use std::time::SystemTime;\n"
+                    "use tilo_clock::time::SystemTime as Wall;\n"
+                    "fn at() -> SystemTime { SystemTime::now() }\n"
+                ),
+                "crates/system/anything/src/root_glob.rs": (
+                    "use std::time::Instant;\n"
+                    "use tilo_clock::*;\n"
+                    "fn at() -> Instant { Instant::now() }\n"
+                ),
+            }
+        )
+        self.assertEqual(contract.audit(root), [])
 
     def test_the_machines_own_types_read_where_they_like(self):
         root = self.fixture(
