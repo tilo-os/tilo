@@ -932,14 +932,9 @@ impl Widget for Reading {
         self.rect = rect;
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &ui::theme::Theme,
-        _presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+        #[allow(unused_variables, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, text, theme, env) = ctx.parts();
         let rect = self.rect;
         self.lay_out(
             ui::num::f32_of_f64(rect.width()),
