@@ -63,12 +63,6 @@ arrival-wait-full = Die Warteliste ist im Moment voll. Versuch es in ein paar Ta
 arrival-wait-failed = Das hat nicht geklappt. Versuch es gleich noch einmal.
 arrival-sign-in-ask = Du hast schon eine Tilo-Identität?
 arrival-sign-in-agent = Mit deinem Agenten anmelden
-arrival-sign-in-passkey = Passkey verwenden
-arrival-sign-in-not-member = Du bist angemeldet, aber diese Identität ist noch nicht in { $workspace }. Trag dich auf die Warteliste ein oder bitte jemanden darin um eine Einladung.
-arrival-sign-in-not-member-unnamed = Du bist angemeldet, aber diese Identität ist noch nicht in diesem Arbeitsbereich. Bitte jemanden darin um eine Einladung.
-arrival-sign-in-unknown = Dieser Passkey öffnet keine Tilo-Identität, die diese Seite kennt. Nimm einen, den du bei Tilo angelegt hast, oder öffne Tilo dort, wo du es schon nutzt.
-arrival-sign-in-failed = Die Anmeldung hat in diesem Browser nicht geklappt. Versuch es noch einmal oder öffne Tilo dort, wo du es schon nutzt.
-arrival-sign-in-no-passkeys = Passkeys lassen sich hier nicht verwenden. Wähle auf einem Gerät, auf dem du angemeldet bist, „Pair a new device“ und füge den Link hier ein.
 arrival-invite-toggle = Du hast einen Einladungs- oder Kopplungslink?
 
 ## The reconnect screen: the page was not let in yet and tries again
@@ -170,3 +164,11 @@ entry-failure-refused-fallback = Dieser Link oder diese Einladung lässt sich ni
 entry-failure-open-host = { $server } öffnen
 entry-failure-others = Oder öffne einen anderen deiner Arbeitsbereiche
 entry-failure-elsewhere = Oder öffne stattdessen eines davon
+
+## Die 24 Wiederherstellungswörter, einmal gezeigt, sobald eine Person
+## hereingelassen wird; Aufbau und Regeln in en-US.ftl.
+recovery-words-heading = Deine 24 Wiederherstellungswörter
+recovery-words-body = Diese 24 Wörter sind der einzige Weg zurück in Tilo, wenn du alle Geräte verlierst. Schreib sie der Reihe nach auf und bewahre sie sicher auf. Wer sie hat, kann sich als du ausgeben.
+recovery-words-copy = Kopieren
+recovery-words-copied = Kopiert
+recovery-words-confirm = Ich habe sie aufgeschrieben

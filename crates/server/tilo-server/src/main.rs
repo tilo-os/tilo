@@ -170,10 +170,6 @@ fn cmd_init(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server must keep serving until shutdown().await consumes it"
-)]
 fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
     // One server per state, and nothing else changing it while it runs

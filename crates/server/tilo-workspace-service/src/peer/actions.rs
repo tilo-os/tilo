@@ -406,7 +406,7 @@ fn hand_over(
     };
     // Every production subscription registers its authenticated peer beside
     // its subscriber, so the addressee is re-authorised from it.
-    let Some(target) = wr.newest_state(&to) else {
+    let Some(target) = wr.subscriber(&to) else {
         return refuse(unavailable_target(wr, &to));
     };
     if action_peer_admitted(wr, &target.peer, session).is_err() {

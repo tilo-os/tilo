@@ -28,7 +28,7 @@ use tilo_user_identity::DeviceCert;
 use super::super::tests::{admit, caller, governed, settled};
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::TestHost as TestHolder;
-use crate::workspaces::tests::{governor, test_host_taking_part as test_holder};
+use crate::workspaces::tests::{governor, test_host as test_holder};
 
 /// The domain whose settings document the discovery fake answers for, as a
 /// provider that publishes them.

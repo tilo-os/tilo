@@ -9,12 +9,12 @@ pub struct History {
     watched: Vec<String>,
 }
 
-#[tilo_resource::resource(kind = "tube.watch-history", catalogue = "tests/locales")]
+#[tilo_resource::resource(kind = "messages.drafts", catalogue = "tests/locales")]
 impl History {}
 
 #[test]
 fn a_known_reader_can_read_their_record_at_any_role() {
-    const APP: &str = "so.tilo.tube";
+    const APP: &str = "so.tilo.messages";
     const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000ad";
     let ada = "ad".repeat(32);
     let bob = "b0".repeat(32);
@@ -38,7 +38,7 @@ fn a_known_reader_can_read_their_record_at_any_role() {
             &records,
             APP,
             id,
-            (APP, "Tube"),
+            (APP, "Messages"),
             Some(permissions),
             None,
         )
@@ -50,17 +50,17 @@ fn a_known_reader_can_read_their_record_at_any_role() {
         assert!(
             !open(
                 person,
-                tilo_actions::policy::roles::WORKSPACE_TUBE_HISTORY_DOCUMENT
+                tilo_actions::policy::roles::WORKSPACE_MESSAGE_DRAFTS_DOCUMENT
             )
             .may_read(),
-            "the earlier watch history has no verifiable owner"
+            "the earlier drafts have no verifiable owner"
         );
     }
 }
 
 #[test]
 fn a_record_whose_store_was_busy_opens_once_the_next_arrival_answers_it() {
-    const APP: &str = "so.tilo.tube";
+    const APP: &str = "so.tilo.messages";
     const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000ad";
     let ada = "ad".repeat(32);
     let store = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()))
@@ -68,7 +68,7 @@ fn a_record_whose_store_was_busy_opens_once_the_next_arrival_answers_it() {
         .expect("the app's store");
     let kept = store.clone();
     let records = WorkspaceResources::new(MemberId::person(&ada), move |_| Ok(kept.clone()));
-    let state = WorkspaceState::new(records, APP, "Tube", None, None);
+    let state = WorkspaceState::new(records, APP, "Messages", None, None);
     let id = tilo_actions::policy::roles::member_record(History::KIND, &ada)
         .expect("Ada's record has a verifiable owner");
     assert!(

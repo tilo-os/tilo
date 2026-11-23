@@ -296,7 +296,7 @@ async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) 
         signature: [0; 64],
     };
     sign_revocation_entry(&mut entry, &ada.root).unwrap();
-    tilo_server::store::save_revocations(ada.state.path(), &[entry]).unwrap();
+    tilo_server::workspace_files::save_revocations(ada.state.path(), &[entry]).unwrap();
     let failed = wait_for("the page to be refused", || {
         let snapshot = page.snapshot();
         async move { (snapshot.phase == "failed").then_some(snapshot) }

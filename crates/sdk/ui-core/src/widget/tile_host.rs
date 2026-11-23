@@ -1208,14 +1208,6 @@ impl TileHost {
         Ok(())
     }
 
-    pub fn kind_string(&self) -> String {
-        match &self.content {
-            TileContent::App(_) => "App".into(),
-            TileContent::Stub { kind, .. } => kind.as_str().into(),
-            TileContent::Notice { title, .. } => title.clone(),
-            TileContent::Arriving => "Arriving".into(),
-        }
-    }
     pub fn app_mut(&mut self) -> Option<&mut (dyn AppWidget + 'static)> {
         match &mut self.content {
             TileContent::App(app) => Some(app.as_mut()),

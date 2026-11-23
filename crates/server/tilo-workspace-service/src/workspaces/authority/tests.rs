@@ -2,11 +2,6 @@
 //! person's device may do is what the workspace's governance lets that person,
 //! and what no workspace decides stays the server's person's.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the server it drives and releases no lock"
-)]
-
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_peer_state::join::Role;
@@ -1800,14 +1795,14 @@ async fn a_page_lists_and_chooses_the_servers_keeping_the_workspace() {
         "{refused:?}"
     );
 
-    // A site that names no server, and a server that does not keep it, are refused in their
-    // own words.
+    // A host line that names no host, and a server that does not keep it, are refused in
+    // their own words.
     let refused = workspaces
         .page_workspaces(
             &owner,
             WorkspacesRequest::AddServer {
                 workspace: workspace.clone(),
-                origin: "not a site".into(),
+                host: "not a host line".into(),
             },
         )
         .await;

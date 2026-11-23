@@ -3,7 +3,7 @@ name = "tilo-workspace-service"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-description = "The workspace service every Tilo device runs and the server embeds: workspace governance, the member session stack, the retained store beneath it, and on a device the apps it serves."
+description = "The workspace service every Tilo device runs and the server embeds: workspace governance, the member session stack, the device store beneath it, and on a device the apps it serves."
 license = "MIT OR Apache-2.0"
 
 [lib]
@@ -13,11 +13,11 @@ path = "src/lib.rs"
 [features]
 # The fixtures the service's tests and its embedders' tests build on: a
 # certified test service and the devices around it, plus the store's test hooks.
-test-support = ["tilo-server-store/test-support", "tilo-peer-state/test-support", "dep:tilo-test-env", "tilo-account-probe/test-support", "dep:rustls"]
+test-support = ["tilo-peer-state/test-support", "dep:tilo-test-env", "tilo-account-probe/test-support", "dep:rustls"]
 # Agents on the host: workspaces keep apps' confined replicas and hand their
 # records' channel keys to pages, and the agents themselves run here
 # ([`agents`]).
-agents = ["device-keys", "dep:tilolang-tilo", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tasks", "dep:tasks-model", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:runtime-collab", "dep:tilo-web-search", "dep:jiff", "tilo-clock/local"]
+agents = ["device-keys", "dep:tilolang-tilo", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tasks", "dep:tasks-model", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:runtime-collab", "dep:tilo-web-search", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
 # A device's own workspace service and the key service beside it: what every device and
 # the server open, whether or not they serve apps. A key holder keeps the records its members
 # write sealed and opens them with the channels' keys it holds.
@@ -46,6 +46,8 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 tilo-server-protocol = { path = "../tilo-server-protocol" }
+# A short invitation link names this host as every link names one.
+tilo-reference = { path = "../../collab/reference" }
 # What a planned machine's installation is to become: the destinations, disk
 # rules and open choices its entry carries.
 install-profile-model = { path = "../../session/install-profile-model" }
@@ -135,9 +137,8 @@ libc.workspace = true
 # The address this host answers at once its endpoint reached a relay, which is
 # what its workspaces' governance names of it.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
-# A host's workspaces keep their files and their retained history on a disk.
+# A host's workspaces keep their files on a disk.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
-tilo-server-store = { path = "../tilo-server-store" }
 # A host's device runs the runtime its own tasks drive.
 tokio = { workspace = true, features = ["full"] }
 # The certificates a test's mail server presents, which `trust_mail_servers` trusts.
@@ -225,7 +226,6 @@ test-http = { path = "../../dev/test-http" }
 tilo-test-env = { path = "../../dev/test-env", features = ["iroh-relay"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
-tilo-server-store = { path = "../tilo-server-store", features = ["test-support"] }
 # A test's mail server answers over real sockets, and the tester trusts its
 # certificate, which no authority signed.
 tilo-account-probe = { path = "../../platform/account-probe", features = ["test-support"] }

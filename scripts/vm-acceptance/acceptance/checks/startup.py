@@ -318,7 +318,7 @@ def files_start(ctx, res):
     log_lines = _first_int(ctx.vm.exec(f'wc -l < "{SESSION_LOG}" 2>/dev/null || echo 0', check=False)) or 0
     problems, unobserved = [], []
     try:
-        gid, procs, toasts0 = _lifecycle(ctx, res, FILES, "applications", label, True)
+        gid, procs, toasts0 = _lifecycle(ctx, res, FILES, label, True)
         marks = _marks(ctx, since_ms) if since_ms is not None else None
         log = ctx.vm.exec(f'tail -n +{log_lines + 1} "{SESSION_LOG}" | grep -a "tilo::launch_latency"',
                           check=False)

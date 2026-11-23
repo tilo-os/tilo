@@ -13,6 +13,10 @@ impl<H: ActionProvider + ?Sized> ActionProvider for std::sync::Arc<H> {
         (**self).retire_execution(caller);
     }
 
+    fn serves(&self, provider: &str) -> bool {
+        (**self).serves(provider)
+    }
+
     fn query(
         &self,
         caller: &Caller,

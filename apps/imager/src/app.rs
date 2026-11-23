@@ -2410,9 +2410,7 @@ impl ImagerApp {
     }
 
     fn export_config(&mut self) {
-        let text = self
-            .profile
-            .to_headless_config(self.source.as_ref(), self.target());
+        let text = self.profile.to_headless_config();
         self.export_dialog.show(text);
         self.dirty = true;
     }
@@ -2863,9 +2861,7 @@ impl ImagerApp {
                 if self.source.is_none() || self.target().is_none() {
                     return Err("Select an image source and target drive first".into());
                 }
-                let text = self
-                    .profile
-                    .to_headless_config(self.source.as_ref(), self.target());
+                let text = self.profile.to_headless_config();
                 self.export_dialog.show(text.clone());
                 self.dirty = true;
                 Ok(Effected::value(text))

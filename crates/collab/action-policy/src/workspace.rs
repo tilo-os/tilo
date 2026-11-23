@@ -137,11 +137,6 @@ pub enum Change {
     RemoveRole {
         id: String,
     },
-    /// Legacy whole-set assignment, kept for replay. New changes set one role at a time.
-    SetMemberRoles {
-        person: String,
-        roles: BTreeSet<String>,
-    },
     /// Assign or remove one custom role without replacing other assignments.
     SetMemberCustomRole {
         person: String,
@@ -200,7 +195,6 @@ impl Change {
             Self::TransferOwnership { .. } => governance::TRANSFER_OWNERSHIP,
             Self::Grant(_)
             | Self::DefineRole { .. }
-            | Self::SetMemberRoles { .. }
             | Self::SetMemberCustomRole { assigned: true, .. } => governance::GRANT,
             Self::Revoke(_)
             | Self::RemoveRole { .. }
@@ -238,7 +232,6 @@ impl Change {
             | Self::Restrict { person, .. }
             | Self::Unrestrict { person }
             | Self::SetRole { person, .. }
-            | Self::SetMemberRoles { person, .. }
             | Self::SetMemberCustomRole { person, .. }
             | Self::TransferOwnership { person }
             | Self::AddAgent {
@@ -273,11 +266,8 @@ pub enum Refusal {
     OwnerRole,
     /// Handing the workspace over is its owner's alone.
     OwnershipByOwner,
-    /// An invite or membership above the actor's own role.
-    AboveActorRole {
-        actor: Option<Role>,
-        wanted: Role,
-    },
+    /// An invite or membership whose role grants more than the actor holds.
+    AboveActorRole(Role),
     /// A grant giving more than the actor holds on its node.
     AboveActorGrant {
         kind: ActionKind,
@@ -286,13 +276,9 @@ pub enum Refusal {
     },
     /// A grant on a node outside this workspace.
     OutsideWorkspace(TreePath),
-    /// A membership action on someone the actor does not outrank: a
-    /// Moderator reaches only members below Moderator, and nobody bans
-    /// themselves.
-    NotBelowActor {
-        actor: Option<Role>,
-        target: Role,
-    },
+    /// Banning or restricting oneself: leaving is how someone stops being
+    /// in a workspace.
+    Themselves,
     /// Making or unmaking an administrator, or inviting one, by someone who
     /// may not: the owner and its administrators make administrators; only
     /// the owner unmakes or removes them.
@@ -339,10 +325,9 @@ impl std::fmt::Display for Refusal {
             Self::OwnershipByOwner => {
                 f.write_str("only the workspace's owner hands the workspace to someone else")
             }
-            Self::AboveActorRole { actor, wanted } => match actor {
-                Some(actor) => write!(f, "a {actor} cannot hand out the {wanted} role"),
-                None => write!(f, "only members can hand out the {wanted} role"),
-            },
+            Self::AboveActorRole(wanted) => {
+                write!(f, "the {wanted} role grants more than the giver holds")
+            }
             Self::AboveActorGrant { kind, held, wanted } => write!(
                 f,
                 "cannot grant \"{wanted}\" for {} while holding \"{held}\"",
@@ -351,10 +336,7 @@ impl std::fmt::Display for Refusal {
             Self::OutsideWorkspace(node) => {
                 write!(f, "{node} is not in this workspace")
             }
-            Self::NotBelowActor { actor, target } => match actor {
-                Some(actor) => write!(f, "a {actor} cannot do this to a {target}"),
-                None => write!(f, "only members ranked above a {target} can do this"),
-            },
+            Self::Themselves => f.write_str("nobody bans or restricts themselves"),
             Self::Administrators { actor, unmaking } => {
                 if *unmaking {
                     write!(
@@ -413,7 +395,6 @@ impl WorkspacePolicy {
             assigned_roles: BTreeMap::new(),
             agents: BTreeMap::new(),
         }
-        .with_person_records()
     }
 
     /// Whether anyone besides `person` belongs to the workspace, its owner or
@@ -448,42 +429,7 @@ impl WorkspacePolicy {
     #[must_use]
     pub fn with_current_roles(mut self) -> Self {
         self.grants = roles::current_role_grants(std::mem::take(&mut self.grants));
-        self.with_person_records()
-    }
-
-    /// The policy with the grants each of its people holds for their own records
-    /// ([`roles::person_record_grants`]), and none for anyone else.
-    #[must_use]
-    fn with_person_records(mut self) -> Self {
-        self.place_person_records();
         self
-    }
-
-    /// Give each of the policy's people the grants for their own records
-    /// ([`roles::person_record_grants`]) and take them from anyone no longer one: what a
-    /// change to who belongs to the workspace calls after it.
-    pub fn place_person_records(&mut self) {
-        let people: BTreeSet<String> = self
-            .owner
-            .iter()
-            .chain(self.members.keys())
-            .cloned()
-            .collect();
-        let workspace = &self.workspace;
-        self.grants.retain(|grant| {
-            !roles::is_person_record_grant(grant)
-                || grant.grantee.person_id().is_some_and(|person| {
-                    people.contains(person)
-                        && roles::person_record_grants(workspace, person).contains(grant)
-                })
-        });
-        for person in people {
-            for grant in roles::person_record_grants(&self.workspace, &person) {
-                if !self.grants.iter().any(|held| held.id == grant.id) {
-                    self.grants.push(grant);
-                }
-            }
-        }
     }
 
     /// Move the policy to another workspace id: every grant on this
@@ -641,7 +587,6 @@ impl WorkspacePolicy {
             }
             if let Some(person) = grant.grantee.person_id()
                 && roles::administrator_named(&grant.id).is_none()
-                && !roles::is_person_record_grant(grant)
             {
                 let extra = grants.extra.entry(person).or_default();
                 *extra = extra.saturating_add(1);
@@ -721,7 +666,10 @@ impl WorkspacePolicy {
         let held_off = self.grants.iter().filter(|grant| {
             grant.grantee.person_id() == Some(person) && moderation.contains(&grant.id)
         });
-        let party = Party::new(self.grantees_of(person), &self.grants).held_off_by(held_off);
+        let mut party = Party::new(self.grantees_of(person), &self.grants).held_off_by(held_off);
+        if self.is_owner(person) || self.members.contains_key(person) {
+            party = party.owning_records(roles::own_records(&self.workspace, person));
+        }
         if self.is_owner(person) {
             party.owning(self.node())
         } else {
@@ -859,18 +807,17 @@ impl WorkspacePolicy {
         self.grants.len() != before
     }
 
-    /// Whether `actor_person` (acting through `actor`) may invite someone with
-    /// `role`. An invite never carries more than the inviter's role.
+    /// Whether `actor` may invite someone with `role`. An invite never
+    /// carries more than the inviter holds ([`Self::check_role_handout`]).
     pub fn check_invite(
         &self,
-        actor_person: &str,
         actor: &Authority<'_>,
         role: Role,
         cx: &Context<'_>,
         approved: bool,
     ) -> Result<(), Refusal> {
         self.check_action(actor, governance::INVITE, cx, approved)?;
-        self.check_role_handout(actor_person, role)
+        self.check_role_handout(actor, role, cx)
     }
 
     /// Whether `actor_person` (acting through `actor`) may invite someone as
@@ -887,7 +834,7 @@ impl WorkspacePolicy {
         cx: &Context<'_>,
         approved: bool,
     ) -> Result<(), Refusal> {
-        self.check_invite(actor_person, actor, Role::Editor, cx, approved)?;
+        self.check_invite(actor, Role::Editor, cx, approved)?;
         self.check_makes_administrators(actor_person, actor, cx, false)
     }
 
@@ -935,23 +882,30 @@ impl WorkspacePolicy {
         target != actor_person && self.is_administrator(target)
     }
 
-    fn check_role_handout(&self, actor_person: &str, role: Role) -> Result<(), Refusal> {
+    /// Whether `actor` may hand out `role`: each of the role's grants is
+    /// within what the actor holds ([`Self::check_within`]), or the actor is
+    /// an administrator. Ownership is handed over, never handed out.
+    fn check_role_handout(
+        &self,
+        actor: &Authority<'_>,
+        role: Role,
+        cx: &Context<'_>,
+    ) -> Result<(), Refusal> {
         if role == Role::Owner {
             return Err(Refusal::OwnerRole);
         }
         // An administrator governs as the owner's equal in all but the
         // owner's place: they hand out every role a workspace hands out.
-        if self.is_administrator(actor_person) && role.assignable() {
+        if self.may_make_administrators(actor, cx) {
             return Ok(());
         }
-        let held = self.role_of(actor_person);
-        if !held.is_some_and(|held| held.includes(role)) {
-            return Err(Refusal::AboveActorRole {
-                actor: held,
-                wanted: role,
-            });
-        }
-        Ok(())
+        let grantee = Grantee::role(role);
+        let lifetime = Lifetime::UntilRevoked;
+        roles::role_preset(role, &self.workspace)
+            .assign("handout", &grantee, &grantee, &lifetime)
+            .iter()
+            .try_for_each(|grant| Self::check_within(actor, grant, cx))
+            .map_err(|_| Refusal::AboveActorRole(role))
     }
 
     /// Whether `actor_person` (acting through `actor`) may make `change`,
@@ -1043,7 +997,7 @@ impl WorkspacePolicy {
     ///
     /// Leaving needs no grant: whoever removes themselves from a workspace does
     /// it by being who they are, and a ban or a restriction stops it no more
-    /// than the `remove` action would (`check_reach`).
+    /// than the `remove` action would.
     ///
     /// # Errors
     /// When the action is not granted, or the change breaks a structural rule:
@@ -1133,13 +1087,6 @@ impl WorkspacePolicy {
                     |grant| !matches!(&grant.grantee, Grantee::CustomRole(role) if role == &id),
                 );
             }
-            Change::SetMemberRoles { person, roles } => {
-                if roles.is_empty() {
-                    self.assigned_roles.remove(&person);
-                } else {
-                    self.assigned_roles.insert(person, roles);
-                }
-            }
             Change::SetMemberCustomRole {
                 person,
                 role,
@@ -1157,7 +1104,6 @@ impl WorkspacePolicy {
                 }
             }
         }
-        self.place_person_records();
         Ok(())
     }
 
@@ -1204,41 +1150,17 @@ impl WorkspacePolicy {
             .retain(|grant| grant.grantee.person_id() != Some(person));
     }
 
-    /// Whether `actor_person` reaches `person` with a membership action: the
-    /// owner reaches everyone else, anyone else only those they outrank (a
-    /// non-member target ranks lowest). Leaving, removing oneself, is always
-    /// in reach.
-    fn check_reach(&self, actor_person: &str, person: &str, ban: bool) -> Result<(), Refusal> {
+    /// Whether `actor_person` may ban or restrict `person`, beyond the grant
+    /// on the action: the workspace keeps its owner, and nobody bans or
+    /// restricts themselves.
+    fn check_bannable(&self, actor_person: &str, person: &str) -> Result<(), Refusal> {
         if self.is_owner(person) {
             return Err(Refusal::Owner);
         }
-        let actor = self.role_of(actor_person);
         if actor_person == person {
-            return if ban {
-                Err(Refusal::NotBelowActor {
-                    actor,
-                    target: actor.unwrap_or(Role::Viewer),
-                })
-            } else {
-                Ok(())
-            };
+            return Err(Refusal::Themselves);
         }
-        if self.is_owner(actor_person) {
-            return Ok(());
-        }
-        // An administrator reaches every member who is not one, whatever
-        // their role: two people who share a workspace as equals each
-        // remove, ban and restrict its other members. Other administrators
-        // are the owner's to reach.
-        if self.is_administrator(actor_person) && !self.is_administrator(person) {
-            return Ok(());
-        }
-        match self.role_of(person) {
-            Some(target) if !actor.is_some_and(|actor| actor.outranks(target)) => {
-                Err(Refusal::NotBelowActor { actor, target })
-            }
-            _ => Ok(()),
-        }
+        Ok(())
     }
 
     /// Whether `grant` gives no more than `actor` holds on its node, for each
@@ -1280,10 +1202,10 @@ impl WorkspacePolicy {
                 self.check_ownership_transfer(actor_person, person)
             }
             Change::AddMember { person, role } => {
-                self.check_member_addition(actor_person, person, *role)
+                self.check_member_addition(actor, person, *role, cx)
             }
-            Change::SetRole { person, role } => self.check_member_role(actor_person, person, *role),
-            Change::RemoveMember { person } => self.check_member_removal(actor_person, person),
+            Change::SetRole { person, role } => self.check_member_role(actor, person, *role, cx),
+            Change::RemoveMember { person } => self.check_member_removal(person),
             Change::Ban { person } => self.check_ban(actor_person, person),
             Change::Unban { person } => self.check_unban(person),
             Change::Restrict { person, until_ms } => {
@@ -1294,9 +1216,6 @@ impl WorkspacePolicy {
             Change::Revoke(id) => self.check_revocation(id),
             Change::DefineRole { id, name } => Self::check_role_definition(id, name),
             Change::RemoveRole { id } => self.require_custom_role(id),
-            Change::SetMemberRoles { person, roles } => {
-                self.check_member_roles(actor, person, roles, cx)
-            }
             Change::SetMemberCustomRole {
                 person,
                 role,
@@ -1378,9 +1297,10 @@ impl WorkspacePolicy {
     /// as banned, at a role the actor may hand out.
     fn check_member_addition(
         &self,
-        actor_person: &str,
+        actor: &Authority<'_>,
         person: &str,
         role: Role,
+        cx: &Context<'_>,
     ) -> Result<(), Refusal> {
         if self.is_member(person) {
             return Err(Refusal::AlreadyAMember(person.to_owned()));
@@ -1388,16 +1308,17 @@ impl WorkspacePolicy {
         if self.is_banned(person) {
             return Err(Refusal::Banned(person.to_owned()));
         }
-        self.check_role_handout(actor_person, role)
+        self.check_role_handout(actor, role, cx)
     }
 
     /// A role changes on someone the membership holds and nobody owns; who may
     /// hand the new role out is the handout's rule.
     fn check_member_role(
         &self,
-        actor_person: &str,
+        actor: &Authority<'_>,
         person: &str,
         role: Role,
+        cx: &Context<'_>,
     ) -> Result<(), Refusal> {
         if self.is_owner(person) {
             return Err(Refusal::Owner);
@@ -1405,7 +1326,7 @@ impl WorkspacePolicy {
         if !self.members.contains_key(person) {
             return Err(Refusal::NotAMember(person.to_owned()));
         }
-        self.check_role_handout(actor_person, role)
+        self.check_role_handout(actor, role, cx)
     }
 
     /// A removal takes the membership and every grant naming them. Someone the
@@ -1413,12 +1334,9 @@ impl WorkspacePolicy {
     /// gave them was taken back first ([`super::super::members`] replay), has
     /// only those grants left to take: removing them is the same change, and
     /// removing them twice changes nothing.
-    fn check_member_removal(&self, actor_person: &str, person: &str) -> Result<(), Refusal> {
+    fn check_member_removal(&self, person: &str) -> Result<(), Refusal> {
         if self.is_owner(person) {
             return Err(Refusal::Owner);
-        }
-        if self.members.contains_key(person) {
-            self.check_reach(actor_person, person, false)?;
         }
         Ok(())
     }
@@ -1427,7 +1345,7 @@ impl WorkspacePolicy {
         if self.is_banned(person) {
             return Err(Refusal::Banned(person.to_owned()));
         }
-        self.check_reach(actor_person, person, true)
+        self.check_bannable(actor_person, person)
     }
 
     fn check_unban(&self, person: &str) -> Result<(), Refusal> {
@@ -1447,7 +1365,7 @@ impl WorkspacePolicy {
         if until_ms <= cx.now_unix_ms {
             return Err(Refusal::InThePast(until_ms));
         }
-        self.check_reach(actor_person, person, true)
+        self.check_bannable(actor_person, person)
     }
 
     fn check_restriction_lift(
@@ -1459,7 +1377,7 @@ impl WorkspacePolicy {
         if self.restricted_until(person, cx).is_none() {
             return Err(Refusal::NotRestricted(person.to_owned()));
         }
-        self.check_reach(actor_person, person, true)
+        self.check_bannable(actor_person, person)
     }
 
     /// A grant is revoked by its own id, and a role's built-in grants are not
@@ -1473,27 +1391,6 @@ impl WorkspacePolicy {
         } else {
             Err(Refusal::UnknownGrant(id.clone()))
         }
-    }
-
-    fn check_member_roles(
-        &self,
-        actor: &Authority<'_>,
-        person: &str,
-        roles: &BTreeSet<String>,
-        cx: &Context<'_>,
-    ) -> Result<(), Refusal> {
-        if !self.members.contains_key(person) {
-            return Err(Refusal::NotAMember(person.to_owned()));
-        }
-        for role in roles {
-            self.require_custom_role(role)?;
-        }
-        for grant in &self.grants {
-            if matches!(&grant.grantee, Grantee::CustomRole(id) if roles.contains(id)) {
-                Self::check_within(actor, grant, cx)?;
-            }
-        }
-        Ok(())
     }
 
     fn check_member_custom_role(

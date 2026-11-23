@@ -148,10 +148,4 @@ impl ContentQueue {
             }
         }
     }
-
-    /// Pieces waiting for the connection.
-    #[cfg(test)]
-    pub(crate) fn waiting_pieces(&self) -> usize {
-        self.queues.lock_recover().pieces
-    }
 }

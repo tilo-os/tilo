@@ -329,7 +329,6 @@ members = [
     "crates/server/tilo-server-client",
     "crates/server/tilo-server-protocol",
     "crates/server/tilo-server-session",
-    "crates/server/tilo-server-store",
     "crates/server/tilo-workspace-service",
 
     # Media
@@ -429,7 +428,6 @@ members = [
     "crates/platform/tilo-system-info",
     "crates/platform/tilo-render-protocol",
     "crates/platform/tilo-app-window",
-    "crates/platform/tilo-written-view",
     "crates/platform/tilo-view",
     "crates/platform/tilo-rt",
     "crates/platform/tilo-secrets",

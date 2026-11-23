@@ -34,20 +34,12 @@ mod browser_root;
 mod carriers;
 #[path = "channel_member.rs"]
 mod channel_member;
-#[path = "chat_landing_work.rs"]
-mod chat_landing_work;
-#[path = "chat_restart.rs"]
-mod chat_restart;
 #[path = "checkpoint_race.rs"]
 mod checkpoint_race;
-#[path = "compaction.rs"]
-mod compaction;
 #[path = "content_answer.rs"]
 mod content_answer;
 #[path = "conversation_over_https.rs"]
 mod conversation_over_https;
-#[path = "crowded_entry.rs"]
-mod crowded_entry;
 #[path = "entry.rs"]
 mod entry;
 #[path = "fetch_proxy.rs"]
@@ -72,16 +64,12 @@ mod held_document_keys;
 mod host_order;
 #[path = "invitation_entry.rs"]
 mod invitation_entry;
-#[path = "kept_after_kill.rs"]
-mod kept_after_kill;
 #[path = "late_join.rs"]
 mod late_join;
 #[path = "layout_views.rs"]
 mod layout_views;
 #[path = "lifecycle_states.rs"]
 mod lifecycle_states;
-#[path = "login_codes.rs"]
-mod login_codes;
 #[path = "lounge_fresh_page.rs"]
 mod lounge_fresh_page;
 #[path = "mcp_server.rs"]
@@ -102,8 +90,6 @@ mod outbox_replay;
 mod own_workspace;
 #[path = "pairing.rs"]
 mod pairing;
-#[path = "passkey_root.rs"]
-mod passkey_root;
 #[path = "place_workspace.rs"]
 mod place_workspace;
 #[path = "plain_http.rs"]

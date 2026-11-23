@@ -35,15 +35,24 @@ impl Place {
     /// certificates its session keeps
     /// (`tilo_identity::provisioning::collaboration_identity_paths`).
     ///
+    /// The directory is made, private to this account, when the computer has never had a login:
+    /// a computer with the person's root issues tickets from it, and one logging in keeps its
+    /// login there.
+    ///
     /// # Errors
-    /// This account has no state directory.
+    /// This account has no state directory, or the directory cannot be made.
     pub fn here(keys: IdentityPaths) -> Result<Self> {
-        Ok(Self {
-            dir: tilo_paths::state_dir()
-                .context("this account has no state directory (no HOME)")?
-                .join("tilo/device"),
-            keys,
-        })
+        let dir = tilo_paths::state_dir()
+            .context("this account has no state directory (no HOME)")?
+            .join("tilo/device");
+        let mut making = std::fs::DirBuilder::new();
+        making.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut making, 0o700);
+        making
+            .create(&dir)
+            .with_context(|| format!("making {}", dir.display()))?;
+        Ok(Self { dir, keys })
     }
 
     /// A login kept in `dir`, with the device key and certificates `keys` names.
@@ -100,6 +109,13 @@ impl Device {
     #[must_use]
     pub fn user(&self) -> String {
         hex::encode(self.cert.user_public_key)
+    }
+
+    /// Whether the login names a server to enter through. One that names none, as logins
+    /// older builds kept do, has ended: nothing this computer runs reaches its workspace again.
+    #[must_use]
+    pub const fn reaches_a_server(&self) -> bool {
+        self.server_address.is_some()
     }
 }
 
@@ -245,10 +261,17 @@ pub fn entered_workspace(keys: IdentityPaths) -> Result<Option<(String, String)>
 /// home's state directory need not be.
 ///
 /// # Errors
-/// `login_dir` is not readable, or the directory is not this account's own.
+/// `login_dir` could not be made or is not readable, or the directory is not this account's own.
 #[cfg(unix)]
 pub fn holder_dir(login_dir: &Path) -> Result<PathBuf, String> {
     use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+    // A computer that made its own identity and never logged in keeps no login yet, so the
+    // directory one goes in is made here, this account's alone, to read whose it is.
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(login_dir)
+        .map_err(|error| format!("{} could not be made: {error}", login_dir.display()))?;
     let owner = std::fs::metadata(login_dir)
         .map_err(|error| format!("{} is not readable: {error}", login_dir.display()))?
         .uid();
@@ -311,19 +334,65 @@ fn held_api_in(place: &Place) -> Result<Option<PathBuf>> {
     let key = match load_public(place)? {
         Some(device) => device.cert.device_public_key,
         // No login: the device key the daemon serves as, named by its certificate so the secret
-        // is not read here.
-        None => match read_device_cert(&place.keys().device_cert) {
-            Ok(cert) => cert.device_public_key,
-            Err(_) => return Ok(None),
+        // is not read here. A computer whose device certificate went (one in an encoding no
+        // build reads) has its key certified for its person beside it, and every one of those
+        // names the same key.
+        None => match served_device_key(place.keys()) {
+            Some(key) => key,
+            None => return Ok(None),
         },
     };
     let holders = holder_dir(place.dir()).map_err(|why| anyhow!(why))?;
     Ok(Some(holder_api_socket(&holders, &holder_name(&key))))
 }
 
+/// The device key a daemon with no login serves as, from a certificate of it in `keys`: the
+/// device's own, else the newest of those it holds for its persons.
+#[cfg(unix)]
+fn served_device_key(keys: &IdentityPaths) -> Option<[u8; 32]> {
+    if let Ok(cert) = read_device_cert(&keys.device_cert) {
+        return Some(cert.device_public_key);
+    }
+    let persons = keys.device_cert_for_user(&[0; 32]);
+    std::fs::read_dir(persons.parent()?)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let cert = read_device_cert(&entry.path()).ok()?;
+            Some((
+                entry.metadata().ok()?.modified().ok()?,
+                cert.device_public_key,
+            ))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, key)| key)
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    /// A computer that never had a login has no device directory yet; finding its place makes
+    /// it, so `tilo device add` and `tilo login` both start there.
+    #[test]
+    fn a_computer_that_never_had_a_login_gets_its_device_directory() {
+        let home = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path());
+        env.set("XDG_STATE_HOME", home.path().join("state"));
+        let runtime = home.path().join("run");
+        std::fs::create_dir(&runtime).unwrap();
+        env.set("XDG_RUNTIME_DIR", &runtime);
+        let place = Place::here(IdentityPaths::under(home.path().join("keys"))).unwrap();
+        assert!(place.dir().is_dir(), "{}", place.dir().display());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(place.dir()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "only this account enters it: {mode:o}");
+            holder_dir(place.dir()).expect("the daemon's place is found from it");
+        }
+    }
 
     /// The daemon's socket is found from the certificate, and finding it never makes the process
     /// undumpable: the daemon refuses a connection from a process it cannot read the namespaces
@@ -402,6 +471,42 @@ mod tests {
                     "finding this computer's daemon reads no device key"
                 );
             },
+        );
+    }
+
+    /// A computer that made its own identity and never logged in keeps no login, so its state
+    /// directory may not even exist: its daemon is still found, from the device's certificate.
+    #[test]
+    fn a_device_that_never_logged_in_finds_its_daemon_without_a_login_directory() {
+        let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let login_dir = root.path().join("state/tilo/device");
+        let keys = IdentityPaths::under(root.path().join("identity"));
+        keys.ensure_directories().unwrap();
+        let root_key = SigningKey::from_bytes(&[9; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root_key.verifying_key().to_bytes(),
+            device_public_key: SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes(),
+            device_label: "server".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1_000,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root_key).unwrap();
+        write_device_cert(&keys.device_cert, &cert).unwrap();
+        assert!(!login_dir.exists(), "this computer never logged in");
+
+        let socket = held_api_in(&Place::at(login_dir.clone(), keys))
+            .unwrap()
+            .expect("a device of its own names its daemon");
+        assert_eq!(
+            socket,
+            holder_api_socket(
+                &holder_dir(&login_dir).unwrap(),
+                &holder_name(&cert.device_public_key),
+            ),
+            "the daemon is the one the device's certificate names"
         );
     }
 }

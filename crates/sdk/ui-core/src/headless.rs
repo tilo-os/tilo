@@ -371,6 +371,12 @@ pub type ServedProvider = Box<
     ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError>,
 >;
 
+/// What decides in a harness, in place of the workspace broker, the actions of records the window
+/// shows that another workspace holds ([`FrameHarness::decide_held_elsewhere`]).
+pub type HeldHost = Box<
+    dyn FnMut(&[crate::held_elsewhere::HeldRecord]) -> Vec<crate::held_elsewhere::HeldDecision>,
+>;
+
 /// One invocation of another provider's action ([`FrameHarness::serve_provider`]).
 pub struct ProvidedInvocation<'a> {
     /// The action as the provider publishes it.
@@ -624,6 +630,12 @@ pub struct FrameHarness {
     /// What takes the place of the providers whose actions the app's controls are bound to
     /// ([`Self::serve_provider`]), by provider.
     providers: HashMap<String, ServedProvider>,
+    /// What decides the actions of records another workspace holds
+    /// ([`Self::decide_held_elsewhere`]), and the records the window last asked it about.
+    held_host: Option<(HeldHost, Vec<crate::held_elsewhere::HeldRecord>)>,
+    /// What the widget tree asked of the transport that a harness host did not answer, until it is
+    /// taken ([`Self::take_collaboration_requests`]).
+    kept_requests: Vec<crate::collaboration::CollabRequest>,
     bound_invocations:
         HashMap<tilo_actions::InvocationId, crate::bound_dispatch::BoundActionTarget>,
     /// What each job started with [`FrameHarness::start_bound_job`] reported so far, in order.
@@ -844,17 +856,6 @@ impl FrameHarness {
         Self::from_component_with_root(component, viewport, inputs, notify, |root| root)
     }
 
-    /// Observe the ordinary mounted component through a transparent root decorator.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn from_component_with_decorator(
-        component: crate::application::AppComponent,
-        viewport: (u32, u32),
-        inputs: crate::application::ComponentRunnerInputs,
-        decorate: impl FnOnce(Box<dyn Widget>) -> Box<dyn Widget>,
-    ) -> Result<Self, crate::launch::LaunchError> {
-        Self::from_component_with_root(component, viewport, inputs, || {}, decorate)
-    }
-
     fn from_component_with_root(
         component: crate::application::AppComponent,
         viewport: (u32, u32),
@@ -942,16 +943,6 @@ impl FrameHarness {
                 .setup_error(crate::launch::LaunchError::Operation(error.to_string())));
         }
         Ok((root, wake, history))
-    }
-
-    /// The content link the mounted component's record content travels on: the content link its window keeps, read as
-    /// the window reads it, so a test asking what the window asked for looks here.
-    pub fn component_document_content_link(
-        &self,
-    ) -> Option<std::sync::Arc<crate::collaboration::document_content::ContentLink>> {
-        let binding = &self.component_wake.as_ref()?.binding;
-        let _entry = binding.lifetime.enter_if_open().ok()?;
-        Some(crate::collaboration::document_content::ContentLink::of_window())
     }
 
     /// The record the mounted component shows.
@@ -1542,6 +1533,8 @@ impl FrameHarness {
             pending_control_invocations: HashSet::new(),
             control_failures: Vec::new(),
             providers: HashMap::new(),
+            held_host: None,
+            kept_requests: Vec::new(),
             bound_invocations: HashMap::new(),
             job_updates: HashMap::new(),
             acting_for: HashMap::new(),
@@ -1695,7 +1688,57 @@ impl FrameHarness {
     /// What the widget tree asked of the transport since the last call, as a live window's host takes
     /// it: the other half of [`Self::handle_collaboration_event`].
     pub fn take_collaboration_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
-        crate::widget::take_collab_requests(self.root.as_mut())
+        self.answer_held_elsewhere();
+        let mut requests = std::mem::take(&mut self.kept_requests);
+        requests.extend(crate::widget::take_collab_requests(self.root.as_mut()));
+        requests
+    }
+
+    /// Decide with `host`, as the workspace broker does, the actions of records the window shows
+    /// that another workspace holds: what the window asks of them is answered in each frame, and
+    /// asked again before each invocation, which is admitted as the holding workspace says then.
+    pub fn decide_held_elsewhere(&mut self, host: HeldHost) {
+        self.invalidate_local();
+        self.held_host = Some((host, Vec::new()));
+    }
+
+    /// Answer what the window asked of the records other workspaces hold, keeping the rest of its
+    /// requests for whoever takes them. Whether it answered anything.
+    fn answer_held_elsewhere(&mut self) -> bool {
+        if self.held_host.is_none() {
+            return false;
+        }
+        let mut asked = None;
+        for request in crate::widget::take_collab_requests(self.root.as_mut()) {
+            match request {
+                crate::collaboration::CollabRequest::DecideHeldElsewhere { records } => {
+                    asked = Some(records);
+                }
+                other => self.kept_requests.push(other),
+            }
+        }
+        let (Some(records), Some((_, held))) = (asked, self.held_host.as_mut()) else {
+            return false;
+        };
+        *held = records;
+        self.decide_held_again()
+    }
+
+    /// Decide the records the window last asked about again, as they stand now, and tell it.
+    fn decide_held_again(&mut self) -> bool {
+        let Some((host, held)) = self.held_host.as_mut() else {
+            return false;
+        };
+        if held.is_empty() {
+            return false;
+        }
+        let verdicts = host(held);
+        self.invalidate_local();
+        crate::widget::handle_collab_event(
+            self.root.as_mut(),
+            &crate::collaboration::CollabEvent::HeldElsewhereVerdicts { verdicts },
+        );
+        true
     }
 
     /// The live document, read-only.
@@ -3062,6 +3105,12 @@ impl FrameHarness {
     fn run_frame(&mut self) {
         self.poll_touch_hold(crate::time::now());
         if let Err(error) = self.try_relayout_following_search() {
+            self.skip_own_frame(&error);
+        }
+        // What the frame asked of records other workspaces hold is answered, and drawn.
+        if self.answer_held_elsewhere()
+            && let Err(error) = self.try_relayout_following_search()
+        {
             self.skip_own_frame(&error);
         }
     }
@@ -6679,21 +6728,6 @@ impl FrameHarness {
         self.call_on_instance_as(instance, resource, action, arguments, false)
     }
 
-    /// [`Self::call_on_instance`] after the caller confirmed this invocation.
-    ///
-    /// # Errors
-    /// As [`Self::call_on`], except that no confirmation is required.
-    pub fn call_on_instance_confirmed(
-        &mut self,
-        instance: crate::application::InstanceId,
-        resource: &str,
-        action: &str,
-        arguments: serde_json::Value,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-        self.invalidate_local();
-        self.call_on_instance_as(instance, resource, action, arguments, true)
-    }
-
     fn call_on_instance_as(
         &mut self,
         instance_id: crate::application::InstanceId,
@@ -7142,6 +7176,8 @@ impl FrameHarness {
         delivered: Option<(tilo_actions::InvocationId, Option<&tilo_actions::Actor>)>,
     ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
     {
+        // A record another workspace holds is admitted as that workspace says now.
+        self.decide_held_again();
         let (invocation, actor) =
             delivered.unwrap_or_else(|| (tilo_actions::InvocationId::new(), None));
         let author = tilo_actions::Actor::Member(self.author.clone());
@@ -8170,27 +8206,6 @@ impl FrameHarness {
         self.root
             .callback_binding()
             .map(|binding| binding.instance_id)
-    }
-
-    /// What a whole-window capture draws of the root, as the shell's "full app" capture does: the
-    /// size the root shows beyond its window and its scene at that size.
-    pub fn complete_content(&mut self) -> Option<(vello::kurbo::Size, Scene)> {
-        self.invalidate_local();
-        use crate::widget::CompleteContentWidgetExt as _;
-        let size = self.root.complete_content_size()?;
-        let origin = self.root.get_rect().origin();
-        let bounds = vello::kurbo::Rect::from_origin_size(origin, size);
-        let mut scene = Scene::new();
-        let drawn = self.root.draw_complete_content(
-            &mut scene,
-            bounds,
-            Affine::IDENTITY,
-            &mut self.text,
-            &self.theme,
-            &self.presence,
-        );
-        self.discard_layout_tree();
-        drawn.then_some((size, scene))
     }
 
     /// The scene the last laid-out frame encoded: what [`Self::render_rgba`] rasterises.

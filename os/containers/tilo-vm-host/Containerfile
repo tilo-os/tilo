@@ -35,13 +35,12 @@ ARG RPMS_REF
 # passt is pasta (each VM's network), skopeo fetches the guest, xfsprogs makes
 # the state disk's filesystem, libcap gives the helper its capabilities,
 # util-linux's setpriv drops to the service's uid and mounts the state disk,
-# curl lets the placer (`tilo-linux-vm hosted place`) scale the hosts through the
-# Kubernetes API, tar unpacks the member identity, and gzip unpacks the
+# tar unpacks the member identity, and gzip unpacks the
 # Firecracker release below, which is a tarball. The package manager goes once
 # they are installed: this host installs nothing at run time.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     microdnf install -y --setopt=reposdir=/repo --disablerepo='*' --enablerepo=frozen \
-        ca-certificates curl grep gzip libcap passt sed shadow-utils skopeo tar util-linux xfsprogs \
+        ca-certificates grep gzip libcap passt sed shadow-utils skopeo tar util-linux xfsprogs \
     && microdnf clean all \
     && microdnf remove -y --setopt=protected_packages= dnf5 \
     && ! command -v dnf5 >/dev/null

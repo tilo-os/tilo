@@ -111,7 +111,7 @@ fn members(state: &Path, workspace_id: WorkspaceId) -> Vec<[u8; 32]> {
     if !directory.exists() {
         return Vec::new();
     }
-    tilo_server::store::WorkspaceStore::open(state, workspace_id, true)
+    tilo_server::workspace_files::WorkspaceFiles::open(state, workspace_id)
         .unwrap()
         .load_membership()
         .unwrap()

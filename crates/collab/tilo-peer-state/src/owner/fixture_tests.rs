@@ -399,11 +399,11 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
     for n in 0..WRITES {
         let request = signed_write_to(&fixture, workspace, &mut record, &format!("k{n}"));
         let before = written();
-        crate::write_work::take();
+        let read_from = crate::work::now().bytes_read;
         let started = std::time::Instant::now();
         fixture.owner.commit_document(request, fixture.now).unwrap();
         times.push(started.elapsed());
-        reads.push(crate::write_work::take());
+        reads.push(crate::work::now().bytes_read.saturating_sub(read_from));
         costs.push(written() - before);
         if n == 100 || n == 2_000 {
             wholes.push(whole());
@@ -460,7 +460,7 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
     // publishes is of the document it changed, never of the workspace.
     let own = app_document(&fixture, workspace).save().len();
     assert!(
-        read_late <= own * 2,
+        read_late <= (own as u64) * 2,
         "a write at 2,000 changes reads {read_late} bytes, its document is {own}"
     );
     assert_eq!(

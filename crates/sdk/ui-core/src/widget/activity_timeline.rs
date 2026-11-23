@@ -669,10 +669,6 @@ impl ActivityTimeline {
         self
     }
 
-    pub fn set_on_open_entry<F: FnMut(&HistoryEntryId) + 'static>(&mut self, f: F) {
-        self.on_open_entry = Some(Box::new(f));
-    }
-
     fn open_row(&mut self, i: usize) -> bool {
         let Some(id) = self
             .row_face(i)
@@ -911,13 +907,6 @@ impl ActivityTimeline {
         }
     }
 
-    pub fn is_day_heading_at(&self, i: usize) -> bool {
-        match self.rows.get(i) {
-            Some(VisualRow::Group(g)) => self.row_groups.get(*g).is_some_and(|rg| rg.is_section),
-            _ => false,
-        }
-    }
-
     pub fn group_title_at_row(&self, i: usize) -> Option<&str> {
         match self.rows.get(i)? {
             VisualRow::Group(g) => Some(self.row_groups.get(*g)?.title.as_str()),
@@ -1025,12 +1014,6 @@ impl ActivityTimeline {
         self.focused_row().and_then(|row| self.row_entry(row))
     }
 
-    /// Geometry for an accessibility child, including off-viewport rows so a
-    /// ScrollIntoView/Focus request can move the roving focus before paint.
-    pub fn accessibility_row_rect(&self, row: usize) -> Option<Rect> {
-        self.row_rect_unclipped(row)
-    }
-
     pub fn focus_row(&mut self, row: usize) -> bool {
         let Some(identity) = self.row_identity(row) else {
             return false;
@@ -1041,12 +1024,6 @@ impl ActivityTimeline {
         }
         self.scroll_row_into_view(row);
         true
-    }
-
-    pub fn clear_row_focus(&mut self) {
-        if self.focused_row.take().is_some() {
-            self.dirty = true;
-        }
     }
 
     pub fn activate_row(&mut self, row: usize) -> bool {

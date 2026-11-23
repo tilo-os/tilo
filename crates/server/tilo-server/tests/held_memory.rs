@@ -1,4 +1,4 @@
-//! What the server allocates, measured with a counting global allocator: classifying a routed
+//! What the server allocates, measured with a counting global allocator: routing a
 //! multi-megabyte delta must not copy it.
 #![allow(
     clippy::unwrap_used,
@@ -49,26 +49,7 @@ fn classifying_a_routed_checkpoint_does_not_copy_it() {
     let delta = app_document_checkpoint(SIZE);
     assert!(delta.len() > SIZE);
 
-    // The compactor sees every delta a session admits.
-    assert!(
-        tilo_server::compaction::Compactor::observe_with(
-            &tilo_server::payloads::NeighbourPayloads,
-            &delta
-        )
-        .is_some()
-    );
-    let observed = heap::allocated_by(|| {
-        tilo_server::compaction::Compactor::observe_with(
-            &tilo_server::payloads::NeighbourPayloads,
-            &delta,
-        )
-    });
-    assert!(
-        observed < BUDGET,
-        "observing a {SIZE}-byte checkpoint allocated {observed} bytes"
-    );
-
-    // Persistence and fan-out route it by channel and kind.
+    // Routing reads the frame's channel and kind without copying its body.
     assert_eq!(
         tilo_server::coedit::retention_metadata(&delta),
         Some(([9; 32], tilo_server::coedit::RetentionKind::Checkpoint))

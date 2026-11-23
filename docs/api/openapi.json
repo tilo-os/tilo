@@ -99,54 +99,6 @@
         ]
       }
     },
-    "/v1/workspaces/{workspace}/export": {
-      "get": {
-        "operationId": "exportWorkspace",
-        "summary": "Everything the workspace holds: every resource of every app, read in full",
-        "tags": [
-          "Resources"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Everything the workspace holds: every resource of every app, read in full",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorkspaceExport"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/resources": {
       "get": {
         "operationId": "listAccountResources",
@@ -999,147 +951,6 @@
         }
       }
     },
-    "/v1/workspaces/{workspace}/search": {
-      "get": {
-        "operationId": "search",
-        "summary": "Search the workspace by words, best first",
-        "tags": [
-          "Resources"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "name": "q",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The words"
-          },
-          {
-            "name": "app",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            },
-            "description": "One app's resources only"
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            },
-            "description": "How many hits at most"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Search the workspace by words, best first",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SearchHits"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/links": {
-      "get": {
-        "operationId": "getLink",
-        "summary": "The link a person opens what a path names with",
-        "tags": [
-          "Resources"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "name": "path",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The resource"
-          },
-          {
-            "name": "mode",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            },
-            "description": "`app` (the default) or `desktop`"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "The link a person opens what a path names with",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Link"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/workspaces/{workspace}/programs": {
       "post": {
         "operationId": "runProgram",
@@ -1201,194 +1012,10 @@
         }
       }
     },
-    "/v1/workspaces/{workspace}/uploads": {
-      "post": {
-        "operationId": "upload",
-        "summary": "Put a file's bytes into the workspace, for an action to take",
-        "tags": [
-          "Files"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "201": {
-            "description": "Put a file's bytes into the workspace, for an action to take",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Uploaded"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "*/*": {
-              "schema": {
-                "type": "string",
-                "contentMediaType": "application/octet-stream"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/contents": {
+    "/v1/workspaces/{workspace}/contents/{hash}": {
       "put": {
-        "operationId": "putManyContents",
-        "summary": "Store several small files whole in one request, answering each one's reference",
-        "tags": [
-          "Resources"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Store several small files whole in one request, answering each one's reference",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PutManyAnswer"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PutMany"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/contents/have": {
-      "post": {
-        "operationId": "haveContents",
-        "summary": "Which of these content hashes the workspace already holds",
-        "tags": [
-          "Resources"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Which of these content hashes the workspace already holds",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HeldHashes"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HaveHashes"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/uploads/{upload}": {
-      "post": {
-        "operationId": "openUpload",
-        "summary": "Open an upload of a size under an id of the caller's choosing, for a file too large for one request",
+        "operationId": "putContent",
+        "summary": "Put a file's bytes into the workspace, addressed by their hash; `Content-Range` continues one too large for one request",
         "tags": [
           "Files"
         ],
@@ -1403,13 +1030,13 @@
             "description": "The workspace's id"
           },
           {
-            "name": "upload",
+            "name": "hash",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
             },
-            "description": "The upload's id, chosen by the caller when it opened the upload"
+            "description": "The content's address, lowercase BLAKE3 hex: what a put names the file's bytes by, and a reference's address with a sealed item's key after a `.`"
           },
           {
             "$ref": "#/components/parameters/Invocation"
@@ -1418,84 +1045,29 @@
             "$ref": "#/components/parameters/InvocationTitle"
           },
           {
+            "$ref": "#/components/parameters/ContentRange"
+          },
+          {
             "$ref": "#/components/parameters/IdempotencyKey"
           }
         ],
         "responses": {
+          "200": {
+            "description": "A piece is there: send the next from `offset`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutContent"
+                }
+              }
+            }
+          },
           "201": {
-            "description": "Open an upload of a size under an id of the caller's choosing, for a file too large for one request",
+            "description": "Every byte is there",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Upload"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NewUpload"
-              }
-            }
-          }
-        }
-      },
-      "put": {
-        "operationId": "uploadPiece",
-        "summary": "Send the next bytes of an open upload, at the offset it stands at",
-        "tags": [
-          "Files"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "name": "upload",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The upload's id, chosen by the caller when it opened the upload"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Send the next bytes of an open upload, at the offset it stands at",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Upload"
+                  "$ref": "#/components/schemas/PutContent"
                 }
               }
             }
@@ -1523,121 +1095,9 @@
           }
         }
       },
-      "get": {
-        "operationId": "uploadStatus",
-        "summary": "Where an open upload stands, to continue it",
-        "tags": [
-          "Files"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "name": "upload",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The upload's id, chosen by the caller when it opened the upload"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Where an open upload stands, to continue it",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Upload"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "operationId": "abandonUpload",
-        "summary": "Drop an open upload; nothing of it is stored",
-        "tags": [
-          "Files"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "name": "upload",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The upload's id, chosen by the caller when it opened the upload"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Drop an open upload; nothing of it is stored",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeletedUpload"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/content/{content}": {
       "get": {
         "operationId": "getContent",
-        "summary": "The bytes an action made",
+        "summary": "The bytes at a content address, with `Range`",
         "tags": [
           "Files"
         ],
@@ -1652,13 +1112,13 @@
             "description": "The workspace's id"
           },
           {
-            "name": "content",
+            "name": "hash",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
             },
-            "description": "`tilo.content:<hash>`, as an upload or an action answered it"
+            "description": "The content's address, lowercase BLAKE3 hex: what a put names the file's bytes by, and a reference's address with a sealed item's key after a `.`"
           },
           {
             "$ref": "#/components/parameters/Invocation"
@@ -1732,173 +1192,6 @@
               "text/event-stream": {
                 "schema": {
                   "type": "string"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/webhooks": {
-      "get": {
-        "operationId": "listWebhooks",
-        "summary": "The workspace's webhooks, without their secrets",
-        "tags": [
-          "Webhooks"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "The workspace's webhooks, without their secrets",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WebhookList"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "operationId": "createWebhook",
-        "summary": "Post the workspace's events to a URL, signed",
-        "tags": [
-          "Webhooks"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "201": {
-            "description": "Post the workspace's events to a URL, signed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Webhook"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "A refusal",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NewWebhook"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/workspaces/{workspace}/webhooks/{webhook}": {
-      "delete": {
-        "operationId": "deleteWebhook",
-        "summary": "Stop posting to a webhook",
-        "tags": [
-          "Webhooks"
-        ],
-        "parameters": [
-          {
-            "name": "workspace",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The workspace's id"
-          },
-          {
-            "name": "webhook",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "The webhook's id, as its creation answered it"
-          },
-          {
-            "$ref": "#/components/parameters/Invocation"
-          },
-          {
-            "$ref": "#/components/parameters/InvocationTitle"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Stop posting to a webhook",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeletedWebhook"
                 }
               }
             }
@@ -2193,139 +1486,6 @@
         ],
         "description": "A workspace as the account lists it: what `/v1` answers, and what an MCP\nclient and the desktop read of the person's workspaces."
       },
-      "WorkspaceExport": {
-        "type": "object",
-        "properties": {
-          "workspace": {
-            "$ref": "#/components/schemas/Workspace"
-          },
-          "exported_at_ms": {
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0
-          },
-          "resources": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Resource"
-            }
-          },
-          "unread": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Unread"
-            },
-            "description": "What it holds that did not read, each with why.",
-            "default": []
-          }
-        },
-        "required": [
-          "workspace",
-          "exported_at_ms",
-          "resources"
-        ],
-        "description": "Everything a workspace holds, as its key reads it: every resource of\nevery app, read in full, in the order a walk from its apps finds them.\nThe files they name (`tilo.content:` references) are fetched with\n`getContent`."
-      },
-      "Resource": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          },
-          "kind": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "fields": {
-            "type": "object",
-            "additionalProperties": true,
-            "description": "The app's own fields, with its own types.",
-            "default": {}
-          },
-          "children": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Child"
-            },
-            "default": []
-          },
-          "cursor": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The app's cursor for the next page."
-          },
-          "app": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "For an app: its id."
-          },
-          "surface": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "For an app: its surface in the form it is kept by\n(`collab_types::surface::canonical`), what types are generated from."
-          },
-          "surface_version": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "For an app: its surface's version, `<app>@<digest>`."
-          }
-        },
-        "required": [
-          "path"
-        ]
-      },
-      "Child": {
-        "type": "object",
-        "properties": {
-          "list": {
-            "type": "string",
-            "description": "The list it is in."
-          },
-          "name": {
-            "type": "string"
-          },
-          "item": {
-            "type": "string",
-            "description": "The key a read takes it by."
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "list",
-          "name",
-          "item",
-          "path"
-        ],
-        "description": "A list of what a resource holds, one entry of it."
-      },
-      "Unread": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          },
-          "error": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "path",
-          "error"
-        ],
-        "description": "One resource an export could not read, and why."
-      },
       "Listing": {
         "type": "object",
         "properties": {
@@ -2441,6 +1601,90 @@
         ],
         "description": "One row of a listing: a resource under the path listed, or an app."
       },
+      "Resource": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "The app's own fields, with its own types.",
+            "default": {}
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Child"
+            },
+            "default": []
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The app's cursor for the next page."
+          },
+          "app": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For an app: its id."
+          },
+          "surface": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For an app: its surface in the form it is kept by\n(`collab_types::surface::canonical`), what types are generated from."
+          },
+          "surface_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For an app: its surface's version, `<app>@<digest>`."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "Child": {
+        "type": "object",
+        "properties": {
+          "list": {
+            "type": "string",
+            "description": "The list it is in."
+          },
+          "name": {
+            "type": "string"
+          },
+          "item": {
+            "type": "string",
+            "description": "The key a read takes it by."
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "list",
+          "name",
+          "item",
+          "path"
+        ],
+        "description": "A list of what a resource holds, one entry of it."
+      },
       "ActionAnswer": {
         "type": "object",
         "properties": {
@@ -2544,68 +1788,6 @@
           }
         },
         "description": "What the person is asked before an action runs."
-      },
-      "SearchHits": {
-        "type": "object",
-        "properties": {
-          "hits": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Hit"
-            }
-          },
-          "query": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "hits",
-          "query"
-        ]
-      },
-      "Hit": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          },
-          "kind": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "label": {
-            "type": "string"
-          },
-          "action": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The action the hit offers; `open` when it opens the resource itself."
-          }
-        },
-        "required": [
-          "path",
-          "label"
-        ]
-      },
-      "Link": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string"
-          },
-          "link": {
-            "type": "string",
-            "description": "Opens it in its app for the workspace's members; carries no secret."
-          }
-        },
-        "required": [
-          "path",
-          "link"
-        ]
       },
       "View": {
         "type": "object",
@@ -2767,106 +1949,9 @@
           "status"
         ]
       },
-      "Uploaded": {
+      "PutContent": {
         "type": "object",
         "properties": {
-          "content": {
-            "type": "string",
-            "description": "`tilo.content:<hash>`: what an action takes the file as."
-          },
-          "size": {
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0
-          }
-        },
-        "required": [
-          "content",
-          "size"
-        ]
-      },
-      "PutMany": {
-        "type": "object",
-        "properties": {
-          "files": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Each file's bytes, base64."
-          }
-        },
-        "required": [
-          "files"
-        ],
-        "description": "Several small files put into the workspace in one request."
-      },
-      "PutManyAnswer": {
-        "type": "object",
-        "properties": {
-          "contents": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        },
-        "required": [
-          "contents"
-        ],
-        "description": "Each file's `tilo.content:<hash>` reference, in the order asked."
-      },
-      "HaveHashes": {
-        "type": "object",
-        "properties": {
-          "hashes": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        },
-        "required": [
-          "hashes"
-        ],
-        "description": "Content hashes (lowercase BLAKE3 hex) to ask whether the workspace holds."
-      },
-      "HeldHashes": {
-        "type": "object",
-        "properties": {
-          "have": {
-            "type": "array",
-            "items": {
-              "type": "boolean"
-            }
-          }
-        },
-        "required": [
-          "have"
-        ],
-        "description": "Whether each asked hash is held, in the order asked."
-      },
-      "NewUpload": {
-        "type": "object",
-        "properties": {
-          "size": {
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0,
-            "description": "How many bytes the whole file is."
-          }
-        },
-        "required": [
-          "size"
-        ]
-      },
-      "Upload": {
-        "type": "object",
-        "properties": {
-          "upload": {
-            "type": "string",
-            "description": "The id the caller named it by."
-          },
           "size": {
             "type": "integer",
             "format": "uint64",
@@ -2884,15 +1969,14 @@
               "string",
               "null"
             ],
-            "description": "`tilo.content:<hash>`, in the answer of the piece that completed it."
+            "description": "`tilo.content:<hash>`, once every byte is there."
           }
         },
         "required": [
-          "upload",
           "size",
           "offset"
         ],
-        "description": "One upload in pieces: where it stands, and what every byte of it is once\nthe last piece answered."
+        "description": "A content put: where an unfinished one stands, and what every byte of it\nis once the last piece answered."
       },
       "Event": {
         "type": "object",
@@ -2951,112 +2035,6 @@
           "max_output_tokens"
         ],
         "description": "One turn asked of the person's own model, which the server that keeps\ntheir workspace asks with the key their vault keeps there: the\nconversation as the model service takes it. The answer streams as\nserver-sent events: `text` and `reasoning` each carry `{\"text\": …}`, what\nthe model wrote since the event before; `answer` ends the stream with the\nwhole turn, `{\"Ok\": {\"message\", \"stop_reason\", \"usage\"}}` or\n`{\"Err\": {\"kind\", \"message\"}}`, the kind telling a caller what to do\n(`no_provider`: none set up yet; `authentication`: no key kept); `error`\nends it with a refusal of the API's own shape."
-      },
-      "NewWebhook": {
-        "type": "object",
-        "properties": {
-          "url": {
-            "type": "string",
-            "description": "`https://…`, where each event is posted."
-          },
-          "events": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "The kinds to post (`change`, `invocation`, `presence`); all without it.",
-            "default": []
-          },
-          "path": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "One resource's changes only, and what is under it."
-          }
-        },
-        "required": [
-          "url"
-        ]
-      },
-      "Webhook": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "url": {
-            "type": "string"
-          },
-          "events": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "path": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "secret": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "What deliveries are signed with: answered once, when it is made."
-          },
-          "undelivered": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Why nothing is posted to its URL, where nothing is: it is not one this API posts to."
-          }
-        },
-        "required": [
-          "id",
-          "url",
-          "events"
-        ]
-      },
-      "WebhookList": {
-        "type": "object",
-        "properties": {
-          "webhooks": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Webhook"
-            }
-          }
-        },
-        "required": [
-          "webhooks"
-        ]
-      },
-      "DeletedWebhook": {
-        "type": "object",
-        "properties": {
-          "deleted": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "deleted"
-        ]
-      },
-      "DeletedUpload": {
-        "type": "object",
-        "properties": {
-          "deleted": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "deleted"
-        ],
-        "description": "An upload dropped before every byte of it was sent."
       },
       "api-tester.workspace.new-request.Arguments": {
         "type": "object",
@@ -33178,6 +32156,15 @@
         "in": "header",
         "required": false,
         "description": "What History calls the invocation",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "ContentRange": {
+        "name": "Content-Range",
+        "in": "header",
+        "required": false,
+        "description": "`bytes <from>-<to>/<size>`: where this piece of a file starts and ends, and how big the whole file is. Omitted when the whole file is one request.",
         "schema": {
           "type": "string"
         }

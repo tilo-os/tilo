@@ -145,11 +145,6 @@ impl FullscreenRequest {
             view: FullscreenView::Distinct,
         }
     }
-
-    /// Whether this request wants a distinct presentation view.
-    pub fn is_distinct(&self) -> bool {
-        matches!(self.view, FullscreenView::Distinct)
-    }
 }
 
 /// Pure output selection: given the enumerated monitors and a target, return the **index** of the

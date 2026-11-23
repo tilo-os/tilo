@@ -13,9 +13,11 @@
 //! - [`lines`]: the lines `tilo` prints for a listing of workspaces, keys and people;
 //! - [`errors`]: the one refusal shape, and its statuses;
 //! - [`idempotency`]: retried mutating calls answer what the first did;
-//! - [`events`] and [`webhooks`]: what happens, as a stream and posted.
+//! - [`events`] and [`webhooks`]: what happens, as a stream and posted; a key's webhooks are
+//!   the account's (`account/webhooks`).
 
 pub mod answers;
+pub mod contents;
 pub mod errors;
 pub mod events;
 pub mod idempotency;
@@ -58,32 +60,17 @@ pub const SURFACE_HEADER: &str = "tilo-surface";
 const DEFAULT_WAIT_SECONDS: u64 = 10;
 /// The longest any call is held.
 const MAX_WAIT_SECONDS: u64 = 60;
-/// How many resources of one export are read at once. Bigger than this only
-/// moves the wait to the workspace that answers the reads.
-const EXPORT_READS_AT_ONCE: usize = 8;
-/// How many exports one server runs at once; the rest wait their turn.
-const EXPORTS_AT_ONCE: usize = 8;
 
 /// What the API keeps besides the server's store.
+#[derive(Default)]
 pub struct State {
     pub(crate) remembered: idempotency::Remembered,
     pub(crate) deliveries: webhooks::Deliveries,
+    /// The content puts a key has yet to send every byte of: where each
+    /// stands, so a connection that failed continues instead of starting again.
+    pub(crate) contents: contents::Uploads,
     /// Each app's surface version per workspace, as last read.
     surfaces: std::sync::Mutex<HashMap<(String, String), String>>,
-    /// How many exports run at once; a burst waits its turn here instead of
-    /// taking the server's other calls down with it.
-    exports: Arc<tokio::sync::Semaphore>,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            remembered: idempotency::Remembered::default(),
-            deliveries: webhooks::Deliveries::default(),
-            surfaces: std::sync::Mutex::default(),
-            exports: Arc::new(tokio::sync::Semaphore::new(EXPORTS_AT_ONCE)),
-        }
-    }
 }
 
 /// Whether `path` is the API's.
@@ -92,10 +79,10 @@ pub fn serves(path: &str) -> bool {
     path == "/v1" || path.starts_with("/v1/")
 }
 
-/// Whether `method` on `path` uploads a file, which may be larger than other
-/// bodies.
+/// Whether `method` on `path` carries a file's bytes, which may be larger than
+/// other bodies.
 #[must_use]
-pub fn uploads(method: &Method, path: &str) -> bool {
+pub fn takes_bytes(method: &Method, path: &str) -> bool {
     routing::find(method, path)
         .is_ok_and(|(operation, _)| operation.body == operations::Body::Bytes)
 }
@@ -418,8 +405,6 @@ impl<'a> Caller<'a> {
         match operation.id {
             "listResources"
             | "readResource"
-            | "search"
-            | "getLink"
             | "viewResource"
             | "listAccountResources"
             | "readAccountResource" => self.resource_operation(operation.id).await,
@@ -427,15 +412,12 @@ impl<'a> Caller<'a> {
             | "undoInvocation" | "invocationOutput" => {
                 self.invocation_operation(operation.id).await
             }
-            "listWebhooks" | "createWebhook" | "deleteWebhook" => {
-                self.webhook_operation(operation.id)
-            }
             "askModel" => model_asks::ask(&self.session, &self.workspace(), self.body).await,
             other => self.workspace_operation(other).await,
         }
     }
 
-    /// Reading the workspace: listings, resources, search and links.
+    /// Reading the workspace: listings, resources and views.
     async fn resource_operation(&self, id: &str) -> Result<Answer, ApiError> {
         match id {
             "listResources" | "listAccountResources" => {
@@ -469,7 +451,7 @@ impl<'a> Caller<'a> {
                     .map(|(app, surface)| surface_version(app, surface));
                 shaped::<answers::Resource>(with(read, "surface_version", version)).map(Answer::ok)
             }
-            "viewResource" => {
+            _ => {
                 let path = self
                     .query("path")
                     .ok_or_else(|| ApiError::new("invalid_arguments", "`path` is required"))?;
@@ -485,24 +467,6 @@ impl<'a> Caller<'a> {
                     scale,
                 );
                 shaped::<answers::View>(self.call("tilo_view", args).await?).map(Answer::ok)
-            }
-            "search" => {
-                let query = self
-                    .query("q")
-                    .ok_or_else(|| ApiError::new("invalid_arguments", "`q` is required"))?;
-                let limit = self
-                    .query("limit")
-                    .and_then(|limit| limit.parse::<u64>().ok());
-                let args = with(json!({"query": query}), "app", self.query("app"));
-                let found = self.call("tilo_find", with(args, "limit", limit)).await?;
-                shaped::<answers::SearchHits>(found).map(Answer::ok)
-            }
-            _ => {
-                let path = self
-                    .query("path")
-                    .ok_or_else(|| ApiError::new("invalid_arguments", "`path` is required"))?;
-                let args = with(json!({"path": path}), "mode", self.query("mode"));
-                shaped::<answers::Link>(self.call("tilo_link", args).await?).map(Answer::ok)
             }
         }
     }
@@ -533,49 +497,10 @@ impl<'a> Caller<'a> {
         }
     }
 
-    /// Everything the workspace holds, read by walking it from its apps as
-    /// an agent would: each listing page by page, each resource read whole.
-    /// A resource that does not read is named with why, and the walk goes on.
-    ///
-    /// The document is written as the walk finds it, so the server holds no
-    /// more than the reads in flight, however much a workspace holds. Some
-    /// exports run side by side; the rest wait their turn.
-    async fn export(&self) -> Result<Answer, ApiError> {
-        let ws = self.workspace();
-        let workspace = self
-            .session
-            .workspace(&ws)
-            .await
-            .map_err(ApiError::from)?
-            .ok_or_else(|| ApiError::new("not_found", "no such workspace"))?;
-        let workspace = parsed::<answers::Workspace>(
-            serde_json::to_value(&workspace)
-                .map_err(|error| ApiError::new("unavailable", error.to_string()))?,
-        )?;
-        let running = Arc::clone(&self.server.v1.exports)
-            .acquire_owned()
-            .await
-            .map_err(|_| ApiError::new("unavailable", "the server is stopping"))?;
-        let source = SessionExport {
-            session: Arc::clone(&self.session),
-            workspace: Some(ws).filter(|ws| !ws.is_empty()),
-            group: self.group.clone(),
-        };
-        Ok(Answer::Stream {
-            content_type: "application/json",
-            body: export_body(source, workspace, crate::now_ms(), running),
-        })
-    }
-
     /// The workspace's people, programs, files and events.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one match over the workspace's operations, each a few lines"
-    )]
     async fn workspace_operation(&self, id: &str) -> Result<Answer, ApiError> {
         let ws = self.workspace();
         match id {
-            "exportWorkspace" => self.export().await,
             "runProgram" => {
                 let program: answers::Program = self.json_body()?;
                 let arguments = json!({
@@ -605,88 +530,52 @@ impl<'a> Caller<'a> {
                 }
                 shaped::<answers::ProgramAnswer>(typed).map(Answer::ok)
             }
-            "upload" => {
-                let content = crate::content::put(&self.session, &ws, self.body)
-                    .await
-                    .map_err(|refused| {
-                        // A revoked key is told so, and how its person approves another.
-                        if refused.body.code == "key_revoked" {
-                            refused
-                        } else {
-                            ApiError::new("unavailable", refused.body.message)
-                                .next("upload the file again")
-                        }
-                    })?;
-                Ok(Answer::created(
-                    json!({"content": content, "size": self.body.len()}),
-                ))
-            }
-            "putManyContents" => {
-                let put: answers::PutMany = self.json_body()?;
-                let answered = self
-                    .call("tilo_put_many", json!({"files": put.files}))
-                    .await?;
-                shaped::<answers::PutManyAnswer>(answered).map(Answer::ok)
-            }
-            "haveContents" => {
-                let asked: answers::HaveHashes = self.json_body()?;
-                let answered = self
-                    .call("tilo_put_have", json!({"hashes": asked.hashes}))
-                    .await?;
-                shaped::<answers::HeldHashes>(answered).map(Answer::ok)
-            }
-            "openUpload" => {
-                let id = self.params.get("upload").to_owned();
-                if !crate::content::valid_id(&id) {
-                    return Err(ApiError::new(
-                        "invalid_request",
-                        "an upload's id is 8 to 128 letters, digits, `-` or `_`",
-                    )
-                    .next(
-                        "name it after something only this upload's caller knows, such as a UUID",
-                    ));
+            "putContent" => {
+                let hash = self.params.get("hash").to_owned();
+                if !contents::address(&hash) {
+                    return Err(contents::bad_address(&hash));
                 }
-                let new: answers::NewUpload = self.json_body()?;
-                let (placement, opened) = self
-                    .server
-                    .uploads
-                    .open(&self.session, &self.grant.id, &ws, &id, new.size)
-                    .await?;
-                Ok(if opened {
-                    Answer::created(placement)
-                } else {
-                    Answer::ok(placement)
-                })
-            }
-            "uploadStatus" => {
-                let id = self.params.get("upload").to_owned();
-                Ok(Answer::ok(self.server.uploads.status(
-                    &self.grant.id,
-                    &ws,
-                    &id,
-                )?))
-            }
-            "uploadPiece" => {
-                let id = self.params.get("upload").to_owned();
-                let at = self.query("offset").and_then(|at| at.trim().parse().ok());
-                let body = self.body;
-                match self
-                    .server
-                    .uploads
-                    .append(&self.session, &self.grant.id, &ws, &id, at, body)
-                    .await?
+                let (first, total) = match self
+                    .headers
+                    .get(header::CONTENT_RANGE)
+                    .and_then(|value| value.to_str().ok())
                 {
-                    crate::content::Sent::More(placement) => Ok(Answer::ok(placement)),
-                    crate::content::Sent::Done(done) => Ok(Answer::created(done)),
-                }
-            }
-            "abandonUpload" => {
-                let id = self.params.get("upload").to_owned();
-                Ok(Answer::ok(self.server.uploads.abandon(
+                    Some(value) => {
+                        let (from, to, size) = contents::range(value).ok_or_else(|| {
+                            ApiError::invalid("Content-Range is `bytes <from>-<to>/<size>`")
+                        })?;
+                        if to.saturating_sub(from).saturating_add(1) != self.body.len() as u64 {
+                            return Err(ApiError::invalid(
+                                "the body is not the piece Content-Range names",
+                            ));
+                        }
+                        (from, size)
+                    }
+                    None => (0, self.body.len() as u64),
+                };
+                // A content put's future is large: on the heap, not in the frames
+                // of the request that awaits it.
+                let put = Box::pin(contents::put(
+                    &self.server.v1.contents,
+                    &self.session,
                     &self.grant.id,
                     &ws,
-                    &id,
-                )?))
+                    &hash,
+                    first,
+                    total,
+                    self.body,
+                ))
+                .await?;
+                match put {
+                    contents::Put::More { offset, size } => {
+                        shaped::<answers::PutContent>(json!({"offset": offset, "size": size}))
+                            .map(Answer::ok)
+                    }
+                    contents::Put::Done { content, size } => shaped::<answers::PutContent>(
+                        json!({"content": content, "offset": size, "size": size}),
+                    )
+                    .map(Answer::created),
+                }
             }
             "getContent" => self.content().await,
             "events" => {
@@ -705,45 +594,6 @@ impl<'a> Caller<'a> {
                 })
             }
             other => Err(ApiError::new("not_found", format!("{other} is not served"))),
-        }
-    }
-
-    /// The key's webhooks in the workspace.
-    fn webhook_operation(&self, id: &str) -> Result<Answer, ApiError> {
-        let ws = self.workspace();
-        match id {
-            "listWebhooks" => {
-                let hooks: Vec<Value> = self
-                    .server
-                    .store
-                    .webhooks(Some((&self.grant.id, &ws)))
-                    .into_iter()
-                    .map(|hook| {
-                        let undelivered = self.server.posting.refusal(&hook.url);
-                        webhook_row(&hook, false, undelivered)
-                    })
-                    .collect();
-                Ok(Answer::ok(json!({"webhooks": hooks})))
-            }
-            "createWebhook" => self.create_webhook(),
-            _ => {
-                let id = self.params.get("webhook");
-                let removed = self
-                    .server
-                    .store
-                    .remove_webhook(&self.grant.id, &ws, id)
-                    .map_err(|_| {
-                        ApiError::new("unavailable", "the webhook could not be removed")
-                    })?;
-                if !removed {
-                    return Err(ApiError::new(
-                        "not_found",
-                        "no such webhook of this key here",
-                    ));
-                }
-                self.server.v1.deliveries.stop(id);
-                Ok(Answer::ok(json!({"deleted": id})))
-            }
         }
     }
 
@@ -878,10 +728,8 @@ impl<'a> Caller<'a> {
     /// bytes=<from>-<to?>` asks for part of it, which a caller downloading a
     /// large file does a piece at a time.
     async fn content(&self) -> Result<Answer, ApiError> {
-        let content = self.params.get("content").to_owned();
-        if content.trim().is_empty() {
-            return Err(ApiError::new("not_found", "no content is named"));
-        }
+        let hash = self.params.get("hash").to_owned();
+        let content = contents::reference(&hash).ok_or_else(|| contents::bad_address(&hash))?;
         let asked = self
             .headers
             .get(hyper::header::RANGE)
@@ -952,242 +800,6 @@ impl<'a> Caller<'a> {
         let size = piece.get("size").and_then(Value::as_u64).unwrap_or(0);
         Ok((size, bytes))
     }
-
-    fn create_webhook(&self) -> Result<Answer, ApiError> {
-        let new: answers::NewWebhook = self.json_body()?;
-        if let Some(why) = self.server.posting.refusal(&new.url) {
-            return Err(ApiError::new("invalid_arguments", why));
-        }
-        let kinds = ["change", "invocation", "presence"];
-        if let Some(unknown) = new
-            .events
-            .iter()
-            .find(|kind| !kinds.contains(&kind.as_str()))
-        {
-            return Err(ApiError::new(
-                "invalid_arguments",
-                format!("{unknown} is no kind of event: change, invocation or presence"),
-            ));
-        }
-        let (Ok(id), Ok(secret)) = (crate::store::secret(12), crate::store::secret(32)) else {
-            return Err(ApiError::new("unavailable", "no randomness is available"));
-        };
-        let hook = crate::store::Webhook {
-            id: format!("wh_{id}"),
-            grant: self.grant.id.clone(),
-            workspace: self.workspace(),
-            url: new.url,
-            events: new.events,
-            path: new.path,
-            secret,
-            cursor: None,
-        };
-        self.server
-            .store
-            .add_webhook(hook.clone())
-            .map_err(|_| ApiError::new("unavailable", "the webhook could not be kept"))?;
-        let row = webhook_row(&hook, true, None);
-        webhooks::Deliveries::start(self.server, hook);
-        Ok(Answer::created(row))
-    }
-}
-
-/// Where an export reads: a key's session ([`SessionExport`]), or a test's
-/// own workspace.
-trait ExportSource: Send + Sync {
-    /// One page of the listing at `path` (`None` for the apps).
-    fn list(
-        &self,
-        path: Option<String>,
-        cursor: Option<String>,
-    ) -> impl Future<Output = Result<answers::Listing, ApiError>> + Send;
-
-    /// One page of the resource at `path`.
-    fn read(
-        &self,
-        path: String,
-        cursor: Option<String>,
-    ) -> impl Future<Output = Result<answers::Resource, ApiError>> + Send;
-
-    /// `path` read with every page of what it holds.
-    fn read_whole(
-        &self,
-        path: &str,
-    ) -> impl Future<Output = Result<answers::Resource, ApiError>> + Send {
-        async move {
-            let mut whole: Option<answers::Resource> = None;
-            let mut cursor: Option<String> = None;
-            loop {
-                let page = self.read(path.to_owned(), cursor.clone()).await?;
-                let next = page.cursor.clone();
-                match &mut whole {
-                    None => whole = Some(page),
-                    Some(whole) => whole.children.extend(page.children),
-                }
-                match next {
-                    Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
-                    _ => break,
-                }
-            }
-            let mut whole = whole.ok_or_else(|| ApiError::new("not_found", "nothing to read"))?;
-            whole.cursor = None;
-            Ok(whole)
-        }
-    }
-}
-
-/// An export's reads: `tilo_ls` and `tilo_read` calls of one key's session
-/// in one workspace.
-struct SessionExport {
-    session: Arc<Session>,
-    workspace: Option<String>,
-    group: Option<Value>,
-}
-
-impl SessionExport {
-    async fn typed(&self, tool: &str, arguments: Value) -> Result<Value, ApiError> {
-        let workspace = self.workspace.as_deref();
-        self.session
-            .typed(workspace, tool, arguments, self.group.clone())
-            .await
-    }
-}
-
-impl ExportSource for SessionExport {
-    async fn list(
-        &self,
-        path: Option<String>,
-        cursor: Option<String>,
-    ) -> Result<answers::Listing, ApiError> {
-        let args = with(
-            with(json!({}), "path", path.as_ref()),
-            "cursor",
-            cursor.as_ref(),
-        );
-        // A listing that answers why it has nothing (an app installed
-        // but not running holds nothing to list) is named like a
-        // resource that does not read, and the walk goes on.
-        let listed = self.typed("tilo_ls", args).await?;
-        parsed::<answers::Listing>(listed)
-    }
-
-    async fn read(
-        &self,
-        path: String,
-        cursor: Option<String>,
-    ) -> Result<answers::Resource, ApiError> {
-        let args = with(json!({"path": path}), "cursor", cursor.as_ref());
-        parsed::<answers::Resource>(self.typed("tilo_read", args).await?)
-    }
-}
-
-/// The export's body: `workspace`'s document, each resource written as the
-/// walk reads it. `permit` is held until the last byte is written, so a
-/// burst of exports queues instead of running the server out of workspace.
-fn export_body<S: ExportSource + 'static>(
-    source: S,
-    workspace: answers::Workspace,
-    exported_at_ms: u64,
-    permit: tokio::sync::OwnedSemaphorePermit,
-) -> Body {
-    let (sender, chunks) = tokio::sync::mpsc::channel(4);
-    tokio::spawn(async move {
-        let _running = permit;
-        write_export(&source, &workspace, exported_at_ms, sender).await;
-    });
-    chunked_body(chunks)
-}
-
-/// Write the export's document into `sender` as the walk finds it: the
-/// workspace and when, then each resource in the order a walk finds it,
-/// then what did not read. Stops when the reader is gone.
-async fn write_export<S: ExportSource>(
-    source: &S,
-    workspace: &answers::Workspace,
-    exported_at_ms: u64,
-    sender: tokio::sync::mpsc::Sender<Bytes>,
-) {
-    use futures_util::StreamExt as _;
-
-    let open = format!(
-        "{{\"workspace\":{},\"exported_at_ms\":{exported_at_ms},\"resources\":[",
-        json_of(workspace),
-    );
-    if sender.send(open.into()).await.is_err() {
-        return;
-    }
-    let mut first = true;
-    let mut unread = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let mut pending: std::collections::VecDeque<Option<String>> =
-        std::collections::VecDeque::from([None]);
-    while let Some(path) = pending.pop_front() {
-        let mut cursor: Option<String> = None;
-        loop {
-            let listing = match source.list(path.clone(), cursor.clone()).await {
-                Ok(listing) => listing,
-                Err(refused) => {
-                    unread.push(answers::Unread {
-                        path: path.clone().unwrap_or_default(),
-                        error: refused.body.message.clone(),
-                    });
-                    break;
-                }
-            };
-            // The page's rows are read side by side, and written in the
-            // order the listing names them, so a workspace's export reads
-            // the same however fast each resource answers. A row the listing
-            // says is no resource of its own (an option, a choice) is part of
-            // what lists it: nothing there is that row's to read, so it is
-            // walked past without a read, and only a row that holds children
-            // is listed on from.
-            let fresh: Vec<answers::Row> = listing
-                .rows
-                .into_iter()
-                .filter(|row| seen.insert(row.path.clone()))
-                .collect();
-            let reading: Vec<String> = fresh
-                .iter()
-                .filter(|row| row.reads)
-                .map(|row| row.path.clone())
-                .collect();
-            let mut reads = futures_util::stream::iter(reading)
-                .map(|path| async move { source.read_whole(&path).await })
-                .buffered(EXPORT_READS_AT_ONCE);
-            for row in &fresh {
-                if row.reads
-                    && let Some(read) = reads.next().await
-                {
-                    match read {
-                        Ok(resource) => {
-                            let mut piece = String::new();
-                            if !first {
-                                piece.push(',');
-                            }
-                            first = false;
-                            piece.push_str(&json_of(&resource));
-                            if sender.send(piece.into()).await.is_err() {
-                                return;
-                            }
-                        }
-                        Err(refused) => unread.push(answers::Unread {
-                            path: row.path.clone(),
-                            error: refused.body.message.clone(),
-                        }),
-                    }
-                }
-                if row.has_children {
-                    pending.push_back(Some(row.path.clone()));
-                }
-            }
-            match listing.next_cursor {
-                Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),
-                _ => break,
-            }
-        }
-    }
-    let rest = format!("],\"unread\":{}}}", json_of(&unread));
-    let _ = sender.send(rest.into()).await;
 }
 
 /// `chunks` as a body, each frame sent as it comes.
@@ -1203,42 +815,12 @@ fn chunked_body(chunks: tokio::sync::mpsc::Receiver<Bytes>) -> Body {
     http_body_util::BodyExt::boxed(http_body_util::StreamBody::new(frames))
 }
 
-/// `value` as the JSON text the export's document carries for it.
-fn json_of<T: serde::Serialize>(value: &T) -> String {
-    serde_json::to_string(value).unwrap_or_else(|why| {
-        tracing::error!(%why, "an export's answer is not JSON");
-        "null".to_owned()
-    })
-}
-
-/// `hook` as its holder reads it: with its secret when it is made, and with
-/// why nothing is posted to its URL (`undelivered`) where nothing is.
-fn webhook_row(
-    hook: &crate::store::Webhook,
-    with_secret: bool,
-    undelivered: Option<&str>,
-) -> Value {
-    let row = with(
-        json!({"id": hook.id, "url": hook.url, "events": hook.events}),
-        "path",
-        hook.path.as_ref(),
-    );
-    let row = with(row, "secret", with_secret.then_some(&hook.secret));
-    with(row, "undelivered", undelivered)
-}
-
 /// `object` with `name` set to `value` when there is one.
 fn with(mut object: Value, name: &str, value: Option<impl serde::Serialize>) -> Value {
     if let (Some(fields), Some(value)) = (object.as_object_mut(), value) {
         fields.insert(name.to_owned(), json!(value));
     }
     object
-}
-
-/// `value` as a `T`, or the refusal that it was not.
-fn parsed<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, ApiError> {
-    serde_json::from_value(value)
-        .map_err(|why| ApiError::malformed(std::any::type_name::<T>(), &why.to_string()))
 }
 
 /// `value` as `T` answers it, or the refusal that it was not.
@@ -1419,300 +1001,4 @@ pub(crate) fn refusal(refused: &ApiError) -> Reply {
         reply.headers_mut().insert(header::RETRY_AFTER, value);
     }
     reply
-}
-
-#[cfg(test)]
-mod export_tests {
-    use super::*;
-    use http_body_util::BodyExt as _;
-    use serde_json::Map;
-    use std::collections::{HashMap, HashSet};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Duration;
-
-    /// A workspace a test scripts: the rows each listing answers, what each
-    /// read answers, and which of them refuse.
-    #[derive(Default)]
-    struct Fake {
-        listings: HashMap<Option<String>, Vec<answers::Row>>,
-        refusals: HashMap<String, String>,
-        unlistable: HashSet<String>,
-        /// Reads that wait for [`Self::check`], so a test can see what was
-        /// written before the walk ended.
-        held: HashSet<String>,
-        check: Option<Arc<tokio::sync::Semaphore>>,
-        /// How long every read takes, so a page's reads overlap.
-        delay: Duration,
-        in_flight: Arc<AtomicUsize>,
-        most_in_flight: Arc<AtomicUsize>,
-    }
-
-    impl ExportSource for Fake {
-        async fn list(
-            &self,
-            path: Option<String>,
-            _cursor: Option<String>,
-        ) -> Result<answers::Listing, ApiError> {
-            if let Some(name) = path
-                .as_ref()
-                .filter(|name| self.unlistable.contains(name.as_str()))
-            {
-                return Err(ApiError::new("failed", format!("{name} holds nothing")));
-            }
-            Ok(answers::Listing {
-                path: path.clone().unwrap_or_else(|| "apps".to_owned()),
-                kind: None,
-                rows: self.listings.get(&path).cloned().unwrap_or_default(),
-                actions: Vec::new(),
-                kinds: std::collections::BTreeMap::new(),
-                next_cursor: None,
-            })
-        }
-
-        async fn read(
-            &self,
-            path: String,
-            _cursor: Option<String>,
-        ) -> Result<answers::Resource, ApiError> {
-            let running = self
-                .in_flight
-                .fetch_add(1, Ordering::SeqCst)
-                .saturating_add(1);
-            self.most_in_flight.fetch_max(running, Ordering::SeqCst);
-            if !self.delay.is_zero() {
-                tokio::time::sleep(self.delay).await;
-            }
-            if self.held.contains(&path)
-                && let Some(check) = &self.check
-            {
-                let _ = check.acquire().await;
-            }
-            self.in_flight.fetch_sub(1, Ordering::SeqCst);
-            if let Some(why) = self.refusals.get(&path) {
-                return Err(ApiError::new("failed", why.clone()));
-            }
-            Ok(resource(&path))
-        }
-    }
-
-    fn row(path: &str, has_children: bool) -> answers::Row {
-        answers::Row {
-            path: path.to_owned(),
-            name: path.to_owned(),
-            id: None,
-            key: None,
-            label: path.to_owned(),
-            kind: "page".to_owned(),
-            has_children,
-            reads: true,
-            actions: Vec::new(),
-            state: None,
-        }
-    }
-
-    /// A row that is only a place inside what lists it: an option, or a
-    /// choice, which no read answers as a resource of its own.
-    fn option(path: &str, has_children: bool) -> answers::Row {
-        answers::Row {
-            reads: false,
-            kind: "option".to_owned(),
-            ..row(path, has_children)
-        }
-    }
-
-    fn resource(path: &str) -> answers::Resource {
-        answers::Resource {
-            path: path.to_owned(),
-            kind: Some("page".to_owned()),
-            fields: Map::new(),
-            children: Vec::new(),
-            cursor: None,
-            app: None,
-            surface: None,
-            surface_version: None,
-        }
-    }
-
-    fn workspace() -> answers::Workspace {
-        answers::Workspace {
-            id: "ws".to_owned(),
-            name: "Workspace".to_owned(),
-            host: None,
-            role: Some("owner".to_owned()),
-            labels: std::collections::BTreeMap::new(),
-            unattended: false,
-            address: None,
-        }
-    }
-
-    /// A permit as the server hands one out, held for the export's life.
-    async fn permit() -> tokio::sync::OwnedSemaphorePermit {
-        let exports = Arc::new(tokio::sync::Semaphore::new(1));
-        exports.acquire_owned().await.unwrap()
-    }
-
-    /// `source`'s export as a client reads it: the body, whole, as the
-    /// document it describes.
-    async fn exported(source: Fake) -> answers::WorkspaceExport {
-        let body = export_body(source, workspace(), 7, permit().await);
-        let bytes = body.collect().await.unwrap().to_bytes();
-        parse(&bytes)
-    }
-
-    fn parse(bytes: &[u8]) -> answers::WorkspaceExport {
-        serde_json::from_slice(bytes)
-            .unwrap_or_else(|why| panic!("{why}: {}", String::from_utf8_lossy(bytes)))
-    }
-
-    fn paths(export: &answers::WorkspaceExport) -> Vec<&str> {
-        export
-            .resources
-            .iter()
-            .map(|resource| resource.path.as_str())
-            .collect()
-    }
-
-    /// A workspace with several resources and child listings exports them in
-    /// the order a walk finds them: a page's rows, then what those hold.
-    #[tokio::test]
-    async fn an_export_walks_child_listings_in_order() {
-        let mut fake = Fake::default();
-        fake.listings
-            .insert(None, vec![row("notes", true), row("files", true)]);
-        fake.listings.insert(
-            Some("notes".to_owned()),
-            vec![row("notes/a", false), row("notes/b", false)],
-        );
-        fake.listings
-            .insert(Some("files".to_owned()), vec![row("files/x", false)]);
-        let export = exported(fake).await;
-        assert_eq!(export.workspace.id, "ws");
-        assert_eq!(export.exported_at_ms, 7);
-        assert_eq!(
-            paths(&export),
-            ["notes", "files", "notes/a", "notes/b", "files/x"]
-        );
-        assert!(export.unread.is_empty(), "{:?}", export.unread);
-    }
-
-    /// A page's resources are read side by side, within the bound, and
-    /// written in the order the listing names them.
-    #[tokio::test]
-    async fn an_export_reads_a_page_side_by_side_and_writes_it_in_order() {
-        let named: Vec<String> = (0..20).map(|at| format!("notes/{at:02}")).collect();
-        let mut fake = Fake::default();
-        fake.listings.insert(
-            None,
-            named
-                .iter()
-                .map(|path| row(path, false))
-                .collect::<Vec<_>>(),
-        );
-        fake.delay = Duration::from_millis(20);
-        let most = Arc::clone(&fake.most_in_flight);
-        let export = exported(fake).await;
-        assert_eq!(
-            paths(&export),
-            named.iter().map(String::as_str).collect::<Vec<_>>()
-        );
-        let most = most.load(Ordering::SeqCst);
-        assert!(most > 1, "the page was read one after another: {most}");
-        assert!(
-            most <= EXPORT_READS_AT_ONCE,
-            "{most} reads ran at once, more than {EXPORT_READS_AT_ONCE}"
-        );
-    }
-
-    /// A resource or a listing that does not read is named with why, and the
-    /// walk goes on with the rest.
-    #[tokio::test]
-    async fn an_export_names_what_does_not_read_and_walks_on() {
-        let mut fake = Fake::default();
-        fake.listings.insert(
-            None,
-            vec![row("notes", true), row("bad", false), row("files", true)],
-        );
-        fake.listings
-            .insert(Some("notes".to_owned()), vec![row("notes/a", false)]);
-        fake.listings
-            .insert(Some("files".to_owned()), vec![row("files/x", false)]);
-        fake.unlistable.insert("notes".to_owned());
-        fake.refusals
-            .insert("bad".to_owned(), "bad is a page of nothing".to_owned());
-        let export = exported(fake).await;
-        assert_eq!(paths(&export), ["notes", "files", "files/x"]);
-        let unread: Vec<(&str, &str)> = export
-            .unread
-            .iter()
-            .map(|unread| (unread.path.as_str(), unread.error.as_str()))
-            .collect();
-        assert_eq!(
-            unread,
-            [
-                ("bad", "bad is a page of nothing"),
-                ("notes", "notes holds nothing")
-            ]
-        );
-    }
-
-    /// A row a listing says is no resource of its own (an option, a choice) is
-    /// not read: what holds it already answered it. Its children are walked
-    /// for resources of their own, and the row is neither exported nor
-    /// reported unread.
-    #[tokio::test]
-    async fn an_export_walks_past_a_row_that_is_no_resource_of_its_own() {
-        let mut fake = Fake::default();
-        fake.listings
-            .insert(None, vec![row("books", true), row("settings", true)]);
-        fake.listings.insert(
-            Some("books".to_owned()),
-            vec![row("books/a", false), option("books/B", false)],
-        );
-        fake.listings.insert(
-            Some("settings".to_owned()),
-            vec![option("settings/fonts", true)],
-        );
-        fake.listings.insert(
-            Some("settings/fonts".to_owned()),
-            vec![row("settings/fonts/Serif", false)],
-        );
-        // A read of an option would be a failure, as it is of the app: no
-        // read is asked for, so none is refused.
-        fake.refusals.insert(
-            "settings/fonts".to_owned(),
-            "settings/fonts has no read action".to_owned(),
-        );
-        let export = exported(fake).await;
-        assert_eq!(
-            paths(&export),
-            ["books", "settings", "books/a", "settings/fonts/Serif"]
-        );
-        assert!(export.unread.is_empty(), "{:?}", export.unread);
-    }
-
-    /// The document is written as it is read: a resource is sent before the
-    /// walk has read the one after it. The chunks read as one document.
-    #[tokio::test]
-    async fn an_export_sends_what_it_read_before_the_walk_ends() {
-        let check = Arc::new(tokio::sync::Semaphore::new(0));
-        let mut fake = Fake::default();
-        fake.listings
-            .insert(None, vec![row("early", false), row("late", false)]);
-        fake.held.insert("late".to_owned());
-        fake.check = Some(Arc::clone(&check));
-        let mut body = export_body(fake, workspace(), 7, permit().await);
-        let mut text = String::new();
-        while !text.contains("\"early\"") {
-            let frame = body.frame().await.unwrap().unwrap();
-            if let Some(data) = frame.data_ref() {
-                text.push_str(&String::from_utf8_lossy(data));
-            }
-        }
-        assert!(!text.contains("\"late\""), "{text}");
-        check.add_permits(1);
-        let rest = body.collect().await.unwrap().to_bytes();
-        text.push_str(&String::from_utf8_lossy(&rest));
-        let export = parse(text.as_bytes());
-        assert_eq!(paths(&export), ["early", "late"]);
-    }
 }

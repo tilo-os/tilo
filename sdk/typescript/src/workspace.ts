@@ -20,14 +20,17 @@ import {
   type WorkspaceExport,
   type WorkspaceInfo,
   resultOf,
-  workspaceOf,
 } from "./models.ts";
 import { ProtocolError, refusalOf } from "./errors.ts";
+import { blake3 } from "@noble/hashes/blake3.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { resourceProxy, type Resource, type Surface } from "./resource.ts";
 import { query as queryOf, routes } from "./routes.ts";
 import { collect } from "./transport.ts";
 
 const INVOCATION_PREFIX = "sdk:";
+/** How many bytes one piece of a content put carries, within the API's limit. */
+const PUT_PIECE = 8 * 1024 * 1024;
 
 /** A file's bytes, as they go up: one upload's own type, when the caller knows it. */
 export type FileBytes = Uint8Array | ArrayBuffer | Blob;
@@ -55,20 +58,60 @@ export class Files {
     const endpoint = await this.workspace.endpoint();
     const contentType =
       data instanceof Blob && data.type !== "" ? data.type : "application/octet-stream";
-    const answer = await endpoint.answer("POST", routes.uploads(endpoint.id), {
-      data: await bytesOfFile(data),
-      headers: { "content-type": contentType },
-    });
-    if (typeof answer.content !== "string" || answer.content === "") {
-      throw new ProtocolError("the host took the upload without naming the content");
+    const bytes = await bytesOfFile(data);
+    const hash = bytesToHex(blake3(bytes));
+    const route = routes.contents(endpoint.id, hash);
+    if (bytes.length <= PUT_PIECE) {
+      const content = await this.put(endpoint, route, bytes, contentType, 0, bytes.length, bytes.length);
+      if (content === null) {
+        throw new ProtocolError("the host took the file without naming its content");
+      }
+      return content;
     }
-    return answer.content;
+    for (let offset = 0; offset < bytes.length; offset += PUT_PIECE) {
+      const piece = bytes.subarray(offset, Math.min(offset + PUT_PIECE, bytes.length));
+      const content = await this.put(
+        endpoint,
+        route,
+        piece,
+        contentType,
+        offset,
+        offset + piece.length - 1,
+        bytes.length,
+      );
+      if (content !== null) {
+        return content;
+      }
+    }
+    throw new ProtocolError("the host took every piece of the file without naming its content");
+  }
+
+  /** One piece of a put: its content once every byte is there, else `null`. */
+  private async put(
+    endpoint: Endpoint,
+    route: string,
+    piece: Uint8Array,
+    contentType: string,
+    from: number,
+    to: number,
+    size: number,
+  ): Promise<string | null> {
+    const headers: Record<string, string> = { "content-type": contentType };
+    if (from !== 0 || piece.length !== size) {
+      headers["content-range"] = `bytes ${from}-${to}/${size}`;
+    }
+    const answer = await endpoint.answer("PUT", route, { data: piece, headers });
+    if (typeof answer.content === "string" && answer.content !== "") {
+      return answer.content;
+    }
+    return null;
   }
 
   /** The bytes of `content`, a `tilo.content:<hash>` in this workspace. */
   async download(content: string): Promise<Uint8Array> {
     const endpoint = await this.workspace.endpoint();
-    const route = routes.content(endpoint.id, content);
+    const hash = content.startsWith("tilo.content:") ? content.slice("tilo.content:".length) : content;
+    const route = routes.contents(endpoint.id, hash);
     const reply = await endpoint.request("GET", route, { stream: true, idempotent: false });
     if (reply.status >= 400) {
       throw refusalOf(reply.status, reply.body);
@@ -245,16 +288,19 @@ export class Workspace {
     return resourceProxy(this, path, surface);
   }
 
-  /** Search the workspace by words, best first. */
+  /** Search the workspace by words, best first: its `search#find` action. */
   async find(words: string, app: string | null = null, limit: number | null = null): Promise<Hit[]> {
-    const endpoint = await this.endpoint();
-    const answer = await endpoint.answer(
-      "GET",
-      `${routes.search(endpoint.id)}${queryOf({ q: words, app, limit })}`,
-      { idempotent: false },
-    );
-    return Array.isArray(answer.hits)
-      ? answer.hits
+    const args: Record<string, unknown> = { query: words };
+    if (app !== null) {
+      args.app = app;
+    }
+    if (limit !== null) {
+      args.limit = limit;
+    }
+    const hits = ((await (await this.endpoint()).action("search#find", args)) as Record<string, unknown> | null)
+      ?.hits;
+    return Array.isArray(hits)
+      ? hits
           .filter((hit): hit is Record<string, unknown> => hit !== null && typeof hit === "object")
           .map(hitOf)
       : [];
@@ -329,22 +375,22 @@ export class Workspace {
   }
 
   /**
-   * The link to hand a person for what `path` names (`notes/Todo`). It opens
-   * the record in its app for the workspace's members and carries no secret:
-   * anyone else must be invited first. `mode` is `app` (the app alone, the
-   * default) or `desktop`.
+   * The link to hand a person for what `path` names (`notes/Todo`): its
+   * `share-link` action. It opens the record in its app for the workspace's
+   * members and carries no secret: anyone else must be invited first. `mode`
+   * is `app` (the app alone, the default) or `desktop`.
    */
   async link(path: string, options: { mode?: "app" | "desktop" | null } = {}): Promise<string> {
-    const endpoint = await this.endpoint();
-    const answer = await endpoint.answer(
-      "GET",
-      `${routes.links(endpoint.id)}${queryOf({ path, mode: options.mode })}`,
-      { idempotent: false },
+    const mode = options.mode ?? null;
+    const result = await (await this.endpoint()).action(
+      `${path}#share-link`,
+      mode === null ? {} : { mode },
     );
-    if (typeof answer.link !== "string" || answer.link === "") {
+    const url = (result as Record<string, unknown> | null)?.url;
+    if (typeof url !== "string" || url === "") {
       throw new ProtocolError(`the workspace answered no link for ${path}`);
     }
-    return answer.link;
+    return url;
   }
 
   /**
@@ -377,28 +423,71 @@ export class Workspace {
 
   /**
    * Everything the workspace holds, read whole: its listing (with its
-   * labels) and every resource of every app, as a walk from its apps finds
-   * them; the ones that did not read are in `unread`, with why. The files
-   * the resources name (`tilo.content:` references) download with
+   * labels) and every resource of every app, read by walking the listings
+   * from its apps; the ones that did not read are in `unread`, with why. The
+   * files the resources name (`tilo.content:` references) download with
    * `files.download`. Take one before deleting a customer's workspace.
    */
   async export(): Promise<WorkspaceExport> {
+    const exportedAtMs = Date.now();
+    const resources: Record<string, unknown>[] = [];
+    const unread: { path: string; error: string }[] = [];
+    const why = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+    const seen = new Set<string>();
+    const walk: (string | null)[] = [null];
+    while (walk.length > 0) {
+      const path = walk.shift() ?? null;
+      let listing: Listing;
+      try {
+        listing = await this.ls(path);
+      } catch (error) {
+        unread.push({ path: path ?? "", error: why(error) });
+        continue;
+      }
+      for await (const row of listing) {
+        if (seen.has(row.path)) {
+          continue;
+        }
+        seen.add(row.path);
+        if (row.raw.reads !== false) {
+          try {
+            resources.push(await this.readWhole(row.path));
+          } catch (error) {
+            unread.push({ path: row.path, error: why(error) });
+          }
+        }
+        if (row.hasChildren) {
+          walk.push(row.path);
+        }
+      }
+    }
+    return { workspace: await this.info(), exportedAtMs, resources, unread };
+  }
+
+  /** `path` read with every page of what it holds. */
+  private async readWhole(path: string): Promise<Record<string, unknown>> {
     const endpoint = await this.endpoint();
-    const answer = await endpoint.answer("GET", routes.export(endpoint.id), { idempotent: false });
-    const workspace =
-      answer.workspace !== null && typeof answer.workspace === "object"
-        ? workspaceOf(answer.workspace as Record<string, unknown>)
-        : await this.info();
-    return {
-      workspace,
-      exportedAtMs: Number(answer.exported_at_ms ?? 0),
-      resources: Array.isArray(answer.resources)
-        ? (answer.resources as Record<string, unknown>[])
-        : [],
-      unread: Array.isArray(answer.unread)
-        ? (answer.unread as { path: string; error: string }[])
-        : [],
-    };
+    const children: unknown[] = [];
+    let whole: Record<string, unknown> = {};
+    let cursor: string | null = null;
+    for (;;) {
+      const page: Record<string, unknown> = await endpoint.answer(
+        "GET",
+        `${routes.resource(endpoint.id, path)}${queryOf({ cursor })}`,
+        { idempotent: false },
+      );
+      if (cursor === null) {
+        whole = { ...page };
+      }
+      children.push(...(Array.isArray(page.children) ? page.children : []));
+      whole.children = children;
+      const following = page.cursor;
+      if (typeof following !== "string" || following === cursor) {
+        delete whole.cursor;
+        return whole;
+      }
+      cursor = following;
+    }
   }
 
   /**

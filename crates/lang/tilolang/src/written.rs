@@ -95,10 +95,13 @@ pub fn compile_view_definition(
         source.to_owned()
     };
     let mut fingerprint = format!("{author}\0{definition}");
+    // The standard library is in every package's scope as `std` already: a runtime that loaded
+    // it as a package lists it among the others.
     let apps: Vec<&PackageMeta> = visible
         .iter()
         .filter(|m| {
             m.app != crate::host::HOST_APP
+                && m.app != crate::stdlib::APP
                 && !m.app.starts_with("agent.")
                 && !m.app.starts_with(WRITTEN_VIEW_APP_PREFIX)
         })

@@ -28,7 +28,7 @@ use tilo_files::{Change, ChangeKind, FsError, VPath, Watch};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::store::GOVERNED_ACCESS_FILE;
+use crate::workspace_files::GOVERNED_ACCESS_FILE;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 

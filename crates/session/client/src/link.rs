@@ -186,6 +186,8 @@ pub enum Entry {
         name: String,
         /// What the person may do there.
         role: tilo_server_protocol::workspaces::Role,
+        /// The host's signed address for the workspace ([`tilo_server_client::login::Admission::host`]).
+        host: Option<Vec<u8>>,
     },
     /// The entry or the workspace did not let it in: the entry's `code`
     /// (`banned`, `removed`, `invitation-only`, `full`, `refused`), or

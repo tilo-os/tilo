@@ -13,11 +13,12 @@
  * page shows the screen once the site's entry let them in (`reveal`), and
  * the visitor it turned away sees the wait list instead.
  *
- * Everything an agent does for the person goes through a login code
- * (`K7Q-MX2P`, `tilo-server-protocol`'s `login_code`): the tab asks its host
- * for one, the agent runs `tilo login <code>`, and the tab follows the code
- * (`follow()`, about once a second), showing each step the computer reports
- * as it happens.
+ * Everything an agent does for the person goes through a ticket the tab's
+ * host serves it (`tilo_device_identity::login`): the tab asks its host for
+ * one, the agent runs `tilo login <ticket>` on a computer (or
+ * `tilo device add <ticket>` on one of the person's own, to sign this tab
+ * in), and the tab follows the ticket (`follow()`, about once a second),
+ * showing each step the computer reports as it happens.
  *
  * The page makes its codes as soon as it can (`offerSetup`,
  * `offerAgentSignIn`), before anyone asks, and keeps a fresh one ready,
@@ -58,9 +59,7 @@
  * - **Returning?** signs in as someone who has been here: **Sign in with
  *   your agent** copies `signInPrompt`, whose code names nothing; a
  *   computer that is already a device of the person claims it, and the page
- *   asks to be certified as that person (`signIn(claimed)`). **Use a
- *   passkey** asks for one, once the page can (a click before then waits,
- *   for a while).
+ *   asks to be certified as that person (`signIn(claimed)`).
  */
 
 /**
@@ -124,9 +123,7 @@ export const ASK_MS = 8_000;
 export const QUIET_MS = 3 * 60_000;
 /** How long opening the person's own workspace waits before it says why it is slow. */
 export const OPEN_SLOW_MS = 20_000;
-/** How long a passkey sign-in waits for the page to be able to ask. */
-export const PASSKEY_WAIT_MS = 30_000;
-/** The site whose commands need no `--site`. */
+/** The site whose commands need no `--site`: a ticket names its own host. */
 export const HOME_SITE = 'https://tilo.sh';
 /** Tilo's MCP server, for an agent added by hand. */
 export const MCP_URL = 'https://mcp.tilo.sh';
@@ -138,26 +135,27 @@ const siteOf = site => (!site || site === HOME_SITE ? null : site);
  * on a machine whose PATH does not name where it went (a fresh one, or an
  * agent's shell, which never rereads the profile that would add it). */
 export const installCommand = (site, args = '') => `curl -fsSL ${siteOf(site) ?? 'tilo.sh'} | sh${args ? ` -s ${args}` : ''}`;
-/** `login <code>`, naming `site` unless it is tilo.sh. */
-const loginArgs = (code, site) => `login ${code}${siteOf(site) ? ` --site ${site}` : ''}`;
-/** `tilo login <code>`, naming `site` unless it is tilo.sh. */
-export const loginCommand = (code, site) => `tilo ${loginArgs(code, site)}`;
+/** `login <ticket>`: a ticket names the host it is served from, so no site is said. */
+const loginArgs = code => `login ${code}`;
+/** `tilo login <ticket>`. */
+export const loginCommand = code => `tilo ${loginArgs(code)}`;
 
 /** The prompt that has an agent set Tilo up: one line, complete on its own,
  * since `tilo login` tells the agent the rest. */
 export function setupPrompt(code, {site} = {}) {
-  return `Set up Tilo for me: run ${installCommand(site, loginArgs(code, site))}, then do what it tells you.`;
+  return `Set up Tilo for me: run ${installCommand(site, loginArgs(code))}, then do what it tells you.`;
 }
 
-/** The prompt that has an agent sign this tab in as the person. */
-export function signInPrompt(code, {site} = {}) {
-  return `Sign me in to Tilo: run ${loginCommand(code, site)}, then do what it tells you.`;
+/** The prompt that has an agent sign this tab in as the person, on a computer
+ * that is already one of their devices: it approves this tab with the ticket. */
+export function signInPrompt(code) {
+  return `Sign me in to Tilo: run tilo device add ${code}, then do what it tells you.`;
 }
 
 /** The command for someone who sets up by hand: their agent then adds the MCP server
  * (`MCP_URL`) where its own configuration keeps servers. */
 export function manualCommands(code, {site} = {}) {
-  return installCommand(site, loginArgs(code, site));
+  return installCommand(site, loginArgs(code));
 }
 
 /** "10 more minutes", the time left until `expiresAt` (ms) at `now` in whole
@@ -253,17 +251,6 @@ function nameOf(site) {
   return url.port ? `${name}:${url.port}` : name;
 }
 
-/** What the screen says of a passkey sign-in that did not work, from `error`.
- * Where the place cannot use passkeys at all (a web view inside an app that
- * may not use this site's), another passkey changes nothing: it says the ways
- * in that work there. */
-export function signInFailure(error) {
-  if (['passkeys-refused', 'passkeys-unavailable'].includes(error?.code)) {
-    return 'Passkeys can’t be used here. Sign in with your agent, or pair this device from one where you are signed in.';
-  }
-  return 'That passkey did not sign you in. Try another, or sign in with your agent.';
-}
-
 /** What the screen says when the page could not make or use a code, from
  * `error`, on `site`: what failed, and what still works. It says a workspace
  * could not be opened only for a page that stopped (`stopped`), and promises
@@ -275,16 +262,16 @@ export function setupFailure(error, {site = HOME_SITE} = {}) {
   if (code === 'stopped') return 'Tilo could not open a workspace for you here yet. Skip for now to see why.';
   if (code === 'no-workspace') return 'There is no workspace here yet to set your agent up in. Try again, or skip for now.';
   if (code === 'no-codes') return 'This tab can’t make the code an agent needs. Try again, or skip for now.';
-  // The site's server answered and would not make the code (a
-  // `LoginCodeError` of no other kind): said of the site by the name in the
-  // person's address bar, never by the address its codes come from, which may
-  // be one by number. Refused by anything else, the sentence names nobody.
+  // The site's server answered and would not serve a ticket (a `TicketError`):
+  // said of the site by the name in the person's address bar, never by the
+  // address its tickets come from, which may be one by number. Refused by
+  // anything else, the sentence names nobody.
   if (code === 'refused') {
-    const by = error?.name === 'LoginCodeError' ? `: ${nameOf(site)} refused it` : '';
+    const by = error?.name === 'TicketError' ? `: ${nameOf(site)} refused it` : '';
     return `The code for your agent could not be made here${by}. Try again, or skip for now and use Tilo without an agent.`;
   }
   if (code === 'copy-failed') return 'Your browser did not let Tilo copy the prompt. Select it and copy it yourself.';
-  if (code === 'not-a-device') return 'That computer is not signed in to Tilo as you. Try your agent on one that is, or use a passkey.';
+  if (code === 'not-a-device') return 'That computer is not signed in to Tilo as you. Try your agent on one that is.';
   if (code === 'not-let-in') return 'This tab isn’t let in yet. Try again in a moment.';
   if (code === 'not-loaded') return 'Tilo didn’t finish loading in this tab.';
   // The host that did not answer is the one the codes come from
@@ -424,8 +411,6 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
   };
   const sameState = (a, b) => JSON.stringify({...onStart(a), shown: null, at: null})
     === JSON.stringify({...onStart(b), shown: null, at: null});
-  let passkeyAction = null;
-  const passkeyWaiting = [];
   let gone = null;
   let stop = () => {};
   let askNow = () => {};
@@ -1044,23 +1029,6 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
       openSignedIn();
       openOwn();
     },
-    /** Sign in with a passkey: at once once the page offers it, else once it
-     * does, for `PASSKEY_WAIT_MS`. What the page's sign-in rejects with is
-     * said (`signInFailure`), but for the person closing the prompt. */
-    async passkey() {
-      if (closed) return;
-      view.signingIn(true);
-      try {
-        const action = passkeyAction ?? await bounded(new Promise((resolve, reject) => {
-          if (gone) reject(gone); else passkeyWaiting.push({resolve, reject});
-        }), PASSKEY_WAIT_MS, later, clear);
-        await action();
-      } catch (error) {
-        console.warn('first screen: sign-in', error);
-        // Closing the passkey prompt is the person's own answer.
-        if (error?.code !== 'passkey-cancelled' && !['NotAllowedError', 'AbortError'].includes(error?.name)) view.signInFailed(error);
-      } finally { view.signingIn(false); }
-    },
     /**
      * The page can make setup codes: `make()` resolves to `{code, expiresAt,
      * follow(), saved}`, `saved` what the setup keeps of it, and
@@ -1110,13 +1078,7 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
         at.error = error;
         show(kind);
       }
-      if (!passkeyAction) for (const {reject} of passkeyWaiting.splice(0)) reject(error);
       if (leaving) close();
-    },
-    /** The page can sign in with a passkey now. */
-    offerSignIn(signIn) {
-      passkeyAction = signIn;
-      for (const {resolve} of passkeyWaiting.splice(0)) resolve(signIn);
     },
     /** Another tab changed the setup: show what it keeps. */
     sync() {
@@ -1314,8 +1276,6 @@ export function domView(document) {
       $('first-screen-commands').closest('.fr-well').hidden = !text;
       $('first-screen-manual-left').textContent = note ?? 'The code works once, for 10 minutes, only for this tab.';
     },
-    signingIn(busy) { $('first-screen-passkey').setAttribute('aria-busy', String(busy)); },
-    signInFailed(error) { say(signInFailure(error)); },
     close() {
       $('first-screen').setAttribute('data-closing', '');
       // The screen fades, then leaves the page: reduced motion skips the fade. It stays in the
@@ -1445,7 +1405,6 @@ function wireFirstScreenScreen(document, storage, {held = false, signInOnly = fa
   on('first-screen-manual-toggle', () => screen.manual());
   on('first-screen-back', () => screen.back());
   on('first-screen-skip', () => screen.skip());
-  on('first-screen-passkey', () => screen.passkey());
   // A prompt selected and copied by hand is copied all the same.
   document.addEventListener('copy', () => {
     const offer = document.getElementById('first-screen-offer');

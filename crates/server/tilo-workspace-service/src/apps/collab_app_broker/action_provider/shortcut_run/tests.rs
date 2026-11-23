@@ -202,7 +202,7 @@ impl Fixture {
         let origin = InvocationCaller::NativePerson {
             invocation,
             workspace: workspace_id.clone(),
-            certificate,
+            certificate: Box::new(certificate),
             time,
         };
         let request = InvokeRequest {

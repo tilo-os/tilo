@@ -79,6 +79,10 @@ pub struct Caller {
     // What the agent's own record bounds it to on its turn (`Self::on_turn`), narrowing the
     // grants a delegated agent acts with; empty follows the default.
     pub(super) bound: Vec<tilo_action_policy::Rule>,
+    // What the agent's own record bounds an agent acting with its own key to, read by the
+    // provider that runs it on its person's device (`Self::held_to`). `None` there holds it to
+    // nothing: it carries no delegation at all.
+    own_bound: Option<Vec<tilo_action_policy::Rule>>,
 }
 
 impl Caller {
@@ -100,6 +104,7 @@ impl Caller {
             agent_name: None,
             asked: None,
             bound: Vec::new(),
+            own_bound: None,
         }
     }
 
@@ -409,14 +414,34 @@ impl Caller {
     }
 
     /// Bind a certified agent caller to the hosted roster entry it was
-    /// approved as, working for `person`: the author of the message whose
-    /// turn it answers, as its provider read it. The workspace service must
-    /// verify this binding.
+    /// approved as, answering `person`: the author of the message whose turn
+    /// it answers, as its provider read it. The agent's own key still signs:
+    /// every call is decided for `person`, bounded by the agent and by the
+    /// person it belongs to ([`Acting::agent_of`],
+    /// [`tilo_action_policy::Acting::signed_by`]), so the turn does only what
+    /// both the agent and `person` may, whoever the agent belongs to. The
+    /// workspace service must verify this binding.
     #[must_use]
     pub fn on_roster(mut self, created_at: i64, person: [u8; 32]) -> Self {
         if !self.session_delegated && self.acting.is_agent() && self.device_public_key.is_some() {
             self.roster_created_at = Some(created_at);
             self.turn_person = Some(person);
+            self.acting.acted_for = vec![Acting::person(hex::encode(person))];
+            if let Some(owner) = self.user_public_key.map(hex::encode) {
+                self.acting = self.acting.clone().agent_of(owner);
+            }
+        }
+        self
+    }
+
+    /// This agent caller as the agent of `owner`, the person it belongs to, answering whoever
+    /// it acts for ([`Acting::agent_of`]): where that is someone else, `owner` bounds it too.
+    /// Set only by the provider that runs the agent, from the agent's own record. Changes
+    /// nothing for a caller that is not an agent.
+    #[must_use]
+    pub fn agent_of(mut self, owner: impl Into<tilo_action_policy::PersonId>) -> Self {
+        if self.acting.is_agent() {
+            self.acting = self.acting.agent_of(owner);
         }
         self
     }
@@ -433,21 +458,21 @@ impl Caller {
 
     /// The agent `agent_id`, named `name`, working under this roster agent's approval: a
     /// sub-agent its starter started. It acts as itself, so what it writes and says is its
-    /// own, for the same person. Its starter hands it the work as a person's device hands an
-    /// agent its session ([`Acting::handed`]), and every change it makes is signed by the
-    /// starter's key, whose approval bounds what that tree may do
-    /// ([`Acting::signed_by`]): it may do only what its person, an agent's preset and its
-    /// starter's approval all allow. It holds no approval of its own. Changes nothing for a caller not bound to its roster entry
+    /// own, for the same person, as one more actor in its starter's chain
+    /// ([`Acting::handed_on`]): the starter, the person its turn answers and the person the
+    /// starter belongs to all bound it. Every change it makes is signed by the starter's key,
+    /// whose approval bounds that tree too ([`Acting::signed_by`]). It holds no approval of
+    /// its own. Changes nothing for a caller not bound to its roster entry
     /// ([`Self::on_roster`]).
     #[must_use]
     pub fn working_under(mut self, agent_id: impl Into<String>, name: &str) -> Self {
         let Some(approved) = self.approved_agent().map(str::to_owned) else {
             return self;
         };
-        let Some(person) = self.acting.acted_for_person().map(str::to_owned) else {
+        if self.acting.acted_for_person().is_none() {
             return self;
-        };
-        self.acting = Acting::handed_agent(agent_id.into(), person);
+        }
+        self.acting = self.acting.handed_on(agent_id);
         self.approved_as = Some(approved);
         self.agent_name = None;
         self.named(name)
@@ -499,6 +524,7 @@ impl Caller {
             agent_name: None,
             asked: None,
             bound: Vec::new(),
+            own_bound: None,
             ..self.clone()
         })
     }
@@ -557,27 +583,49 @@ impl Caller {
         &self.acting
     }
 
-    /// The grants made for this caller's software: the bound held on the agent a person's
-    /// own device handed its session to, `kept`, the bound the workspace's list of its agents
-    /// keeps for it, when no turn carries one. The delegation's preset is its acting's own
-    /// ([`Acting::handed_preset`]).
+    /// An agent acting with its own key on its person's device, held to `bound`, the rules its
+    /// own record narrows it to: it carries the delegation its person's grant gives an agent,
+    /// narrowed by them ([`Self::granted`]). The provider that runs the agent and read its record
+    /// sets it, never a payload. Changes nothing for any other caller.
+    #[must_use]
+    pub fn held_to(mut self, bound: Vec<tilo_action_policy::Rule>) -> Self {
+        if !self.session_delegated && self.acting.is_agent() && self.device_public_key.is_some() {
+            self.own_bound = Some(bound);
+        }
+        self
+    }
+
+    /// The grants made for this caller's software, the one place an agent's bound becomes
+    /// grants, so every host and every receiver narrows an agent alike. An agent a person's own
+    /// device handed its session to is held to the bound its turn carries, else `kept`, the one
+    /// the workspace's list of its agents keeps for it; its delegation is its acting's own
+    /// ([`Acting::handed_preset`]). An agent acting with its own key carries, where its person's
+    /// device read its record ([`Self::held_to`]), its person's delegation narrowed by that
+    /// bound; elsewhere it carries nothing of its own, and the host that admits it bounds what
+    /// the workspace gives its approved key. An agent whose bound nobody read is never more than
+    /// its person allows.
     #[must_use]
     pub fn granted(&self, kept: &[tilo_action_policy::Rule]) -> Vec<tilo_action_policy::Grant> {
         let (Some(agent), Some(person)) = (self.acting.agent_id(), self.acting.acted_for_person())
         else {
             return Vec::new();
         };
-        if !self.session_delegated {
-            return Vec::new();
+        if self.session_delegated {
+            let bound = if self.turn.is_some() {
+                &self.bound[..]
+            } else {
+                kept
+            };
+            return tilo_action_policy::roles::agent_bound(agent, person, bound);
         }
-        // A turn's agent carries the bound its server read for the turn; an agent outside a turn
-        // (one a person's computer works with) is held to what the workspace's list keeps for it.
-        let bound = if self.turn.is_some() {
-            &self.bound[..]
-        } else {
-            kept
-        };
-        tilo_action_policy::roles::agent_bound(agent, person, bound)
+        match (&self.own_bound, &self.workspace) {
+            (Some(bound), Some(workspace)) => {
+                let mut grants = Acting::handed_agent(agent, person).handed_preset(workspace);
+                grants.extend(tilo_action_policy::roles::agent_bound(agent, person, bound));
+                grants
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// The group a session named `id` is, as this caller's provider admitted
@@ -681,6 +729,41 @@ mod tests {
             appearance: None,
             signed: None,
         }
+    }
+
+    /// Ada's approved agent answers Bo: it acts for Bo, bounded by Ada. A sub-agent it starts
+    /// on that turn works for Bo under Ada's agent's approval, and records the whole chain, so
+    /// whatever decides its changes is bounded by Ada's agent and Ada as well.
+    #[test]
+    fn a_sub_agent_on_another_members_turn_carries_its_starters_whole_chain() {
+        let (ada, bo) = ([1; 32], [2; 32]);
+        let (ada_id, bo_id) = (hex::encode(ada), hex::encode(bo));
+        let scout = Caller::delegated_agent("scout", ada, [3; 32]).on_roster(7, bo);
+        assert_eq!(scout.acting().acted_for_person(), Some(bo_id.as_str()));
+        assert_eq!(
+            scout.acting().people(),
+            vec![bo_id.as_str(), ada_id.as_str()]
+        );
+        assert_eq!(scout.turn_person(), Some(&bo));
+
+        let helper = scout.clone().working_under("helper", "Helper");
+        let acting = helper.acting();
+        assert_eq!(acting.agent_id(), Some("helper"));
+        assert_eq!(
+            acting.acted_for_person(),
+            Some(bo_id.as_str()),
+            "it works for Bo"
+        );
+        assert!(acting.people().contains(&ada_id.as_str()), "{acting:?}");
+        assert!(
+            acting.nodes().iter().any(|node| *node == scout.acting()),
+            "its starter's whole tree: {acting:?}"
+        );
+        assert_eq!(helper.approved_agent(), Some("scout"));
+
+        // Ada's own turn records her once.
+        let hers = Caller::delegated_agent("scout", ada, [3; 32]).on_roster(7, ada);
+        assert_eq!(hers.acting().people(), vec![ada_id.as_str()]);
     }
 
     /// An agent goes by the name of the session its client named for the call, and by its own

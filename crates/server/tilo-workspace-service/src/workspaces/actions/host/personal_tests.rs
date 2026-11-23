@@ -3,11 +3,6 @@
 //! the workspaces this host keeps for them, an agent's grant reads only what
 //! it reaches, and nobody keeps or reads another person's.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server handle a test binds is kept until the test ends; dropping it earlier closes the host it drives"
-)]
-
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::{ActionCallError, ActionProvider as _, InvokeRequest, ReceiptStatus};
@@ -21,11 +16,16 @@ use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{caller, settled};
 use crate::workspaces::OwnWorkspaceOffer;
+use crate::workspaces::fixtures::test_host_holding;
 use crate::workspaces::tests::{governor, test_host};
+use std::sync::Arc;
 
 /// Hold `person`'s own workspace on `workspaces`: the list and devices the
 /// host serves for them live there.
-async fn hold_person_workspace(workspaces: &crate::workspaces::Workspaces, person: [u8; 32]) {
+pub(super) async fn hold_person_workspace(
+    workspaces: &crate::workspaces::Workspaces,
+    person: [u8; 32],
+) {
     let id = tilo_server_protocol::servers::person_workspace_id(&person);
     workspaces
         .create_for(crate::workspaces::person_workspace::NAME, Some(&id), person)
@@ -98,7 +98,9 @@ const LAPTOP: &str = "22222222-2222-4222-8222-222222222222";
 async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_here() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
+    // One device key service across the restart, as a server keeps its keys.
+    let keys = Arc::<crate::workspaces::fixtures::TestGroupKeys>::default();
+    let server = test_host_holding(dir.path(), &key, &owner, Arc::clone(&keys)).await;
     let workspaces = server.workspaces();
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
@@ -292,7 +294,7 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
 
     // The list stays across a restart.
     server.shutdown().await;
-    let server = test_host(dir.path(), &key, &owner).await;
+    let server = test_host_holding(dir.path(), &key, &owner, Arc::clone(&keys)).await;
     let workspaces = server.workspaces();
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
@@ -651,7 +653,9 @@ async fn a_listed_workspace_says_when_it_was_made_and_a_rename_does_not_move_it(
 async fn a_keys_sessions_say_when_it_was_here_and_whether_it_is_now() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
+    // One device key service across the restart, as a server keeps its keys.
+    let keys = Arc::<crate::workspaces::fixtures::TestGroupKeys>::default();
+    let server = test_host_holding(dir.path(), &key, &owner, Arc::clone(&keys)).await;
     let workspaces = server.workspaces();
     let root = SigningKey::from_bytes(&rand::random());
     hold_person_workspace(workspaces, root.verifying_key().to_bytes()).await;
@@ -679,7 +683,7 @@ async fn a_keys_sessions_say_when_it_was_here_and_whether_it_is_now() {
     // The host opens its files again: the record still says when the key was
     // here last.
     server.shutdown().await;
-    let server = test_host(dir.path(), &key, &owner).await;
+    let server = test_host_holding(dir.path(), &key, &owner, Arc::clone(&keys)).await;
     let listed = server
         .workspaces()
         .personal(&laptop, &[], &super::Listed::default())
@@ -791,8 +795,6 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
         fetch: None,
         agents: crate::peer::AgentRegistry::default(),
         environments: crate::environment::EnvironmentRegistry::default(),
-        positions: None,
-        compactor: None,
     };
     let (_client, end) = tokio::io::duplex(65_536);
     let (read, write) = tokio::io::split(end);

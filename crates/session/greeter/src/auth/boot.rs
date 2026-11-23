@@ -53,6 +53,20 @@ impl BootLink {
         self.0.recv_from_supervisor()
     }
 
+    /// Whether a message of the supervisor's waits to be read, so that
+    /// [`Self::recv`] answers without waiting.
+    pub fn has_message(&self) -> bool {
+        let mut fds = [rustix::event::PollFd::new(
+            &*self.0,
+            rustix::event::PollFlags::IN,
+        )];
+        let now = rustix::event::Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        rustix::event::poll(&mut fds, Some(&now)).is_ok_and(|ready| ready > 0)
+    }
+
     /// Read the supervisor's messages on a thread: each goes to `post` as an
     /// external payload ([`encode`]), and `ended` runs once it is gone.
     pub fn listen(

@@ -276,12 +276,17 @@ impl Window {
             })
             .unwrap_or_else(|| panic!("the window shows no {name:?} with a menu"))
             .0;
+        self.a11y_action(node, &ui::a11y::Action::ShowContextMenu);
+    }
+
+    /// The accessibility action `action` on `node`, as a tool or a screen reader asks for it.
+    fn a11y_action(&mut self, node: ui::accesskit::NodeId, action: &ui::a11y::Action) {
         match self {
             Self::Harness(window) => window
-                .perform_a11y_action(node, &ui::a11y::Action::ShowContextMenu)
-                .expect("the window opens the menu where the node stands"),
+                .perform_a11y_action(node, action)
+                .expect("the window acts where the node stands"),
             Self::Live(app) => {
-                app.dispatch_a11y_action(node, &ui::a11y::Action::ShowContextMenu);
+                app.dispatch_a11y_action(node, action);
             }
         }
     }
@@ -814,6 +819,31 @@ impl Session {
             .as_any()
             .and_then(|any| any.downcast_ref::<HostedWindow>())
             .expect("the window is the hosted window")
+    }
+
+    /// Press the window bar's History, as the shell's bar hands the press to the window, and let
+    /// the window settle.
+    fn press_history(&mut self) {
+        let history = ui::widget::capability::capability_mut::<dyn ui::widget::WindowHistory>(
+            self.window.root(),
+        )
+        .expect("the window offers its bar's History");
+        let control = history
+            .window_history_control()
+            .expect("the window's History is offered once it shows something");
+        history
+            .invoke_window_history_control(control)
+            .expect("the window's History is pressed");
+        self.settle();
+    }
+
+    /// The texts the window shows of the history of what it shows, under its bar's History: it
+    /// opens it, reads it, and closes it again.
+    fn history_shown(&mut self) -> Vec<String> {
+        self.press_history();
+        let shown = self.shown();
+        self.press_history();
+        shown
     }
 
     /// The texts the window's views show: its overview, and the page the content level opens.

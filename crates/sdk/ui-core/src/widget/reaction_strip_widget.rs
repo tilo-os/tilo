@@ -135,14 +135,6 @@ impl ReactionStripWidget {
         self
     }
 
-    /// Leave the add button's picker to the host, which opens its own at
-    /// [`Self::take_add_request`].
-    #[must_use]
-    pub fn without_picker(mut self) -> Self {
-        self.picker = None;
-        self
-    }
-
     #[must_use]
     pub fn is_picking(&self) -> bool {
         self.picker
@@ -154,15 +146,6 @@ impl ReactionStripWidget {
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.test_id = Some(id.into());
         self
-    }
-
-    /// Show `groups` now: a new pill arrives, a changed count cross-fades.
-    pub fn set_reactions(&mut self, groups: Vec<ReactionGroup>) {
-        if groups != self.groups {
-            self.groups = groups;
-            self.dirty = true;
-            self.layout_dirty = true;
-        }
     }
 
     #[must_use]

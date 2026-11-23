@@ -1,5 +1,5 @@
-//! A public workspace's chain: a newcomer is replayed none of its parts, and
-//! opening the chain's head sends the newest part and follows the chain.
+//! A public workspace's chain: a device that links holds the parts the chain
+//! started, and the newest part reaches it live as the chain grows.
 
 #![allow(
     clippy::unwrap_used,
@@ -8,30 +8,12 @@
     reason = "the member's helpers are part of the test's assertions"
 )]
 
-use std::collections::BTreeSet;
-
-use super::fixtures::{SealingMember, member_device};
-use super::tests::{Lounge, lounge_with_client, seal_and_send_title, title};
-use crate::CoeditPayload;
-use tilo_server_protocol::WorkspaceId;
+use super::fixtures::SealingMember;
+use super::tests::{Lounge, Peer, lounge_with_client, seal_and_send_title, title};
+use neighbour_wire::NeighbourMsg;
 
 /// The chain the members write, of the lounge's app.
 const CHAIN: &str = "messages";
-
-/// The retained channel a frame the host sent travels on, if it is a record's.
-fn frame_channel(envelope: &crate::Envelope) -> Option<[u8; 32]> {
-    let crate::Envelope::Delta { delta, .. } = envelope else {
-        return None;
-    };
-    match CoeditPayload::decode(delta)? {
-        CoeditPayload::Checkpoint { channel, .. }
-        | CoeditPayload::RetainedDelta { channel, .. } => Some(channel),
-    }
-}
-
-fn part_channel(app: &str, index: u64) -> [u8; 32] {
-    neighbour_wire::app_document_group(app, &neighbour_wire::document_part(CHAIN, index))
-}
 
 /// The member starts part `index` of the chain through its own session, as
 /// a device's writes reach the host, until the host holds it.
@@ -66,145 +48,46 @@ async fn write_part(lounge: &Lounge, client: &crate::ServerClient, index: u64) {
     .await;
 }
 
-/// What the host replays to `guest` until it is ready: the channels of the
-/// records it sent, and whether it says records come when opened.
-async fn replay(guest: &crate::ServerClient) -> (BTreeSet<[u8; 32]>, bool) {
-    tilo_test_env::within("the guest's replay", async {
-        let mut replayed = BTreeSet::new();
-        loop {
-            match guest.recv().await {
-                Some(crate::Envelope::Ready {
-                    documents_when_opened,
-                    ..
-                }) => return (replayed, documents_when_opened),
-                Some(crate::Envelope::NotAuthorised { refusal, .. }) => {
-                    panic!("the guest was refused: {refusal}")
-                }
-                Some(envelope) => replayed.extend(frame_channel(&envelope)),
-                None => panic!("the host closed the guest's session"),
-            }
-        }
-    })
-    .await
-}
-
-/// `guest` opens the record at `head`: the channels of the records the host
-/// sent before it answered, and the frames it says it sent.
-async fn open_head(
-    guest: &crate::ServerClient,
-    workspace_id: WorkspaceId,
-    head: [u8; 32],
-) -> (BTreeSet<[u8; 32]>, u32) {
-    guest
-        .send(crate::Envelope::OpenDocument {
-            workspace_id,
-            channel: head,
-        })
-        .unwrap();
-    tilo_test_env::within("the host answers the chain's head", async {
-        let mut sent = BTreeSet::new();
-        loop {
-            match guest.recv().await {
-                Some(crate::Envelope::DocumentOpened {
-                    channel,
-                    answer: tilo_server_protocol::DocumentAnswer::Sent { frames },
-                    ..
-                }) if channel == head => return (sent, frames),
-                Some(envelope) => sent.extend(frame_channel(&envelope)),
-                None => panic!("the host closed the guest's session"),
-            }
-        }
-    })
-    .await
-}
-
-/// A chat's newest part was replayed to every newcomer, so a guest entering a
-/// public workspace waited for all of it before its desktop; and a device that
-/// holds no part found none to show and started a first part of its own. Now
-/// the host keeps the chain for whoever opens its head, which brings the
-/// newest part in one answer, and later heads as they start.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_public_workspace_sends_a_chains_newest_part_to_who_opens_its_head() {
     let (lounge, client) = lounge_with_client().await;
     let app = super::tests::APP;
-    let (workspaces, workspace, workspace_id) = (
-        &lounge.workspaces,
-        lounge.workspace.as_str(),
-        lounge.workspace_id,
-    );
-    let (guest_key, guest_cert) = member_device(
-        workspaces,
-        workspace,
-        (&lounge.governor_key, &lounge.governor),
-        9,
-    )
-    .await;
     for index in 0..2 {
         write_part(&lounge, &client, index).await;
     }
-    workspaces
-        .publish(
-            workspace,
-            &lounge.governor,
-            tilo_server_protocol::directory::Listing {
-                description: "Everyone".into(),
-                default_role: tilo_server_protocol::workspaces::Role::Editor,
-            },
-        )
-        .await
-        .unwrap();
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&guest_key.to_bytes()))
-        .relay_mode(iroh::RelayMode::Disabled)
-        .bind()
-        .await
-        .unwrap();
-    let guest = crate::ServerClient::connect_to_pinned_host(
-        endpoint,
-        lounge.server.node_addr(),
-        guest_cert,
-        guest_key.clone(),
-        tilo_user_identity::RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    guest
-        .send(crate::Envelope::Subscribe { workspace_id })
-        .unwrap();
-    let (replayed, when_opened) = replay(&guest).await;
-    assert!(when_opened, "the guest is told records come when opened");
+    assert!(
+        lounge.workspaces.chain_head_has_part(
+            &lounge.workspace,
+            app,
+            &neighbour_wire::chain_head(CHAIN)
+        ),
+        "the chain has restarted a part, so a head is answered with one"
+    );
+    // A device that links now holds every part the chain started.
+    let mut peer = Peer::link(&lounge, 9).await;
     for index in 0..2 {
+        let record = neighbour_wire::document_part(CHAIN, index);
         assert!(
-            !replayed.contains(&part_channel(app, index)),
-            "part {index} came with the replay"
+            peer.link.read(|held| held.document(app, &record).is_some()),
+            "a device that caught up holds part {index}: its app reads it, and does not make it again"
         );
     }
-
-    // Opening the chain's head: the newest part, and only it.
-    let head = neighbour_wire::app_document_group(app, &neighbour_wire::chain_head(CHAIN));
-    let (sent, frames) = open_head(&guest, workspace_id, head).await;
-    assert!(frames > 0, "the host sent the newest part's frames");
-    assert_eq!(
-        sent,
-        BTreeSet::from([part_channel(app, 1)]),
-        "the host sent the newest part alone"
-    );
-
-    // A part started after reaches the guest, which follows the chain.
+    // A part started after reaches the linked device as it starts.
     write_part(&lounge, &client, 2).await;
-    tilo_test_env::within("the chain's next part reaches the guest", async {
+    let next = neighbour_wire::document_part(CHAIN, 2);
+    tilo_test_env::within("the chain's next part reaches the linked device", async {
         loop {
-            match guest.recv().await {
-                Some(envelope) if frame_channel(&envelope) == Some(part_channel(app, 2)) => {
-                    return;
-                }
-                Some(_) => {}
-                None => panic!("the host closed the guest's session"),
+            let frame = peer.heard.recv().await.unwrap();
+            if let NeighbourMsg::AppDocument { document_id, .. } = &frame.message
+                && document_id == &next
+            {
+                return;
             }
         }
     })
     .await;
-    drop((guest, client));
+    peer.pairing.abort();
+    drop((client, peer));
     let Lounge {
         server, workspaces, ..
     } = lounge;
@@ -216,33 +99,25 @@ async fn a_public_workspace_sends_a_chains_newest_part_to_who_opens_its_head() {
 /// takes as a chain to start.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_chain_with_no_part_answers_its_head_with_nothing() {
-    let (lounge, guest) = lounge_with_client().await;
-    let head = neighbour_wire::app_document_group(
-        super::tests::APP,
-        &neighbour_wire::chain_head("nothing yet"),
+    let (lounge, client) = lounge_with_client().await;
+    let head = neighbour_wire::chain_head("nothing yet");
+    assert!(
+        !lounge
+            .workspaces
+            .chain_head_has_part(&lounge.workspace, super::tests::APP, &head),
+        "a chain with no part has none: its head is answered with nothing, a chain to start"
     );
-    guest
-        .send(crate::Envelope::OpenDocument {
-            workspace_id: lounge.workspace_id,
-            channel: head,
-        })
-        .unwrap();
-    let frames = tilo_test_env::within("the host answers the chain's head", async {
-        loop {
-            if let Some(crate::Envelope::DocumentOpened {
-                channel,
-                answer: tilo_server_protocol::DocumentAnswer::Sent { frames },
-                ..
-            }) = guest.recv().await
-                && channel == head
-            {
-                return frames;
-            }
-        }
-    })
-    .await;
-    assert_eq!(frames, 0);
-    drop(guest);
+    // The first part the chain starts makes its head answer with it.
+    write_part(&lounge, &client, 0).await;
+    assert!(
+        lounge.workspaces.chain_head_has_part(
+            &lounge.workspace,
+            super::tests::APP,
+            &neighbour_wire::chain_head(CHAIN)
+        ),
+        "the part the chain started is held, and its head answers with it"
+    );
+    drop(client);
     let Lounge {
         server, workspaces, ..
     } = lounge;

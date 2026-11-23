@@ -9,13 +9,15 @@ anything, so what is recorded is that each thing was findable.
 
 Every step's pass or fail is read off the shell's own state: the state dump (the workspaces it
 holds and which is in front, the strip it is on) and the controls it shows by their accessible
-names, never off what an action answered.
+names and whether each shows itself chosen, never off what a press answered. What the look and the
+accent are set to is read from the appearance settings the person changed.
 
     python3 desktop-easy.py OUT_DIR
 """
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -63,7 +65,8 @@ def drawn(one: Person, app_id: str) -> dict | None:
 
 def picks_mode(one: Person, mode: str) -> None:
     """Pick the `mode` look on the Appearance page of the Settings window that is open, as a person
-    goes on from the settings they just found."""
+    goes on from the settings they just found, and read back that the mode shows itself chosen and
+    the appearance setting holds it."""
     settings = until("Settings, where the look is picked, drawn",
                      lambda: drawn(one, SETTINGS), 30, 0.25)
     if not one.target(MODE, exact=False):
@@ -74,8 +77,66 @@ def picks_mode(one: Person, mode: str) -> None:
         press_in(one, MODE, settings, f"the {MODE} setting", exact=False)
         until(f"the {mode} look among the modes", lambda: one.target(mode), 10, 0.2)
     press_in(one, mode, settings, f"the {mode} look")
+    chosen(one, mode, f"the {mode} look")
+    held = appearance(one).get("mode")
+    if held != mode.lower():
+        raise Failed(f"the {mode} look was pressed but the appearance holds the mode {held!r}")
     # The look changes through the shell's motion: the shot is of where it came to rest.
     time.sleep(1.0)
+
+
+def picks_accent(one: Person, accent: str) -> None:
+    """Pick the `accent` colour from the swatch row, and read back that the swatch shows itself
+    chosen and the appearance setting holds it."""
+    settings = until("Settings, where the accent is picked, drawn",
+                     lambda: drawn(one, SETTINGS), 30, 0.25)
+    try:
+        until(f"the {accent} swatch", lambda: one.target(accent), 15, 0.2)
+    except Failed:
+        names = [target.get("name") for target in one.targets() if target.get("name")]
+        raise Failed(f"no {accent} swatch; the shell shows {json.dumps(names)[:800]}") from None
+    press_in(one, accent, settings, f"the {accent} accent swatch")
+    chosen(one, accent, f"the {accent} accent")
+    held = appearance(one).get("accent")
+    if held != accent.lower():
+        raise Failed(f"the {accent} accent was pressed but the appearance holds {held!r}")
+    time.sleep(1.0)
+
+
+def appearance(one: Person) -> dict:
+    """The appearance setting as Settings reads it now: the look's mode and the accent it holds,
+    read from the resource itself rather than from what a press answered."""
+    for row in one.session.actions("inspect-appearance"):
+        address = (row.get("action") or {}).get("address") or {}
+        if address.get("action") != "inspect-appearance":
+            continue
+        answer = one.session.invoke(row["provider"], address["resource"],
+                                    "inspect-appearance", {})
+        value = (answer.get("Completed") or {}).get("output", {}).get("value")
+        if isinstance(value, dict):
+            return value
+        raise Failed(f"Settings' appearance read answered nothing: {json.dumps(answer)[:600]}")
+    raise Failed("Settings offers no reading of the appearance")
+
+
+def chosen(one: Person, name: str, what: str) -> dict:
+    """The control `name` once it shows itself the chosen one: a segment that holds the look, a
+    swatch that holds the accent. A press that changed nothing leaves it unchosen, and fails
+    here."""
+    def held():
+        target = one.target(name)
+        return target if target and target.get("selected") else None
+    return until(f"{what} to show itself chosen", held, 15, 0.2)
+
+
+def no_sheets(one: Person) -> None:
+    """No sheet stands over Settings: opening it must ask nothing before the person touches a
+    control, and a question about a pane they never opened would take their clicks instead."""
+    answer = one.session.control({"op": "questions"}).get("answer") or {}
+    pending = answer.get("questions") or []
+    if pending:
+        raise Failed(f"a sheet stands over Settings before a look is picked: "
+                     f"{json.dumps(pending)[:800]}")
 
 
 def steps(story: Story) -> None:
@@ -150,9 +211,19 @@ def steps(story: Story) -> None:
     story.step("They find their settings", finds_settings, people=[robin])
 
     def picks_looks():
-        for mode in ("Light", "Dark"):
-            picks_mode(robin, mode)
-            story.shot(robin, f"the {mode.lower()} look")
+        # Opening Settings asks nothing: a sheet about a pane they never opened would take the
+        # first click instead of the control they meant.
+        no_sheets(robin)
+        # The light palette paints two hues as one accent and offers them once, so the Pink
+        # swatch exists while the look is dark.
+        picks_mode(robin, "Dark")
+        picks_accent(robin, "Pink")
+        story.shot(robin, "the dark look with the pink accent")
+        picks_mode(robin, "Light")
+        held = appearance(robin).get("accent")
+        if held != "pink":
+            raise Failed(f"the accent did not follow the look into light: {held!r}")
+        story.shot(robin, "the light look with the pink accent")
 
     story.step("They pick a light and a dark look", picks_looks, people=[robin])
 

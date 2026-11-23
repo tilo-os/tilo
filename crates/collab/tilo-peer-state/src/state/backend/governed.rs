@@ -99,7 +99,7 @@ fn receipts_checked<R: WorkspaceRead>(
                         if only.is_some_and(|only| !only.contains(key)) {
                             return Ok(());
                         }
-                        crate::governance_work::receipt_read();
+                        crate::work::receipt_read();
                         // Keep all raw values in the same sorted-key/log order as the
                         // original collector.
                         let mut values = Vec::new();

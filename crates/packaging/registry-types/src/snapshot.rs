@@ -717,7 +717,7 @@ mod tests {
             let (mut snapshot, owner) = fixture();
             let owner_hex = hex::encode(owner.verifying_key().to_bytes());
             for other in [0, 1, 2, 3, 4, 5] {
-                if other == PACKAGE_FORMAT_VERSION {
+                if crate::READABLE_CATALOGUE_FORMATS.contains(&other) {
                     continue;
                 }
                 snapshot.protocol = other;
@@ -822,5 +822,27 @@ mod tests {
                 Err(SnapshotError::ChannelAuthorization)
             );
         }
+    }
+
+    #[test]
+    fn a_catalogue_a_registry_published_before_the_format_bump_still_reads() {
+        // The format 3 bump dropped the retired `[sandbox.fs]` manifest block; the
+        // catalogue and its signing form are the same, so a registry that has not
+        // published since still serves format 2, and a device must read it.
+        let (mut snapshot, owner) = fixture();
+        snapshot.protocol = 2;
+        snapshot.owner_signature_hex = hex::encode(
+            owner
+                .sign(&snapshot_signing_message(&snapshot).unwrap())
+                .to_bytes(),
+        );
+        assert_eq!(
+            verify_snapshot(
+                &snapshot,
+                &hex::encode(owner.verifying_key().to_bytes()),
+                15
+            ),
+            Ok(())
+        );
     }
 }

@@ -64,14 +64,6 @@ pub(crate) struct Asking {
     origin: String,
     host: tilo_server_client::ServerAddress,
     person: [u8; 32],
-    device: [u8; 32],
-}
-
-impl Asking {
-    /// The new device's key.
-    pub(crate) const fn device(&self) -> [u8; 32] {
-        self.device
-    }
 }
 
 /// A host this device waits at for the new devices its pairing link sends there.
@@ -358,7 +350,6 @@ fn follow_host(
                 origin: origin.to_owned(),
                 host: host.clone(),
                 person,
-                device: entry.request.device_public_key,
             });
         }
     });
@@ -409,43 +400,6 @@ pub(crate) fn host_action(fabric: &SharedLink, choice: &str) -> bool {
         tracing::warn!(%error, "could not answer a device asking to be the person");
     }
     true
-}
-
-/// Answer a device asking to be the person from the `answer` step, which is the notification's own
-/// path: the digest it lists, and the person's verdict. Blocks on the identity store.
-pub(crate) fn answer_step(
-    fabric: Option<&SharedLink>,
-    ask: &str,
-    approve: bool,
-) -> Result<serde_json::Value, String> {
-    let digest: [u8; 32] = hex::decode(ask.trim())
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or("ask must be 64 hex characters")?;
-    let fabric = fabric.ok_or_else(|| "the session runs no device fabric".to_string())?;
-    let label =
-        answer(fabric.as_ref(), digest, approve)?.ok_or("no device asks under that any more")?;
-    Ok(serde_json::json!({ "ask": hex::encode(digest), "label": label, "approved": approve }))
-}
-
-/// The new devices asking at this device to be the person, as the `asking` step lists them.
-pub(crate) fn asking_step(fabric: Option<&SharedLink>) -> serde_json::Value {
-    let asking: Vec<serde_json::Value> = fabric.map_or_else(Vec::new, |fabric| {
-        asking(fabric.as_ref())
-            .into_iter()
-            .map(|asking| {
-                serde_json::json!({
-                    "ask": hex::encode(asking.digest),
-                    "device": hex::encode(asking.device()),
-                    "label": asking.label,
-                    "code": asking.code,
-                    "via": asking.via,
-                    "asked_at_ms": asking.asked_at_ms,
-                })
-            })
-            .collect()
-    });
-    serde_json::json!({ "asking": asking })
 }
 
 #[cfg(test)]
@@ -674,7 +628,6 @@ mod tests {
         // This laptop asks the person, with the code the phone shows, and they approve.
         let asked = asked_with(&laptop, &code);
         assert_eq!(asked.label, "Phone");
-        assert_eq!(asked.device(), phone.verifying_key().to_bytes());
         assert_eq!(
             answer(laptop.as_ref(), asked.digest, true).unwrap(),
             Some("Phone".to_owned())

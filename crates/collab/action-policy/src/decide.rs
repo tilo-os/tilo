@@ -4,7 +4,9 @@ use std::cmp::Ordering;
 
 use tilo_app_id::AppId;
 
-use crate::{ActionKind, Answer, Context, Grant, GrantId, Grantee, Level, Lifetime, TreePath};
+use crate::{
+    ActionKind, Answer, Context, Grant, GrantId, Grantee, KindSet, Level, Lifetime, TreePath,
+};
 
 /// Why a party answered as it did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,6 +17,9 @@ pub enum Basis<'g> {
     Capped(Answer),
     /// The party owns the workspace the node is in.
     Owner,
+    /// The node is the party's own: their view of the layout, or a private record of theirs
+    /// ([`crate::roles::own_records`]).
+    OwnRecord,
     /// No live grant covers the node and kind.
     NoGrant,
 }
@@ -111,9 +116,10 @@ fn compare_content_rules(candidate: &Grant, current: &Grant) -> Ordering {
 }
 
 /// Whether `grant` names one of `grantees`. A grant to a role names everyone
-/// holding that role and every higher one, except a built-in role's own grants:
-/// those are the role's rules ([`crate::roles::role_rules`]), each the whole
-/// answer for its role, and a higher role carries them already.
+/// holding that role or one that holds all of its grants ([`crate::Role::includes`]),
+/// except a built-in role's own grants: those are the role's rules
+/// ([`crate::roles::role_rules`]), each the whole answer for its role, and a
+/// role holding them carries them already.
 #[must_use]
 pub fn names(grant: &Grant, grantees: &[Grantee], cx: &Context<'_>) -> bool {
     if cx.grantee_matches(&grant.grantee, grantees) {
@@ -138,6 +144,9 @@ pub struct Party<'g> {
     /// Nodes owned structurally: everything under them is allowed, whatever
     /// the grants say.
     pub owns: Vec<TreePath>,
+    /// What is the party's own, and what it may do there whatever its role's grants say
+    /// ([`crate::roles::own_records`]).
+    pub own_records: Vec<(TreePath, KindSet)>,
     /// Denies no more specific grant lifts: the workspace's ban or restriction
     /// of this person. A grant to their role (a share of one item with the
     /// workspace, a role's rule on comments) speaks for the role, not for a
@@ -190,6 +199,7 @@ impl<'g> Party<'g> {
             grantees,
             grants: grants.into_iter().collect(),
             owns: Vec::new(),
+            own_records: Vec::new(),
             held_off: Vec::new(),
             cap: None,
         }
@@ -205,6 +215,13 @@ impl<'g> Party<'g> {
     #[must_use]
     pub fn owning(mut self, node: TreePath) -> Self {
         self.owns.push(node);
+        self
+    }
+
+    /// The same party, with `records` its own ([`crate::roles::own_records`]).
+    #[must_use]
+    pub fn owning_records(mut self, records: Vec<(TreePath, KindSet)>) -> Self {
+        self.own_records.extend(records);
         self
     }
 
@@ -264,8 +281,8 @@ impl<'g> Party<'g> {
                 basis: Basis::NoGrant,
             };
         }
-        // A person's private record is theirs, not the workspace's owner's: only a grant reaches
-        // it ([`crate::roles::private_record_grants`]).
+        // A person's private record is theirs, not the workspace's owner's: only its person
+        // ([`crate::roles::own_records`]) or a grant reaches it.
         if !crate::roles::in_private_record(node)
             && self.owns.iter().any(|owned| cx.covers(owned, node))
         {
@@ -280,6 +297,16 @@ impl<'g> Party<'g> {
             return Decision {
                 answer: Answer::Deny,
                 basis: Basis::Grant(deny),
+            };
+        }
+        if self
+            .own_records
+            .iter()
+            .any(|(own, kinds)| kinds.contains(kind) && cx.covers(own, node))
+        {
+            return Decision {
+                answer: Answer::Allow,
+                basis: Basis::OwnRecord,
             };
         }
         decide(self.deciding(cx), &self.grantees, node, kind, cx)
@@ -302,6 +329,7 @@ impl<'g> Party<'g> {
             grantees: self.grantees.clone(),
             grants: self.deciding(&cx).cloned().collect(),
             owns: self.owns.clone(),
+            own_records: self.own_records.clone(),
             held_off: self.held_off.iter().copied().cloned().collect(),
             cap: self.cap,
         }
@@ -327,6 +355,7 @@ struct EffectiveParty {
     grantees: Vec<Grantee>,
     grants: Vec<Grant>,
     owns: Vec<TreePath>,
+    own_records: Vec<(TreePath, KindSet)>,
     held_off: Vec<Grant>,
     cap: Option<Cap>,
 }
@@ -683,6 +712,7 @@ impl<'g> Verdict<'g> {
             .unwrap_or(0);
         let reason = match self.parts.get(index).map(|part| part.basis) {
             Some(Basis::Owner) => "the person owns the workspace".to_owned(),
+            Some(Basis::OwnRecord) => format!("{} is theirs alone", self.node),
             Some(Basis::Capped(answer)) => format!(
                 "{} may do at most \"{answer}\" with {} here",
                 who(index),

@@ -1046,11 +1046,16 @@ impl serde::Serialize for SplashSegment {
 pub struct Resources {
     #[serde(default)]
     pub kinds: Vec<String>,
+    /// The kinds of [`Self::kinds`] of which each member of a workspace keeps one record that
+    /// only they read and change, whatever their role: what they watched, what they are writing
+    /// and have not sent. The workspace's policy decides them by that reader rule.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub private: Vec<String>,
 }
 
 impl Resources {
     fn is_empty(&self) -> bool {
-        self.kinds.is_empty()
+        self.kinds.is_empty() && self.private.is_empty()
     }
 }
 
@@ -1383,6 +1388,14 @@ mode = "off"
             assert_eq!(declared.resources.kinds, ["example.note", "example.todo"]);
             let recovered = Manifest::from_toml_str(&declared.to_toml_string().unwrap()).unwrap();
             assert_eq!(recovered.resources, declared.resources);
+
+            let private = Manifest::from_toml_str(&format!(
+                "{bare}\n[resources]\nkinds = [\"example.note\", \"example.draft\"]\nprivate = [\"example.draft\"]\n"
+            ))
+            .unwrap();
+            assert_eq!(private.resources.private, ["example.draft"]);
+            let recovered = Manifest::from_toml_str(&private.to_toml_string().unwrap()).unwrap();
+            assert_eq!(recovered.resources, private.resources);
         }
 
         phase offered_actions_survive_the_signed_manifest_round_trip;

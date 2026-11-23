@@ -38,8 +38,9 @@ pub fn tab(content: PeopleContent) -> sheet::People {
                 can_manage: entry.can_manage,
             })
             .collect(),
-        roles: [Role::Viewer, Role::Commenter, Role::Editor]
+        roles: Role::ALL
             .into_iter()
+            .filter(|role| Role::Editor.includes(*role))
             .map(|role| sheet::RoleChoice {
                 key: role.key().to_owned(),
                 label: domain::role_label(role),

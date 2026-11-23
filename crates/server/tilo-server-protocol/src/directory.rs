@@ -43,9 +43,6 @@ use crate::workspaces::Role;
 /// The directory of a host, below its API prefix.
 pub const DIRECTORY_PATH: &str = "/directory";
 
-/// The longest description a public workspace shows.
-pub const MAX_DESCRIPTION_CHARS: usize = 280;
-
 /// People shown as "here now" on a listing at most; the rest are counted.
 pub const MAX_FACES: usize = 8;
 
@@ -95,40 +92,6 @@ pub struct Listing {
     pub description: String,
     /// The role everyone who joins through the directory gets.
     pub default_role: Role,
-}
-
-/// Why a listing cannot be published.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum ListingError {
-    /// The description is longer than [`MAX_DESCRIPTION_CHARS`] or holds a
-    /// control character other than a line break.
-    #[error("a description is at most {MAX_DESCRIPTION_CHARS} characters of text")]
-    Description,
-    /// Moderators are chosen, never handed out at the entry.
-    #[error("people who join on their own become viewers, commenters or editors")]
-    Role,
-}
-
-impl Listing {
-    /// The listing with its description trimmed, when it may be published.
-    pub fn checked(self) -> Result<Self, ListingError> {
-        let description = self.description.trim().to_owned();
-        if description.chars().count() > MAX_DESCRIPTION_CHARS
-            || description.chars().any(|c| c.is_control() && c != '\n')
-        {
-            return Err(ListingError::Description);
-        }
-        if !matches!(
-            self.default_role,
-            Role::Viewer | Role::Commenter | Role::Editor
-        ) {
-            return Err(ListingError::Role);
-        }
-        Ok(Self {
-            description,
-            default_role: self.default_role,
-        })
-    }
 }
 
 /// Someone in a public workspace now, as its listing shows them.
@@ -487,33 +450,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn a_directory_lists_workspaces_as_text_activity_and_camel_case_json;
-
-        phase a_listing_is_text_and_hands_out_no_moderators;
-        {
-            let listing = Listing {
-                description: "  A place for coffee.\nAnd tea.  ".into(),
-                default_role: Role::Commenter,
-            };
-            assert_eq!(
-                listing.checked().map(|listing| listing.description),
-                Ok("A place for coffee.\nAnd tea.".to_owned())
-            );
-            let moderators = Listing {
-                description: String::new(),
-                default_role: Role::Moderator,
-            };
-            assert_eq!(moderators.checked(), Err(ListingError::Role));
-            let long = Listing {
-                description: "x".repeat(MAX_DESCRIPTION_CHARS + 1),
-                default_role: Role::Viewer,
-            };
-            assert_eq!(long.checked(), Err(ListingError::Description));
-            let control = Listing {
-                description: "bell\u{7}".into(),
-                default_role: Role::Viewer,
-            };
-            assert_eq!(control.checked(), Err(ListingError::Description));
-        }
 
         phase activity_says_who_is_here_before_how_recent;
         {

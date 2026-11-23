@@ -140,48 +140,12 @@
 		}
 	}
 
-	# A sealed invitation's link opens the page at the site that keeps the
-	# invitation: https://<site>/i/<handle>#<key>. A browser opening it gets
-	# the page, which reads the site's own configuration and files
-	# (/entry.json, /v/…); the page's own request for the invitation — and a
-	# build that takes the link without the page — is the deployment's server's
-	# to answer, which keeps the invitation under the handle and was never
-	# given the key in the fragment. That server is the one the home workspace
-	# is hosted on, which the entrypoint names unless the deployment says
-	# otherwise; with no home workspace the page still opens, and an
-	# invitation left there is not one it can take.
-	handle /i/* {
-		# Only the link's own path, /i/<16-character handle>, is the shelf's:
-		# the page it opens loads its modules relative to it (/i/v/…), and
-		# those fetches ask for no page either.
-		@shelf {
-			path_regexp ^/i/[A-Za-z0-9_-]{16}$
-			not header Accept *text/html*
-		}
-		handle @shelf {
-			reverse_proxy {$TILO_WEB_SHELF:127.0.0.1:9}
-		}
-		# The route keeps the order written here: as the handles it would be
-		# sorted, and the rewrite to the entry page would run before the
-		# prefix came off, leaving a path no file has.
-		route {
-			uri strip_prefix /i
-			root * {$TILO_WEB_SITE:/srv/tilo-web}
-			header Cache-Control "no-cache"
-			@page not file {path}
-			rewrite @page /index.html
-			file_server {
-				precompressed br zstd
-			}
-		}
-	}
-
 	# A workspace's app as a web page, /w/<workspace>/<app>[/<target>]: the
 	# deployment's server renders it, and answers its address here, at this
 	# site's own origin, so the page proves itself with the device this
 	# browser already keeps for the site.
 	handle /w/* {
-		reverse_proxy {$TILO_WEB_SHELF:127.0.0.1:9}
+		reverse_proxy {$TILO_WEB_SERVER:127.0.0.1:9}
 	}
 
 	# The sign-in page a service's sign-in link lands on. It answers with a

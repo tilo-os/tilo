@@ -1546,7 +1546,7 @@ mod tests {
 
     #[test]
     fn an_owner_and_a_member_each_branch_only_their_own_private_records() {
-        use tilo_action_policy::roles::WORKSPACE_TUBE_HISTORY_DOCUMENT;
+        use tilo_action_policy::roles::WORKSPACE_MESSAGE_DRAFTS_DOCUMENT;
         use tilo_peer_state::join::Role;
 
         let (from, to) = ids();
@@ -1570,8 +1570,8 @@ mod tests {
             .admit_member_device(certificate, signer, now)
             .unwrap();
 
-        let app = "so.tilo.tube";
-        let kind = "tube.watch-history";
+        let app = "so.tilo.messages";
+        let kind = "messages.drafts";
         // Each person's record of the kind, which only the grant the workspace gives that person
         // reads.
         let private_for = |device: &tilo_identity::identity_store::DeviceIdentity| {
@@ -1583,7 +1583,7 @@ mod tests {
         };
         let owner_route = private_for(&owner);
         let member_route = private_for(&member);
-        let history = |route: &str, body| {
+        let drafts = |route: &str, body| {
             record_of(
                 FROM,
                 &ui::resource::DocumentId::parse(route).unwrap(),
@@ -1595,15 +1595,15 @@ mod tests {
         let records = RetainedRecords(BTreeMap::from([
             (
                 (app.into(), owner_route.clone()),
-                history(&owner_route, "owner's history"),
+                drafts(&owner_route, "owner's drafts"),
             ),
             (
                 (app.into(), member_route.clone()),
-                history(&member_route, "member's history"),
+                drafts(&member_route, "member's drafts"),
             ),
             (
-                (app.into(), WORKSPACE_TUBE_HISTORY_DOCUMENT.into()),
-                history(WORKSPACE_TUBE_HISTORY_DOCUMENT, "old history"),
+                (app.into(), WORKSPACE_MESSAGE_DRAFTS_DOCUMENT.into()),
+                drafts(WORKSPACE_MESSAGE_DRAFTS_DOCUMENT, "old drafts"),
             ),
             (
                 ("so.tilo.notes".into(), "uuid-plan".into()),
@@ -1612,14 +1612,14 @@ mod tests {
         ]));
 
         for (device, route, private) in [
-            (&owner, &owner_route, "owner's history"),
-            (&member, &member_route, "member's history"),
+            (&owner, &owner_route, "owner's drafts"),
+            (&member, &member_route, "member's drafts"),
         ] {
             let can_read = |app: &str, record: &str| {
                 peer.check_document_read(device.device_public_key(), app, record, now)
                     .is_ok()
             };
-            assert!(!can_read(app, WORKSPACE_TUBE_HISTORY_DOCUMENT));
+            assert!(!can_read(app, WORKSPACE_MESSAGE_DRAFTS_DOCUMENT));
             let permits = |app: &str, record: &str| !stays(app, record) && can_read(app, record);
             let mut result = Branched::default();
             let sources = read_resources(&records, from, &mut result, &permits);

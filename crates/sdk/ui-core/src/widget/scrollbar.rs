@@ -381,10 +381,6 @@ impl Scrollbar {
         self
     }
 
-    pub fn is_vertical(&self) -> bool {
-        self.vertical
-    }
-
     pub fn is_dragging(&self) -> bool {
         self.drag.is_some()
     }

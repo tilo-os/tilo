@@ -743,6 +743,7 @@ fallback_report() {  # STATUS DIGEST TRIES
 cmd_fallback() {
   [ "$(id -u)" = 0 ] || die "fallback needs root"
   local esp; esp="$(esp_path)" || { log "$(esp_missing); nothing to check"; return 0; }
+  unpin_trial_default "$esp"
   local status queued digest f file="" name counter left done id report settled
   status="$(bootc_status_json)"
   [ -n "$status" ] || die "bootc status said nothing"
@@ -803,6 +804,32 @@ cmd_fallback() {
   # bootc rewrote the entries; give whatever it wrote the counters it needs.
   ( cmd_entries ) || warn "the boot counters could not be brought up to date"
   [ "$settled" = yes ]
+}
+
+# systemd-boot boots a default pinned by its exact id (LoaderEntryDefault: `D` in
+# the boot menu, `bootctl set-default`) before it looks at boot counting, so a pin
+# that names an entry on trial starts it even when it has no tries left, and the
+# machine never goes back from an update that fails. bootc renumbers its entries
+# when it stages one, so a pin made on the deployment that was running names the
+# staged update afterwards. A pin that names an entry on trial goes; one that
+# names an entry that booted well, or a pattern, stays.
+unpin_trial_default() {  # ESP
+  local esp="$1" pin f id
+  [ -n "$esp" ] || return 0
+  pin="$(loader_var LoaderEntryDefault)" && [ -n "$pin" ] || return 0
+  pin="$(printf '%s' "$pin" | tr '[:upper:]' '[:lower:]')"
+  for f in "$esp"/loader/entries/*+*.conf "$esp"/loader/entries.staged/*+*.conf; do
+    [ -e "$f" ] || continue
+    id="$(entry_id_of "$f" | tr '[:upper:]' '[:lower:]')"
+    [ "$id" = "$pin" ] || continue
+    if bootctl set-default '' >/dev/null 2>&1; then
+      log "boot menu: the default no longer names $id, which is on trial; the boot counters decide again"
+    else
+      warn "the boot menu's default names $id, which is on trial, and could not be removed:
+  the boot loader keeps starting it even after it fails. Remove it with: bootctl set-default ''"
+    fi
+    return 0
+  done
 }
 
 # The newest fallback report, for `list`.
@@ -907,6 +934,7 @@ cmd_update() {
   # into it, or the first boot of a broken update is also the last chance to
   # notice. Doing it here rather than at next boot is the whole difference.
   cmd_entries
+  unpin_trial_default "$(esp_path)"
 }
 
 stage_rollback_generation() {

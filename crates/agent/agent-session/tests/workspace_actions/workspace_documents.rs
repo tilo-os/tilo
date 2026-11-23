@@ -158,7 +158,7 @@ async fn a_workspaces_agents_are_found_and_made_through_its_server_with_no_page_
     // Assistant's own document of the workspace, made and closed again: from here on no window
     // of Assistant is open on any device, and nobody ever made an agent.
     let assistant_doc = browser.create(AGENTS_OWNER);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     let provider = resource_provider(&assistant_doc);
 
     let membership = Membership::of(

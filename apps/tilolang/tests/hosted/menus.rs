@@ -84,6 +84,66 @@ fn a_tasks_menu_marks_it_done_by_its_complete_command() {
     assert_eq!(shown.role(), ui::accesskit::Role::MenuItem);
 }
 
+/// A key a task's actions answer to runs on the row that has the keyboard, though the person
+/// never opened its menu and so the window holds none of the row's commands: Ctrl+Enter
+/// completes the task, and no menu opens for it.
+#[test]
+fn a_tasks_key_completes_it_from_a_row_whose_menu_never_opened() {
+    let _settled = ui::motion::testing::settled();
+    let surface = package(package_of(TASKS))
+        .surface()
+        .expect("the package has a surface");
+    collab_types::app_surface::register_package(TASKS, &surface);
+    let mut session = Session::tasks();
+    choose(&mut session, "New task");
+    session.window.type_text("Water the plants");
+    session
+        .window
+        .press_key(ui::winit::keyboard::NamedKey::Enter);
+    session.settle();
+    // From the entry the task was typed into, Tab gives the list the keyboard, and Down puts it
+    // on the task's row.
+    session.window.harness().key("Tab");
+    session.settle();
+    session.window.harness().key("Down");
+    session.settle();
+    let focused = session.window.harness().inspection();
+    assert!(
+        focused.root.nodes().iter().any(|node| {
+            node.widget == "SwipeRow"
+                && node
+                    .semantics
+                    .as_ref()
+                    .is_some_and(|semantics| semantics.state.focused)
+        }),
+        "the keyboard is on the task's row, not on {:?}",
+        focused
+            .root
+            .nodes()
+            .iter()
+            .filter(|node| node
+                .semantics
+                .as_ref()
+                .is_some_and(|semantics| semantics.state.focused))
+            .map(|node| (
+                node.widget.clone(),
+                node.semantics.as_ref().and_then(|s| s.name.clone())
+            ))
+            .collect::<Vec<_>>()
+    );
+    session.window.harness().key("Ctrl+Enter");
+    session.settle();
+    assert!(
+        task_in_workspace(&session, "Water the plants", true),
+        "Ctrl+Enter on the row completed its task"
+    );
+    assert_eq!(
+        menu_commands(&mut session),
+        Vec::<String>::new(),
+        "no menu opened"
+    );
+}
+
 /// Another task typed into the window's entry, after the first.
 fn add_task(session: &mut Session, title: &str) {
     choose(session, "New task");

@@ -29,8 +29,8 @@ async fn a_join_is_answered_while_its_access_write_is_held() {
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Plans").await.unwrap();
     let hosted = runtime(&workspaces, created.workspace_id).await;
-    let root = hosted.lock().await.store.root().to_path_buf();
-    let (release, reached) = crate::store::test_barrier::install(&root, "access-write");
+    let root = hosted.lock().await.files.root().to_path_buf();
+    let (release, reached) = crate::workspace_files::test_barrier::install(&root, "access-write");
     let (guest_key, guest) = guest_device();
     tilo_test_env::within(
         "a join answered while its access write is held",
@@ -58,7 +58,7 @@ async fn a_join_is_answered_while_its_access_write_is_held() {
     drop(release);
     let turns = hosted.lock().await.authorization.clone();
     turns.settled().await;
-    let store = hosted.lock().await.store.clone();
+    let store = hosted.lock().await.files.clone();
     assert!(
         store
             .load_membership()
@@ -111,7 +111,7 @@ async fn a_restart_between_the_commit_and_the_access_write_admits_what_the_membe
         .await
         .lock()
         .await
-        .store
+        .files
         .clone();
     let listed: HashSet<[u8; 32]> = store.load_membership().unwrap().into_iter().collect();
     assert!(
@@ -171,7 +171,7 @@ async fn a_restart_between_the_commit_and_the_access_write_admits_what_the_membe
     );
     let turns = hosted.lock().await.authorization.clone();
     turns.settled().await;
-    let store = hosted.lock().await.store.clone();
+    let store = hosted.lock().await.files.clone();
     let listed: HashSet<[u8; 32]> = store.load_membership().unwrap().into_iter().collect();
     assert_eq!(listed, governed, "and its file holds it");
     drop(workspaces);

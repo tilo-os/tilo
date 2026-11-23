@@ -33,7 +33,7 @@ import uuid
 
 from .. import core, session_unit
 from ..core import CheckFailed, Unobservable, check, expect
-from ..vm import VmError, wait_until
+from ..vm import VmError, address, label as action_label, wait_until
 from . import agents_e2e as ae
 
 AREA = "ws-branch-e2e"
@@ -99,7 +99,7 @@ def close_app_windows(ctx, app: str) -> bool:
     gids = {str(g["id"]) for g in core.all_groups(ctx.state())
             if any(app in str(core.tab_app(t)) for t in g.get("tabs") or [])}
     for gid in gids:
-        ctx.vm.invoke(core.SESSION, core.CHROME_CLOSE_WINDOW, {"group": gid})
+        ctx.vm.invoke(core.SESSION, *core.CHROME_CLOSE_WINDOW, {"group": gid})
     return bool(wait_until(lambda: not {str(g["id"]) for g in core.all_groups(ctx.state())} & gids or None, 20,
                            interval=0.5))
 
@@ -118,14 +118,12 @@ def ws_key(ws: dict, field: str) -> str:
 def branch_action(ctx) -> dict:
     """The shell's `workspace.branch`, where `workspace.create` is published: its row."""
     def found():
-        rows = [r for r in ctx.vm.actions("branch", programmatic=True)
-                if str(r.get("id", "")).split("\x1f")[-1] in BRANCH_IDS
-                or r.get("operation") in BRANCH_IDS]
+        rows = [r for r in ctx.vm.actions("branch") if address(r)[1] in BRANCH_IDS]
         return rows or None
 
     rows = wait_until(found, 20, interval=1.0)
     if not rows:
-        ctx.write("WB02-branch-rows.json", json.dumps(ctx.vm.actions("branch", programmatic=True), indent=1))
+        ctx.write("WB02-branch-rows.json", json.dumps(ctx.vm.actions("branch"), indent=1))
         raise CheckFailed(f"the shell publishes no {WORKSPACE_BRANCH}")
     ctx.write("WB02-branch-action.json", json.dumps(rows, indent=1))
     return rows[0]
@@ -133,8 +131,7 @@ def branch_action(ctx) -> dict:
 
 def branch_args(row: dict, source: str, name: str) -> dict:
     """{source, name} under the names the action's own parameters give them."""
-    params = row.get("params") or {}
-    keys = list((params.get("properties") or params) if isinstance(params, dict) else [])
+    keys = {p.get("name") for p in row["action"].get("params") or []}
     which = next((k for k in ("source", "workspace", "from") if k in keys), "source")
     called = next((k for k in ("name", "new_name", "title") if k in keys), "name")
     return {which: source, called: name}
@@ -206,7 +203,7 @@ def app_rows(ctx, app: str) -> list[dict]:
     opening again after a restart) is read again a little later."""
     for attempt in range(6):
         try:
-            return [r for r in ctx.vm.actions(programmatic=True) if r.get("application") == app]
+            return [r for r in ctx.vm.actions() if r.get("app_id") == app]
         except VmError as exc:
             if "changed on each" not in str(exc) or attempt == 5:
                 raise
@@ -215,13 +212,13 @@ def app_rows(ctx, app: str) -> list[dict]:
 
 
 def offered(ctx, app: str) -> str:
-    """What `app` offers in front, by operation and provider, for a failure to say."""
-    return json.dumps(sorted({(str(r.get("operation")), str(r.get("provider")), str(r.get("resource")))
+    """What `app` offers in front, by action and provider, for a failure to say."""
+    return json.dumps(sorted({(address(r)[1], str(r.get("provider")), r["resource"]["id"])
                               for r in app_rows(ctx, app)}))
 
 
 def note_rows(ctx, operation: str) -> list[dict]:
-    return [r for r in app_rows(ctx, ae.NOTES) if r.get("operation") == operation]
+    return [r for r in app_rows(ctx, ae.NOTES) if address(r)[1] == operation]
 
 
 def ensure_notes(ctx, ws: dict) -> None:
@@ -248,7 +245,7 @@ def note_titles(ctx, ws: dict) -> list[str]:
     rows = wait_until(lambda: note_rows(ctx, "read"), 30, interval=1.0)
     if not rows:
         raise Unobservable(f"{ws.get('name')}: Notes in front offers no read; it offers {offered(ctx, ae.NOTES)}")
-    answer = ae.invoke(ctx, rows[0]["provider"], rows[0]["id"], {}, name=f"notes-read-{ws['id']}")
+    answer = ae.invoke(ctx, rows[0]["provider"], *address(rows[0]), {}, name=f"notes-read-{ws['id']}")
     if isinstance(answer, str):
         try:
             answer = json.loads(answer)
@@ -376,8 +373,7 @@ def terminal_in(ctx, ws: dict, label: str) -> ae.Terminal:
     ae.select_workspace(ctx, ws)
 
     def mine():
-        rows = [r for r in ae.terminal_rows(ctx) if r.get("workspace") in (None, "", ws.get("id"))]
-        return sorted({ae.identity(r) for r in rows}, key=str) or None
+        return sorted({ae.identity(r) for r in ae.terminal_rows(ctx)}, key=str) or None
 
     there = wait_until(mine, 5, interval=1.0)
     if there:
@@ -614,7 +610,7 @@ def branch_by_action(ctx, source: dict, name: str, field: str) -> tuple[dict, di
     baseline = shell_baseline(ctx)
     started = time.monotonic()
     with ShellProbe(ctx) as probe:
-        answer = ae.invoke(ctx, row["provider"], row["id"], args, confirmed=True,
+        answer = ae.invoke(ctx, row["provider"], *address(row), args, confirmed=True,
                            name=f"branch-{name.split()[-1].lower()}", timeout=BRANCH_S)
         answered = time.monotonic() - started
         new_id = answered_id(answer)
@@ -713,9 +709,9 @@ def branch(ctx, res):
     entries = ctx.vm.actions("Branch")
     ctx.write("WB02-entries.json", json.dumps(entries, indent=1))
     # By its action, whatever words the catalogue gives its title ("Branch the workspace").
-    offered = [r for r in entries if str(r.get("id", "")).endswith("branch-workspace")
-               or str(r.get("title", "")).lower() in (BRANCH_ENTRY.lower(), "branch a workspace", "branch the workspace")]
-    res.metrics["entry"] = [{k: r.get(k) for k in ("provider", "id", "title")} for r in offered][:5]
+    offered = [r for r in entries if address(r)[1] in BRANCH_IDS
+               or action_label(r).lower() in (BRANCH_ENTRY.lower(), "branch a workspace", "branch the workspace")]
+    res.metrics["entry"] = [ae.listing_row(r) for r in offered][:5]
     problems.want(bool(offered), f"the shell offers no {BRANCH_ENTRY!r} entry")
     branches, timings = [], {}
     for label in BRANCHES:
@@ -794,7 +790,7 @@ def owner_alone(members: dict, owner: str) -> bool:
 
 
 def chat_rows(ctx, operation: str) -> list[dict]:
-    return [r for r in app_rows(ctx, CHAT) if r.get("operation") == operation]
+    return [r for r in app_rows(ctx, CHAT) if address(r)[1] == operation]
 
 
 def chat_dir(ctx, ws: dict) -> bool:
@@ -810,7 +806,7 @@ def chat_says(ctx, ws: dict, text: str, label: str) -> dict:
     ae.select_workspace(ctx, ws)
     open_by_id(ctx, CHAT)
     rows = wait_until(lambda: chat_rows(ctx, "read") or None, 30, interval=1.0)
-    read = ae.invoke(ctx, rows[0]["provider"], rows[0]["id"], {}, name=f"chat-read-{label}") if rows else None
+    read = ae.invoke(ctx, rows[0]["provider"], *address(rows[0]), {}, name=f"chat-read-{label}") if rows else None
     listed = [r for r in ctx.vm.actions(text) if text in json.dumps(r)]
     shown = [t.get("name") for t in ctx.vm.targets() if text in str(t.get("name", ""))]
     ctx.write(f"chat-{label}.json", json.dumps({"read_rows": rows, "read": read, "listed": listed, "shown": shown,
@@ -845,7 +841,7 @@ def open_by_id(ctx, app: str, patience: float = TERMINAL_S) -> None:
                               f"it offers {offered(ctx, app)}; {app_evidence(ctx, app)}")
         if not asked:
             try:
-                ctx.vm.invoke("applications", app)
+                ctx.vm.open(app)
                 asked = True
             except VmError as exc:
                 if "unknown_action" not in str(exc):
@@ -867,13 +863,13 @@ def post_chat(ctx, ws: dict, text: str) -> None:
     if not made:
         raise Unobservable(f"Chat in {ws.get('name')} offers no new_channel; it offers {offered(ctx, CHAT)}; "
                            f"{app_evidence(ctx, CHAT)}; {session_told(ctx)}")
-    ae.invoke(ctx, made[0]["provider"], made[0]["id"], {"name": CHAT_CHANNEL}, confirmed=True,
+    ae.invoke(ctx, made[0]["provider"], *address(made[0]), {"name": CHAT_CHANNEL}, confirmed=True,
               name="chat-new-channel")
     sends = wait_until(lambda: chat_rows(ctx, "send") or None, 30, interval=1.0)
     if not sends:
         raise Unobservable(f"Chat in {ws.get('name')} offers no send once its channel is made; it offers "
                            f"{offered(ctx, CHAT)}; {app_evidence(ctx, CHAT)}")
-    ae.invoke(ctx, sends[0]["provider"], sends[0]["id"], {"body": text}, confirmed=True, name="chat-send")
+    ae.invoke(ctx, sends[0]["provider"], *address(sends[0]), {"body": text}, confirmed=True, name="chat-send")
 
 
 TASKS_LOG = "/var/tmp/e2e-drawing-threads.log"
@@ -1393,7 +1389,7 @@ def after_restart(ctx, res):
                               f"{offered(ctx, ae.NOTES)}; {app_evidence(ctx, ae.NOTES)}")
         if asked is None:
             try:
-                ctx.vm.invoke("applications", ae.NOTES)
+                ctx.vm.open(ae.NOTES)
                 asked = "asked for"
             except VmError as exc:
                 if "unknown_action" not in str(exc):

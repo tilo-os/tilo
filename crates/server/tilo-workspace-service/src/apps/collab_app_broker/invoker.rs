@@ -64,36 +64,6 @@ pub(super) fn working_from(
     context
 }
 
-/// `context` with the device that signed the call named on its invoker, when
-/// [`working_from`] named none: `signed`, the device certificate the host
-/// verified the call under. An invocation of this host's own processes names
-/// none, and its application reads this host's device. An action's
-/// requirement sees the device (`invoker.device()`), so a call from a
-/// person's other device is never taken for one made here.
-pub(super) fn signed_by(
-    context: Option<tilo_actions::ActionContext>,
-    actor: &BrokerActor,
-    signed: Option<&tilo_user_identity::DeviceCert>,
-) -> Option<tilo_actions::ActionContext> {
-    let Some(signed) = signed else {
-        return context;
-    };
-    // A person acting for themselves has no context yet: their invoker is the admitted actor.
-    let mut context = context.unwrap_or_default();
-    if context.invoker.is_none() {
-        context = context.with_host_actor(&actor.shown(), None);
-    }
-    if let Some(invoker) = context.invoker.as_mut()
-        && invoker.device.is_none()
-    {
-        invoker.device = Some(tilo_actions::InvokerDevice::certified(
-            signed.device_public_key,
-            &signed.device_label,
-        ));
-    }
-    Some(context)
-}
-
 /// The presence a host-set context routes to (see [`host_set_invoker`]).
 pub(super) fn invoker_presence(
     context: Option<&tilo_actions::ActionContext>,

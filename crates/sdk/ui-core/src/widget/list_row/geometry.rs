@@ -127,12 +127,9 @@ impl ListRowFace<'_> {
                 Some(_) => (2.0 * m.icon + m.column_gap, m.icon),
                 None => (m.icon, m.icon),
             },
-            Some(
-                RowLeading::Avatar(_)
-                | RowLeading::Thumbnail(_)
-                | RowLeading::Paint(_)
-                | RowLeading::AvatarSpace,
-            ) => (avatar, avatar),
+            Some(RowLeading::Avatar(_) | RowLeading::Thumbnail(_) | RowLeading::Paint(_)) => {
+                (avatar, avatar)
+            }
             Some(RowLeading::Media(_, aspect)) => ((avatar * aspect.ratio()).ceil(), avatar),
             Some(RowLeading::Badge(badge)) => {
                 let width = super::badge_column_width(text, theme, &[badge]);
@@ -162,12 +159,7 @@ impl ListRowFace<'_> {
         let big_leading = fact_avatar > 0.0
             || matches!(
                 self.leading,
-                Some(
-                    RowLeading::Avatar(_)
-                        | RowLeading::Thumbnail(_)
-                        | RowLeading::Media(..)
-                        | RowLeading::AvatarSpace
-                )
+                Some(RowLeading::Avatar(_) | RowLeading::Thumbnail(_) | RowLeading::Media(..))
             );
         let held = self
             .text_block(text, &m)

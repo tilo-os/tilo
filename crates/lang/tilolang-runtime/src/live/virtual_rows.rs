@@ -312,6 +312,10 @@ pub(crate) struct Virtual {
     /// it shows open, and a row's document is built for it alone. A key, not a place, so the row
     /// the person reads stays the row it is as the rows around it come, go and move.
     open: Option<String>,
+    /// The key of the row whose item's menu the host asked for: its row builds the menu, and
+    /// every other row says only that its item offers one, so a list the person never opens a
+    /// menu of decides none of its items' actions.
+    menu: Option<String>,
     /// The host's rows are no longer known: steps were given that did not fit. The host reads
     /// the list anew when its holder next runs.
     lost: bool,
@@ -336,6 +340,7 @@ impl Virtual {
             len,
             stepped: false,
             open,
+            menu: None,
             lost: false,
         }
     }
@@ -429,6 +434,29 @@ impl Live {
                 b.open = opens;
             }
             self.dirty.insert(id);
+        }
+    }
+
+    /// The host asks for the menu of the item the row `menu` of the list `list` shows: that row
+    /// builds it and the row that had it lets it go, both rendered again where they stand.
+    pub fn menu_row(&mut self, list: &str, menu: Option<&str>) {
+        let Some(rows) = self.lists.get_mut(list) else {
+            return;
+        };
+        if rows.menu.as_deref() == menu {
+            return;
+        }
+        let before = std::mem::replace(&mut rows.menu, menu.map(str::to_owned));
+        let built: Vec<BoundId> = rows.built.iter().map(|(_, id)| *id).collect();
+        for id in built {
+            let Some(b) = self.bound_mut(id) else {
+                continue;
+            };
+            let asked = Some(b.key.as_str()) == menu;
+            if asked || Some(b.key.as_str()) == before.as_deref() {
+                b.menu = asked;
+                self.dirty.insert(id);
+            }
         }
     }
 
@@ -553,6 +581,7 @@ impl Live {
         // A row the host holds open carries its item's document, built with it.
         let mut stub = rows.template.stub(&key, args);
         stub.open = rows.open.as_deref() == Some(key.as_str());
+        stub.menu = rows.menu.as_deref() == Some(key.as_str());
         let mut bound = Bound::new(stub, true);
         bound.path = [at.as_slice(), &[place]].concat();
         let id = self.add_bound(bound);
@@ -1258,7 +1287,7 @@ impl Builder<'_> {
         };
         // The row the host holds open stays open across the run: its document is built with the
         // row it belongs to, as the rows built before it are kept.
-        let open = before.open;
+        let (open, menu) = (before.open, before.menu);
         // The rows stand as they are when the rows built before hold the same items, and the
         // count is the rows' own: a listing that checks its items as it reads them answers the
         // most it can hold rather than how many, so its count moves with the bounds of its run
@@ -1295,7 +1324,9 @@ impl Builder<'_> {
                     continue;
                 };
                 let (row_key, args) = template.row(&item, now);
-                let (id, content) = self.keep_row(template.stub(&row_key, args))?;
+                let mut stub = template.stub(&row_key, args);
+                stub.menu = menu.as_deref() == Some(row_key.as_str());
+                let (id, content) = self.keep_row(stub)?;
                 built.push((now, id));
                 children.push((now, template.fragment(row_key, content)));
             }
@@ -1306,9 +1337,13 @@ impl Builder<'_> {
         self.live
             .row_changes
             .insert(key.clone(), RowsChange::Steps(steps));
-        self.live
-            .lists
-            .insert(key, Virtual::new(self.id, template, rows, built, open));
+        self.live.lists.insert(
+            key,
+            Virtual {
+                menu,
+                ..Virtual::new(self.id, template, rows, built, open)
+            },
+        );
         Ok(children.into_iter().map(|(_, node)| node).collect())
     }
 

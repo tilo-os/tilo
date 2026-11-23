@@ -736,15 +736,15 @@ impl Agents {
     pub(super) async fn close_answer(
         &self,
         workspace: &str,
-        agent: &str,
+        agent: &Agent,
         by: &str,
         said: &str,
     ) -> Result<(), String> {
         let packages = super::asked::packages()?;
-        if !super::asked::takes(&self.workspaces, workspace, (packages.app(), by)).await? {
+        if !super::asked::takes(&self.workspaces, workspace, agent, by).await? {
             return Err("the answer was taken already".to_owned());
         }
-        let member = tilo_action_policy::MemberId::agent(agent.to_owned());
+        let member = tilo_action_policy::MemberId::agent(agent.id.0.clone());
         let (by, said) = (by.to_owned(), said.to_owned());
         self.workspaces
             .with_tl_record(
@@ -948,7 +948,7 @@ impl Agents {
                 continue;
             };
             let said = closing(answer, changed);
-            if let Err(error) = self.close_answer(workspace, &agent.id.0, &by, said).await {
+            if let Err(error) = self.close_answer(workspace, &agent, &by, said).await {
                 // Nothing was done: the claim is given back, and the next look reads again.
                 tracing::warn!(%workspace, %error, "an answer to an agent's question was not closed");
                 if let Err(error) = self.workspaces.release_ask(&claimed) {

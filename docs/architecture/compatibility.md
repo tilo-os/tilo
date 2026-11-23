@@ -252,10 +252,8 @@ the window is exactly one peer version wide:
 - Every message a device takes in, from a peer, a server or its own store, is
   read by one reader, `neighbour_wire::NeighbourMsg::decode`, and the frames
   that carry one end with it or read it through that reader. A document write
-  of version 58 built before writes carried their reader set ends before it;
-  that reader reads it as naming none, and the frozen `document-write` frame
-  holds that layout, so a field appended to a message the previous version
-  sends fails the test above instead of a live write from the older server.
+  kept before writes carried their reader set ends before it; that reader
+  reads it as naming none.
 - A version bump keeps the window when the frozen frames still pass: write the
   frames of the version being left into the file first (with its number), then
   move `PEER_PROTOCOL_VERSION`, and set `OLDEST_PEER_PROTOCOL_VERSION` to the

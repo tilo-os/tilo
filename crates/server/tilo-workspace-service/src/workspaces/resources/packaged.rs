@@ -144,7 +144,7 @@ impl Workspaces {
         keep_surface(&self.inner.host.surfaces, app, &surface_bytes);
         let stamp = Stamp {
             verb: call.action.to_owned(),
-            invoker: agent.to_owned(),
+            invoker: Stamp::by(&caller.acting().by),
             invocation: call.invocation().0.to_string(),
             membership: governed
                 .peer()

@@ -1,8 +1,3 @@
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "each test's server handle drives the host it reads until the test ends"
-)]
-
 //! A service's resources read for a device: what it holds whole, what it holds nothing of, and
 //! what a chain's head names.
 
@@ -13,7 +8,7 @@ use super::*;
 use crate::apps::route::CrdtRoute;
 use crate::workspace_documents::DocumentRead;
 use crate::workspaces::fixtures::{
-    TestGroupKeys, TestHost, device_cert, governor, test_host_holding, test_host_taking_part,
+    TestGroupKeys, TestHost, device_cert, governor, test_host, test_host_holding,
 };
 use std::sync::Arc;
 use tilo_peer_state::workspace_documents::DeviceDocuments as _;
@@ -39,7 +34,7 @@ fn context(
 async fn a_resource_the_service_holds_reads_from_it() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = test_host_taking_part(scratch.path(), &key, &cert).await;
+    let server = test_host(scratch.path(), &key, &cert).await;
     let created = server.workspaces().create("Reads").await.unwrap();
     let workspace = created.workspace;
     server
@@ -130,7 +125,7 @@ async fn a_resource_the_service_holds_reads_from_it() {
 async fn a_resource_the_service_holds_nothing_of_is_the_apps_own() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = test_host_taking_part(scratch.path(), &key, &cert).await;
+    let server = test_host(scratch.path(), &key, &cert).await;
     let created = server.workspaces().create("Reads").await.unwrap();
     let workspace = created.workspace;
     let reads = server.host().document_reads();
@@ -159,7 +154,7 @@ async fn a_resource_the_service_holds_nothing_of_is_the_apps_own() {
 async fn a_chains_head_is_answered_with_its_newest_part_or_with_none() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = test_host_taking_part(scratch.path(), &key, &cert).await;
+    let server = test_host(scratch.path(), &key, &cert).await;
     let created = server.workspaces().create("Reads").await.unwrap();
     let workspace = created.workspace;
     let base = "derived:messages@derived:default";
@@ -216,7 +211,7 @@ async fn authored(
     automerge::AutoCommit,
 ) {
     let (key, cert) = governor();
-    let server = test_host_taking_part(scratch, &key, &cert).await;
+    let server = test_host(scratch, &key, &cert).await;
     let created = server.workspaces().create("Own reads").await.unwrap();
     let workspace = created.workspace;
     server

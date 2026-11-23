@@ -151,7 +151,6 @@ impl StatePeer {
             ),
             Change::DefineRole { .. }
             | Change::RemoveRole { .. }
-            | Change::SetMemberRoles { .. }
             | Change::SetMemberCustomRole { .. }
             | Change::AddAgent { .. }
             | Change::RemoveAgent { .. } => {

@@ -86,17 +86,6 @@ impl AppBrokerState {
                 _ => None,
             },
         );
-        let context = invoker::signed_by(
-            context,
-            actor,
-            match &origin {
-                Some(InvocationCaller::Certified { caller, .. }) => {
-                    caller.admitted.certificate.as_ref()
-                }
-                Some(InvocationCaller::NativePerson { certificate, .. }) => Some(certificate),
-                Some(InvocationCaller::Local { .. }) | None => None,
-            },
-        );
         // A certified local origin retains its original registered clock and
         // exact person/workspace through an asynchronous directory lookup. Never
         // recapture a replacement origin at dispatch or accept a payload actor.
@@ -190,6 +179,9 @@ impl AppBrokerState {
             Some(Ok(going)) => going.answers,
             _ => Vec::new(),
         };
+        // A record another workspace holds (a person's profile record) is
+        // admitted by that workspace, wherever the window showing it is open.
+        let held = self.held_workspace(peer_id, &offered.1.resource);
         // Every check of this admission is decided on one committed sample,
         // so a policy change cannot land between the action check and the
         // record check.
@@ -197,19 +189,32 @@ impl AppBrokerState {
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
-            .decide_in_workspace(&offered.0.route.cluster_id, |workspace| {
-                let workspace = workspace.ok_or("workspace no longer hosted")?;
-                let answered;
-                let workspace = if answers.is_empty() {
-                    workspace
-                } else {
-                    let mut copy = workspace.clone();
-                    copy.policy.grants.extend(answers.iter().cloned());
-                    answered = copy;
-                    &answered
-                };
-                actor.admit_published_in(workspace, now, (&offered.0, &offered.1))
-            })??;
+            .decide_in_workspace(
+                held.as_deref().unwrap_or(&offered.0.route.cluster_id),
+                |workspace| {
+                    let Some(workspace) = workspace else {
+                        return Err(if held.is_some() {
+                            super::held_elsewhere::NOT_HELD.to_owned()
+                        } else {
+                            "workspace no longer hosted".to_owned()
+                        });
+                    };
+                    let answered;
+                    let workspace = if answers.is_empty() {
+                        workspace
+                    } else {
+                        let mut copy = workspace.clone();
+                        copy.policy.grants.extend(answers.iter().cloned());
+                        answered = copy;
+                        &answered
+                    };
+                    if held.is_some() {
+                        actor.admit_held_in(workspace, now, (&offered.0, &offered.1))
+                    } else {
+                        actor.admit_published_in(workspace, now, (&offered.0, &offered.1))
+                    }
+                },
+            )??;
 
         if execution.is_some()
             && !self

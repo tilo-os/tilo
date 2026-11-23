@@ -944,23 +944,30 @@ impl App {
     }
 
     /// The History control the window shows for this app, if it has a
-    /// History to open.
+    /// History to open: the one its root widget offers
+    /// ([`crate::widget::WindowHistory`]: a window showing the system's
+    /// history of what it shows), else its History API's.
     #[cfg(feature = "native")]
     pub(crate) fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
-        self.history
-            .as_deref()
-            .and_then(crate::history_mode::host::window_control)
+        crate::history_mode::host::offered_control(
+            self.root_widget.as_ref(),
+            self.history.as_deref(),
+        )
     }
 
-    /// The window's History control was pressed: run it on this app's
-    /// History API, as the History shortcut does.
+    /// The window's History control was pressed: run it on the History the
+    /// root widget offers, else on this app's History API, as the History
+    /// shortcut does.
     #[cfg(feature = "native")]
     pub(crate) fn invoke_window_history_control(
         &mut self,
         control: crate::widget::HistoryControl,
     ) -> Result<(), String> {
-        let history = self.history.as_mut().ok_or("History is unavailable")?;
-        crate::history_mode::host::press_window_control(history.as_mut(), control)?;
+        crate::history_mode::host::press_offered(
+            self.root_widget.as_mut(),
+            self.history.as_deref_mut(),
+            control,
+        )?;
         self.needs_sync = true;
         self.layout.layout_dirty = true;
         Ok(())

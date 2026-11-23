@@ -18,6 +18,7 @@ set -euo pipefail
 
 dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 vm="$dev_dir/vm.sh"
+export TILO_VM_ARCH="${TILO_VM_ARCH:-$(uname -m)}"
 medium="${1:?usage: test-installer-cycle.sh INSTALLER_QCOW2 [--out DIRECTORY] [--prepared-alongside|--guided-alongside] [--install-only] [--software-tpm] [--graphics gl|software] [--build-profile-encoder] [--selinux-audit-ssh]}"
 shift
 out=""

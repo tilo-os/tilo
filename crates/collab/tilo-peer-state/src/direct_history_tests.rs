@@ -10,7 +10,9 @@ use crate::owner::{NativeWorkspaceOwner, open_file};
 use crate::store::{Appetite, Store};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::CommitNamed as _;
+use ed25519_dalek::SigningKey;
 use std::sync::Arc;
+use std::time::Duration;
 use tilo_desktop_model::WorkspaceId;
 
 /// The bytes of one part's text: eighty of them are more than a link takes
@@ -238,5 +240,137 @@ fn a_newcomer_to_eighty_parts_takes_each_in_as_fast_as_a_newcomer_to_two() {
         "a part of 80 moved {} bytes, a part of 2 {}",
         large / 80,
         small / 2
+    );
+}
+
+/// `key`'s channel governance for the workspace's group `group`: its genesis,
+/// its commit at `epoch`, or its access request.
+fn channel_frame(
+    key: &SigningKey,
+    group: collab_types::WorkspaceId,
+    kind: u8,
+) -> crate::NeighbourMsg {
+    use collab_types::{MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceFrame};
+    match kind {
+        0 => crate::NeighbourMsg::MlsGovernance {
+            workspace: WORKSPACE.into(),
+            frame: Box::new(
+                MlsGovernanceFrame::signed(group, [0; 32], 0, MlsGovernanceAction::Genesis, key)
+                    .unwrap(),
+            ),
+            delivery: 0,
+        },
+        2 => crate::NeighbourMsg::MlsAccessRequest {
+            workspace: WORKSPACE.into(),
+            request: Box::new(MlsAccessRequestV1::signed(group, vec![1], 1, key).unwrap()),
+            delivery: 0,
+        },
+        epoch => crate::NeighbourMsg::MlsGovernance {
+            workspace: WORKSPACE.into(),
+            frame: Box::new(
+                MlsGovernanceFrame::signed(
+                    group,
+                    [epoch; 32],
+                    u64::from(epoch),
+                    MlsGovernanceAction::Commit {
+                        removed: Vec::new(),
+                        added: Vec::new(),
+                        commit: vec![epoch],
+                        joining: None,
+                        history: None,
+                    },
+                    key,
+                )
+                .unwrap(),
+            ),
+            delivery: 0,
+        },
+    }
+}
+
+/// A device that links the workspace's host after a restart is handed every
+/// channel's genesis, its newest commit and each device's newest access
+/// request, read from the host's store alone: what it joins each channel's
+/// key group from. A commit the newest replaced is not handed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newcomer_joins_each_channel_from_what_its_host_kept_at_its_store() {
+    let ((intent, bootstrap, _, _, now), governor, key) = governed_fixture_at(tilo_clock::wall());
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("store");
+    let group = collab_types::WorkspaceId::new();
+    let founder = SigningKey::from_bytes(&[41; 32]);
+    let genesis = channel_frame(&founder, group, 0);
+    let first = channel_frame(&founder, group, 1);
+    let newest = channel_frame(&founder, group, 3);
+    let request = channel_frame(&key, group, 2);
+    {
+        let store = Arc::new(Store::open(&path, Appetite::StoreAll).unwrap());
+        let host = DirectSync::over(Replica::new(governor.clone()), key.clone()).with_store(store);
+        let serving = super::Serving::default();
+        serving.serve(host.clone()).unwrap();
+        let founder_device = founder.verifying_key().to_bytes();
+        // What reached the host over its link: the channel's genesis, then
+        // the commits after it, then a member's access request.
+        assert!(host.carry(founder_device, &genesis).unwrap());
+        assert!(host.carry(founder_device, &first).unwrap());
+        assert!(host.carry(founder_device, &newest).unwrap());
+        host.send(request.clone()).unwrap();
+    }
+
+    // The host starts again over its store, with nothing else of the
+    // channels' history: no server's retained copy is read.
+    let store = Arc::new(Store::open(&path, Appetite::StoreAll).unwrap());
+    let host = DirectSync::over(Replica::new(governor), key.clone()).with_store(store);
+    let serving = super::Serving::default();
+    serving.serve(host.clone()).unwrap();
+    let owner = open_file(&directory.path().join("joined-workspaces.json")).unwrap();
+    let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
+    owner
+        .install(&finalize(intent, pending, bootstrap).unwrap(), now)
+        .unwrap();
+    let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
+    let newcomer = DirectSync::over(owner.replica(workspace).unwrap(), member_key())
+        .owning(owner.clone(), workspace)
+        .unwrap();
+    let mut heard = newcomer.heard();
+    let host_endpoint = endpoint(&key).await;
+    let router = iroh::protocol::Router::builder(host_endpoint.clone())
+        .accept(DIRECT_ALPN, host.clone())
+        .spawn();
+    let newcomer_endpoint = endpoint(&member_key()).await;
+    let linking = tokio::spawn({
+        let newcomer = newcomer.clone();
+        let newcomer_endpoint = newcomer_endpoint.clone();
+        let host_addr = addr(&host_endpoint);
+        async move { newcomer.connect(&newcomer_endpoint, host_addr).await }
+    });
+    let wanted = [genesis, newest, request];
+    let mut handed = Vec::new();
+    let handed_all = tokio::time::timeout(Duration::from_secs(60), async {
+        while !wanted.iter().all(|frame| handed.contains(frame)) {
+            let Ok(frame) = heard.recv().await else {
+                break;
+            };
+            if frame.message.governance_workspace().is_some() {
+                handed.push(frame.message);
+            }
+        }
+    })
+    .await;
+    linking.abort();
+    router.shutdown().await.unwrap();
+    newcomer_endpoint.close().await;
+    assert!(
+        handed_all.is_ok(),
+        "the newcomer was handed only {handed:?}"
+    );
+    assert_eq!(
+        handed.iter().position(|frame| *frame == wanted[0]),
+        Some(0),
+        "the group's genesis comes before what builds on it"
+    );
+    assert!(
+        !handed.contains(&first),
+        "the commit the newest replaced is not handed"
     );
 }

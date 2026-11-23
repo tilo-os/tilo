@@ -106,15 +106,11 @@ type Queued = ([u8; 32], String, watch::Receiver<Option<CertifyReply>>);
 /// The pairing invites answered, as (person, invite).
 type AnsweredInvites = std::collections::HashSet<([u8; 32], [u8; 16])>;
 
-/// The requests this server's login codes expect (`crate::web`'s login
-/// codes): queued for whoever answers them, even for a person no workspace
-/// here lets in yet.
-pub(crate) trait CodeRequests: Send + Sync {
-    /// Whether a computer resolving a setting-up code here made `request`,
-    /// so its tab, which wrote the link the code names, answers it.
-    fn sets_up(&self, request: &CertificationRequest, now_ns: u64) -> bool;
-    /// Whether a claim of a sign-in code here expects `request`: the device
-    /// that claimed it certifies it ([`CertificationProtocol::issue_named`]).
+/// The requests a page's sign-in tickets expect (`crate::web::tickets`): queued for the device
+/// that approved the tab, even for a person no workspace here lets in yet.
+pub(crate) trait TabRequests: Send + Sync {
+    /// Whether a tab signing in with a ticket here pairs with `request`: the device that
+    /// approved it answers it ([`CertificationProtocol::issue_named`]).
     fn expects(&self, request: &CertificationRequest, now_ns: u64) -> bool;
 }
 
@@ -159,7 +155,7 @@ pub struct CertificationProtocol {
     /// devices' requests; absent in a host that governs none.
     workspaces: Option<crate::peer::WorkspaceRegistry>,
     /// The requests this server's login codes expect.
-    codes: Arc<std::sync::OnceLock<Arc<dyn CodeRequests>>>,
+    codes: Arc<std::sync::OnceLock<Arc<dyn TabRequests>>>,
     /// The workspaces this host governs, whose records keep each person's
     /// devices: a certificate a root issues here joins its person's record.
     records: Arc<std::sync::OnceLock<tilo_workspace_service::workspaces::Workspaces>>,
@@ -267,10 +263,10 @@ impl CertificationProtocol {
         }
     }
 
-    /// Name the requests this server's login codes expect. Named once; a
-    /// later call keeps the first.
+    /// Name the requests this server's sign-in tickets expect. Named once; a later call keeps
+    /// the first.
     #[cfg(feature = "web")]
-    pub(crate) fn set_code_requests(&self, codes: Arc<dyn CodeRequests>) {
+    pub(crate) fn set_tab_requests(&self, codes: Arc<dyn TabRequests>) {
         let _ = self.codes.set(codes);
     }
 
@@ -360,6 +356,14 @@ impl CertificationProtocol {
         workspaces: tilo_workspace_service::workspaces::Workspaces,
     ) {
         let _ = self.records.set(workspaces);
+    }
+
+    /// Add `cert`, a certificate the person's root signed here, to the person's
+    /// record, so their devices list it and the workspaces here admit it. Idempotent.
+    pub(crate) async fn keep_issued_device(&self, cert: &DeviceCert, label: &str) {
+        if let Some(records) = self.records.get() {
+            records.keep_issued_device(cert, label).await;
+        }
     }
 
     /// The devices this host knows are revoked.
@@ -650,6 +654,17 @@ impl CertificationProtocol {
         );
         let digest = request.digest().map_err(|error| error.to_string())?;
         let pairing_code = request.pairing_code().map_err(|error| error.to_string())?;
+        // Signing in: the request is one a page's sign-in ticket here expects, told by the
+        // ticket's own direction rather than from the request's shape. The devices that
+        // approve it list it as such.
+        #[cfg(feature = "web")]
+        let sign_in = request.invite != [0; 16]
+            && self
+                .codes
+                .get()
+                .is_some_and(|codes| codes.expects(&request, now_ns));
+        #[cfg(not(feature = "web"))]
+        let sign_in = false;
         let mut pending = self.lock();
         pending.retain(|_, entry| entry.entry.request.expires_at_ns > now_ns);
         if pending.contains_key(&digest) {
@@ -667,6 +682,7 @@ impl CertificationProtocol {
                     request_digest: digest,
                     pairing_code: pairing_code.clone(),
                     requested_at_ns: now_ns,
+                    sign_in,
                 },
                 answer,
                 label,
@@ -804,17 +820,15 @@ impl CertificationProtocol {
         let now = unix_now_ns();
         // A member of a workspace this host serves queues their own devices
         // beside the host's own, answered by their root rather than the
-        // owner's. A person's tab shows its agent a setting-up code before
-        // the Lounge has let it into a workspace here, so a computer that
-        // resolves that code is queued the same way: once its request
-        // arrives, the tab is the one that answers it.
-        // A request a sign-in code's claim expects is queued the same way,
-        // for the device that claimed it to certify.
+        // owner's. A tab signing in with a ticket pairs with the invite its
+        // ticket named before a workspace here lets its person in: the device
+        // that approved it is the one that answers, so its request is queued
+        // the same way.
         let member = self.admits(request.user_public_key).await
-            || self.codes.get().is_some_and(|codes| {
-                request.invite != [0; 16]
-                    && (codes.sets_up(&request, now) || codes.expects(&request, now))
-            });
+            || self
+                .codes
+                .get()
+                .is_some_and(|codes| request.invite != [0; 16] && codes.expects(&request, now));
         let queued = self.enqueue_member(request, now, member);
         let (digest, pairing_code, answer) = match queued {
             Ok(queued) => queued,
@@ -963,6 +977,33 @@ impl CertificationProtocol {
         entry.answer.send_replace(Some(answer));
         drop(asked);
         ApproverReply::Decided
+    }
+
+    /// Every question still waiting for `person`'s answer, for a page of
+    /// theirs to draw in the sheet's words: the same list their approving
+    /// devices read over an approver session.
+    #[must_use]
+    pub fn pending_for(&self, person: &[u8; 32]) -> Vec<PendingConfirmation> {
+        self.questions(person, unix_now_ns())
+    }
+
+    /// Answer question `id` for `person`, as a device of theirs proved on the
+    /// session the page asked over: the answer runs the call held there once,
+    /// or refuses it. `Err` says why it was not taken.
+    ///
+    /// # Errors
+    /// No such question waits for them, or it takes no such answer.
+    pub fn answer_for(
+        &self,
+        person: &[u8; 32],
+        id: [u8; 32],
+        answer: ConfirmationAnswer,
+    ) -> Result<(), String> {
+        match self.answer(person, id, answer, unix_now_ns()) {
+            ApproverReply::Decided => Ok(()),
+            ApproverReply::Refused { reason } => Err(reason),
+            _ => Err("the question was not answered".into()),
+        }
     }
 
     /// Answer `request` from an approver of `approver`'s root, who decides
@@ -1679,5 +1720,65 @@ mod confirmation_tests {
             "Claude Code on laptop 2",
             "the host names two devices set up alike apart"
         );
+    }
+
+    /// A page's sign-in tickets expect one invite: the request that names it is listed for the
+    /// approving devices as signing a tab in, and a device pairing is not — told by the ticket's
+    /// direction, never guessed from a request.
+    #[cfg(feature = "web")]
+    #[test]
+    fn only_a_request_a_sign_in_ticket_expects_is_listed_as_signing_in() {
+        struct Expects([u8; 16]);
+
+        impl crate::certification::TabRequests for Expects {
+            fn expects(&self, request: &CertificationRequest, _now_ns: u64) -> bool {
+                request.invite == self.0
+            }
+        }
+
+        let protocol = protocol();
+        let invite = [31; 16];
+        protocol.set_tab_requests(Arc::new(Expects(invite)));
+        let now = unix_now_ns();
+        let request = |device: &ed25519_dalek::SigningKey, invite: [u8; 16], nonce: [u8; 16]| {
+            CertificationRequest {
+                version: tilo_user_identity::CERTIFICATION_SCHEMA_VERSION,
+                user_public_key: protocol.identity.user_public_key,
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "Browser".into(),
+                requested: DeviceCapabilities::member(),
+                nonce,
+                invite,
+                issued_at_ns: now,
+                expires_at_ns: now.checked_add(60_000_000_000).unwrap(),
+                signature: [0; 64],
+            }
+            .sign(device)
+            .unwrap()
+        };
+        let tab = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
+        let paired = ed25519_dalek::SigningKey::from_bytes(&[33; 32]);
+        protocol
+            .enqueue(request(&tab, invite, [1; 16]), now)
+            .unwrap();
+        protocol
+            .enqueue(request(&paired, [2; 16], [2; 16]), now)
+            .unwrap();
+        let ApproverReply::Pending(listed) = protocol.decide(
+            ApproverRequest::ListPending,
+            now,
+            &protocol.identity.user_public_key,
+        ) else {
+            panic!("a list");
+        };
+        let sign_in_of = |device: &ed25519_dalek::SigningKey| {
+            listed
+                .iter()
+                .find(|entry| entry.request.device_public_key == device.verifying_key().to_bytes())
+                .map(|entry| entry.sign_in)
+                .expect("listed")
+        };
+        assert!(sign_in_of(&tab), "the request a sign-in ticket expects");
+        assert!(!sign_in_of(&paired), "a device pairing signs no tab in");
     }
 }

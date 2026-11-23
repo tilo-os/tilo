@@ -114,9 +114,10 @@ pub fn draft_local_write(
         now,
     } = write;
     if founding && peer.holds_document(app, document) {
-        return Err(WriteRefusal::Refused(format!(
-            "{document} of {app} is in the workspace already"
-        )));
+        return Err(WriteRefusal::Declined {
+            reason: neighbour_wire::RefusalReason::Conflict,
+            detail: format!("{document} of {app} is in the workspace already"),
+        });
     }
     // A change needs the record it changes: drafted before the record is here, it would be
     // refused and let go, and the next change, which builds on it, would be taken once the record
@@ -127,9 +128,7 @@ pub fn draft_local_write(
             crate::admission::MissingPrerequisite::CausalDependencies,
         ));
     }
-    let author = peer
-        .permissions(*device, now)
-        .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
+    let author = peer.permissions(*device, now)?;
     let artifact = document_artifact_id(app, workspace, document);
     let frame = if snapshot {
         DocumentMutation::Snapshot(changes.to_vec())
@@ -269,13 +268,11 @@ async fn signed_local_write(
         })
         .map_err(|refused| match refused {
             NotAdmitted::Waiting(prerequisite) => WriteRefusal::Waiting(prerequisite),
-            NotAdmitted::Refused(reason) if reason.contains("sealed record history is full") => {
-                WriteRefusal::HistoryFull {
-                    app: write.app.clone(),
-                    record: write.document.clone(),
-                }
-            }
-            NotAdmitted::Refused(reason) => WriteRefusal::Refused(reason),
+            NotAdmitted::HistoryFull => WriteRefusal::HistoryFull {
+                app: write.app.clone(),
+                record: write.document.clone(),
+            },
+            NotAdmitted::Refused { reason, detail } => WriteRefusal::Declined { reason, detail },
             NotAdmitted::ChangeRefused(change) => WriteRefusal::ChangeRefused(change),
         })?;
     Ok(AppWrite {

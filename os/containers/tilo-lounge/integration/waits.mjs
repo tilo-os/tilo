@@ -9,7 +9,7 @@
 
 import {availableParallelism} from 'node:os';
 import {readFileSync, readdirSync} from 'node:fs';
-import {nextChange} from '../../../../tools/web/chrome.mjs';
+import {nextChange, sleep} from '../../../../tools/web/chrome.mjs';
 
 /** The memory the check's browsers hold, read from /proc while they run: each
  * renderer and the GPU process (which holds a software GPU's buffers), with
@@ -56,6 +56,58 @@ export const shellMetrics = {width: SHELL.width, height: SHELL.height, deviceSca
 /** `n` steps, for what takes a person more than one: a page loading and
  * joining (6), an answer crossing to another person's page (4). */
 export const stepLimit = n => n * STEP_MS;
+
+/** One look at the entry's 24 recovery words card, as a person meets it right
+ * after a browser's person is first let in: `{state, words}` where `state` is
+ * `kept` (it pressed "I've written them down"), `waiting` (the card is up but
+ * not whole) or `none` (no card). A flow that polls the page for something
+ * else calls this each turn, so the card never holds it. */
+export async function confirmRecoveryWords(tab) {
+  const answer = await tab.evaluate(`(() => {
+    const card = document.querySelector('[data-card="recovery-words"]');
+    if (!card) return 'none';
+    const words = card.querySelectorAll('.tilo-recovery-word').length;
+    const go = card.querySelector('button.tilo-entry-primary');
+    if (!go || words !== 24) return 'waiting';
+    go.click();
+    return JSON.stringify({words});
+  })()`).catch(() => 'none');
+  if (answer === 'none' || answer === 'waiting') return {state: answer, words: 0};
+  return {state: 'kept', words: JSON.parse(answer).words};
+}
+
+/**
+ * The entry shows a person's 24 recovery words once, right after they are
+ * first let in anywhere, and holds everything after it — the first screen, the
+ * agent's setup, the workspace — until they say they kept them. Every flow
+ * that founds a person confirms the card here, as the person does; a flow
+ * about the card itself reads it instead (`page-boot.mjs`, `onboarding.mjs`).
+ *
+ * Resolves `{kept, words}`: whether a card was pressed and how many words it
+ * showed. It waits `timeout` for the card, so a flow can call it right after
+ * the page is navigated and the person is let in behind the first screen; a
+ * browser that already keeps its person has no card and answers
+ * `{kept: false}`. `what` names the page where a stuck card is reported.
+ */
+export async function keepRecoveryWords(tab, what = 'the page', {timeout = stepLimit(4)} = {}) {
+  for (const deadline = Date.now() + timeout; ;) {
+    const answer = await confirmRecoveryWords(tab);
+    if (answer.state === 'kept') {
+      // The page goes on behind the card: wait for it to leave before the
+      // caller reads what it hid.
+      for (const gone = Date.now() + stepLimit(2); Date.now() < gone;) {
+        if (await tab.evaluate(`!document.querySelector('[data-card="recovery-words"]')`).catch(() => false)) break;
+        await sleep(25);
+      }
+      return {kept: true, words: answer.words};
+    }
+    if (Date.now() > deadline) {
+      if (answer.state === 'waiting') console.warn(`${what}: the recovery words card did not take a press`);
+      return {kept: false, words: 0};
+    }
+    await sleep(100);
+  }
+}
 
 /**
  * Reload `tab` and wait until the document that answers is the one it loaded,

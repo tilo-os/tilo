@@ -761,11 +761,6 @@ impl ProcessContext {
     pub fn is_private(&self) -> bool {
         self.private
     }
-    /// Prepare the instance as a view another app's window embeds ([`crate::window_share`]): it
-    /// stands in that window, with no bar of its own, showing the one thing the window asked for.
-    pub fn provide_embedded(&mut self) {
-        self.embedded = true;
-    }
     /// Whether the instance is a view another app's window embeds.
     pub fn is_embedded(&self) -> bool {
         self.embedded

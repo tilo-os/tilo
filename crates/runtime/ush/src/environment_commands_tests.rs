@@ -314,7 +314,7 @@ fn opening_browser_asks_the_hosts_service_for_the_workspaces_vm() {
     let (socket, asked) = fake_hosted(
         dir.path(),
         vec![
-            Reply::Busy("Starting another machine for it, about 3 minutes.".into()),
+            Reply::Busy("The machine is full until one of its VMs goes idle.".into()),
             Reply::Opened {
                 opened_ms: Some(900),
                 provider: "42".into(),

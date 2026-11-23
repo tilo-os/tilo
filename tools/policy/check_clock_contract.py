@@ -100,7 +100,7 @@ TIMERS = {
     Path("crates/server/tilo-workspace-service/src/peer/arriving.rs"): TIMER_REASON,
     Path("crates/server/tilo-workspace-service/src/peer/access_audit.rs"): TIMER_REASON,
     Path("crates/server/tilo-workspace-service/src/peer/delivery.rs"): TIMER_REASON,
-    Path("crates/server/tilo-workspace-service/src/peer/session/writer.rs"): TIMER_REASON,
+    Path("crates/server/tilo-workspace-service/src/peer/session.rs"): TIMER_REASON,
     Path("crates/server/tilo-workspace-service/src/presence_mailbox.rs"): TIMER_REASON,
     Path("crates/server/tilo-workspace-service/src/workspace.rs"): TIMER_REASON,
     Path("crates/server/tilo-workspace-service/src/agents.rs"): TIMER_REASON,

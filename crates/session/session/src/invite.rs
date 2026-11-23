@@ -3,8 +3,8 @@
 //! The sheet shows and asks; the workspace's host makes, lists and cancels the invitations
 //! ([`Workspace`]): on a desktop the shell's own published actions, so a link handed over from here
 //! is the same invitation an app or an agent makes; on the page the workspace's host it reaches.
-//! What is the role's here is what the sheet says, optionally leaving the link on a site's shelf, and
-//! putting it on the clipboard long enough to hand it over.
+//! What is the role's here is what the sheet says, and putting the link on the clipboard long enough
+//! to hand it over.
 
 #![cfg_attr(
     target_arch = "wasm32",
@@ -71,8 +71,6 @@ pub trait Workspace {
     fn issue(&self, role: &str, recipient: &str, answer: Answer<Issued>);
     /// Take back the link `invite`: whoever holds it admits nobody from now on.
     fn cancel(&self, invite: &str, answer: Answer<()>);
-    /// The site whose shelf keeps a link, and the workspace's own host a link names.
-    fn shelf(&self) -> (Option<url::Url>, Option<String>);
 }
 
 /// The invite sheet's role: what it shows and what its presses do, over the workspace's host.
@@ -86,7 +84,7 @@ pub struct Invite {
 }
 
 impl Invite {
-    /// Invitations into `workspace`, left on the shelves `store` reaches and copied to `clipboard`.
+    /// Invitations into `workspace`, handed over through `store` and copied to `clipboard`.
     #[must_use]
     pub fn new(
         workspace: Rc<dyn Workspace>,
@@ -113,12 +111,6 @@ impl Invite {
             }
         }));
     }
-
-    /// Take what a shelf answered: a link the sheet shows may have become the site's short one.
-    /// Whether one answered.
-    pub fn follow_shelf(&self) -> bool {
-        self.store.follow_shelf(&mut self.made.borrow_mut())
-    }
 }
 
 impl sheet::Invitations for Invite {
@@ -143,12 +135,7 @@ impl sheet::Invitations for Invite {
     }
 
     fn pending(&self) -> Vec<sheet::Pending> {
-        let made = self.made.borrow();
-        self.workspace
-            .pending()
-            .into_iter()
-            .filter(|pending| !made.waiting_to_show(&pending.key))
-            .collect()
+        self.workspace.pending()
     }
 
     fn made(&self) -> Option<sheet::Created> {
@@ -156,7 +143,7 @@ impl sheet::Invitations for Invite {
     }
 
     fn making(&self) -> bool {
-        self.issuing.get() || self.made.borrow().making()
+        self.issuing.get()
     }
 
     fn note(&self) -> Option<sheet::Note> {
@@ -165,7 +152,6 @@ impl sheet::Invitations for Invite {
 
     fn create(&self, role: &str, recipient: &str) {
         let asked = (role.to_owned(), recipient.to_owned());
-        let (site, host) = self.workspace.shelf();
         let (store, made, issuing) = (
             Rc::clone(&self.store),
             Rc::clone(&self.made),
@@ -181,7 +167,7 @@ impl sheet::Invitations for Invite {
                     Ok(issued) => issued,
                     Err(refused) => return say_refused(&made, "invite-failed", refused),
                 };
-                // The link can carry the signed invitation itself or point to it on a shelf.
+                // The link names the invitation at the workspace's host, or carries it.
                 let (role, recipient) = &asked;
                 let mut created =
                     sheet::made(&issued.invite, role, recipient, issued.expires_at_ns);
@@ -190,13 +176,7 @@ impl sheet::Invitations for Invite {
                 }
                 // The sheet's state is let go before a refusal is said in it, which borrows it
                 // again.
-                let handed = store.hand_over(
-                    &mut made.borrow_mut(),
-                    created,
-                    &issued.text,
-                    site.as_ref(),
-                    host.as_deref(),
-                );
+                let handed = store.hand_over(&mut made.borrow_mut(), created, &issued.text);
                 if let Err(reason) = handed {
                     tracing::warn!(%reason, "the invitation was not handed over");
                     say_refused(&made, "invite-failed", Refused::Because(reason));
@@ -206,18 +186,14 @@ impl sheet::Invitations for Invite {
     }
 
     fn revoke(&self, invite: &str) {
-        let (store, made, cancelled) = (
-            Rc::clone(&self.store),
-            Rc::clone(&self.made),
-            invite.to_owned(),
-        );
+        let (made, cancelled) = (Rc::clone(&self.made), invite.to_owned());
         self.workspace.cancel(
             invite,
             Box::new(move |answer| match answer {
                 Ok(()) => {
-                    // The site's copy goes too: a link handed out before is not one that waits
-                    // there to be fetched, and the one this opening showed goes with it.
-                    store.take_back(&mut made.borrow_mut(), &cancelled);
+                    // The workspace no longer hands it to whoever holds its link, and the link
+                    // this opening showed goes with it.
+                    made.borrow_mut().revoked(&cancelled);
                     made.borrow_mut().say(word("invite-revoked"), false);
                 }
                 Err(refused) => say_refused(&made, "invite-revoke-failed", refused),
@@ -270,7 +246,6 @@ impl Shared {
             return;
         };
         sheet::answer(&state.take_asked(), &self.inviting);
-        self.inviting.follow_shelf();
         if state.presentation().is_open() {
             self.show_invite();
         }

@@ -160,7 +160,10 @@ os/dev/installer-console.py --socket <that path> invoke begin@installer.review -
 The console answers action frames, the same ones the desktop answers. Action
 ids are `<action>@<resource>`. An action whose contract is destructive takes
 its confirmation beside its arguments, a typed phrase or a plain confirmation,
-exactly like app actions through the compositor. A wrong or missing phrase is
+exactly like app actions through the compositor: an `Invoke` frame carries
+`"confirmation": {"Phrase": "/dev/vdb"}`, which `installer-console.py invoke
+--phrase` writes, and a script written in the headless-drive format names the
+same phrase `confirmation_phrase`. A wrong or missing phrase is
 `ConfirmationRequired`; a step the wizard is not on is
 `action_unavailable` with the reason the screen would give.
 

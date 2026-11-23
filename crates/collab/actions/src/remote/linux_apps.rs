@@ -159,15 +159,6 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_linux_app_is_named_and_launched_by_its_desktop_file;
 
-        phase an_app_open_names_the_environments_own_action;
-        {
-            assert_eq!(target().provider, PROVIDER);
-            assert_eq!(target().address.resource, RESOURCE);
-            assert_eq!(target().address.action, OPEN);
-            assert_eq!(stop_target().address.action, STOP);
-            assert_ne!(OPEN, super::super::browser::OPEN);
-        }
-
         phase an_app_is_named_by_its_desktop_file_and_nothing_else;
         {
             assert_eq!(

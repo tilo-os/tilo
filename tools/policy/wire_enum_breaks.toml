@@ -591,11 +591,6 @@ enum = "FsRequest"
 reason = "the app's half of the same file calls: runtime interface 34, same build at both ends, never stored"
 
 [[break]]
-file = "crates/server/tilo-server-protocol/src/transport.rs"
-enum = "HomePeerManagementRequest"
-reason = "a request a device sends a server of the same person's and the server answers at once, never kept; every device and server update together, so no build reads another's numbering"
-
-[[break]]
 file = "crates/session/core/src/layout/mod.rs"
 enum = "LayoutAction"
 reason = "tagged by name, not position: the remaining actions read as before, and an action written with the removed name was refused already and now fails to read"
@@ -604,11 +599,6 @@ reason = "tagged by name, not position: the remaining actions read as before, an
 file = "crates/session/network-actor/src/fabric/model.rs"
 enum = "PersonalFabricAction"
 reason = "sent between a person's devices as it happens and never kept; every device updates together, so no build reads another's numbering"
-
-[[break]]
-file = "crates/server/tilo-server-protocol/src/login_code.rs"
-enum = "ClaimRefused"
-reason = "the reason beside a 403 is read by the `tilo login` that asked a moment before, both from one build, and never kept: the one that meant 'may not admit devices' is 'not a device of the person' now"
 
 [[break]]
 file = "crates/platform/imager-backend/src/account_sources/mod.rs"
@@ -658,12 +648,12 @@ reason = "a frame on a live action stream, never kept; the removed `Offer` was i
 [[break]]
 file = "crates/system/accounts/src/sign_ins.rs"
 enum = "Ask"
-reason = "the account sign-ins socket: newline-delimited JSON, by name, between the session and the processes it serves on this device, and no line of it is kept. The session, the cloud service and the connectors the session starts ship in one image. `Hurry` let a connector's ask for accounts go after its person said yes on its window; the workspace's host asks the person now"
+reason = "the account sign-ins socket: newline-delimited JSON, by name, between the session and the processes it serves on this device, and no line of it is kept. The session, the cloud service and the connectors the session starts ship in one image. `Hurry` let a connector's ask for accounts go after its person said yes on its window, and no connector asks its person for a sign-in now"
 
 [[break]]
 file = "crates/system/accounts/src/sign_ins.rs"
 enum = "Answer"
-reason = "the session's half of the same socket: newline-delimited JSON over a local connection, never kept. `Asks` told a connector to ask its person; the session asks the workspace's host instead and answers a sign-in or a refusal"
+reason = "the session's half of the same socket: newline-delimited JSON over a local connection, never kept. `Asks` told a connector to ask its person; the session answers a sign-in or a refusal"
 
 [[break]]
 file = "crates/platform/tilolang-mail/src/wire.rs"
@@ -674,3 +664,18 @@ reason = "length-prefixed JSON, by name, between a mail origin and the connector
 file = "crates/platform/tilolang-mail/src/wire.rs"
 enum = "FromConnector"
 reason = "the connector's half of the same connection: length-prefixed JSON, by name, never kept. `Asks` named the accounts waiting on the person's yes for Mail's Ask bar, which no longer asks"
+
+[[break]]
+file = "crates/collab/resource-store/src/wire.rs"
+enum = "Command"
+reason = "a request an app instance sends the workspace service over its port and gets answered at once; no byte of it is kept. `Leases` was its last variant, so nothing after it moves, and it read the workspace's leases for a requirement the design no longer has"
+
+[[break]]
+file = "crates/collab/actions/src/remote.rs"
+enum = "RemoteActionMessage"
+reason = "the search request and answer went: a workspace's search is the `tilo.search` provider's `search#find` action, asked and answered as an invocation. The frame is JSON, named by variant, and the remote-action envelope version is bumped from 2 to 3 with the removal, so a peer at the old version is refused as undeliverable instead of sending a search no one reads"
+
+[[break]]
+file = "crates/collab/action-policy/src/workspace.rs"
+enum = "Change"
+reason = "`SetMemberRoles`, a whole-set role assignment no build ever wrote, went. It was added after the stored governance this tree still reads was written, so that governance numbers its variants without it and reads as it was written again; only frames written in the few days between its addition and its removal shift, and those are development data"

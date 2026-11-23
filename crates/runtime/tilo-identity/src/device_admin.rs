@@ -1,110 +1,15 @@
-//! Pairing and administering the person's devices, whichever action API asks: the
-//! shell's `identity.device.pair.*` and `identity.*` actions. Each action API decides who may
-//! take a step; what the step runs, and with which arguments, is decided
-//! here once.
-//!
-//! The identity CLI runs `tilo-enroll discover[-device]` to find an unprovisioned
-//! device on the LAN. The privileged helper
-//! (`tilo-home-peer-control approve-…`) admits the device discovery found.
-//! The helper is started through polkit at a desktop, or sudo over SSH.
+//! Administering the person's devices, whichever action API asks: the `identity.*` actions.
+//! Each action API decides who may take a step; what the step writes, and with which arguments,
+//! is decided here once.
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::path::PathBuf;
 
 use tilo_actions::remote::identity_admin::FleetDevice;
 use tilo_device_identity::IdentityPaths;
 use tilo_user_identity::{RevocationEntry, RevocationReason};
 
-/// Which pairing finds and admits a new device: one the person uses
-/// themselves, or a home peer that runs their workspaces' sync without a
-/// screen. Both are certified as the person's devices.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum DeviceKind {
-    Personal,
-    HomePeer,
-}
-
-impl DeviceKind {
-    /// The name the kind is asked for by: `personal-device` or `home-peer`.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Personal => "personal-device",
-            Self::HomePeer => "home-peer",
-        }
-    }
-
-    /// The kind named by [`Self::name`].
-    #[must_use]
-    pub fn parse(name: &str) -> Option<Self> {
-        match name.trim() {
-            "personal-device" => Some(Self::Personal),
-            "home-peer" => Some(Self::HomePeer),
-            _ => None,
-        }
-    }
-}
-
 use crate::device_fleet::DeviceFleetStore;
-
-/// The enrollment program the image installs.
-pub const ENROLL: &str = "/usr/libexec/tilo/tilo-enroll";
-/// The privileged helper that admits a discovered device.
-pub const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";
-
-/// The `tilo-enroll` command that listens for a device of `role`.
-#[must_use]
-pub const fn discover_command(role: DeviceKind) -> &'static str {
-    match role {
-        DeviceKind::Personal => "discover-device",
-        DeviceKind::HomePeer => "discover",
-    }
-}
-
-/// The helper's command that admits a device of `role`.
-const fn approve_command(role: DeviceKind) -> &'static str {
-    match role {
-        DeviceKind::Personal => "approve-device",
-        DeviceKind::HomePeer => "approve-enrollment",
-    }
-}
-
-/// A device found nearby, as `tilo-enroll discover` reports it.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
-pub struct Candidate {
-    pub device_node_id: String,
-    /// The server service node id it announced, lowercase hex.
-    pub server_node_id: String,
-    pub label: String,
-    /// The code both screens show.
-    pub verification_code: String,
-}
-
-/// The device a finished `tilo-enroll discover[-device]` reports.
-pub fn discovered(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<Candidate, String> {
-    if !success {
-        return Err(command_error(stderr, "no new device was found nearby"));
-    }
-    let candidate: Candidate = serde_json::from_slice(stdout)
-        .map_err(|_| "nearby discovery returned an invalid identity".to_string())?;
-    Ok(Candidate {
-        device_node_id: node_id(&candidate.device_node_id, "the discovered device")?,
-        server_node_id: node_id(&candidate.server_node_id, "the discovered server service")?,
-        ..candidate
-    })
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Approval {
-    pub role: DeviceKind,
-    pub device: String,
-    /// The server service node id it announced, in lowercase hex.
-    pub service: String,
-    /// For a home peer, the workspaces it keeps; `None` takes the server
-    /// configuration's.
-    pub workspace_ids: Option<Vec<u64>>,
-}
 
 /// Where the identity an approved device joins lives.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,49 +32,6 @@ impl PersonPaths {
     }
 }
 
-/// The helper and its arguments that admit `approval`'s device into the
-/// identity at `paths`, for the launcher (polkit or sudo) to run.
-#[must_use]
-pub fn approval_args(
-    approval: &Approval,
-    paths: &PersonPaths,
-    workspace_ids: &[u64],
-) -> Vec<OsString> {
-    let mut args: Vec<OsString> = [CONTROL_HELPER, approve_command(approval.role)]
-        .into_iter()
-        .map(OsString::from)
-        .collect();
-    args.push("--identity-root".into());
-    args.push(paths.root.clone().into_os_string());
-    args.push("--identity-dir".into());
-    args.push(paths.dir.clone().into_os_string());
-    args.push("--expected-device".into());
-    args.push(approval.device.clone().into());
-    args.push("--expected-service".into());
-    args.push(approval.service.clone().into());
-    if approval.role == DeviceKind::HomePeer {
-        for id in workspace_ids {
-            args.push("--workspace-id".into());
-            args.push(id.to_string().into());
-        }
-    }
-    args
-}
-
-/// Whether this device holds the whole of the identity at `paths`, without
-/// opening its secret: only such a device certifies the devices it adds.
-///
-/// # Errors
-///
-/// When this account has no identity, or it cannot be read.
-pub fn holds_whole_key(paths: &PersonPaths) -> Result<bool, String> {
-    let record = crate::store::resolve_active_identity(&paths.dir)
-        .ok_or("this account has no identity yet")?;
-    let metadata = tilo_identity_client::load_metadata_from_path(&record)
-        .map_err(|error| format!("could not read your identity: {error}"))?;
-    Ok(metadata.single_device)
-}
-
 /// A device key or relay service node id: 32 bytes as hex, lowercased.
 ///
 /// # Errors
@@ -181,24 +43,6 @@ pub fn node_id(text: &str, what: &str) -> Result<String, String> {
         Ok(text.to_ascii_lowercase())
     } else {
         Err(format!("{what} must be 64 hexadecimal characters"))
-    }
-}
-
-/// A child's diagnostic, safe to show a person, or `fallback` when it said
-/// nothing.
-#[must_use]
-pub fn command_error(stderr: &[u8], fallback: &str) -> String {
-    let detail = String::from_utf8_lossy(stderr);
-    let detail: String = detail
-        .trim()
-        .chars()
-        .filter(|character| !character.is_control() || *character == ' ')
-        .take(512)
-        .collect();
-    if detail.is_empty() {
-        fallback.to_owned()
-    } else {
-        detail
     }
 }
 
@@ -338,12 +182,7 @@ fn ms_since_epoch(ns: u64) -> i64 {
 /// reaches every workspace of the person's, or for a key that is no agent's
 /// grant.
 fn scope_id(scope: Option<tilo_user_identity::AgentScope>) -> Option<String> {
-    match scope? {
-        tilo_user_identity::AgentScope::AllWorkspaces => None,
-        tilo_user_identity::AgentScope::Workspace(id) => {
-            Some(tilo_user_identity::AgentScope::Workspace(id).name())
-        }
-    }
+    scope?.workspace_name()
 }
 
 /// The devices `listed`, this device's fleet, and the keys `record` adds: one
@@ -443,9 +282,6 @@ pub fn revoke(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const DEVICE: &str = "aa00000000000000000000000000000000000000000000000000000000000001";
-    const SERVICE: &str = "bb00000000000000000000000000000000000000000000000000000000000002";
 
     /// One of the person's devices, as the record on a host keeps it.
     fn certified(label: &str, key: u8) -> tilo_user_identity::DeviceCert {
@@ -623,85 +459,19 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_device_helper;
+        fn a_device_key_is_checked_before_anything_runs;
 
-        phase keys_roles_and_discoveries_are_checked_before_anything_runs;
+        phase a_device_key_is_thirty_two_bytes_as_hex;
         {
-            assert_eq!(DeviceKind::parse("home-peer"), Some(DeviceKind::HomePeer));
+            let key = "aa00000000000000000000000000000000000000000000000000000000000001";
             assert_eq!(
-                DeviceKind::parse(" personal-device "),
-                Some(DeviceKind::Personal)
-            );
-            assert!(DeviceKind::parse("server").is_none());
-            assert_eq!(
-                node_id(&DEVICE.to_ascii_uppercase(), "device"),
-                Ok(DEVICE.into())
+                node_id(&key.to_ascii_uppercase(), "device"),
+                Ok(key.to_owned())
             );
             assert!(node_id("abc", "device").is_err());
             assert!(node_id(&"g".repeat(64), "device").is_err());
-            assert_eq!(
-                discovered(false, b"", b"\x1b[31mno matching device\n"),
-                Err("[31mno matching device".into())
-            );
-            assert!(discovered(true, b"{\"device_node_id\":\"x\"}", b"").is_err());
-            let found = format!(
-                "{{\"device_node_id\":\"{}\",\"server_node_id\":\"{SERVICE}\",\
-             \"label\":\"Phone\",\"verification_code\":\"123-456\",\"kind\":\"PersonalDevice\"}}\n",
-                DEVICE.to_ascii_uppercase()
-            );
-            let candidate = discovered(true, found.as_bytes(), b"").unwrap();
-            assert_eq!(candidate.device_node_id, DEVICE);
-            assert_eq!(candidate.verification_code, "123-456");
             assert_eq!(revocation_reason(" Lost "), Ok(RevocationReason::Lost));
             assert!(revocation_reason("misplaced").is_err());
-        }
-
-        phase every_api_runs_the_helper_with_the_same_arguments;
-        {
-            let paths = PersonPaths {
-                root: PathBuf::from("/var/lib/tilo"),
-                dir: PathBuf::from("/home/person/.config/tilo/identity"),
-            };
-            let approval = Approval {
-                role: DeviceKind::HomePeer,
-                device: DEVICE.into(),
-                service: SERVICE.into(),
-                workspace_ids: None,
-            };
-            assert_eq!(
-                approval_args(&approval, &paths, &[7, 9]),
-                [
-                    CONTROL_HELPER,
-                    "approve-enrollment",
-                    "--identity-root",
-                    "/var/lib/tilo",
-                    "--identity-dir",
-                    "/home/person/.config/tilo/identity",
-                    "--expected-device",
-                    DEVICE,
-                    "--expected-service",
-                    SERVICE,
-                    "--workspace-id",
-                    "7",
-                    "--workspace-id",
-                    "9",
-                ]
-                .map(OsString::from)
-                .to_vec()
-            );
-            let personal = approval_args(
-                &Approval {
-                    role: DeviceKind::Personal,
-                    ..approval
-                },
-                &paths,
-                &[7],
-            );
-            assert_eq!(personal.get(1), Some(&OsString::from("approve-device")));
-            assert!(
-                !personal.contains(&OsString::from("--workspace-id")),
-                "a personal device keeps no workspaces of its own"
-            );
         }
     }
 }

@@ -384,48 +384,6 @@ impl DragRun {
         self.lift.as_ref().is_some_and(|lift| lift.active)
     }
 
-    /// What another widget is dragging over this run: `payload`, shown in the ghost as
-    /// `label`.
-    pub fn set_foreign(&mut self, foreign: Option<(DragPayload, String)>) {
-        if self
-            .foreign
-            .as_ref()
-            .map(|(p, l)| (format!("{p:?}"), l.clone()))
-            != foreign.as_ref().map(|(p, l)| (format!("{p:?}"), l.clone()))
-        {
-            self.foreign = foreign;
-            self.landing = None;
-            self.dirty = true;
-        }
-    }
-
-    /// Whether a foreign drag is over the run now.
-    #[must_use]
-    pub fn foreign_is_over(&self) -> bool {
-        self.landing.is_some()
-    }
-
-    /// Where the foreign drag over the run would land, once its host ends it: the resource
-    /// and the item it goes before.
-    #[must_use]
-    pub fn take_foreign(&mut self) -> Option<DragDrop> {
-        let (payload, _) = self.foreign.take()?;
-        let landing = self.landing.take()?;
-        self.dirty = true;
-        let DragPayload::Custom { kind, blob } = payload else {
-            return None;
-        };
-        if kind != ITEM_PAYLOAD {
-            return None;
-        }
-        Some(DragDrop {
-            run: self.id.clone(),
-            moved: String::from_utf8(blob).ok()?,
-            at: landing.at,
-            before: landing.before,
-        })
-    }
-
     /// What the run dropped since the host last read it: an item moved, or a
     /// resource dropped on it.
     pub fn take_drops(&mut self) -> Vec<DragDrop> {

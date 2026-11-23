@@ -671,6 +671,27 @@ impl ui::component_lifecycle::WindowTitle for HostedWindow {
     }
 }
 
+/// The window bar's History is the app window's: the instance shows the system's history of what
+/// the window shows. The window offers it from the start, so the bar finds it once something shows.
+impl ui::widget::WindowHistory for HostedWindow {
+    fn set_window_presents_history(&mut self, _tab_presents: bool) {}
+
+    fn window_history_control(&self) -> Option<ui::widget::HistoryControl> {
+        self.view()
+            .and_then(ui::widget::WindowHistory::window_history_control)
+    }
+
+    fn invoke_window_history_control(
+        &mut self,
+        control: ui::widget::HistoryControl,
+    ) -> Result<(), String> {
+        let connected = self.connected.as_mut().ok_or("History is unavailable")?;
+        ui::widget::WindowHistory::invoke_window_history_control(&mut connected.view, control)?;
+        connected.view.flush();
+        Ok(())
+    }
+}
+
 /// Until the app's patch connection arrived the window shows its loading state: what the person
 /// types waits for the app's first view.
 impl ui::widget::AwaitsContent for HostedWindow {
@@ -695,7 +716,8 @@ impl ui::widget::Decorator for HostedWindow {
         dyn ui::component_lifecycle::HostIntents,
         dyn ui::undo::LocalUndo,
         dyn ui::component_lifecycle::HearsElsewhere,
-        dyn ui::widget::AwaitsContent;
+        dyn ui::widget::AwaitsContent,
+        dyn ui::widget::WindowHistory;
         decorated
     );
 

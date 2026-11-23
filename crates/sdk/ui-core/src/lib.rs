@@ -158,6 +158,7 @@ pub mod charts;
 pub mod chrome;
 pub mod clock;
 pub mod collaboration;
+pub use runtime_collab::held_elsewhere;
 pub use runtime_collab::native_media;
 pub mod collection_transition;
 pub use tilo_ui_paint::{color, color_compat};

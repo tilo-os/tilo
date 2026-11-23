@@ -1,7 +1,7 @@
 //! The workspace service every device runs and the server embeds: the governance of
 //! the workspaces placed on a device (`workspaces`), the session stack their members
-//! run (the handshake, `peer`, each workspace's runtime) and the retained
-//! store and persistence beneath it. [`service::WorkspaceService`] is its embeddable
+//! run (the handshake, `peer`, each workspace's runtime) and the device store
+//! the workspace's changes are kept in. [`service::WorkspaceService`] is its embeddable
 //! surface; the modules marked hidden are shared with the server daemon that
 //! embeds the same stack, and are not an interface of their own.
 //!
@@ -32,12 +32,8 @@ pub mod app_serving;
 #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
 pub mod apps;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod attach;
-#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod authority_epoch;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod compaction;
 /// How a device opens its own workspace service and the key service beside it.
 #[cfg(all(feature = "device-keys", not(target_arch = "wasm32")))]
 pub mod own_device;
@@ -74,6 +70,8 @@ pub mod files;
 #[doc(hidden)]
 pub mod handshake;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod history_move;
+#[cfg(not(target_arch = "wasm32"))]
 mod i18n;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
@@ -87,17 +85,12 @@ pub mod payloads;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
 #[cfg(not(target_arch = "wasm32"))]
-#[doc(hidden)]
-pub mod persistence;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod presence_mailbox;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod service;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod service_authority;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod store;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod surfaces;
 #[cfg(not(target_arch = "wasm32"))]
@@ -113,6 +106,8 @@ pub mod workspace;
 #[doc(hidden)]
 pub mod workspace_access;
 pub mod workspace_documents;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod workspace_files;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod workspace_io;
@@ -133,11 +128,10 @@ use tilo_server_client::frame;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_server_protocol::{auth, policy};
 #[cfg(not(target_arch = "wasm32"))]
-use tilo_server_session::{client, coedit, position};
+use tilo_server_session::{client, coedit};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod transport {
-    pub(crate) use crate::frame::{decode, encode};
     pub(crate) use tilo_server_protocol::transport::*;
 }
 

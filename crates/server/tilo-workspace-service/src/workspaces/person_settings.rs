@@ -15,6 +15,7 @@
 
 /// The sign-ins of the accounts and providers, as entries of the workspace's vault.
 pub(in crate::workspaces) mod kept_sign_ins;
+pub(in crate::workspaces) mod oauth_grant;
 mod sending;
 /// Signing in on a provider's own page: a Nextcloud server's login flow.
 mod sign_in;
@@ -318,13 +319,6 @@ impl Workspaces {
                 .await;
         }
         let action = request.target.address.action.as_str();
-        // A member's device that does not hold the vault asks it here for its own sign-in,
-        // decided for that device as on any device holding the vault.
-        if action == person_accounts::SIGN_IN {
-            return self
-                .account_sign_in_invoke(workspace_id, caller, request)
-                .await;
-        }
         let effect = mail_effect(action);
         let asked = (workspace_id, caller, certificate);
         // A send asks its person with the message itself, below.

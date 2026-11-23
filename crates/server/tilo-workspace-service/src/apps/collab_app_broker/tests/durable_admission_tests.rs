@@ -408,3 +408,118 @@ async fn a_completion_waiting_for_a_slow_disk_leaves_the_broker_loop_answering()
         })
         .await;
 }
+
+/// A record another workspace holds (a person's profile record, shown in a
+/// window of a workspace they only read) is admitted by the workspace holding
+/// it when it runs: allowed there while that workspace's grants allow it, and
+/// refused once they no longer do, even while the window still holds the
+/// verdict that allowed it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_held_record_is_admitted_by_its_workspace_whatever_its_verdict_said() {
+    use crate::apps::test_support::{Role, Workspace, WorkspaceId};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let root = tempfile::tempdir().unwrap();
+            let person =
+                person_id_for_root(SigningKey::from_bytes(&[51; 32]).verifying_key().to_bytes());
+            let mut board = Workspace::new(WorkspaceId::from_u128(71), "Board");
+            board.set_owner(actor_root(60));
+            board.admit(person.clone(), Role::Viewer);
+            let holding = WorkspaceId::from_u128(72);
+            let mut own = Workspace::new(holding, "Their own");
+            own.set_owner(actor_root(60));
+            own.admit(person.clone(), Role::Editor);
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(board);
+            tree.workspaces.push(own);
+            tree.set_active(WorkspaceId::from_u128(71));
+            tree.persist_path = Some(root.path().join("state.json"));
+            let membership = tree.shared();
+            let (mut fixture, caller) = durable_fixture(root.path(), Some(membership.clone()));
+            let mut surface = fixture.state.publishers.surfaces.lock().unwrap()[&71].clone();
+            surface.actions[0].contract.kind = tilo_actions::ActionKind::Undoable;
+            let action = surface.actions[0].clone();
+            fixture
+                .state
+                .publishers
+                .surfaces
+                .lock()
+                .unwrap()
+                .insert(71, surface);
+            // The window publishes the record as held in the person's own workspace.
+            let (delta, _) = runtime_collab::SurfacePublication::next_held(
+                None,
+                std::slice::from_ref(&action),
+                &|_| Some(holding.to_string()),
+            );
+            let mut table = runtime_collab::SurfaceTable::default();
+            table.apply(&delta).unwrap();
+            fixture
+                .state
+                .surface_tables
+                .lock()
+                .unwrap()
+                .insert(71, table);
+
+            let actor = caller.admitted.broker_actor();
+            let record = runtime_collab::held_elsewhere::HeldRecord::new(
+                &holding.to_string(),
+                &fixture.route.app_id,
+                (&action.resource_kind, &action.resource, &action.action),
+                &action.contract.need(),
+            );
+            let mut verdicts = fixture
+                .state
+                .subscribe_held_elsewhere(actor.clone(), vec![record]);
+            assert_eq!(
+                verdicts.next().await.unwrap().unwrap()[0].verdict,
+                runtime_collab::held_elsewhere::HeldVerdict::Allowed,
+                "an editor of the holding workspace may run it, though they only read the board"
+            );
+            admit(&mut fixture, &caller);
+
+            // The holding workspace takes the grant back; the window has not heard yet.
+            membership
+                .write()
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id() == holding)
+                .unwrap()
+                .admit(person, Role::Viewer);
+            let surface = fixture.state.publishers.surfaces.lock().unwrap()[&71].clone();
+            let refused = fixture.state.dispatch_invocation_from_offered_owned(
+                71,
+                (surface, action),
+                InvocationInputs {
+                    original_request: None,
+                    requested: Some(tilo_actions::InvocationId::new()),
+                    caller: None,
+                    execution: None,
+                    argument: None,
+                    actor: &actor,
+                    confirmation_token: None,
+                    context: None,
+                },
+                AdmissionProvenance {
+                    revision: None,
+                    origin: None,
+                    retained_time: None,
+                },
+            );
+            assert_eq!(
+                refused.err().as_deref(),
+                Some("caller no longer authorized for invocation"),
+                "the stale verdict lets nothing through"
+            );
+        })
+        .await;
+}
+
+/// The person id of the root seeded with `seed`.
+fn actor_root(seed: u8) -> String {
+    person_id_for_root(
+        SigningKey::from_bytes(&[seed; 32])
+            .verifying_key()
+            .to_bytes(),
+    )
+}

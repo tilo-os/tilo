@@ -49,7 +49,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "vm-acceptance"))
 
-from acceptance.vm import TiloVm, VmError, first_json, wait_until  # noqa: E402
+from acceptance.vm import (Invoked, TiloVm, VmError, address, completed, first_json,  # noqa: E402
+                           label, opens, wait_until)
 
 ACCOUNT = "me"
 SOURCE, BRANCHES = "box", ("a", "b")
@@ -516,19 +517,18 @@ def keep_session(run: Run, name: str, label: str) -> None:
     keep_boot(run, name, label)
 
 
-def keep_actions(run: Run, name: str, label: str) -> None:
-    """What the desktop lists, by provider and id, for steps that address its actions."""
+def keep_actions(run: Run, name: str, tag: str) -> None:
+    """What the desktop lists, by provider and address, for steps that address its actions."""
     try:
         listed = listed_actions(run.vm(name))
         # The shell's own chrome last: what an app offers is what a failing step looks for, and the
         # evidence keeps the file's end.
-        listed.sort(key=lambda r: r.get("provider") not in ("so.tilo.session", "applications"))
-        rows = [f"{r.get('provider')}  {r.get('application') or ''}  "
-                f"{str(r.get('id')).replace(chr(31), ' | ')[:160]}  {r.get('operation')}  "
-                f"{r.get('title')}" for r in listed]
-        run.write(f"{label}-{name}-actions.txt", "\n".join(rows))
+        listed.sort(key=lambda r: r.get("provider") != "so.tilo.session")
+        rows = [f"{r.get('provider')}  {r.get('app_id') or ''}  "
+                f"{' | '.join(address(r))[:160]}  {address(r)[1]}  {label(r)}" for r in listed]
+        run.write(f"{tag}-{name}-actions.txt", "\n".join(rows))
     except VmError as exc:
-        run.write(f"{label}-{name}-actions.txt", f"could not list: {exc}")
+        run.write(f"{tag}-{name}-actions.txt", f"could not list: {exc}")
 
 
 def sign_in(facts: dict, run: Run) -> None:
@@ -695,15 +695,15 @@ def keep_awake(vm: TiloVm) -> None:
         pass
 
 
-def act(vm: TiloVm, provider: str, name: str, args: dict | None = None, wait: bool = False) -> dict:
-    """Invoke the desktop action `name` of `provider`, addressed as the listing reads it
-    (`resource␟action`): the listed row whose id is `name` or ends in it."""
+def act(vm: TiloVm, provider: str, resource: str, action: str, args: dict | None = None,
+        wait: bool = False) -> Invoked:
+    """Invoke the desktop action `action` of `resource` under `provider`, as the listing
+    addresses it."""
     keep_awake(vm)
-    rows = [r for r in listed_actions(vm) if r.get("provider") == provider
-            and (r["id"] == name or r["id"].endswith("\x1f" + name))]
-    pages = "every"
-    expect(rows, f"{vm.vm} lists no {provider} action {name!r} in {pages} page(s)")
-    return vm.invoke(provider, rows[0]["id"], args, wait_ms=20000 if wait else 0)
+    rows = [r for r in listed_actions(vm)
+            if r.get("provider") == provider and address(r) == (resource, action)]
+    expect(rows, f"{vm.vm} lists no {provider} action {resource}#{action}")
+    return vm.invoke_row(rows[0], args, wait_ms=20000 if wait else 0)
 
 
 # -- a model provider's API key, through Settings ------------------------------------
@@ -726,51 +726,45 @@ def listed_actions(vm: TiloVm, *query: str) -> list[dict]:
 
 def app_rows(vm: TiloVm, query: str, action: str) -> list[dict]:
     """The app actions named `action` the desktop lists: an app the desktop launches is listed
-    under `app-actions`, a running app's instance under a provider of its own, naming its app
-    (`application`) and its action (`operation`)."""
+    under its launch or application provider, a running app's instance under a provider of its
+    own, naming its app (`app_id`) and its action."""
     def offered(row: dict) -> bool:
-        if row.get("provider") in ("so.tilo.session", "applications"):
+        provider = row.get("provider", "")
+        if provider == "so.tilo.session" or opens(row, row.get("app_id") or ""):
             return False
-        named = row.get("operation") or str(row.get("id", "")).split("\x1f")[-1]
-        return named == action and (row.get("provider") == "app-actions"
-                                    or bool(row.get("application")))
+        return address(row)[1] == action and (provider.startswith(("application:", "launch:"))
+                                               or bool(row.get("app_id")))
     return [row for row in listed_actions(vm, *([query] if query else [])) if offered(row)]
 
 
 def of_app(rows: list[dict], app: str) -> list[dict]:
     """The rows of `rows` that are `app`'s."""
-    return [r for r in rows if r.get("application") == app or app in str(r.get("id", ""))]
+    return [r for r in rows
+            if r.get("app_id") == app or app in address(r)[0] + str(r.get("provider"))]
 
 
 def app_action(vm: TiloVm, query: str, action: str, args: dict | None = None, part: str = "") -> dict:
     """Invoke the app action `action` a live window offers (else its directory's row), as the
     agent-chat e2e does, and its answer once it succeeded."""
     rows = sorted((r for r in app_rows(vm, query, action)
-                   if part in r["id"] or part == r.get("application")),
-                  key=lambda row: row["id"].startswith("directory"))
+                   if part in address(r)[0] or part == r.get("app_id")),
+                  key=lambda row: address(row)[0].startswith("directory"))
     expect(rows, f"{vm.vm} offers no {action} (asked for {query!r})")
     try:
-        answer = vm.invoke(rows[0]["provider"], rows[0]["id"], args, wait_ms=20000)
+        invoked = vm.invoke_row(rows[0], args, wait_ms=20000)
     except VmError:
         if vm.vm in run_of:
             run_of[vm.vm].write(f"invoke-{action}-{vm.vm}.txt", invoke_excerpt(vm))
         raise
-    state = (answer.get("receipt") or {}).get("update", {}).get("state")
-    expect(state == "succeeded", f"{action} did not succeed on {vm.vm}: {json.dumps(answer)[:800]}")
-    return answer
+    try:
+        return completed(invoked.status)
+    except VmError as exc:
+        raise Failed(f"{action} did not succeed on {vm.vm}: {str(exc)[:800]}") from exc
 
 
-def record_part(row_id: str) -> str:
-    parts = row_id.split("\x1f")
-    return parts[-2] if len(parts) >= 2 else ""
-
-
-CHROME = "desktop:chrome\x1f"
-
-
-def open_app(vm: TiloVm, app: str) -> dict:
+def open_app(vm: TiloVm, app: str) -> Invoked:
     """Open `app` in the shown strip, as the shell's own Open an app does."""
-    return act(vm, "so.tilo.session", CHROME + "open-app", {"app": app}, wait=True)
+    return act(vm, "so.tilo.session", "desktop:chrome", "open-app", {"app": app}, wait=True)
 
 
 def open_provider_settings(vm: TiloVm) -> None:
@@ -786,19 +780,20 @@ def open_provider_settings(vm: TiloVm) -> None:
 
 def provider_part(vm: TiloVm) -> str | None:
     rows = app_rows(vm, PROVIDER_LABEL, "list-provider-models")
-    return record_part(rows[0]["id"]) if rows else None
+    return address(rows[0])[0] if rows else None
 
 
 def add_provider(vm: TiloVm, key: str) -> str:
     """An OpenAI-compatible provider at the loopback endpoint, with `key` saved in the
     person's vault through Settings' own actions. Its record part."""
     open_provider_settings(vm)
-    before = {r["id"] for r in app_rows(vm, "", "set-provider-details")}
+    before = {address(r)[0] for r in app_rows(vm, "", "set-provider-details")}
     app_action(vm, "Add provider", "add-provider", {"preset": "openai-compatible"})
-    new = wait_until(lambda: [r for r in app_rows(vm, "", "set-provider-details") if r["id"] not in before],
+    new = wait_until(lambda: [r for r in app_rows(vm, "", "set-provider-details")
+                              if address(r)[0] not in before],
                      30, interval=1.0)
     expect(new, "Settings shows no row for the provider it added")
-    part = record_part(new[0]["id"])
+    part = address(new[0])[0]
     app_action(vm, "", "set-provider-details", {"label": PROVIDER_LABEL,
                "endpoint": f"http://127.0.0.1:{MODEL_PORT}/v1", "model": PROVIDER_MODEL}, part)
     app_action(vm, "", "save-provider-key", {"key": key}, part)
@@ -833,7 +828,7 @@ def held(state: dict, wid) -> bool:
 
 def make_workspace(vm: TiloVm) -> dict:
     before = {w["id"] for w in workspaces(vm.state())}
-    act(vm, "so.tilo.session", CHROME + "new-workspace", {"name": WORKSPACE}, wait=True)
+    act(vm, "so.tilo.session", "desktop:chrome", "new-workspace", {"name": WORKSPACE}, wait=True)
     made = wait_until(lambda: next((w for w in workspaces(vm.state()) if w["id"] not in before), None),
                       30, interval=0.5)
     expect(made, "workspace.create made no workspace")
@@ -853,8 +848,8 @@ def select_workspace(vm: TiloVm, id: str) -> None:
     expect(ws, f"{vm.vm} has no workspace {id} on its shell: "
                f"{[(w.get('id'), w.get('name')) for w in workspaces(state)]}")
     if (state.get("workspace_tree") or {}).get("active") != ws["id"]:
-        act(vm, "so.tilo.session", CHROME + "switch-workspace", {"workspace": str(ws["id"])},
-            wait=True)
+        act(vm, "so.tilo.session", "desktop:chrome", "switch-workspace",
+            {"workspace": str(ws["id"])}, wait=True)
         expect(wait_until(lambda: (vm.state().get("workspace_tree") or {}).get("active") == ws["id"],
                           15, interval=0.5), f"{vm.vm} did not show workspace {id}")
 

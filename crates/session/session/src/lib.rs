@@ -147,7 +147,6 @@ mod collaboration;
 #[cfg(target_os = "linux")]
 pub mod comforts;
 #[cfg(target_os = "linux")]
-mod community;
 #[cfg(target_os = "linux")]
 mod config;
 #[cfg(target_os = "linux")]
@@ -172,6 +171,8 @@ mod device_inbox;
 mod device_lists;
 #[cfg(target_os = "linux")]
 mod device_state;
+#[cfg(target_os = "linux")]
+mod device_tickets;
 #[cfg(target_os = "linux")]
 mod devices;
 #[cfg(target_os = "linux")]
@@ -305,7 +306,6 @@ mod page_track;
 #[cfg(target_os = "linux")]
 mod pair_device;
 #[cfg(target_os = "linux")]
-mod pairing;
 #[cfg(target_os = "linux")]
 mod pairing_link;
 #[cfg(target_os = "linux")]

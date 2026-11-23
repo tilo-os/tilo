@@ -44,7 +44,7 @@ impl crate::apps::services::HostStepServices for NativeFacadeHostSteps {
 async fn signed_native_facade_runs_host_steps_with_original_certified_ownership() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use tilo_actions::remote::{device_pairing, identity_admin};
+            use tilo_actions::remote::identity_admin;
             let env = Environment::new();
             let started = Arc::new(Mutex::new(Vec::new()));
             let step = |provider, resource, action| {
@@ -61,18 +61,11 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_ownership(
                     local_person: Some(Arc::new(super::signed_worker::NativePerson(
                         env.authority.clone(),
                     ))),
-                    host_steps: vec![
-                        step(
-                            identity_admin::PROVIDER,
-                            identity_admin::RESOURCE,
-                            identity_admin::LIST,
-                        ),
-                        step(
-                            device_pairing::PROVIDER,
-                            device_pairing::RESOURCE,
-                            device_pairing::DISCOVER,
-                        ),
-                    ],
+                    host_steps: vec![step(
+                        identity_admin::PROVIDER,
+                        identity_admin::RESOURCE,
+                        identity_admin::LIST,
+                    )],
                     ..env.membership.services()
                 },
             )
@@ -92,10 +85,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_ownership(
                 .state
                 .verify_action_caller(&env.route.cluster_id, &evidence)
                 .unwrap();
-            for target in [
-                identity_admin::target(identity_admin::LIST),
-                device_pairing::target(device_pairing::DISCOVER),
-            ] {
+            for target in [identity_admin::target(identity_admin::LIST)] {
                 let mut request = local_host_request(false);
                 request.target = target;
                 local_host_answer(native.invoke(&caller, request.clone()))
@@ -123,14 +113,12 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_ownership(
             }
             assert_eq!(
                 *started.lock().unwrap(),
-                vec![
-                    (
-                        env.route.cluster_id.clone(),
-                        tilo_actions::MemberId::person(original.admitted.actor_key.clone())
-                    );
-                    2
-                ],
+                vec![(
+                    env.route.cluster_id.clone(),
+                    tilo_actions::MemberId::person(original.admitted.actor_key.clone())
+                )],
             );
+            let started_before = started.lock().unwrap().len();
             *env.authority.certificate.lock().unwrap() = None;
             let mut request = local_host_request(false);
             request.target = identity_admin::target(identity_admin::LIST);
@@ -139,7 +127,11 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_ownership(
                     .await
                     .is_err()
             );
-            assert_eq!(started.lock().unwrap().len(), 2);
+            assert_eq!(
+                started.lock().unwrap().len(),
+                started_before,
+                "a call refused once the certificate is withdrawn starts no host step"
+            );
             rig.stop().await;
         })
         .await;

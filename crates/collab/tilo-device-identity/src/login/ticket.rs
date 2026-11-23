@@ -36,6 +36,15 @@ pub const CERTIFY: &str = "certify";
 pub const ISSUE: &str = "issue";
 /// The action a daemon answers on its own workspace: log in with a ticket another device issued.
 pub const LOG_IN: &str = "logIn";
+/// The action a device of the person's that holds their root calls on the host that serves a
+/// sign-in ticket: the tab waiting for them.
+pub const PENDING: &str = "pending";
+/// The action a device of the person's that holds their root calls on the host that serves a
+/// sign-in ticket: hand the host the root-signed certificate of the tab that is waiting.
+pub const APPROVE: &str = "approve";
+/// The action a certified computer calls on the host that served its ticket: what it did as it
+/// logged in, step by step.
+pub const REPORTED: &str = "reported";
 /// The scope a request names when it is that one call: no workspace, since the computer is in
 /// none yet.
 pub const SCOPE: &str = "tilo.new-device";
@@ -58,11 +67,26 @@ pub struct Reached {
     pub direct: Vec<SocketAddr>,
 }
 
+/// What a ticket is for: a computer logging in as one of the person's devices, or a device
+/// approving the tab that showed the ticket.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Direction {
+    /// `tilo login <ticket>`: this computer becomes a device of the person.
+    #[default]
+    Login,
+    /// `tilo device add <ticket>`: a device of the person signs the tab's certificate.
+    SignIn,
+}
+
 /// What a new computer needs to be added to a person's devices: where the issuing device is
-/// reached, and the one-time secret it takes.
+/// reached, what the ticket is for, and the one-time secret it takes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ticket {
     pub issuer: Reached,
+    /// The direction the issuer serves the ticket in. Read explicitly, never guessed from the
+    /// ticket's shape: `tilo login` and `tilo device add` each take their own.
+    pub direction: Direction,
     pub secret: [u8; 32],
 }
 
@@ -71,15 +95,168 @@ pub struct Ticket {
 #[error("this is not a Tilo ticket")]
 pub struct NotATicket;
 
+/// A tab asking to be signed in ([`Direction::SignIn`]): its device key, and the name it asks the
+/// person's devices to list it by. The person's root signs it one of their member devices'
+/// certificates, as it signs one for any device of theirs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Tab {
+    /// The tab's device public key, hex.
+    pub device_public_key: String,
+    /// The name it asks to be listed by, within what a certificate's label carries.
+    pub label: String,
+}
+
+impl Tab {
+    /// The tab's device key, hex as the certificate names it, checked to be one.
+    ///
+    /// # Errors
+    /// The key is not 32 bytes hex.
+    pub fn key(&self) -> Result<[u8; 32], NotATab> {
+        hex::decode(&self.device_public_key)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(NotATab)
+    }
+
+    /// The name the tab is listed by, within what a certificate's label carries.
+    #[must_use]
+    pub fn fitted_label(&self) -> String {
+        let label = self.label.trim();
+        let room = tilo_user_identity::certification::MAX_CERTIFICATION_LABEL_BYTES;
+        let end = (0..=room.min(label.len()))
+            .rev()
+            .find(|end| label.is_char_boundary(*end))
+            .unwrap_or(0);
+        label.get(..end).unwrap_or_default().to_owned()
+    }
+
+    /// The certificate the person's root signs for this tab, as it signs one for any device of
+    /// theirs: a member of the person's, for a browser's lifetime
+    /// ([`tilo_user_identity::CertificationPolicy::browser`]), issued now. Sign it with the root
+    /// ([`tilo_user_identity::sign_device_cert`]); it names no issuer, since the person's own
+    /// root signed it.
+    ///
+    /// # Errors
+    /// The key is not 32 bytes hex, or the label is not one a certificate carries.
+    pub fn certificate(
+        &self,
+        user_public_key: [u8; 32],
+        issued_at_ns: u64,
+    ) -> Result<DeviceCert, TabCertError> {
+        let key = self.key()?;
+        let label = self.fitted_label();
+        let label = tilo_user_identity::display_name(&label)?;
+        let policy = tilo_user_identity::CertificationPolicy::browser();
+        Ok(DeviceCert {
+            user_public_key,
+            device_public_key: key,
+            device_label: label.to_owned(),
+            capabilities: policy.ceiling.clone(),
+            issued_at_ns,
+            expires_at_ns: Some(issued_at_ns.saturating_add(policy.lifetime_ns)),
+            signature: [0; 64],
+            issuer: None,
+        })
+    }
+}
+
+/// Why a tab cannot be certified as it asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum TabCertError {
+    /// Its device key is not one.
+    #[error("this is not a tab asking to be signed in")]
+    Key(#[from] NotATab),
+    /// Its label is not one a certificate carries.
+    #[error("the tab's name is not one a device may be listed by")]
+    Label(#[from] tilo_user_identity::DisplayNameError),
+}
+
+/// Why a string is not a tab's request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("this is not a tab asking to be signed in")]
+pub struct NotATab;
+
+/// What the computer that holds the person's root is told of the tab a sign-in ticket waits for
+/// ([`PENDING`]): its key, the name it asks to be listed by, and what certifying it makes it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SigningIn {
+    /// The tab's device public key, hex.
+    pub device: String,
+    /// The name it asks to be listed by.
+    pub label: String,
+    /// What the certificate makes it, as the approval prompt says it.
+    pub capability: String,
+}
+
+/// What a tab is certified as: a member of the person's, for a browser's lifetime
+/// ([`tilo_user_identity::CertificationPolicy::browser`]).
+#[must_use]
+pub const fn tab_capability() -> &'static str {
+    "a browser of yours, for 30 days"
+}
+
+/// What a computer reports as it logs in with a ticket, the tab that showed it shows each
+/// ([`REPORTED`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Step {
+    /// The ticket was taken: the agent has the `tilo` command.
+    Resolved,
+    /// The computer is a device of the person now.
+    LoggedIn,
+    /// The agent has Tilo's tools (its MCP server is registered).
+    ToolsAdded,
+    /// The agent's own check found Tilo's server where it keeps its servers.
+    Check,
+    /// The agent must restart before its tools load.
+    Restart,
+    /// The agent entered the person's workspace.
+    Entered,
+    /// The tab that asked to be signed in was approved.
+    Approved,
+    /// Something failed; the report's `detail` says what.
+    Failed,
+}
+
+/// A computer reporting one step ([`REPORTED`]): the ticket it logged in with, what it did, the
+/// agent running it, and, for [`Step::Failed`], what went wrong.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Report {
+    /// The ticket, as the prompt carried it.
+    pub ticket: String,
+    pub step: Step,
+    /// The agent running the computer, as `tilo login` found it (`Claude Code`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// One sentence for the person, for [`Step::Failed`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
 impl Ticket {
     /// A ticket for the device reached at `issuer`, with a fresh secret.
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn new(issuer: Reached) -> Self {
+        Self::in_direction(Direction::Login, issuer)
+    }
+
+    /// A ticket `direction` is served in, for the device reached at `issuer`, with a fresh
+    /// secret.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn in_direction(direction: Direction, issuer: Reached) -> Self {
         use getrandom::rand_core::Rng as _;
         let mut secret = [0; 32];
         getrandom::rand_core::UnwrapErr(getrandom::SysRng).fill_bytes(&mut secret);
-        Self { issuer, secret }
+        Self {
+            issuer,
+            direction,
+            secret,
+        }
     }
 
     /// The ticket as the one string a person hands on.

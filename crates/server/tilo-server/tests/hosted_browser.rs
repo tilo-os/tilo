@@ -1770,21 +1770,20 @@ async fn an_environment_hears_its_own_record_and_no_other() {
     );
 }
 
-/// What the workspace's store keeps that `device` wrote. The workspace keeps its own governance
-/// beside it, which is not counted.
-fn written_by(state_root: &std::path::Path, device: [u8; 32]) -> Vec<Envelope> {
-    tilo_server::store::WorkspaceStore::open(state_root, WS, true)
-        .unwrap()
-        .load_retained()
-        .unwrap()
+/// What the workspace's store keeps that `device` wrote, as each write's
+/// channel and encoded message. The workspace keeps its own governance beside
+/// it, which is not counted.
+fn written_by(server: &tilo_server::Server, device: [u8; 32]) -> Vec<([u8; 32], Vec<u8>)> {
+    server
+        .workspace_documents()
+        .retained(WS)
+        .unwrap_or_default()
         .into_iter()
-        .filter_map(|frame| {
-            tilo_server::frame::decode(frame.get(4..)?)
-                .ok()
-                .filter(|envelope| {
-                    matches!(envelope, Envelope::Delta { author_device_public_key, .. }
-                    if *author_device_public_key == device)
-                })
+        .filter(|kept| kept.author == device)
+        .filter_map(|kept| {
+            let message: neighbour_wire::NeighbourMsg = postcard::from_bytes(&kept.body).ok()?;
+            let (channel, _) = neighbour_wire::retention(&message, false)?;
+            Some((channel, kept.body))
         })
         .collect()
 }
@@ -1837,7 +1836,7 @@ async fn an_environment_writes_its_record_and_no_other() {
     // store is read until the write is there, however long a loaded server takes.
     let retained = tilo_test_env::within("the window's write is kept", async {
         loop {
-            let kept = written_by(&fixture.server.state_root, device);
+            let kept = written_by(&fixture.server.server, device);
             if !kept.is_empty() {
                 return kept;
             }
@@ -1846,7 +1845,10 @@ async fn an_environment_writes_its_record_and_no_other() {
     })
     .await;
     assert_eq!(
-        changed(&retained),
+        retained
+            .iter()
+            .map(|(channel, _)| *channel)
+            .collect::<Vec<_>>(),
         [window_channel()],
         "the window's own write is the only record this workspace keeps from it"
     );
@@ -2428,29 +2430,11 @@ async fn an_environment_writes_nothing_of_the_workspaces_own_document_and_stays(
             .any(|envelope| matches!(envelope, Envelope::NotAuthorised { .. })),
         "a session that writes its shell as any session does is not cut for it: {after:?}"
     );
-    let retained: Vec<Vec<u8>> =
-        tilo_server::store::WorkspaceStore::open(&fixture.server.state_root, WS, true)
-            .unwrap()
-            .load_retained()
-            .unwrap()
-            .into_iter()
-            .filter_map(
-                |frame| match tilo_server::frame::decode(frame.get(4..)?).ok()? {
-                    // The workspace keeps its own governance beside it: what
-                    // is counted is what the environment's device wrote.
-                    Envelope::Delta {
-                        delta,
-                        author_device_public_key,
-                        ..
-                    } if author_device_public_key == device => Some(delta),
-                    _ => None,
-                },
-            )
-            .collect();
+    let retained = written_by(&fixture.server.server, device);
     assert!(
-        !retained
-            .iter()
-            .any(|delta| delta.starts_with(b"a shell layout")),
+        !retained.iter().any(|(_, body)| body
+            .windows(b"a shell layout".len())
+            .any(|window| window == b"a shell layout")),
         "the workspace keeps nothing of its document from the environment's device"
     );
     assert_eq!(

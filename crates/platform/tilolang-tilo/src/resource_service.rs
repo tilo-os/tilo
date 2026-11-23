@@ -170,6 +170,13 @@ impl ResourceService {
 
     /// Read and write `store` from now on, with every package the host runs loaded again over it.
     fn rehost(&mut self, store: crate::resources::ResourceStore) -> Result<(), String> {
+        let host = self.host_over(store)?;
+        self.install(host);
+        Ok(())
+    }
+
+    /// A host over `store` with every package this service's host runs loaded again over it.
+    fn host_over(&self, store: crate::resources::ResourceStore) -> Result<Host, String> {
         let host = Host::open(store, self.host.viewer().clone(), None, || None)
             .map_err(|error| error.to_string())?;
         if let Some(words) = &self.words {
@@ -179,11 +186,15 @@ impl ResourceService {
             host.load_module(&package.wasm, package.meta.clone(), package.ids.clone())
                 .map_err(|error| format!("{}: {error}", package.meta.app))?;
         }
+        Ok(host)
+    }
+
+    /// Read and write through `host` from now on.
+    fn install(&mut self, host: Host) {
         self.planner = Arc::new(host.handle());
         self.publications = Publications::new(&host);
         self.watch = host.store().watch();
         self.host = host;
-        Ok(())
     }
 
     /// Read the resources in `words`.
@@ -1050,18 +1061,19 @@ impl Service for ResourceService {
             store: std::rc::Rc::clone(store),
             app: app.clone(),
         });
-        self.rehost(crate::resources::ResourceStore::new(port))?;
+        // The service moves only once the workspace took the seed: one it refused leaves the
+        // service reading the resources it held, and the move is asked again.
+        let host = self.host_over(crate::resources::ResourceStore::new(port))?;
         // Seeded once something besides the app's root is kept: a root alone is what a seed the
         // workspace refused partway left (its keys were not here yet), and it is seeded again.
-        let held = match self.host.package(&app) {
+        let held = match host.package(&app) {
             Some(package) => {
                 let mut held = false;
                 for ty in &package.meta.types {
                     if package.meta.roots.contains(&ty.id) {
                         continue;
                     }
-                    if !self
-                        .host
+                    if !host
                         .store()
                         .resources_of(&ty.id)
                         .map_err(|error| error.to_string())?
@@ -1076,13 +1088,12 @@ impl Service for ResourceService {
             None => true,
         };
         if !held && let Some(seed) = &self.seed {
-            seed(&self.host)?;
-            if let Some(refused) = self.host.store().take_refusal() {
+            seed(&host)?;
+            if let Some(refused) = host.store().take_refusal() {
                 return Err(refused);
             }
         }
-        // Moved only once the workspace's store answered and holds the app's resources: a store
-        // that could not be read yet is tried again on the next pass.
+        self.install(host);
         self.in_workspace = true;
         self.publications.update(&self.host, &self.planner);
         let _ = self.watch.take();

@@ -98,8 +98,11 @@ pub const PACKAGE_FORMAT_VERSION: u32 = 3;
 ///
 /// Format 2 renumbered the protocols into one number and widened it in the canonical signing form,
 /// so a catalogue written before it fails every signature here. Format 3 drops the retired
-/// `[sandbox.fs]` manifest block.
-pub const READABLE_CATALOGUE_FORMATS: [u32; 1] = [PACKAGE_FORMAT_VERSION];
+/// `[sandbox.fs]` manifest block, which changes a package's manifest and not the catalogue or its
+/// signing form: a registry that has not published since still serves format 2, and this reads it.
+/// Format 2 stays exactly until apps.tilo.so publishes format 3, and goes with that republish: it is
+/// what the live registry serves today, not older state to keep supporting.
+pub const READABLE_CATALOGUE_FORMATS: [u32; 2] = [2, PACKAGE_FORMAT_VERSION];
 
 /// What a catalogue at a protocol this build does not read means, and what to do.
 #[must_use]

@@ -888,7 +888,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let host_key = host.cert.device_public_key;
     let themes = browser.create("so.tilo.themes");
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     let provider = resource_provider(&themes);
     let page = browser
         .catalogue(CatalogueQuery {
@@ -958,7 +958,6 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
         .server
         .workspace_documents()
         .retained(crate::support::workspace())
-        .await
         .unwrap();
     let (readable, _) = crate::common::member_documents(
         retained
@@ -984,7 +983,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
 
     let sheets = browser.create(SHEETS);
     let books = browser.create(EBOOK);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     let sheets_provider = resource_provider(&sheets);
     let books_provider = resource_provider(&books);
 
@@ -1221,7 +1220,6 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         .server
         .workspace_documents()
         .retained(crate::support::workspace())
-        .await
         .unwrap();
     let (readable, _) = crate::common::member_documents(
         retained
@@ -1245,7 +1243,7 @@ async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() 
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
     let sheets = browser.create(SHEETS);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     let provider = resource_provider(&sheets);
     let new_sheet = browser
         .catalogue(CatalogueQuery {
@@ -1277,4 +1275,30 @@ async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() 
     );
     let names = after_a_marker(&mut browser, &sheets, &new_sheet, "After the refusal").await;
     assert!(!names.contains(&"Budget".to_owned()));
+}
+
+/// How long a page waits for its host to answer a barrier. A healthy host answers within a second
+/// even on a loaded runner; a barrier still open after this holds a write the host never took, and
+/// every test of a shard waiting the whole shared hang bound on one kept a runner busy for an hour.
+const BARRIER_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The host's answer to a page's barrier: whether every write it asked after is saved. A barrier
+/// the host never answers fails here by name within [`BARRIER_BOUND`], instead of holding a
+/// runtime worker on a blocking receive until the test runner kills the whole test.
+#[track_caller]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the answer is the host's verdict on the writes; a barrier never answered is the test's failure"
+)]
+pub fn saved(barrier: &tilo_session_client::Receipt<Result<(), String>>) -> Result<(), String> {
+    match barrier.recv_timeout(tilo_test_env::hang_bound().min(BARRIER_BOUND)) {
+        Ok(answer) => answer,
+        Err(tilo_session_client::RecvTimeoutError::Timeout) => panic!(
+            "timed out after {BARRIER_BOUND:?} waiting for the host to say the page's writes are \
+             saved: a barrier that is never answered holds a write the host never took"
+        ),
+        Err(tilo_session_client::RecvTimeoutError::Disconnected) => {
+            panic!("the page's session ended before the host answered its barrier")
+        }
+    }
 }

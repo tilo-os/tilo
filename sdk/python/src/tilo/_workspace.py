@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import builtins
 import dataclasses
+import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 from urllib.parse import quote
 
+import blake3
+
 from ._endpoint import CURRENT, Endpoint, InvocationGroup, result_of, segments
-from ._errors import AskPending, ProtocolError
+from ._errors import AskPending, ProtocolError, Refused
 from ._models import (
     Event,
     Hit,
@@ -27,6 +30,8 @@ from ._models import (
 from ._resource import Resource
 
 INVOCATION_PREFIX = "sdk:"
+# How many bytes one piece of a content put carries, within the API's limit.
+PUT_PIECE = 8 * 1024 * 1024
 
 
 def _bytes_of(data: Any) -> bytes:
@@ -38,6 +43,13 @@ def _bytes_of(data: Any) -> bytes:
         return data.read()
     with open(data, "rb") as file:
         return file.read()
+
+
+def _content_of(answer: Mapping[str, Any]) -> str:
+    content = answer.get("content")
+    if not isinstance(content, str) or not content:
+        raise ProtocolError("the put answered no content reference")
+    return content
 
 
 class Files:
@@ -262,21 +274,19 @@ class Workspace:
         return await endpoint.json("GET", endpoint.path("resources", segments(path)))
 
     def find(self, query: str, app: str | None = None, limit: int | None = None) -> Any:
-        """Search the workspace by words, best first."""
+        """Search the workspace by words, best first: its `search#find` action."""
         return self.client.handoff(self._find(query, app, limit))
 
     async def _find(self, query: str, app: str | None, limit: int | None) -> builtins.list[Hit]:
         endpoint = await self._endpoint()
-        answer = await endpoint.json(
-            "GET",
-            endpoint.path("search"),
-            query={"q": query, "app": app, "limit": limit},
-        )
-        return [
-            Hit.of(hit)
-            for hit in answer.get("hits") or []
-            if isinstance(hit, Mapping)
-        ]
+        args: dict[str, Any] = {"query": query}
+        if app is not None:
+            args["app"] = app
+        if limit is not None:
+            args["limit"] = limit
+        answer = await endpoint.act("search#find", args)
+        hits = answer.get("hits") if isinstance(answer, Mapping) else None
+        return [Hit.of(hit) for hit in hits or [] if isinstance(hit, Mapping)]
 
     # -- acting ----------------------------------------------------------
 
@@ -353,7 +363,7 @@ class Workspace:
     def link(self, path: str, *, mode: str | None = None) -> Any:
         """The link to hand a person for what `path` names (`notes/Todo`).
 
-        It opens the record in its app for the workspace's members and
+        It is the record's `share-link` action. It opens the record in its app for the workspace's members and
         carries no secret: anyone else must be invited first. `mode` is
         `app` (the app alone, the default) or `desktop`.
         """
@@ -361,10 +371,10 @@ class Workspace:
 
     async def _link(self, path: str, mode: str | None) -> str:
         endpoint = await self._endpoint()
-        answer = await endpoint.json(
-            "GET", endpoint.path("links"), query={"path": path, "mode": mode}
+        answer = await endpoint.act(
+            f"{path}#share-link", {} if mode is None else {"mode": mode}
         )
-        link = answer.get("link")
+        link = answer.get("url") if isinstance(answer, Mapping) else None
         if not isinstance(link, str) or not link:
             raise ProtocolError(f"the workspace answered no link for {path}")
         return link
@@ -401,16 +411,73 @@ class Workspace:
     def export(self) -> Any:
         """Everything the workspace holds, read whole: a `WorkspaceExport`.
 
-        Its listing (with its labels) and every resource of every app, as a
-        walk from its apps finds them; the ones that did not read are in
-        `unread`, with why. The files the resources name download with
-        `files.download`. Take one before deleting a customer's workspace.
+        Its listing (with its labels) and every resource of every app, read
+        by walking the listings from its apps; the ones that did not read
+        are in `unread`, with why. The files the resources name download
+        with `files.download`. Take one before deleting a customer's
+        workspace.
         """
         return self.client.handoff(self._export())
 
     async def _export(self) -> WorkspaceExport:
         endpoint = await self._endpoint()
-        return WorkspaceExport.of(await endpoint.json("GET", endpoint.path("export")))
+        exported_at_ms = int(time.time() * 1000)
+        resources: builtins.list[Mapping[str, Any]] = []
+        unread: builtins.list[Mapping[str, Any]] = []
+        seen: set[str] = set()
+        walk: builtins.list[str | None] = [None]
+        while walk:
+            path = walk.pop(0)
+            cursor = None
+            while True:
+                try:
+                    listing = await endpoint.json(
+                        "GET", endpoint.path("resources"), query={"path": path, "cursor": cursor}
+                    )
+                except Refused as refused:
+                    unread.append({"path": path or "", "error": refused.message or refused.code})
+                    break
+                for row in listing.get("rows") or []:
+                    at = row.get("path")
+                    if not isinstance(at, str) or at in seen:
+                        continue
+                    seen.add(at)
+                    if row.get("reads", True):
+                        try:
+                            resources.append(await self._read_whole(endpoint, at))
+                        except Refused as refused:
+                            unread.append({"path": at, "error": refused.message or refused.code})
+                    if row.get("has_children"):
+                        walk.append(at)
+                following = listing.get("next_cursor")
+                if not isinstance(following, str) or following == cursor:
+                    break
+                cursor = following
+        return WorkspaceExport(
+            workspace=await self._resolve(),
+            exported_at_ms=exported_at_ms,
+            resources=resources,
+            unread=unread,
+        )
+
+    @staticmethod
+    async def _read_whole(endpoint: Endpoint, path: str) -> Mapping[str, Any]:
+        """`path` read with every page of what it holds."""
+        whole: dict[str, Any] | None = None
+        cursor = None
+        while True:
+            page = await endpoint.json(
+                "GET", endpoint.path("resources", segments(path)), query={"cursor": cursor}
+            )
+            if whole is None:
+                whole = dict(page)
+            else:
+                whole["children"] = [*whole.get("children", []), *(page.get("children") or [])]
+            following = page.get("cursor")
+            if not isinstance(following, str) or following == cursor:
+                whole.pop("cursor", None)
+                return whole
+            cursor = following
 
     def branch(
         self,
@@ -465,21 +532,36 @@ class Workspace:
 
     async def _upload(self, data: bytes) -> str:
         endpoint = await self._endpoint()
-        answer = await endpoint.json(
-            "POST",
-            endpoint.path("uploads"),
-            data=data,
-            headers={"content-type": "application/octet-stream"},
-        )
-        content = answer.get("content")
-        if not isinstance(content, str) or not content:
-            raise ProtocolError("the upload answered no content reference")
-        return content
+        hash = blake3.blake3(data).hexdigest()
+        route = endpoint.path("contents", hash)
+        headers = {"content-type": "application/octet-stream"}
+        if len(data) <= PUT_PIECE:
+            answer = await endpoint.json("PUT", route, data=data, headers=headers)
+            return _content_of(answer)
+        offset = 0
+        while offset < len(data):
+            piece = data[offset : offset + PUT_PIECE]
+            answer = await endpoint.json(
+                "PUT",
+                route,
+                data=piece,
+                headers={
+                    **headers,
+                    "content-range": f"bytes {offset}-{offset + len(piece) - 1}/{len(data)}",
+                },
+            )
+            content = answer.get("content")
+            if isinstance(content, str) and content:
+                return content
+            offset = int(answer.get("offset", offset + len(piece)))
+        raise ProtocolError("the host took every piece of the file without naming its content")
 
     async def _download(self, content: str) -> bytes:
         endpoint = await self._endpoint()
+        prefix = "tilo.content:"
+        hash = content.removeprefix(prefix)
         answer = await endpoint.call(
-            "GET", endpoint.path("content", quote(content, safe="")), grouped=False
+            "GET", endpoint.path("contents", quote(hash, safe="")), grouped=False
         )
         return answer.body
 

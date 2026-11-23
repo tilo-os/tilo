@@ -49,8 +49,7 @@ impl ListMetrics {
 }
 
 #[derive(Clone, Debug)]
-struct Session<Id> {
-    id: Id,
+struct Session {
     from: usize,
     grab_offset: f64,
     start: Point,
@@ -70,7 +69,7 @@ fn axis_coord(axis: Axis, p: Point) -> f64 {
 /// ghost has travelled from its original slot. Rounding the slot-displacement
 /// gives a half-slot dead-zone: the gap only moves once the ghost's leading
 /// edge crosses the midpoint of a neighbouring slot.
-fn target_for<Id>(axis: Axis, s: &Session<Id>, m: &ListMetrics) -> usize {
+fn target_for(axis: Axis, s: &Session, m: &ListMetrics) -> usize {
     if m.count == 0 {
         return 0;
     }
@@ -97,20 +96,20 @@ fn target_for<Id>(axis: Axis, s: &Session<Id>, m: &ListMetrics) -> usize {
 ///
 /// ```ignore
 /// let grab = cursor.y - metrics.slot_lead(i);      // press on item i
-/// ctrl.begin(item_id, i, grab, cursor);
+/// ctrl.begin(i, grab, cursor);
 /// if ctrl.pointer_moved(cursor, &metrics) { /* mark dirty */ }
 /// for (i, item) in items { let dy = ctrl.item_shift(i, &metrics); }
 /// if let Some(g) = ctrl.ghost_rect(list_x0, list_x1) { /* paint ghost */ }
 /// if let Some((from, to)) = ctrl.commit() { model.move_item(from, to); }
 /// ctrl.cancel(); // Escape / drop outside
 /// ```
-pub struct DragController<Id = ()> {
+pub struct DragController {
     axis: Axis,
     threshold: f64,
-    session: Option<Session<Id>>,
+    session: Option<Session>,
 }
 
-impl<Id: Clone> DragController<Id> {
+impl DragController {
     fn new(axis: Axis) -> Self {
         Self {
             axis,
@@ -140,13 +139,12 @@ impl<Id: Clone> DragController<Id> {
         }
     }
 
-    /// Begin a (pending) drag of the item at index `from`, carrying `id`.
+    /// Begin a (pending) drag of the item at index `from`.
     /// `grab_offset` is the pointer's offset *within* the grabbed item
     /// (`cursor_axis - item_leading_edge`). Not yet "active" — promotes to a
     /// live reorder only once the pointer clears the threshold.
-    pub fn begin(&mut self, id: Id, from: usize, grab_offset: f64, start: Point) {
+    pub fn begin(&mut self, from: usize, grab_offset: f64, start: Point) {
         self.session = Some(Session {
-            id,
             from,
             grab_offset,
             start,
@@ -235,11 +233,6 @@ impl<Id: Clone> DragController<Id> {
         self.session.as_ref().filter(|s| s.active).map(|s| s.target)
     }
 
-    /// The identity payload attached to the dragged item, once active.
-    pub fn dragged_id(&self) -> Option<&Id> {
-        self.session.as_ref().filter(|s| s.active).map(|s| &s.id)
-    }
-
     /// How far the *non-dragged* item at original index `index` must slide
     /// (signed) to open a one-slot gap at the live target index. `0` for the
     /// dragged item, and `0` for every item during the dead-zone. Models
@@ -325,8 +318,8 @@ mod tests {
         {
             fn nudge_within_own_slot_is_a_dead_zone_no_gap_no_reflow() {
                 let m = m4();
-                let mut c = DragController::<u32>::vertical();
-                c.begin(1, 1, 30.0, Point::new(200.0, 198.0));
+                let mut c = DragController::vertical();
+                c.begin(1, 30.0, Point::new(200.0, 198.0));
                 // A nudge that clears the drag-start threshold but keeps the ghost
                 // inside item 1's own slot must NOT open a gap.
                 c.pointer_moved(Point::new(200.0, 205.0), &m);
@@ -352,8 +345,8 @@ mod tests {
 
             fn gap_opens_only_once_the_ghost_crosses_into_a_neighbour() {
                 let m = m4(); // pitch 68, slot 1 spans lead 168..236
-                let mut c = DragController::<u32>::vertical();
-                c.begin(1, 1, 30.0, Point::new(200.0, 198.0)); // grab item 1 at its middle
+                let mut c = DragController::vertical();
+                c.begin(1, 30.0, Point::new(200.0, 198.0)); // grab item 1 at its middle
                 c.pointer_moved(Point::new(200.0, 198.0 + 0.6 * m.pitch()), &m);
                 assert_eq!(
                     c.insertion(),
@@ -369,9 +362,9 @@ mod tests {
             fn insertion_equals_the_committed_destination() {
                 // The live target index the caret/gap is drawn at must equal the `to`
                 // a drop commits, so what you see is exactly what lands.
-                let mut c = DragController::<u32>::vertical();
+                let mut c = DragController::vertical();
                 let m = m4();
-                c.begin(0, 0, 30.0, Point::new(200.0, 130.0));
+                c.begin(0, 30.0, Point::new(200.0, 130.0));
                 c.pointer_moved(Point::new(200.0, 400.0), &m); // drag item 0 to the end
                 let shown = c.insertion();
                 assert_eq!(shown, Some(3), "the gap sits at the final slot");
@@ -390,8 +383,8 @@ mod tests {
         phase drag_session_press_move_drop_and_cancel;
         {
             fn press_then_small_move_stays_a_click() {
-                let mut c = DragController::<u32>::vertical();
-                c.begin(7, 1, 30.0, Point::new(200.0, 200.0));
+                let mut c = DragController::vertical();
+                c.begin(1, 30.0, Point::new(200.0, 200.0));
                 assert!(c.is_pending(), "press latched");
                 assert!(!c.is_active(), "not yet a drag");
                 let changed = c.pointer_moved(Point::new(201.0, 202.0), &m4());
@@ -401,9 +394,9 @@ mod tests {
             }
 
             fn pointer_move_updates_live_insertion_index() {
-                let mut c = DragController::<u32>::vertical();
+                let mut c = DragController::vertical();
                 // Grab item 0 at its centre (offset 30 within a 60-px item).
-                c.begin(0, 0, 30.0, Point::new(200.0, 130.0));
+                c.begin(0, 30.0, Point::new(200.0, 130.0));
                 assert!(c.pointer_moved(Point::new(200.0, 250.0), &m4()));
                 assert!(c.is_active(), "cleared the threshold");
                 assert_eq!(c.insertion(), Some(2));
@@ -416,16 +409,16 @@ mod tests {
             }
 
             fn drop_commits_from_to_move() {
-                let mut c = DragController::<u32>::vertical();
-                c.begin(0, 0, 30.0, Point::new(200.0, 130.0));
+                let mut c = DragController::vertical();
+                c.begin(0, 30.0, Point::new(200.0, 130.0));
                 c.pointer_moved(Point::new(200.0, 400.0), &m4()); // drag item 0 to the end
                 assert_eq!(c.commit(), Some((0, 3)));
                 assert!(!c.is_pending(), "commit clears the session");
             }
 
             fn cancel_restores_by_forgetting_the_session() {
-                let mut c = DragController::<u32>::vertical();
-                c.begin(2, 2, 30.0, Point::new(200.0, 266.0));
+                let mut c = DragController::vertical();
+                c.begin(2, 30.0, Point::new(200.0, 266.0));
                 c.pointer_moved(Point::new(200.0, 120.0), &m4());
                 assert!(c.is_active());
                 assert!(c.cancel(), "a live drag was cancelled");
@@ -434,9 +427,9 @@ mod tests {
             }
 
             fn ghost_tracks_cursor_at_grab_offset() {
-                let mut c = DragController::<u32>::vertical();
+                let mut c = DragController::vertical();
                 let m = m4();
-                c.begin(1, 1, 20.0, Point::new(200.0, 188.0));
+                c.begin(1, 20.0, Point::new(200.0, 188.0));
                 c.pointer_moved(Point::new(200.0, 300.0), &m);
                 // Ghost leading edge keeps the 20-px grab offset under the cursor.
                 assert_eq!(c.ghost_lead(), Some(280.0));
@@ -448,9 +441,9 @@ mod tests {
             }
 
             fn horizontal_axis_uses_x() {
-                let mut c = DragController::<u32>::horizontal();
+                let mut c = DragController::horizontal();
                 let m = ListMetrics::uniform(0.0, 80.0, 10.0, 3); // pitch 90
-                c.begin(0, 0, 40.0, Point::new(40.0, 50.0)); // ghost lead = slot_lead(0)
+                c.begin(0, 40.0, Point::new(40.0, 50.0)); // ghost lead = slot_lead(0)
                 c.pointer_moved(Point::new(200.0, 50.0), &m); // slide right ~1.8 slots
                 assert!(c.is_active());
                 assert_eq!(
@@ -473,9 +466,9 @@ mod tests {
         phase reflow_opens_and_repins_the_drop_gap;
         {
             fn reflow_opens_a_gap_at_the_drop_and_closes_the_hole() {
-                let mut c = DragController::<u32>::vertical();
+                let mut c = DragController::vertical();
                 let m = m4();
-                c.begin(0, 0, 30.0, Point::new(200.0, 130.0));
+                c.begin(0, 30.0, Point::new(200.0, 130.0));
                 c.pointer_moved(Point::new(200.0, 400.0), &m);
                 let pitch = m.pitch();
                 assert_eq!(c.item_shift(0, &m), 0.0);
@@ -485,9 +478,9 @@ mod tests {
             }
 
             fn reflow_pushes_items_down_when_dropping_above_them() {
-                let mut c = DragController::<u32>::vertical();
+                let mut c = DragController::vertical();
                 let m = m4();
-                c.begin(9, 3, 30.0, Point::new(200.0, 334.0));
+                c.begin(3, 30.0, Point::new(200.0, 334.0));
                 c.pointer_moved(Point::new(200.0, 100.0), &m);
                 assert_eq!(c.insertion(), Some(0));
                 let pitch = m.pitch();
@@ -499,8 +492,8 @@ mod tests {
             }
 
             fn sync_insertion_repins_gap_after_a_scroll() {
-                let mut c = DragController::<u32>::vertical();
-                c.begin(0, 0, 30.0, Point::new(200.0, 130.0));
+                let mut c = DragController::vertical();
+                c.begin(0, 30.0, Point::new(200.0, 130.0));
                 c.pointer_moved(Point::new(200.0, 250.0), &m4());
                 assert_eq!(c.insertion(), Some(2));
                 let scrolled = ListMetrics::uniform(32.0, 60.0, 8.0, 4);

@@ -203,6 +203,7 @@ impl<'a> Validator<'a> {
             | ToUi::Form(None)
             | ToUi::Activate
             | ToUi::Kept(_)
+            | ToUi::History(_)
             | ToUi::Took { .. } => Ok(()),
             ToUi::Actions(catalogue) => {
                 self.carried(catalogue.bytes(), "over the limit of bytes in a catalogue")
@@ -712,9 +713,16 @@ impl<'a> Validator<'a> {
             ToApp::Open { resource } => self.resource(resource)?,
             ToApp::OpenReference { reference } => self.string(reference)?,
             ToApp::Rows {
-                list, start, end, ..
+                list,
+                start,
+                end,
+                open,
+                menu,
+                ..
             } => {
-                self.key(list)?;
+                for key in std::iter::once(list).chain(open).chain(menu) {
+                    self.key(key)?;
+                }
                 if end < start || end.saturating_sub(*start) > self.limits.rows {
                     return Err(Refused::invalid(concat!(
                         "over the limit of ",
@@ -749,6 +757,7 @@ impl<'a> Validator<'a> {
             | ToApp::Redo
             | ToApp::Composing(_)
             | ToApp::SaveAgain
+            | ToApp::History { .. }
             | ToApp::FormSubmit { .. }
             | ToApp::FormCancel { .. } => {}
         }

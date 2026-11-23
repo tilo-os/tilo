@@ -124,12 +124,19 @@ cat >"$work/bin/chgrp" <<'STUB'
 #!/usr/bin/env bash
 exit 0
 STUB
+# bootctl: only removing the boot menu's default, from the stand-in EFI variables.
+cat >"$work/bin/bootctl" <<'STUB'
+#!/usr/bin/env bash
+echo "bootctl $*" >>"$FIXTURE/log"
+[ "$#" = 2 ] && [ "$1" = set-default ] && [ -z "$2" ] || exit 2
+rm -f "$FIXTURE"/efivars/LoaderEntryDefault-*
+STUB
 chmod +x "$work/bin"/*
 echo dev >"$work/flavour"
 
 reset() {  # FAILED-ENTRY-FILE QUEUED
-  rm -rf "$work/esp" "$work/reports" "$work/pstore" "$work/log" "$work/plan" "$work/plans"
-  install -d "$work/esp/loader/entries" "$work/pstore"
+  rm -rf "$work/esp" "$work/reports" "$work/pstore" "$work/log" "$work/plan" "$work/plans" "$work/efivars"
+  install -d "$work/esp/loader/entries" "$work/pstore" "$work/efivars"
   entry bootc_bootc-44-1.conf "$running" bootc-bootc-1
   entry "$1" "$failed" bootc-bootc-0
   echo "$2" >"$work/queued"
@@ -141,12 +148,19 @@ run() {  # ARGS...
     RUNNING="$running" FAILED="$failed" FIXTURE_STAGED="${FIXTURE_STAGED:-}" \
     FIXTURE_ROLLBACK_FAILS="${FIXTURE_ROLLBACK_FAILS:-}" \
     LOGGED_BOOT="$logged_boot" SILENT_BOOT="$silent_boot" CURRENT_BOOT="$current_boot" \
-    TILO_ESP="$work/esp" TILO_ESP_CANDIDATES="$work/nowhere" \
+    TILO_ESP="$work/esp" TILO_EFIVARS="$work/efivars" TILO_ESP_CANDIDATES="$work/nowhere" \
     TILO_IMAGE_FLAVOUR_FILE="$work/flavour" TILO_ESP_PLAN_DIR="$work/plan" \
     TILO_ESP_WRITE_CMD=record-esp-plan TILO_FALLBACK_DIR="$work/reports" TILO_PSTORE_ARCHIVE="$work/pstore" \
     bash "$deployment" "$@" 2>&1)"
   status=$?
 }
+
+# The boot menu's default as the firmware keeps it: four bytes of attributes, then UTF-16LE.
+pin_default() {  # ID
+  { printf '\007\000\000\000'; printf '%s' "$1" | sed 's/./&\x00/g'; printf '\000\000'; } \
+    >"$work/efivars/LoaderEntryDefault-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+}
+pinned() { [ -e "$work/efivars/LoaderEntryDefault-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f" ]; }
 
 report() { ls -d "$work"/reports/*-"${failed:0:16}" 2>/dev/null | head -1; }
 
@@ -218,6 +232,22 @@ reset 'bootc_bootc-44-0+0-3.conf' true
 FIXTURE_STAGED="$staged" run fallback
 [ "$status" = 0 ] && ! grep -q rollback "$work/log" \
   && ok "a staged update is left to boot next" || bad "a staged update was overruled: $out"
+
+# --- a default pinned in the boot menu -------------------------------------------
+# systemd-boot starts a default named by its exact id even with no tries left, so a
+# pin on the entry on trial would keep the machine on an update that fails.
+reset 'bootc_bootc-44-0+2-1.conf' true
+pin_default 'bootc_bootc-44-0.conf'
+FIXTURE_STAGED="$staged" run fallback
+[ "$status" = 0 ] && ! pinned && grep -qx "bootctl set-default " "$work/log" \
+  && ok "a default pinned on the entry on trial is removed, so the boot counters decide" \
+  || bad "the pin on the entry on trial stayed: $out $(cat "$work/log")"
+
+reset 'bootc_bootc-44-0+2-1.conf' true
+pin_default 'bootc_bootc-44-1.conf'
+FIXTURE_STAGED="$staged" run fallback
+[ "$status" = 0 ] && pinned && ! grep -q bootctl "$work/log" \
+  && ok "a default pinned on an entry that booted well stays" || bad "a pin on a good entry was removed: $out"
 
 # --- bootc refuses ----------------------------------------------------------------
 reset 'bootc_bootc-44-0+0-3.conf' true

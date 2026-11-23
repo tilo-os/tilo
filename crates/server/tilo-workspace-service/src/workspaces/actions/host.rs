@@ -62,7 +62,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 20] = [
+pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 19] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -245,16 +245,6 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 20] = [
     ),
     (
         Verb {
-            id: TAKE_IN_PERSON_DEVICE,
-            label: "Take one of your devices into your workspace",
-            check: TAKE_IN_PERSON_DEVICE,
-            kind: roles::GOVERNANCE_KIND,
-            params: take_in_person_device_params,
-        },
-        ServiceOperation::TakeInPersonDevice,
-    ),
-    (
-        Verb {
             id: ADMIT_SERVER,
             label: "Take a server into your servers",
             check: ADMIT_SERVER,
@@ -281,7 +271,6 @@ pub(super) const ADMIT_MACHINE: &str = "machine.admit";
 /// Take a server in among the person's servers, by the certificate its ticket's login answered
 /// with and where its endpoint is dialled.
 pub(super) const ADMIT_SERVER: &str = "server.admit";
-use tilo_server_session::workspaces::TAKE_IN_PERSON as TAKE_IN_PERSON_DEVICE;
 
 fn admit_server_params() -> Vec<ActionParam> {
     vec![
@@ -296,14 +285,6 @@ fn admit_server_params() -> Vec<ActionParam> {
             "Where the server is dialled, as its endpoint advertises it (JSON).",
         ),
     ]
-}
-
-fn take_in_person_device_params() -> Vec<ActionParam> {
-    vec![ActionParam::required(
-        "endpoint",
-        ParamType::Text,
-        "Where the asking device is dialled, as its endpoint advertises it (JSON).",
-    )]
 }
 
 fn plan_machine_params() -> Vec<ActionParam> {
@@ -769,21 +750,6 @@ impl Workspaces {
                     .map_err(|error| refused(&error))?;
                 Box::pin(machine::admit_server(self, &args)).await
             }
-            ServiceOperation::TakeInPersonDevice => {
-                self.authorize(device, None, WorkspaceOp::Host(operation), now)
-                    .map_err(|error| refused(&error))?;
-                let endpoint: iroh_base::EndpointAddr =
-                    serde_json::from_str(args.required_text("endpoint")?)
-                        .map_err(|_| refused(&"a device's endpoint is its own JSON"))?;
-                crate::workspaces::servers::take_in(self, device, &endpoint)
-                    .await
-                    .map_err(|error| refused(&error))?;
-                Ok(serde_json::json!({
-                    "workspace": tilo_server_protocol::servers::person_workspace_id(
-                        &device.user_public_key
-                    )
-                }))
-            }
             _ => Err(ActionCallError::UnknownAction),
         }
     }
@@ -1085,6 +1051,10 @@ impl Workspaces {
     async fn listed(&self, device: &DeviceCert, only: &Listed) -> Vec<WorkspaceListing> {
         let labels = &only.labels;
         let person = device.user_public_key;
+        // The person's own workspace holds what is theirs alone, and is never one of the
+        // workspaces their shell shows them: it is left out of the list as the shell leaves it
+        // out of what it takes in.
+        let their_own = tilo_server_protocol::servers::person_workspace_id(&person);
         if person != self.inner.host.cert.user_public_key {
             let own = self.own().map(|own| own.of(&person)).unwrap_or_default();
             let now = tilo_clock::unix_now_ns();
@@ -1101,7 +1071,11 @@ impl Workspaces {
             let wanted: std::collections::HashSet<String> = own
                 .iter()
                 .chain(&invited)
-                .filter(|workspace| only.names(workspace) && self.lists_to(device, workspace))
+                .filter(|workspace| {
+                    **workspace != their_own
+                        && only.names(workspace)
+                        && self.lists_to(device, workspace)
+                })
                 .cloned()
                 .collect();
             let mut kept = self.listings_of(&wanted).await;
@@ -1146,7 +1120,10 @@ impl Workspaces {
         // listing answers when it was made, which no summary carries.
         let mut listed: Vec<WorkspaceListing> = Vec::new();
         for summary in self.list().await {
-            if !only.names(&summary.workspace) || !self.lists_to(device, &summary.workspace) {
+            if summary.workspace == their_own
+                || !only.names(&summary.workspace)
+                || !self.lists_to(device, &summary.workspace)
+            {
                 continue;
             }
             let mut one = WorkspaceListing {
@@ -1471,7 +1448,7 @@ impl Workspaces {
                 if self.speaks_no_catch_up_now() {
                     return Err(ActionCallError::UnknownAction);
                 }
-                let (cursors, content_missing) = Box::pin(self.catch_up_from(
+                let (cursors, content_missing, fetched) = Box::pin(self.catch_up_from(
                     device,
                     args.required_text("workspace")?,
                     args.flag("names_content")?,
@@ -1482,6 +1459,7 @@ impl Workspaces {
                 answer(&CaughtUpWorkspace {
                     cursors: hex_postcard(&cursors)?,
                     content_missing,
+                    fetched,
                 })
             }
             _ => Err(ActionCallError::UnknownAction),

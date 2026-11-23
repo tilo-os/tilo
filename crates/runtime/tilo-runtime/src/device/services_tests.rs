@@ -144,7 +144,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         live: true,
     }]);
     let mut invocations = broker.capture_invocations_for_test(7);
-    let owner = Caller::local_person(actor)
+    let owner = Caller::local_person(actor.clone())
         .in_workspace(&workspace_id)
         .in_new_execution();
     let provider = RuntimeActionProvider {
@@ -214,7 +214,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         PendingPoll::Ready(Ok(retry)) if retry == receipt
     ));
     assert!(matches!(
-        provider.invoke(&other, request).poll_ready(),
+        provider.invoke(&other, request.clone()).poll_ready(),
         PendingPoll::Ready(Err(ActionCallError::NotPermitted))
     ));
     assert!(
@@ -230,6 +230,38 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
             .expect("the provider answers"),
         Ok(())
     );
+    // The person's own run, as the daemon admits it for their programs: each program's session
+    // calls in an execution of its own, and is the person all the same; another person is not.
+    let person_run = RuntimeActionProvider {
+        session: provider.session.as_ref().map(|session| {
+            Arc::new(AdmittedRuntimeSession {
+                policy_time: session.policy_time.clone(),
+                provider: Arc::clone(&session.provider),
+                admission: Arc::clone(&session.admission),
+                agent: None,
+                projection: Some(Caller::local_person(actor.clone()).in_workspace(&workspace_id)),
+            })
+        }),
+        ..provider.clone()
+    };
+    let program = Caller::local_person(actor)
+        .in_workspace(&workspace_id)
+        .in_new_execution();
+    let asked = InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        ..request.clone()
+    };
+    assert!(!matches!(
+        person_run.invoke(&program, asked.clone()).poll_ready(),
+        PendingPoll::Ready(Err(_))
+    ));
+    let stranger = Caller::local_person("someone else")
+        .in_workspace(&workspace_id)
+        .in_new_execution();
+    assert!(matches!(
+        person_run.invoke(&stranger, asked).poll_ready(),
+        PendingPoll::Ready(Err(_))
+    ));
     // The cancellation request changed the invocation: the waiter wakes on
     // it, well before the broker's one-second safety interval. The paused
     // clock reaches that interval only once nothing else can run, so the
@@ -665,10 +697,17 @@ fn the_session_hands_its_workspace_service_a_route_that_asks_the_workspaces_devi
 /// The workspace founded on this computer, as its device's directory keeps it.
 fn listed_workspace() -> String {
     let place = tilo_device_identity::login::Place::here(tilo_api::client::device_keys()).unwrap();
-    std::fs::read_to_string(place.dir().join(FOUNDED))
+    let mut kept = std::fs::read_dir(place.dir())
         .unwrap()
-        .trim()
-        .to_owned()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(FOUNDED))
+        });
+    let path = kept.next().expect("a workspace founded here");
+    assert!(kept.next().is_none(), "one person founds here");
+    std::fs::read_to_string(path).unwrap().trim().to_owned()
 }
 
 /// A running host holds the person's own documents store: asserted on the

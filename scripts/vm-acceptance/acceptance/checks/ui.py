@@ -8,6 +8,7 @@ import re
 
 from .. import core
 from ..core import CheckFailed, check, expect
+from ..vm import address, label, opens
 
 AREA = "ui"
 
@@ -32,7 +33,7 @@ def set_theme(ctx, name: str) -> None:
     on the next paint. An open Settings window repaints in it once the change reaches it:
     wait for that frame, bounded, as a theme that is already set repaints nothing."""
     seq = ctx.frame_seq(SETTINGS)
-    ctx.vm.invoke(core.SESSION, APPEARANCE, THEMES[name])
+    ctx.vm.invoke(core.SESSION, *APPEARANCE, THEMES[name])
     if seq is not None:
         ctx.wait_presented(SETTINGS, 2.5, after_seq=seq)
     ctx.wait_still()
@@ -88,7 +89,7 @@ def _surface_pass(ctx, res, label):
     for name, action, overlay in SURFACES:
         ctx.close_overlays()
         if action:
-            ctx.vm.invoke(core.SESSION, action[0], action[1])
+            ctx.vm.invoke(core.SESSION, *action[0], action[1])
             try:
                 ctx.wait_state(lambda s: core.overlays(s).get(overlay), 5, f"{name} open")
             except CheckFailed as exc:
@@ -158,9 +159,9 @@ def _matrix(ctx, res, locale):
 def semantic(ctx, res):
     found = {}
     for q in ("dark theme", "light theme", "Sprache"):
-        found[q] = [(a["provider"], a["id"]) for a in ctx.vm.actions(q)
-                    if re.search(r"theme|appearance", a["id"] + a["title"], re.I)
-                    and a["provider"] != "applications"][:3]
+        found[q] = [(a["provider"], *address(a)) for a in ctx.vm.actions(q)
+                    if re.search(r"theme|appearance", "#".join(address(a)) + label(a), re.I)
+                    and not opens(a, a["app_id"])][:3]
     res.metrics["found"] = found
     missing = [q for q, v in found.items() if not v and q != "Sprache"]
     expect(not missing, f"no action sets: {missing}")
@@ -178,9 +179,9 @@ def matrix_de(ctx, res):
 
 @check("U04", AREA, "German session: shell strings and action titles are German", needs=("locale_de",))
 def german_strings(ctx, res):
-    titles = {a["id"]: a["title"] for a in ctx.vm.actions()}
-    sample = {k: titles.get(k) for k in (core.CHROME_OVERVIEW, core.CHROME_OPEN_SETTINGS,
-                                         core.CHROME_QUICK_SETTINGS)}
+    titles = {address(a): label(a) for a in ctx.vm.actions() if a["provider"] == core.SESSION}
+    sample = {"#".join(k): titles.get(k) for k in (core.CHROME_OVERVIEW, core.CHROME_OPEN_SETTINGS,
+                                                   core.CHROME_QUICK_SETTINGS)}
     res.metrics["titles"] = sample
     english = {"Overview", "Open Settings", "Quick Settings"}
     still = [v for v in sample.values() if v in english]

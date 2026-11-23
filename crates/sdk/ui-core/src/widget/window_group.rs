@@ -701,10 +701,6 @@ impl WindowGroup {
         }
     }
 
-    pub fn set_fills_display(&mut self, fills: bool) {
-        self.fills_display = fills;
-    }
-
     pub fn set_top_overlay_inset(&mut self, inset: f64) {
         let inset = inset.max(0.0);
         if (self.top_overlay_inset - inset).abs() > f64::EPSILON {
@@ -1335,12 +1331,16 @@ impl WindowGroup {
             // measured at its content's least width (`filling`).
             style = crate::widget::layout::filling(style, 1.0e6);
         }
-        // Moved down, not shrunk, while the shell's bar shows over the
-        // windows' top edge (a maximized window, or a bar hidden by choice):
-        // the window's own bar is never under the shell's.
+        // While the shell's bar shows over the windows' top edge (a maximized
+        // window, or a bar hidden by choice) the window is the space below it:
+        // its top edge moves down by the bar and its bottom edge stays where
+        // the row ends, so its own bar is never under the shell's and no edge
+        // of it leaves the screen. The row stretches it to its height less the
+        // margin.
         let slide = self.top_slide_now();
         if slide > 0.0 {
-            style.inset.top = taffy::LengthPercentageAuto::length(f32_of_f64(slide));
+            style.size.height = Dimension::auto();
+            style.margin.top = taffy::LengthPercentageAuto::length(f32_of_f64(slide));
         }
         style
     }

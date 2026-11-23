@@ -7,8 +7,8 @@ use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
 
 use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use crate::theme::{Look, Theme};
+use crate::tokens::{Emphasis, PresenceHue, TextRole};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ColourFilter {
@@ -88,6 +88,14 @@ pub enum Picture {
     /// A notification banner: an app's icon and a title, with the
     /// message's lines under it or only the title.
     Banner { message: bool },
+    /// A look as a small window in its own colours, its light side beside its
+    /// dark side (the ground, a sidebar with the selected row, a heading and
+    /// text lines, a primary button in the accent and a switch that is on):
+    /// what choosing that look for the person's accent gives.
+    Look {
+        look: Look,
+        accent: Option<PresenceHue>,
+    },
 }
 
 impl Picture {
@@ -117,8 +125,244 @@ impl Picture {
             Self::ScrollDirection { natural, wheel } => {
                 paint_scroll_direction(scene, transform, area, (*natural, *wheel), theme);
             }
+            Self::Look { look, accent } => {
+                paint_look(
+                    scene,
+                    transform,
+                    area,
+                    *look,
+                    *accent,
+                    theme.tokens.colors.you,
+                    f64::from(theme.tokens.radii.control),
+                );
+            }
         }
     }
+}
+
+/// A look as its light and dark sides across a slanted edge, on `area`.
+fn paint_look(
+    scene: &mut Scene,
+    transform: Affine,
+    area: Rect,
+    look: Look,
+    accent: Option<PresenceHue>,
+    you: PresenceHue,
+    radius: f64,
+) {
+    let side = |dark: bool| {
+        let mut document = look.preset(dark).document();
+        if let Some(accent) = accent {
+            document.emphasis = Emphasis::Tinted {
+                hue: accent.degrees(),
+            };
+        }
+        Theme::from_document(&document)
+            .unwrap_or_else(|| Theme::preset(look.preset(dark)))
+            .with_your_colour(you)
+    };
+    let [light, dark] = [side(false), side(true)];
+    let slant = area.height() * 0.18;
+    let middle = area.center().x;
+    let half = |edge: f64| {
+        let mut path = BezPath::new();
+        path.move_to((edge, area.y0));
+        path.line_to((middle + slant, area.y0));
+        path.line_to((middle - slant, area.y1));
+        path.line_to((edge, area.y1));
+        path.close_path();
+        path
+    };
+    for (side, half) in [(light, half(area.x0)), (dark, half(area.x1))] {
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &half);
+        paint_window(scene, transform, area, &side, radius);
+        scene.pop_layer();
+    }
+}
+
+fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme, radius: f64) {
+    let colors = &theme.tokens.colors;
+    let surfaces = &colors.surfaces;
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        surfaces.base,
+        None,
+        &RoundedRect::from_rect(area, radius),
+    );
+    let inset = (area.height() * 0.12).round();
+    let window = Rect::new(area.x0 + inset, area.y0 + inset, area.x1, area.y1);
+    let corner = (radius * 0.6).max(3.0);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        surfaces.content,
+        None,
+        &RoundedRect::new(
+            window.x0,
+            window.y0,
+            window.x1,
+            window.y1,
+            (corner, 0.0, radius, 0.0),
+        ),
+    );
+    let unit = (window.height() / 9.0).max(2.0);
+    let sidebar = paint_sidebar(scene, transform, theme, window, (corner, unit));
+    paint_window_content(scene, transform, theme, window, sidebar, unit);
+}
+
+fn paint_sidebar(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    window: Rect,
+    (corner, unit): (f64, f64),
+) -> Rect {
+    let colors = &theme.tokens.colors;
+    let surfaces = &colors.surfaces;
+    let sidebar = Rect::new(
+        window.x0,
+        window.y0,
+        window.x0 + window.width() * 0.32,
+        window.y1,
+    );
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        surfaces.sidebar,
+        None,
+        &RoundedRect::new(
+            sidebar.x0,
+            sidebar.y0,
+            sidebar.x1,
+            sidebar.y1,
+            (corner, 0.0, 0.0, 0.0),
+        ),
+    );
+    for row in 0..3 {
+        let y = sidebar.y0 + unit * (1.2 + f64::from(row) * 1.6);
+        if row == 1 {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.intent.selection,
+                None,
+                &RoundedRect::new(
+                    sidebar.x0 + unit * 0.4,
+                    y - unit * 0.45,
+                    sidebar.x1 - unit * 0.4,
+                    y + unit * 1.15,
+                    unit * 0.4,
+                ),
+            );
+        }
+        sample_bar(
+            scene,
+            transform,
+            unit,
+            sidebar.x0 + unit,
+            y,
+            sidebar.width() * 0.55,
+            colors.text_dim.multiply_alpha(0.7),
+        );
+    }
+    sidebar
+}
+
+fn paint_window_content(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    window: Rect,
+    sidebar: Rect,
+    unit: f64,
+) {
+    let colors = &theme.tokens.colors;
+    let left = sidebar.x1 + unit * 1.2;
+    let width = window.x1 - left - unit * 1.2;
+    sample_bar(
+        scene,
+        transform,
+        unit,
+        left,
+        window.y0 + unit * 1.2,
+        width * 0.55,
+        colors.text_primary,
+    );
+    sample_bar(
+        scene,
+        transform,
+        unit,
+        left,
+        window.y0 + unit * 2.8,
+        width * 0.9,
+        colors.text_dim.multiply_alpha(0.6),
+    );
+    sample_bar(
+        scene,
+        transform,
+        unit,
+        left,
+        window.y0 + unit * 4.0,
+        width * 0.7,
+        colors.text_dim.multiply_alpha(0.6),
+    );
+    let control = unit * 1.6;
+    let bottom = window.y1 - unit * 1.2;
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.intent.accent,
+        None,
+        &RoundedRect::new(
+            left,
+            bottom - control,
+            left + width * 0.42,
+            bottom,
+            unit * 0.5,
+        ),
+    );
+    let track = Rect::new(
+        window.x1 - unit * 1.2 - control * 1.8,
+        bottom - control,
+        window.x1 - unit * 1.2,
+        bottom,
+    );
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.intent.on_state,
+        None,
+        &RoundedRect::from_rect(track, control / 2.0),
+    );
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.intent.on_state_mark,
+        None,
+        &Circle::new(
+            (track.x1 - control / 2.0, track.center().y),
+            control / 2.0 - 1.5,
+        ),
+    );
+}
+
+fn sample_bar(
+    scene: &mut Scene,
+    transform: Affine,
+    unit: f64,
+    x: f64,
+    y: f64,
+    width: f64,
+    color: Color,
+) {
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        color,
+        None,
+        &RoundedRect::new(x, y, x + width, y + unit * 0.7, unit * 0.35),
+    );
 }
 
 /// "Aa" at `scale` times the theme's unscaled title size, centred.

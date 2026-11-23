@@ -150,7 +150,6 @@ fn an_agent_passing_done_explicitly_wins() {
         actor: tilolang_tilo::runtime::ids::MemberId::agent("task-1").into(),
         agent: true,
         on_behalf_of: Some("ada".to_owned()),
-        device: None,
     };
     let unchecked = plan(
         &ada,

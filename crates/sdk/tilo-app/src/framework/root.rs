@@ -100,6 +100,9 @@ pub(crate) struct ResourceRoot {
     /// while the app runs takes effect at once. `None` for a read-only view
     /// of a past version.
     permissions: Option<LivePermissions>,
+    /// The records other workspaces hold that the window last asked its host about, and what the
+    /// records it publishes beside its own were then ([`super::settings::ViewStorage::resources_key`]).
+    held_asked: (Vec<(String, u64)>, Vec<ui_core::held_elsewhere::HeldRecord>),
     write: Option<PermissionScope>,
     stages: Stages,
     /// The item a view operation showed and its host laid out, which the
@@ -235,6 +238,38 @@ impl ui_core::component_lifecycle::WindowTitle for ResourceRoot {
     fn window_title(&self) -> Option<&str> {
         let view = app_view_in(self.content.as_ref())?;
         ui_core::component_lifecycle::window_title(view)
+    }
+}
+
+impl ui_core::widget::WindowHistory for ResourceRoot {
+    fn set_window_presents_history(&mut self, tab_presents: bool) {
+        with_app_view_mut(&mut self.content, |view| {
+            if let Some(history) = ui_core::widget::capability::capability_mut::<
+                dyn ui_core::widget::WindowHistory,
+            >(view)
+            {
+                history.set_window_presents_history(tab_presents);
+            }
+        });
+    }
+
+    /// The app's own view offers the window's History: a view whose app runs elsewhere (a
+    /// tilolang host's instance) shows the system's history of what the window shows.
+    fn window_history_control(&self) -> Option<ui_core::widget::HistoryControl> {
+        let view = app_view_in(self.content.as_ref())?;
+        ui_core::widget::capability::capability::<dyn ui_core::widget::WindowHistory>(view)?
+            .window_history_control()
+    }
+
+    fn invoke_window_history_control(
+        &mut self,
+        control: ui_core::widget::HistoryControl,
+    ) -> Result<(), String> {
+        with_app_view_mut(&mut self.content, |view| {
+            ui_core::widget::capability::capability_mut::<dyn ui_core::widget::WindowHistory>(view)
+                .ok_or("History is unavailable")?
+                .invoke_window_history_control(control)
+        })
     }
 }
 
@@ -596,6 +631,7 @@ impl ResourceRoot {
             save: super::saves::SaveIndicator::new(saves, title),
             reactions: super::reactions::ReactionsIndicator::default(),
             permissions: None,
+            held_asked: Default::default(),
             write: None,
             stages,
             shown_first: None,
@@ -1105,6 +1141,7 @@ fn without_children(resource: &ResourceSpec) -> ResourceSpec {
         actions,
         views,
         personal,
+        workspace,
         resource_type,
     } = resource;
     ResourceSpec {
@@ -1118,6 +1155,7 @@ fn without_children(resource: &ResourceSpec) -> ResourceSpec {
         actions: actions.clone(),
         views: views.clone(),
         personal: *personal,
+        workspace: workspace.clone(),
         resource_type: resource_type.clone(),
     }
 }
@@ -1386,7 +1424,7 @@ impl SearchCache {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl RootModel for ResourceRoot {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, dyn ui_core::history_mode::capability::PresentsHistoryEntries, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowTitle, dyn ui_core::component_lifecycle::HearsElsewhere, dyn ui_core::collaboration::presences::Presences; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, dyn ui_core::history_mode::capability::PresentsHistoryEntries, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowTitle, dyn ui_core::component_lifecycle::HearsElsewhere, dyn ui_core::widget::WindowHistory, dyn ui_core::collaboration::presences::Presences; inner = content);
 
     fn view(&self) -> &(dyn Widget + 'static) {
         match &self.unreadable {
@@ -1977,6 +2015,9 @@ impl ui_core::widget::Collaborative for ResourceRoot {
     fn take_collab_requests(&mut self) -> Vec<ui_core::collaboration::CollabRequest> {
         let mut requests =
             ui_core::widget::Collaborative::take_collab_requests(self.share.remote_mut());
+        if let Some(records) = self.held_to_ask() {
+            requests.push(ui_core::collaboration::CollabRequest::DecideHeldElsewhere { records });
+        }
         if let Some(mut api) = self.dispatch.opener.api() {
             requests.extend(ui_core::widget::Collaborative::take_collab_requests(
                 &mut api,
@@ -1991,6 +2032,12 @@ impl ui_core::widget::Collaborative for ResourceRoot {
     }
 
     fn handle_collab_event(&mut self, event: &ui_core::collaboration::CollabEvent) {
+        if let ui_core::collaboration::CollabEvent::HeldElsewhereVerdicts { verdicts } = event
+            && let Some(permissions) = &self.permissions
+        {
+            permissions.decide_held(verdicts);
+            self.dispatch.refresh_permission_states();
+        }
         ui_core::widget::Collaborative::handle_collab_event(self.share.remote_mut(), event);
         if let Some(mut api) = self.dispatch.opener.api() {
             ui_core::widget::Collaborative::handle_collab_event(&mut api, event);
@@ -2000,6 +2047,53 @@ impl ui_core::widget::Collaborative for ResourceRoot {
                 content.handle_collab_event(event);
             }
         });
+    }
+}
+
+impl ResourceRoot {
+    /// The actions of the records the window publishes beside its own that another workspace
+    /// holds (a person's profile record, held in their own workspace), when they changed since the
+    /// window last asked its host about them: what it asks now. They are refused here until the
+    /// host's verdicts arrive.
+    fn held_to_ask(&mut self) -> Option<Vec<ui_core::held_elsewhere::HeldRecord>> {
+        let permissions = self.permissions.as_ref()?;
+        let key = self.storage.resources_key();
+        if key == self.held_asked.0 {
+            return None;
+        }
+        let mut records = Vec::new();
+        for resource in &self.storage.resource_resources() {
+            held_records(self.dispatch.app_id(), resource, &mut records);
+        }
+        self.held_asked.0 = key;
+        if records == self.held_asked.1 {
+            return None;
+        }
+        permissions.ask_held(&records);
+        self.held_asked.1.clone_from(&records);
+        Some(records)
+    }
+}
+
+/// Add to `records` every action of `resource`, and of its children, that a workspace other than
+/// the window's holds.
+fn held_records(
+    app: &str,
+    resource: &ResourceSpec,
+    records: &mut Vec<ui_core::held_elsewhere::HeldRecord>,
+) {
+    if let Some(workspace) = &resource.workspace {
+        records.extend(resource.actions.iter().map(|action| {
+            ui_core::held_elsewhere::HeldRecord::new(
+                workspace,
+                app,
+                (&resource.kind, resource.id.as_str(), &action.id),
+                &action.contract.need(),
+            )
+        }));
+    }
+    for child in &resource.children {
+        held_records(app, child, records);
     }
 }
 

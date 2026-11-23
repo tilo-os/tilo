@@ -26,6 +26,11 @@ pub const OPEN_ACTION: &str = "$open";
 /// The action of `a.then(b)`: its arguments are `a` and `b`, run in turn.
 pub const THEN_ACTION: &str = "$then";
 
+/// The action of a row's keys (`shortcut` on a `ui.ListItem`): run the action of the row's item
+/// the key pressed names, where it applies. Its arguments are the keys, each with what it runs,
+/// and the key pressed.
+pub const SHORTCUT_ACTION: &str = "$shortcut";
+
 /// The action of `file.choose(a)`: ask the person for a file, and run `a` with it as the
 /// argument it still needs. Its arguments are `a` and the media types it may be.
 pub const CHOOSE_ACTION: &str = "$choose";
@@ -812,6 +817,9 @@ pub(crate) fn shown_node(key: &str, shown: &Value, phrase: &dyn Fn(&str) -> Stri
     };
     match kind {
         "none" => shown_text(key, Value::Text(phrase("tilolang-none-value")), true),
+        // A title left empty, as the field's placeholder reads: the record's untitled words,
+        // dimmed.
+        "placeholder" => shown_text(key, value, true),
         "date" | "time" => shown_moment(key, kind, value, extra),
         "actor" => {
             let avatar = shown_node_of(

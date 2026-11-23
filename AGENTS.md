@@ -30,12 +30,8 @@ The [architecture overview](docs/architecture/README.md) states these; work keep
 - Views compose, can be shown again anywhere, and can be written quickly, also by an agent in a
   chat. The shell is a view.
 
-Tilo is a small Rust core plus apps written in tilolang. The core holds workspace state, sync,
-identity and permissions, the tilolang runtime, running programs, and drawing views. Everything
-a person sees is tilolang: apps, the shell, Chat, agent views. A tilolang change needs no Rust
-build and can't break the core. A Rust app gets replaced by a tilolang app built from what the
-Rust app does, and the Rust app is deleted in the same piece of work. Don't add new Rust apps or
-app UI in Rust.
+Apps are written in Rust or tilolang against one app interface. Every system service reaches
+both through the same path; a second path for one language is a duplicate to remove.
 
 ## Principles
 

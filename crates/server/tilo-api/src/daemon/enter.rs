@@ -90,7 +90,27 @@ pub async fn connect(
         .as_ref()
         .ok_or_else(|| anyhow!(LOGIN_ENDED))?;
     let signed = signed_over_iroh(device, address)?;
-    Ok(Entered::enter_lent(None, &signed, Arc::new(key.clone()), lent).await?)
+    let entered = Entered::enter_lent(None, &signed, Arc::new(key.clone()), lent).await?;
+    enter_own_workspace(&entered);
+    Ok(entered)
+}
+
+/// Have `entered` take the person's own workspace in by its id, at the device the login enters
+/// through: the device the ticket named, which keeps it when the person's root issued the ticket
+/// there, or the server its login enters through. Its person is that workspace's one member, so it
+/// admits this device as theirs, and their list of workspaces, kept there, reaches this device. A
+/// device that keeps no copy of it refuses, and this device goes on in the workspace it entered.
+fn enter_own_workspace(entered: &Entered) {
+    let own = tilo_server_protocol::servers::person_workspace_id(&entered.cert().user_public_key);
+    if own == entered.workspace_id().to_string() {
+        return;
+    }
+    let entered = entered.clone();
+    tokio::spawn(async move {
+        if let Err(error) = entered.join(&own).await {
+            tracing::warn!(%error, workspace = %own, "the person's own workspace was not entered at the device the login enters through");
+        }
+    });
 }
 
 /// Where the server `device` reaches is dialed: at the address its login names.

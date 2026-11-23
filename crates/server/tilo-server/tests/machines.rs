@@ -10,12 +10,15 @@
     reason = "hosts and fixtures deliberately stay alive until the test ends"
 )]
 
+use std::sync::Arc;
+
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_server::ServerClient;
 use tilo_server::servers::{self, Servers, person_workspace_id};
-use tilo_server_protocol::WorkSetting;
+use tilo_server_protocol::{WorkSetting, WorkspaceId};
 use tilo_user_identity::{DeviceCapabilities, Dial, RevocationList};
+use tilo_workspace_service::workspaces::MemberDevice;
 
 use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, serve_in};
 
@@ -38,6 +41,20 @@ async fn own_host(user: &TestUser, device: &TestDevice) -> Hosted {
         tempfile::tempdir().unwrap(),
     )
     .await
+}
+
+/// [`own_host`], whose service also keeps workspaces `device` is a member of
+/// that another device keeps, as a device's own service does.
+async fn member_host(user: &TestUser, device: &TestDevice) -> Hosted {
+    let hosted = own_host(user, device).await;
+    hosted
+        .host
+        .workspaces()
+        .set_member_device(Arc::new(MemberDevice {
+            cert: device.cert.clone(),
+            signer: Arc::new(device.sk.clone()),
+        }));
+    hosted
 }
 
 /// A session of `device` to its own `host`, as `tilo do` speaks to it.
@@ -633,70 +650,63 @@ async fn a_desktop_alone_hands_its_first_server_the_servers_workspace() {
     );
 }
 
-/// A device of the person without the person's workspace asks the device that
-/// introduces it to take it in, over that device's action: it holds the
-/// workspace from then on, and a resource written there reaches it. A device
-/// of another person is not taken in.
+/// A newly certified device of the person opens their workspace as it opens
+/// any workspace of theirs: the workspace's id follows from their root, a
+/// device that keeps it signs where it is reached, and the new device proves it
+/// is the person's there and keeps it from then on. A server and an ordinary
+/// device alike, and nothing asks a server to let either in. A device of
+/// another person proves nothing there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_device_asks_its_introducer_into_its_persons_workspace() {
+async fn a_new_device_of_the_person_opens_the_persons_workspace_as_a_member() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
-    let desktop = alice.enrol("desktop", DeviceCapabilities::member());
     let laptop_host = own_host(&alice, &laptop).await;
-    let asking = own_host(&alice, &desktop).await;
-    servers::found(laptop_host.host.workspaces()).await.unwrap();
-    servers::apply(
-        laptop_host.host.workspaces(),
-        Servers::ENROLL_SERVER.with((
-            hex::encode(laptop.device_pubkey()),
-            "laptop".into(),
-            serde_json::to_string(&laptop_host.host.node_addr()).unwrap(),
-        )),
-    )
-    .await
-    .unwrap();
-    assert!(!servers::holds_person_workspace(asking.host.workspaces()).await);
+    let id = servers::found(laptop_host.host.workspaces()).await.unwrap();
+    assert_eq!(id, person_workspace_id(&alice.user_pk));
+    let workspace = WorkspaceId::parse(&id).unwrap();
+    let hint = laptop_host
+        .host
+        .workspaces()
+        .hosts(&id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|hint| hint.host.device_public_key == laptop.device_pubkey())
+        .expect("the laptop signs where it keeps the workspace");
 
-    // The asking device speaks from the endpoint its own service answers on,
-    // where the laptop hands it the workspace.
-    let session = ServerClient::connect_v2_to_own_device(
-        asking.router.endpoint().clone(),
-        laptop_host.host.node_addr(),
-        alice.user_pk,
-        laptop_host.host.device_cert().device_public_key,
-        desktop.cert.clone(),
-        desktop.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    let taken: serde_json::Value = host_action(
-        &session,
-        "person.take-in",
-        serde_json::json!({
-            "endpoint": serde_json::to_string(&asking.host.node_addr()).unwrap(),
-        }),
-    )
-    .await;
-    assert_eq!(taken["workspace"], person_workspace_id(&alice.user_pk));
-    tilo_test_env::within("the asking device to hold the workspace", async {
-        while !servers::holds_person_workspace(asking.host.workspaces()).await {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
-    entry_where(&asking, &hex::encode(laptop.device_pubkey()), |_| true).await;
+    for label in ["nas", "phone"] {
+        let device = alice.enrol(label, DeviceCapabilities::member());
+        let copy = member_host(&alice, &device).await;
+        let opened = tilo_test_env::within(
+            "the new device opens the person's workspace",
+            copy.host.workspaces().hold_as_member(workspace, &hint),
+        )
+        .await;
+        assert_eq!(opened, Ok(workspace), "{label} is the person's device");
+        assert!(copy.host.workspaces().is_member(&id).await.unwrap());
+        let (name, _) = copy
+            .host
+            .workspaces()
+            .member_copy(workspace)
+            .await
+            .expect("the new device keeps the workspace");
+        assert_eq!(
+            name,
+            tilo_workspace_service::workspaces::person_workspace::NAME
+        );
+    }
 
-    // Bob's device is no device of Alice's: her host takes it into nothing.
+    // Bob's device is no device of Alice's: her workspace does not let it in.
     let bob = TestUser::fresh("Bob");
     let intruder = bob.enrol("laptop", DeviceCapabilities::primary());
-    let refused = servers::take_in(
-        laptop_host.host.workspaces(),
-        &intruder.cert,
-        &asking.host.node_addr(),
+    let outside = member_host(&bob, &intruder).await;
+    let refused = tilo_test_env::within(
+        "the other person's device is answered",
+        outside.host.workspaces().hold_as_member(workspace, &hint),
     )
     .await;
-    assert!(refused.is_err(), "another person's device is not taken in");
+    assert!(refused.is_err(), "another person's device is refused");
+    assert!(!outside.host.workspaces().is_member(&id).await.unwrap());
 }
 
 /// A Wi-Fi passphrase one device of the person kept, and what that device says

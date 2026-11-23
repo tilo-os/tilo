@@ -5,11 +5,6 @@
 //! and calls what only reads, and its changes ask its member; and a server
 //! asks no address inside its own network unless its operator lets it.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the serving device a test binds is kept until the test ends; dropping it earlier closes what the test drives"
-)]
-
 use collab_types::WorkspaceId;
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
@@ -27,7 +22,7 @@ use super::super::ServiceWorkspaceActions as Served;
 use super::super::tests::{admit, caller, governed, settled};
 use crate::connections::ASKS_FIRST;
 use crate::connections::stand_in::StandIn;
-use crate::workspaces::fixtures::test_host_taking_part as start_serving;
+use crate::workspaces::fixtures::test_host as start_serving;
 use crate::workspaces::tests::governor;
 use crate::workspaces::{AsksPeople, PersonAnswer};
 

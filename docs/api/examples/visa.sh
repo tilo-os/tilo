@@ -91,8 +91,8 @@ letter=$(jq -r '[.. | strings | select(startswith("tilo.content:"))][0]' <<<"$ex
 check '[[ $letter == tilo.content:* ]]' "Writer exports the letter as content ($letter)"
 curl -sS -H "authorization: Bearer $key" -o "$work/letter.docx" "$api$base/content/$letter"
 check '[[ $(head -c 2 "$work/letter.docx") == PK ]]' "the backend downloads a Word file"
-link=$(call "$agent" GET "$base/links?path=pdf-viewer/application.pdf")
-check '[[ $(jq -r .link <<<"$link") == http* ]]' "the form has a link to hand over"
+link=$(act pdf-viewer/application.pdf share-link '{}')
+check '[[ $(jq -r .result.url <<<"$link") == http* ]]' "the form has a link to hand over"
 
 say "4. The minted key reaches that workspace and nothing else, until it is revoked"
 other=$(jq -r "[.result.workspaces[] | select(.id != \"$first\")][0].id" <<<"$listed")

@@ -9,6 +9,7 @@ use tilo_actions::remote::server_account::Refusal;
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
+use tilo_lock::MutexRecover as _;
 use tilo_server_client::login::Admission;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_server_client::login::{Entry, SignIn};
@@ -52,6 +53,13 @@ pub struct Device {
     workspace_id: WorkspaceId,
     /// What this device calls itself, as its host's journals name it.
     label: String,
+    /// Each workspace's host's signed address, as the host answered this device's entry into it
+    /// ([`Admission::host`]): what this device's workspace service holds its member copy by.
+    hosts: Arc<
+        std::sync::Mutex<
+            std::collections::BTreeMap<WorkspaceId, tilo_peer_state::join::TransportHint>,
+        >,
+    >,
 }
 
 impl std::fmt::Debug for Device {
@@ -123,6 +131,7 @@ impl Device {
             server_cert,
             workspace_id: WorkspaceId::from_u128(0),
             label: label.to_owned(),
+            hosts: Arc::default(),
         }
     }
 
@@ -204,7 +213,7 @@ impl Device {
         // per key, so the two would cut each other off for as long as both dial.
         let unentered = Unentered(Some(device.peer.clone()));
         if through_entry {
-            entered(&device.peer).await?;
+            device.keep_host(&entered(&device.peer).await?);
         } else {
             device.connected().await?;
         }
@@ -326,12 +335,43 @@ impl Device {
                 answered => break answered?,
             }
         };
-        admission(entered).map_err(|refusal| {
+        let admission = admission(entered).map_err(|refusal| {
             CertifyError::Denied(format!(
                 "The workspace did not let this device in: {}",
                 refusal.reason()
             ))
-        })
+        })?;
+        self.keep_host(&admission);
+        Ok(admission)
+    }
+
+    /// Keep where `admission`'s host said its workspace is held, for [`Self::hosts`]. An address
+    /// that does not read is the host's fault, and the workspace is not held on that word.
+    fn keep_host(&self, admission: &Admission) {
+        let Some(host) = &admission.host else {
+            return;
+        };
+        match postcard::from_bytes::<tilo_peer_state::join::TransportHint>(host) {
+            Ok(hint) => {
+                self.hosts
+                    .lock_recover()
+                    .insert(admission.workspace_id, hint);
+            }
+            Err(error) => {
+                tracing::warn!(workspace = %admission.workspace_id, %error, "the host's address for a workspace does not read; this device's service does not hold it");
+            }
+        }
+    }
+
+    /// Each workspace this device entered whose host said where it holds it, with that host's
+    /// signed address: what this device's workspace service takes each in by, as a member.
+    #[must_use]
+    pub fn hosts(&self) -> Vec<(WorkspaceId, tilo_peer_state::join::TransportHint)> {
+        self.hosts
+            .lock_recover()
+            .iter()
+            .map(|(workspace, host)| (*workspace, host.clone()))
+            .collect()
     }
 
     /// One ask of `entering` on this device's session, once it is connected: the host's answer.
@@ -541,29 +581,6 @@ impl Device {
                 .map_err(|error| DeviceRefusal::malformed(error.to_string()))?,
         );
         self.host_action(KEEP_PERSONAL, arguments).await.map(drop)
-    }
-
-    /// Ask the host, a device that holds the person's workspace, to take this device into it, as
-    /// dialled at `endpoint`: this device holds the workspace from then on. What a device does with
-    /// the [`tilo_server_protocol::servers::Introducer`] it was handed when it was admitted.
-    ///
-    /// # Errors
-    /// The host did not answer, does not hold the person's workspace, or refused.
-    pub async fn take_into_person_workspace(
-        &self,
-        endpoint: &iroh_base::EndpointAddr,
-    ) -> Result<(), DeviceRefusal> {
-        let mut arguments = Map::new();
-        arguments.insert(
-            "endpoint".to_owned(),
-            Value::String(
-                serde_json::to_string(endpoint)
-                    .map_err(|error| DeviceRefusal::malformed(error.to_string()))?,
-            ),
-        );
-        self.host_action(tilo_server_session::workspaces::TAKE_IN_PERSON, arguments)
-            .await
-            .map(drop)
     }
 
     /// The server's own operation `action` with `arguments`, asked in the workspace this
@@ -975,12 +992,13 @@ fn admission(
             workspace_id,
             name,
             role,
-            ..
+            host,
         } => Ok(Admission {
             workspace,
             workspace_id,
             name,
             role,
+            host,
         }),
         tilo_server_protocol::entering::Entered::Refused(refusal) => Err(refusal),
     }
@@ -1035,12 +1053,14 @@ pub async fn entered(peer: &Link) -> Result<Admission, DeviceRefusal> {
                 workspace_id,
                 name,
                 role,
+                host,
             }) => {
                 return Some(Ok(Admission {
                     workspace: workspace.clone(),
                     workspace_id: *workspace_id,
                     name: name.clone(),
                     role: *role,
+                    host: host.clone(),
                 }));
             }
             Some(crate::Entry::Refused {

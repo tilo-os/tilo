@@ -214,7 +214,7 @@ pub struct PageSidebar {
     frame_theme: Theme,
 
     scroll: f64,
-    drag: DragController<usize>,
+    drag: DragController,
     press_idx: Option<usize>,
     last_pointer: Point,
     menu: Option<Menu>,
@@ -573,7 +573,7 @@ impl PageSidebar {
             self.pending.push(PageSidebarEvent::Select(i));
             if !self.read_only {
                 let grab = p.y - self.list_metrics().slot_lead(i);
-                self.drag.begin(i, i, grab, p);
+                self.drag.begin(i, grab, p);
             }
             return true;
         }

@@ -552,8 +552,7 @@ impl Checker<'_> {
     }
 
     /// `workspace.members`: everyone in the workspace now, read from the platform's membership.
-    /// `workspace.me`: the person the view is shown to. Any other field is one of the
-    /// workspace's own resource ([`crate::workspace`]), such as `workspace.leases`.
+    /// `workspace.me`: the person the view is shown to.
     pub(super) fn workspace_field(&mut self, name: &ast::Ident) -> Ex {
         if name.name == "members" {
             return Ex::host(
@@ -577,57 +576,16 @@ impl Checker<'_> {
             }
             return Ex::host(Imp::Viewer, Vec::new(), Ty::Actor);
         }
-        // Everything else is a field of the workspace's own resource (`tilo.workspace`), read
-        // as a field of any record is: `workspace.leases`.
-        if let Some(root) = self.workspace_root(&name.name) {
-            return self.field_read(root, name);
-        }
-        let fields = self
-            .env
-            .type_info(&Self::workspace_key())
-            .map(|info| {
-                info.fields
-                    .iter()
-                    .map(|f| f.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
-            .unwrap_or_default();
-        let known = if fields.is_empty() {
-            crate::prims::WORKSPACE_FIELDS.to_owned()
-        } else {
-            format!("{}, {fields}", crate::prims::WORKSPACE_FIELDS)
-        };
         self.err(
             "E021",
             name.span,
             format!(
-                "`workspace` has no field `{}`; fields are: {known}",
-                name.name
+                "`workspace` has no field `{}`; fields are: {}",
+                name.name,
+                crate::prims::WORKSPACE_FIELDS
             ),
         );
         Ex::error()
-    }
-
-    /// The type of the workspace's own resource ([`crate::workspace`]).
-    fn workspace_key() -> crate::types::TypeKey {
-        crate::types::TypeKey {
-            app: crate::workspace::APP.to_owned(),
-            name: crate::workspace::ROOT_TYPE.to_owned(),
-        }
-    }
-
-    /// The workspace's own resource, where `workspace.<field>` names one of its fields rather
-    /// than one the host answers (`members`, `me`): the record a read or a map's `.get` of the
-    /// field is asked of.
-    pub(super) fn workspace_root(&self, field: &str) -> Option<Ex> {
-        if field == "members" || field == "me" {
-            return None;
-        }
-        let key = Self::workspace_key();
-        let info = self.env.type_info(&key)?;
-        info.field(field)?;
-        Some(Self::root_ref(&key.app, &info.id, &key))
     }
 
     /// `speakers(items)`: the people who spoke in the conversation of `items`, most recent first,

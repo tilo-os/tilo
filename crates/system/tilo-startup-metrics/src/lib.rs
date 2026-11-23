@@ -567,6 +567,18 @@ struct Event {
 /// for the app's startup file: `name@epoch_us` entries joined by `,`.
 pub const LAUNCHER_MARKS_ENV: &str = "TILO_STARTUP_LAUNCHER_MARKS";
 
+/// Set to `1` in a session's environment to measure the launches it starts: each app is told where
+/// to write its startup timeline (`TILO_STARTUP_METRICS_PATH`) and logs its `APP-STARTUP` summary.
+/// The one switch a measured session (the session's tests, the VM checks) turns on; without it an
+/// app keeps no timeline.
+pub const STARTUP_TIMELINE_ENV: &str = "TILO_STARTUP_TIMELINE";
+
+/// Whether this session measures the launches it starts ([`STARTUP_TIMELINE_ENV`]).
+#[must_use]
+pub fn session_measures_launches() -> bool {
+    std::env::var_os(STARTUP_TIMELINE_ENV).as_deref() == Some(std::ffi::OsStr::new("1"))
+}
+
 const HANDOFF_MAX_MARKS: usize = 32;
 const HANDOFF_MAX_NAME: usize = 48;
 

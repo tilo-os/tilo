@@ -836,12 +836,6 @@ impl Default for ChartStyle {
 
 impl ChartStyle {
     #[must_use]
-    pub fn with_trend(mut self, trend: TrendStyle) -> Self {
-        self.trend = trend;
-        self
-    }
-
-    #[must_use]
     pub fn with_grid(mut self, divisions: usize, color: Option<Color>) -> Self {
         self.grid_divisions = divisions;
         self.grid_color = color;

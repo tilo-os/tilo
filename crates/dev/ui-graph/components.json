@@ -8128,6 +8128,18 @@
           }
         },
         {
+          "name": "offers_menu",
+          "doc": "The item offers a menu the row does not carry: opening the row's menu asks for the row again with it ([`RowSource::ask_menu`]), and the menu opens when it comes.",
+          "type": "bool"
+        },
+        {
+          "name": "keys",
+          "doc": "The keys the item's actions answer to (\"Ctrl+Enter\"): a press of one while the row holds the keyboard reports `shortcut` with it, whether or not the row carries its menu.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
           "name": "group",
           "doc": "The group the row is in, as the platform reads it over the group's first row: a day for a date. Rows of one group stand together under its heading, in the order they come.",
           "type": {
@@ -8256,6 +8268,13 @@
           "doc": "The item's document, shown in the row's place while the row stands open into it: a row with a document opens where it stands in the list when it is chosen, and the list's own motion grows the row to hold it. The document opens with the item's own leading control and title, in the row's column — the row becomes the item, its title written once — and what the item holds follows under them.",
           "accepts": "view",
           "when_open": true
+        }
+      ],
+      "events": [
+        {
+          "name": "shortcut",
+          "doc": "A key of `keys` was pressed on the row: carries it.",
+          "value": "text"
         }
       ],
       "semantics": {

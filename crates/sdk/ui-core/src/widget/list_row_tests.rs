@@ -1065,7 +1065,7 @@ tilo_test_env::scenario! {
         assert_eq!(node.value.as_deref(), Some("Overdue since Jun 29"));
     }
 
-    phase a_described_rows_explanation_is_its_description_and_not_its_value;
+    phase a_rows_secondary_line_is_said_once_as_its_description_or_in_its_name;
     {
         let row = ListRow::new("bounce-alert", "Flash when a key is ignored")
             .secondary("Show the visual alert each time bounce keys drops a press")
@@ -1078,9 +1078,12 @@ tilo_test_env::scenario! {
         );
         assert_eq!(node.value, None, "the explanation is said once");
 
+        // A row's secondary line that explains nothing is its own text: a reader hears the
+        // whole row as its name, as a message is its sender and its subject.
         let read = ListRow::new("path", "Home").secondary("/home/quinten");
         let node = Widget::accessibility(&read).unwrap();
-        assert_eq!(node.value.as_deref(), Some("/home/quinten"));
+        assert_eq!(node.name.as_deref(), Some("Home, /home/quinten"));
+        assert_eq!(node.value, None, "the secondary line is said once, in the name");
         assert_eq!(node.description, None);
     }
 }

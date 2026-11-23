@@ -245,27 +245,12 @@ impl AppBrokerState {
             .chain(retained)
             .filter(|surface| surface.route.cluster_id == cluster_id)
             .collect::<Vec<_>>();
-        let live_apps = self
-            .publishers
-            .surfaces
-            .lock()
-            .map(|surfaces| {
-                surfaces
-                    .values()
-                    .filter(|surface| surface.live && surface.route.cluster_id == cluster_id)
-                    .map(|surface| surface.app_id.clone())
-                    .collect::<std::collections::HashSet<_>>()
-            })
-            .unwrap_or_default();
         let applications = self
             .services
             .launcher
             .as_ref()
             .map(|service| service.applications())
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|app| !live_apps.contains(&app.package_id))
-            .collect::<Vec<_>>();
+            .unwrap_or_default();
         // A step of an agent session's own (the programs it writes) is listed to an agent while
         // it works in a session, and taken only there. A session step (for turns) is listed to
         // every caller the grants allow, as an app action is.
@@ -384,34 +369,19 @@ impl AppBrokerState {
                     .collect(),
             });
         }
+        // A running app is listed to open too: opening it brings its window forward, as the
+        // person's own launch of it does.
         for app in applications {
-            let package_id = app.package_id;
-            let display_name = app.display_name;
             offer(runtime_collab::BrokerActionSurface {
                 peer_id: 0,
                 provider: Some(tilo_actions::remote::workspace_provider(cluster_id)),
-                app_id: package_id.clone(),
+                app_id: app.package_id.clone(),
                 cluster_id: cluster_id.to_owned(),
                 document_id: String::new(),
                 live: true,
-                actions: vec![PublishedAction {
-                    did: None,
-                    state: tilo_actions::ActionState::default(),
-                    resource: format!("app.{package_id}"),
-                    semantic_identity: None,
-                    action: "open".into(),
-                    resource_kind: "applications.app".into(),
-                    action_label: format!("Open {display_name}"),
-                    resource_label: display_name,
-                    keywords: Vec::new(),
-                    icon: None,
-                    description: Some("Launch this application into the current workspace".into()),
-                    operation_kind: tilo_actions::OperationKind::Effect,
-                    params: Vec::new(),
-                    contract: tilo_actions::ActionContract::default(),
-                    view: None,
-                    input: PublishedInput::None,
-                }],
+                actions: vec![stateless(PublishedAction::from(
+                    &super::action_provider::app_open_descriptor(&app),
+                ))],
             });
         }
         Ok(surfaces)

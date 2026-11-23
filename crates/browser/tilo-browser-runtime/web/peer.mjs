@@ -35,8 +35,8 @@ import {siteServer, STALE_SITE_SERVER, staleSiteServer, staleSiteServerReport} f
 import {deviceLabel} from './pairing.mjs';
 
 export {
-  addPasskey, browserIdentity, browserPerson, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, installNode,
-  installNodeCertificate, MAX_DISPLAY_NAME_BYTES, nodeInstallInfo, publishEnvelope, publishProfile, signInWithPasskey, storagePersisted, unlockIdentity,
+  browserIdentity, browserPerson, certifyDevice, currentIdentity, fetchProfile, fitDisplayName, IdentityError, installNode,
+  installNodeCertificate, MAX_DISPLAY_NAME_BYTES, nodeInstallInfo, publishProfile, storagePersisted,
 } from './identity.mjs';
 // The workspaces a page can open, for hosts of this module (Tilo Cloud) that
 // import only the peer.
@@ -1372,17 +1372,14 @@ export function invitationOffer(reply) {
 
 /**
  * The invitation a link's `invite` secret names, as `inspectInvitation` and
- * `joinWorkspace` take one: fetched from the shelf of `site` — the site that
- * keeps it, which the link names — and opened with the key the link carries.
- * Resolves to `{invitation, host}`, the invitation's own text and, where the
- * device that left it named one, the origin of the host it admits into: a
- * link names the site that keeps the invitation, not the host it admits
- * into. A secret that is an invitation's own text is answered as it came,
- * with no host, so links of every build join the same way.
+ * `joinWorkspace` take one: the invitation `workspace` keeps at its host
+ * `origin`, which answers with it for the secret a short link carries.
+ * Resolves to the invitation's own text. A secret that is an invitation's own
+ * text is answered as it came, so every link joins the same way.
  */
-export async function openInvitation(site, secret, {runtime} = {}) {
+export async function openInvitation(origin, workspace, secret, {runtime} = {}) {
   runtime ??= await pageRuntime();
-  return JSON.parse(await runtime.redeemInvitation(site, secret));
+  return runtime.openInvitation(origin, workspace ?? '', secret);
 }
 
 /**

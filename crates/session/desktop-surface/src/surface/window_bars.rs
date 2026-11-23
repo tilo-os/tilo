@@ -162,6 +162,7 @@ impl DesktopHandle {
                         target.rect[3] - target.rect[1],
                     ),
                     level: target.level,
+                    selected: target.selected,
                 });
             }
         }

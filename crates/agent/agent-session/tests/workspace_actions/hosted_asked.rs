@@ -4,8 +4,8 @@
 //! through the package's own actions, as the agent. No device of the person's has to be on, and
 //! nothing of Chat's own fields is read.
 //!
-//! The reply grows while its model writes it, and what the agent learns about its keeper is
-//! told and kept only where what it was asked about is theirs and the agent's alone.
+//! The reply grows while its model writes it, and what the agent learns about the person who
+//! asked is told and kept only where what it was asked about is theirs and the agent's alone.
 use super::*;
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -26,21 +26,21 @@ use tilo_workspace_service::tl_records::runtime::rich::RichValue;
 /// member acting for her, as making an agent makes it. Ada's page joins once; no device of hers
 /// answers.
 macro_rules! ada_and_scout {
-    ($root:ident, $server:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident, $person:ident) => {
+    ($root:ident, $server:ident, $served:ident, $workspaces:ident, $workspace:ident, $page:ident, $person:ident) => {
         let ($root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
         let $server = enrol(&$root, "tilo-sh", DeviceCapabilities::member());
         let browser = enrol(&$root, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let (served, $actions) = crate::harness::hosted::serving_documents_with_actions(
+        let $served = crate::harness::hosted::start(
             &$root,
             &$server,
             state.path(),
-            crate::common::catalogue,
+            crate::harness::hosted::Options::offering(crate::common::catalogue),
         )
         .await;
-        let $workspaces = served.workspaces().unwrap().clone();
+        let $workspaces = $served.workspaces().unwrap().clone();
         let $workspace = $workspaces.create("Team").await.unwrap().workspace;
-        let $page = Browser::open_at(&served, &browser, &$server, &$workspace).await;
+        let $page = Browser::open_at(&$served, &browser, &$server, &$workspace).await;
         let $person = hex::encode($root.verifying_key().to_bytes());
         make_agent(&$page, &$workspaces, &$workspace, &$person, None).await;
     };
@@ -183,7 +183,7 @@ async fn answered_one(agents: &ServerAgents, workspace: &str) -> Turn {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_hosted_agent_answers_the_message_that_mentions_it() {
-    ada_and_scout!(root, host, actions, workspaces, workspace, page, person);
+    ada_and_scout!(root, host, served, workspaces, workspace, page, person);
     mention_in_channel(&workspaces, &workspace, &person, " what is planned?").await;
     let waiting = asked(&workspaces, &workspace, &person).await;
     assert_eq!(waiting.len(), 1, "the mention asked once: {waiting:?}");
@@ -192,11 +192,10 @@ async fn a_hosted_agent_answers_the_message_that_mentions_it() {
 
     // The server reads the ask as a turn of the agent's, for Ada, with what she wrote.
     let model_asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(looks_then_answers(1_000, Arc::clone(&model_asked))),
-    );
+    let agents = served
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(looks_then_answers(1_000, Arc::clone(&model_asked)));
     let turn = answered_one(&agents, &workspace).await;
     assert!(matches!(turn.ask, Ask::Asked { .. }), "{:?}", turn.ask);
     assert_eq!(turn.person, person, "it works for whoever asked");
@@ -212,7 +211,8 @@ async fn a_hosted_agent_answers_the_message_that_mentions_it() {
     assert_eq!(answered.len(), 1, "{answered:?}");
     let ask = &answered[0];
     assert_eq!(ask.state, AskState::Done, "{ask:?}");
-    let lease = format!("ask/{}", ask.at.id_string());
+    // The turn of the agent in the conversation it was asked in, which one device answers.
+    let lease = format!("turn/{}/{}", turn.agent.id.0, turn.conversation);
     assert_eq!(
         workspaces.lease_holder(&workspace, &lease).await.unwrap(),
         Some(workspaces.governor().device_public_key),
@@ -355,7 +355,7 @@ async fn begin(
 /// whole answer and is done.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reply_grows_while_its_model_writes_it() {
-    ada_and_scout!(root, host, actions, workspaces, workspace, page, person);
+    ada_and_scout!(root, host, served, workspaces, workspace, page, person);
     let (theirs, _lets_go) = writing(
         &workspaces,
         &workspace,
@@ -369,11 +369,10 @@ async fn a_reply_grows_while_its_model_writes_it() {
     )
     .await;
     mention_in_channel(&workspaces, &workspace, &person, " plan the launch").await;
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(never_asked(Arc::default())),
-    );
+    let agents = served
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(never_asked(Arc::default()));
     let going = begin(&agents, &workspace).await;
 
     let grown = reply_reads(
@@ -420,7 +419,7 @@ async fn a_reply_grows_while_its_model_writes_it() {
 /// writes after the tool stands a paragraph below.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn words_before_a_tool_stay_and_the_answer_stands_below_them() {
-    ada_and_scout!(root, host, actions, workspaces, workspace, page, person);
+    ada_and_scout!(root, host, served, workspaces, workspace, page, person);
     let (theirs, _lets_go) = writing(
         &workspaces,
         &workspace,
@@ -431,11 +430,10 @@ async fn words_before_a_tool_stay_and_the_answer_stands_below_them() {
     )
     .await;
     mention_in_channel(&workspaces, &workspace, &person, " what is planned?").await;
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(never_asked(Arc::default())),
-    );
+    let agents = served
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(never_asked(Arc::default()));
     let going = begin(&agents, &workspace).await;
 
     until("the model is asked again after its tool", || {
@@ -606,7 +604,7 @@ async fn admit(
 /// her next turn is told nothing and offered none of the tools.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_hosted_turn_keeps_what_its_keeper_tells_it_only_where_nobody_else_reads() {
-    ada_and_scout!(root, host, actions, workspaces, workspace, page, person);
+    ada_and_scout!(root, host, served, workspaces, workspace, page, person);
     let model_asked = Arc::new(Mutex::new(Vec::new()));
     let minded = {
         let asked = Arc::clone(&model_asked);
@@ -617,7 +615,10 @@ async fn a_hosted_turn_keeps_what_its_keeper_tells_it_only_where_nobody_else_rea
                 as Box<dyn tilo_agent_session::model::PlanTurns>)
         }) as Model
     };
-    let agents = ServerAgents::for_test(workspaces.clone(), actions.clone(), Some(minded));
+    let agents = served
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(minded);
     assert!(
         workspaces.learned_about(&workspace).is_none(),
         "nothing yet"
@@ -765,11 +766,11 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (served, actions) = crate::harness::hosted::serving_documents_with_actions(
+    let served = crate::harness::hosted::start(
         &root,
         &host,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
     let workspaces = served.workspaces().unwrap().clone();
@@ -816,11 +817,11 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     );
 
     mention_in_channel(&workspaces, &workspace, &bea_person, " what is planned?").await;
-    let agents = ServerAgents::for_test(
-        workspaces.clone(),
-        actions.clone(),
-        Some(looks_then_answers(1_000, Arc::default())),
-    );
+    // Bea approves her agent on the server from her own page, as Ada approves hers.
+    let agents = served
+        .approving_as(&bea_root, &workspace, &[SCOUT], &[])
+        .await
+        .scripted(looks_then_answers(1_000, Arc::default()));
     let turn = answered_one(&agents, &workspace).await;
     assert_eq!(turn.person, bea_person, "it works for Bea, who asked");
     assert!(

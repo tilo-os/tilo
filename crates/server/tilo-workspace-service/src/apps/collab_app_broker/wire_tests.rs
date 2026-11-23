@@ -932,3 +932,81 @@ async fn the_wire_client_calls_and_subscribes_against_the_host() {
         })
         .await;
 }
+
+/// One action of a record `workspace` holds, which a window of another workspace shows.
+fn held_record(workspace: u128) -> runtime_collab::held_elsewhere::HeldRecord {
+    runtime_collab::held_elsewhere::HeldRecord::new(
+        &crate::apps::test_support::WorkspaceId::from_u128(workspace).to_string(),
+        "so.tilo.notes",
+        ("test.playback", "person:test.playback", "mute"),
+        &tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
+    )
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_record_held_elsewhere_is_decided_by_its_workspace_and_again_when_its_grants_change() {
+    use runtime_collab::held_elsewhere::{HeldDecision, HeldVerdict};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let workspace = Workspace::new(&[21]);
+            // The person only reads the workspace holding the record; the window's own
+            // workspace, where they edit, does not decide it.
+            let holding = crate::apps::test_support::WorkspaceId::from_u128(10);
+            let mut held = crate::apps::test_support::Workspace::new(holding, "Their own");
+            held.admit(actor(21), crate::apps::test_support::Role::Viewer);
+            workspace.membership.write().workspaces.push(held);
+            let mut endpoint = workspace.endpoint(21);
+            let channel = endpoint.channel;
+            let records = vec![held_record(10), held_record(11)];
+            let subscription = endpoint
+                .send(Operation::Subscribe {
+                    channel,
+                    topic: Topic::HeldElsewhere(records.clone()),
+                })
+                .await;
+            assert_eq!(
+                endpoint.frame().await,
+                HostFrame::Reply {
+                    id: subscription,
+                    result: Ok(Reply::Subscribed),
+                }
+            );
+            let decided = |verdicts: [HeldVerdict; 2]| HostFrame::Event {
+                subscription,
+                event: Event::HeldElsewhere(
+                    records
+                        .iter()
+                        .cloned()
+                        .zip(verdicts)
+                        .map(|(record, verdict)| HeldDecision { record, verdict })
+                        .collect(),
+                ),
+            };
+            let not_held = HeldVerdict::Refused(super::held_elsewhere::NOT_HELD.into());
+            assert_eq!(
+                endpoint.frame().await,
+                decided([
+                    HeldVerdict::Refused(tilo_broker_core::held::REFUSED.into()),
+                    not_held.clone(),
+                ]),
+                "a reader of the holding workspace may not change the record, and a workspace \
+                 this host does not hold is refused in words the person reads"
+            );
+
+            workspace
+                .membership
+                .write()
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id() == holding)
+                .unwrap()
+                .admit(actor(21), crate::apps::test_support::Role::Editor);
+            workspace.state.refresh_policy_surfaces();
+            assert_eq!(
+                endpoint.frame().await,
+                decided([HeldVerdict::Allowed, not_held]),
+                "the holding workspace's change reaches the window while it shows the record"
+            );
+        })
+        .await;
+}

@@ -30,7 +30,7 @@ async fn a_commenter_comments_and_a_moderator_makes_a_channel_by_the_role_the_wo
     let mut page = Browser::open(&server, &page_device, &device).await;
     let tasks = provider(TASKS, &page.create(TASKS));
     let chat = provider(CHAT, &page.create(CHAT));
-    page.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&page.peer.barrier().unwrap()).unwrap();
     // The owner files an issue for a member to comment on.
     let issues = ui::resource::chain_resource_id(&ui::resource::DocumentId::derived(
         "issues",

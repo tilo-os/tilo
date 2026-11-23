@@ -68,14 +68,6 @@ impl ProgramStepView {
         self
     }
 
-    /// Keep whether a long answer is unfolded in `group`, by this step's id, so a view that
-    /// rebuilds its steps leaves the answer as the person left it.
-    #[must_use]
-    pub fn with_disclosure(mut self, group: &DisclosureGroup) -> Self {
-        self.disclosure = Some(group.clone());
-        self
-    }
-
     #[must_use]
     pub fn into_widget(self) -> Element {
         let mut column = Column::new()

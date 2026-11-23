@@ -3,7 +3,7 @@
 //!
 //! What a page needs before it holds a session rides it: the host's
 //! certificate and address (`/host`), joining a workspace, the public
-//! directory, root envelopes and profiles, the fetch proxy and the static
+//! directory, profiles, the fetch proxy and the static
 //! entry. Everything after that — certification, presence, membership,
 //! records, previews, calls — goes over iroh, as every device's does. Routes are listed in [`tilo_server_protocol::web`].
 //!
@@ -11,19 +11,21 @@
 //! own locks; workspace I/O already runs on the blocking pool.
 
 mod content;
-mod envelopes;
 mod fetch;
 pub mod install;
 mod link;
 pub(crate) mod live;
-mod login_codes;
 mod page;
 mod page_errors;
-mod shelf;
-mod sign_in;
+mod profiles;
+// The question sheet a page draws over its app: the same words a native
+// session's sheet asks it.
+#[cfg(feature = "agents")]
+pub(crate) mod question_sheet;
 mod stand_in;
 #[cfg(test)]
 mod tests;
+mod tickets;
 mod tls;
 
 pub use fetch::FetchProxySetup;
@@ -45,7 +47,6 @@ use tilo_server_protocol::web::{
 
 use crate::daemon::{Server, ServerError, WebContext};
 use collab_types::WorkspaceId;
-use tilo_workspace_service::workspaces::SealedInvitations;
 
 /// Configuration of the browser listener.
 #[derive(Clone, Debug)]
@@ -80,9 +81,8 @@ pub struct WebConfig {
     /// it. `None` listens beside the HTTPS listener.
     pub link: Option<LinkListen>,
     /// The site this host belongs to (`https://tilo.sh/`), when it knows one:
-    /// its `/i/<handle>` answers a browser that opens the host's own address
-    /// by sending it to the site's page, which is the page that can take a
-    /// sealed invitation's link.
+    /// a browser that opens the host's own address is sent to the site's
+    /// page.
     pub site: Option<String>,
 }
 
@@ -211,10 +211,8 @@ struct Web {
     allowed_origins: Vec<String>,
     /// The workspaces this server governs, for their directory and entries.
     workspaces: Option<crate::workspaces::Workspaces>,
-    /// Members' root envelopes, for `/envelope`.
-    envelopes: envelopes::Envelopes,
     /// Members' profiles, for `/profile`.
-    profiles: Arc<envelopes::Envelopes>,
+    profiles: Arc<profiles::Profiles>,
     /// The fetch proxy, when [`WebConfig::fetch_proxy`] asked for one, and the
     /// tokens its pages' sessions take for it.
     fetch: Option<tilo_net::proxy::host::FetchProxy>,
@@ -225,16 +223,11 @@ struct Web {
     presence: Arc<live::Authority>,
     /// The page errors the entry logs.
     page_errors: page_errors::PageErrors,
-    /// The sealed invitations this site keeps in place of their clerk: what a
-    /// short link names, in bytes the site has no key for. The workspaces
-    /// here seal onto it, so a link a member hands over and the one the mail
-    /// to an address carries are the same link.
-    shelf: Arc<shelf::Shelf>,
     /// The site this host belongs to, when it knows one: where a browser that
     /// opened a link at the host's own address is sent.
     site: Option<Site>,
-    /// The login codes tabs hand their agents.
-    login_codes: Arc<login_codes::LoginCodes>,
+    /// The tickets tabs hand their agents, and the questions their computers ask with them.
+    tickets: tickets::Tickets,
     /// The wait list the entry keeps for a workspace taking people by
     /// invitation, when whoever runs this host keeps one.
     wait_list: WaitListSlot,
@@ -255,6 +248,28 @@ impl Web {
             follow_endpoint(address, endpoint.addr());
         }
         info
+    }
+
+    /// Queue the certification requests this host's sign-in tickets expect: a tab that pairs
+    /// with the invite its ticket named waits for the device that approved it to be answered.
+    fn serve_tab_requests(&self) {
+        self.context
+            .certification
+            .set_tab_requests(Arc::new(tickets::Expecting(self.tickets.clone())));
+    }
+
+    /// Serve the tickets a page's host makes for its agent: the certify action a computer with
+    /// no certificate calls, routed to the ticket whose secret its call carries, and the device
+    /// actions a certified device calls beside its workspaces' own.
+    fn serve_tickets(&self) {
+        if let Some(workspaces) = self.workspaces.as_ref() {
+            let service = workspaces.action_service();
+            service.admit_uncertified(
+                tilo_device_identity::login::SCOPE,
+                Arc::new(tickets::Router::new(self.tickets.clone())),
+            );
+            service.add_provider(Arc::new(tickets::Certified::new(self.tickets.clone())));
+        }
     }
 }
 
@@ -282,8 +297,7 @@ pub(crate) fn stand_ins_dir(state_root: &std::path::Path) -> std::path::PathBuf 
 /// answered: the page that takes it is the site's.
 #[derive(Clone, Debug)]
 struct Site {
-    /// The site's origin (`https://tilo.sh`), below which `i/<handle>` is the
-    /// page an invitation's link opens.
+    /// The site's origin (`https://tilo.sh`).
     origin: String,
     /// The `host:port` a request names when it already reached the site, and so
     /// arrived through it: sending it on would be sending it to itself.
@@ -300,13 +314,6 @@ impl Site {
             origin: entry.to_owned(),
             authority,
         })
-    }
-
-    /// Where the site's page for `handle` is. The key that opens the
-    /// invitation stays in the link's fragment, which a browser carries over
-    /// this redirect by itself: the site is never told it.
-    fn invitation(&self, handle: &str) -> String {
-        format!("{}/i/{handle}", self.origin)
     }
 
     /// Whether the request reached the host through the site itself.
@@ -548,48 +555,36 @@ impl Server {
             0o644,
         )
         .map_err(|error| failed(format!("keep this host's name: {error}")))?;
-        // A link is read days after it was made, so what it names waits on
-        // this host's disk: a restart, an upgrade or a deploy over this
-        // server leaves it there.
-        let invitation_shelf = Arc::new(shelf::Shelf::opening(
-            self.state_root().join("invitations"),
-            tilo_clock::unix_now_ns(),
-        ));
         let web = Arc::new(Web {
             context: context.clone(),
             server_info: server_info.clone(),
             endpoint: Some(self.endpoint()),
             allowed_origins: config.allowed_origins,
             workspaces: self.workspaces().cloned(),
-            envelopes: envelopes::Envelopes::new(self.state_root().join("envelopes")),
-            profiles: Arc::new(envelopes::Envelopes::of(
-                envelopes::Kind::Profile,
-                self.state_root().join("profiles"),
-            )),
+            profiles: Arc::new(profiles::Profiles::new(self.state_root().join("profiles"))),
             fetch: fetch.proxy,
             grants: Arc::default(),
             content_links: self.content_links(),
             presence: live.authority(),
             page_errors: page_errors::PageErrors::default(),
-            shelf: Arc::clone(&invitation_shelf),
             site: config.site.as_deref().and_then(Site::new),
-            login_codes: Arc::new(kept_login_codes(
-                self.state_root(),
-                public_origin.clone(),
-                also,
-            )),
+            tickets: tickets::Tickets::new(context.certification.clone()),
             wait_list: config.wait_list.clone(),
         });
         // The name each person gives themselves is kept with their profile, which the workspaces
         // here name them by.
         if let Some(workspaces) = &web.workspaces {
             workspaces.person_names(web.profiles.clone());
-            // The invitations the workspaces issue are sealed onto this
-            // site's shelf, so the link a member hands over and the one the
-            // mail to an address carries name the same short link.
-            let _ = workspaces.shelve_invitations(invitation_shelf as Arc<dyn SealedInvitations>);
+            // The short links of the invitations the workspaces issue name
+            // this host, which answers a page for the invitation a link names
+            // (`OPEN_INVITATION_PATH`): the link a member hands over and the
+            // one the mail to an address carries are the same.
+            if let Some(origin) = &public_origin {
+                let _ = workspaces.invitations_at(origin);
+            }
         }
-        web.serve_code_requests();
+        web.serve_tab_requests();
+        web.serve_tickets();
         web.serve_pushes(
             self.state_root(),
             config.site.as_deref(),
@@ -1116,15 +1111,6 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
         );
         return response;
     }
-    // A sealed invitation is fetched and taken back with their own methods,
-    // so the shelf answers before the POST-only check.
-    if let Some(handle) = tilo_server_protocol::sealed_invitations::handle_of(request.uri().path())
-    {
-        let handle = handle.to_owned();
-        let mut response = shelf::handle(web, request, &handle).await;
-        shelf::cors(&mut response);
-        return response;
-    }
     // A workspace's app as a web page: the document its script opens the
     // page from, over the device's own session.
     if request.method() == Method::GET
@@ -1177,8 +1163,8 @@ async fn body(
     Ok((parts, bytes))
 }
 
-/// Whether `user` is admitted to any workspace this server serves: whose
-/// envelope it keeps.
+/// Whether `user` is admitted to any workspace this server serves: a member
+/// here.
 async fn admitted_anywhere(web: &Web, user: [u8; 32]) -> bool {
     // The person this host runs for is its own before any workspace is bound.
     web.context.server.admits(user).await
@@ -1219,31 +1205,6 @@ fn refused(code: StatusCode, message: &str) -> Response<Body> {
     response
 }
 
-/// This host's login codes, kept under `state_root`: every deploy restarts
-/// the host, and a code a tab shows, or an agent was handed, outlives that.
-fn kept_login_codes(
-    state_root: &std::path::Path,
-    public_origin: Option<String>,
-    also: Vec<String>,
-) -> login_codes::LoginCodes {
-    login_codes::LoginCodes::kept(
-        public_origin,
-        state_root.join("login-codes.json"),
-        tilo_clock::unix_now_ms(),
-    )
-    .reached_also_at(also)
-}
-
-fn code_refused(refusal: &login_codes::Refusal) -> Response<Body> {
-    let code = match refusal {
-        login_codes::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
-        login_codes::Refusal::Unknown => StatusCode::NOT_FOUND,
-        login_codes::Refusal::TooMany => StatusCode::TOO_MANY_REQUESTS,
-        login_codes::Refusal::Conflict(_) => StatusCode::CONFLICT,
-    };
-    refused(code, refusal.message())
-}
-
 #[allow(
     clippy::result_large_err,
     reason = "the error is the response the handler sends as it is"
@@ -1253,59 +1214,44 @@ fn json_body<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Response
         .map_err(|_| refused(StatusCode::BAD_REQUEST, "not a request this route takes"))
 }
 
-/// The login code routes ([`tilo_server_protocol::login_code`]), or `None`
-/// for any other route.
-fn login_route(
-    web: &Web,
-    route: &str,
-    bytes: &[u8],
-    client: Option<std::net::IpAddr>,
-) -> Option<Response<Body>> {
-    use tilo_server_protocol::login_code as wire;
-    fn answered<T: serde::Serialize>(result: Result<T, login_codes::Refusal>) -> Response<Body> {
-        result.map_or_else(|refusal| code_refused(&refusal), |value| json(&value))
+/// Why a ticket route was refused, as the page is told it.
+fn ticket_refused(refusal: &tickets::Refusal) -> Response<Body> {
+    let status = match refusal {
+        tickets::Refusal::Malformed => StatusCode::BAD_REQUEST,
+        tickets::Refusal::Unknown => StatusCode::NOT_FOUND,
+        tickets::Refusal::TooMany => StatusCode::TOO_MANY_REQUESTS,
+        tickets::Refusal::NotWaiting
+        | tickets::Refusal::NotThisPerson
+        | tickets::Refusal::NotSignedIn
+        | tickets::Refusal::Spent => StatusCode::CONFLICT,
+    };
+    refused(status, refusal.message())
+}
+
+/// The ticket routes ([`tickets`]), or `None` for any other route.
+fn ticket_route(web: &Web, route: &str, bytes: &[u8]) -> Option<Response<Body>> {
+    fn answered<T: serde::Serialize>(result: Result<T, tickets::Refusal>) -> Response<Body> {
+        result.map_or_else(|refusal| ticket_refused(&refusal), |value| json(&value))
     }
-    let now_ms = tilo_clock::unix_now_ms();
-    let codes = &web.login_codes;
-    Some(match route {
-        wire::CREATE_ROUTE => match json_body::<wire::CreateCode>(bytes) {
-            Ok(create) => answered(codes.create(create.link.as_deref(), now_ms)),
+    let answer = match route {
+        tickets::MINT_ROUTE => match json_body::<tickets::Mint>(bytes) {
+            Ok(mint) => answered(web.tickets.mint(&mint, &web.current_host_info())),
             Err(refusal) => refusal,
         },
-        wire::RESOLVE_ROUTE => match json_body::<wire::Resolve>(bytes) {
-            Ok(resolve) => answered(codes.resolve(&resolve.code, client, now_ms)),
+        tickets::ASKED_ROUTE => match json_body::<tickets::Asking>(bytes) {
+            Ok(asking) => answered(web.tickets.asking(&asking.id)),
             Err(refusal) => refusal,
         },
-        wire::STEP_ROUTE => match json_body::<wire::Report>(bytes) {
-            Ok(report) => codes.report(&report, now_ms).map_or_else(
-                |refusal| code_refused(&refusal),
-                |()| reply(StatusCode::NO_CONTENT, Vec::new()),
-            ),
-            Err(refusal) => refusal,
-        },
-        wire::CLAIM_ROUTE => match json_body::<wire::Claim>(bytes) {
-            Ok(claim) => web.claim(&claim).unwrap_or_else(|refusal| refusal),
-            Err(refusal) => refusal,
-        },
-        wire::WAITING_ROUTE => match json_body::<wire::Waiting>(bytes) {
-            Ok(waiting) => answered(web.waiting(&waiting)),
-            Err(refusal) => refusal,
-        },
-        wire::CERTIFY_ROUTE => match json_body::<wire::Certify>(bytes) {
-            Ok(certify) => web.certify(&certify).map_or_else(
-                |refusal| refusal,
-                |()| reply(StatusCode::NO_CONTENT, Vec::new()),
-            ),
-            Err(refusal) => refusal,
-        },
-        wire::FOLLOW_ROUTE => match json_body::<wire::Follow>(bytes) {
-            Ok(follow) => {
-                answered(codes.follow(&follow.follow, follow.offer.as_ref(), client, now_ms))
-            }
+        tickets::ANSWER_ROUTE => match json_body::<tickets::Answering>(bytes) {
+            Ok(answering) => match web.tickets.answer(&answering) {
+                Ok(()) => reply(StatusCode::NO_CONTENT, Vec::new()),
+                Err(refusal) => ticket_refused(&refusal),
+            },
             Err(refusal) => refusal,
         },
         _ => return None,
-    })
+    };
+    Some(answer)
 }
 
 #[allow(
@@ -1329,7 +1275,7 @@ async fn route(
     };
     let client = client_address(&request);
     let (_, bytes) = body(request, MAX_REQUEST_BYTES).await?;
-    if let Some(answer) = login_route(web, route, &bytes, client) {
+    if let Some(answer) = ticket_route(web, route, &bytes) {
         return Ok(answer);
     }
     match route {
@@ -1349,6 +1295,27 @@ async fn route(
             let invitation: Vec<u8> = decode(&bytes)?;
             Ok(encoded(&workspaces.inspect_invitation(&invitation).await))
         }
+        tilo_server_protocol::web::OPEN_INVITATION_PATH => {
+            let workspaces = web.workspaces.as_ref().ok_or_else(|| {
+                status(StatusCode::NOT_FOUND, "this server governs no workspaces")
+            })?;
+            let asked: tilo_server_protocol::web::KeptInvitation = serde_json::from_slice(&bytes)
+                .map_err(|_| {
+                status(
+                    StatusCode::BAD_REQUEST,
+                    "that is not an invitation's secret",
+                )
+            })?;
+            // Spent, lapsed, taken back and never issued read alike: a link
+            // tells nothing about the invitations it does not name.
+            let signed = workspaces
+                .kept_invitation(&asked.workspace, &asked.secret)
+                .await
+                .ok_or_else(|| status(StatusCode::GONE, "that invitation is gone"))?;
+            Ok(json(&tilo_server_protocol::web::OpenedInvitation {
+                invitation: tilo_peer_state::join::encode_invitation_text(&signed),
+            }))
+        }
         tilo_server_protocol::directory::DIRECTORY_PATH => {
             let workspaces = web.workspaces.as_ref().ok_or_else(|| {
                 status(StatusCode::NOT_FOUND, "this server governs no workspaces")
@@ -1363,21 +1330,16 @@ async fn route(
             let client = client.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
             directory_entry(web, route, &bytes, client).await
         }
-        "/envelope" | "/profile" => {
+        "/profile" => {
             let now_ms = tilo_clock::unix_now_ms();
-            let kept = if route == "/profile" {
-                &web.profiles
-            } else {
-                &web.envelopes
-            };
-            kept.publish(&bytes, now_ms, |root| admitted_anywhere(web, root))
+            web.profiles
+                .publish(&bytes, now_ms, |root| admitted_anywhere(web, root))
                 .await
                 .map(|root| {
                     // A profile's name is the person's in every workspace here: each names them
                     // by it from now on.
-                    if route == "/profile"
-                        && let (Some(workspaces), Some(name)) =
-                            (web.workspaces.clone(), web.profiles.kept_name(&root))
+                    if let (Some(workspaces), Some(name)) =
+                        (web.workspaces.clone(), web.profiles.kept_name(&root))
                     {
                         tokio::spawn(async move {
                             workspaces
@@ -1389,21 +1351,17 @@ async fn route(
                 })
                 .map_err(|refusal| {
                     let code = match refusal {
-                        envelopes::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
-                        envelopes::Refusal::BadSignature | envelopes::Refusal::NotMember => {
+                        profiles::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
+                        profiles::Refusal::BadSignature | profiles::Refusal::NotMember => {
                             StatusCode::FORBIDDEN
                         }
-                        envelopes::Refusal::Stale => StatusCode::CONFLICT,
-                        envelopes::Refusal::Storage => StatusCode::INTERNAL_SERVER_ERROR,
+                        profiles::Refusal::Stale => StatusCode::CONFLICT,
+                        profiles::Refusal::Storage => StatusCode::INTERNAL_SERVER_ERROR,
                     };
                     status(code, refusal.message())
                 })
         }
-        "/envelope/fetch" | "/profile/fetch" => match if route == "/profile/fetch" {
-            web.profiles.answer(&bytes)
-        } else {
-            web.envelopes.answer(&bytes)
-        } {
+        "/profile/fetch" => match web.profiles.answer(&bytes) {
             Some(json) => {
                 let mut response = reply(StatusCode::OK, json);
                 response.headers_mut().insert(

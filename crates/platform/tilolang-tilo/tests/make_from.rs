@@ -61,7 +61,7 @@ fn ref_of(node: &UiNode, prop: &str) -> Option<ResourceRef> {
     }
 }
 
-/// The transcript's rows as the list builds them: each row's node.
+/// The transcript's rows as the list builds them, each with its menu: each row's node.
 fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
     view.poll_patches().unwrap();
     let list = view
@@ -72,7 +72,13 @@ fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
         .clone();
     let len = view.list_len(&list).unwrap_or(0);
     (0..len)
-        .filter_map(|i| view.row(&list, i).unwrap().cloned())
+        .filter_map(|i| {
+            // The menu of each row, asked for as the window asks when the person opens it.
+            let key = view.row_key(&list, i);
+            view.menu_row(&list, key.as_deref());
+            view.poll_patches().unwrap();
+            view.row(&list, i).unwrap().cloned()
+        })
         .collect()
 }
 

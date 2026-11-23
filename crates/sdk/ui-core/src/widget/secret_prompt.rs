@@ -774,10 +774,6 @@ impl SecretPrompt {
         self.presentation
     }
 
-    pub fn set_presentation(&mut self, presentation: Presentation) {
-        self.presentation = presentation;
-    }
-
     pub fn title(&self) -> &str {
         &self.title
     }
@@ -1187,13 +1183,6 @@ impl SecretPrompt {
     /// control up beside it with this.
     pub fn field_height(theme: &Theme) -> f64 {
         ControlSize::Regular.height(theme)
-    }
-
-    /// How tall this prompt's fields stand under `theme` as it is now: a
-    /// touch target once a finger is in play, [`Self::field_height`]
-    /// otherwise.
-    pub fn current_field_height(&self, theme: &Theme) -> f64 {
-        Self::field_height(&self.effective_theme(theme))
     }
 
     fn line_height(theme: &Theme, role: TextRole) -> f64 {
@@ -1926,13 +1915,6 @@ impl SecretPrompt {
             self.paint_body(scene, transform, text, &theme, &answer);
         }
         self.answer.rest_if_settled(now);
-    }
-
-    /// When the answer under the fields comes to rest; `None` once its
-    /// resting frame has been painted. A host drawing outside the widget
-    /// tree asks for frames until then.
-    pub fn answer_deadline(&self) -> Option<crate::time::Instant> {
-        self.answer.deadline()
     }
 
     /// A field whose answer is being checked: edged in the informational

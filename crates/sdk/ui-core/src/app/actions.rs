@@ -1266,6 +1266,18 @@ impl App {
                 && spec.locus == tilo_actions::ExecutionLocus::ServerPreferred)
     }
 
+    /// A record another workspace holds (a person's profile record in a window of another
+    /// workspace) is admitted where it is held: the broker decides it there, never this window,
+    /// which only shows what that workspace said of it.
+    fn held_invocation_needs_broker(
+        resource: &tilo_actions::ResourceSpec,
+        invocation: Option<tilo_actions::InvocationId>,
+        has_delivery: bool,
+        connected: bool,
+    ) -> bool {
+        resource.workspace.is_some() && invocation.is_none() && (has_delivery || connected)
+    }
+
     fn route_bound_invocation_to_broker(
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
@@ -1345,16 +1357,21 @@ impl App {
         let has_delivery = broker_delivery.is_some();
         let connected = self.collaboration.manager.is_connected();
         let resolved = std::cell::Cell::new(None);
-        let route = |spec: &tilo_actions::ActionSpec| {
+        let route = |resource: &tilo_actions::ResourceSpec, spec: &tilo_actions::ActionSpec| {
             resolved.set(Some(spec.kind));
             !broker_admitted
-                && Self::bound_invocation_needs_broker(
+                && (Self::bound_invocation_needs_broker(
                     spec.kind,
                     spec,
                     invocation,
                     has_delivery,
                     connected,
-                )
+                ) || Self::held_invocation_needs_broker(
+                    resource,
+                    invocation,
+                    has_delivery,
+                    connected,
+                ))
         };
         let id = invocation.unwrap_or_default();
         let mut api = BrokerApi {

@@ -110,11 +110,18 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn std::error:
     let mut widget = GreeterApp::for_boot(link.clone(), comforts.screen_reader);
     // The first frame shows who signs in, so it waits for the list, which
     // the supervisor sends as soon as it has read it.
+    let mut counted_from = Ran::default();
     loop {
+        let waits = !link.has_message();
         let message = link.recv()?;
         let people = matches!(message, ToGreeter::People { .. });
         widget.boot_message(message);
         if people {
+            // Ready before the list came: the first frame's work starts now.
+            // The list came first: everything since the start was on its way.
+            if waits {
+                counted_from = Ran::so_far();
+            }
             break;
         }
     }
@@ -154,10 +161,60 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<(), Box<dyn std::error:
         move || ended.quit(),
     );
     host.run(&mut app, || {
-        // The boot performance check reads this line's time.
-        eprintln!("tilo-greeter: first frame of the boot sign-in");
+        // The boot performance check reads this line's time, and holds the
+        // work it names to the first frame's budget.
+        let ran = Ran::so_far().since(counted_from);
+        eprintln!(
+            "tilo-greeter: first frame of the boot sign-in ran_ms={} waited_ms={}",
+            ran.ran_ns / 1_000_000,
+            ran.waited_ns / 1_000_000
+        );
     })?;
     Ok(())
+}
+
+/// What this process's threads have run on a core and waited for one, from
+/// the kernel's scheduler statistics for each (`/proc/self/task/*/schedstat`):
+/// the work of the first frame, apart from the time a busy machine kept it
+/// waiting. A thread that has ended counts no more.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Ran {
+    ran_ns: u64,
+    waited_ns: u64,
+}
+
+impl Ran {
+    fn so_far() -> Self {
+        let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
+            return Self::default();
+        };
+        tasks
+            .filter_map(|task| std::fs::read_to_string(task.ok()?.path().join("schedstat")).ok())
+            .map(|stat| Self::parse(&stat))
+            .fold(Self::default(), |total, thread| Self {
+                ran_ns: total.ran_ns.saturating_add(thread.ran_ns),
+                waited_ns: total.waited_ns.saturating_add(thread.waited_ns),
+            })
+    }
+
+    /// One thread's `schedstat`: the nanoseconds it ran, then the nanoseconds
+    /// it waited to run, then how many times it ran.
+    fn parse(stat: &str) -> Self {
+        let mut fields = stat
+            .split_whitespace()
+            .map(|field| field.parse::<u64>().unwrap_or(0));
+        Self {
+            ran_ns: fields.next().unwrap_or(0),
+            waited_ns: fields.next().unwrap_or(0),
+        }
+    }
+
+    fn since(self, earlier: Self) -> Self {
+        Self {
+            ran_ns: self.ran_ns.saturating_sub(earlier.ran_ns),
+            waited_ns: self.waited_ns.saturating_sub(earlier.waited_ns),
+        }
+    }
 }
 
 #[cfg(test)]

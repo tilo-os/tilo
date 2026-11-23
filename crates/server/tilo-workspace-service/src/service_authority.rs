@@ -119,10 +119,6 @@ pub enum ServiceOperation {
     /// its device key: the person's device that approved it does this, and the
     /// machine's own report follows when it holds the workspace.
     AdmitMachine,
-    /// Take the asking device, another of the host's person's, into the
-    /// person's workspace, which the host holds: it holds the workspace from
-    /// then on. Only a device of the person, never an agent's grant.
-    TakeInPersonDevice,
     /// Take the server `cert` names, reached at `endpoint`, in among the host's
     /// person's servers: a new entry under its device key in their Servers
     /// document, which this host holds and governs, as the server's own start
@@ -158,7 +154,6 @@ impl ServiceOperation {
             Self::ShowMachine => "machine.show",
             Self::ListServers => "machine.servers",
             Self::AdmitMachine => "machine.admit",
-            Self::TakeInPersonDevice => "person.take-in",
             Self::AdmitServer => "server.admit",
         }
     }
@@ -246,7 +241,6 @@ impl ServiceOperation {
             | Self::ShowMachine
             | Self::ListServers
             | Self::AdmitMachine
-            | Self::TakeInPersonDevice
             | Self::AdmitServer => false,
         }
     }
@@ -257,7 +251,7 @@ mod tests {
     use super::ServiceOperation;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
-    const ALL: [ServiceOperation; 25] = [
+    const ALL: [ServiceOperation; 24] = [
         ServiceOperation::CreateWorkspace,
         ServiceOperation::ListWorkspaces,
         ServiceOperation::EnterWorkspace,
@@ -281,7 +275,6 @@ mod tests {
         ServiceOperation::ShowMachine,
         ServiceOperation::ListServers,
         ServiceOperation::AdmitMachine,
-        ServiceOperation::TakeInPersonDevice,
         ServiceOperation::AdmitServer,
     ];
 

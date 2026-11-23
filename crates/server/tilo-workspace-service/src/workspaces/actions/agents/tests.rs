@@ -2,11 +2,6 @@
 //! asking its person first by default; a key a person made for their own
 //! programs is that person, held to what they may.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends"
-)]
-
 use std::sync::{Arc, Mutex};
 
 use ed25519_dalek::SigningKey;
@@ -407,8 +402,8 @@ async fn its_person_is_asked_last_once_their_own_checks_pass() {
     assert!(refused.is_err(), "{refused:?}");
     assert!(allowing.asked().is_empty(), "{:?}", allowing.asked());
 
-    // An administrator removes someone ranked below them: their agent asks
-    // them first, and what they refuse leaves the member in place.
+    // An administrator may remove Bo, and their agent's grants answer Ask: it
+    // asks them first, and what they refuse leaves the member in place.
     workspaces
         .set_member_administrator(
             &workspace,

@@ -14,7 +14,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use tilo_action_policy::{
-    ActionKind, Answer, Grant, GrantId, Grantee, MemberAccess, TreePath, WorkspacePolicy,
+    ActionKind, Grant, GrantId, Grantee, MemberAccess, TreePath, WorkspacePolicy,
 };
 use tilo_lock::MutexRecover;
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -68,7 +68,6 @@ mod bot_schedules_tests;
 #[cfg(test)]
 pub(crate) mod test_desktops;
 pub use delegates::{ActingAs, DelegateInactive, GovernedAgent, GovernedDelegateRow};
-mod agent_runs;
 mod local_admission;
 pub use local_admission::NotAdmitted;
 mod local_outbox;
@@ -130,9 +129,11 @@ pub use authority::DocumentKeysBasis;
 mod construction;
 mod durable;
 mod written_under;
-pub use durable::DURABLE_VERSION;
 #[cfg(test)]
 pub(crate) use durable::Durable;
+#[cfg(test)]
+use durable::{BROUGHT_UP, brought_up};
+pub use durable::{DURABLE_VERSION, kept_before_own_removal};
 pub(crate) use durable::{DocumentParts, DurableParts};
 mod receiving;
 mod records;
@@ -167,18 +168,6 @@ pub(crate) fn now_secs(now: SystemTime) -> i64 {
         .unwrap_or(i64::MAX)
 }
 
-/// Whether `agent` is admitted to the workspace: it holds a live grant on the workspace
-/// itself.
-pub(crate) fn agent_is_member(policy: &WorkspacePolicy, agent: &str, now: SystemTime) -> bool {
-    let cx = tilo_action_policy::Context::at_time(now);
-    let workspace = policy.node();
-    policy.grants.iter().any(|grant| {
-        grant.grantee.agent_id() == Some(agent)
-            && grant.node == workspace
-            && grant.answer != Answer::Deny
-            && grant.is_live(&cx)
-    })
-}
 /// The id of the grant that makes a member an administrator.
 fn administrator_grant_id(user_public_key: [u8; 32]) -> GrantId {
     tilo_action_policy::roles::administrator_grant_id(&hex::encode(user_public_key))

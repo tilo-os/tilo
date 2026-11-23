@@ -94,13 +94,6 @@ impl TextInput {
         self.on_completion_create = Some(Box::new(create));
     }
 
-    pub fn set_on_command(
-        &mut self,
-        start: impl FnMut(&crate::widget::completion::Candidate) + 'static,
-    ) {
-        self.on_command = Some(Box::new(start));
-    }
-
     #[must_use]
     pub fn pending_token(&self) -> Option<std::ops::Range<usize>> {
         self.completion

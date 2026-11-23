@@ -29,7 +29,6 @@ use super::calendar_connect::{
     ASKED_FIRST, Asker, Asking, Carrier, DECLINED, PutAsk, TYPED, Typed, UNANSWERED,
     ask_for_password, asked_in,
 };
-use super::mail::narrowing;
 use super::turn_provider::{Ending, Rows};
 use super::{Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::hosted_use::{
@@ -105,7 +104,7 @@ impl TurnMailConnects {
     /// and act through.
     pub(super) async fn for_turn(carrier: &Carrier, turn: &Turn, reply: &Reply) -> Arc<Self> {
         let workspace_id = reply.provider.workspace;
-        let narrowed = narrowing(&turn.agent, &reply.workspace);
+        let narrowed = turn.agent.bound_rules();
         let hosted = HostedTurn {
             workspace: workspace_id,
             caller: &reply.caller,
@@ -128,7 +127,7 @@ impl TurnMailConnects {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<InvocationUpdate, ActionCallError> {
-        let narrowed = narrowing(&self.agent, &self.workspace);
+        let narrowed = self.agent.bound_rules();
         let hosted = HostedTurn {
             workspace: self.workspace_id,
             caller,
@@ -264,7 +263,7 @@ impl Carrier {
         claimed: &MailAsk,
         typed: Option<String>,
     ) -> Option<MailAsk> {
-        let narrowed = narrowing(&asker.agent, &claimed.workspace);
+        let narrowed = asker.agent.bound_rules();
         let hosted = HostedTurn {
             workspace: asker.workspace_id,
             caller: &asker.turn,

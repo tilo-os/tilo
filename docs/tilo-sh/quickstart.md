@@ -96,8 +96,8 @@ api=$TILO_API_URL/v1
 auth="Authorization: Bearer $TILO_API_KEY"   # the key in TILO_API_KEY
 
 # The same Idempotency-Key again answers this workspace rather than making another.
-created=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Idempotency-Key: first-steps" \
-  -H "Content-Type: application/json" -d '{"name": "First steps"}')
+created=$(curl -sS --fail-with-body "$api/resources/account/workspaces/actions/create" -H "$auth" -H "Idempotency-Key: first-steps" \
+  -H "Content-Type: application/json" -d '{"name": "First steps"}' | jq -r .result.workspace)
 workspace=$(jq -r .id <<<"$created")
 echo "workspace: $(jq -r .name <<<"$created") $workspace"
 

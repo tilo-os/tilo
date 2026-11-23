@@ -239,10 +239,12 @@ async fn assert_delegated_write_refused(
     );
 }
 
+/// The versions of issue `i-1`, oldest first, are by `authors`: whoever the service named on each
+/// write, whatever its stamp claimed.
 async fn assert_certified_history(
     workspaces: &Workspaces,
     context: &ResourceRequestContext,
-    person: &str,
+    authors: &[tilo_actions::Actor],
 ) {
     let Reply::Versions(versions) = workspaces
         .resource_command(
@@ -257,13 +259,12 @@ async fn assert_certified_history(
     else {
         panic!("the resource has a history");
     };
-    assert_eq!(versions.len(), 2);
-    assert!(versions.iter().all(|version| {
-        version
-            .stamp
-            .as_ref()
-            .is_some_and(|stamp| stamp.invoker == person)
-    }));
+    let by: Vec<_> = versions
+        .iter()
+        .map(|version| version.stamp.as_ref().and_then(Stamp::invoked_by))
+        .collect();
+    let expected: Vec<_> = authors.iter().cloned().map(Some).collect();
+    assert_eq!(by, expected, "each version names who made it");
 }
 
 /// The replica follows the document placed by the store so other members hear its changes.
@@ -350,6 +351,25 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
             "the write is read back at once"
         );
     }
+    // A write the app makes while serving an invocation the workspace service delivered to it is that
+    // invocation's invoker's: an agent acting for the person is named as the agent.
+    let agent = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"));
+    let delivered = tilo_actions::InvocationId(uuid::Uuid::new_v4());
+    workspaces
+        .resource_command(
+            &context.clone().serving(vec![(delivered, agent.clone())]),
+            Command::Put {
+                kind: KIND.to_owned(),
+                id: "i-1".to_owned(),
+                resource: issue("Scribed"),
+                stamp: Stamp {
+                    invocation: delivered.0.to_string(),
+                    ..stamp.clone()
+                },
+            },
+        )
+        .await
+        .unwrap();
     assert_replica_holds_issue(&workspaces, &workspace).await;
     // A reader the issue's set leaves out reads nothing of it.
     assert!(
@@ -366,10 +386,13 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
         cert: cert.clone(),
         signer: Arc::new(key),
     }));
-    assert_certified_history(&workspaces, &context, &hex::encode(cert.user_public_key)).await;
+    let person = tilo_actions::Actor::Member(tilo_actions::MemberId::person(hex::encode(
+        cert.user_public_key,
+    )));
+    assert_certified_history(&workspaces, &context, &[person.clone(), person, agent]).await;
     assert_eq!(
         title_through_service(&workspaces, &context, "i-1").await,
-        Some(Value::Text("Renamed".into())),
+        Some(Value::Text("Scribed".into())),
         "a restart reads the store back"
     );
     assert!(
@@ -691,7 +714,7 @@ async fn index_retained_checkpoint(
     let NeighbourMsg::AppDocument { envelope, .. } = &message else {
         panic!("a store document checkpoint");
     };
-    let (group, retention) = neighbour_wire::retention(&message, false).unwrap();
+    let (_, retention) = neighbour_wire::retention(&message, false).unwrap();
     assert_eq!(retention, neighbour_wire::Retention::Checkpoint);
     {
         let state = workspaces.workspace(workspace).await.unwrap();
@@ -707,8 +730,8 @@ async fn index_retained_checkpoint(
 
     let device = workspaces.member_identity().unwrap();
     let context = context(workspace, &device.cert);
-    let records = &workspaces.inner.host.records;
-    let before = records.retained(workspace_id).await.unwrap();
+    let records = &workspaces.inner.records;
+    let before = records.retained(workspace_id).unwrap();
     let mut watches = workspaces.document_writes();
     let refused = workspaces
         .resource_command(&context, put_signed_issue("No signed base"))
@@ -720,7 +743,7 @@ async fn index_retained_checkpoint(
         .await
         .unwrap_err();
     assert!(refused.contains("has not opened this resource's signed history"));
-    assert_eq!(records.retained(workspace_id).await.unwrap(), before);
+    assert_eq!(records.retained(workspace_id).unwrap(), before);
     assert!(watches.try_recv().is_err());
     assert_eq!(
         title_through_service(workspaces, &context, "i-1").await,
@@ -729,21 +752,12 @@ async fn index_retained_checkpoint(
 
     workspaces
         .inner
-        .host
         .records
         .carry(
             workspace_id,
             author,
-            crate::workspace_documents::HostCommit {
-                body,
-                channel: group,
-                checkpoint: true,
-            },
+            &crate::workspace_documents::HostCommit { body },
         )
-        .await
-        .unwrap()
-        .durable()
-        .await
         .unwrap();
     document
 }
@@ -774,11 +788,12 @@ async fn a_cancelled_write_keeps_nothing(
     workspace_id: collab_types::WorkspaceId,
     context: &ResourceRequestContext,
 ) {
-    let registry = &workspaces.inner.host.workspaces;
-    let records = &workspaces.inner.host.records;
-    let before = records.retained(workspace_id).await.unwrap();
+    let records = &workspaces.inner.records;
+    let before = records.retained(workspace_id).unwrap();
     let state = workspaces.workspace(workspace).await.unwrap();
-    let registry_guard = registry.lock().await;
+    // The workspace held, the write waits for it before admission: cancelling
+    // it there keeps nothing.
+    let held = state.lock().await;
     let cancelled = tokio::spawn({
         let workspaces = workspaces.clone();
         let context = context.clone();
@@ -788,22 +803,12 @@ async fn a_cancelled_write_keeps_nothing(
                 .await
         }
     });
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while state.try_lock().is_ok() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the write reaches the workspace");
+    // Let the write run until it waits for the workspace this test holds.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     cancelled.abort();
     assert!(cancelled.await.unwrap_err().is_cancelled());
-    drop(
-        tokio::time::timeout(std::time::Duration::from_secs(5), state.lock())
-            .await
-            .expect("cancellation releases the workspace before admission"),
-    );
-    drop(registry_guard);
-    assert_eq!(records.retained(workspace_id).await.unwrap(), before);
+    drop(held);
+    assert_eq!(records.retained(workspace_id).unwrap(), before);
     assert_eq!(
         title_through_service(workspaces, context, "i-1").await,
         None
@@ -829,30 +834,33 @@ async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
         cluster_id: workspace.clone(),
         document: String::new(),
     };
-    workspaces
-        .own_route_keys(&route, true)
-        .await
-        .unwrap()
-        .unwrap();
     let context = context(&workspace, &cert);
-    let registry = &workspaces.inner.host.workspaces;
-    let records = &workspaces.inner.host.records;
-    let before = records.retained(created.workspace_id).await.unwrap();
-    let hosted = registry.lock().await.remove(&created.workspace_id).unwrap();
-    let result = workspaces
+    let records = &workspaces.inner.records;
+    let before = records.retained(created.workspace_id).unwrap();
+    // Peer-state's admission refuses the first write: this device holds no keys
+    // of the record's channel yet, so nothing is retained, nothing reads, and
+    // whoever follows the workspace's records is not woken.
+    let mut watches = workspaces.document_writes();
+    let refused = workspaces
         .resource_command(&context, put_signed_issue("Refused"))
         .await;
-    registry.lock().await.insert(created.workspace_id, hosted);
-    assert_eq!(result.unwrap_err(), "the workspace is not hosted here");
-    assert_eq!(
-        records.retained(created.workspace_id).await.unwrap(),
-        before
-    );
+    assert_eq!(refused.unwrap_err(), "this channel has no keys yet");
+    assert_eq!(records.retained(created.workspace_id).unwrap(), before);
     let title = title_through_service(&workspaces, &context, "i-1").await;
     assert_eq!(
         title, None,
         "a first write without a durable frame is invisible"
     );
+    assert!(
+        watches.try_recv().is_err(),
+        "a refused write wakes no follower"
+    );
+    // The channel's keys make the next writes admission's to take.
+    workspaces
+        .own_route_keys(&route, true)
+        .await
+        .unwrap()
+        .unwrap();
 
     a_cancelled_write_keeps_nothing(&workspaces, &workspace, created.workspace_id, &context).await;
 
@@ -961,7 +969,6 @@ async fn a_member_copy_retains_and_forwards_its_first_resource_write() {
     let retained = member
         .workspace_documents()
         .retained(created.workspace_id)
-        .await
         .unwrap();
     assert!(retained.iter().any(|frame| {
         frame.author == cert.device_public_key
@@ -1072,7 +1079,6 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
             let retained = member
                 .workspace_documents()
                 .retained(created.workspace_id)
-                .await
                 .unwrap();
             if retained.iter().any(|frame| {
                 matches!(NeighbourMsg::decode(&frame.body), Ok(NeighbourMsg::AppDocument {
@@ -1159,8 +1165,8 @@ async fn retained_store_checkpoint_restores_signed_history_on_open() {
     assert!(history.writes[0].mutation.is_ok());
 
     let context = context(&workspace, &cert);
-    let records = &workspaces.inner.host.records;
-    let before_cancel = records.retained(created.workspace_id).await.unwrap();
+    let records = &workspaces.inner.records;
+    let before_cancel = records.retained(created.workspace_id).unwrap();
     let mut watches = workspaces.document_writes();
     {
         let state = workspaces.workspace(&workspace).await.unwrap();
@@ -1195,7 +1201,7 @@ async fn retained_store_checkpoint_restores_signed_history_on_open() {
         Some(Value::Text("First".into()))
     );
     assert_eq!(
-        records.retained(created.workspace_id).await.unwrap(),
+        records.retained(created.workspace_id).unwrap(),
         before_cancel,
         "a cancelled write leaves retained history untouched"
     );
@@ -1275,10 +1281,8 @@ async fn a_write_this_device_cannot_send_is_not_read_back() {
     );
     let retained = workspaces
         .inner
-        .host
         .records
         .retained(created.workspace_id)
-        .await
         .unwrap();
     assert!(
         !retained.iter().any(|frame| matches!(

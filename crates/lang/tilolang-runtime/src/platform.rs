@@ -488,6 +488,18 @@ impl Core {
     /// change was made over; then the id of the action that made it and of its change, which
     /// code compares rather than reads (`tilolang::host::action_id_at`).
     fn version_value(&self, v: crate::store::Version, of: &ResourceRef) -> HResult<Value> {
+        self.act_value(v, of, None)
+    }
+
+    /// [`Self::version_value`] of the last of a run of changes that are one act (the keystrokes
+    /// of one burst of typing), the run opening with the change `since`: what each field held
+    /// before the run and holds after it, so one entry says what the act did as a whole.
+    fn act_value(
+        &self,
+        v: crate::store::Version,
+        of: &ResourceRef,
+        since: Option<&str>,
+    ) -> HResult<Value> {
         let run = v.run.as_ref().map(|run| Box::new(run_value(run)));
         let info = self.type_of_ref(&of.ty).ok().map(|(_, info)| info);
         let named: Vec<String> = v
@@ -533,7 +545,7 @@ impl Core {
             .as_ref()
             .map_or_else(String::new, |who| self.unnamed(who));
         let changes = match &info {
-            Some(info) => self.changes_value(&v, of, info, looking.as_ref())?,
+            Some(info) => self.changes_value((&v, since), of, info, looking.as_ref())?,
             None => Vec::new(),
         };
         Ok(Value::Tuple(vec![
@@ -641,7 +653,7 @@ impl Core {
             return self.action_label(&v.action);
         };
         let said: Vec<String> = self
-            .changes_value(v, of, &info, Some(viewer))
+            .changes_value((v, None), of, &info, Some(viewer))
             .unwrap_or_default()
             .into_iter()
             .filter_map(|change| {
@@ -787,12 +799,13 @@ impl Core {
 
     /// Each field the version `v` of `of` changed, as a `host.Change`: its name, its name in
     /// words, what it held before and after as its type shows it, and the words history says it
-    /// with ([`crate::did`]), read from the change itself. None for a version that made or
+    /// with ([`crate::did`]), read from the change itself, or from before the change `since`
+    /// where `v` ends a run of changes that are one act. None for a version that made or
     /// removed the resource, or one not committed yet. A time of day that moved with its day
     /// reads with it ("Tomorrow 9:00 AM"), not as a change of its own.
     fn changes_value(
         &self,
-        v: &crate::store::Version,
+        (v, since): (&crate::store::Version, Option<&str>),
         of: &ResourceRef,
         info: &crate::registry::TypeInfo,
         viewer: Option<&Actor>,
@@ -822,9 +835,13 @@ impl Core {
         let written = self
             .store
             .borrow()
-            .written(of, &specs, &v.change)
+            .written(of, &specs, (since.unwrap_or(&v.change), &v.change))
             .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-        // Each field it wrote, with what it held before and after as its type shows it.
+        // Each field it wrote, with what it held before and after as its type shows it. The field
+        // a record is named by reads, while empty, as every surface names the record then: the
+        // words its type gives it while untitled, as the field's placeholder stands, dimmed.
+        let named = info.name_field().map(|field| field.id.as_str());
+        let untitled = self.untitled_words(of);
         let mut held: Vec<(&crate::registry::FieldInfo, Value, Value)> =
             Vec::with_capacity(written.len());
         for (id, before, after) in written {
@@ -835,6 +852,15 @@ impl Core {
                 let value = self
                     .field_value(of, field, held, None)
                     .map_err(crate::engine::HostFail::Trap)?;
+                if named == Some(field.id.as_str())
+                    && matches!(&value, Value::Text(text) if text.trim().is_empty())
+                {
+                    return Ok(Value::Tuple(vec![
+                        Value::text("placeholder"),
+                        Value::Text(untitled.clone()),
+                        Value::none(),
+                    ]));
+                }
                 self.change_shown(&field.ty, &value, viewer)
             };
             held.push((field, side(before)?, side(after)?));
@@ -1160,33 +1186,34 @@ impl Core {
             let opens = above.as_ref().is_none_or(|above| opens_visit(above, last));
             let latest = above.is_none();
             above = Some(last.clone());
-            // How many acts the step folds: versions of one change are one command over many
-            // items, and the changes of one gesture are the keystrokes of one burst of typing —
-            // history says the count of each, and Undo takes them all back together.
-            let changes = {
-                let mut count = 0usize;
-                let mut previous: Option<(&str, Option<&str>)> = None;
-                for v in &step {
-                    let holds = (v.change.as_str(), v.gesture.as_deref());
-                    let continues = previous.is_some_and(|(change, gesture)| {
-                        change == holds.0 || (gesture.is_some() && gesture == holds.1)
-                    });
-                    if !continues {
-                        count = count.saturating_add(1);
-                    }
-                    previous = Some(holds);
-                }
-                count
-            };
+            // The acts the step folds: versions of one change are one command over many items,
+            // and the changes of one gesture are the keystrokes of one burst of typing. History
+            // says how many acts, lists each act once, and Undo takes each back whole.
+            let acts = acts_of(&step);
+            let changes = acts.len();
             // What the step did, where its changes are one action's and its words say how many:
             // the count stands in the sentence, not beside it.
             let said = self
                 .counted_said(&step, changes)
                 .map_or_else(|| Value::Text(String::new()), Value::Text);
-            let versions = step
-                .into_iter()
-                .map(|v| self.version_value(v, at))
-                .collect::<HResult<_>>()?;
+            // Each act as its last change, saying what the whole act did: a burst of typing
+            // reads from before its first keystroke to after its last.
+            let mut versions = Vec::with_capacity(acts.len());
+            for act in acts {
+                let (Some(first), Some(last)) = (act.first(), act.last()) else {
+                    continue;
+                };
+                let since = (first.change != last.change).then(|| first.change.clone());
+                let mut whole = last.clone();
+                for v in act {
+                    for field in &v.fields {
+                        if !whole.fields.contains(field) {
+                            whole.fields.push(field.clone());
+                        }
+                    }
+                }
+                versions.push(self.act_value(whole, at, since.as_deref())?);
+            }
             out.push(Value::Tuple(vec![
                 who,
                 at_time,
@@ -2120,12 +2147,48 @@ impl Core {
         Ok(sentence(&ty.name))
     }
 
+    /// What a record of `of`'s type is called while its title is empty: the words its type
+    /// declares for it (`(untitled: "Untitled")`), else its type's name, as [`Self::title_of`]
+    /// names it.
+    fn untitled_words(&self, of: &ResourceRef) -> String {
+        let Ok((pkg, info)) = self.type_of_ref(&of.ty) else {
+            return String::new();
+        };
+        let Some(declared) = pkg.meta.types.iter().find(|ty| ty.id == info.id) else {
+            return sentence(&info.name);
+        };
+        match &declared.untitled {
+            Some(untitled) => {
+                let key = format!("{}.untitled", tilolang::messages::key_of(&declared.id));
+                self.word_args(&key, &[], untitled)
+            }
+            None => sentence(&declared.name),
+        }
+    }
+
     /// The actions offered on `target`: its type's own that need nothing else (what else it
     /// takes has a default, which the invocation gets, or a form asks), and the actions of the
     /// resource holding it that take it as their second argument — in the order their packages
     /// declare them, the primary one first, each a `host.Action`. An app declares its actions in
     /// the order a person reads them, so a menu of one item lists them as it wrote them.
     pub(crate) fn actions_on(&self, target: &RefValue, above: &Value) -> HResult<Vec<Value>> {
+        self.offers_on(target, above, |offers| {
+            let mut out = Vec::with_capacity(offers.len());
+            for shown in offers {
+                out.extend(self.action_value(shown, Some(target))?);
+            }
+            Ok(out)
+        })
+    }
+
+    /// What `f` makes of the actions offered on `target` ([`Self::actions_on`]), none of them
+    /// presented or decided yet: a caller that needs only some of them decides only those.
+    pub(crate) fn offers_on<R>(
+        &self,
+        target: &RefValue,
+        above: &Value,
+        f: impl FnOnce(&[Offered<'_>]) -> HResult<R>,
+    ) -> HResult<R> {
         let held = &target.target;
         let packages = self.registry.borrow().packages();
         let rank = |pkg: &Rc<Package>| {
@@ -2209,23 +2272,19 @@ impl Core {
         found.sort_by_key(|(primary, pkg, index, _)| (!primary, *pkg, *index));
         // What it already offers as itself is not offered again as something to make: an
         // action written for the target is where a person finds it.
-        let direct: Vec<&str> = found
-            .iter()
-            .map(|(_, _, _, shown)| shown.action.id.as_str())
-            .collect();
-        let mut out = Vec::new();
-        for (_, _, _, shown) in found {
-            out.extend(self.action_value(&shown, Some(target))?);
-        }
+        let mut offers: Vec<Offered<'_>> =
+            found.into_iter().map(|(_, _, _, shown)| shown).collect();
         // Last, under the menu's one group, what can be made from it: a submenu of its own at
         // the end, so what the app offers the item stays what a person reads first.
         for shown in self.make_offers(target, own.as_ref(), &packages)? {
-            if direct.contains(&shown.action.id.as_str()) {
-                continue;
+            if !offers
+                .iter()
+                .any(|direct| direct.action.id == shown.action.id)
+            {
+                offers.push(shown);
             }
-            out.extend(self.action_value(&shown, None)?);
         }
-        Ok(out)
+        f(&offers)
     }
 
     /// The actions that can make something of `target`: for every type of the packages this
@@ -2555,6 +2614,13 @@ impl Core {
         )
     }
 
+    /// Why the invocation `run` does not apply where it was offered, as its action's `applies`
+    /// says it in `viewer`'s words: what leaves it out of a menu.
+    pub(crate) fn inapplicable(&self, run: &ActionRef, viewer: &Actor) -> HResult<Option<String>> {
+        self.decided(&run.action, &run.args, viewer, Decides::Applies)
+            .map(|(reason, _)| reason)
+    }
+
     /// Why the invocation `run` would be refused now, as its action's `require` says it in
     /// `viewer`'s words: what a control bound to it says while it stands dimmed.
     pub(crate) fn unmet(&self, run: &ActionRef, viewer: &Actor) -> HResult<Option<String>> {
@@ -2804,6 +2870,27 @@ fn step_facts(version: &crate::store::Version) -> StepFacts<'_> {
         run: version.run.as_ref().map(|run| run.id.as_str()),
         ..StepFacts::default()
     }
+}
+
+/// The acts the versions of one step (oldest first) are, each a run of them in order: versions
+/// of one change (one command over many items), or of one gesture (the keystrokes of one burst
+/// of typing), are one act.
+fn acts_of(step: &[crate::store::Version]) -> Vec<&[crate::store::Version]> {
+    let mut acts = Vec::new();
+    let mut start = 0;
+    for (at, pair) in step.windows(2).enumerate() {
+        let [before, next] = pair else { continue };
+        let continues = before.change == next.change
+            || (before.gesture.is_some() && before.gesture == next.gesture);
+        if !continues {
+            acts.push(step.get(start..=at).unwrap_or_default());
+            start = at.saturating_add(1);
+        }
+    }
+    if start < step.len() {
+        acts.push(step.get(start..).unwrap_or_default());
+    }
+    acts
 }
 
 /// How long after one step the next one by the same hand still joins its visit: a person's

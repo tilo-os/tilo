@@ -17,8 +17,6 @@ pub mod agent_cert;
 pub mod delegation;
 pub mod invitations;
 pub mod native;
-/// A link that carries an invitation's place and key, not its kilobytes.
-pub mod sealed;
 mod workspace_text;
 
 use std::collections::BTreeMap;

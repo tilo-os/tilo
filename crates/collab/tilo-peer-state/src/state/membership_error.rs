@@ -20,9 +20,10 @@ pub enum MembershipError {
     /// The workspace's root has revoked the device.
     #[error("device revoked by workspace")]
     Revoked,
-    /// The workspace's governance is not here to decide against.
-    #[error("workspace governance missing")]
-    GovernanceMissing,
+    /// The workspace's rules (its members, roles and grants) are not here
+    /// to decide against yet.
+    #[error("the workspace's rules are not here yet")]
+    RulesMissing,
     /// The governance document carries no row for the device.
     #[error("device is absent from governed roster")]
     Absent,
@@ -50,6 +51,30 @@ pub enum MembershipError {
     #[error("the governed identity row does not decode")]
     MalformedIdentity(#[source] std::sync::Arc<crate::state::RowError>),
 }
+impl MembershipError {
+    /// Why a device the workspace grants nothing is refused, as it is told it.
+    #[must_use]
+    pub const fn refusal_reason(&self) -> neighbour_wire::RefusalReason {
+        use neighbour_wire::RefusalReason;
+        match self {
+            Self::Revoked => RefusalReason::Revoked,
+            Self::Certificate(tilo_user_identity::DeviceCertError::Expired) => {
+                RefusalReason::Expired
+            }
+            Self::UnknownDevice
+            | Self::Certificate(_)
+            | Self::Absent
+            | Self::CertificateMismatch => RefusalReason::NotCertified,
+            Self::RulesMissing => RefusalReason::MissingDependency,
+            Self::RevocationRoot
+            | Self::Revocation(_)
+            | Self::UnreadableAccess
+            | Self::MalformedIdentity(_) => RefusalReason::Malformed,
+            Self::Delegate(_) | Self::NoMembership => RefusalReason::Forbidden,
+        }
+    }
+}
+
 impl From<backend::CertificateLookupError> for MembershipError {
     fn from(error: backend::CertificateLookupError) -> Self {
         match error {

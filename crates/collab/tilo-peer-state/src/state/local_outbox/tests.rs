@@ -363,7 +363,10 @@ tilo_test_env::scenario! {
             &governor_cert,
             &governor_key,
             &waiting,
-            "missing dependency",
+            &crate::AdmissionError::rejected(
+                neighbour_wire::RefusalReason::MissingDependency,
+                "missing dependency",
+            ),
             &mut member,
             now,
         );
@@ -373,7 +376,7 @@ tilo_test_env::scenario! {
             &governor_cert,
             &governor_key,
             &refused,
-            "no permission",
+            &crate::AdmissionError::forbidden("no permission"),
             &mut member,
             now,
         );
@@ -430,13 +433,13 @@ fn refuse_into(
     cert: &DeviceCert,
     key: &SigningKey,
     message: &NeighbourMsg,
-    reason: &str,
+    verdict: &crate::AdmissionError,
     author: &mut StatePeer,
     now: SystemTime,
 ) {
     refuser
         .workspace_mut()
-        .refuse_write(cert, message, reason, key, now)
+        .refuse_write(cert, message, verdict, key, now)
         .unwrap();
     author
         .receive_from(

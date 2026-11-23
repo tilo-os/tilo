@@ -1,12 +1,14 @@
-//! A member device that takes its workspaces' work: the shell commands of
-//! the Terminal sessions of the workspaces a server places on it
+//! A member device that takes its workspaces' Linux work: the shell commands,
+//! terminals, machines and Browser of the workspaces its server serves
 //! (`docs/app-model/environments.md`, "Members that take work").
 //!
 //! A workspace whose server hosts it has no device of the person's running
-//! its Terminal sessions. The VM host that holds the workspace's VM does
-//! instead, as a member device of the server's own person: it holds the
-//! workspace and its files as any member does, and answers the server's runs
-//! on its device action service ([`ACTIONS_ALPN`]) with a
+//! its Terminal sessions. A VM host does instead, as a member device of the
+//! server's own person: it holds the workspace and its files as any member
+//! does, and takes the workspace's Linux turns
+//! ([`tilo_workspace_service::work::Turn::Linux`]) on its device action service
+//! ([`ACTIONS_ALPN`]) when [`takes_turn`](tilo_workspace_service::work::takes_turn)
+//! says they are its, running each with an
 //! [`EnvironmentCommands`](ush::environment_commands::EnvironmentCommands) dispatcher over
 //! the workspace's shells ([`ush::workspace_shell::WorkspaceShells`]):
 //!
@@ -22,15 +24,15 @@
 //!
 //! The member keeps the lease of each VM its hosted-VM service keeps
 //! (`tilo_peer_state::vm_lease`), claiming it in the VM's workspace as its
-//! own member's write and renewing it while the VM is there: the server reads
-//! the lease to know which machine keeps the VM.
+//! own member's write and renewing it while the VM is there: the workspace's
+//! Linux turns go to the device that keeps its VM, where its disk is.
 //!
 //! A Terminal session's shell opened on a terminal here is carried to the server on a stream
 //! of its own ([`ush::environment_terminals::ALPN`]), which only the server that asked for it
 //! takes ([`TakesWork`]).
 //!
-//! The member's endpoint listens on [`PORT`], where the server's members file
-//! reaches it. It serves only the workspaces it holds; the first request for
+//! The member's endpoint listens on [`PORT`], the address its entry among its
+//! person's servers names. It serves only the workspaces it holds; the first request for
 //! one it does not hold yet makes it ask the server to enter it (the
 //! workspaces this profile joined, entering on a miss). What it answers is
 //! the server's own runs: a device of another person is refused as every
@@ -50,8 +52,7 @@ use tilo_actions::remote::ActionProvider;
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService};
 use tilo_user_identity::DeviceCert;
 
-/// The UDP port a member's endpoint listens on, and the one the relay's
-/// members file names for it.
+/// The UDP port a member's endpoint listens on.
 pub const PORT: u16 = 7703;
 /// The device key of the server a member serves, hex: a profile that names one is a member that
 /// takes that server's work.
@@ -189,6 +190,17 @@ impl TakesWork {
             (ush_alpn(), self.terminals),
         ]
     }
+
+    /// The device action service this member answers its server's work on: the one its
+    /// daemon answers the device actions on.
+    pub(crate) fn actions(&self) -> ActionService {
+        self.actions.clone()
+    }
+
+    /// The terminal streams of the shells it opened for its server, and their protocol.
+    pub(crate) fn terminals(self) -> (&'static [u8], Box<dyn iroh::protocol::DynProtocolHandler>) {
+        (ush_alpn(), self.terminals)
+    }
 }
 
 /// The protocol the terminal streams are dialled on.
@@ -202,11 +214,11 @@ const fn ush_alpn() -> &'static [u8] {
     b"tilo-environment-terminal/1"
 }
 
-/// What a member's shells answer with: its runs on the device action service, and what
+/// What a member's shells answer with: the Linux machines its turns run on, and what
 /// serves the terminal streams they hand out, once that service maps the endpoints that
 /// dial it to their devices.
 struct Shells {
-    runs: Arc<dyn ActionProvider + Send + Sync>,
+    linux: Arc<dyn tilo_workspace_service::work::HostLinux>,
     terminals: TerminalsOf,
 }
 
@@ -240,9 +252,14 @@ pub(crate) fn action_service(
         service: Arc::clone(workspaces.service()),
         entering: Some(Arc::clone(&entering)),
     });
+    workspaces.copies().run_linux(shells.linux);
     let action_service = {
         let _entered = tilo_rt::app().handle().enter();
-        ActionService::over(workspaces.signer(), shells.runs, reads)
+        ActionService::over(
+            workspaces.signer(),
+            workspaces.copies().device_actions(),
+            reads,
+        )
     };
     // The server asks from its endpoint, which a Tilo server keys apart from
     // the device it signs its runs as.
@@ -363,9 +380,29 @@ fn shell_runs(
         )) as Box<dyn iroh::protocol::DynProtocolHandler>
     });
     Some(Shells {
-        runs: commands,
+        linux: Arc::new(Machines(commands)),
         terminals,
     })
+}
+
+/// The workspaces' Linux machines on this member: its hosted-VM service, through the
+/// dispatcher that runs their work.
+#[cfg(target_os = "linux")]
+struct Machines(Arc<ush::environment_commands::EnvironmentCommands>);
+
+#[cfg(target_os = "linux")]
+impl tilo_workspace_service::work::HostLinux for Machines {
+    fn machine_lease(&self) -> String {
+        tilo_peer_state::vm_lease(ush::environment_commands::ENVIRONMENT)
+    }
+
+    fn has_room(&self) -> bool {
+        self.0.has_room()
+    }
+
+    fn runs(&self) -> Arc<dyn ActionProvider + Send + Sync> {
+        Arc::clone(&self.0) as Arc<dyn ActionProvider + Send + Sync>
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

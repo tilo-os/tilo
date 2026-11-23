@@ -18,8 +18,6 @@
 //! - [`workspaces`] — governed workspaces over HTTPS: administration and joining;
 //! - [`directory`] — the public workspaces a host lists, and the entry that
 //!   lets anyone in with the owner's default role;
-//! - [`sealed_invitations`] — the shelf a site keeps sealed invitations on,
-//!   so a link carries a handle and a key instead of an invitation;
 //! - [`operator`] — the JSON-lines protocol between the public-workspace
 //!   service and each `tilo-server workspace` child it runs;
 //! - [`mesh`] — service capabilities and the server advertisements devices
@@ -52,7 +50,6 @@ pub mod host_voice;
 pub mod hosted;
 pub mod invocation;
 pub mod live;
-pub mod login_code;
 pub mod mesh;
 pub mod metrics;
 pub mod operator;
@@ -61,7 +58,6 @@ pub mod policy;
 pub mod process_lease;
 pub mod public_avatars;
 pub mod refusal;
-pub mod sealed_invitations;
 pub mod servers;
 pub mod transport;
 pub mod voice;

@@ -23,11 +23,11 @@
 // Prints a JSON report and saves what each page showed; exits non-zero when a
 // step of either path did not happen.
 import {execFile, spawn} from 'node:child_process';
-import {mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
+import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit, shellMetrics, machine, browserMemory, reloaded} from './waits.mjs';
+import {stepLimit, shellMetrics, machine, browserMemory, reloaded, keepRecoveryWords} from './waits.mjs';
 
 const [site, server, tiloBin, out] = process.argv.slice(2);
 if (!site || !server || !tiloBin || !out) {
@@ -125,12 +125,30 @@ const until = async (tab, expression, what, timeout = stepLimit(3)) => {
 const computer = join(out, 'computer');
 mkdirSync(join(computer, 'bin'), {recursive: true});
 const agentName = 'Reviewer';
-const agentConfiguration = join(computer, 'agent-mcp.json');
+// The tool the agent runs in, as `tilo login` finds it: its own command adds Tilo's MCP server,
+// which it records, and writes the configuration it would keep.
+const claudeCalls = join(out, 'claude-calls.txt');
+const claudeConfig = join(computer, '.claude.json');
+const claude = `#!/bin/sh
+echo "$@" >> ${JSON.stringify(claudeCalls)}
+if [ "${'$'}1" = "mcp" ] && [ "${'$'}2" = "add" ]; then
+  command=""
+  rest=$(echo "$@" | sed 's/.* -- //')
+  program=${'$'}{rest%% *}
+  printf '{"mcpServers":{"tilo":{"type":"stdio","command":"%s","args":["mcp"],"env":{}}}}\n' "${'$'}program" > ${JSON.stringify(claudeConfig)}
+fi
+exit 0
+`;
+writeFileSync(join(computer, 'bin', 'claude'), claude);
+chmodSync(join(computer, 'bin', 'claude'), 0o755);
 const env = {
   PATH: `${join(computer, 'bin')}:${process.env.PATH}`,
   HOME: computer,
   XDG_STATE_HOME: join(computer, 'state'),
   XDG_CONFIG_HOME: join(computer, 'config'),
+  // The tool this computer's commands run under, as every tool names itself to the commands it
+  // runs.
+  CLAUDECODE: '1',
   // The computer's peer logs each window it shows on the person's layout.
   RUST_LOG: 'tilo_runtime::mcp::agent::link=debug,warn',
 };
@@ -207,6 +225,10 @@ const visit = async name => {
   await tab.send('Browser.grantPermissions', {origin: new URL(site).origin,
     permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']}).catch(() => {});
   await tab.navigate(site);
+  // The join behind the held first screen founds this browser's person: the
+  // entry shows their 24 recovery words once, and the first screen waits for
+  // them to be kept.
+  await keepRecoveryWords(tab, `${name}: founded`);
   await until(tab, `document.documentElement.dataset.firstScreen !== undefined && !!document.getElementById('first-screen-agent')`,
     `${name}: the first screen`);
   return tab;
@@ -240,7 +262,7 @@ const clipboardNow = tab => tab.evaluate(`navigator.clipboard.readText().catch((
 // from what it held before the click (`before`).
 const copied = async (tab, what, before) => {
   const read = `navigator.clipboard.readText().then(text =>
-    text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`;
+    text.match(/(?:tilo|sh -s) (?:login|device add) /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`;
   // The clipboard is the browser's, not the page's: a write landing is no
   // change the page tells anyone about, so this is the one wait here that
   // reads on a clock, and it holds a step.
@@ -251,11 +273,17 @@ const copied = async (tab, what, before) => {
   }
   await fail(`${what} never reached the clipboard`);
 };
-// The code and site a prompt names.
+// What a prompt names: the ticket this tab's host served (`tilo1…`), and, from a host still
+// handing out login codes, the short code it names instead.
 const commandOf = prompt => {
-  const match = prompt.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})(?: --site (\S+?))?(?:,|\s|$)/);
-  if (!match) return null;
-  return {code: match[1], site: match[2] ?? null};
+  const login = prompt.match(/(?:tilo|sh -s) login (\S+)/);
+  const add = prompt.match(/(?:tilo|sh -s) device add (\S+)/);
+  const text = login?.[1] ?? add?.[1];
+  if (!text) return null;
+  return {text, kind: add ? 'device add' : 'login',
+    ticket: /^tilo1[0-9a-f]+$/.test(text) ? text : null,
+    code: /^[2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4}$/.test(text) ? text : null,
+    site: prompt.match(/--site (\S+?)(?:,|\s|$)/)?.[1] ?? null};
 };
 // The steps the tab shows, as it shows them: each line the list ever held,
 // kept in the page the moment the list changes. Read by polling, a step the
@@ -323,34 +351,35 @@ if (prompt !== shown) await fail(`the click copied something else than the promp
 report.prompt = prompt;
 mark('the page copied its setup prompt');
 const setup = commandOf(prompt);
-if (!setup) await fail(`the prompt names no tilo login code: ${prompt}`);
-if (!/^Set up Tilo for me: run curl -fsSL \S+ \| sh -s login /.test(prompt) || prompt.length > 200) {
-  await fail(`the prompt is not the short one-line setup: ${prompt}`);
+if (!setup) await fail(`the prompt names no tilo login ticket: ${prompt}`);
+if (!/^Set up Tilo for me: run curl -fsSL \S+ \| sh -s login tilo1[0-9a-f]+, then do what it tells you\.$/.test(prompt)) {
+  await fail(`the prompt is not the one-line setup naming the ticket: ${prompt}`);
 }
-if (setup.site && new URL(setup.site).origin !== new URL(site).origin) await fail(`the prompt names another site: ${setup.site}`);
-const login = tilo(['login', setup.code, '--site', setup.site ?? site, '--agent', agentName]);
+const login = tilo(['login', setup.ticket, '--agent', agentName]);
 // The tab's steps are followed while the agent goes: the screen leaves only
 // once the agent has confirmed Tilo's tools in its own configuration.
 const following = followSteps(first, `document.documentElement.dataset.firstScreen === undefined || document.documentElement.dataset.firstScreen === 'connected'`);
 const loggedIn = await login;
 report.login = loggedIn;
 if (loggedIn.code !== 0) await fail(`tilo login failed (${loggedIn.code}): ${loggedIn.stderr}${loggedIn.stdout}`);
-if (!/restart/.test(loggedIn.stdout) || !/\btilo_[a-z]+\b/.test(loggedIn.stdout)) {
+if (!/restart/i.test(loggedIn.stdout) || !/\btilo_[a-z]+\b/.test(loggedIn.stdout)) {
   await fail(`tilo login did not tell the agent to restart and which tool to call: ${loggedIn.stdout}`);
 }
-if (!/agent check --config/.test(loggedIn.stdout)) await fail(`tilo login did not leave the agent the check that confirms its tools: ${loggedIn.stdout}`);
-if (!/stdio server \S*tilo with the argument mcp/.test(loggedIn.stdout)) {
-  await fail(`tilo login did not name the command that runs its MCP server: ${loggedIn.stdout}`);
+if (!/holds the MCP server tilo/.test(loggedIn.stdout) || !/tilo_[a-z]+/.test(loggedIn.stdout)) {
+  await fail(`tilo login did not confirm Tilo's tools in the agent's own configuration: ${loggedIn.stdout}`);
 }
 if (/failed/i.test(loggedIn.stdout)) await fail(`tilo login said something failed: ${loggedIn.stdout}`);
-// The agent adds the server where its own configuration keeps servers, as
-// the login's words ask, then runs the check they name on that file.
-writeFileSync(agentConfiguration, `${JSON.stringify({mcpServers: {tilo: {type: 'stdio', command: tiloBin, args: ['mcp'], env: {}}}})}\n`);
-const checked = await tilo(['agent', 'check', '--config', agentConfiguration]);
-report.check = checked;
-if (checked.code !== 0) await fail(`tilo agent check did not confirm Tilo's server (${checked.code}): ${checked.stderr}${checked.stdout}`);
-if (!checked.stdout.includes(`holds the MCP server tilo`) || !/tilo_[a-z]+/.test(checked.stdout)) {
-  await fail(`tilo agent check did not say the file holds the server and what to call: ${checked.stdout}`);
+// The tool's own command added the server, as the login runs it, and the configuration it keeps
+// holds Tilo's server: what the tab shows the tools added is what the agent's own file holds.
+const calls = readFileSync(claudeCalls, 'utf8');
+report.claudeCalls = calls;
+if (!/^mcp add --scope user tilo -- \S*tilo mcp$/m.test(calls)) {
+  await fail(`the tool's own command never added Tilo's server: ${JSON.stringify(calls)}`);
+}
+const kept = readFileSync(claudeConfig, 'utf8');
+report.claudeConfig = kept;
+if (!JSON.parse(kept)?.mcpServers?.tilo?.command?.endsWith('tilo')) {
+  await fail(`the tool's own configuration holds no Tilo server: ${kept}`);
 }
 const steps = await following;
 report.steps = steps;
@@ -521,10 +550,30 @@ await until(second, `document.documentElement.dataset.firstScreen === 'waiting'`
 const again = await copied(second, 'the sign-in prompt', beforeSignIn);
 report.signInPrompt = again;
 const signIn = commandOf(again);
-if (!signIn) await fail(`the sign-in prompt names no tilo login code: ${again}`);
-const approved = await tilo(['login', signIn.code, '--site', signIn.site ?? site]);
+if (!signIn) await fail(`the sign-in prompt names no ticket or code: ${again}`);
+const approved = await tilo(signIn.kind === 'device add'
+  ? ['device', 'add', signIn.ticket]
+  : ['login', signIn.code, ...(signIn.site ? ['--site', signIn.site] : [])]);
 report.approve = approved;
 if (approved.code !== 0) await fail(`tilo login did not approve the tab (${approved.code}): ${approved.stderr}${approved.stdout}`);
+// The person's root stays in the tab that set it up, so the computer that ran `tilo device add`
+// holds none: it hands the signing on, and the first tab, which holds the root, asks about the
+// browser it would sign in and approves it.
+if (signIn.kind === 'device add') {
+  if (!/handed the signing on/.test(approved.stdout)) {
+    await fail(`tilo device add did not hand the signing on from a computer with no root: ${approved.stdout}${approved.stderr}`);
+  }
+  const askedAbout = await until(first, `(() => {
+    const bar = document.getElementById('tilo-sign-in');
+    return bar && !bar.hidden ? bar.innerText.trim() : '';
+  })()`, 'the first tab asking about the browser signing in', stepLimit(8));
+  report.signInAsked = askedAbout;
+  if (!/becomes one of your devices/.test(askedAbout)) {
+    await fail(`the first tab's ask names no device of the person's: ${askedAbout}`);
+  }
+  await click(first, 'tilo-sign-in-allow');
+  mark('the first tab approved the browser signing in');
+}
 // The person asked their agent to sign them in on this tab, so the tab asks
 // them nothing about whose device it becomes: that card, which warns of a
 // link someone else made, is for a link handed to a device.

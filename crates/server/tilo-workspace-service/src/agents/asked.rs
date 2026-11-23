@@ -44,25 +44,36 @@ pub(crate) fn viewer() -> asks::Actor {
     asks::Actor::App(tilo_app_id::AppId::new(asks::AGENT_APP))
 }
 
-/// The turn of answering the ask `ask` (by its id) kept in `app`'s record.
-fn turn(app: &str, ask: &str) -> work::Turn {
-    work::Turn::Ask {
-        app: app.to_owned(),
-        ask: ask.to_owned(),
-    }
-}
-
-/// Whether this device takes the turn of answering `ask`, kept in `app`'s record of
-/// `workspace`: `false` where another device holds it.
+/// Whether this device takes `agent`'s turn of answering `ask` (by its id), kept in Chat's
+/// record of `workspace`: the one turn the agent's answers in that conversation are claimed
+/// under ([`super::agent_turn`]). `false` where another device holds it.
 ///
 /// # Errors
-/// The claim could not be written.
+/// The record could not be read, the ask is not in it, or the claim could not be written.
 pub(super) async fn takes(
     workspaces: &Workspaces,
     workspace: &str,
-    (app, ask): (&str, &str),
+    agent: &Agent,
+    ask: &str,
 ) -> Result<bool, String> {
-    match work::takes_turn(workspaces, workspace, &turn(app, ask)).await {
+    let packages = packages()?;
+    let by = ask.to_owned();
+    let place = workspaces
+        .with_tl_record(workspace, &packages, viewer(), move |opened| {
+            let all = asks::asks(opened)?;
+            let asked = all
+                .iter()
+                .find(|asked| asked.at.id_string() == by)
+                .ok_or("the ask is not in the record")?;
+            let around = asked
+                .from
+                .as_ref()
+                .map(|from| asks::around(opened, from, 1));
+            Ok(conversation_of(asked, around.as_ref()))
+        })
+        .await?;
+    let turn = super::agent_turn_at(agent, place, (packages.app(), ask))?;
+    match work::takes_turn(workspaces, workspace, &turn).await {
         Ok(_) => Ok(true),
         Err(NotTaken::TakenBy(_)) => Ok(false),
         Err(not_taken) => Err(not_taken.to_string()),
@@ -82,22 +93,13 @@ pub(super) async fn turns(
     roster: Option<&tilo_workspace_agent::WorkspaceAgents>,
 ) -> Result<(Vec<Turn>, Vec<Turn>), String> {
     let packages = packages()?;
-    // Each agent by its id, with its keeper where it has one.
-    let wanted: std::collections::BTreeMap<String, (Agent, Option<tilo_action_policy::MemberId>)> =
-        agents
-            .iter()
-            .map(|(id, agent)| {
-                let keeper = super::keeper_of(agent).map(tilo_action_policy::MemberId::person);
-                (id.clone(), (agent.clone(), keeper))
-            })
-            .collect();
+    let wanted = agents.clone();
     let (all, read) = workspaces
         .with_tl_record(workspace, &packages, viewer(), move |opened| {
             let all = asks::asks(opened)?;
             let mut read = Vec::new();
             for (index, asked) in all.iter().enumerate() {
-                let Some((agent, keeper)) = asked.agent.agent_id().and_then(|id| wanted.get(id))
-                else {
+                let Some(agent) = asked.agent.agent_id().and_then(|id| wanted.get(id)) else {
                     continue;
                 };
                 let team = sub_agents::is_team(agent, asked);
@@ -109,23 +111,27 @@ pub(super) async fn turns(
                         .as_ref()
                         .map(|from| asks::around(opened, from, AROUND))
                 };
+                // What is private to the person who asked and the agent: a turn about it knows
+                // and keeps what the agent learns about that person ([`super::learned`]).
+                let asker = match &asked.who {
+                    Some(asks::Actor::Member(who)) if who.person_id().is_some() => Some(who),
+                    _ => None,
+                };
                 let private = !team
-                    && keeper.as_ref().is_some_and(|keeper| {
-                        // What an event of the keeper's asked is shown in their Direct with the
+                    && asker.is_some_and(|asker| {
+                        // What an event of theirs asked is shown in their Direct with the
                         // agent, so it is as private as that conversation.
                         let by_event = asked
                             .from
                             .as_ref()
                             .and_then(crate::agents::events::event_named)
                             .is_some();
-                        let by_keeper =
-                            matches!(&asked.who, Some(asks::Actor::Member(who)) if who == keeper);
-                        if by_event && by_keeper {
-                            asks::direct_with(opened, keeper, &asked.agent).is_some_and(|direct| {
-                                asks::alone_with(opened, &direct, keeper, &asked.agent)
+                        if by_event {
+                            asks::direct_with(opened, asker, &asked.agent).is_some_and(|direct| {
+                                asks::alone_with(opened, &direct, asker, &asked.agent)
                             })
                         } else {
-                            asks::private_to(opened, asked, keeper, &asked.agent)
+                            asks::private_to(opened, asked, asker, &asked.agent)
                         }
                     });
                 read.push((agent.id.0.clone(), index, around, private));
@@ -166,12 +172,12 @@ pub(super) async fn turns(
         let Some(turn) = turn.filter(|_| wanted) else {
             continue;
         };
-        let taking = work::takes_turn(
-            workspaces,
-            workspace,
-            &self::turn(packages.app(), &asked.at.id_string()),
-        )
-        .await;
+        // The one turn its answer claims ([`super::ServerAgents::claim`]): an agent naming no
+        // keeper is answered by no device.
+        let Ok(claimed) = super::agent_turn(workspace, &turn) else {
+            continue;
+        };
+        let taking = work::takes_turn(workspaces, workspace, &claimed).await;
         let mine = taking.is_ok();
         match asked.state {
             AskState::Stopped if mine => stopped.push(turn),
@@ -337,8 +343,6 @@ pub(crate) async fn made_from(
 pub(super) struct Replying {
     workspaces: Workspaces,
     workspace: String,
-    /// The app whose record keeps the ask.
-    app: String,
     agent: tilo_action_policy::MemberId,
     ask: asks::ResourceRef,
     reply: Arc<std::sync::Mutex<Option<asks::ResourceRef>>>,
@@ -347,13 +351,12 @@ pub(super) struct Replying {
 impl Replying {
     /// Where `turn`'s reply is written, for a turn made from an ask; `None` for any other.
     pub(super) fn of(workspaces: &Workspaces, workspace: &str, turn: &Turn) -> Option<Self> {
-        let Ask::Asked { app, ask, ty, .. } = &turn.ask else {
+        let Ask::Asked { ask, ty, .. } = &turn.ask else {
             return None;
         };
         Some(Self {
             workspaces: workspaces.clone(),
             workspace: workspace.to_owned(),
-            app: app.clone(),
             agent: tilo_action_policy::MemberId::agent(turn.agent.id.0.clone()),
             ask: asks::ResourceRef::parse_id(ask, ty.clone())?,
             reply: Arc::default(),
@@ -371,46 +374,22 @@ impl Replying {
             .await
     }
 
-    /// Take the ask's turn for this server, and start its reply where the turn is this
-    /// server's: whether it is.
+    /// Start the ask's reply, for the turn this device claimed.
     ///
     /// # Errors
-    /// The claim, or the record, could not be written.
-    pub(super) async fn take(&self) -> Result<bool, String> {
-        if !takes(
-            &self.workspaces,
-            &self.workspace,
-            (&self.app, &self.ask.id_string()),
-        )
-        .await?
-        {
-            return Ok(false);
-        }
+    /// The record could not be written.
+    pub(super) async fn take(&self) -> Result<(), String> {
         let (agent, ask) = (self.agent.clone(), self.ask.clone());
         let reply = self
             .on_record(move |opened| asks::answer(opened, &agent, &ask))
             .await?;
         *self.reply.lock_recover() = Some(reply);
-        Ok(true)
+        Ok(())
     }
 
     /// Whether the ask's newest reply is still working from an earlier run of this server: it
     /// took the turn and stopped before it ended, and nothing says what its steps did.
     pub(super) async fn left_begun(&self) -> bool {
-        match takes(
-            &self.workspaces,
-            &self.workspace,
-            (&self.app, &self.ask.id_string()),
-        )
-        .await
-        {
-            Ok(true) => {}
-            Ok(false) => return false,
-            Err(error) => {
-                tracing::warn!(workspace = %self.workspace, %error, "an ask's turn could not be claimed");
-                return false;
-            }
-        }
         let ask = self.ask.clone();
         let working = self
             .on_record(move |opened| {

@@ -94,7 +94,9 @@ an invocation of its own, named for the key ("Visa backend #3").
 | `GET /v1/resources?path=` | the account's resources and actions, as a workspace's are listed |
 | `GET /v1/resources/account/usage` | its `fields`: the person's plan and per workspace what it keeps and the VM time it ran |
 | `POST /v1/resources/{path}/actions/{action}` | runs an action of the account, as a workspace's action is run: `{"status", "path", "result"}` |
-| `GET /v1/workspaces/{workspace}/export` | `{"workspace", "exported_at_ms", "resources": [...], "unread": [...]}`: every resource of every app, read whole and streamed as it reads |
+
+A workspace's export is the walk of its listings, each resource read whole: the SDKs'
+`workspace.export()` makes it.
 
 The account's actions, each run with `POST /v1/resources/account/{resource}/actions/{action}`
 (MCP: `tilo_do account/{resource}#{action}`), answer their `result`:
@@ -120,8 +122,7 @@ action of the account answers `not_permitted`.
 |---|---|
 | `GET /v1/workspaces/{workspace}/resources?path=&cursor=&limit=&kind=` | what is under `path` (the apps without one): `{"path", "kind", "rows": [...], "actions": [...], "kinds": {...}, "next_cursor", "text"}` |
 | `GET /v1/workspaces/{workspace}/resources/{path}?cursor=` | one resource: `{"path", "kind", "fields": {...}, "children": [...], "cursor", "text"}` |
-| `GET /v1/workspaces/{workspace}/search?q=&limit=` | `{"hits": [{"path", "kind", "label", "action"}], "query"}`, best first |
-| `GET /v1/workspaces/{workspace}/links?path=&mode=` | `{"path", "link"}`: the link a person opens it with (invite them first) |
+| `POST /v1/workspaces/{workspace}/resources/search/actions/find` | the workspace's search, `{"query", "app", "limit"}`: its `result` is `{"hits": [{"path", "kind", "label", "action"}], "query"}`, best first |
 | `GET /v1/workspaces/{workspace}/views?path=&picture=&scale=` | what the app's window shows for `path`: `{"path", "app", "shown", "text", "tree", "nodes", "viewport", "window_origin", "revision"}`, and `picture` (a `tilo.content:` of a PNG) with `picture=true` |
 
 A row of `rows` is `{"path", "name", "label", "kind", "has_children", "reads", "actions"}`, its
@@ -211,9 +212,11 @@ On the API server, a workspace's events can be posted to a URL instead:
 
 | | |
 |---|---|
-| `POST /v1/workspaces/{workspace}/webhooks` `{url, events?, path?}` | `201` `{"id", "url", "events", "secret"}`; `secret` is shown once |
-| `GET /v1/workspaces/{workspace}/webhooks` | the webhooks, without their secrets |
-| `DELETE /v1/workspaces/{workspace}/webhooks/{id}` | removes one |
+| `account/webhooks#create` `{workspace, url, events?, path?}` | `{"id", "workspace", "url", "events", "secret"}`; `secret` is shown once |
+| `account/webhooks#list` `{workspace?}` | the key's webhooks, without their secrets |
+| `account/webhooks#delete` `{webhook}` | removes one |
+
+Each is an action of the account, run as any other: `POST /v1/resources/account/webhooks/actions/create`.
 
 Each delivery is `POST url` with the event as the body (`{"id", "type", "workspace", "data"}`),
 `Tilo-Webhook-Id`, `Tilo-Delivery` (unique per event) and `Tilo-Signature: t=<unix seconds>,
@@ -223,32 +226,42 @@ Check the signature and that `t` is recent; deduplicate by `Tilo-Delivery`.
 
 ## Files
 
-A file goes up in one request, and a file larger than one request should carry goes up in as
-many as it takes. Both end in the same place: `tilo.content:<hash>`, which an action takes the
-file by. Nothing names an app yet — a file's **bytes** say which app opens it. Opening the
-file there is that app's `open` with the file: `POST …/resources/pdf-viewer/actions/open`
+A file's bytes go into the workspace at their own address: the lowercase BLAKE3 hash of the
+bytes, 64 hex characters. The address is what makes a file go up once, whatever a caller would
+have called it, and what a client says to ask whether the workspace already has it. A put of
+bytes it already holds is answered as complete without storing them twice.
+
+| | |
+|---|---|
+| `PUT /v1/workspaces/{workspace}/contents/{hash}` (the file's bytes) | `201` `{"content": "tilo.content:<reference>", "offset": <size>, "size"}`, what an action takes: the whole file in one request, or one piece of it |
+| `GET /v1/workspaces/{workspace}/contents/{hash}` | the bytes a reference names, with `Range` |
+
+A put's `{hash}` is the BLAKE3 hash of the file's bytes, lowercase hex: the same bytes are the
+same address, so a file goes up once, and a put of bytes the server has already kept answers the
+same reference without storing them again. The answer's `content` is the reference the workspace
+keeps them by; in a workspace whose content is sealed it carries the key that opens it after a
+`.`, and a `GET` takes that reference whole.
+
+A file larger than one request should carry goes up in pieces, each request carrying one. Its
+`Content-Range: bytes {from}-{to}/{size}` says where the piece starts and ends and how big the
+whole file is, and the first piece opens the put. One request carries at most 64 MiB.
+
+A piece sent from an offset the put is not at answers `409 offset_mismatch`, naming where it
+stands. A piece sent again after an answer that did not arrive costs nothing: the answer says
+where the put stands now (`200` `{"offset", "size"}`). The piece that completes the file
+answers `201` `{"content", "offset", "size"}`, and a put of content whose every byte is
+already there answers `409 upload_complete`. A put nobody continues is dropped after six
+hours. `tilo files put` sends a large file this way, and resumes it after a connection that
+failed.
+
+Whatever a file ends in is `tilo.content:<hash>`, which an action takes the file by. Nothing
+names an app yet — a file's **bytes** say which app opens it. Opening the file there is that
+app's `open` with the file: `POST …/resources/pdf-viewer/actions/open`
 `{"content": "tilo.content:<hash>", "name": "forms/visa.pdf"}`. PDF Viewer, Writer, Sheets and
 Slides open each file in a resource of its own, so a folder of PDFs is a PDF each; Notes and
 Photos take it into the notebook or library the workspace keeps. The answer's
 `result.provider` names the resource, where a person opens it and search finds it. An app that
 does not open the file's type refuses it and makes no resource.
-
-| | |
-|---|---|
-| `POST /v1/workspaces/{workspace}/uploads` (the file's bytes, its `Content-Type`) | `201` `{"content": "tilo.content:<hash>", "size"}`: what an action takes |
-| `PUT /v1/workspaces/{workspace}/contents` `{"files": [base64…]}` | `200` `{"contents": ["tilo.content:<hash>"…]}`: several small files whole in one request, each reference in order |
-| `POST /v1/workspaces/{workspace}/contents/have` `{"hashes": [hex…]}` | `200` `{"have": [bool…]}`: which of these the workspace already holds, so a folder's unchanged files need no upload |
-| `POST /v1/workspaces/{workspace}/uploads/{upload}` `{size}` | `201` `{"upload", "size", "offset": 0}`: opens an upload under an id you choose, for a file too large for one request. Opening it again answers where it stands (`200`) |
-| `PUT /v1/workspaces/{workspace}/uploads/{upload}?offset={offset}` (the next bytes) | `200` `{"upload", "size", "offset"}` where the next piece goes, or `201` `{"content", "size"}` when this piece completes the file |
-| `GET /v1/workspaces/{workspace}/uploads/{upload}` | `200` `{"upload", "size", "offset"}`: where it stands, to continue it |
-| `DELETE /v1/workspaces/{workspace}/uploads/{upload}` | `200` `{"deleted"}`: drops it, storing nothing |
-| `GET /v1/workspaces/{workspace}/content/{content}` | the bytes an action made (`tilo.content:<hash>`), with `Range` |
-
-One request carries at most 64 MiB. A piece sent from an offset the upload is not at answers
-`409 offset_mismatch` instead of storing its bytes twice, so a client that lost an answer asks
-`GET …/uploads/{upload}` and sends the rest from there; an upload nobody finishes is dropped
-after six hours. `tilo files put` sends a large file this way, and resumes it after a
-connection that failed.
 
 A folder goes into the workspace's own folder in one action: `POST …/resources/files/actions/open`
 with `files`, a list of `content`, `name` and `dir`, each file's bytes uploaded first. A large

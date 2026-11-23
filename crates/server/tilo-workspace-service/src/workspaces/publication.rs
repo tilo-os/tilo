@@ -64,6 +64,34 @@ pub(super) fn starts_over(outgoing: &[Publication]) -> bool {
         || weight(changes) >= (weight(base) / 2).max(MIN_PUBLICATION_TAIL_BYTES)
 }
 
+/// Bring `outgoing`, the publications a workspace's record holds, to this build's layout: a
+/// document write a build before this one published named the member's own record it was, which
+/// nothing reads any more ([`tilo_peer_state::kept_message`]), and in that layout it does not read
+/// here, so the workspace would not settle nor serve it to a newcomer. Answers whether any
+/// publication changed, for the record to be written again.
+///
+/// # Errors
+///
+/// A publication reads in neither layout: which one, and why.
+pub(super) fn brought_up(outgoing: &mut [Publication]) -> Result<bool, String> {
+    let mut changed = false;
+    for (index, publication) in outgoing.iter_mut().enumerate() {
+        let bytes = &publication.bytes;
+        if !neighbour_wire::NeighbourMsg::is_app_document(bytes)
+            || neighbour_wire::NeighbourMsg::decode(bytes).is_ok()
+        {
+            continue;
+        }
+        let message = tilo_peer_state::kept_message(bytes)
+            .map_err(|error| format!("publication {index} does not read: {error}"))?;
+        publication.bytes = postcard::to_allocvec(&message)
+            .map_err(|error| format!("publication {index}: {error}"))?
+            .into();
+        changed = true;
+    }
+    Ok(changed)
+}
+
 /// Whether `message`, published after the workspace's base, takes back
 /// something of the workspace's document: one of its changes overwrites or
 /// deletes a value, which a newcomer replayed the change would read as it

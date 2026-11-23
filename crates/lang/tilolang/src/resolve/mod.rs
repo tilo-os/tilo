@@ -181,18 +181,6 @@ impl Env {
             }));
     }
 
-    /// Adds the workspace's own state, `tilo.workspace`, which every package reads as
-    /// `workspace.<field>` without a `use`. Imported under its app id, so no alias a package
-    /// chooses for a package it uses is taken. The package itself compiles without it, and so
-    /// does the standard library, which the package compiles with and whose views expand in
-    /// callers that have it.
-    pub fn add_workspace(&mut self) {
-        if self.app == crate::workspace::APP || self.app == crate::stdlib::APP {
-            return;
-        }
-        self.add_import(crate::workspace::APP, crate::workspace::meta());
-    }
-
     /// Adds the agent library, `tilo.agent`, as the package a session has by default: its words are
     /// host imports the checker lowers (see [`crate::agent`]).
     pub fn add_agent(&mut self) {
@@ -551,7 +539,6 @@ pub fn resolve(
     r.env.add_import("host", &crate::host::host_meta());
     r.env.add_toolkit();
     r.env.add_std();
-    r.env.add_workspace();
     r.imports(module, imports);
     r.types(module, lock);
     r.callables(module, lock);

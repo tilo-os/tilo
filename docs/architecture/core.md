@@ -56,7 +56,8 @@ one resource to everyone.
   are only appended. The current state, and every past state, come from them.
 - Every device runs the same engine. Devices differ only in how much they
   keep and which work they take. A server is a device that keeps
-  more. A store holds sealed changes and forwards them, but cannot read them.
+  more. A device without a resource's keys keeps and forwards its sealed changes
+  without reading them.
   A workspace held only by one person's computer is complete.
 - Changes move over one link, device to device. Reaching a device through a
   server means reaching it through a device that is online.
@@ -95,6 +96,11 @@ use the same addresses.
   the keys (reading means holding the keys of the resource's readers;
   resources with the same readers share one key group, and removing a reader
   rekeys it). What a device already received cannot be taken back.
+- A window does not decide permissions itself. The device's daemon answers
+  for the actions a view shows, the window holds those answers for its
+  controls and updates them live as grants change, and the call is still
+  admitted when it is made. There is no permission check in the UI library,
+  the app SDK, tilolang's runtime or an app.
 - A file action is an action at the file's address. A grant on a folder
   covers what is below it. The mount is one more caller and decides every
   open from the replicated member list; a path a person may not see does not
@@ -105,10 +111,19 @@ use the same addresses.
 - What an app's code may reach (paths, devices, network hosts) is a separate
   grant, given at install or through a picker. An app acting for a person
   does only what both may.
+- A visitor with no identity (joining a wait list, reading a public
+  directory) is a caller too: the page makes a key on the visitor's device
+  and signs each call with it, and a grant to any key names exactly the
+  actions a workspace opens to visitors, limited per client address. There
+  is no unsigned caller. When the visitor later signs up, that key is
+  certified as one of their devices, so what they did is already theirs.
+- An automation, like a wait list's confirmation mail, runs as the member who
+  set it up, within that member's grants.
 
 ### Apps
 
-An app is a tilolang package installed in a workspace. It declares resource
+An app is a package installed in a workspace, written in tilolang or Rust
+against the one app SDK. It declares resource
 types, actions (verbs with a typed input, a typed result and a kind:
 read, edit or privileged) and views (functions from a resource to UI whose
 controls name fields and actions). Installing it publishes all three into the
@@ -136,9 +151,8 @@ call (`tilo_action_policy::Acting`, `admit_invocation`).
 An agent or an automation acts with a subset of its person's permissions,
 by default the largest one. Granting it less works the
 way granting a person less does. It acts on undoable things without asking,
-which is most of what happens in a workspace. It runs on the person's
-devices, like everything else, and does whatever it or its person starts it
-on.
+which is most of what happens in a workspace. It runs on the workspace's
+devices, like everything else (see where work runs).
 
 An agent is started by triggers, the same triggers a shortcut or any other
 automation uses: anything that can be watched, such as a mention anywhere, a
@@ -148,16 +162,8 @@ expect (mentions, direct messages, assigned tasks), and its person changes them
 like any automation's. A trigger starts a turn, and the agent answers where it
 was triggered: in the chat, on the task, in the note. There is no separate
 record of asking. The agent engine runs inside each device's one daemon and runs the
-agent's triggers; it never reads an app's own fields. Which eligible device takes a turn is decided in
-one function, `tilo_workspace_service::work::takes_turn`: an eligible device
-claims the turn with an ordinary change, the earliest claim wins, and a claim
-that writes nothing for a minute may be taken over. A lease is workspace state
-every device reads. The host declares `workspace` as one read-only resource with a tilolang
-schema, and its `leases` are keyed by the agent and the place it was triggered about; a
-lease's `device` is the device whose claim stands now. A
-require reads it like any record (`workspace.leases.get(...)`), and `workspace.members` and
-`workspace.me` move onto the same resource, so the host fields under `workspace.` go. A require sees the device that signed an
-invocation as `invoker.device`; the refusal notice's require is that the two match. Everything a turn writes
+agent's triggers; it never reads an app's own fields. Which eligible device runs a turn is the one placement rule of where work
+runs, decided in one function, `tilo_workspace_service::work::takes_turn`. Everything a turn writes
 is a member write for the agent, signed by the device that runs it.
 
 An agent is a reader in its own right. Its member key is in the reader set
@@ -166,25 +172,28 @@ is sealed for Ada and the agent, never for Ada alone. A device that runs the
 agent, the tilo.sh server included, holds the agent's keys and so opens
 exactly the records the agent reads, and no others. A device that cannot
 open the record a trigger is about is not eligible to take its turn.
-A sub-agent or coding agent that an agent starts acts as its starter's
-approved key, narrowed to its own conversation: a grant only narrows what
-its giver holds. Any device of the person an agent acts for may approve
-that agent. Any member who may write where an agent is may talk to it,
+A sub-agent or coding agent that an agent starts is one more actor in the
+chain, so it does no more than everyone before it may. Any device of the
+person an agent belongs to may approve that agent, and approving it is the
+ticket flow, the one way a key is added: wherever the agent runs (a computer,
+the person's server, tilo.sh) asks with a ticket naming the agent's key, the
+agent shows that ticket while it waits, and a device holding the person's root
+redeems it over `tilo-actions/1` and certifies the key. There is no separate
+proposal queue and no certify protocol beside it. Any member who may write where an agent is may talk to it,
 whoever the agent belongs to. A turn answering a person runs with no more
 than both of them may do: the agent's own grants and the grants of the person
-whose message it answers, the smaller of the two on every resource. Ada's
-agent answering Bo reads and changes only what Ada's agent and Bo both may. A turn that has no approved caller writes its refusal into the
-conversation, with the reason, and ends. It is written as the device that took
-the turn, whose grant is that one notice in that one place. A handed node
-for a sub-agent is decided together with its signer and only narrows it.
+whose message it answers, the smaller of the two on every resource. An
+agent's own grants are ordinary grants in the workspace's policy, granted to
+the agent's member id, never a separate limit kept in the agent's record, so
+every device that admits its changes caps them the same way. A change signed
+by an agent's key is weighed as that agent, with the chain it acted for. Ada's
+agent answering Bo reads and changes only what Ada's agent and Bo both may. An agent nobody has approved is not
+triggered; the agent shows that it waits for approval.
 
 A member change (add, role, remove) is an ordinary action on
-`workspace/members`, run and signed by the device that writes it. That
-device admits the call itself with `admit_invocation` over its synced
-grants and asks its person through the Confirm frame. A workspace always keeps
-one owner, and a server's person has no special place in it. A member may
-remove themselves or someone ranked below them, and an agent may do what its person may once
-its person says yes.
+`workspace/members`, admitted by grants like every other action (an Ask grant
+when someone wants to confirm it). A workspace always keeps one owner, and a
+server's person has no special place in it.
 
 A server runs an app's code for the person at the page, under that
 person's grants, never as a person of its own. Carrying an app's old data
@@ -219,7 +228,10 @@ call from tilolang (`tasks.done(task)`, checked at compile time), `tilo ls`
 and `tilo do`, a few generic MCP tools, and SDK types generated from the
 published types. An action names the view that shows it, so every open view
 of the resource shows the change and who made it, and an agent can attach
-that view to its answer.
+that view to its answer. A view publishes each action's description once per
+resource type; a row publishes only its resource and what differs for it
+(whether the action's require passes, and why not), so a list of 10k rows
+stays cheap and every row is still reachable by its address.
 
 Our own code calls only over the device link (`tilo-actions/1` on iroh).
 That includes signing in: `tilo login <ticket>` connects straight to the
@@ -229,9 +241,10 @@ holds a certificate. The issuer is any device of the person: a browser tab,
 a desktop or a server. A tab has no endpoint, so the page's host serves its
 ticket and the tab signs the approval. A tab that holds no root signs in the
 other way round: its ticket names the tab's pending request, and the person runs
-`tilo device add <ticket>` on a device that is logged in, which signs the tab's
-certificate with its device key (member, 30 days; a certificate a device signed
-signs nothing). `tilo login` is always this computer logging in. There is no site lookup. `/v1` REST is only an edge
+`tilo device add <ticket>` on a device that is logged in, and the person's root certifies the tab
+like any other device. A computer that holds no root hands the signing on: the person's tab that
+holds their root, or any of their logged-in devices, sees the request among `devices#pending` and
+answers it. `tilo login` is always this computer logging in. There is no site lookup. `/v1` REST is only an edge
 for callers outside Tilo.
 
 ### Where work runs
@@ -246,7 +259,12 @@ An action that needs what not every device has (a secret it may not read, a
 local model or GPU, Linux, a particular piece of hardware, a connection that
 stays up such as fetching mail) runs on a device of the workspace that has it:
 the starting device if it qualifies, otherwise an always-on server, otherwise
-any other. It runs under the caller's grants, streams its progress and output
+any other, decided in one function (`work::takes_turn`); a device that stops
+writing for a minute loses the work to the next. It runs under the caller's grants: the device that runs it signs what it
+writes with its own device key and carries the caller's signed call with it, so
+every receiver checks that the call was the caller's and that the change stays
+within it and the caller's grants. No caller key leaves the caller's device, and
+there is no second signing scheme. It streams its progress and output
 back to the caller as it goes, and ends in a result or a legible error the
 caller sees, and the caller can cancel it. What it writes goes into resources,
 so every view shows it, and work that outlives its device is carried on by
@@ -338,8 +356,8 @@ There are seven ways to add a device:
 3. The `tilo-enroll` and `tilo-approve` binaries in `tilo-server` (1,741).
 4. `tilo login` with a ticket, the certify action on the device that issued
    it (`tilo_device_identity::login`, `tilo_peer_state::new_device`, `tilo-cli`
-   `login.rs` and `device.rs`), and the browser page's login codes
-   (`tilo-server` `web/login_codes.rs` and `web/sign_in.rs` 1,500).
+   `login.rs` and `device.rs`), and the tickets a page's host serves it
+   (`tilo-server` `web/tickets.rs`).
 5. The browser's `web/pairing.mjs` (348).
 6. The boot-key enrolment in `tilo-auth` `sibling/enrol.rs` (1,121).
 7. `tilo-device-admin` `device.unlock.enrol` (2,211).
@@ -349,9 +367,8 @@ There are seven ways to add a device:
 - **One key per device, in one store.** `IdentityPaths` is the only place a
   native device keeps its key and certificate. The browser keeps its key in
   IndexedDB because it has no file system, but it holds the same `DeviceCert`
-  bytes. The CLI login keeps only `site`, `workspace` and `server_cert` as a
-  `login.json` beside `device/`, and signs with the device key that is
-  already there.
+  bytes. A device logged in with a ticket keeps nothing beside its key and
+  certificate: no site, no server certificate, no `login.json`.
 - **One certificate format.** `DeviceCert`, checked by `verify_device_cert`
   for every caller. Before a disk is unlocked the device key is inside it,
   so the unlock request is signed by a boot key on the unencrypted
@@ -359,14 +376,12 @@ There are seven ways to add a device:
   The signed request names the volume and slot, and the approving device
   checks them against what it recorded when unlock was set up. There is no
   `BootKeyCert` and no second verifier.
-- **One device list.** `DeviceFleetStore` persists it, and `CertifiedFleet`
-  verifies it. A workspace's device view is derived from the fleet, not
-  stored a second time. Revocation is an entry in the fleet and reaches every
-  device of the identity.
-- **One way to add a device.** `tilo-enrollment`. A login code, a pairing
-  code, a QR code and a boot-key request are only token sources feeding
-  `join_with_token`. Adding a computer is one command, `tilo login`, and
-  that computer is then a device of the person like any other.
+- **One device list**: the person's devices, a resource of the person's own
+  workspace, signed by their root. Nothing keeps a second copy. Revocation is
+  an entry in it and reaches every device of the identity.
+- **One way to add a device**: a ticket. `tilo device add` issues one and
+  `tilo login <ticket>` uses it; the root certifies the new device. There are
+  no tokens, codes or a join to wait on.
 
 ### What goes
 
@@ -391,7 +406,7 @@ A person's identity root is kept in more than one place:
 | Store | Code | Location | Size |
 |---|---|---|---|
 | Native person records | `tilo-identity` `store/` (`unix.rs`, `backup.rs`, `recovery_words.rs`, `secure_store.rs`) | `$XDG_CONFIG_HOME/tilo/identity/{<id>.json,active,secrets/}` | 4,986 |
-| Browser root | `tilo-browser-runtime` `root_identity.rs`, `web/identity.mjs` `RootEnvelope`, wrapped by a passkey PRF | IndexedDB | 1,466 |
+| Browser root | `tilo-browser-runtime` `root_identity.rs`, `web/identity.mjs`, the root as the identity store's record | IndexedDB | 738 |
 | Old CLI location | `tilo-cli` `identity.rs` `earlier()` | `$XDG_STATE_HOME/tilo/identity/user-identity/pubkey.bin` | ~20 |
 
 `tilo-identity` as a whole is 22,760 lines, with `store/`, `identity_store`,
@@ -400,8 +415,8 @@ over each other. `DeviceIdentity` means two different things: public
 metadata in `tilo-user-identity` `lib.rs`, and a certificate plus signer in
 `tilo-identity` `identity_store.rs`.
 
-There are three recovery formats (the 24 words, the browser `RecoveryKey`,
-and `tilo-auth`'s modhex on disk). There are five sign-in paths: the greeter
+There are two recovery formats (the 24 words and `tilo-auth`'s modhex on
+disk). There are five sign-in paths: the greeter
 through `pam-tilo` to the `tilo-auth` daemon, `boot-signin`, `tilo-api`
 `sign_in.rs` with `oauth.rs` and `SignInProof`, the browser `sign-in.mjs`,
 and `tilo login`. `threshold-identity` (2,644) implements key generation
@@ -410,24 +425,25 @@ used.
 
 ### What survives
 
-- **One identity root type**, `tilo-user-identity` (`RootEnvelope`,
-  `DeviceCert`, `SignInProof`), shared by the OS, the CLI and the browser.
+- **One identity root type**, `tilo-user-identity` (`DeviceCert`,
+  `SignInProof`), shared by the OS, the CLI and the browser.
 - **One person store**, `tilo_identity::store`: the `IdentityRecord` files,
   the `active` selection, and the profiles derived from them. Nothing else
   indexes them. The browser keeps its wrapped root in IndexedDB, in the same
   record format.
-- **One recovery format**: the 24 words.
+- **One recovery format**: the 24 words. No server keeps a copy of the root,
+  wrapped by a passkey or otherwise; a new browser is added with a ticket from
+  any of the person's devices, or restored from the words.
 - **One sign-in proof**, `SignInProof`. The greeter, the web page, the API
   and `tilo login` all prove the same thing (a current device of this
   identity) and differ only in how the person approves it.
-- The runtime's `DeviceIdentity` is renamed `DeviceSigner`.
 
 ### What goes
 
 | Delete | Size |
 |---|---|
 | The old `$XDG_STATE_HOME/tilo/identity` probe, after one migration | ~20 |
-| The browser `RecoveryKey` and `tilo-auth` modhex recovery formats | ~400 |
+| The `tilo-auth` modhex recovery format | ~400 |
 | `threshold-identity` paths with no caller, until a product needs them | ~2,000 |
 | Overlapping layers inside `tilo-identity` `store/` | to be measured as they fold |
 
@@ -490,8 +506,8 @@ and screen share only, never documents, and stays as it is.
   rebuilt from the kept signed frames.
 - **One wire and one link**: `NeighbourMsg` on one device link. Device to
   device and device to host are the same link, over iroh, and the page uses
-  the same framing over WebTransport. `tilo-server/1` keeps only what comes
-  before a session (join and address lookup).
+  the same framing over WebTransport. `tilo-server/1` goes: joining is a ticket and
+  there is no address lookup.
 - **One compaction**: `tilo-peer-state` `sealed_compaction`.
 - **One resource index**: `resource-store`, with a persistent backend taken
   from the tilolang redb pager. Every host of resources (the workspace
@@ -502,8 +518,16 @@ and screen share only, never documents, and stays as it is.
   `tree_sync` only. Bytes go through one content store, moved by
   `RouteContent`, with keys from `workspace-keys`. Presentations (FUSE,
   native, mirror) are views of that one tree.
-- **Settings are resources.** A person's settings are records of their
-  workspace, and a device's settings are records of that device.
+- **Settings are resources.** A person's settings (appearance,
+  accessibility, shortcuts, language) are records of their own workspace,
+  so they follow the person to every device, a shared one included. A
+  device's settings (displays, power, hardware, network) are records at
+  `devices/<id>/settings/<section>` in its owner's own workspace, read and
+  changed by others through ordinary grants. Each section is one resource
+  with a typed action per key (`settings/appearance#set_theme`), so a grant
+  can name one setting and search finds each field at its own address; an
+  app's preferences are one resource per app. There is no generic
+  `set(key, value)`.
 
 ### What goes
 
@@ -561,32 +585,49 @@ The copies:
 
 ### What survives
 
-- **One declaration language for apps: tilolang.** An app is types, actions
-  and views in `.tl`. Rust remains for the core and for engines an app uses
-  as host capabilities (pixels for Imager, the browser engine, PDF, video,
-  the terminal), never for app UI.
+- **Two layers: a UI library and an app SDK.**
+  - **The UI library** is raw UI that knows nothing about Tilo: widgets,
+    layout, text, input, animation and rendering on every platform, good
+    enough to compete as a UI library on its own on speed and developer
+    experience. It holds no resources, actions, workspaces, identity,
+    history, presence, search or permissions. ui-core's `history_mode`,
+    `history_source`, `presence`, `search`, `action_palette`, its action
+    dispatch and its shell widgets leave it.
+  - **The app SDK** gives an app the whole of Tilo (workspace, resources,
+    actions, history, identity, permissions, search, presence) with a pleasant
+    developer experience. An app changes state only through actions, and
+    everything it holds is in the normal store with permissions, history and
+    an author. It may use the UI library directly, but only by declaring how
+    that UI maps onto its resources, actions and views. tilolang and Rust are
+    two languages for this one SDK, each with one path into the system; the
+    showing of history, presence and search is SDK views over the system's
+    services.
 - **One model ABI**: `tilo-resource` (`DynResource`, merge kinds,
   `ActionCx`), with models running as WebAssembly in every host.
 - **One action registry**: `tilo-actions` (the published tree,
   `ActionEnvelope` replay, `ActionProvider`), with `action-policy` deciding
   every call and `automation` on top. The OS and session verbs are
   providers in it, and their descriptions are generated.
-- **One view path**: tilolang view patches, through
-  `tilo-app-window::reconcile`, to ui-core widgets. ui-core is the one widget
-  library. The web page's HTML comes from the same view output, not from a
-  second per-widget path. Today the page renders the composed widget tree
-  through each widget's `html` (`composition.rs` `HtmlCx`, 277 files); the
-  page entry (`PageShow`, `PageAct`) stays as the seam, and a renderer from
-  view nodes replaces `Page::render` behind it, deleting `HtmlCx` view by
-  view. No new `html` code is written meanwhile.
+- **One view path**: views, from tilolang view patches through
+  `tilo-app-window::reconcile` or from a Rust app, become widgets of the UI
+  library. The web page's HTML comes from one renderer over the semantics
+  tree every window already produces (role, name, value, state, actions,
+  bounds), written as semantic HTML in the shared components' styles; a
+  press on the page is that node's accessibility action. It serves Rust and
+  tilolang windows alike, replaces every widget's `html` (`HtmlCx`) in one
+  push once the page walks match, and there is no second renderer from view
+  nodes beside it.
 - **One sandbox for app code**: `tilolang-process`, started through
   `app-launch` and the `launcher` sandbox when an action is called or a view
   is shown, one per workspace and app, serving every window, page viewer and
   windowless call of that app, and stopped when idle. It is how the system
   runs app code, not an app being open. `app-keeper` stays only for programs that are not Tilo
   apps.
-- **One undo boundary and one executor in the toolkit**: `LocalDispatch`.
-  Widgets change things only through bound actions.
+- **One undo boundary and one executor, in the app SDK**: `LocalDispatch`.
+  The UI library's widgets take plain closures; an app's state changes only
+  through its typed actions, which agents and automations call. A press on a
+  control is not itself a published action: an agent shown a window presses
+  through the same accessibility action a person's assistive tool uses.
 
 ### What goes
 
@@ -681,7 +722,10 @@ workspace vault, despite their names.
 - **What is a person's alone** (their keys, devices, appearance, the list of
   their workspaces, their servers) lives in the person's own workspace,
   where no other person is a member (their agents may be, acting for
-  them). There is no second kind of store for it.
+  them). There is no second kind of store for it. A device enters the person's
+  own workspace from its ticket and certificate, and reads the list of the
+  person's workspaces from it, so that list never names the own workspace
+  itself.
 
 ### What goes
 
@@ -718,16 +762,19 @@ the same `tilo-workspace-service` through `own_device`, but each has its own
 wrapper around it.
 
 What survives: **one daemon per device**, the workspace service opened
-through `own_device`. On a desktop the session is that daemon. Elsewhere it
-is one binary that the CLI, a server and tilo.sh all run, with one MCP socket
+through `own_device`. It is the device's, not a signed-in person's: a system
+service holding the device key, up from boot, so a device at the greeter, before
+its first sign-in or mid-update still answers `tilo-actions/1`. A desktop session is
+a client of it. It is one binary that the CLI, a server and tilo.sh all run, with one MCP socket
 locally and `tilo-actions/1` frames as its remote face. A server differs only in its
 what it keeps and which work it takes, set per workspace.
 The relay is a mode of that daemon. `tilo-api` reads grants from the
 workspace, not from its own file. The agent runner is in the workspace
 service (`agents`, under its `agents` feature) and reaches what only a server
-has today (its Browser windows, its coding runner, its signing sessions and
-its bot runner) through traits; the bot runner (`tilo-server`
-`workspace_bots`) follows it, so any device that takes agent work runs it. A
+has today (its Browser windows and its signing sessions) through traits, so
+any device that takes agent work runs it. There are no bots: an installed
+bot (`bot_members`, `workspace_bots`, with its own device identity and
+program) is an automation with triggers, run like any other, and that code goes. A
 device's first run needs no server: it creates the person's identity and
 their first workspace, an ordinary workspace whose signed member list names
 them as owner.
@@ -766,7 +813,7 @@ The entry points on top of it:
 | TypeScript SDK | `sdk/typescript` (26,401): 18,871 of types generated by `tilo sdk gen`, about 3,500 of hand-written runtime (`models.ts`, `routes.ts` repeating `operations.rs`, `endpoint.ts`, `client.ts`) | HTTPS, or napi into `tilo_api::direct` |
 | Python SDK | `sdk/python` (32,350): 25,299 generated, about 3,450 hand-written | the same |
 | Legacy readers | the `principal` alias (old history is pinned to surfaces that say it; it goes with that history) and the `legacy-guest` image name (goes in the first stable release that publishes `linux-guest`) | nothing | none: the lane is done |
-| Agents | the remaining agent engine's Claude-specific paths, if any | the Tilo-agent milestone: a chat message in the company workspace becomes a small change, checked with t, committed and pushed by the agent. One agent engine since 6b9795c98ef (−15.7k) | Agent engines |
+| Agents | the remaining Claude-specific paths in the agent engine; any agent-only notice, rank or refusal path beside the ordinary grants | agents started by triggers (the Shortcuts system: mention, DM, assigned task by default, anything watchable when set), answering where they were triggered, each turn bounded by the agent's and the asker's grants; the Tilo-agent milestone: a chat message in the company workspace becomes a small change, checked with t, committed and pushed by the agent. One agent engine since 6b9795c98ef (−15.7k) | Agent engines |
 | tilolang CLI | `tilolang-cli` `session.rs` | tilo-control and the REST client |
 
 So there are three action wire dialects (`RemoteActionFrame`, MCP JSON, and
@@ -867,6 +914,38 @@ any of them is added.
 | tilo-control row dialect, `legacy_rows`, `param_row` | a second wire for actions | the one call |
 | REST clients in our code (`tilo-api` `client.rs`, SDK HTTP runtimes) | our code calling our REST edge | calls over iroh |
 
+## Code layout
+
+The crates are grouped by what they are, so the core stays small and
+everything else is visibly optional:
+
+- `crates/core/`: the foundation (wire types, crypto, identity, keys,
+  documents, the one store) and the device daemon. Nothing per app, no
+  importers, no product features.
+- `crates/platform/`: one API per operating-system capability (files,
+  paths, clock, network, processes, secrets, notifications, clipboard,
+  dialogs, appearance, locale) on Linux, macOS and the web. It knows nothing
+  about Tilo either; the UI library and the core both build on it.
+- `crates/ui/`: the UI library, which knows nothing about Tilo and depends on
+  no Tilo crate outside `platform/`.
+- `crates/sdk/`: the app SDK over the core and the UI library, for tilolang
+  and Rust.
+- `crates/lang/`: tilolang's compiler, runtime and process.
+- `crates/desktop/`: the compositor, a session that is a client of the
+  daemon, the portal and the desktop's system services. The shell is a
+  tilolang app.
+- `crates/os/`, `crates/vm/`, `crates/compat/`, `crates/integrations/`:
+  product subsystems (install and boot, hardware, VMs and sandboxes, Windows
+  programs, messaging bridges, cloud mounts), each optional and none linked
+  by the core.
+- `crates/engines/`: PDF, media, document codecs and search, shared by apps.
+- `crates/import/`: everything that reads another product's data, behind
+  `tilo migrate`.
+- `tools/`: the dev VM, app CLIs, examples and test fakes.
+
+A crate moves to its group in the push that removes what it duplicates, not
+as a separate rename.
+
 ## Plan
 
 Each piece's "What goes" table is the work. This table says where it
@@ -884,13 +963,13 @@ waits on, if anything.
 | Piece | Left on main | On a branch now | Session |
 |---|---|---|---|
 | Devices, identity | `tilo-enrollment`, `tilo-device-admin`, `threshold-identity`, nearby pairing and Settings' old add-a-device flow, the browser root, and the page's own copy of `device-key.mjs`'s reader | the build server signed in from the laptop's root; Settings adds a device with a ticket and nearby pairing goes (−2.4k); the tilo.sh page checks approve with `tilo device add` and the page's login-code path goes in the same push; `page.mjs` imports `device-key.mjs`. `tilo device add` and `tilo login` are daemon ticket actions, and first boot, onboarding and the imager carry no identity of their own since eb928484901 (−6.6k); the boot key is an ordinary device certificate since 3ec9b6ef0b1 | One identity |
-| Sync | host retained store (`store/`, `persistence.rs`, `compaction.rs`, `tilo-server-store`), delta and co-edit envelopes, the file path's tail (the Files daemon's keys from the identity service; `kept_documents`, which goes because a mount write is durable once it is in the device's one store; `runtime-fs` blobs and `content-device`, after apps read content through the broker; `DISCOVERY_ALPN` at the next peer-version bump), broker overlap, `settings-store` document layer, `app-state` `FsStore` | one store −40k (waits on the company move's OK), the file path's tail; one file path landed in c4f20cecac1 (−15.1k) | One engine |
-| tilolang store | the redb pager outside resource-store; open, switch and scroll above their bars after the move (465, 108 and 43 ms against 289, 60 and 25); the host fields under `workspace.` (`workspace_field`, `Imp::WorkspaceMembers`) beside the `workspace` resource | the costs first, then the pager into resource-store; `workspace.members` and `me` onto the `workspace` resource with the host fields deleted, right after the lease read lands; the store move landed in e39e9557706 (−49.7k) | tilolang onto the resource store |
+| Sync | session document writes still arriving as envelopes until they move onto actions, the old layout's one-time move into the device store (goes once the company move has run), the file path's tail (the Files daemon's keys from the identity service; `kept_documents`; `runtime-fs` blobs and `content-device`, after apps read content through the broker), broker overlap, `settings-store` document layer, `app-state` `FsStore`, `tilo-server/1` | session document writes onto actions with the envelopes deleted; the file path's tail. One store per device since cb6fcf6f9fc (−44.0k); one file path since c4f20cecac1 (−15.1k); one tree writer since a60e81727f2 | One engine |
+| tilolang store | the redb pager outside resource-store; open, switch and scroll above their bars after the move (465, 108 and 43 ms against 289, 60 and 25); the host fields under `workspace.` (`workspace_field`, `Imp::WorkspaceMembers`), the host-declared `workspace` resource with `leases`, and `invoker.device` (6f60017184b) | the costs first, then the pager into resource-store; tilolang reads `workspace/members` as the ordinary published resource, and the host fields, the `workspace` resource, its `leases` and `invoker.device` are deleted; the store move landed in e39e9557706 (−49.7k) | tilolang onto the resource store |
 | App framework | Rust Chat (71k), Rust Tasks (13.5k), `apps/tilolang` (21k), 65 `*-model` crates, `tilo-view`, `tilo-app` `framework/` (64k) after the ports, the Rust shell, the toolkit's second action path, `PreparedIdentity` in the imager (an identity prepared on the install media) and the in-Tilo imager app; the standalone writer and the installer stay programs that run before Tilo exists and write no identity; a capture before the wipe goes to a folder on the new encrypted disk, which `tilo migrate` reads after login | Chat deletion −145k on one branch, Tasks with Notes on the web −14k, shell context menu | Delete Rust Chat; Rust apps to tilolang; cleanup |
 | Agents | `coding_agents` (4k) and every Claude-specific path, the other agent engines | C −6k | Agent engines |
 | Workspace | `PersonalStore` and `state/personal`, `device_sessions.rs`, `AccountStore` and the `accounts` crate (Settings, the imager, the installer's `store.json`), fake-oauth, `PersonAccounts`, governor role, `Membership`/`WorkspaceRuntime`, `Agent.keeper` (back from main's agent engine) | one push on top of main for all of these, `keeper` becoming the person the agent acts for; the own-document path, the wire `own` field, the settings-store person document, the home-peer registry and per-device accounts are gone since 65a7b8b31c3 (−5.7k), and the person's settings, formats, region, devices and servers are resources of their own workspace | one workspace |
-| Hosting | `tilo-server` as a second host wrapping the workspace service (it becomes the one daemon keeping more; stack.sh still runs it), `tilo-api`'s grant file, the separate binaries, the VM placer (`linux-vm` placement and `tilo-server` `placed_*`) and a member device's second `tilo-actions/1` handler for shell work, the server's `carries_migrations` flag, which moves onto `takes_turn` | `tilo-server`'s management protocol (AdmitServer moves onto `tilo device add` tickets); `tilo-server` onto the one daemon after the store deletion, taking the VM placer, the second handler and `ServerLauncher` (which refuses every windowless tilolang call) with it, so a server runs tilolang actions with the device's own launcher and can take agent turns; agent asks onto `takes_turn` once c-one and the Rust-apps push land. One worker and one `work::takes_turn` on the workspace leases since 9e73c6e787f (−2.7k) | hosting |
-| Actions | three ways in: the frame, MCP over the one walk (`tilo_actions::tree`), and the rest of `tilo-api`'s own routes (tilo-runtime's `account_call` into `api.mcp`, `/v1` model asks calling the session directly, the per-route `/v1` handlers for uploads, programs, invocations, webhooks, export, search, links and views); our own REST client (`tilo do -w`, `tilo-api` `client.rs`, the Python SDK's HTTP runtime); the device-signed agent path (`Caller::delegated_to`, `Acting::handed`), which goes once MCP clients hold keys of their own; the hand-typed vocabularies | `tilo-device-admin` (its own ALPN, handshake and endpoint carrying tilo-vmd's old request lines) goes, with `tilo-vm` reaching a device over `tilo-actions/1` frames; the rest of `tilo-api`'s routes become actions on providers, so `/v1` keeps only its generic resource and action routes; the daemon serves frames on its local socket and the CLI, the REPL and the SDKs move onto them with `client.rs` deleted (the Python SDK's HTTP runtime goes once its native addon is published); then the device-signed agent path; then the device's own admission with the grant move. `tilo-api`'s own operations are the ordinary `tilo.account` provider and its intercepts are gone since 199631cb48f; members.rs is gone; the session's, greeter's, installer's and tilo-vmd's actions are frames; console-control's row format and `tilo-control`'s actions subcommands are gone (59612ef86c3) | actions everywhere |
+| Hosting | `tilo-server` as a second host wrapping the workspace service (it becomes the one daemon keeping more; stack.sh still runs it), `tilo-api`'s grant file, the separate binaries, a member device's second `tilo-actions/1` handler for shell work, and the server's `carries_migrations` flag (a migration is an action and runs where `takes_turn` puts it) | `tilo-server` onto the one daemon, taking the second handler and `ServerLauncher` (which refuses every windowless tilolang call) with it, so a server runs tilolang actions with the device's own launcher and takes agent turns started by triggers; a server joins with a `tilo device add` ticket like any device. One worker and one `work::takes_turn` since 9e73c6e787f (−2.7k) | hosting |
+| Actions | three ways in: the frame, MCP over the one walk (`tilo_actions::tree`), and the rest of `tilo-api`'s own routes (tilo-runtime's `account_call` into `api.mcp`, `/v1` model asks calling the session directly, the per-route `/v1` handlers for uploads, programs, invocations, webhooks, export, search, links and views); our own REST client (`tilo do -w`, `tilo-api` `client.rs`, the Python SDK's HTTP runtime); the device-signed agent path (`Caller::delegated_to`, `Acting::handed`), which goes once MCP clients hold keys of their own; the hand-typed vocabularies | `tilo-device-admin` (its own ALPN, handshake and endpoint carrying tilo-vmd's old request lines) goes in the push that publishes tilo-vmd's requests as a provider on the device's daemon at `devices/<id>/…` in the person's own workspace, admitted by the ordinary grants there, with image layers as content-addressed blobs the device fetches and the certificate's administer bit dropped; a step that needs root is a oneshot unit, a subcommand of the one binary started over D-Bus under a polkit rule naming only those units, so nothing root stays running; build and exec run as the account's user in transient units; no SSH path in between; the rest of `tilo-api`'s routes become actions on providers, so `/v1` keeps only its generic resource and action routes; the daemon serves frames on its local socket and the CLI, the REPL and the SDKs move onto them with `client.rs` deleted (the Python SDK's HTTP runtime goes once its native addon is published); then the device-signed agent path; then the device's own admission with the grant move. `tilo-api`'s own operations are the ordinary `tilo.account` provider and its intercepts are gone since 199631cb48f; members.rs is gone; the session's, greeter's, installer's and tilo-vmd's actions are frames; console-control's row format and `tilo-control`'s actions subcommands are gone (59612ef86c3) | actions everywhere |
 
 Progress is measured as net lines removed on `origin/main` in each piece's
 crates since `d81cc1750ff`, and as copies of each concept left.

@@ -378,6 +378,11 @@ macro_rules! over_content {
 pub struct ContextMenuArea {
     content: Element,
     entries: ContentMenuEntries,
+    /// Whether what is offered where a menu opens is on its way ([`Self::waiting_on`]).
+    waits: Option<Box<dyn Fn(&dyn Widget, Option<Point>) -> bool>>,
+    /// A menu asked for that waits for what it offers: it opens where it was asked once that
+    /// comes.
+    pending: Option<(Rect, Option<Point>)>,
     menu: ContextMenu,
     /// What opened the open menu, and so where it stands.
     opening: Option<Opening>,
@@ -419,6 +424,8 @@ impl ContextMenuArea {
         Self {
             content,
             entries: Box::new(entries),
+            waits: None,
+            pending: None,
             menu: ContextMenu::new(),
             opening: None,
             runs: Vec::new(),
@@ -431,6 +438,17 @@ impl ContextMenuArea {
             picker_wanted: None,
             environment: crate::interaction::InteractionEnvironment::default(),
         }
+    }
+
+    /// The area with `waits` saying whether what is offered at a point (or under the keyboard)
+    /// is on its way: a menu opened there waits for it, and opens once it has come.
+    #[must_use]
+    pub fn waiting_on(
+        mut self,
+        waits: impl Fn(&dyn Widget, Option<Point>) -> bool + 'static,
+    ) -> Self {
+        self.waits = Some(Box::new(waits));
+        self
     }
 
     /// What the menu is over.
@@ -468,6 +486,7 @@ impl ContextMenuArea {
     /// it. The keyboard names the item instead, and the menu stands under
     /// that.
     pub fn open_over(&mut self, anchor: Rect, at_pointer: Option<Point>) -> bool {
+        self.pending = None;
         let entries = (self.entries)(self.content.as_ref(), at_pointer);
         // A row of commands is something to offer whether or not the view bound it (a
         // described row the host left unbound still shows, so a missing binding is seen
@@ -507,9 +526,16 @@ impl ContextMenuArea {
             Some(at) => Opening::Pointer(at),
             None => Opening::Item,
         });
-        // Nothing offered, and no agent to tell: no menu.
+        // Nothing offered, and no agent to tell: no menu, unless what it offers is on its way.
         if menu.items().is_empty() {
             self.opening = None;
+            if self
+                .waits
+                .as_ref()
+                .is_some_and(|waits| waits(self.content.as_ref(), at_pointer))
+            {
+                self.pending = Some((anchor, at_pointer));
+            }
             return false;
         }
         menu.focus_first_action();
@@ -746,6 +772,15 @@ impl super::Decorator for ContextMenuArea {
                 return;
             }
         }
+        // A press elsewhere means the person moved on from a menu still on its way.
+        let pressed = match event {
+            WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
+            WindowEvent::KeyboardInput { event, .. } => event.state == ElementState::Pressed,
+            _ => false,
+        };
+        if pressed {
+            self.pending = None;
+        }
         if let Some((anchor, at_pointer)) = self.opens(event, ctx) {
             // A right-click reaches the content first, so it can take it
             // (a field's own menu) or act on where it landed (pick what is
@@ -756,7 +791,7 @@ impl super::Decorator for ContextMenuArea {
                     return;
                 }
             }
-            if self.open_over(anchor, at_pointer) {
+            if self.open_over(anchor, at_pointer) || self.pending.is_some() {
                 *ctx.handled = true;
             } else if at_pointer.is_none() {
                 self.content.handle_event(event, ctx);
@@ -793,6 +828,10 @@ impl super::Decorator for ContextMenuArea {
     // edges land on the display's pixels as the content's do.
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
         self.content.apply_layout(taffy, node, origin);
+        // What a menu waited for has come with the content laid out anew.
+        if let Some((anchor, at_pointer)) = self.pending {
+            self.open_over(anchor, at_pointer);
+        }
         self.menu.layout_at_position();
     }
 

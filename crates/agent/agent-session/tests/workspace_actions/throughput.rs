@@ -142,10 +142,11 @@ impl Agent<'_> {
 
     /// `bytes` into the workspace in one request: their `tilo.content:` name.
     async fn upload(&self, base: &str, bytes: &[u8]) -> String {
+        let hash = blake3::hash(bytes).to_hex().to_string();
         let (status, reply) = self
             .send(
-                hyper::Method::POST,
-                &format!("{base}/uploads"),
+                hyper::Method::PUT,
+                &format!("{base}/contents/{hash}"),
                 bytes,
                 "application/octet-stream",
             )
@@ -727,32 +728,40 @@ async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
             .map(|index| (index as u32).wrapping_mul(2_654_435_761).to_le_bytes()[0])
             .collect();
         let began = Instant::now();
-        let content = if large * 1024 * 1024 <= piece {
+        let content = if bytes.len() <= piece {
             agent.upload(&base, &bytes).await
         } else {
-            // In pieces, as `tilo put` sends a file larger than one request.
-            let size = large * 1024 * 1024;
-            let (status, opened) = agent
-                .send(
-                    hyper::Method::POST,
-                    &format!("{base}/uploads/bench-large-upload"),
-                    json!({ "size": size }).to_string().as_bytes(),
-                    "application/json",
+            // In pieces, as a file larger than one request goes up.
+            let hash = blake3::hash(&bytes).to_hex().to_string();
+            let route = format!("{base}/contents/{hash}");
+            let mut sent = Value::Null;
+            let mut at = 0usize;
+            while at < bytes.len() {
+                let end = (at + piece).min(bytes.len());
+                // `bytes <from>-<to>/<size>`
+                let content_range = format!("bytes {at}-{}/{size}", end - 1, size = bytes.len());
+                let bearer = format!("Bearer {}", agent.token);
+                let pairs = [
+                    ("authorization", bearer.as_str()),
+                    ("content-type", "application/octet-stream"),
+                    ("content-range", content_range.as_str()),
+                ];
+                let (status, answer) = json_of(
+                    agent
+                        .api
+                        .dispatch(
+                            &hyper::Method::PUT,
+                            &route,
+                            "",
+                            &headers(&pairs),
+                            &bytes[at..end],
+                        )
+                        .await,
                 )
                 .await;
-            assert!(status < 300, "{opened}");
-            let mut sent = Value::Null;
-            for _ in 0..large.div_ceil(64) {
-                let (status, answer) = agent
-                    .send(
-                        hyper::Method::PUT,
-                        &format!("{base}/uploads/bench-large-upload"),
-                        &bytes,
-                        "application/octet-stream",
-                    )
-                    .await;
-                assert!(status < 300, "{answer}");
+                assert!(status == 200 || status == 201, "{answer}");
                 sent = answer;
+                at = end;
             }
             let text = sent.to_string();
             let at = text

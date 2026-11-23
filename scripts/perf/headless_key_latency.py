@@ -207,17 +207,16 @@ def open_something(session, app: str, title: str, arguments: dict, timeout: floa
     keys change. A window publishes its actions after it shows, so the run waits for it."""
     deadline = time.monotonic() + timeout
     while True:
-        found = [action for action in session.actions(app)
-                 if action.get("provider") != "applications" and action.get("title") == title]
+        found = [row for row in session.actions(app)
+                 if (row.get("action") or {}).get("action_label") == title]
         if found or time.monotonic() > deadline:
             break
         time.sleep(0.2)
     if not found:
         sys.exit(f"[key-latency] {app} offers no action {title!r} to --open")
-    receipt = session.invoke(found[0]["provider"], found[0]["id"], arguments or None)
-    update = receipt.get("receipt", {}).get("update", {})
-    if update.get("state") != "succeeded":
-        sys.exit(f"[key-latency] {app}'s {title!r} did not succeed: {update}")
+    status = session.invoke_row(found[0], arguments or None)
+    if not (isinstance(status, dict) and "Completed" in status):
+        sys.exit(f"[key-latency] {app}'s {title!r} did not succeed: {status}")
 
 
 def app_frames(session, app: str) -> int:

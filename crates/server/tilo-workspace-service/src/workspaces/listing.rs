@@ -184,35 +184,11 @@ fn faces(members: &[tilo_peer_state::Member], online: &BTreeSet<[u8; 32]>) -> (V
     (faces, count)
 }
 
-/// The part an invitation hands a member who holds `role`, so that redeeming
-/// it leaves them as they are. The owner holds the workspace whatever an
-/// invitation names: none is theirs.
-const fn invited_part(role: Role) -> Option<Role> {
-    match role {
-        Role::Viewer => Some(Role::Viewer),
-        Role::Commenter => Some(Role::Commenter),
-        Role::Editor => Some(Role::Editor),
-        Role::Moderator => Some(Role::Moderator),
-        Role::Owner => None,
-    }
-}
-
-/// The part a listing hands everyone who joins through the entry. A listing hands
-/// out no more than an editor ([`EntryPolicy::checked`] refuses a moderator's or
-/// an owner's), so one written another way still hands out no governance.
-const fn listed_part(role: Role) -> Role {
-    match role {
-        Role::Viewer => Role::Viewer,
-        Role::Commenter => Role::Commenter,
-        Role::Editor | Role::Moderator | Role::Owner => Role::Editor,
-    }
-}
-
 /// `entry`'s listing as the directory and the pages read it.
 fn listing_of_entry(entry: &EntryPolicy) -> Option<Listing> {
     entry.listing.as_ref().map(|listing| Listing {
         description: listing.description.clone(),
-        default_role: listed_part(listing.default_role),
+        default_role: listing.default_role,
     })
 }
 
@@ -229,28 +205,6 @@ impl Workspaces {
     /// every device again. A public workspace is one anyone may walk into:
     /// what a newcomer waits for is its governance and its shared desktop,
     /// not every record its crowd ever wrote.
-    async fn load_documents_when_opened(&self, workspace: &str, when_opened: bool) {
-        let Ok(governed) = self.workspace(workspace).await else {
-            return;
-        };
-        let workspace_id = governed.lock().await.workspace_id();
-        let hosted = self
-            .inner
-            .host
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace_id)
-            .cloned();
-        if let Some(hosted) = hosted {
-            hosted
-                .lock()
-                .await
-                .store
-                .set_documents_when_opened(when_opened);
-        }
-    }
-
     /// The entry `governed` holds, as its governance records it.
     pub(super) fn entry_of(governed: &GovernedWorkspace) -> EntryPolicy {
         governed.peer().governance().governed_entry()
@@ -314,7 +268,6 @@ impl Workspaces {
         .await?;
         let listed = entry.is_listed();
         drop(governed);
-        self.load_documents_when_opened(workspace, listed).await;
         self.inner.directory.announce(workspace);
         tracing::info!(%workspace, listed, "the workspace's entry settled");
         Ok(entry)
@@ -328,9 +281,6 @@ impl Workspaces {
         device: &DeviceCert,
         listing: Listing,
     ) -> Result<Listing, CollaborationError> {
-        let listing = listing
-            .checked()
-            .map_err(|error| CollaborationError::new(error.to_string()))?;
         let settling = ListingPolicy {
             description: listing.description,
             default_role: listing.default_role,
@@ -705,9 +655,11 @@ impl Workspaces {
             if governed.removals.refuses(user, now) {
                 return Err(EntryRefusal::Removed);
             }
+            // A member is handed the part they hold, so that redeeming it leaves them as they
+            // are; the owner holds the workspace whatever an invitation names.
             let role = member
-                .and_then(invited_part)
-                .unwrap_or_else(|| listed_part(listing.default_role));
+                .filter(|role| role.assignable())
+                .unwrap_or(listing.default_role);
             let token = hex::encode(rand::random::<[u8; 32]>());
             let grant = self.entry_grant(workspace, role, now, &token)?;
             // A person an invitation of the workspace's own names is handed
@@ -904,10 +856,6 @@ pub(super) mod tests {
 
 #[cfg(test)]
 pub(crate) mod entry_tests {
-    #![expect(
-        clippy::significant_drop_tightening,
-        reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
-    )]
     use tilo_actions::remote::{
         ActionProvider as _, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
         RemoteActionTarget,

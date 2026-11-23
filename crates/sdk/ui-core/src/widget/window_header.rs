@@ -105,6 +105,9 @@ impl HistoryControl {
     }
 }
 
+/// A window's History, which the window bar's History control opens and closes: an embedded
+/// app's, or the one an app's root widget offers of what its window shows (a tilolang window,
+/// whose instance shows the system's history of the resource the window shows).
 pub trait WindowHistory {
     fn set_window_presents_history(&mut self, tab_presents: bool);
 
@@ -668,14 +671,6 @@ impl HistoryOpener {
 
     pub fn button_mut(&mut self) -> Option<&mut super::Button> {
         self.button.as_mut()
-    }
-
-    pub fn take_rebuilt(&mut self) -> bool {
-        std::mem::take(&mut self.rebuilt)
-    }
-
-    pub fn tree_rebuilt(&mut self) {
-        self.retired.clear();
     }
 
     #[must_use]

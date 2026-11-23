@@ -402,7 +402,7 @@ pub(crate) fn access_fixture(
     scenario: Option<&str>,
 ) -> Option<crate::panes::devices_access::AccessSample> {
     use crate::device_fleet::DeviceView;
-    use crate::panes::devices_access::{AccessSample, Asking};
+    use crate::panes::devices_access::AccessSample;
     use ui::tilo_actions::remote::identity_admin::KeyKind;
     use ui::tilo_actions::remote::mcp_server::{AgentSession, Grant, Reach, Server};
     const MINUTE: i64 = 60_000;
@@ -485,12 +485,6 @@ pub(crate) fn access_fixture(
             ],
             workspaces: Vec::new(),
         },
-        asking: vec![Asking {
-            ask: "dd".repeat(32),
-            label: "Safari on iPad".into(),
-            code: "482 913".into(),
-            via: "Pixel 9".into(),
-        }],
         now_ms: NOW,
     })
 }

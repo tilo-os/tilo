@@ -260,13 +260,6 @@ impl PixelsHost {
         self.gpu.is_none() && self.waiting()
     }
 
-    /// Whether it renders on `device`; a host whose device was lost and replaced hands it a renderer on
-    /// the new one.
-    #[must_use]
-    pub fn draws_on(&self, device: &wgpu::Device) -> bool {
-        self.gpu.as_ref().is_some_and(|gpu| gpu.device == *device)
-    }
-
     /// Render from now on with `renderer` on `device`.
     pub fn set_gpu(&mut self, device: wgpu::Device, queue: wgpu::Queue, renderer: Renderer) {
         if let Some(job) = self.current.take() {

@@ -308,38 +308,11 @@ impl WebView {
         self.send_resize_if_needed();
     }
 
-    #[must_use]
-    pub fn has_fitting_frame(&self) -> bool {
-        let expected = (
-            round_to_u32_px(self.rect.width() * f64::from(self.engine_scale())),
-            round_to_u32_px(self.rect.height() * f64::from(self.engine_scale())),
-        );
-        let slack = frame_quantization_slack(self.engine_scale());
-        let slot = self.engine.frames();
-        let guard = slot.lock();
-        guard.ok().as_deref().is_some_and(|frame| {
-            frame.as_ref().is_some_and(|frame| {
-                frame.width.abs_diff(expected.0) <= slack
-                    && frame.height.abs_diff(expected.1) <= slack
-            })
-        })
-    }
-
     pub fn lands_at(&mut self, transform: Affine) {
         if !self.host_scaled {
             let coefficients = crate::scroll_copy::on_screen(transform).as_coeffs();
             self.rescale(f32_of_f64(coefficients[0].hypot(coefficients[1])));
         }
-    }
-
-    /// Show only the frames `accepts` passes, for a host that knows its
-    /// own page's frames (an HTML mail marks its document's end): a frame it
-    /// rejects, or one that does not fit the view, is never drawn, and the
-    /// view goes on drawing the last frame it showed. Whatever the engine
-    /// delivers between a host's look at the view and its draw, the draw
-    /// shows a frame the host accepted.
-    pub fn accept_frames(&mut self, accepts: fn(&tilo_webview::Frame) -> bool) {
-        self.accepts = Some(accepts);
     }
 
     pub fn refresh_frame(&mut self) -> bool {
@@ -493,18 +466,6 @@ impl WebView {
             .map(|rect| [rect.x, rect.y, rect.width, rect.height])
             .collect();
         vello::register_image_delta(previous.data.id(), image.data.id(), &rects);
-    }
-
-    /// Forget the page's last frame, for a host loading another document
-    /// into the view: until the new page paints, the view shows its
-    /// placeholder, never the document before it.
-    pub fn forget_frame(&mut self) {
-        if let Ok(mut slot) = self.engine.frames().lock() {
-            *slot = None;
-        }
-        self.cached_image = None;
-        self.cached_trace_id = None;
-        self.cached_key = (0, 0, 0);
     }
 
     #[must_use]

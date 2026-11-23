@@ -156,15 +156,6 @@ fn random<const N: usize>() -> Result<[u8; N], CollaborationError> {
 }
 
 impl Workspaces {
-    /// The heads of `workspace`'s governance as this server holds it now: what
-    /// a change refused against an access read from an earlier state waits
-    /// for ([`crate::workspace::access_deciding`]).
-    pub(crate) async fn governance_heads(&self, workspace: &str) -> Option<Vec<[u8; 32]>> {
-        let governed = self.workspace(workspace).await.ok()?;
-        let heads = governed.lock().await.peer().governance().heads();
-        Some(heads)
-    }
-
     /// Issue an invitation to `workspace` for `administrator`: a device of this
     /// server's own user, or of a member the workspace lets invite with the
     /// invitation's role.
@@ -357,6 +348,20 @@ impl Workspaces {
         Ok(())
     }
 
+    /// The signed invitation `workspace` keeps under the secret a short link
+    /// carries ([`tilo_peer_state::join::native::bearer_text`]), while it may
+    /// still be redeemed: what this host answers whoever follows the link,
+    /// before they are anyone it knows. `None` for a secret that names
+    /// nothing here, or an invitation spent, lapsed or taken back.
+    pub async fn kept_invitation(&self, workspace: &str, secret: &str) -> Option<Vec<u8>> {
+        let bearer = tilo_peer_state::join::native::parse_bearer(secret)?;
+        let workspace = self.workspace(workspace).await.ok()?;
+        let workspace = workspace.lock().await;
+        workspace
+            .collaboration()
+            .invitation_by_bearer(&bearer, tilo_clock::unix_now_ns())
+    }
+
     /// The invitations of `workspace` still redeemable.
     pub async fn pending(
         &self,
@@ -489,10 +494,7 @@ impl Workspaces {
             person: hex::encode(cert.user_public_key),
             device: hex::encode(cert.device_public_key),
             name: cert.device_label.clone(),
-            scope: match scope {
-                AgentScope::AllWorkspaces => None,
-                one @ AgentScope::Workspace(_) => Some(one.name()),
-            },
+            scope: scope.workspace_name(),
             expires_ms: cert.expires_at_ns.map(|expiry| expiry / 1_000_000),
             // A key that another grant minted names it, so the key that made
             // it lists it wherever the workspace is held.
@@ -1089,8 +1091,8 @@ impl Workspaces {
     }
 
     /// Remove, ban or unban, decided by who asks: a device of the server's
-    /// user governs its workspaces, and any other member by the workspace's policy (a
-    /// Moderator reaches members ranked below Moderator).
+    /// user governs its workspaces, and any other member by the workspace's grants on
+    /// the action (the Moderator role holds them).
     async fn change_membership(
         &self,
         workspace: &str,

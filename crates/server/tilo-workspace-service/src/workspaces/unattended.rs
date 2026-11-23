@@ -27,7 +27,7 @@ use tilo_lock::RwLockRecover as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_server_session::workspaces::Refusal;
-use tilo_user_identity::{AgentScope, DeviceCert};
+use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
 
@@ -102,10 +102,11 @@ impl Workspaces {
         else {
             return false;
         };
-        let one_workspace = matches!(
-            certificate.capabilities.agent,
-            Some(scope @ AgentScope::Workspace(_)) if AgentScope::parse(&workspace) == Some(scope)
-        );
+        let one_workspace = certificate
+            .capabilities
+            .agent
+            .and_then(|scope| scope.workspace_name())
+            .is_some_and(|one| one == workspace);
         one_workspace
             && certificate.user_public_key == *user
             && own.owner_of(&workspace) == Some(*user)

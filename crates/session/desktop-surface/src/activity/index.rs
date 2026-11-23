@@ -756,7 +756,9 @@ mod folder_rows_tests {
             for row in written {
                 let parts = ui::author_parts(&row.author);
                 assert_eq!(parts.person, "Ada", "{row:#?}");
-                assert_eq!(parts.writer.as_deref(), Some("Claude Code"), "{row:#?}");
+                // The agent is named as the workspace knows it; the session's title ("Claude
+                // Code") is detail on the hover, never who did it.
+                assert_eq!(parts.writer.as_deref(), Some("Claude"), "{row:#?}");
             }
         }
 

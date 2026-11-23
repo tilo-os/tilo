@@ -102,15 +102,6 @@ fn until_waiting(served: &Served, count: usize) {
     }
 }
 
-/// `answering`, answering a sign-in this device refuses as it first decides it: the test's
-/// device holds what it ever will as it asks.
-fn refusing_at_once(answering: super::Answering) -> super::Answering {
-    super::Answering {
-        sign_in_wait: Duration::ZERO,
-        ..answering
-    }
-}
-
 /// The workspace's accounts record keeping `account`, as Settings writes it.
 fn accounts_keeping(account: &accounts::Account) -> automerge::AutoCommit {
     let document = accounts_document();
@@ -240,7 +231,7 @@ fn a_connector_is_told_its_workspaces_accounts_and_asks_their_sign_ins_only() {
         let stream = tokio::net::UnixStream::from_std(session).unwrap();
         let by = Caller::authenticated([0x30; 32], [0x31; 32]);
         let scope = super::Scope::connector(MAIL, WORKSPACE);
-        let answering = refusing_at_once(super::Answering::here(workspaces, by, changes));
+        let answering = super::Answering::here(workspaces, by, changes);
         super::connection(stream, &answering, &scope).await
     });
     let connector = std::cell::RefCell::new(Client::over(connector).unwrap());
@@ -314,7 +305,7 @@ fn whoever_may_not_read_the_app_asking_gets_no_password() {
             item,
         };
         served.runtime.block_on(async {
-            let answering = refusing_at_once(super::Answering::here(workspaces, agent, changes));
+            let answering = super::Answering::here(workspaces, agent, changes);
             match super::answer(&answering, &scope, ask).await {
                 Answer::Refused { error } => error,
                 other => panic!("a refusal, not {other:?}"),

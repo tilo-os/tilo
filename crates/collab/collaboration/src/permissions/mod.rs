@@ -223,6 +223,9 @@ pub struct PermissionContext {
     /// hosted workspace's records puts an ask to the person on their own
     /// devices ([`Self::reaching_person`]).
     reaches_person: bool,
+    /// What the workspaces holding records this window shows, other than its own, said of their
+    /// actions: decided there, and only shown here ([`held`]).
+    held: Arc<HeldVerdicts>,
 }
 
 /// Inert directory cache identity. It cannot make a permission decision.
@@ -236,6 +239,7 @@ pub struct DirectoryPermissionObservation {
     /// were live: time matters only where it changes an answer.
     live: Vec<bool>,
     action_authority: Option<(String, Box<DirectoryPermissionObservation>)>,
+    held: Arc<HeldVerdicts>,
 }
 
 impl PermissionContext {
@@ -253,6 +257,7 @@ impl PermissionContext {
             once_spender: None,
             spent: std::collections::BTreeSet::new(),
             reaches_person: false,
+            held: Arc::default(),
         }
     }
 
@@ -606,6 +611,7 @@ impl PermissionContext {
             access: Arc::clone(&self.access),
             live,
             action_authority,
+            held: Arc::clone(&self.held),
         })
     }
 
@@ -652,6 +658,57 @@ impl PermissionContext {
     /// The sandbox capabilities in force.
     pub fn capabilities(&self) -> &[CapOverride] {
         &self.sandbox
+    }
+
+    /// What the workspaces holding records this window shows, other than its own, said of their
+    /// actions.
+    #[must_use]
+    pub fn held(&self) -> &HeldVerdicts {
+        &self.held
+    }
+
+    /// The window asks its host about the actions `records` names, of records other workspaces
+    /// hold: they are refused here until their verdicts arrive.
+    pub fn ask_held(&mut self, records: &[HeldRecord]) {
+        let asked = self.held.asking(records);
+        if *self.held != asked {
+            self.held = Arc::new(asked);
+        }
+    }
+
+    /// Take the verdicts the host sent of the actions asked about ([`Self::ask_held`]).
+    pub fn decide_held(&mut self, decisions: &[HeldDecision]) {
+        Arc::make_mut(&mut self.held).decide(decisions);
+    }
+
+    /// Why an invocation of `action` on `resource`, held in another workspace, is refused here, as
+    /// a person reads it.
+    #[must_use]
+    pub fn held_refusal(
+        &self,
+        resource: &tilo_actions::ResourceSpec,
+        action: &tilo_actions::ActionSpec,
+    ) -> Option<tilo_actions::ApiError> {
+        resource.workspace.as_ref()?;
+        let reason = self
+            .held
+            .refusal(resource.id.as_str(), &action.id)
+            .unwrap_or(held::CHECKING);
+        Some(tilo_actions::ApiError::Unavailable {
+            code: "permission_denied".into(),
+            reason: reason.to_owned(),
+        })
+    }
+
+    /// The answer for `action` on `resource` when another workspace holds it: what that
+    /// workspace said, and refused until it did.
+    fn held_answer(&self, resource: &tilo_actions::ResourceSpec, action: &str) -> Option<Answer> {
+        resource.workspace.as_ref()?;
+        Some(
+            self.held
+                .answer(resource.id.as_str(), action)
+                .unwrap_or(Answer::Deny),
+        )
     }
 
     fn policy_now(&self) -> Result<Option<u64>, String> {
@@ -782,6 +839,9 @@ impl PermissionContext {
         action_id: &str,
         need: &tilo_actions::ActionNeed,
     ) -> Answer {
+        if let Some(answer) = self.held.answer(resource_id, action_id) {
+            return answer;
+        }
         if self.action_authority.is_none() {
             return self
                 .published_answers(|answer| {
@@ -816,6 +876,9 @@ impl PermissionContext {
         json: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
     ) -> (Answer, Vec<policy::GrantId>) {
+        if let Some(answer) = self.held_answer(resource, &action.id) {
+            return (answer, Vec::new());
+        }
         let need = input_need(&resource.kind, action, action.need_for(json, argument));
         let node = tilo_actions::action_node(
             &TreePath::root(),
@@ -841,6 +904,9 @@ impl PermissionContext {
         json: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
     ) -> Answer {
+        if let Some(answer) = self.held_answer(resource, &action.id) {
+            return answer;
+        }
         self.need_answer(
             app_id,
             &resource.kind,
@@ -894,11 +960,20 @@ impl PermissionContext {
         resource: tilo_actions::ResourceSpec,
     ) -> Option<tilo_actions::ResourceSpec> {
         // A host action authority decides some nodes from a member access it
-        // samples per action: ask action by action.
-        if self.action_authority.is_some() {
+        // samples per action, and the workspaces holding records held elsewhere decide theirs:
+        // ask action by action.
+        let mut held = std::collections::HashSet::new();
+        held_elsewhere(&resource, &mut held);
+        if self.action_authority.is_some() || !held.is_empty() {
             return keep_permitted(
                 resource,
-                &|kind, id, action, need| self.permits_need(app_id, kind, id, &action.id, need),
+                &|kind, id, action, need| {
+                    if held.contains(id) {
+                        return self.held.answer(id, &action.id).unwrap_or(Answer::Deny)
+                            != Answer::Deny;
+                    }
+                    self.permits_need(app_id, kind, id, &action.id, need)
+                },
                 self.lists_refused(),
             );
         }
@@ -987,6 +1062,9 @@ impl ActionDecider<'_> {
         action_id: &str,
         need: &tilo_actions::ActionNeed,
     ) -> bool {
+        if let Some(answer) = self.permissions.held.answer(resource_id, action_id) {
+            return answer != Answer::Deny;
+        }
         let Some(answers) = &self.answers else {
             return self.permissions.permits_need(
                 self.app_id,
@@ -1327,6 +1405,10 @@ impl SharedPermissions {
     pub fn set(&self, context: PermissionContext) {
         {
             let mut live = self.0.borrow_mut();
+            // What other workspaces said of the records they hold is the host's to change
+            // ([`PermissionContext::decide_held`]), not this window's access.
+            let mut context = context;
+            context.held = Arc::clone(&live.held);
             // A sync that hands over the permissions already in force moved
             // nothing: what was drawn from them stays.
             if *live == context {
@@ -1430,6 +1512,17 @@ impl LivePermissions {
     pub fn current(&self) -> PermissionContext {
         self.0.get()
     }
+
+    /// The window asks its host about the actions of records other workspaces hold
+    /// ([`PermissionContext::ask_held`]).
+    pub fn ask_held(&self, records: &[HeldRecord]) {
+        self.0.update(|context| context.ask_held(records));
+    }
+
+    /// The host's verdicts of them ([`PermissionContext::decide_held`]).
+    pub fn decide_held(&self, decisions: &[HeldDecision]) {
+        self.0.update(|context| context.decide_held(decisions));
+    }
 }
 
 impl std::fmt::Debug for LivePermissions {
@@ -1442,6 +1535,22 @@ impl std::fmt::Debug for LivePermissions {
 
 mod action_authority;
 use action_authority::ActionAuthoritySampler;
+pub mod held;
+pub use held::HeldVerdicts;
+use runtime_collab::held_elsewhere::{HeldDecision, HeldRecord};
+
+/// Add to `held` the id of every resource in `resource` held in another workspace.
+fn held_elsewhere(
+    resource: &tilo_actions::ResourceSpec,
+    held: &mut std::collections::HashSet<String>,
+) {
+    if resource.workspace.is_some() {
+        held.insert(resource.id.as_str().to_owned());
+    }
+    for child in &resource.children {
+        held_elsewhere(child, held);
+    }
+}
 
 /// What invoking an action of a resource of `kind` needs. The verbs an
 /// accessibility surface publishes for a control — focusing it, pressing it,

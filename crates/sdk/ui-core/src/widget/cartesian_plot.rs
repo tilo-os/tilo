@@ -769,16 +769,6 @@ impl CartesianPlot {
             .position(|annotation| annotation.id == id && annotation.interactive);
         self.inspect_item(index.map(CartesianHover::Annotation))
     }
-    pub fn take_annotation_activated(&mut self) -> Option<String> {
-        match self.activation() {
-            Some(CartesianActivation::Annotation(id)) => {
-                let id = id.clone();
-                self.clear_activation();
-                Some(id)
-            }
-            _ => None,
-        }
-    }
     pub fn take_brush_selection(&mut self) -> Option<CartesianBrushSelection> {
         self.marks.brushed.take()
     }

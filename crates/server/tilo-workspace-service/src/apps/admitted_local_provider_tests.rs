@@ -815,7 +815,7 @@ async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
                 Ok(retried) => retried,
                 Err(error) => {
                     assert!(
-                        matches!(&error, tilo_actions::remote::ActionCallError::Unavailable { reason } if reason.contains("still being admitted")),
+                        matches!(&error, tilo_actions::remote::ActionCallError::Unanswered),
                         "{error:?}"
                     );
                     local_host_answer(host.invoke(&caller, request.clone()))

@@ -20,8 +20,8 @@
 //! - **Stopping.** A stop on its item ends the turn that is going, and takes back every ask its
 //!   line made of it before the stop.
 //!
-//! What a sub-agent may read is not decided here: every turn carries the rules its item
-//! derives ([`tilo_workspace_agent::Agent::turn_rules`]).
+//! What a sub-agent may read and change is not decided here: it is one more actor in its
+//! starter's chain ([`tilo_actions::remote::Caller::working_under`]), decided as every action is.
 
 use std::collections::BTreeMap;
 
@@ -95,15 +95,6 @@ fn agent_of(actor: Option<&Actor>) -> Option<&str> {
         Some(Actor::Member(member)) => member.agent_id(),
         _ => None,
     }
-}
-
-/// Whether this server's own loop works `agent`: every agent a person made, and a sub-agent
-/// that works on it. One that works elsewhere is its own runner's.
-pub(super) fn worked_here(agent: &Agent) -> bool {
-    agent
-        .sub
-        .as_ref()
-        .is_none_or(|sub| sub.runs == sub::RUNS_ON_HOST)
 }
 
 /// Whether `asked` is the team's to read as a turn of `agent`: anything asked of a sub-agent,
@@ -411,7 +402,7 @@ impl ServerAgents {
         roster_of(&self.workspaces, workspace).await
     }
 
-    /// Ask the sub-agents of `workspace` that this server works, those in `worked`, what
+    /// Ask the sub-agents of `workspace` among `worked`, the agents this server runs, what
     /// `roster` holds for them and they were not asked yet, and take back what a stop on an
     /// item ended before anyone took it.
     ///

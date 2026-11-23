@@ -177,7 +177,7 @@ fn member_grant(device: [u8; 32], user: [u8; 32]) -> Setup {
 
 fn workspace(root: &std::path::Path) -> WorkspaceRuntime {
     let id = WorkspaceId::parse(WORKSPACE).unwrap();
-    WorkspaceRuntime::open(root, id, false, Membership::default()).unwrap()
+    WorkspaceRuntime::open(root, id, Membership::default()).unwrap()
 }
 
 /// How a case puts its actor into the workspace and the server.
@@ -441,7 +441,6 @@ fn decide_matrix() {
             runtime.governed_user_roots.clear();
             runtime.attached_hosts.clear();
             runtime.workspace_authority = None;
-            runtime.clear_states();
             runtime.admission = *mode;
             (case.setup)(&mut runtime, &server);
             let actual: String = OPS

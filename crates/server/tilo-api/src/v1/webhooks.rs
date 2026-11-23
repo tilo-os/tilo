@@ -12,6 +12,9 @@
 //! - `Tilo-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>">`
 //!   under the webhook's secret.
 //!
+//! A key's webhooks are the account's (`account/webhooks#list`, `#create`, `#delete`): [`list`],
+//! [`create`] and [`delete`] answer those actions.
+//!
 //! A `2xx` within [`ANSWER_WITHIN`] delivers it; anything else is tried again
 //! after [`RETRIES`], and an event the URL never takes is given up on (and
 //! logged) so the ones after it still go. Revoking the key ends its
@@ -26,8 +29,10 @@
 
 use super::answers::Event;
 use crate::Server;
-use crate::store::Webhook;
+use crate::account::{Outcome, failed};
+use crate::store::{Grant, Webhook};
 use hmac::{KeyInit as _, Mac as _};
+use serde_json::{Value, json};
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -215,6 +220,129 @@ impl Posting {
             .iter()
             .any(|stand_in| origin == format!("http://{stand_in}"))
     }
+}
+
+/// The kinds of event a webhook posts.
+const KINDS: [&str; 3] = ["change", "invocation", "presence"];
+
+/// `account/webhooks#list {workspace?}`: `grant`'s webhooks, each with why nothing is posted to
+/// its URL where nothing is.
+pub(crate) fn list(server: &Server, grant: &Grant, args: &Value) -> Outcome {
+    let workspace = args.get("workspace").and_then(Value::as_str);
+    let hooks: Vec<Value> = server
+        .store
+        .webhooks(None)
+        .into_iter()
+        .filter(|hook| hook.grant == grant.id && workspace.is_none_or(|ws| hook.workspace == ws))
+        .map(|hook| row(&hook, false, server.posting.refusal(&hook.url)))
+        .collect();
+    Outcome::Ok(json!({"webhooks": hooks}))
+}
+
+/// `account/webhooks#create {workspace, url, events?, path?}`: a webhook of `grant`'s, delivered
+/// from now on, answered with its secret.
+pub(crate) fn create(server: &Arc<Server>, grant: &Grant, args: &Value) -> Outcome {
+    let text = |name: &str| args.get(name).and_then(Value::as_str).map(str::to_owned);
+    let (Some(workspace), Some(url)) = (text("workspace"), text("url")) else {
+        return failed(
+            "invalid_arguments",
+            "`workspace` and `url` are required",
+            "pass {workspace, url, events?, path?}",
+        );
+    };
+    if let Some(why) = server.posting.refusal(&url) {
+        return failed(
+            "invalid_arguments",
+            why,
+            "name an https URL on the public internet",
+        );
+    }
+    let events: Vec<String> = args
+        .get("events")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    if let Some(unknown) = events.iter().find(|kind| !KINDS.contains(&kind.as_str())) {
+        return failed(
+            "invalid_arguments",
+            format!("{unknown} is no kind of event"),
+            "name change, invocation or presence",
+        );
+    }
+    let (Ok(id), Ok(secret)) = (crate::store::secret(12), crate::store::secret(32)) else {
+        return failed(
+            "unavailable",
+            "no randomness is available",
+            "try again shortly",
+        );
+    };
+    let hook = Webhook {
+        id: format!("wh_{id}"),
+        grant: grant.id.clone(),
+        workspace,
+        url,
+        events,
+        path: text("path"),
+        secret,
+        cursor: None,
+    };
+    if server.store.add_webhook(hook.clone()).is_err() {
+        return failed(
+            "unavailable",
+            "the webhook could not be kept",
+            "try again shortly",
+        );
+    }
+    let made = row(&hook, true, None);
+    Deliveries::start(server, hook);
+    Outcome::Ok(made)
+}
+
+/// `account/webhooks#delete {webhook}`: stop posting to a webhook of `grant`'s.
+pub(crate) fn delete(server: &Server, grant: &Grant, args: &Value) -> Outcome {
+    let id = args
+        .get("webhook")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match server.store.remove_webhook(&grant.id, id) {
+        Ok(true) => {
+            server.v1.deliveries.stop(id);
+            Outcome::Ok(json!({"deleted": id}))
+        }
+        Ok(false) => failed(
+            "not_found",
+            "no such webhook of this key",
+            "account/webhooks#list names them",
+        ),
+        Err(_) => failed(
+            "unavailable",
+            "the webhook could not be removed",
+            "try again shortly",
+        ),
+    }
+}
+
+/// `hook` as its holder reads it: with its secret when it is made, and with why nothing is
+/// posted to its URL (`undelivered`) where nothing is.
+fn row(hook: &Webhook, with_secret: bool, undelivered: Option<&str>) -> Value {
+    let mut row = serde_json::Map::new();
+    row.insert("id".into(), json!(hook.id));
+    row.insert("workspace".into(), json!(hook.workspace));
+    row.insert("url".into(), json!(hook.url));
+    row.insert("events".into(), json!(hook.events));
+    for (name, value) in [
+        ("path", hook.path.as_deref()),
+        ("secret", with_secret.then_some(hook.secret.as_str())),
+        ("undelivered", undelivered),
+    ] {
+        if let Some(value) = value {
+            row.insert(name.into(), json!(value));
+        }
+    }
+    Value::Object(row)
 }
 
 /// The webhooks being delivered, by id.

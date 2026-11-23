@@ -112,8 +112,8 @@ pub enum ServiceError {
     #[error("identity: {0}")]
     Identity(String),
     /// On-disk persistence.
-    #[error("store: {0}")]
-    Store(#[from] crate::store::StoreError),
+    #[error("files: {0}")]
+    Files(#[from] crate::workspace_files::FilesError),
     /// Filesystem I/O.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
@@ -149,7 +149,6 @@ pub struct ServiceSessions {
     pub identity: LiveIdentity,
     pub(crate) handshake_trust: HandshakeTrust,
     pub state_root: PathBuf,
-    pub(crate) shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
     /// The server ALPN's handler, and every session's context.
     pub handler: ServerProtocol,
     /// Ends the in-process sessions when the service shuts down.
@@ -203,10 +202,6 @@ impl ServiceSessions {
     /// The identity is invalid or, for a certified service, not able to serve
     /// or to govern the workspaces it was asked to govern; the state root
     /// cannot be created; or the workspaces cannot be opened.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the handler is a set of shared handles moved into the sessions it becomes part of; dropping it earlier releases no lock"
-    )]
     pub async fn open(
         cfg: ServiceConfig,
         identity: ServiceIdentity,
@@ -256,12 +251,6 @@ impl ServiceSessions {
             environments: crate::environment::EnvironmentRegistry::at(
                 cfg.state_root.join("environments.json"),
             ),
-            compactor: crate::compaction::Compactor::new(
-                identity.device_signing_key.clone(),
-                identity.device_cert.clone(),
-                cfg.shell_payloads.clone(),
-            ),
-            arrivals: crate::attach::Arrivals::default(),
             holds_for_others: cfg.work.from.takes_others(),
         };
         let sessions = Self {
@@ -271,7 +260,6 @@ impl ServiceSessions {
             identity: live,
             handshake_trust,
             state_root: cfg.state_root.clone(),
-            shell_payloads: cfg.shell_payloads.clone(),
             handler,
             closing: Arc::new(tokio::sync::watch::channel(false).0),
             membership_watch: Arc::new(crate::membership_watch::WatchTask::spawn(&cfg.state_root)),
@@ -298,8 +286,14 @@ impl ServiceSessions {
             // Sessions ask its governance what a device may do; the lock is set
             // before the endpoint routes any session to a service that governs here.
             let _ = sessions.handler.admin.set(Arc::new(workspaces.clone()));
-            #[cfg(feature = "device-keys")]
-            take_part(&sessions.handler.compactor, &workspaces);
+            #[cfg(all(
+                not(target_arch = "wasm32"),
+                any(feature = "agents", feature = "device-keys")
+            ))]
+            {
+                let carrying = workspaces.clone();
+                tokio::spawn(async move { carrying.carry_vaults_over().await });
+            }
         }
         Ok((
             sessions,
@@ -324,12 +318,10 @@ impl ServiceSessions {
             channels,
             workspaces: self.workspaces.clone(),
             access: self.access_writer(),
-            records: self.workspace_documents(),
             endpoint,
             cert: identity.device_cert.clone(),
             key: identity.device_signing_key.clone(),
             revocations,
-            metrics: self.metrics.clone(),
             max_pre_admissions: cfg
                 .max_workspace_grants
                 .unwrap_or(crate::workspaces::DEFAULT_MAX_PRE_ADMISSIONS),
@@ -343,7 +335,6 @@ impl ServiceSessions {
                 cloud: cfg.rented,
                 moderates: std::collections::BTreeSet::new(),
             })),
-            arrivals: self.handler.arrivals.clone(),
             member: cfg.member.clone(),
             surfaces: Arc::clone(&cfg.surfaces),
         }
@@ -355,20 +346,8 @@ impl ServiceSessions {
             workspaces: self.workspaces.clone(),
             handshake_trust: self.handshake_trust.clone(),
             state_root: self.state_root.clone(),
-            shell_payloads: self.shell_payloads.clone(),
             environments: self.handler.environments.clone(),
         }
-    }
-
-    /// In-process access to the records of the workspaces this service holds.
-    pub fn workspace_documents(&self) -> crate::workspace_documents::WorkspaceDocuments {
-        crate::workspace_documents::WorkspaceDocuments::new(
-            self.workspaces.clone(),
-            self.identity.cert.device_public_key,
-            self.identity.user_public_key,
-            self.identity.signing_key.clone(),
-            self.metrics.clone(),
-        )
     }
 
     /// Whether the service counts `device` as subscribed to `workspace_id`.
@@ -421,28 +400,11 @@ impl ServiceSessions {
         .await
     }
 
-    /// End every in-process session and stop compacting.
-    pub async fn shutdown(&self) {
+    /// End every in-process session.
+    pub fn shutdown(&self) {
         self.closing.send_replace(true);
         self.membership_watch.stop();
-        self.handler.compactor.stop().await;
     }
-}
-
-/// Let `compactor` fold the sealed records `workspaces` take part in with their channels' keys,
-/// and repair the stores they kept from a run before a page's writes waited for their record:
-/// writes stuck behind a change their writer never sent are folded away now, not at whatever
-/// write next brings each record's fold.
-#[cfg(feature = "device-keys")]
-fn take_part(compactor: &crate::compaction::Compactor, workspaces: &crate::workspaces::Workspaces) {
-    compactor.with_group_keys(Arc::new(workspaces.clone()));
-    let (repairing, compactor) = (workspaces.clone(), compactor.clone());
-    tokio::spawn(async move {
-        #[cfg(not(target_arch = "wasm32"))]
-        Box::pin(repairing.carry_vaults_over()).await;
-        repairing.reseal_before_reader_sets().await;
-        repairing.fold_away_unsent(&compactor).await;
-    });
 }
 
 /// Whether a service asked to govern under `cert` may: governing a workspace is holding its
@@ -757,33 +719,11 @@ impl WorkspaceService {
         self.sessions.endpoint.addr()
     }
 
-    /// The compactor of the workspaces served here.
-    #[cfg(all(test, feature = "agents"))]
-    pub(crate) const fn compactor(&self) -> &crate::compaction::Compactor {
-        &self.sessions.handler.compactor
-    }
-
-    /// The runtime of workspace `workspace_id`, as this service's sessions hold
-    /// it: what the workspace's own writes go through, for a test driving a
-    /// member's change in and reading what the store kept of it.
-    #[cfg(all(test, feature = "agents"))]
-    pub(crate) async fn runtime(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> Option<crate::workspace::SharedWorkspace> {
-        self.sessions
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace_id)
-            .cloned()
-    }
-
-    /// The durable records of the workspaces served here, for a service the
+    /// The kept records of the workspaces served here, for a service the
     /// embedder runs beside them.
     #[must_use]
     pub fn workspace_documents(&self) -> crate::workspace_documents::WorkspaceDocuments {
-        self.sessions.workspace_documents()
+        self.workspaces.documents()
     }
 
     /// The resources of the workspaces this service holds, as the broker answers an app's Open of
@@ -824,7 +764,7 @@ impl WorkspaceService {
     /// ([`crate::workspaces::Workspaces::keep_what_was_followed`]).
     pub async fn shutdown(&self) {
         self.workspaces.keep_what_was_followed().await;
-        self.sessions.shutdown().await;
+        self.sessions.shutdown();
     }
 }
 
@@ -958,7 +898,6 @@ pub(crate) struct GovernedAccessWriter {
     workspaces: WorkspaceRegistry,
     handshake_trust: HandshakeTrust,
     state_root: PathBuf,
-    shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
     /// The browser environments this server placed: their devices are listed
     /// beside the members governance names, so a governance change keeps them.
     environments: crate::environment::EnvironmentRegistry,
@@ -972,11 +911,6 @@ impl GovernedAccessWriter {
     /// A workspace this service deleted admits nobody at the handshake either.
     pub(crate) fn forget_workspace(&self, workspace_id: WorkspaceId) {
         self.handshake_trust.forget(workspace_id);
-    }
-
-    /// The adapter the server opens workspaces with.
-    pub(crate) const fn shell_payloads(&self) -> &Arc<dyn crate::payloads::ShellPayloads> {
-        &self.shell_payloads
     }
 
     /// Whether what the server decides `workspace_id`'s changes against holds
@@ -1002,28 +936,20 @@ impl GovernedAccessWriter {
     pub(crate) async fn replace_access(
         &self,
         workspace_id: WorkspaceId,
-        (device_access, heads): (
-            crate::workspace::DeviceAccess,
-            tilo_peer_state::GovernanceHeads,
-        ),
+        device_access: crate::workspace::DeviceAccess,
     ) -> Result<(), ServiceError> {
         let workspace = crate::workspace_io::get_or_initialize(
             &self.workspaces,
             self.state_root.clone(),
-            &self.shell_payloads,
             workspace_id,
             crate::workspace_access::AdmissionMode::Explicit,
             crate::peer::MAX_HELD_WORKSPACES,
         )
         .await?;
-        workspace.lock().await.project_access(device_access, heads);
+        workspace.lock().await.project_access(device_access);
         Ok(())
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
-    )]
     pub(crate) async fn replace(
         &self,
         workspace_id: WorkspaceId,
@@ -1038,7 +964,6 @@ impl GovernedAccessWriter {
         let workspace = crate::workspace_io::get_or_initialize(
             &self.workspaces,
             self.state_root.clone(),
-            &self.shell_payloads,
             workspace_id,
             crate::workspace_access::AdmissionMode::Explicit,
             crate::peer::MAX_HELD_WORKSPACES,
@@ -1062,7 +987,7 @@ impl GovernedAccessWriter {
         let roots: HashSet<[u8; 32]> = member_user_roots.iter().copied().collect();
         let result = crate::workspace_io::replace_governed_access(
             &workspace,
-            crate::store::GovernedAccessRecord {
+            crate::workspace_files::GovernedAccessRecord {
                 member_devices,
                 member_user_roots,
                 governed: true,
@@ -1120,12 +1045,9 @@ impl HandshakeTrust {
         }
         let mut contributions = HashMap::new();
         let held = workspaces.lock().await;
-        for runtime in held.values() {
+        for (workspace_id, runtime) in held.iter() {
             let runtime = runtime.lock().await;
-            contributions.insert(
-                runtime.store.workspace_id(),
-                runtime.governed_user_roots.clone(),
-            );
+            contributions.insert(*workspace_id, runtime.governed_user_roots.clone());
         }
         drop(held);
         *self.contributions.lock_recover() = contributions;
@@ -1362,10 +1284,6 @@ pub struct ServerProtocol {
     /// The devices this service certified for its browser environments, see
     /// [`crate::environment`].
     pub environments: crate::environment::EnvironmentRegistry,
-    pub compactor: crate::compaction::Compactor,
-    /// Told each device whose session here authenticated
-    /// ([`crate::attach::Arrivals`]).
-    pub(crate) arrivals: crate::attach::Arrivals,
     /// Whether this service's work setting takes workspaces of people other
     /// than its own to hold ([`tilo_server_protocol::WorkFrom::takes_others`]):
     /// their governing services, whom nothing here admits yet, then open a
@@ -1413,10 +1331,6 @@ impl ServerProtocol {
             fetch: self.fetch.get().cloned(),
             agents: self.agents.clone(),
             environments: self.environments.clone(),
-            positions: Some(crate::position::PositionIssuer::new(
-                &self.identity.signing_key.to_bytes(),
-            )),
-            compactor: Some(self.compactor.clone()),
         }
     }
 }
@@ -1540,10 +1454,6 @@ async fn serve_streams(
 /// admits), then the peer loop until the stream ends or `closed` resolves.
 /// Every carrier runs this: an iroh stream, and an in-process stream. Only a
 /// stream with a connection's keying material (`binding`) takes an entry.
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the context is a set of shared handles moved into the peer session it runs"
-)]
 async fn serve_session<R, W>(
     ctx: ServerProtocol,
     mut recv: R,
@@ -1616,7 +1526,6 @@ where
         }
     }
     ctx.metrics.inc_conns_authed();
-    ctx.arrivals.arrived(client_peer.device_public_key);
     // One of an environment's devices may be here: its environment is up, and
     // an end being waited on is not one.
     ctx.environments.arrived(client_peer.device_public_key);

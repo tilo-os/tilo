@@ -10,9 +10,10 @@
         reason = "a page's signer answers through a JavaScript promise, so the owner's write future, which awaits it while it holds the page's store, stays on the page's one thread"
     )
 )]
+mod before_own_removal;
+pub use before_own_removal::kept_message;
 mod frames;
 pub mod governance;
-pub mod governance_work;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod join_answer;
 pub mod join_log;
@@ -71,8 +72,6 @@ pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation
 mod verified_certificate;
 pub use collab_types::work_delegation::WorkDelegation;
 pub use state::ChangeRefused;
-/// The durable layout a replica's state is written in ([`StatePeer::durable`]).
-pub use state::DURABLE_VERSION;
 pub use state::DelegatedWork;
 pub use state::DocumentKeysBasis;
 /// A state of a workspace's governance, kept to ask which heads it holds.
@@ -101,6 +100,8 @@ pub use state::{
     workspace_grants_of, workspace_host_actor, workspace_seed,
 };
 pub use state::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept, Refusal};
+/// The durable layout a replica's state is written in ([`StatePeer::durable`]).
+pub use state::{DURABLE_VERSION, kept_before_own_removal};
 pub use state::{changes_since, saved_whole};
 pub use state::{vm_lease, vm_rank};
 pub mod coverage;
@@ -124,7 +125,9 @@ pub mod workspace_membership;
 
 mod admission;
 pub mod resources;
-mod write_work;
+/// The work reading and writing a workspace's history costs, for the whole
+/// process.
+pub mod work;
 pub use admission::{
     AdmissionError, AdmissionReport, DocumentAdmission, DropReason, DroppedInput, InputDisposition,
     MAX_EXACT_ADMISSION_BYTES, MAX_EXACT_ADMISSIONS, MissingPrerequisite, Released, StillHeld,

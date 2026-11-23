@@ -3,17 +3,21 @@
 //! device after asking.
 
 use tilo_server_protocol::WorkFrom;
-use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Widget};
+use ui::icons::Icon;
+use ui::tokens::{Rhythm, TextRole};
+use ui::widget::{
+    Button, ButtonRole, Column, DisclosureRow, Dropdown, EditableLabel, Row, Spacer, Text, Widget,
+};
 
 use super::{
-    DeviceMeshEffect, HomePeerHealth, Page, PairingTarget, ROOM, ServerRuntimeStatus, WORK_FROM,
-    home_server_row, last_seen_label, peer_health_badge, peer_health_detail, peer_key,
-    personal_device_key, room_shown, runtime_status_tone, takes_work, work_key,
+    DeviceMeshEffect, HomePeerHealth, Page, ROOM, ServerRuntimeStatus, WORK_FROM, home_server_row,
+    last_seen_label, peer_health_badge, peer_health_detail, peer_key, personal_device_key,
+    room_shown, runtime_status_tone, takes_work, work_key,
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
 use provider_settings_ui::widgets::{
-    SettingsSection, StatusTone, error_caption, note, row, rows, section_with,
+    SettingsSection, StatusTone, block, error_caption, note, row, rows, section_with,
     semantic_status_pill, setting_row_described,
 };
 
@@ -83,25 +87,6 @@ impl Page<'_> {
     }
 
     pub(super) fn devices_section(&self) -> SettingsSection {
-        let pairing = self.pairing_call.is_some();
-        let personal_label = if pairing && self.pairing_target == PairingTarget::PersonalDevice {
-            t("mesh-pairing")
-        } else if self.pairing_target == PairingTarget::PersonalDevice {
-            self.pairing_candidate.as_ref().map_or_else(
-                || t("mesh-add-device"),
-                |candidate| {
-                    t_args(
-                        "mesh-approve",
-                        &[
-                            ("label", candidate.label.as_str().into()),
-                            ("code", candidate.verification_code.as_str().into()),
-                        ],
-                    )
-                },
-            )
-        } else {
-            t("mesh-add-device")
-        };
         let mut items = Vec::new();
         for entry in self.device_entries() {
             items.push(row(Box::new(
@@ -112,11 +97,11 @@ impl Page<'_> {
                     &entry.key,
                 )
                 .icon(if entry.this {
-                    ui::icons::Icon::Monitor
+                    Icon::Monitor
                 } else if entry.peer.is_some() {
-                    ui::icons::Icon::HardDrive
+                    Icon::HardDrive
                 } else {
-                    ui::icons::Icon::MonitorSmartphone
+                    Icon::MonitorSmartphone
                 })
                 .secondary(self.device_state(&entry)),
             )));
@@ -129,46 +114,40 @@ impl Page<'_> {
             items.push(note(&t("mesh-status-devices-reading")));
         }
 
-        let home_label = if pairing && self.pairing_target == PairingTarget::HomePeer {
-            t("mesh-pairing")
-        } else if let Some(candidate) = self
-            .pairing_candidate
-            .as_ref()
-            .filter(|_| self.pairing_target == PairingTarget::HomePeer)
-        {
-            t_args(
-                "mesh-approve",
-                &[
-                    ("label", candidate.label.as_str().into()),
-                    ("code", candidate.verification_code.as_str().into()),
-                ],
-            )
-        } else {
-            t("mesh-pair-home")
-        };
-        let pair_home = self.bind_invocation(
-            Button::new("device_mesh.approve_enrollment", &home_label).with_enabled(!pairing),
-            DeviceMeshEffect::PairHomeServer,
-        );
-        items.push(row(Box::new(
-            ui::widget::Row::new()
-                .push(Box::new(pair_home))
-                .push(Box::new(ui::widget::Spacer::new())),
-        )));
-        let add_device = Box::new(
-            self.bind_invocation(
-                Button::new("device_mesh.approve_personal_device", &personal_label)
-                    .with_enabled(!pairing),
-                DeviceMeshEffect::AddPersonalDevice,
-            ),
-        );
-        if let Some(status) = self.status.pairing_shown() {
+        // The code a new computer joins with, while one is printed: the code itself, with the
+        // one control that copies it, and the next step under it.
+        if let Some(code) = &self.ticket {
+            let copy = self.bind_invocation(
+                Button::new("device_mesh.copy_code", &t("mesh-code-copy"))
+                    .role(ButtonRole::Secondary)
+                    .with_icon(Icon::Copy),
+                DeviceMeshEffect::CopyCode { code: code.clone() },
+            );
+            items.push(block(Box::new(
+                Column::new()
+                    .with_rhythm(Rhythm::Related)
+                    .push(Box::new(Text::new(code).with_role(TextRole::Code)))
+                    .push(Box::new(
+                        Row::new()
+                            .push(Box::new(copy))
+                            .push(Box::new(Spacer::new())),
+                    )),
+            )));
+            items.push(note(&t("mesh-add-device-hint")));
+        }
+        if let Some(status) = self.status.ticket_shown() {
             items.push(note(&status));
         }
         if let Some(trouble) = self.status.settings_trouble_shown() {
             items.push(row(error_caption(&trouble)));
         }
-        section_with(&t("mesh-trusted-title"), add_device, rows(items))
+
+        let add = self.bind_invocation(
+            Button::new("device_mesh.add_device", &t("mesh-add-device"))
+                .with_enabled(self.ticket_call.is_none()),
+            DeviceMeshEffect::AddDevice,
+        );
+        section_with(&t("mesh-trusted-title"), Box::new(add), rows(items))
     }
 
     fn device_state(&self, entry: &DeviceEntry<'_>) -> String {

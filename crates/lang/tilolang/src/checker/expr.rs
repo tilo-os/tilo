@@ -658,7 +658,7 @@ impl Checker<'_> {
     }
 
     /// The workspace's resource of the root type `key` (id `ty_id`): `root-<type id>`.
-    pub(super) fn root_ref(app: &str, ty_id: &str, key: &crate::types::TypeKey) -> Ex {
+    fn root_ref(app: &str, ty_id: &str, key: &crate::types::TypeKey) -> Ex {
         Ex::host(
             Imp::RefLit,
             vec![
@@ -851,14 +851,7 @@ impl Checker<'_> {
     }
 
     fn equality(&mut self, eq: bool, l: Ex, r: Ex, span: Span) -> Ex {
-        // A value compared with an option is compared with the option holding it, whichever side
-        // the option is on: `invoker.device() == lease?.device` as `lease?.device == ...`.
-        let (l, r) = if matches!(r.ty, Ty::Option(_)) && !matches!(l.ty, Ty::Option(_)) {
-            (self.coerce(l, &r.ty, span), r)
-        } else {
-            let r = self.coerce(r, &l.ty, span);
-            (l, r)
-        };
+        let r = self.coerce(r, &l.ty, span);
         let e = self.same(l, r, span);
         if eq || e.ty.is_error() {
             e

@@ -818,7 +818,7 @@ fn assert_invalid_then_valid_chat(
     let error = receiver.receive_from_report(origin, bad, now).unwrap_err();
     assert_eq!(
         error,
-        AdmissionError::Rejected(media::MediaPolicyError::Binding.to_string()),
+        AdmissionError::malformed(media::MediaPolicyError::Binding),
         "{case}: the signed snapshot must reach the exact Chat binding guard"
     );
     assert_eq!(bytes, receiver.durable().unwrap(), "{case}");

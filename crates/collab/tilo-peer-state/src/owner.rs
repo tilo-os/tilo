@@ -584,6 +584,9 @@ impl SharedOwner {
         if result.is_err() && !self.store.healthy() {
             self.fence_all();
         }
+        if result.is_ok() {
+            crate::work::commit();
+        }
         if policy && result.is_ok() {
             policy_changed();
         }
@@ -864,9 +867,11 @@ impl NativeWorkspaceOwner {
         message: NeighbourMsg,
         now: SystemTime,
     ) -> Result<AdmissionReport, crate::AdmissionError> {
-        self.receive_batch(workspace, vec![(origin, message)], now)?
+        self.receive_batch(workspace, vec![(origin, message)], now)
+            .map_err(crate::AdmissionError::malformed)?
             .pop()
-            .ok_or_else(|| "native owner admitted no input".to_owned())?
+            .ok_or_else(|| "native owner admitted no input".to_owned())
+            .map_err(crate::AdmissionError::malformed)?
     }
     /// Admit `inputs`, in order, into `workspace` and commit the workspace once for
     /// all of them: a host's replay of a busy workspace is thousands of inputs,
@@ -906,7 +911,7 @@ impl NativeWorkspaceOwner {
                 .as_mut()
                 .and_then(|publication| self.receive_hosted(&candidate, publication, &message, now))
             {
-                Some(report) => report.map_err(crate::AdmissionError::from),
+                Some(report) => report.map_err(crate::AdmissionError::malformed),
                 None => self.admit_with_keys(&candidate, origin, message, now),
             };
             if report.is_ok()
@@ -1018,7 +1023,8 @@ impl NativeWorkspaceOwner {
         {
             let exact = live.lookup_exact_document_report(origin, &message, now)?;
             if let Some(exact) = exact
-                && publication::exact_replay_unchanged(&live, &candidate.record)?
+                && publication::exact_replay_unchanged(&live, &candidate.record)
+                    .map_err(crate::AdmissionError::malformed)?
             {
                 return Ok(exact);
             }

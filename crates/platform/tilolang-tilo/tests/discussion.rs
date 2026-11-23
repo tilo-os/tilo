@@ -504,8 +504,8 @@ tilo_test_env::scenario! {
             ],
             "the task's thread draws them oldest first"
         );
-        // The page also draws the task's history and what changed since Ada last looked, each
-        // with faces and times of its own; the thread is the section that draws what was said.
+        // The page also draws what changed since Ada last looked, with faces and times of its
+        // own; the thread is the section that draws what was said.
         let thread = thread_drawn(page.tree());
         let who: Vec<String> = thread.of_kind("ui.Avatar")
             .into_iter()
@@ -639,18 +639,36 @@ fn a_comment_is_about_its_task_so_the_page_does_not_list_it_as_made_from_it() {
 }
 
 /// A step that wrote no field of its own says what its action is called: the app's words for the
-/// action, never the comment its declaration explains to whoever writes the app.
+/// action, never the comment its declaration explains to whoever writes the app. The history is the
+/// one a window of Tasks shows of the task under its bar's History; the task's page draws none.
 #[test]
 fn a_history_entry_says_what_was_done_in_the_apps_words_not_in_its_declaration() {
     let (ada, _bo, task, _said, _asked) = ada_and_bo_after_a_comment();
+    let history_title =
+        |node: &&UiNode| node.props.get("title") == Some(&Value::text("tilolang-history"));
     let page = ada.host.open_resource(&task, None).unwrap();
-    let section = page
+    assert!(
+        !page.tree().of_kind("ui.Section").iter().any(history_title),
+        "the task's page draws no history of its own"
+    );
+    let viewer = ada.host.viewer().clone();
+    let history = ada
+        .host
+        .runtime()
+        .open_written_view(
+            &viewer,
+            tilolang_tilo::instance::WINDOW_HISTORY,
+            &viewer,
+            vec![Value::resource(&task)],
+        )
+        .unwrap();
+    let section = history
         .tree()
         .of_kind("ui.Section")
         .into_iter()
-        .find(|node| node.props.get("title") == Some(&Value::text("tilolang-history")))
+        .find(history_title)
         .cloned()
-        .expect("the task's page shows its history");
+        .expect("the window's History shows the task's history");
     let words: Vec<String> = section
         .of_kind("ui.Text")
         .into_iter()

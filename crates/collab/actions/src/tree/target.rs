@@ -191,6 +191,7 @@ impl<P: ActionProvider + Sync> Tree<P> {
                 return Err(Unresolved::NotStarted {
                     app_id,
                     why: error.message.clone(),
+                    code: error.code.clone(),
                 });
             }
             (_, Some(InvocationUpdate::Cancelled { .. }))
@@ -198,12 +199,14 @@ impl<P: ActionProvider + Sync> Tree<P> {
                 return Err(Unresolved::NotStarted {
                     app_id,
                     why: "it was cancelled".to_owned(),
+                    code: String::new(),
                 });
             }
             _ => {
                 return Err(Unresolved::NotStarted {
                     app_id,
                     why: "it is still starting; ask again".to_owned(),
+                    code: String::new(),
                 });
             }
         };

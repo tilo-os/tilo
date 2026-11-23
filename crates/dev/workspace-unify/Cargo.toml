@@ -565,7 +565,7 @@ doc = false
 "insta-1_49_0" = { package = "insta", version = "^1.49.0", default-features = false, features = ["colors", "console", "default", "pest", "pest_derive", "redactions", "serde"] }
 "install" = { path = "../../../crates/packaging/install", default-features = false, features = [] }
 "install-plan" = { path = "../../../crates/session/install-plan", default-features = false, features = [] }
-"install-profile-model" = { path = "../../../crates/session/install-profile-model", default-features = false, features = [] }
+"install-profile-model" = { path = "../../../crates/session/install-profile-model", default-features = false, features = ["model"] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
 "intl_pluralrules-7_0_2" = { package = "intl_pluralrules", version = "^7.0.2", default-features = false, features = [] }
 "inventory-0_3_25" = { package = "inventory", version = "^0.3.25", default-features = false, features = [] }
@@ -1345,7 +1345,6 @@ doc = false
 "tilo-server-client" = { path = "../../../crates/server/tilo-server-client", default-features = false, features = ["default", "dial"] }
 "tilo-server-protocol" = { path = "../../../crates/server/tilo-server-protocol", default-features = false, features = [] }
 "tilo-server-session" = { path = "../../../crates/server/tilo-server-session", default-features = false, features = [] }
-"tilo-server-store" = { path = "../../../crates/server/tilo-server-store", default-features = false, features = ["test-support"] }
 "tilo-service" = { path = "../../../crates/session/service", default-features = false, features = [] }
 "tilo-session" = { path = "../../../crates/session/session", default-features = false, features = [] }
 "tilo-session-actions" = { path = "../../../crates/session/session-actions", default-features = false, features = [] }
@@ -1409,7 +1408,6 @@ doc = false
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = ["test-support"] }
 "tilo-workspace-keys" = { path = "../../../crates/collab/workspace-keys", default-features = false, features = ["test-support"] }
 "tilo-workspace-service" = { path = "../../../crates/server/tilo-workspace-service", default-features = false, features = ["agents", "apps", "content", "device-keys", "files", "session-pages", "test-support"] }
-"tilo-written-view" = { path = "../../../crates/platform/tilo-written-view", default-features = false, features = [] }
 "tilo-x11-transfer" = { path = "../../../crates/session/x11-transfer", default-features = false, features = [] }
 "tilo-zone-globe" = { path = "../../../crates/platform/zone-globe", default-features = false, features = [] }
 "tilolang" = { path = "../../../crates/lang/tilolang", default-features = false, features = [] }
@@ -3230,7 +3228,7 @@ doc = false
 "insta-1_49_0" = { package = "insta", version = "^1.49.0", default-features = false, features = ["colors", "console", "default", "pest", "pest_derive", "redactions", "serde"] }
 "install" = { path = "../../../crates/packaging/install", default-features = false, features = [] }
 "install-plan" = { path = "../../../crates/session/install-plan", default-features = false, features = [] }
-"install-profile-model" = { path = "../../../crates/session/install-profile-model", default-features = false, features = [] }
+"install-profile-model" = { path = "../../../crates/session/install-profile-model", default-features = false, features = ["model"] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
 "intl_pluralrules-7_0_2" = { package = "intl_pluralrules", version = "^7.0.2", default-features = false, features = [] }
 "inventory-0_3_25" = { package = "inventory", version = "^0.3.25", default-features = false, features = [] }
@@ -4010,7 +4008,6 @@ doc = false
 "tilo-server-client" = { path = "../../../crates/server/tilo-server-client", default-features = false, features = ["default", "dial"] }
 "tilo-server-protocol" = { path = "../../../crates/server/tilo-server-protocol", default-features = false, features = [] }
 "tilo-server-session" = { path = "../../../crates/server/tilo-server-session", default-features = false, features = [] }
-"tilo-server-store" = { path = "../../../crates/server/tilo-server-store", default-features = false, features = ["test-support"] }
 "tilo-service" = { path = "../../../crates/session/service", default-features = false, features = [] }
 "tilo-session" = { path = "../../../crates/session/session", default-features = false, features = [] }
 "tilo-session-actions" = { path = "../../../crates/session/session-actions", default-features = false, features = [] }
@@ -4074,7 +4071,6 @@ doc = false
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = ["test-support"] }
 "tilo-workspace-keys" = { path = "../../../crates/collab/workspace-keys", default-features = false, features = ["test-support"] }
 "tilo-workspace-service" = { path = "../../../crates/server/tilo-workspace-service", default-features = false, features = ["agents", "apps", "content", "device-keys", "files", "session-pages", "test-support"] }
-"tilo-written-view" = { path = "../../../crates/platform/tilo-written-view", default-features = false, features = [] }
 "tilo-x11-transfer" = { path = "../../../crates/session/x11-transfer", default-features = false, features = [] }
 "tilo-zone-globe" = { path = "../../../crates/platform/zone-globe", default-features = false, features = [] }
 "tilolang" = { path = "../../../crates/lang/tilolang", default-features = false, features = [] }

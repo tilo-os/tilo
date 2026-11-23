@@ -40,7 +40,7 @@ impl Requester<'_> {
     /// Whether they govern the workspace: its owner or a moderator.
     #[must_use]
     pub fn governs(&self) -> bool {
-        self.role >= Some(Role::Moderator)
+        self.role.is_some_and(|role| role.includes(Role::Moderator))
     }
 
     /// Whether they write in the workspace at all.
@@ -56,7 +56,7 @@ impl Requester<'_> {
 /// their device sends nothing the workspace did not answer that it allows.
 #[must_use]
 pub fn writes(role: Option<Role>) -> bool {
-    role >= Some(Role::Editor)
+    role.is_some_and(|role| role.includes(Role::Editor))
 }
 
 /// What a workspace's governors alone may change.

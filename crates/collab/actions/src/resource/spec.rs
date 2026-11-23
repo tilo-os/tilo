@@ -36,6 +36,10 @@ pub struct ResourceSpec {
     /// notifications. Only a program the session runs itself reads it; an installed app reads
     /// what its own records hold.
     pub personal: bool,
+    /// The workspace that holds the record, when it is not the one the window publishing it is
+    /// open in: a person's profile record, held in their own workspace. That workspace decides
+    /// the record's changes; `None` is the window's.
+    pub workspace: Option<String>,
     /// What it is, as people name it, when its type says ([`ResourceType`]).
     pub resource_type: Option<ResourceType>,
 }
@@ -56,6 +60,7 @@ impl Clone for ResourceSpec {
             actions: self.actions.clone(),
             views: self.views.clone(),
             personal: self.personal,
+            workspace: self.workspace.clone(),
             resource_type: self.resource_type.clone(),
         }
     }
@@ -79,6 +84,7 @@ impl ResourceSpec {
             actions: Vec::new(),
             views: Vec::new(),
             personal: false,
+            workspace: None,
         }
     }
 
@@ -119,6 +125,13 @@ impl ResourceSpec {
     #[must_use]
     pub fn with_personal_reading(mut self) -> Self {
         self.personal = true;
+        self
+    }
+
+    /// The record is held in `workspace` rather than in the window's ([`Self::workspace`]).
+    #[must_use]
+    pub fn held_in(mut self, workspace: impl Into<String>) -> Self {
+        self.workspace = Some(workspace.into());
         self
     }
 

@@ -24,7 +24,7 @@ rm -rf "$out"
 mkdir -p "$out/bin" "$out/lib"
 while IFS= read -r binary; do
     cp -p "$target/thin-app/$binary" "$out/bin/"
-done < <(jq -r '.catalog[].binary' <<<"$plan")
+done < <(jq -r '.catalog[].binary | select(length > 0)' <<<"$plan")
 cp -p "$target/thin-app/libruntime_dylib.so" "$out/lib/"
 while IFS= read -r engine; do
     cp -p "$target/thin-app/$engine" "$out/lib/"

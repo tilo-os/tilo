@@ -10,30 +10,77 @@
 //! The device that won runs the turn and renews its claim while it does;
 //! every other device answers whose turn it is, or why it may not take it.
 //!
+//! An agent's turn is a turn too ([`Turn::Agent`]), claimed under the agent
+//! and the place it was started in: every device that runs an agent engine
+//! and reads what started it calls [`takes_turn`] before it answers, and the
+//! one whose claim wins writes the answer.
+//!
 //! Whether a device may take a turn is decided in one place
 //! ([`eligibility`]). For an offloaded action's work: the person's entry for
 //! this device among their servers offers compute and is not retired, this
 //! device's job runner ([`HostJobs`]) runs the transform and keeps every input
 //! already, it has room for one more job, the workspace lets this device open
 //! the record the work is about, and it lets the device that asked run the
-//! action. No caller checks any of this itself.
+//! action. For an agent's turn: the workspace lets this device open the
+//! record the turn is about, and the device runs an agent engine that can run
+//! the agent: it holds the agent's approved key, or it is a device of the
+//! agent's keeper (a server of theirs only where its entry offers compute and
+//! is not retired). Who started the turn does not decide where it runs: any
+//! member may start any agent's turn. No caller checks any of this itself.
+//!
+//! A run that needs Linux (a workspace's shell command, its terminal, its
+//! machine, its Browser) is asked the same way ([`Turn::Linux`], on
+//! [`LINUX_RESOURCE`]). A device takes it when it runs Linux machines
+//! ([`HostLinux`]) and has room for one more, unless the workspace's machine
+//! is kept on another device already: a machine stays where its disk is.
 
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
 use tilo_actions::remote::{
-    ActionCallError, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
+    ActionCallError, ActionProvider, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, Offload};
 
 use crate::workspaces::Workspaces;
+use crate::workspaces::servers;
+use tilo_server_protocol::servers::person_workspace_id;
 
 /// The provider a turn of work is asked under on the device action service.
 pub const WORK_PROVIDER: &str = "tilo.work";
 /// The resource a turn of work is asked on.
 pub const WORK_RESOURCE: &str = "work";
+/// The resource a run that needs Linux is asked on.
+pub const LINUX_RESOURCE: &str = "linux";
 /// The action that asks a device to take a turn.
 pub const TAKE: &str = "take";
+
+/// The ask that a device take `run`, an action of the Linux machine a
+/// workspace's devices run its shells and Browser in, as the turn `run` names.
+#[must_use]
+pub fn linux_take_request(run: &InvokeRequest) -> InvokeRequest {
+    let argument = match serde_json::json!(run) {
+        serde_json::Value::Object(run) => InvokeArgument::Json(run),
+        _ => InvokeArgument::None,
+    };
+    InvokeRequest {
+        invocation: run.invocation,
+        target: RemoteActionTarget {
+            provider: WORK_PROVIDER.to_owned(),
+            address: ActionAddress::new(LINUX_RESOURCE, TAKE),
+        },
+        argument,
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
 
 /// How long a turn's claim lasts past its last write, before the minute every
 /// claim is given for clocks that differ: none, so a claim is live for exactly
@@ -85,7 +132,7 @@ impl Job {
 }
 
 /// One turn of work a device may take.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Turn {
     /// An offloaded invocation of an app's action, asked by the device
     /// `requester`.
@@ -97,13 +144,29 @@ pub enum Turn {
         /// What runs.
         job: Job,
     },
-    /// An agent's answer to an ask of it: the ask's record, kept by the app `app`. Its lease is
-    /// the ask's id alone, which names it wherever it is read.
-    Ask {
-        /// The app whose record keeps the ask, which this device must be let open.
+    /// A run on the workspace's Linux machine, asked by the device
+    /// `requester`: the action of the machine it invokes there.
+    Linux {
+        /// The invocation, which names the turn.
+        id: InvocationId,
+        /// The device that asked.
+        requester: [u8; 32],
+        /// What runs.
+        run: Box<InvokeRequest>,
+    },
+    /// A turn of an agent's, in the place something started it.
+    Agent {
+        /// The agent that answers.
+        agent: String,
+        /// Where the turn was started: the conversation, or the task, it
+        /// answers in. One device answers there at a time.
+        place: String,
+        /// The person who keeps the agent, by their root key.
+        keeper: [u8; 32],
+        /// The app keeping the record the turn is about.
         app: String,
-        /// The ask, by its record id.
-        ask: String,
+        /// That record.
+        record: String,
     },
 }
 
@@ -112,7 +175,8 @@ impl Turn {
     fn lease(&self) -> String {
         match self {
             Self::Invocation { id, .. } => format!("invocation/{}", id.0),
-            Self::Ask { ask, .. } => format!("ask/{ask}"),
+            Self::Linux { id, .. } => format!("linux/{}", id.0),
+            Self::Agent { agent, place, .. } => format!("turn/{agent}/{place}"),
         }
     }
 }
@@ -136,6 +200,17 @@ pub enum Ineligible {
     CannotOpen,
     /// The workspace does not let the device that asked run the action.
     NotPermitted,
+    /// This device runs no Linux machines.
+    RunsNoLinux,
+    /// It runs as many Linux machines as it has room for.
+    NoRoomForLinux,
+    /// The workspace's Linux machine is kept on another device.
+    MachineElsewhere,
+    /// This device holds no approved key of the agent and is none of its
+    /// keeper's devices.
+    CannotRunAgent,
+    /// This device runs no agent engine.
+    RunsNoAgents,
 }
 
 impl fmt::Display for Ineligible {
@@ -148,6 +223,11 @@ impl fmt::Display for Ineligible {
             Self::AtCapacity => "this device is running as many jobs as it takes on",
             Self::CannotOpen => "this device cannot open the record the work is about",
             Self::NotPermitted => "the workspace does not let the device that asked run this",
+            Self::RunsNoLinux => "this device runs no Linux machines",
+            Self::NoRoomForLinux => "this device has no room for another Linux machine",
+            Self::MachineElsewhere => "the workspace's Linux machine is kept on another device",
+            Self::CannotRunAgent => "this device cannot run the agent",
+            Self::RunsNoAgents => "this device runs no agents",
         })
     }
 }
@@ -243,7 +323,7 @@ pub async fn takes_turn(
     eligibility(workspaces, workspace, turn)
         .await
         .map_err(NotTaken::Ineligible)?;
-    let device = workspaces.serving_certificate().device_public_key;
+    let device = workspaces.lease_device(workspace).await;
     let lease = turn.lease();
     let holder = workspaces
         .lease_holder(workspace, &lease)
@@ -278,10 +358,21 @@ pub async fn takes_turn(
 /// Whether this device offers compute to its person's workspaces: the person's
 /// entry for it among their servers says so and it was not retired.
 pub async fn offers_compute(workspaces: &Workspaces) -> bool {
-    let device = workspaces.serving_certificate().device_public_key;
-    crate::workspaces::servers::read(workspaces)
+    let person = workspaces.serving_certificate().user_public_key;
+    server_entry(workspaces, &person)
         .await
-        .is_ok_and(|servers| servers.active(&device).is_some_and(|entry| entry.compute))
+        .is_some_and(|entry| entry.compute && !entry.retired)
+}
+
+/// This device's entry among the servers of the person whose root is `person`.
+async fn server_entry(workspaces: &Workspaces, person: &[u8; 32]) -> Option<servers::Server> {
+    let device = workspaces.serving_certificate().device_public_key;
+    let servers = servers::read_on(workspaces, &person_workspace_id(person)).await;
+    servers
+        .ok()?
+        .servers
+        .get(&servers::device_id(&device))
+        .cloned()
 }
 
 /// Whether this device may take `turn` in `workspace`, or why not.
@@ -290,6 +381,7 @@ async fn eligibility(
     workspace: &str,
     turn: &Turn,
 ) -> Result<(), Ineligible> {
+    let device = workspaces.serving_certificate().device_public_key;
     match turn {
         Turn::Invocation { requester, job, .. } => {
             if !offers_compute(workspaces).await {
@@ -305,9 +397,8 @@ async fn eligibility(
             if jobs.free_slots() == Some(0) {
                 return Err(Ineligible::AtCapacity);
             }
-            let device = workspaces.serving_certificate().device_public_key;
             if !workspaces
-                .opens_record(device, workspace, (&job.app, &job.resource))
+                .opens_record(device, workspace, &job.app, &job.resource)
                 .await
             {
                 return Err(Ineligible::CannotOpen);
@@ -317,14 +408,82 @@ async fn eligibility(
             }
             Ok(())
         }
-        Turn::Ask { app, ask } => {
-            let device = workspaces.serving_certificate().device_public_key;
-            if !workspaces.opens_record(device, workspace, (app, ask)).await {
+        Turn::Linux { .. } => {
+            let linux = workspaces.host_linux().ok_or(Ineligible::RunsNoLinux)?;
+            let device = workspaces.lease_device(workspace).await;
+            let keeper = workspaces
+                .lease_holder(workspace, &linux.machine_lease())
+                .await
+                .ok()
+                .flatten();
+            match keeper {
+                Some(keeper) if keeper == device => Ok(()),
+                Some(_) => Err(Ineligible::MachineElsewhere),
+                None if linux.has_room() => Ok(()),
+                None => Err(Ineligible::NoRoomForLinux),
+            }
+        }
+        Turn::Agent {
+            agent,
+            keeper,
+            app,
+            record,
+            ..
+        } => {
+            if !workspaces
+                .opens_record(device, workspace, app, record)
+                .await
+            {
                 return Err(Ineligible::CannotOpen);
             }
-            Ok(())
+            let Some(keys) = workspaces.agent_keys() else {
+                return Err(Ineligible::RunsNoAgents);
+            };
+            if keys.holds(workspace, agent, keeper).await {
+                return Ok(());
+            }
+            keepers_device(workspaces, keeper).await
         }
     }
+}
+
+/// The Linux machines a device runs its workspaces' shells, terminals and
+/// Browser in.
+pub trait HostLinux: Send + Sync {
+    /// The lease of a workspace the device keeping its machine claims: a
+    /// machine stays where its disk is.
+    fn machine_lease(&self) -> String;
+
+    /// Whether this device has room to start one more machine.
+    fn has_room(&self) -> bool;
+
+    /// What answers the machine's actions here: a run, a terminal, a branch
+    /// or delete of the machine, a Browser.
+    fn runs(&self) -> Arc<dyn ActionProvider + Send + Sync>;
+}
+
+/// Whether this device runs agents for the person whose root is `keeper`: it
+/// is a device of theirs, and where their servers name it, its entry offers
+/// compute and is not retired.
+async fn keepers_device(workspaces: &Workspaces, keeper: &[u8; 32]) -> Result<(), Ineligible> {
+    match server_entry(workspaces, keeper).await {
+        Some(entry) if entry.compute && !entry.retired => Ok(()),
+        Some(_) => Err(Ineligible::OffersNoCompute),
+        None if workspaces.serving_certificate().user_public_key == *keeper => Ok(()),
+        None => Err(Ineligible::CannotRunAgent),
+    }
+}
+
+/// The agent engine a device runs, as [`takes_turn`] asks it about an agent.
+pub trait AgentEngine: Send + Sync {
+    /// Whether this device holds an approved key of `agent` of `workspace`,
+    /// kept by the person whose root is `keeper`.
+    fn holds<'a>(
+        &'a self,
+        workspace: &'a str,
+        agent: &'a str,
+        keeper: &'a [u8; 32],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>>;
 }
 
 /// The jobs a device runs for the devices of its workspaces: an offloadable

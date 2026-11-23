@@ -32,7 +32,7 @@ use super::turn_use_tests::{not_hosted_turns, on_turn};
 use crate::workspaces::hosted_use::{AskedSend, HostedTurn, SEND_CARRIER, TurnMail};
 use crate::workspaces::mail_watch::testing::{Watched, keep};
 use crate::workspaces::person_asking::kept_asks::{KeptAsk, NewAsk};
-use crate::workspaces::tests::{governor, test_host_taking_part as test_server};
+use crate::workspaces::tests::{governor, test_host as test_server};
 use crate::workspaces::{RemoveMemberRequest, WorkspaceId, Workspaces};
 
 const ACCOUNT: &str = "ada@example.test";

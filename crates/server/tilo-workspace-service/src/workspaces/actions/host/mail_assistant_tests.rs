@@ -33,7 +33,7 @@ use super::super::tests::{admit, caller, governed, settled};
 use super::accounts_tests::asking;
 use crate::workspaces::fixtures::TestHost;
 use crate::workspaces::mail_watch::testing::{Watched, keep};
-use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
+use crate::workspaces::tests::{governor, test_host};
 use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
 
 const ACCOUNT: &str = "ada@example.test";

@@ -99,8 +99,12 @@ pub(super) struct Asking {
 pub(super) fn asking(message: &RemoteActionMessage) -> Option<Asking> {
     let kind = match message {
         RemoteActionMessage::CatalogueRequest { .. } => Kind::List,
+        RemoteActionMessage::Invoke(request)
+            if tilo_actions::remote::search::is_find(&request.target) =>
+        {
+            Kind::Search
+        }
         RemoteActionMessage::Invoke(_) => Kind::Admit,
-        RemoteActionMessage::SearchRequest { .. } => Kind::Search,
         _ => return None,
     };
     let asked = ASKED.try_with(Arc::clone).ok()?;

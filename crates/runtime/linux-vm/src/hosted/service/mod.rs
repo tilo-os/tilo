@@ -34,9 +34,8 @@ use tilo_actions::remote::server_account;
 /// How often awake VMs are asked what runs in them.
 pub const POLL: Duration = Duration::from_secs(1);
 
-/// What a wake that waits for room is told, and its caller shows: a placer starts another machine
-/// for the demand (about three minutes on Azure), or a VM going idle makes room sooner.
-pub const BUSY: &str = "Starting another machine for it, about 3 minutes.";
+/// What a wake that waits for room is told, and its caller shows: a VM going idle makes room.
+pub const BUSY: &str = "The machine is full until one of its VMs goes idle.";
 
 /// How long a waiting wake counts as demand after it last asked: its
 /// caller asks again every few seconds while it waits.
@@ -49,7 +48,7 @@ const BROWSER_GRACE: Duration = Duration::from_secs(15);
 /// How long after a template was last tried another try waits. A node that
 /// could not spare the memory or whose boot failed gets another try while
 /// whoever waited for the template is still waiting: ten minutes is long past
-/// any check or placer that asked for it.
+/// any check that asked for it.
 const TEMPLATE_RETRY_MS: u64 = 60 * 1000;
 
 /// What a request for a VM that was deleted while it waited is told.
@@ -511,8 +510,7 @@ impl Service {
             .is_none_or(|free| free >= self.budget.reserve_mib.saturating_add(expected_mib))
     }
 
-    /// Note that `id` waits for room: what a placer starts another machine
-    /// for.
+    /// Note that `id` waits for room: the demand the host's load reports.
     fn waits(&self, id: &str) {
         lock(&self.waiting).insert(id.to_owned(), (self.budget.expected_mib(), (self.clock)()));
     }
@@ -1492,9 +1490,7 @@ impl Service {
                 self.stop_apps(&workspace);
                 Reply::Done
             }
-            Request::Place { .. } => {
-                Reply::Error("a host runs VMs; a placer answers where".to_owned())
-            }
+            Request::Place { .. } => Reply::Error("a host runs VMs; it places none".to_owned()),
             Request::Branch { vm, from } => self.answer_branch(&vm, &from),
             Request::Delete {
                 workspace,
@@ -1607,33 +1603,6 @@ impl Service {
         self.suspend_all();
         let _ = std::fs::remove_file(&socket);
         Ok(())
-    }
-}
-
-impl Service {
-    /// Answer [`Request::Status`] on `listener`, and nothing else: what a
-    /// placer reads of this host over the network. Waking, stopping and usage
-    /// stay on the service's own socket.
-    pub fn serve_status(self: &Arc<Self>, listener: std::net::TcpListener) {
-        let service = Arc::clone(self);
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else {
-                    continue;
-                };
-                let service = Arc::clone(&service);
-                std::thread::spawn(move || {
-                    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-                    if let Ok(Some(request)) = FRAMING.read_value::<_, Request>(&mut stream) {
-                        let reply = match request {
-                            Request::Status => service.handle(Request::Status),
-                            _ => Reply::Error("this listener answers Status only".to_owned()),
-                        };
-                        let _ = FRAMING.write_value(&mut stream, &reply);
-                    }
-                });
-            }
-        });
     }
 }
 

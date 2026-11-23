@@ -72,6 +72,13 @@ impl SettingsSteps {
         changed
     }
 
+    /// Take what this provider offers out of `resources`: the session's own provider lists
+    /// what its services publish, and Settings' sections are offered here instead, under
+    /// this provider. One address has one entry.
+    pub(crate) fn leave_out(resources: &mut Vec<ResourceSpec>) {
+        resources.retain(|resource| !tilo_settings_service::keeps(resource.id.as_str()));
+    }
+
     /// The rows the settings stand in now.
     fn offered(&self) -> Vec<tilo_actions::api::PlacedAction> {
         tilo_actions::api::survey_placed(&self.resources.read_recover())

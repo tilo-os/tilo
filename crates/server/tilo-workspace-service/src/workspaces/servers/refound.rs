@@ -156,7 +156,7 @@ pub(super) async fn refound(workspaces: &Workspaces) -> Result<bool, String> {
         ))
         .await
         .map_err(|error| error.to_string())?;
-        workspaces.note_document_write(&admin, &app, &record);
+        workspaces.wrote(&admin, &app, &record);
     }
     write(&kept, &carried)?;
     let mut left = Vec::new();

@@ -152,10 +152,14 @@ impl StatePeer {
             ..
         } = message
         else {
-            return Err("exact document lookup requires AppDocument".into());
+            return Err(crate::AdmissionError::malformed(
+                "exact document lookup requires AppDocument",
+            ));
         };
         if *peer != peer_handle(&source) {
-            return Err("transport author mismatch".into());
+            return Err(crate::AdmissionError::forbidden(
+                "transport author mismatch",
+            ));
         }
         self.lookup_exact_document_parts(source, app_id, cluster_id, document_id, envelope, now)
     }
@@ -169,7 +173,9 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<Option<DocumentAdmission>, AdmissionError> {
         if workspace != self.core.workspace || op.author.as_bytes() != &source {
-            return Err("transport author or document workspace mismatch".into());
+            return Err(crate::AdmissionError::forbidden(
+                "transport author or document workspace mismatch",
+            ));
         }
         if matches!(
             self.authorize_document(&source, app, document, op, now, false)
@@ -185,9 +191,7 @@ impl StatePeer {
                             said,
                         )))
                     }
-                    denied @ super::authority::AuthorizeRefusal::Denied(_) => {
-                        AdmissionError::Rejected(denied.to_string())
-                    }
+                    super::authority::AuthorizeRefusal::Denied(refusal) => refusal,
                 })?,
             super::authority::Authorized::Hold(_)
         ) {
@@ -195,8 +199,8 @@ impl StatePeer {
             return Ok(None);
         }
         collab_types::validate_whole_document_payload_route(app, workspace, document, op)
-            .map_err(err)?;
-        collab_types::verify_op(op).map_err(err)?;
+            .map_err(crate::AdmissionError::malformed)?;
+        collab_types::verify_op(op).map_err(crate::AdmissionError::malformed)?;
         let admission = DocumentAdmission::from_op(workspace, app, document, op)?;
         let compaction = op.kind == collab_types::OpKind::Compaction;
         match self.core.exact_admissions.get(&admission.key) {
@@ -267,9 +271,10 @@ impl StatePeer {
             || !self.keeps_owner_of(before)
             || (before.core.exact_selected && !self.core.exact_selected)
         {
-            return Err(
-                "admission candidate replaces namespace or downgrades native writer".into(),
-            );
+            return Err(crate::AdmissionError::rejected(
+                neighbour_wire::RefusalReason::Conflict,
+                "admission candidate replaces namespace or downgrades native writer",
+            ));
         }
         let index = &self.core.exact_admissions;
         let prior = &before.core.exact_admissions;
@@ -281,7 +286,10 @@ impl StatePeer {
         if index.shares_settled(prior) {
             for (key, id) in prior.recent() {
                 if index.get(key) != Some(id) {
-                    return Err("admission candidate discards exact evidence".into());
+                    return Err(crate::AdmissionError::rejected(
+                        neighbour_wire::RefusalReason::Conflict,
+                        "admission candidate discards exact evidence",
+                    ));
                 }
             }
             return Ok(index
@@ -297,12 +305,18 @@ impl StatePeer {
         // compaction raised; marks never fall.
         for (key, id) in before.core.exact_admissions.iter() {
             if index.get(key) != Some(id) && !index.covers(key) {
-                return Err("admission candidate discards exact evidence".into());
+                return Err(crate::AdmissionError::rejected(
+                    neighbour_wire::RefusalReason::Conflict,
+                    "admission candidate discards exact evidence",
+                ));
             }
         }
         for (writer, mark) in before.core.exact_admissions.marks() {
             if !index.covers(&writer.at(mark)) {
-                return Err("admission candidate lowers a compaction mark".into());
+                return Err(crate::AdmissionError::rejected(
+                    neighbour_wire::RefusalReason::Conflict,
+                    "admission candidate lowers a compaction mark",
+                ));
             }
         }
         Ok(self
@@ -389,7 +403,7 @@ impl StatePeer {
                 // A device at a peer protocol version this one does not work
                 // with is admitted to nothing: what it says is not read here.
                 if !neighbour_wire::works_with_peer_version(protocol) {
-                    return Err(AdmissionError::Rejected(format!(
+                    return Err(AdmissionError::malformed(format!(
                         "the device speaks peer protocol {protocol}, this one {}",
                         neighbour_wire::PEER_PROTOCOL_VERSION
                     )));
@@ -407,7 +421,7 @@ impl StatePeer {
                         message,
                         Held {
                             retained_replay,
-                            prerequisite: MissingPrerequisite::Governance,
+                            prerequisite: MissingPrerequisite::Rules,
                             now,
                         },
                     );
@@ -453,7 +467,7 @@ impl StatePeer {
                                 message,
                                 Held {
                                     retained_replay,
-                                    prerequisite: MissingPrerequisite::Governance,
+                                    prerequisite: MissingPrerequisite::Rules,
                                     now,
                                 },
                             )
@@ -479,7 +493,9 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<AdmissionReport, AdmissionError> {
         if cert.device_public_key != source {
-            return Err("transport certificate mismatch".into());
+            return Err(crate::AdmissionError::forbidden(
+                "transport certificate mismatch",
+            ));
         }
         if self.core.certificates.get(&source).map(AsRef::as_ref) != Some(cert) {
             let admitted = self.core.workspace_doc.as_ref().and_then(|doc| {
@@ -488,15 +504,19 @@ impl StatePeer {
                     .and_then(|identity| identity.as_ref().ok())
             });
             if admitted.is_none_or(|identity| identity.device_cert != *cert) {
-                return Err("identity is absent from admitted roster".into());
+                return Err(crate::AdmissionError::rejected(
+                    neighbour_wire::RefusalReason::NotCertified,
+                    "identity is absent from admitted roster",
+                ));
             }
         }
-        let verified = VerifiedCertificate::new(cert.clone(), now_ns(now))?;
+        let verified = VerifiedCertificate::new(cert.clone(), now_ns(now))
+            .map_err(crate::AdmissionError::malformed)?;
         let mut metadata_changed =
             self.core.certificates.get(&source).map(AsRef::as_ref) != Some(cert);
         for entry in revocations {
             if entry.user_public_key != cert.user_public_key {
-                return Err("revocation root mismatch".into());
+                return Err(crate::AdmissionError::forbidden("revocation root mismatch"));
             }
             if self
                 .core
@@ -504,16 +524,25 @@ impl StatePeer {
                 .get(&entry.revoked_device_public_key)
                 .is_some_and(|target| target.user_public_key != entry.user_public_key)
             {
-                return Err("revocation cannot cross identity roots".into());
+                return Err(crate::AdmissionError::forbidden(
+                    "revocation cannot cross identity roots",
+                ));
             }
-            metadata_changed |= self.core.revocations.insert(entry).map_err(err)?;
+            metadata_changed |= self
+                .core
+                .revocations
+                .insert(entry)
+                .map_err(crate::AdmissionError::malformed)?;
         }
         if self
             .core
             .revocations
             .is_revoked(&cert.user_public_key, &source)
         {
-            return Err("device revoked".into());
+            return Err(crate::AdmissionError::rejected(
+                neighbour_wire::RefusalReason::Revoked,
+                "device revoked",
+            ));
         }
         self.core.certificates.insert(source, verified);
         Ok(AdmissionReport::metadata(ReceiveOutcome {
@@ -532,9 +561,11 @@ impl StatePeer {
         strict_report: bool,
     ) -> Result<AdmissionReport, AdmissionError> {
         if received != self.core.workspace {
-            return Err("workspace topic mismatch".into());
+            return Err(crate::AdmissionError::forbidden("workspace topic mismatch"));
         }
-        let access = self.workspace_writer(source, now)?;
+        let access = self
+            .workspace_writer(source, now)
+            .map_err(crate::AdmissionError::malformed)?;
         let owner = self.core.owner;
         let administrators = self.administrator_roots();
         let from = hex::encode(source);
@@ -572,7 +603,8 @@ impl StatePeer {
         // Receipts this peer admitted earlier stay immutable even once
         // the workspace document omits them.
         let mut receipts = self.core.receipts.clone();
-        workspace::admit_receipts(&mut receipts, &candidate).map_err(err)?;
+        workspace::admit_receipts(&mut receipts, &candidate)
+            .map_err(crate::AdmissionError::malformed)?;
         let changed = rebased
             || self
                 .core
@@ -581,7 +613,8 @@ impl StatePeer {
                 .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
         let lacks_history = self.newly_waiting(&candidate);
         if let Some(policy) = &media {
-            self.validate_media_bindings(policy, false)?;
+            self.validate_media_bindings(policy, false)
+                .map_err(crate::AdmissionError::malformed)?;
         }
         // The rows the change left as they were keep what reading them took.
         let candidate = match self.core.workspace_doc.as_ref() {
@@ -598,17 +631,21 @@ impl StatePeer {
         let held_owner = self.core.owner;
         let first = self.core.workspace_doc.is_none();
         let Some(owner) = governed_owner(&candidate, &self.core.workspace) else {
-            return Err("the workspace's governance names no owner".into());
+            return Err(crate::AdmissionError::malformed(
+                "the workspace's governance names no owner",
+            ));
         };
         if !first && owner != held_owner && !candidate.owner_moved(&self.core.workspace) {
-            return Err("the workspace's governance names an owner it was not handed to".into());
+            return Err(crate::AdmissionError::malformed(
+                "the workspace's governance names an owner it was not handed to",
+            ));
         }
         self.core.owner = owner;
         let metadata_changed = match self.import_governed_rows(&candidate, now) {
             Ok(changed) => changed || self.core.owner != held_owner,
             Err(error) => {
                 self.core.owner = held_owner;
-                return Err(error.into());
+                return Err(crate::AdmissionError::malformed(error));
             }
         };
         self.core.receipts = receipts;
@@ -616,7 +653,8 @@ impl StatePeer {
         // The governance may name a record this replica holds nothing of and
         // that no one can send it: an empty one. Held before the writes
         // waiting on it are tried, so the first one builds on the record.
-        covered_documents::hold_covered_empty_documents(self)?;
+        covered_documents::hold_covered_empty_documents(self)
+            .map_err(crate::AdmissionError::malformed)?;
         let mut report = AdmissionReport::metadata(ReceiveOutcome {
             changed,
             metadata_changed,
@@ -639,11 +677,13 @@ impl StatePeer {
     ) -> Result<(), AdmissionError> {
         if let Some(device) = self.own_device {
             let actor = self.workspace_actor_for(&device);
-            workspace::base::carried(before, candidate, &actor).map_err(err)?;
+            workspace::base::carried(before, candidate, &actor)
+                .map_err(crate::AdmissionError::malformed)?;
         }
         if let Some(device) = keeper {
             let actor = self.workspace_actor_for(&device);
-            super::work_delegations::carried(before, candidate, &actor)?;
+            super::work_delegations::carried(before, candidate, &actor)
+                .map_err(crate::AdmissionError::malformed)?;
         }
         Ok(())
     }

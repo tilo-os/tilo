@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.imager@4a37f2987b3e5ed3";
+export const SURFACE = "so.tilo.imager@a069ab15651fe83e";
 
 /** One of "btrfs", "ext4", "xfs". */
 export type Filesystem = "btrfs" | "ext4" | "xfs";
@@ -38,10 +38,10 @@ export interface InstallProfile {
   wifi_ssid: string;
   device_label: string;
   enroll_local_identity: boolean;
-  prepared_setup: PreparedSetupExpectation | null;
+  prepared_setup: MediaPreparedSetup | null;
 }
 
-export interface PreparedSetupExpectation {
+export interface MediaPreparedSetup {
   schema: number;
   sealed_bytes: number;
   ciphertext_sha256: string;

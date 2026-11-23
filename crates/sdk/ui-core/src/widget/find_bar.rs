@@ -533,14 +533,6 @@ impl FindBar {
         self
     }
 
-    /// Offer the regular-expression toggle (the bar also offers it whenever its findable
-    /// supports regular expressions).
-    #[must_use]
-    pub fn with_regex(mut self) -> Self {
-        self.regex = true;
-        self
-    }
-
     /// Start in `mode` (a byte view that opens on hex).
     #[must_use]
     pub fn with_mode(mut self, mode: FindMode) -> Self {

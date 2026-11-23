@@ -1,5 +1,6 @@
-//! What tests of a window's history (`std.history`) read of it: the moments it shows as how
-//! long ago they were, when the window next wakes, and its pictures.
+//! What tests of a window's history (`std.history`, under the window bar's History) read of it
+//! and do to it: whether it shows, pressing the bar's History, the moments it shows as how long
+//! ago they were, when the window next wakes, and its pictures.
 
 use crate::change_marks::Driven;
 
@@ -28,6 +29,31 @@ pub(crate) fn times(app: &mut impl Driven) -> Vec<String> {
         .filter(|node| heading.is_none_or(|heading| node.rect[1] >= heading))
         .filter_map(|node| node.semantics.as_ref()?.name.clone())
         .collect()
+}
+
+/// Whether the window shows a history: the section of the system's history view, headed
+/// "History" (the bar's button of that name is no text of the window's).
+pub(crate) fn shows_history(app: &mut impl Driven) -> bool {
+    let snapshot = app.harness().inspection();
+    snapshot.root.nodes().iter().any(|node| {
+        node.widget == "Text"
+            && node
+                .semantics
+                .as_ref()
+                .is_some_and(|semantics| semantics.name.as_deref() == Some("History"))
+    })
+}
+
+/// Press the window bar's History, as the shell's bar hands the press to the window, and let the
+/// window settle: it says whether its History stands open after.
+pub(crate) fn press_history(app: &mut impl Driven) -> bool {
+    app.harness()
+        .press_window_history()
+        .expect("the window offers its bar's History");
+    app.settle();
+    app.harness()
+        .window_history_control()
+        .is_some_and(ui::widget::HistoryControl::is_open)
 }
 
 /// How long the window sleeps before something it shows is due to change, if it waits for one.

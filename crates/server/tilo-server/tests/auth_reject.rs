@@ -160,7 +160,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
             signature: [0; 64],
         };
         sign_revocation_entry(&mut entry, &user.user_sk).unwrap();
-        tilo_server::store::save_revocations(state.path(), &[entry]).unwrap();
+        tilo_server::workspace_files::save_revocations(state.path(), &[entry]).unwrap();
 
         assert!(
             tilo_test_env::within("client to close", client.recv())
@@ -226,7 +226,7 @@ async fn persisted_revocation_closes_a_member_session_within_a_second() {
         signature: [0; 64],
     };
     sign_revocation_entry(&mut entry, &user.user_sk).unwrap();
-    tilo_server::store::save_revocations(state.path(), &[entry]).unwrap();
+    tilo_server::workspace_files::save_revocations(state.path(), &[entry]).unwrap();
 
     let closed = tokio::time::timeout(std::time::Duration::from_secs(1), async {
         while client.recv().await.is_some() {}
@@ -235,66 +235,5 @@ async fn persisted_revocation_closes_a_member_session_within_a_second() {
     assert!(
         closed.is_ok(),
         "a persisted revocation must end the session within a second"
-    );
-}
-
-/// Home-peer management admits only the owner's devices: a member the
-/// server's live policy admits on the server ALPN is refused at its handshake.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn management_alpn_rejects_member_admitted_by_live_policy() {
-    let alice = TestUser::fresh("Alice");
-    let bob = TestUser::fresh("Bob");
-    let server_dev = alice.enrol("home-server", DeviceCapabilities::member());
-    let server_key = server_dev.device_pubkey();
-    let bob_laptop = bob.enrol("member-laptop", DeviceCapabilities::primary());
-    let state = tempfile::tempdir().unwrap();
-    let server = crate::common::start_server(
-        tilo_server::ServerConfig {
-            state_root: state.path().to_path_buf(),
-            trust_policy: tilo_server::TrustPolicy::AllowList {
-                users: vec![hex::encode(alice.user_pk), hex::encode(bob.user_pk)],
-            },
-            ..Default::default()
-        },
-        tilo_server::daemon::ServerIdentity {
-            user_public_key: alice.user_pk,
-            device_signing_key: server_dev.sk,
-            device_cert: server_dev.cert,
-            revocations: RevocationList::new(),
-        },
-    )
-    .await
-    .unwrap();
-    let endpoint = client_endpoint().await;
-    let manage = |cert: tilo_user_identity::DeviceCert, sk: ed25519_dalek::SigningKey| {
-        ServerClient::manage_home_peer(
-            &endpoint,
-            server.node_addr(),
-            alice.user_pk,
-            server_key,
-            cert,
-            sk,
-            RevocationList::new(),
-            tilo_server::transport::HomePeerManagementRequest::AdmitServer {
-                endpoint: endpoint.addr(),
-            },
-        )
-    };
-
-    // The live policy admits Bob's device on the server ALPN.
-    ServerClient::connect_to_pinned_host(
-        client_endpoint().await,
-        server.node_addr(),
-        bob_laptop.cert.clone(),
-        bob_laptop.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .expect("the live policy admits the member on the server ALPN");
-    // Management refuses Bob's device at its handshake, which admits the
-    // owner's devices alone (`HandshakeTrust::OwnerDevicesOnly`).
-    assert!(
-        manage(bob_laptop.cert, bob_laptop.sk).await.is_err(),
-        "a member must not pass the management handshake"
     );
 }

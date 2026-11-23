@@ -894,6 +894,15 @@ impl Local {
         self.device_actions.get().cloned()
     }
 
+    /// Where this device's action service lands once the endpoint binds it: what a ticket for a
+    /// new computer is served through when the session builds its app wire before the network
+    /// comes up.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn actions_handle(&self) -> Arc<std::sync::OnceLock<DeviceActions>> {
+        std::sync::Arc::clone(&self.device_actions)
+    }
+
     /// The actions one of the person's devices sent this one since the last call, for the session's
     /// pass to carry out. A Nearby Send is carried out here instead, by this client's own transfer
     /// engine: the offer, the checkpoint, the withdrawal and the ending of a transfer are the
@@ -1891,6 +1900,13 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub(crate) fn device_actions(&self) -> Option<DeviceActions> {
         self.hosting.local.device_actions()
+    }
+
+    /// Where this device's action service lands, for an app wire that is built before it does.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn actions_handle(&self) -> std::sync::Arc<std::sync::OnceLock<DeviceActions>> {
+        self.hosting.local.actions_handle()
     }
 
     /// The member's devices the peer network heard at another peer protocol version.

@@ -53,6 +53,20 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase the_standard_library_a_runtime_loaded_is_std_once;
+    // A running workspace loads the standard library as a package beside the apps: a written view
+    // reads it as `std`, as every package does, and the library is not in scope twice.
+    {
+        let v = tilolang::compile_view_definition(
+            "view history(of: todo.TodoList) {\n    std.history(of)\n}",
+            "ada",
+            &[tilolang::stdlib::meta().clone(), todo_meta()],
+        )
+        .unwrap_or_else(|d| panic!("{d:#?}"));
+        validate(&v.wasm);
+        assert_eq!(v.shows(), Some("so.tilo.todo.TodoList"));
+    }
+
     phase a_bare_body_is_a_view_that_takes_nothing;
     {
         let v = written("stack {\n    text(\"Good morning\")\n}").unwrap();

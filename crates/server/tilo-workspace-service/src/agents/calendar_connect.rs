@@ -36,7 +36,6 @@ use tilo_server_protocol::certify::{AgentAsk, PendingConfirmation};
 use tilo_workspace_agent::Agent;
 
 use super::asks::AskedIn;
-use super::mail::narrowing;
 use super::turn_provider::{Ending, Rows};
 use super::{Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::Workspaces;
@@ -227,7 +226,7 @@ impl TurnConnects {
     /// as and act through.
     pub(super) async fn for_turn(carrier: &Carrier, turn: &Turn, reply: &Reply) -> Arc<Self> {
         let workspace_id = reply.provider.workspace;
-        let narrowed = narrowing(&turn.agent, &reply.workspace);
+        let narrowed = turn.agent.bound_rules();
         let hosted = HostedTurn {
             workspace: workspace_id,
             caller: &reply.caller,
@@ -250,7 +249,7 @@ impl TurnConnects {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<InvocationUpdate, ActionCallError> {
-        let narrowed = narrowing(&self.agent, &self.workspace);
+        let narrowed = self.agent.bound_rules();
         let hosted = HostedTurn {
             workspace: self.workspace_id,
             caller,
@@ -444,7 +443,7 @@ impl Carrier {
     /// Let the entry do what it kept for `claimed` with the reference its person's password is
     /// kept under (`None` where they declined), and tell the agent that asked, once.
     async fn carry_out_connect(&self, asker: &Asker, claimed: ConnectAsk, typed: Option<String>) {
-        let narrowed = narrowing(&asker.agent, &claimed.workspace);
+        let narrowed = asker.agent.bound_rules();
         let hosted = HostedTurn {
             workspace: asker.workspace_id,
             caller: &asker.turn,

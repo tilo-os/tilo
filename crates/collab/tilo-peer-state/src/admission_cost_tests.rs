@@ -252,13 +252,13 @@ tilo_test_env::scenario! {
 /// What a newcomer's copy works through taking in the governance of a
 /// workspace of `members` and reading who is in it, as a fresh page does:
 /// nothing it reads was checked in its process before.
-fn newcomer_work(members: u32) -> crate::governance_work::GovernanceWork {
+fn newcomer_work(members: u32) -> crate::work::Work {
     let (host, authority, now) = crowd(members);
     let message = host.workspace_message();
     let owner = host.owner_certificates()[0].clone();
     tilo_user_identity::cert::forget_verified_signatures();
     crate::members::op::forget_verified_ops();
-    let _ = crate::governance_work::take();
+    let before = crate::work::now();
     let mut guest = StatePeer::joined(
         host.workspace_id(),
         owner,
@@ -279,7 +279,7 @@ fn newcomer_work(members: u32) -> crate::governance_work::GovernanceWork {
     assert_eq!(people.members.len(), members.saturating_add(1));
     guest.governance().governed_device_access(now).unwrap();
     assert!(matches!(guest.security_basis(), Some(Ok(_))));
-    crate::governance_work::take()
+    crate::work::now().since(before)
 }
 
 /// A newcomer taking in a workspace of 300 against one of 30. The
@@ -307,8 +307,8 @@ fn newcomer_of_30_against_300() {
     let large = newcomer_work(300);
     let more = |large: u64, small: u64| large.saturating_sub(small);
     assert_eq!(
-        (large.governance_reads, large.replays, large.security_bases),
-        (small.governance_reads, small.replays, small.security_bases),
+        (large.admission_reads, large.replays, large.security_bases),
+        (small.admission_reads, small.replays, small.security_bases),
         "readings over every row, at 300 members against 30: {large:?} against {small:?}"
     );
     assert!(
@@ -329,10 +329,10 @@ fn newcomer_of_30_against_300() {
 /// enters it, as each device holding the workspace does: it reads who is in it
 /// now and whether each of the `records` it holds needs keys of its own, which
 /// is how it seals its next write there.
-fn entered_work(members: u32, records: usize) -> crate::governance_work::GovernanceWork {
+fn entered_work(members: u32, records: usize) -> crate::work::Work {
     let (mut peer, authority, now) = crowd(members);
     admit(&mut peer, &authority, members, now);
-    let _ = crate::governance_work::take();
+    let before = crate::work::now();
     let people = peer.governance().governed_members(now).unwrap();
     // The crowd, its owner and the person who just entered.
     assert_eq!(
@@ -348,7 +348,7 @@ fn entered_work(members: u32, records: usize) -> crate::governance_work::Governa
             "every member reads the workspace's notes"
         );
     }
-    crate::governance_work::take()
+    crate::work::now().since(before)
 }
 
 /// A workspace of 300 against one of 30, someone entering each: the member's

@@ -2,11 +2,6 @@
 //! once, bounded, claimed by one reader of the answer, found started after
 //! a restart, and gone once forgotten.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server handle a test binds is kept until the test ends; dropping it earlier closes the server it drives"
-)]
-
 use serde_json::json;
 use tilo_actions::remote::person_asking::Words;
 

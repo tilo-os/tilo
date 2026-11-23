@@ -109,41 +109,43 @@ pub enum ServersCmd {
                       (a laptop, say), this says 0: the server keeps every file and attachment, \
                       and fetches what it lacks from the members' devices while they are on.")]
     Content,
-    /// Have the server whose site is ORIGIN keep the workspace (-w) as well.
+    /// Have the server whose own line is HOST keep the workspace (-w) as well.
     #[command(
-        after_help = "Example:\n  tilo workspace servers add https://tilo.sh -w Tilo\n\n\
-                      Both servers keep the workspace from then on: a change on either reaches \
-                      the other, and its people reach it at either. Only its owners choose its \
-                      servers, and the other server takes it only if it let you in and has \
-                      capacity for it: sign in there first."
+        after_help = "Example:\n  tilo workspace servers add \"$(cat web-host.json)\" -w Tilo\n\n\
+                      HOST is that server's own web-host.json line, which its operator gives you: \
+                      its certificate and where it is dialled. Both servers keep the workspace \
+                      from then on: a change on either reaches the other, and its people reach it \
+                      at either. Only its owners choose its servers, and the other server takes it \
+                      only if it let you in and has capacity for it: sign in there first."
     )]
     Add {
-        /// The other server's site, like `https://tilo.sh`.
-        origin: String,
+        /// The other server's own `web-host.json` line.
+        host: String,
     },
     /// Have a server keep the workspace (-w) no more.
     #[command(
         after_help = "Example:\n  tilo workspace servers remove https://tilo.sh -w Tilo\n\n\
-                      SERVER is its site, or its device key as `tilo workspace servers ls` names \
-                      it. It is no longer named to anyone at once, and lets the workspace go when \
+                      SERVER is its name as `tilo workspace servers ls` shows it, or its device \
+                      key. It is no longer named to anyone at once, and lets the workspace go when \
                       it hears so."
     )]
     Remove {
-        /// The server's site, or its device key.
+        /// The server's name in the list, or its device key.
         server: String,
     },
-    /// Move the workspace (-w) from the server FROM to the server whose site
-    /// is TO.
+    /// Move the workspace (-w) from the server FROM to the server whose own
+    /// line is HOST.
     #[command(
-        after_help = "Example:\n  tilo workspace servers move https://old.example.com https://tilo.sh -w Tilo\n\n\
-                      TO keeps the workspace first, then FROM keeps it no more. If TO refuses, \
-                      the workspace stays where it was. FROM is a site, or a device key as \
-                      `tilo workspace servers ls` names it; TO is a site."
+        after_help = "Example:\n  tilo workspace servers move tilo.sh \"$(cat web-host.json)\" -w Tilo\n\n\
+                      HOST is the moving-to server's own web-host.json line, which its operator \
+                      gives you. HOST keeps the workspace first, then FROM keeps it no more. If \
+                      HOST refuses, the workspace stays where it was. FROM is its name as the \
+                      server list shows it, or its device key."
     )]
     Move {
-        /// The server it moves from: its site, or its device key.
+        /// The server it moves from: its name in the list, or its device key.
         from: String,
-        /// The site of the server it moves to, like `https://tilo.sh`.
+        /// The moving-to server's own `web-host.json` line.
         to: String,
     },
 }
@@ -230,8 +232,7 @@ pub enum WorkspaceCmd {
     /// well: both keep it, a change on either reaches the other, and its people
     /// reach it at either.
     #[command(after_help = "Examples:\n  tilo workspace servers ls -w Tilo\n  \
-                      tilo workspace servers add https://tilo.sh -w Tilo\n  \
-                      tilo workspace servers remove https://tilo.sh -w Tilo")]
+                      tilo workspace servers remove tilo.sh -w Tilo")]
     Servers {
         #[command(subcommand)]
         cmd: ServersCmd,
@@ -305,7 +306,7 @@ pub enum PeopleCmd {
     /// Remove someone from the workspace, with every device of theirs.
     #[command(
         after_help = "Example:\n  tilo workspace people rm 3f9c…e1 -w Acme\n\n\
-                      Its owners remove people, and a moderator removes those ranked below them."
+                      Whoever the workspace grants removing removes people, a moderator included."
     )]
     Rm {
         /// Their user public key, as `tilo workspace people ls` names it.
@@ -1726,9 +1727,9 @@ fn servers(reach: Reach<'_>, workspace: &str, cmd: ServersCmd) -> ExitCode {
         let (action, args) = match cmd {
             ServersCmd::Ls => ("list", json!({})),
             ServersCmd::Content => ("content", json!({})),
-            ServersCmd::Add { origin } => ("add", json!({ "origin": origin })),
+            ServersCmd::Add { host } => ("add", json!({ "host": host })),
             ServersCmd::Remove { server } => ("remove", json!({ "server": server })),
-            ServersCmd::Move { from, to } => ("move", json!({ "server": from, "origin": to })),
+            ServersCmd::Move { from, to } => ("move", json!({ "server": from, "host": to })),
         };
         let answer = client
             .act(

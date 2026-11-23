@@ -1,9 +1,11 @@
 // The page boots for real: the built bundle in headless Chromium beside a
 // running server, as a person's browser loads it. The tab arrives at the site,
-// joins the Lounge's workspace, is handed to the page, and Notes shows. They
-// make a note, type its title, and reload: the title is still there, because
-// it is the workspace's and not the page's. (What a page can do in each app is
-// walked by page-notes.mjs.)
+// joins the Lounge's workspace, and — because joining founds its person — is
+// shown the 24 recovery words once, which this reads from the card and checks
+// restore the same person before it goes on. Then it is handed to the page and
+// Notes shows. They make a note, type its title, and reload: the title is still
+// there, because it is the workspace's and not the page's. (What a page can do
+// in each app is walked by page-notes.mjs.)
 //
 // What it catches is what compiles and passes every unit test yet stops a real
 // page: the page's script calling something the bundle lacks, a read of the
@@ -116,10 +118,53 @@ const press = async what => {
   })()`);
 };
 
-// 1. The page boots and arrives.
+/** The page's own identity module, the one it holds its person in. */
+const identityModule = `await import(new URL('identity.mjs', new URL('.', (document.querySelector('link[rel="modulepreload"][href], script[type="module"][src]').href
+  || document.querySelector('script[type="module"][src]').src))).href)`;
+
+/** A screenshot of the card the entry asks about now, in `look` (`light` or
+ * `dark`): the card is drawn in the entry's own colours, which follow the
+ * page's `data-look`. */
+const shot = async name => {
+  const png = await Promise.race([tab.screenshot().catch(() => null), sleep(stepLimit(2)).then(() => null)]);
+  if (png) writeFileSync(join(out, `${name}.png`), png);
+};
+
+// 1. The page boots, and its person is founded: the 24 words are shown once.
 await tab.navigate(site);
 // The site's entry admits this browser, then hands it to the page.
 await press(`/^Join\\b/i.test(b.textContent.trim())`);
+// Right after the person is founded: the words that are the only way back,
+// shown once before anything else opens. They are read from the card the
+// person sees, checked to be 24 words, and derived again to the person the
+// browser holds: the same phrase must restore the same root.
+await until(`!!document.querySelector('[data-card="recovery-words"]')`, 'the 24 recovery words shown once the person is founded', stepLimit(6));
+const shownWords = JSON.parse(await tab.evaluate(`JSON.stringify([...document.querySelectorAll('[data-card="recovery-words"] .tilo-recovery-word')]
+  .map(item => (item.querySelector('.tilo-recovery-text')?.textContent ?? '').trim()))`));
+if (shownWords.length !== 24) await fail(`the recovery card shows ${shownWords.length} words, not 24: ${shownWords.join(' ')}`);
+if (!shownWords.every(word => /^[a-z]+$/.test(word))) await fail(`the recovery card carries something other than words: ${shownWords.join(' ')}`);
+const restored = await tab.evaluate(`(async () => {
+  const id = ${identityModule};
+  return id.recoveryWordsPublicKey(${JSON.stringify(shownWords.join(' '))});
+})()`).catch(error => fail(`the 24 words did not read back: ${error?.message ?? error}`));
+const person = await tab.evaluate(`(async () => {
+  const id = ${identityModule};
+  return (await id.browserIdentity({create: false}))?.userPublicKey ?? null;
+})()`).catch(() => null);
+if (!person) await fail('the browser holds no person the 24 words could restore');
+if (restored !== person) await fail(`the 24 words restore ${restored}, not the person this browser founded (${person})`);
+report.recovery = {words: shownWords.length, restores: person};
+// The card in both themes, while it is up.
+await tab.evaluate(`document.documentElement.dataset.look = 'light'`);
+await shot('recovery-words-light');
+await tab.evaluate(`document.documentElement.dataset.look = 'dark'`);
+await shot('recovery-words-dark');
+await tab.evaluate(`delete document.documentElement.dataset.look`);
+console.log(`ok: the entry showed the 24 recovery words, which restore the person it founded (${person.slice(0, 12)}…)`);
+mark('the 24 words were shown and restore the person');
+// They wrote them down: I've written them down, as the person presses it.
+await tab.evaluate(`document.querySelector('[data-card="recovery-words"] button.tilo-entry-primary').click()`);
+await until(`!document.querySelector('[data-card="recovery-words"]')`, 'the words card closing once they are kept');
 await until(`document.documentElement.dataset.arrival === 'done'`, 'the page arriving');
 console.log('ok: the page booted and arrived');
 mark('the page arrived');

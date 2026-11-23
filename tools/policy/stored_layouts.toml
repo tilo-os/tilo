@@ -105,3 +105,40 @@ what = """the frames a store device keeps for its workspaces: one postcard Neigh
 types = [
   "crates/collab/neighbour-wire/src/lib.rs:NeighbourMsg",
 ]
+
+[[layout]]
+format = "peer durable state"
+version = 12
+digest = "ce37a79415b46711"
+what = """a replica's durable state: its workspace, documents, certificates, receipts, the writes waiting to be sent (each a NeighbourMsg, a document write ending with its reader set) and each sealed document's writes, and the keys those writes are sealed under, derived from the document and its reader set (version 10 was written both with and without a waiting document write's reader set)"""
+types = [
+  "crates/collab/tilo-peer-state/src/state/durable.rs:Durable",
+  "crates/collab/neighbour-wire/src/lib.rs:NeighbourMsg",
+  "crates/collab/tilo-peer-state/src/state.rs:DurableDocument",
+  "crates/collab/collab-types/src/op.rs:SignedOp",
+  "crates/collab/collab-types/src/op.rs:DocumentMutation",
+  "crates/collab/collab-types/src/op.rs:EncryptionMetadata",
+  "crates/collab/collab-types/src/op.rs:document_artifact_id",
+  "crates/collab/collab-types/src/op.rs:document_attestation_id",
+  "crates/collab/collab-types/src/op.rs:derived_document_uuid",
+  "crates/collab/collab-types/src/op.rs:derived_uuid",
+  "crates/collab/collab-types/src/op.rs:DOCUMENT_ATTESTATION_DOMAIN",
+  "crates/collab/collab-types/src/readers.rs:content_artifact_id",
+  "crates/collab/collab-types/src/readers.rs:reader_group",
+  "crates/collab/collab-types/src/readers.rs:app_document_id",
+  "crates/collab/collab-types/src/readers.rs:store_document_readers",
+  "crates/collab/collab-types/src/readers.rs:reader_set_name",
+  "crates/collab/collab-types/src/readers.rs:EVERY_MEMBER",
+  "crates/collab/collab-types/src/readers.rs:CONTENT_ARTIFACT_DOMAIN",
+  "crates/collab/collab-types/src/readers.rs:READER_GROUP_DOMAIN",
+  "crates/server/tilo-server-protocol/src/live.rs:live_artifact",
+]
+
+[[layout]]
+format = "peer store frames"
+version = 5
+digest = "f9601f82d6a82542"
+what = """the frames a store device keeps for its workspaces: one postcard NeighbourMsg per file in a store's workspaces directory, named by workspace, resource and author, under the version its frames-version file records (version 1, kept before that file, ended a document write before its reader set; version 3 is a document write whose envelope may name its own content key)"""
+types = [
+  "crates/collab/neighbour-wire/src/lib.rs:NeighbourMsg",
+]

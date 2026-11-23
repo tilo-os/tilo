@@ -80,7 +80,7 @@ impl GovernedIdentity {
     ///
     /// The bytes are not an identity row.
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, RowError> {
-        crate::governance_work::identity_decoded();
+        crate::work::identity_decoded();
         let stored: StoredIdentity = postcard::from_bytes(bytes).map_err(RowError::Postcard)?;
         Ok(Self {
             device_cert: stored.device_cert,

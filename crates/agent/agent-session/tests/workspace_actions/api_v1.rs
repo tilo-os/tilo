@@ -1,8 +1,8 @@
 //! The API's `/v1` routes against a workspace's server, as tilo.sh runs them: a
 //! person's key makes a workspace (a retry of the same request makes no
 //! second one), puts a form in, runs actions on it, follows its runs and
-//! reads the workspace's events as they happen, is refused a webhook to the
-//! API's own machine, mints a key for that workspace alone, and
+//! reads the workspace's events as they happen, is refused a webhook
+//! (`account/webhooks#create`) to the API's own machine, mints a key for that workspace alone, and
 //! deletes the workspace. Every route is one of the calls an agent makes
 //! over MCP, so this is that same path through HTTP and JSON.
 
@@ -202,18 +202,16 @@ async fn a_webhook_of_a_hosted_api_is_delivered() {
         )
         .await;
     assert_eq!(status, 200, "{made}");
-    let base = format!(
-        "/v1/workspaces/{}",
-        made["workspace"]["id"].as_str().unwrap()
-    );
+    let workspace = made["workspace"]["id"].as_str().unwrap();
+    let base = format!("/v1/workspaces/{workspace}");
 
     let receiver = HookReceiver::start();
     let beside = test_http::Responder::silent();
     api.webhooks_stand_in(receiver.at());
     let (status, refused) = backend
-        .post(
-            &format!("{base}/webhooks"),
-            &json!({"url": format!("{}/hook", beside.url()), "events": ["invocation"]}),
+        .account(
+            "webhooks#create",
+            &json!({"workspace": workspace, "url": format!("{}/hook", beside.url()), "events": ["invocation"]}),
             &[],
         )
         .await;
@@ -223,13 +221,13 @@ async fn a_webhook_of_a_hosted_api_is_delivered() {
         "a hosted API kept a webhook to a receiver nobody handed it: {refused}"
     );
     let (status, hook) = backend
-        .post(
-            &format!("{base}/webhooks"),
-            &json!({"url": receiver.url(), "events": ["invocation"]}),
+        .account(
+            "webhooks#create",
+            &json!({"workspace": workspace, "url": receiver.url(), "events": ["invocation"]}),
             &[],
         )
         .await;
-    assert_eq!(status, 201, "the webhook to the receiver is kept");
+    assert_eq!(status, 200, "the webhook to the receiver is kept: {hook}");
 
     // An app is opened and takes a file, as the long story begins.
     let named = [
@@ -244,11 +242,13 @@ async fn a_webhook_of_a_hosted_api_is_delivered() {
         )
         .await;
     assert_eq!(status, 200, "{opened}");
+    let pdf = application_pdf();
+    let hash = blake3::hash(&pdf).to_hex().to_string();
     let uploaded = backend
         .send(
-            hyper::Method::POST,
-            &format!("{base}/uploads"),
-            &application_pdf(),
+            hyper::Method::PUT,
+            &format!("{base}/contents/{hash}"),
+            &pdf,
             &[("content-type", "application/pdf")],
         )
         .await;
@@ -273,7 +273,9 @@ async fn a_webhook_of_a_hosted_api_is_delivered() {
     let posted = receiver.next().await;
     is_a_signed_delivery_of(&posted, &hook);
     beside.assert_untouched();
-    let (status, kept) = backend.get(&format!("{base}/webhooks")).await;
+    let (status, kept) = backend
+        .account("webhooks#list", &json!({"workspace": workspace}), &[])
+        .await;
     assert_eq!(status, 200, "{kept}");
     let rows = kept["webhooks"].as_array().unwrap();
     assert_eq!(rows.len(), 1, "{kept}");
@@ -351,10 +353,11 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
     // A file goes in, and an action takes it.
     let base = format!("/v1/workspaces/{workspace}");
     let pdf = application_pdf();
+    let hash = blake3::hash(&pdf).to_hex().to_string();
     let uploaded = backend
         .send(
-            hyper::Method::POST,
-            &format!("{base}/uploads"),
+            hyper::Method::PUT,
+            &format!("{base}/contents/{hash}"),
             &pdf,
             &[("content-type", "application/pdf")],
         )
@@ -385,9 +388,9 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
         "https://10.0.0.7/hook",
     ] {
         let (status, refused) = backend
-            .post(
-                &format!("{base}/webhooks"),
-                &json!({"url": own, "events": ["invocation"]}),
+            .account(
+                "webhooks#create",
+                &json!({"workspace": workspace, "url": own, "events": ["invocation"]}),
                 &claims,
             )
             .await;
@@ -397,7 +400,9 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
             "a hosted API kept a webhook to {own}: {refused}"
         );
     }
-    let (status, kept) = backend.get(&format!("{base}/webhooks")).await;
+    let (status, kept) = backend
+        .account("webhooks#list", &json!({"workspace": workspace}), &[])
+        .await;
     assert_eq!((status, &kept["webhooks"]), (200, &json!([])), "{kept}");
 
     let run_headers = [
@@ -1347,11 +1352,18 @@ async fn a_hosted_workspace_streams_changes_finds_and_undoes_runs() {
     assert_eq!(status, 200, "{written}");
     let run = written["invocation"].as_str().unwrap().to_owned();
 
-    // Search finds what the workspace holds.
+    // Search finds what the workspace holds: the workspace's search is an action of its own.
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     let found = loop {
-        let (status, found) = backend.get(&format!("{base}/search?q=Gooseberry")).await;
+        let (status, found) = backend
+            .post(
+                &format!("{base}/resources/search/actions/find"),
+                &json!({"query": "Gooseberry"}),
+                &[],
+            )
+            .await;
         assert_eq!(status, 200, "a hosted workspace answers search: {found}");
+        let found = found["result"].clone();
         if found["hits"]
             .as_array()
             .is_some_and(|hits| !hits.is_empty())
@@ -1417,79 +1429,97 @@ async fn a_file_larger_than_one_request_goes_up_in_pieces_that_resume() {
     let (_, made) = backend
         .account("workspaces#create", &json!({"name": "Contracts"}), &[])
         .await;
-    let base = format!(
-        "/v1/workspaces/{}/uploads",
-        made["workspace"]["id"].as_str().expect("a workspace")
-    );
     // A file of the size one request would not carry, its bytes all
     // different so a piece lost or doubled shows.
     let whole: Vec<u8> = (0..5_000_000_u32).map(|at| (at % 251) as u8).collect();
-    let id = "up_0123456789abcdef0123456789abcdef";
-    let upload = format!("{base}/{id}");
-
-    // The upload is opened with its size, and opening it again answers where
-    // it stands rather than opening a second one.
-    let (status, opened) = backend
-        .post(&upload, &json!({"size": whole.len()}), &[])
-        .await;
-    assert_eq!(status, 201, "{opened}");
-    assert_eq!(opened["offset"], json!(0), "{opened}");
-    let (status, again) = backend
-        .post(&upload, &json!({"size": whole.len()}), &[])
-        .await;
-    assert_eq!((status, &again["offset"]), (200, &json!(0)), "{again}");
-
-    // The first piece goes at the offset it stands at, and the answer says
-    // where the next one does.
+    let hash = blake3::hash(&whole).to_hex().to_string();
+    let base = format!(
+        "/v1/workspaces/{}/contents/{hash}",
+        made["workspace"]["id"].as_str().expect("a workspace")
+    );
     let piece = |from: usize, of: usize| whole[from..(from + of).min(whole.len())].to_vec();
+    let range = |from: usize, of: usize| {
+        let to = (from + of).min(whole.len()) - 1;
+        format!("bytes {from}-{to}/{}", whole.len())
+    };
+
+    // The first piece opens the put where it starts and says how big the file
+    // is; the answer says where the next one goes.
     let first = piece(0, 1_000_000);
-    let reply = backend
-        .send(
-            hyper::Method::PUT,
-            &format!("{upload}?offset=0"),
-            &first,
-            &[],
-        )
-        .await;
-    let (status, access) = json_of(reply).await;
+    let first_range = range(0, 1_000_000);
+    let (status, access) = json_of(
+        backend
+            .send(
+                hyper::Method::PUT,
+                &base,
+                &first,
+                &[("content-range", first_range.as_str())],
+            )
+            .await,
+    )
+    .await;
     assert_eq!(status, 200, "{access}");
     assert_eq!(access["offset"], json!(1_000_000), "{access}");
+    assert_eq!(access["size"], json!(whole.len()), "{access}");
 
-    // A piece sent again from where it already stands is refused, with the
-    // offset to send from: the workspace never keeps it twice.
-    let reply = backend
-        .send(
-            hyper::Method::PUT,
-            &format!("{upload}?offset=0"),
-            &first,
-            &[],
-        )
-        .await;
-    let (status, refused) = json_of(reply).await;
+    // The same piece sent again after an answer that did not arrive costs
+    // nothing: the answer says where the put stands now.
+    let (status, again) = json_of(
+        backend
+            .send(
+                hyper::Method::PUT,
+                &base,
+                &first,
+                &[("content-range", first_range.as_str())],
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        (status, &again["offset"]),
+        (200, &json!(1_000_000)),
+        "{again}"
+    );
+
+    // A piece from an offset the put is not at is refused with where it stands.
+    let ahead = range(2_000_000, 1_000_000);
+    let (status, refused) = json_of(
+        backend
+            .send(
+                hyper::Method::PUT,
+                &base,
+                &piece(2_000_000, 1_000_000),
+                &[("content-range", ahead.as_str())],
+            )
+            .await,
+    )
+    .await;
     assert_eq!(
         (status, &refused["error"]["code"]),
         (409, &json!("offset_mismatch")),
         "{refused}"
     );
-    let (status, access) = backend.get(&upload).await;
-    assert_eq!((status, &access["offset"]), (200, &json!(1_000_000)));
 
     // After a connection that stopped, the next piece continues from where
-    // the workspace says the upload stands, and the last one answers the
-    // content the whole file is kept under.
-    let mut at = access["offset"].as_u64().unwrap() as usize;
+    // the put stands, and the last one answers the content the whole file is
+    // kept under.
+    let mut at = 1_000_000;
     let mut content = Value::Null;
     while at < whole.len() {
         let chunk = piece(at, 1_000_000);
-        let reply = backend
-            .send(
-                hyper::Method::PUT,
-                &format!("{upload}?offset={at}"),
-                &chunk,
-                &[],
-            )
-            .await;
-        let (status, answered) = json_of(reply).await;
+        let from = at;
+        let content_range = range(from, chunk.len());
+        let (status, answered) = json_of(
+            backend
+                .send(
+                    hyper::Method::PUT,
+                    &base,
+                    &chunk,
+                    &[("content-range", content_range.as_str())],
+                )
+                .await,
+        )
+        .await;
         assert!(status == 200 || status == 201, "{answered}");
         at += chunk.len();
         assert_eq!(
@@ -1501,26 +1531,41 @@ async fn a_file_larger_than_one_request_goes_up_in_pieces_that_resume() {
             content = answered["content"].clone();
         }
     }
-    // Every byte of it, byte for byte, and nothing of the upload left open.
-    let reply = backend
-        .send(
-            hyper::Method::GET,
-            &format!(
-                "/v1/workspaces/{}/content/{}",
-                made["workspace"]["id"].as_str().unwrap(),
-                content.as_str().unwrap()
-            ),
-            b"",
-            &[],
-        )
-        .await;
+    let content = content
+        .as_str()
+        .expect("the put names its content")
+        .to_owned();
+    assert!(content.starts_with("tilo.content:"), "{content}");
+    let reference = content
+        .strip_prefix("tilo.content:")
+        .expect("a content reference");
+    let read = format!(
+        "/v1/workspaces/{}/contents/{reference}",
+        made["workspace"]["id"].as_str().unwrap()
+    );
+
+    // Every byte of it, byte for byte.
+    let reply = backend.send(hyper::Method::GET, &read, b"", &[]).await;
     let body = reply.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(body.as_ref(), whole.as_slice());
-    let (status, gone) = backend.get(&upload).await;
+
+    // A piece sent after every byte is there is told so.
+    let last_range = range(whole.len() - 1_000_000, 1_000_000);
+    let (status, complete) = json_of(
+        backend
+            .send(
+                hyper::Method::PUT,
+                &base,
+                &piece(whole.len() - 1_000_000, 1_000_000),
+                &[("content-range", last_range.as_str())],
+            )
+            .await,
+    )
+    .await;
     assert_eq!(
-        (status, &gone["error"]["code"]),
-        (404, &json!("not_found")),
-        "{gone}"
+        (status, &complete["error"]["code"]),
+        (409, &json!("upload_complete")),
+        "{complete}"
     );
 }
 

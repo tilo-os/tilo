@@ -254,7 +254,7 @@ def stuck_modifiers(ctx, res):
             for modifier in ("shift", "ctrl", "alt", "super"):
                 ctx.vm.input("hold", modifier)
                 held.append(modifier)
-                ctx.vm.invoke(core.SESSION, core.SESSION_LOCK)
+                ctx.vm.invoke(core.SESSION, *core.SESSION_LOCK)
                 ctx.wait_state(lambda s: s["chrome"].get("session_locked"), 10, f"locked with {modifier} down")
                 # The key comes up behind the lock: the release reaches the compositor before
                 # the passcode typed on the same keyboard.
@@ -492,8 +492,7 @@ def wake_from_sleep(ctx, res):
                 raise CheckFailed(f"no shell ran in the new Terminal within {core.TERMINAL_SHELL_S} s")
             ctx.vm.input("type", "i=0; while :; do i=$((i+1)); echo wake-$i; sleep 0.2; done")
             ctx.vm.key("Return")
-            displays = ctx.state()["workspace_tree"]["outputs"]["displays"]
-            connectors = [d.get("monitor", "").removeprefix("connector:") for d in displays]
+            connectors = core.lit_connectors(core.display_snapshot(ctx))
             kms = Kms(ctx, connectors)
             before = kms.scanning_out()
             res.metrics["kms_before"] = before

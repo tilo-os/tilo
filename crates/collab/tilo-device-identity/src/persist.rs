@@ -38,7 +38,7 @@ use std::io::{self, Read};
 use std::os::fd::FromRawFd as _;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(not(windows))]
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -250,10 +250,42 @@ pub enum DeviceKeyOwnership {
     Keychain,
 }
 
+/// Where a machine keeps its own identity tree.
+pub const SYSTEM_IDENTITY_ROOT: &str = "/var/lib/tilo";
+
+/// Where this device's key and certificates live, for every program of this account: the session
+/// that proves for the device, its setup, `tilo`, and the shell runtime that proves to it. They
+/// must all read the same key, or a proof made with one proves nothing to a checker holding
+/// another.
+///
+/// `TILO_IDENTITY_ROOT` when it names one; else the machine's tree, [`SYSTEM_IDENTITY_ROOT`], when
+/// it holds an identity (`device/`); else this account's own data directory
+/// (`$XDG_DATA_HOME/tilo`), as on a computer running Tilo beside another operating system.
+#[must_use]
+pub fn collaboration_identity_root() -> PathBuf {
+    if let Some(root) = std::env::var_os("TILO_IDENTITY_ROOT").filter(|value| !value.is_empty()) {
+        return PathBuf::from(root);
+    }
+    held_root(
+        Path::new(SYSTEM_IDENTITY_ROOT),
+        tilo_paths::data_dir().as_deref(),
+    )
+}
+
+/// [`collaboration_identity_root`] without the environment: `system` when it holds an identity,
+/// else the account's own `data` directory, else `system` (where an identity will be made).
+fn held_root(system: &Path, data: Option<&Path>) -> PathBuf {
+    if system.join("device").is_dir() {
+        return system.to_path_buf();
+    }
+    data.filter(|dir| dir.is_absolute())
+        .map_or_else(|| system.to_path_buf(), |dir| dir.join("tilo"))
+}
+
 impl IdentityPaths {
     /// Standard layout under `/var/lib/tilo`.
     pub fn default_system() -> Self {
-        Self::under("/var/lib/tilo")
+        Self::under(SYSTEM_IDENTITY_ROOT)
     }
 
     /// Custom root — the boot path uses `/var/lib/tilo`, tests use
@@ -1509,6 +1541,36 @@ mod tests {
     }
     use ed25519_dalek::Signer;
     use std::sync::{Arc, Barrier};
+
+    /// The identity root every program of the account reads the device key and certificates from
+    /// is the machine's only when the machine holds an identity: a tree with no `device/` is
+    /// where an identity would be made on that machine, not the one this account has, so the
+    /// account's own data directory answers instead. Without one either, the machine's tree does.
+    #[test]
+    fn the_identity_root_is_the_machine_tree_only_when_it_holds_an_identity() {
+        let fixture = identity_tempdir();
+        let system = fixture.path().join("var/lib/tilo");
+        let data = fixture.path().join("home/ada/.local/share");
+        std::fs::create_dir_all(&system).unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        assert_eq!(held_root(&system, Some(&data)), data.join("tilo"));
+        std::fs::create_dir_all(system.join("device")).unwrap();
+        assert_eq!(held_root(&system, Some(&data)), system);
+        assert_eq!(
+            held_root(&fixture.path().join("absent"), Some(&data)),
+            data.join("tilo")
+        );
+        assert_eq!(
+            held_root(&fixture.path().join("absent"), None),
+            fixture.path().join("absent"),
+            "with nowhere of the account's own, an identity is made in the machine's tree"
+        );
+        assert_eq!(
+            held_root(&fixture.path().join("absent"), Some(Path::new("relative"))),
+            fixture.path().join("absent"),
+            "a relative data directory names no place an identity could be"
+        );
+    }
 
     /// `device/cert.bin` as `tilo login --new-identity` wrote it before the
     /// host and read-all grants were retired: a member certificate whose

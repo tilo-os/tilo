@@ -4,9 +4,10 @@
 
 use std::sync::Arc;
 
-use super::{GovernedWorkspace, KEEP_FOLLOWED, Workspaces, peer_parts, publisher};
+use neighbour_wire::NeighbourMsg;
+
+use super::{GovernedWorkspace, KEEP_FOLLOWED, WeakWorkspaces, Workspaces, peer_parts};
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::TransportOrigin;
 use tilo_user_identity::DeviceCert;
 
 /// A member's write to a record of a governed workspace, after the governor's
@@ -19,13 +20,6 @@ pub struct ResourceWrite {
     pub app: String,
     /// The record's id on the wire (`""` for the app's primary).
     pub record: String,
-    /// What the write carried that the record's repair could take in
-    /// ([`super::repaired_documents::Carried`]): the changes it carried, when the
-    /// record's kept changes could wait for one of them. Nothing when the
-    /// record's archive says nothing it keeps waits for a write like this, so
-    /// reading the record for it would be work for nothing.
-    #[cfg(feature = "agents")]
-    pub carried: super::repaired_documents::Carried,
 }
 
 /// What taking a member's write into the governor's copy did.
@@ -37,7 +31,7 @@ pub(super) struct Followed {
     /// since: replaying what the server retains brings it in.
     pub(super) replay_wanted: bool,
     /// Admission refused the write, and why: the author is owed a verdict.
-    pub(super) refused: Option<String>,
+    pub(super) refused: Option<tilo_peer_state::AdmissionError>,
     /// The write is a sealed compaction this copy refused because it is behind in it, and why
     /// it could not take it yet ([`BehindRefusal`]).
     pub(super) behind: Option<BehindRefusal>,
@@ -54,48 +48,43 @@ pub(super) enum BehindRefusal {
 }
 
 impl Workspaces {
-    /// Tell whoever follows the workspace's documents that `message`, `author`'s
-    /// write of `document` of `app`, is in `workspace`'s copy: the write that
-    /// starts a document as every write after it, since a follower nobody told
-    /// reads it only when it next looks at everything. Sent while the
-    /// workspace is still locked, so whoever it wakes reads a copy that holds
-    /// the write. Another device's write is also handed on whole
-    /// ([`Workspaces::admitted_writes`]), for this device's apps to show, as
-    /// `history` the workspace already held or as a write made just now.
-    #[cfg_attr(
-        not(feature = "agents"),
-        expect(
-            clippy::unused_async,
-            reason = "one signature with the build that reads what a write carried"
-        )
+    /// Hand `message`, `author`'s write the workspace took in, to the apps of
+    /// this device that follow it: the write that starts a document as every
+    /// write after it. Sent while the workspace is still locked, so whoever it
+    /// wakes reads a copy that holds the write. Another device's write is also
+    /// handed on whole ([`Workspaces::admitted_writes`]), as `history` the
+    /// workspace already held or as a write made just now.
+    ///
+    /// Whoever follows the workspace's records through
+    /// [`Workspaces::document_writes`] is told by [`Self::wrote`], the one
+    /// notice an admitted frame and a local write raise: telling it here as
+    /// well woke those watchers twice for one write.
+    #[expect(
+        clippy::unused_async,
+        reason = "one signature with the callers that send the write while the workspace is locked"
     )]
     pub(super) async fn tell_followers(
         &self,
         workspace: &GovernedWorkspace,
         author: [u8; 32],
-        (app, document): (String, String),
         message: &neighbour_wire::NeighbourMsg,
         history: bool,
     ) {
         self.hand_on(workspace, author, message, history);
-        // What the write carried, read here where it is at hand, so a document
-        // whose repair keeps changes is read only for a write that could
-        // release one of them.
-        #[cfg(feature = "agents")]
-        let carried = {
-            let name = workspace.workspace().to_owned();
-            self.carried_into(workspace, (&name, &app, &document), message)
-                .await
-        };
-        #[cfg(not(feature = "agents"))]
-        let _ = message;
-        let _ = self.inner.document_writes.send(ResourceWrite {
-            workspace: workspace.workspace().to_owned(),
-            app,
-            record: document,
-            #[cfg(feature = "agents")]
-            carried,
-        });
+    }
+
+    /// Tell whoever follows `workspace`'s records through
+    /// [`Workspaces::document_writes`] that `message` is in its copy: the one
+    /// notice an admitted frame and a local write raise, so it fires once.
+    pub(super) fn wrote_frame(&self, workspace: &str, message: &neighbour_wire::NeighbourMsg) {
+        if let neighbour_wire::NeighbourMsg::AppDocument {
+            app_id,
+            document_id,
+            ..
+        } = message
+        {
+            self.wrote(workspace, app_id, document_id);
+        }
     }
 
     /// Hand `message`, `author`'s write `workspace` took in, to the apps of
@@ -174,41 +163,32 @@ impl GovernedWorkspace {
         Ok(())
     }
 
-    /// The governance this workspace published that the server has not retained,
-    /// in order, each with its place reserved in `records`; `published`
-    /// moves past them. Stops before a change that does not read, with why.
-    pub(super) fn unpublished(
+    /// Keep and carry the governance this workspace published that the device
+    /// store does not hold yet, in order; `published` moves past each. Stops
+    /// at a change that could not be kept, with why, for the next settle to
+    /// publish again.
+    pub(super) fn publish(
         &mut self,
         records: &crate::workspace_documents::WorkspaceDocuments,
-    ) -> (Vec<publisher::Publication>, Result<(), String>) {
-        let mut publications = Vec::new();
+    ) -> Result<(), String> {
         while let Some(entry) = self.record.outgoing.get(self.record.published) {
-            let channel = neighbour_wire::NeighbourMsg::decode(&entry.bytes)
-                .map_err(|error| error.to_string())
-                .and_then(|message| {
-                    neighbour_wire::retention(&message, entry.checkpoint)
-                        .map(|(channel, _)| channel)
-                        .ok_or_else(|| {
-                            "workspace governance message has no retention channel".into()
-                        })
-                });
-            let channel = match channel {
-                Ok(channel) => channel,
-                Err(error) => return (publications, Err(error)),
-            };
-            publications.push(publisher::Publication::new(
-                records,
-                self.record.workspace_id,
-                Some(self.record.published),
-                crate::workspace_documents::HostCommit {
-                    body: entry.bytes.to_vec(),
-                    channel,
-                    checkpoint: entry.checkpoint,
-                },
-            ));
+            records
+                .commit(
+                    self.record.workspace_id,
+                    &crate::workspace_documents::HostCommit {
+                        body: entry.bytes.to_vec(),
+                    },
+                )
+                .map_err(|error| {
+                    format!(
+                        "governance publication {} of {} not carried: {error}",
+                        self.record.published,
+                        self.record.outgoing.len()
+                    )
+                })?;
             self.record.published = self.record.published.saturating_add(1);
         }
-        (publications, Ok(()))
+        Ok(())
     }
 
     /// Write the governor's copy, as following members' writes changed it,
@@ -303,7 +283,7 @@ impl GovernedWorkspace {
                 Followed::default()
             }
             Err(error) => Followed {
-                refused: Some(error.to_string()),
+                refused: Some(error),
                 ..Followed::default()
             },
         }
@@ -422,13 +402,13 @@ impl GovernedWorkspace {
             })
     }
 
-    /// The verdict [`Self::follow`] would give `message`, `author`'s write,
-    /// without taking it in: why the workspace refuses the write, or `None`
-    /// when it takes it. The server asks before it keeps the write, so a
-    /// refused change is never stored and never served to a reader, and a
-    /// writer numbering its next change the refused one's sequence again
-    /// never meets it. `None` for a record the governor's copy does not hold:
-    /// that write founds one, which is no refusal.
+    /// The verdict taking `message`, `author`'s write, into the governor's
+    /// copy would give, without keeping it: why the workspace refuses the
+    /// write, or `None` when it takes it. A test asks it of a write the
+    /// workspace's link would have admitted, so nothing is decided for a
+    /// change that never reaches a copy. The tests that ask are the sealed
+    /// documents', which are built with the agents.
+    #[cfg(all(test, feature = "agents"))]
     pub(super) fn refuses(
         &self,
         author: [u8; 32],
@@ -462,7 +442,7 @@ impl GovernedWorkspace {
         };
         let error = decided
             .receive_from(
-                TransportOrigin::RetainedServerDelta(author),
+                tilo_peer_state::TransportOrigin::RetainedServerDelta(author),
                 message.clone(),
                 tilo_clock::wall(),
             )
@@ -474,20 +454,20 @@ impl GovernedWorkspace {
         Some(error.to_string())
     }
 
-    /// File this device's verdict on the write admission refused because
-    /// `reason`, in the governor's copy, for [`Self::keep_followed`] to write
+    /// File this device's verdict on the write admission refused as
+    /// `refusal` says, in the governor's copy, for [`Self::keep_followed`] to write
     /// through: the write's author reads why it is not here.
     pub(super) fn refused(
         &self,
         caller: &DeviceCert,
         key: &SigningKey,
         message: &neighbour_wire::NeighbourMsg,
-        reason: &str,
+        refusal: &tilo_peer_state::AdmissionError,
     ) -> Followed {
         let filed = self.peer().workspace_mut().refuse_write(
             caller,
             message,
-            reason,
+            refusal,
             key,
             tilo_clock::wall(),
         );
@@ -499,7 +479,7 @@ impl GovernedWorkspace {
             Err(error) => {
                 tracing::warn!(
                     workspace = %self.record.workspace,
-                    %reason,
+                    %refusal,
                     %error,
                     "the governor did not file a refusal of a record write"
                 );
@@ -510,19 +490,15 @@ impl GovernedWorkspace {
 }
 
 impl Workspaces {
-    /// Why this workspace refuses `body`, `author`'s write, decided before the
-    /// server keeps or forwards it; `None` when it takes the write, when this
-    /// server does not govern the workspace, or when the write founds the
-    /// record rather than changing one. The verdict is the one the governor
-    /// would give the write ([`GovernedWorkspace::refuses`]), so the change is
-    /// never stored for a later reader to meet, and a writer numbering its
-    /// next change the refused one's sequence again writes on cleanly.
+    /// Why taking `body`, `author`'s write, into `workspace` would refuse it;
+    /// `None` when it takes the write. A test asks it of a write the
+    /// workspace's link would have admitted.
     ///
-    /// A sealed compaction the copy is behind in is not refused: it is taken as
-    /// the record's base under the record's keys. One whose keys are not here yet is kept, as
-    /// any sealed frame the store cannot read is, and a replay takes it once they are
-    /// ([`GovernedWorkspace::follow_kept`]). The writes it covers are nowhere but inside it, and
-    /// a change refused here is never kept.
+    /// A sealed compaction the copy is behind in is not refused: it is taken
+    /// as the record's base under the record's keys, and one whose keys are
+    /// not here yet is taken once they are. The tests that ask are the sealed
+    /// documents', which are built with the agents.
+    #[cfg(all(test, feature = "agents"))]
     pub(crate) async fn refuses_write(
         &self,
         workspace: &str,
@@ -550,16 +526,16 @@ impl Workspaces {
             return Some(refusal);
         }
         let followed = governed.follow_kept(author, message.clone()).await;
-        // A compaction this copy cannot open yet is kept, not refused: it is a sealed frame the
-        // retained store keeps like any it cannot read, and the replay takes it once the keys
-        // are here.
+        // A compaction this copy cannot open yet is kept, not refused: the
+        // link keeps it like any sealed frame it cannot read, and a replay
+        // takes it once the keys are here.
         if followed.behind == Some(BehindRefusal::Keys) {
             drop(governed);
             return None;
         }
         if let Some(refused) = followed.refused {
             drop(governed);
-            return Some(refused);
+            return Some(refused.to_string());
         }
         // The change is this copy's now: what it took is kept, and a verdict
         // filed against it before is cleared.
@@ -570,9 +546,7 @@ impl Workspaces {
         drop(governed);
         None
     }
-}
 
-impl Workspaces {
     /// Replay what the server retains for `workspace` into the governor's copy
     /// ([`Self::recall_retained`]), apart from whatever asked for it. The
     /// server's copy is read once every write the governor was handed is
@@ -627,5 +601,365 @@ impl Workspaces {
                 tracing::warn!(workspace = %workspace.workspace(), %error, "the governor's copy of members' writes was not kept");
             }
         });
+    }
+}
+
+impl Workspaces {
+    /// Serve `workspace`'s replica over the direct link, keeping its history
+    /// and its channels' governance at the host's store, and take in what its
+    /// members send there.
+    pub(super) fn serve_direct(&self, workspace: &GovernedWorkspace) -> Result<(), String> {
+        let workspace_id = workspace.workspace_id();
+        let workspaces = WeakWorkspaces(Arc::downgrade(&self.inner));
+        let link = tilo_peer_state::direct::DirectSync::over(
+            workspace.peer.clone(),
+            self.inner.host.key.clone(),
+        )
+        .with_store(Arc::clone(&self.inner.store))
+        .with_record_sink(move |author, message| {
+            // The sessions that read this workspace through a session get what a
+            // link to their device would, from the one point a frame is kept and
+            // carried: the record's write where one is opened, a channel's
+            // governance for every session.
+            if let Some(workspaces) = workspaces.upgrade() {
+                workspaces.deliver_record_write(workspace_id, author, message);
+            }
+        });
+        #[cfg(test)]
+        let link = match self
+            .inner
+            .link_heard_capacity
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            0 => link,
+            capacity => link.with_heard_capacity(capacity),
+        };
+        self.inner.direct.serve(link.clone())?;
+        self.follow_link(workspace, &link);
+        Ok(())
+    }
+
+    /// Give the links of the workspaces served from now on workspace for only
+    /// `capacity` frames heard and not read yet: what a test that makes the
+    /// host's reader of a link fall behind sets.
+    #[cfg(all(test, feature = "agents"))]
+    pub(crate) fn bound_link_readers(&self, capacity: usize) {
+        self.inner
+            .link_heard_capacity
+            .store(capacity, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Take in what `workspace`'s link admits and answer what its members ask
+    /// there: a frame the link admitted is a member's write, followed into the
+    /// governor's copy ([`Self::absorb`]), and each ask for content is answered with what this host keeps of it, or word
+    /// that it keeps none, addressed to whoever asked. The link carries each
+    /// ask on to the workspace's other members itself.
+    ///
+    /// A reader that falls behind the link's frames takes in the writes it
+    /// missed before it reads on ([`tilo_peer_state::direct::Reader`]): a
+    /// member is told its write landed once the link admitted it, so the host
+    /// following it is not the member's to retry. Only the link ending stops
+    /// the reads.
+    fn follow_link(
+        &self,
+        workspace: &GovernedWorkspace,
+        link: &tilo_peer_state::direct::DirectSync,
+    ) {
+        let name = workspace.workspace().to_owned();
+        let workspaces = WeakWorkspaces(Arc::downgrade(&self.inner));
+        let link = link.clone();
+        // Subscribed, where the replica stands, before the task runs:
+        // every frame the link admits from here on is this reader's, and what
+        // the replica held before is not read again.
+        let mut reader = link.reader();
+        tokio::spawn(async move {
+            // The link is gone: nothing more comes through it.
+            while let Some(frame) = reader.recv().await {
+                // The host this link served is gone: so is the answer.
+                let Some(workspaces) = workspaces.upgrade() else {
+                    return;
+                };
+                let asking = matches!(frame.message, NeighbourMsg::DocumentContentWant { .. });
+                let answering = matches!(
+                    frame.message,
+                    NeighbourMsg::DocumentContentPiece { .. }
+                        | NeighbourMsg::DocumentContentLacks { .. }
+                        | NeighbourMsg::DocumentContentRefused { .. }
+                );
+                let Ok(body) = postcard::to_allocvec(&frame.message) else {
+                    continue;
+                };
+                if let Err(error) = workspaces.absorb(&name, frame.author, &body).await {
+                    tracing::warn!(%name, %error, "the host did not keep what its link admitted");
+                }
+                // What a member answers the host with answers a request the
+                // host made, and is the host's to keep: a device that keeps
+                // its workspace's files reads the pieces here
+                // ([`Self::content_for_host`]).
+                if answering {
+                    let (workspaces, name, author) =
+                        (workspaces.clone(), name.clone(), frame.author);
+                    let body = body.clone();
+                    tokio::task::spawn_blocking(move || {
+                        workspaces.content_for_host(&name, author, &body);
+                    });
+                    continue;
+                }
+                if !asking {
+                    continue;
+                }
+                for answer in workspaces.content_answer(&name, &frame.author, &body) {
+                    match NeighbourMsg::decode(&answer) {
+                        Ok(message) => {
+                            let _ = link.send(message);
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "a content answer did not encode");
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
+impl Workspaces {
+    /// Replay every record write the device's store keeps for `workspace` into
+    /// the governor's copy, and keep what it took in.
+    pub(super) async fn recall(&self, workspace: &mut GovernedWorkspace) -> Result<(), String> {
+        let retained = self.inner.records.retained(workspace.workspace_id())?;
+        self.recall_retained(workspace, retained).await;
+        Ok(())
+    }
+
+    /// Take `retained`, the record writes the device's store keeps for `workspace`, into
+    /// the governor's copy, and keep what it took in. A write held for an
+    /// app surface not here yet may be let go past the held queue's bound,
+    /// and so is every later write of its author to its record, which
+    /// would otherwise overtake it for good. The store still keeps them
+    /// all: they are replayed again, in the order their authors wrote them,
+    /// once the surface arrives ([`Self::follow`]) or something they waited
+    /// for lands ([`Followed::replay_wanted`]).
+    pub(super) async fn recall_retained(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        retained: Vec<crate::workspace_documents::RetainedBody>,
+    ) {
+        let (mut changed, mut again) = (false, false);
+        let mut windows = Vec::new();
+        // The documents this replay changed: whoever follows them is told, as a write taken in
+        // as it is made tells them, since a replay runs again whenever something a write waited
+        // for lands, long after those followers first read the copy.
+        let mut written = std::collections::BTreeSet::new();
+        for retained in retained {
+            let own = retained.author == self.inner.host.cert.device_public_key;
+            let Some(message) = retained_message(&retained, own) else {
+                continue;
+            };
+            // What the server's device wrote is kept under its key, the
+            // governor's own commits and its own writes of records alike. The
+            // first are the governor's copy already, each written through
+            // as it was made. The second (the actions the server carries
+            // out for members, its agents' answers) the governor took in as
+            // they came, in memory, and writes through within
+            // `KEEP_FOLLOWED`: a server killed inside that time starts
+            // without them, and nobody sends them again. So those are
+            // replayed like a member's.
+            if own && !written_as_a_record(&message) {
+                continue;
+            }
+            let followed = workspace
+                .follow_kept(retained.author, message.clone())
+                .await;
+            self.replay_resource_write(workspace, retained.author, &message)
+                .await;
+            if let neighbour_wire::NeighbourMsg::SyncResp {
+                workspace: named,
+                changes,
+            } = &message
+            {
+                if named == workspace.workspace()
+                    && !super::unbuildable_windows::holds_all(
+                        workspace.peer().admitted_workspace(),
+                        changes,
+                    )
+                {
+                    windows.push((retained.author, message));
+                }
+                continue;
+            }
+            let Followed {
+                changed: took,
+                replay_wanted,
+                refused,
+                behind,
+            } = followed;
+            changed |= took;
+            again |= replay_wanted;
+            if took
+                && let neighbour_wire::NeighbourMsg::AppDocument {
+                    app_id,
+                    document_id,
+                    ..
+                } = &message
+            {
+                written.insert((app_id.clone(), document_id.clone()));
+            }
+            // A compaction whose record keys are not here yet is kept by the store it came
+            // from: the next replay, once they are, takes it in.
+            if let Some(reason) =
+                refused.filter(|_| behind != Some(super::follow::BehindRefusal::Keys))
+            {
+                let filed = workspace.refused(
+                    &self.inner.host.cert,
+                    &self.inner.host.key,
+                    &message,
+                    &reason,
+                );
+                changed |= filed.changed;
+            } else if took && self.landed(workspace, &message) {
+                changed = true;
+            }
+        }
+        if changed {
+            workspace.keep_followed();
+        }
+        for (app, record) in written {
+            self.wrote(workspace.workspace(), &app, &record);
+        }
+        self.recall_windows(workspace, windows).await;
+        // What a write let go waited for landed in this replay: the server's
+        // copy is read again, with what reached it since this one was read.
+        // Each further replay needs something new to land, so it ends.
+        if again {
+            self.replay_soon(workspace.workspace().to_owned());
+        }
+    }
+
+    /// Take `windows`, members' changes to the workspace's own state the
+    /// server retains and the governor's copy lacks, into it, in the order
+    /// they were retained: a member's change the link admitted that the
+    /// server stopped before committing. The member's device holds it as the
+    /// workspace's, and builds every later change on it, never sending it
+    /// again; without it each of those is refused for history the workspace
+    /// lost, for as long as the member keeps publishing.
+    async fn recall_windows(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        windows: Vec<([u8; 32], NeighbourMsg)>,
+    ) {
+        let mut taken = 0_usize;
+        for (author, message) in windows {
+            match self.take_topology(workspace, author, message).await {
+                Ok(true) => taken = taken.saturating_add(1),
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::debug!(workspace = %workspace.workspace(), %error, "a retained change of a member's was not taken in");
+                }
+            }
+        }
+        if taken > 0 {
+            tracing::info!(workspace = %workspace.workspace(), taken, "the governor took in members' changes it kept but had not committed");
+        }
+    }
+
+    /// Found every document of `workspace` that `retained` holds a write of
+    /// and this server holds none of, from the document's first retained write
+    /// ([`Self::absorb`]): the copy of a document the server was admitted to a
+    /// channel of after its members started writing it has to start
+    /// somewhere, and its later writes build on the first. A document found
+    /// first from a later write would refuse that one for the changes it
+    /// lacks, and never be founded.
+    #[cfg(any(feature = "agents", feature = "device-keys"))]
+    pub(super) async fn found_retained(
+        &self,
+        workspace: &str,
+        state: &tokio::sync::Mutex<GovernedWorkspace>,
+        retained: &[crate::workspace_documents::RetainedBody],
+    ) {
+        let mut first: std::collections::BTreeMap<
+            (String, String),
+            &crate::workspace_documents::RetainedBody,
+        > = std::collections::BTreeMap::new();
+        for retained in retained {
+            // What the server's own device wrote the governor holds already, or
+            // took in as it came ([`Self::recall_retained`]).
+            let server = &self.inner.host;
+            if retained.author == server.cert.device_public_key {
+                continue;
+            }
+            let Ok(neighbour_wire::NeighbourMsg::AppDocument {
+                app_id,
+                document_id,
+                envelope,
+                ..
+            }) = neighbour_wire::NeighbourMsg::decode(&retained.body)
+            else {
+                continue;
+            };
+            // A document the server may read in the clear was founded when its
+            // first write was handed to the governor: only a sealed one waits
+            // for the group to admit this server's device.
+            if envelope.encryption.is_none() {
+                continue;
+            }
+            first.entry((app_id, document_id)).or_insert(retained);
+        }
+        if first.is_empty() {
+            return;
+        }
+        let missing: Vec<_> = {
+            let workspace = state.lock().await;
+            first
+                .into_iter()
+                .filter(|((app, document), _)| !workspace.peer().holds_document(app, document))
+                .map(|(_, retained)| retained)
+                .collect()
+        };
+        for retained in missing {
+            if let Err(error) = self
+                .absorb(workspace, retained.author, &retained.body)
+                .await
+            {
+                tracing::warn!(%workspace, %error, "governed workspace did not found a document its members wrote");
+            }
+        }
+    }
+}
+
+/// Whether `message`, which the server's device wrote, is a write of a record
+/// it made as any member does: a change to a document or a resource store
+/// write. Other whole documents under that key are the governor's own commits.
+fn written_as_a_record(message: &neighbour_wire::NeighbourMsg) -> bool {
+    matches!(
+        message,
+        neighbour_wire::NeighbourMsg::AppDocument { document_id, envelope, .. }
+            if !envelope.is_whole_resource() || collab_types::is_store_document(document_id)
+    )
+}
+
+/// The write `retained` holds, decoded; `None` for one that is not a write to
+/// replay. Not all the server's device retains under its key (`own`) is a
+/// write to a document; anyone else's that does not decode is reported.
+fn retained_message(
+    retained: &crate::workspace_documents::RetainedBody,
+    own: bool,
+) -> Option<neighbour_wire::NeighbourMsg> {
+    if own {
+        return tilo_failure::ignored!(
+            "not all the server's device retains under its key is a write to a document",
+            neighbour_wire::NeighbourMsg::decode(&retained.body).ok()
+        );
+    }
+    match neighbour_wire::NeighbourMsg::decode(&retained.body) {
+        Ok(message) => Some(message),
+        Err(error) => {
+            tracing::warn!(
+                author = %hex::encode(retained.author),
+                %error,
+                "a retained write does not decode; it is not replayed"
+            );
+            None
+        }
     }
 }

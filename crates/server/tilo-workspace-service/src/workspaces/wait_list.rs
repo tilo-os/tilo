@@ -599,32 +599,9 @@ pub(super) struct EntrySettings {
     pub(super) wait_list: std::sync::OnceLock<tilo_server_protocol::directory::EntryWaitList>,
     /// The page an invitation's link opens ([`super::Workspaces::invite_at`]).
     pub(super) invitations: std::sync::OnceLock<String>,
-    /// The site itself, as whoever runs the server configured it
-    /// (`https://tilo.sh/`): where a link handed over short is opened, since
-    /// the site is what keeps the sealed invitation its handle names.
-    pub(super) site: std::sync::OnceLock<String>,
-    /// The shelf the site keeps sealed invitations on
-    /// ([`super::Workspaces::shelve_invitations`]).
-    pub(super) sealed: std::sync::OnceLock<std::sync::Arc<dyn SealedInvitations>>,
-}
-
-/// What a site keeps of an invitation sealed onto its shelf
-/// ([`tilo_server_protocol::sealed_invitations`]): the ciphertext a link's
-/// handle names, until the invitation it holds lapses. It is handed the
-/// ciphertext and the secret that takes it back, never the key, which travels
-/// in the link alone.
-pub trait SealedInvitations: Send + Sync {
-    /// Keep `stored` under `handle` for the shelf a link names it at.
-    ///
-    /// # Errors
-    ///
-    /// Why the site kept nothing: the shelf is full, the handle is spoken for,
-    /// or its disk could not be written.
-    fn keep(
-        &self,
-        handle: &str,
-        stored: tilo_server_protocol::sealed_invitations::Stored,
-    ) -> Result<(), String>;
+    /// This host's own web origin (`https://eu1.tilo.sh`), where a page asks
+    /// for an invitation a short link names ([`super::Workspaces::short_invitation_link`]).
+    pub(super) host: std::sync::OnceLock<String>,
 }
 
 /// The page an invitation's link opens when the server names none of its own.
@@ -708,14 +685,6 @@ impl super::Workspaces {
     /// its addresses are this machine's, so a public page cannot dial it, and its own site is
     /// the only page that opens the link. `false` once called before.
     pub fn invite_at(&self, entry: &str, local: bool) -> bool {
-        // A link handed over short names the site it was sealed onto, which is
-        // the site this host was configured with, whether or not a stranger's
-        // computer reaches it.
-        let _ = self
-            .inner
-            .entry
-            .site
-            .set(format!("{}/", entry.trim_end_matches('/')));
         self.inner
             .entry
             .invitations
@@ -723,42 +692,47 @@ impl super::Workspaces {
             .is_ok()
     }
 
-    /// Keep the invitations this host seals on the site's shelf
-    /// (`/i/<handle>`), which is where a short link's ciphertext waits
-    /// ([`Self::sealed_invitation_link`]). `false` once called before.
+    /// This host's own web origin (`https://eu1.tilo.sh`), which the short
+    /// links of its workspaces' invitations name: a page following one asks
+    /// it for the invitation the workspace keeps
+    /// ([`tilo_server_protocol::web::OPEN_INVITATION_PATH`]). `false` once
+    /// called before, or for an origin no link can name.
     #[must_use]
-    pub fn shelve_invitations(&self, site_shelf: std::sync::Arc<dyn SealedInvitations>) -> bool {
-        self.inner.entry.sealed.set(site_shelf).is_ok()
+    pub fn invitations_at(&self, origin: &str) -> bool {
+        tilo_reference::link::HostOrigin::new(origin.trim_end_matches('/')).is_ok()
+            && self.inner.entry.host.set(origin.to_owned()).is_ok()
     }
 
-    /// The short link of `invitation` (its signed bytes) for the site
-    /// [`Self::invite_at`] names: the invitation sealed under a fresh key,
-    /// left on the site's shelf under a handle the link carries, with the key
-    /// after its `#`. `None` where the site keeps no shelf here, or could not
-    /// be written: the invitation's own link joins just the same.
-    pub(super) fn sealed_invitation_link(
+    /// The short link of `invitation` (its signed bytes), which `workspace`
+    /// keeps: the page [`Self::invite_at`] names, opened at this host's
+    /// workspace with the secret only the invitation's holder can derive
+    /// (`#/@<host>/w/<workspace>?invite=<secret>`). The page asks this host for
+    /// the invitation by it, so the link fits a message and the invitation
+    /// stays in its workspace, which takes it back when it is cancelled.
+    /// `None` where this host has no web origin a page can ask.
+    pub(super) fn short_invitation_link(
         &self,
+        workspace: &str,
         invitation: &[u8],
-        expires_at_ns: u64,
     ) -> Option<String> {
-        let keeper = self.inner.entry.sealed.get()?;
-        let site = self.inner.entry.site.get()?;
-        let sealed = tilo_peer_state::join::sealed::seal(invitation).ok()?;
-        keeper
-            .keep(
-                &sealed.handle,
-                tilo_server_protocol::sealed_invitations::Stored {
-                    sealed: sealed.sealed_text(),
-                    expires_at_ns,
-                    delete: sealed.delete.clone(),
-                    // Where the invitation admits into is the site's home
-                    // workspace's host, which a page opening the link reads
-                    // from the site itself.
-                    host: None,
-                },
-            )
-            .ok()?;
-        sealed.link(site).ok()
+        let host = self.inner.entry.host.get()?;
+        let host = tilo_reference::link::HostOrigin::new(host.trim_end_matches('/')).ok()?;
+        let entry = self
+            .inner
+            .entry
+            .invitations
+            .get()
+            .map_or(PUBLIC_INVITE_ENTRY, String::as_str);
+        let secret = tilo_peer_state::join::native::bearer_text(invitation);
+        // A page served by this host names no host: the workspace is its own.
+        let own =
+            tilo_reference::link::WebEntry::new(entry).is_ok_and(|entry| *entry.origin() == host);
+        let at = if own {
+            String::new()
+        } else {
+            format!("/@{}", host.route())
+        };
+        Some(format!("{entry}#{at}/w/{workspace}?invite={secret}"))
     }
 
     /// The link that brings whoever follows it into `workspace` with `invitation` (its signed

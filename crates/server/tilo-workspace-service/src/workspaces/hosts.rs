@@ -22,14 +22,12 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Duration;
 
 use iroh_base::EndpointAddr;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
-use tilo_net::proxy::host::{Destinations, check_destination, guarded_client, system_lookup};
 use tilo_peer_state::CopyRole;
 use tilo_peer_state::join::{Role, TransportHint};
 use tilo_server_protocol::workspaces::WorkspaceHolder;
@@ -359,15 +357,18 @@ impl Workspaces {
     /// and see in where its store stands then that it keeps every change of
     /// this device's it may read, and in what it says it lacks that it keeps
     /// all the content those changes name. The server is asked again only
-    /// after an answer that narrowed what it lacks, for what reached this
-    /// device while it took in the rest: an answer that narrowed nothing is
-    /// its last.
+    /// after an answer that narrowed what it lacks, or that says it fetched
+    /// content while it answered, for what reached this device while it took
+    /// in the rest: an answer that did neither is its last. What it lacks may
+    /// count more than the last answer did and still follow content fetched:
+    /// it counts over the resources that open there, which grow as the
+    /// workspace's arrive.
     ///
     /// # Errors
     ///
     /// The server did not answer the ask (a build before it, or one that
     /// could not reach this device), or an answer left it lacking changes or
-    /// content and narrowed nothing of it.
+    /// content and neither narrowed it nor fetched any.
     async fn caught_up_with_this(
         &self,
         workspace: &str,
@@ -418,7 +419,7 @@ impl Workspaces {
             let narrowed = before.is_none_or(|(lacked_before, missing_before)| {
                 lacked < lacked_before || content_missing < missing_before
             });
-            if !narrowed {
+            if !narrowed && !caught_up.fetched {
                 return Err(format!(
                     "the server {} still lacks {lacked} of the changes this device keeps and \
                      {content_missing} blobs of the content they name",
@@ -436,7 +437,8 @@ impl Workspaces {
     /// device's store stands then, and how many blobs of the content the
     /// workspace's resources name it still lacks once the caller may have
     /// handed them ([`Self::content_settled`]), beside what `absent`
-    /// addresses: the content the caller keeps none of either.
+    /// addresses: the content the caller keeps none of either. Says too
+    /// whether it fetched any while it answered.
     ///
     /// [`DirectSync::take_store`]: tilo_peer_state::direct::DirectSync::take_store
     ///
@@ -450,7 +452,7 @@ impl Workspaces {
         workspace: &str,
         names_content: bool,
         absent: &BTreeSet<String>,
-    ) -> Result<(Vec<tilo_peer_state::store::Cursor>, u32), String> {
+    ) -> Result<(Vec<tilo_peer_state::store::Cursor>, u32, bool), String> {
         let workspace_id = WorkspaceId::parse(workspace)
             .ok_or_else(|| "a workspace is named by its id".to_owned())?;
         let state = self
@@ -479,16 +481,19 @@ impl Workspaces {
             .ok_or("only a device keeping the workspace hands its changes over")?;
         let cursors = self
             .take_store_of(
-                workspace,
                 workspace_id,
                 address.endpoint_addr,
                 address.device_certificate.device_public_key,
             )
             .await?;
-        let content_missing = self
+        let (content_missing, fetched) = self
             .content_settled(workspace, caller.device_public_key, names_content, absent)
             .await;
-        Ok((cursors, u32::try_from(content_missing).unwrap_or(u32::MAX)))
+        Ok((
+            cursors,
+            u32::try_from(content_missing).unwrap_or(u32::MAX),
+            fetched,
+        ))
     }
 
     /// How many blobs of the content `workspace`'s resources name this device
@@ -500,14 +505,15 @@ impl Workspaces {
     /// which `from` keeps none of either, is not counted. The workspace's members are
     /// asked again for all this device lacks first, and each count after that
     /// follows an answer to those asks, a write to the workspace, or a change
-    /// to its member list.
+    /// to its member list. Says too whether that count is below the first:
+    /// content arrived while it waited.
     async fn content_settled(
         &self,
         workspace: &str,
         from: [u8; 32],
         names_content: bool,
         absent: &BTreeSet<String>,
-    ) -> usize {
+    ) -> (usize, bool) {
         use tokio::sync::broadcast::error::RecvError;
         // Subscribed before the asks go out, so no answer to them is missed.
         let mut answers = self.content_answers();
@@ -547,22 +553,20 @@ impl Workspaces {
                 break;
             }
         }
-        lacking
+        (lacking, lacking < asked)
     }
 
     /// Take in what `device` at `addr`, one keeping `workspace`
     /// (`workspace_id`), keeps of it and this device's store lacks, over the
-    /// workspace's device link, into this device's history and its copy as
-    /// a cold start takes what only the link kept
-    /// ([`Self::keep_link_history`]), so a page and the content kept here
-    /// read it at once. Answers where this device's store stands then.
+    /// workspace's device link, into this device's one store as a cold start
+    /// takes a workspace in, so a page and the content kept here read it at
+    /// once. Answers where this device's store stands then.
     ///
     /// # Errors
     ///
     /// No link serves the workspace here, or its changes could not be taken in.
     async fn take_store_of(
         &self,
-        workspace: &str,
         workspace_id: WorkspaceId,
         addr: EndpointAddr,
         device: [u8; 32],
@@ -581,12 +585,9 @@ impl Workspaces {
                     hex::encode(device)
                 )
             })?;
-        // What the server's history already held its copy follows: only
-        // what the link alone kept is replayed into it, once it is kept.
-        if self.keep_link_history(workspace, workspace_id).await > 0 {
-            self.carried_through(workspace_id).await;
-            self.replay(workspace).await;
-        }
+        // The store it took is the one it keeps: every change it holds is in
+        // its own history already, and what its copy needs of them follows
+        // from there.
         Ok(cursors)
     }
 
@@ -795,7 +796,7 @@ impl Workspaces {
         } else if let Some(addr) = addr.or(known) {
             match self.reach_host(device, addr.clone()).await {
                 Ok(reached) => {
-                    self.take_store_of(workspace, workspace_id, addr, device)
+                    self.take_store_of(workspace_id, addr, device)
                         .await
                         .map_err(|error| {
                             format!("the server keeps the workspace still: {error}")
@@ -923,80 +924,85 @@ impl Workspaces {
             .collect())
     }
 
-    /// Have the holder whose site is at `origin` (`https://tilo.sh`) hold
-    /// `workspace` as well, as `role`: the holder says who it is and where it
-    /// is dialed at its origin, and is then handed the workspace
+    /// Have the server whose own line is `host` hold `workspace` as well, as
+    /// `role`: the line names its certificate and where it is dialled
+    /// (`tilo_server_protocol::web::ServerInfo::web_host_json`), its operator
+    /// hands it over, and the server is then handed the workspace
     /// ([`Self::attach_server`]), which it takes as its own rules for whom it
     /// keeps workspaces say.
     ///
     /// # Errors
     ///
-    /// As [`Self::attach_server`], or the origin did not say who it is.
+    /// As [`Self::attach_server`], or `host` is no host's own line.
     pub async fn add_server(
         &self,
         workspace: &str,
-        origin: &str,
+        host: &str,
         role: CopyRole,
     ) -> Result<TransportHint, String> {
-        let (device, addr) = host_at(origin, self.site_reach()).await?;
+        let (device, addr) = named_host(host)?;
         self.attach_server(workspace, device, addr, role).await
     }
 
-    /// Which addresses this device asks when an owner names a holder by its
-    /// site: those on the public internet, and its own network too only
-    /// where its operator lets it call there, the one leave a person's model
-    /// provider is called by ([`Self::call_private_model_addresses`]).
-    fn site_reach(&self) -> Destinations {
-        if self.inner.models.private_addresses() {
-            Destinations::Any
-        } else {
-            Destinations::Public
-        }
-    }
-
-    /// Stop having the holder `named` hold `workspace`: named by its site's
-    /// origin, or by its device key (64 hex) as [`Self::keeping_devices`] names it.
+    /// Stop having the holder `named` hold `workspace`: named by its device
+    /// key (64 hex) or by the name [`Self::keeping_devices`] lists it under.
     /// Answers whether the holder confirmed it let the workspace go
     /// ([`Self::detach_host`]).
     ///
     /// # Errors
     ///
-    /// The holder is not one of the workspace's, or the origin did not say
-    /// who it is.
+    /// The holder is not one of the workspace's, or no holder of it goes by
+    /// `named`.
     pub async fn remove_server(&self, workspace: &str, named: &str) -> Result<bool, String> {
         let named = named.trim();
-        let (device, addr) = if let Some(device) = device_key(named) {
-            (device, None)
-        } else {
-            let (device, addr) = host_at(named, self.site_reach()).await?;
-            (device, Some(addr))
+        let device = match device_key(named) {
+            Some(device) => device,
+            None => self
+                .keeping_devices(workspace)
+                .await?
+                .into_iter()
+                .find(|holder| holder.label == named)
+                .and_then(|holder| device_key(&holder.device))
+                .ok_or_else(|| format!("no server keeping the workspace goes by {named:?}"))?,
         };
         if !self.names_server(workspace, device).await {
             return Err(format!("{named} does not hold the workspace"));
         }
-        self.detach_host(workspace, device, addr).await
+        self.detach_host(workspace, device, None).await
     }
 
-    /// Move `workspace` from the server `from` (its site, or its device key
-    /// as [`Self::keeping_devices`] names it) to the one at the site `to`
-    /// ([`Self::move_holder`]).
+    /// Move `workspace` from the server `from` (its device key, or the name
+    /// [`Self::keeping_devices`] lists it under) to the server whose own line
+    /// is `host` ([`Self::move_holder`]).
     ///
     /// # Errors
     ///
-    /// As [`Self::move_holder`], or a site did not say who it is.
-    pub async fn move_server(&self, workspace: &str, from: &str, to: &str) -> Result<bool, String> {
+    /// As [`Self::move_holder`], or `from` names no holder and `host` is no
+    /// host's own line.
+    pub async fn move_server(
+        &self,
+        workspace: &str,
+        from: &str,
+        host: &str,
+    ) -> Result<bool, String> {
         let from = from.trim();
         let old = match device_key(from) {
             Some(device) => device,
-            None => host_at(from, self.site_reach()).await?.0,
+            None => self
+                .keeping_devices(workspace)
+                .await?
+                .into_iter()
+                .find(|holder| holder.label == from)
+                .and_then(|holder| device_key(&holder.device))
+                .ok_or_else(|| format!("no server keeping the workspace goes by {from:?}"))?,
         };
-        let (new, addr) = host_at(to, self.site_reach()).await?;
+        let (new, addr) = named_host(host)?;
         self.move_holder(workspace, old, new, addr)
             .await
             .map_err(|error| {
                 error
                     .replace("the old server", from)
-                    .replace("the new server", to)
+                    .replace("the new server", host)
             })
     }
 
@@ -1187,89 +1193,24 @@ pub(super) fn holders_of(holders: &[TransportHint]) -> Vec<WorkspaceHolder> {
     keepers
 }
 
-/// `text` as a device key, when it is 64 hex characters; anything else names
-/// a host by its site.
+/// `text` as a device key, when it is 64 hex characters.
 fn device_key(text: &str) -> Option<[u8; 32]> {
     use hex::FromHex as _;
     <[u8; 32]>::from_hex(text).ok()
 }
 
-/// How long a holder's site may take to say who it is.
-const SITE_ANSWERS: Duration = Duration::from_secs(20);
-/// The most read of what a site says of its holder.
-const MAX_SITE_ANSWER: usize = 64 * 1024;
-
-/// The holder whose site is at `origin`, as the site says there: its device
-/// and where it is dialed.
-///
-/// An owner names the site, and this device asks it from inside its own
-/// network. So it asks as it asks a provider a person named: an https
-/// address, on the public internet at the lookup the connection dials, and
-/// no redirect is followed. With [`Destinations::Any`], its operator's
-/// leave, an address on its own network is asked too, also over plain http.
-/// The site publishes who its host is and where it is dialled (`home.host.info`).
-/// What a site answers a refusal with is not handed on.
-async fn host_at(
-    origin: &str,
-    destinations: Destinations,
-) -> Result<([u8; 32], EndpointAddr), String> {
-    let origin = origin.trim().trim_end_matches('/');
-    let no_site = || {
-        format!(
-            "{origin:?} is no holder's address: name its site by its https address, like \
-             https://tilo.sh"
-        )
-    };
-    let url = tilo_net::Url::parse(origin).map_err(|_| no_site())?;
-    let plain = url.scheme() == "http" && destinations == Destinations::Any;
-    if !(url.scheme() == "https" || plain)
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || check_destination(&url, destinations).is_err()
-    {
-        return Err(no_site());
-    }
-    let client =
-        guarded_client(destinations, system_lookup()).map_err(|error| error.to_string())?;
-    let mut response = client
-        .get(format!("{origin}/entry.json"))
-        .timeout(SITE_ANSWERS)
-        .send()
-        .await
-        .map_err(|error| {
-            // What a site answers a refusal with stays with it: an owner
-            // names any site, and its words are not this device's to hand on.
-            format!(
-                "{origin} did not say which holder it is: {}",
-                error.without_url()
-            )
-        })?;
-    if !response.status().is_success() {
-        return Err(format!("{origin} refused to say which holder it is"));
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|error| {
-        format!(
-            "{origin} did not say which holder it is: {}",
-            error.without_url()
-        )
-    })? {
-        if body.len().saturating_add(chunk.len()) > MAX_SITE_ANSWER {
-            return Err("it served more than a site says of its holder".to_owned());
-        }
-        body.extend_from_slice(&chunk);
-    }
-    let entry: Value = serde_json::from_slice(&body)
-        .map_err(|error| format!("{origin} did not say which holder it is: {error}"))?;
-    // The site publishes who its host is and where it is dialled (`home.host.info`): the host's
-    // `web-host.json` as one JSON object, written as a string the page reads by parsing it
-    // (`entry.json`, the web entry's `TILO_WEB_HOME_HOST_INFO`).
-    let info = tilo_server_client::login::entry_host(&entry)
-        .ok_or_else(|| format!("{origin} names no host certificate and address"))?;
-    let address = info
+/// The host `text` names, as the host's own line says
+/// (`tilo_server_protocol::web::ServerInfo::web_host_json`): its certificate,
+/// where it is dialled, and the web origin its links name. Its operator hands
+/// it over, as a ticket is handed over; no site of the host's is read to learn
+/// where it is.
+fn named_host(text: &str) -> Result<([u8; 32], EndpointAddr), String> {
+    let host: tilo_server_protocol::web::PageHost = serde_json::from_str(text.trim())
+        .map_err(|error| format!("that is not the host's own web-host.json line: {error}"))?;
+    let address = host
         .address
-        .ok_or_else(|| format!("{origin} names no address to reach its host at"))?;
-    Ok((info.server_cert.device_public_key, address.endpoint_addr))
+        .ok_or("that host names no address to reach it at")?;
+    Ok((host.server_cert.device_public_key, address.endpoint_addr))
 }
 
 impl Workspaces {

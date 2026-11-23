@@ -296,14 +296,6 @@ impl SearchField {
         self.scope_token = token;
     }
 
-    /// The glyph the scope token starts with: a chevron by default, since the token names the
-    /// scope the query was narrowed into.
-    pub fn set_scope_token_icon(&mut self, icon: Icon) {
-        self.dirty = true;
-        self.layout_dirty = true;
-        self.scope_token_icon = icon;
-    }
-
     #[must_use]
     pub fn scope_token(&self) -> Option<&str> {
         self.scope_token.as_deref()

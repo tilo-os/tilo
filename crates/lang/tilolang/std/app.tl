@@ -1086,6 +1086,9 @@ view suggestions<R>(of: R) {
 /// reading it on. A step of several changes is opened to each of them, each taken back on its
 /// own there. One change made over many items at once — a command run on a choice of them — is
 /// one step: it says how many items it changed, and its undo takes them all back together.
+///
+/// It is what a window shows when its bar's History is pressed, of the resource the window shows,
+/// so no app places it on its pages.
 view history<R>(of: R) {
     state open: Text = ""
     let steps = steps(of)
@@ -1122,9 +1125,15 @@ view history<R>(of: R) {
                                     ui.Text(v.actor, role: .label)
                                     // A run's own words stand under its sentence: its changes are
                                     // what it did, and it names them all. The step's own words
-                                    // stand where they say how many changes it folds.
+                                    // stand where they say how many changes it folds. A step that
+                                    // made the resource says so: what followed the making in the
+                                    // same hand is under it, opened with the step.
                                     if s.run == .none {
-                                        if s.said != "" {
+                                        if made {
+                                            if let first = s.versions.first() {
+                                                std.version_said(first)
+                                            }
+                                        } else if s.said != "" {
                                             ui.Text(s.said, role: .label)
                                         } else {
                                             std.version_said(v)
@@ -1296,12 +1305,33 @@ template view version_changes(v: host.Version, spoken: Bool = true) {
         v.changes.filter(c -> v.count > 1 or v.did != "" or c.shows == "")
     } else { v.changes }
     if v.kind != "created" and v.kind != "removed" and not unsaid.is_empty() {
-        grid(columns: 3, gap: .related) {
+        grid(columns: 2, gap: .related) {
             for c in unsaid {
                 ui.Text(c.label, role: .caption, secondary: true)
-                c.before
-                c.after
+                std.value_change {
+                    before: {
+                        c.before
+                    }
+                    after: {
+                        c.after
+                    }
+                }
             }
         }
+    }
+}
+
+/// What a value held before and what it holds now, read left to right with an arrow between:
+/// one change of one value, wherever a change is shown.
+template view value_change(before: View, after: View) {
+    row(gap: .tight, align: .center, wrap: true) {
+        before
+        ui.Icon(
+            .arrow_right,
+            size: .small,
+            secondary: true,
+            description: phrase("tilolang-change-to"),
+        )
+        after
     }
 }

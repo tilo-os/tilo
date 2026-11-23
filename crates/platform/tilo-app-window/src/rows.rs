@@ -45,6 +45,8 @@ pub struct RemoteRows {
     asked: Option<Asked>,
     /// Rows the list shows that the app is still to be asked for.
     wanted: Option<Asked>,
+    /// The row whose menu the person opened, by key: the app sends it again with its menu.
+    menu: Option<String>,
     /// The words of the heading over its rows (`ui.Card`, `ui.Section`, the window's title), where
     /// one heads them: a row's day fact that says the same day is the heading's.
     under: Option<String>,
@@ -59,6 +61,9 @@ pub struct Asked {
     /// The row held open into its item, by key: the app renders its document, and no closed
     /// row's.
     pub open: Option<String>,
+    /// The row whose menu the person opened, by key: the app renders its menu, and no other
+    /// row's.
+    pub menu: Option<String>,
 }
 
 impl RemoteRows {
@@ -84,6 +89,7 @@ impl RemoteRows {
             changes: Vec::new(),
             asked: None,
             wanted: None,
+            menu: None,
             awaiting: false,
             under: None,
         }
@@ -401,9 +407,25 @@ impl RowSource for RemoteRows {
     fn request_range(&mut self, range: Range<usize>, open: Option<String>) {
         // The app renders what the list shows and forgets the rest: it hears of every range, and of
         // the row that opened or closed, whose document it renders or drops.
-        let asked = Asked { range, open };
+        let menu = self.menu.clone();
+        let asked = Asked { range, open, menu };
         if self.asked.as_ref() != Some(&asked) {
             self.wanted = Some(asked);
+        }
+    }
+
+    /// Ask the app for the row `key` again with its menu, the range and the open row as they
+    /// were asked last.
+    fn ask_menu(&mut self, key: &str) {
+        self.menu = Some(key.to_owned());
+        if let Some(asked) = self.wanted.as_ref().or(self.asked.as_ref()) {
+            let asked = Asked {
+                menu: self.menu.clone(),
+                ..asked.clone()
+            };
+            if self.asked.as_ref() != Some(&asked) {
+                self.wanted = Some(asked);
+            }
         }
     }
 
@@ -698,6 +720,7 @@ mod tests {
                 Asked {
                     range: 0..20,
                     open: None,
+                    menu: None,
                 }
             ))
         );
@@ -742,6 +765,7 @@ mod tests {
             Some(Asked {
                 range: 0..20,
                 open: None,
+                menu: None,
             })
         );
         rows.request_range(0..20, Some("v/4".to_owned()));

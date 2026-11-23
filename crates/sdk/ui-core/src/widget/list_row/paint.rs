@@ -869,7 +869,6 @@ impl ListRowFace<'_> {
                 );
             }
             RowLeading::Paint(painter) => painter(ctx, slot),
-            RowLeading::AvatarSpace => {}
         }
     }
 

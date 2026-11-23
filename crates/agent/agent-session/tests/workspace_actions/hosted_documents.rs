@@ -364,8 +364,8 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
     let reviewer = enrol(&root, "reviewer's phone", DeviceCapabilities::member());
     let computer = enrol(&root, "visa agent", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    // The workspace's shell: where its commands run, here or on the VM host
-    // a placer names. Document work never asks it.
+    // The workspace's shell: where its commands run, here or on the device
+    // that takes its Linux turn. Document work never asks it.
     let shell_state = tempfile::tempdir().unwrap();
     let shells = shell_state.path().join("shells");
     let hosted = crate::harness::hosted::start(

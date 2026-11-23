@@ -6,11 +6,6 @@
 //! connected to, so nobody maps this server's network or sends a password
 //! into it by naming a mail server.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server handle a test binds is kept until the test ends; dropping it earlier closes what it drives"
-)]
-
 use std::net::{Ipv4Addr, TcpListener};
 
 use serde_json::json;
@@ -19,7 +14,7 @@ use tilo_actions::remote::person_accounts;
 
 use super::super::tests::{admit, caller, governed, settled};
 use super::accounts_tests::asking;
-use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
+use crate::workspaces::tests::{governor, test_host};
 
 /// What the judge of addresses says of a name it refuses.
 const INSIDE: &str = "answers with an address of this machine or its network";

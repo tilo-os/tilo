@@ -774,7 +774,18 @@ pub fn seeded_session(root: &Path) -> Session {
     // is the person's language's, so a fixture reads the style, not their words.
     show_preset(&mut session, FRAMES);
     until(&mut session, "the canvas", |session| canvas_shown(session));
+    kept_in_workspace(&mut session);
     session
+}
+
+/// Wait until the seeded apps' resources are kept in the workspace the session shows: what a test
+/// reads of them, their ids included, is the workspace's from then on.
+pub fn kept_in_workspace(session: &mut Session) {
+    until(
+        session,
+        "the seeded apps' resources in the workspace",
+        |session| session.apps_kept_in_workspace(),
+    );
 }
 
 /// Install the app `app` — named `name` — in `home` 's own app store: a package whose entrypoint is

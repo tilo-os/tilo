@@ -22,7 +22,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::json;
 use tilo_api::daemon::DaemonPlace;
 use tilo_api::server::ServerAddress;
-use tilo_device_identity::login::Ticket;
+use tilo_device_identity::login::{Direction, REPORTED, Step, Ticket};
 use tilo_server_client::CertifyError;
 use tilo_server_client::LinkError;
 use tilo_session_client::Outbox as _;
@@ -111,6 +111,41 @@ pub(crate) fn this_device_key() -> Result<SigningKey> {
         tilo_device_identity::persist::load_or_create_device_key(&crate::identity::paths())
             .context("reading this computer's device key")?;
     Ok(key)
+}
+
+/// `tilo device public-key`: this computer's device key as hex, for [`this_device_public_key`].
+///
+/// # Errors
+/// The key cannot be read or kept.
+pub(crate) fn print_public_key() -> Result<ExitCode> {
+    println!(
+        "{}",
+        hex::encode(this_device_key()?.verifying_key().to_bytes())
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// This computer's device key, made now when it has none, read by a child of this program: a
+/// process that reads the private key is undumpable, and this computer's daemon refuses API
+/// calls from a process whose namespaces it cannot read. A command that calls the daemon after
+/// it knows which device this is keeps the private key out of its process until those calls end.
+///
+/// # Errors
+/// The child cannot run, or says why it could not read or keep the key.
+pub(crate) fn this_device_public_key() -> Result<[u8; 32]> {
+    let tilo = std::env::current_exe().context("finding this program")?;
+    let out = std::process::Command::new(tilo)
+        .args(["device", "public-key"])
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .context("reading this computer's device key")?;
+    if !out.status.success() {
+        bail!("reading this computer's device key failed");
+    }
+    hex::decode(String::from_utf8_lossy(&out.stdout).trim())
+        .ok()
+        .and_then(|key| key.try_into().ok())
+        .ok_or_else(|| anyhow!("reading this computer's device key gave no key"))
 }
 
 pub(crate) fn hostname() -> String {
@@ -443,7 +478,8 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
         device.label(),
         which_agent(&agent.name)
     );
-    entered_after_login(&runtime, &key, &device, &agent)
+    entered_after_login(&runtime, &key, &device, &agent, false)?;
+    Ok(ExitCode::SUCCESS)
 }
 
 /// What the agent does once Tilo's tools are in: the one visible thing that
@@ -488,22 +524,25 @@ fn mcp_servers(tilo: &Path, http: Option<&str>) -> String {
 
 /// What `tilo login` prints last: what the agent does next, in order. `http` is the streamable
 /// HTTP MCP server that reaches the workspace, when one does ([`http_mcp`]).
-fn next_steps(agent: &Agent, tilo: &Path, http: Option<&str>) -> String {
-    let mut steps: Vec<String> = vec![
-        format!(
+fn next_steps(agent: &Agent, tilo: &Path, http: Option<&str>, added: bool) -> String {
+    let mut steps: Vec<String> = Vec::new();
+    if !added {
+        steps.push(format!(
             "Add Tilo's MCP server to yourself, as the server tilo: {}. Put it where your own MCP \
              configuration keeps servers, beside the ones already there, with your own tooling.",
             mcp_servers(tilo, http)
-        ),
-        format!(
+        ));
+        steps.push(format!(
             "Run `{tilo} agent check --config <its path>`: it says whether that file holds \
              Tilo's server.",
             tilo = tilo.display()
-        ),
+        ));
+    }
+    steps.push(
         "If your tools load only when you start, ask the person to restart you with this \
          conversation kept."
             .to_owned(),
-    ];
+    );
     steps.push(format!(
         "Call the tilo_ls tool to see what is in their workspace, and tell them what you can do \
          in Tilo: {WHAT_TILO_DOES}."
@@ -541,11 +580,16 @@ fn not_a_ticket(text: &str) -> anyhow::Error {
 /// person declined, or the answer cannot be kept.
 pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<ExitCode> {
     crate::identity::convert_earlier()?;
-    Ticket::parse(ticket).map_err(|_| not_a_ticket(ticket))?;
+    let parsed = Ticket::parse(ticket).map_err(|_| not_a_ticket(ticket))?;
+    if parsed.direction == Direction::SignIn {
+        bail!(
+            "That ticket signs a browser in: run `tilo device add {}` with it on this computer.",
+            ticket.trim()
+        );
+    }
     let agent = agent::given(agent);
-    let key = this_device_key()?;
     let login_place = Place::here(crate::identity::paths())?;
-    let place = DaemonPlace::of(login_place.dir(), &key.verifying_key().to_bytes())
+    let place = DaemonPlace::of(login_place.dir(), &this_device_public_key()?)
         .map_err(anyhow::Error::msg)?;
     ensure_daemon(&place)?;
     let runtime = runtime()?;
@@ -563,21 +607,117 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
                 &workspace,
                 "devices",
                 tilo_device_identity::login::LOG_IN,
-                &json!({"ticket": ticket.trim(), "agent": agent.name, "label": said}),
+                &json!({"ticket": parsed.encode(), "agent": agent.name, "label": said}),
                 "Log in",
             )
             .await?;
         Ok::<(), anyhow::Error>(())
     })?;
     // The daemon kept the login; one serving it hands this computer its workspace.
-    let device = load(&login_place)?.ok_or_else(|| anyhow!(LOGIN_DAMAGED))?.1;
+    let (key, device) = load(&login_place)?.ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
     let days = device.cert.expires_at_ns.map_or(0, |end| {
         end.saturating_sub(device.cert.issued_at_ns) / (24 * 3600 * 1_000_000_000)
     });
     println!("{}", logged_in_said(device.label(), days, &agent.name));
-    let code = entered_after_login(&runtime, &key, &device, &agent)?;
+    let client = Client::open(crate::api::Reach {
+        api: None,
+        key_file: None,
+        json: false,
+    })?;
+    let text = parsed.encode();
+    report(&runtime, &client, &text, Step::LoggedIn, &agent, None);
+    let added = add_and_report(&runtime, &client, &text, &agent);
+    let entered = entered_after_login(&runtime, &key, &device, &agent, added)?;
+    if entered {
+        report(&runtime, &client, &text, Step::Entered, &agent, None);
+    } else {
+        report(
+            &runtime,
+            &client,
+            &text,
+            Step::Failed,
+            &agent,
+            Some("this computer could not enter your workspace"),
+        );
+    }
     restart_after_login(&place)?;
-    Ok(code)
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Add Tilo's tools to the agent's tool with the tool's own command, confirm them, and tell the
+/// tab that showed the ticket what became of them.
+fn add_and_report(
+    runtime: &tokio::runtime::Runtime,
+    client: &Client,
+    ticket: &str,
+    agent: &Agent,
+) -> bool {
+    let Some(tool) = agent.tool else {
+        return false;
+    };
+    let Ok(tilo) = std::env::current_exe() else {
+        return false;
+    };
+    println!("Adding Tilo's tools to {}…", tool.title());
+    let added = match agent::add_tools(tool, &tilo) {
+        agent::Added::Verified => {
+            println!("Tilo's tools are added to {}.", tool.title());
+            report(runtime, client, ticket, Step::ToolsAdded, agent, None);
+            report(runtime, client, ticket, Step::Check, agent, None);
+            true
+        }
+        agent::Added::Unverified => {
+            println!(
+                "Tilo's tools are added to {}; its own configuration is one Tilo does not read \
+                 back.",
+                tool.title()
+            );
+            true
+        }
+        agent::Added::Failed(said) => {
+            println!("Tilo's tools are not in {} yet: {said}.", tool.title());
+            report(
+                runtime,
+                client,
+                ticket,
+                Step::Failed,
+                agent,
+                Some(&format!("adding Tilo's tools to {} failed", tool.title())),
+            );
+            false
+        }
+    };
+    println!("Restart {}: {}", tool.title(), tool.restart());
+    report(runtime, client, ticket, Step::Restart, agent, None);
+    added
+}
+
+/// Tell the tab that showed `ticket` one step of the login, as this computer's daemon reports
+/// it there. A report the host did not take never fails the login: the tab shows what it heard.
+pub(crate) fn report(
+    runtime: &tokio::runtime::Runtime,
+    client: &Client,
+    ticket: &str,
+    step: Step,
+    agent: &Agent,
+    detail: Option<&str>,
+) {
+    let reported = runtime.block_on(async {
+        let workspace = client.founded_workspace().await?;
+        client
+            .act(
+                &workspace,
+                "devices",
+                REPORTED,
+                &json!({"ticket": ticket, "step": step, "agent": agent.name, "detail": detail}),
+                "Report a login's step",
+            )
+            .await
+            .map(|_| ())
+    });
+    if let Err(error) = reported {
+        debug_why("reporting a login's step", &error);
+    }
 }
 
 /// How long `tilo login` waits for the daemon it logged in to end before starting the one the
@@ -614,23 +754,28 @@ fn entered_after_login(
     key: &SigningKey,
     device: &Device,
     agent: &Agent,
-) -> Result<ExitCode> {
+    added: bool,
+) -> Result<bool> {
     let tilo = std::env::current_exe().context("finding this program")?;
     let place = format!(
         "{} on {}",
         device.workspace_name.as_deref().unwrap_or("the workspace"),
         host_of(&device.host_origin)
     );
-    runtime.block_on(async {
+    let entered = runtime.block_on(async {
         match connect_retrying(key, device).await {
             Ok(entered) => {
                 println!("Entered {place}.");
                 entered.close();
+                true
             }
-            Err(error) => println!(
-                "Logged in, but this computer can't open {place} yet: {}",
-                enter_said(&error)
-            ),
+            Err(error) => {
+                println!(
+                    "Logged in, but this computer can't open {place} yet: {}",
+                    enter_said(&error)
+                );
+                false
+            }
         }
     });
     match crate::folders::after_login(&device.workspace, device.workspace_name.as_deref()) {
@@ -647,8 +792,11 @@ fn entered_after_login(
         }
     }
     println!();
-    println!("{}", next_steps(agent, &tilo, http_mcp(device).as_deref()));
-    Ok(ExitCode::SUCCESS)
+    println!(
+        "{}",
+        next_steps(agent, &tilo, http_mcp(device).as_deref(), added)
+    );
+    Ok(entered)
 }
 
 /// A member device certificate for `key`, signed by the person's root.
@@ -956,7 +1104,7 @@ mod tests {
         {
             let tilo = Path::new("/home/me/.local/bin/tilo");
             let other = agent::named("Reviewer");
-            let next = next_steps(&other, tilo, Some(agent::MCP_URL));
+            let next = next_steps(&other, tilo, Some(agent::MCP_URL), false);
             let steps: Vec<&str> = next.lines().collect();
             assert_eq!(steps[0], "Next, in order:");
             assert!(
@@ -980,7 +1128,7 @@ mod tests {
             );
             // A workspace no HTTP server reaches (one on a company's own server, joined over
             // iroh) is offered the stdio server alone.
-            let elsewhere = next_steps(&other, tilo, None);
+            let elsewhere = next_steps(&other, tilo, None, false);
             assert!(
                 elsewhere.contains(
                     "the stdio server /home/me/.local/bin/tilo with the argument mcp. Put it"

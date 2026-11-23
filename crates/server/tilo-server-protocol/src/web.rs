@@ -9,6 +9,7 @@
 //! |---|---|---|
 //! | `/host` | — | [`ServerInfo`] |
 //! | `/invitation` ([`INVITATION_PATH`]) | a signed invitation (`Vec<u8>`) | [`JoinReply`](crate::workspaces::JoinReply) |
+//! | `/invitation/open` ([`OPEN_INVITATION_PATH`]) | [`KeptInvitation`] as JSON | [`OpenedInvitation`] as JSON, or `410` |
 //! | `/workspace-deleted` ([`WORKSPACE_DELETED_PATH`]) | a workspace's id (`String`) | `bool` |
 //! | `/fetch` ([`FETCH_PATH`]) | any method: `tilo_net::proxy` wire protocol v1 | the target's response, or the proxy's failure |
 //!
@@ -259,6 +260,37 @@ pub const WORKSPACE_DELETED_PATH: &str = "/workspace-deleted";
 /// holds it, before they have a device to enter with
 /// ([`crate::workspaces`]).
 pub const INVITATION_PATH: &str = "/invitation";
+
+/// The invitation a workspace keeps, below [`API_PREFIX`], read by the secret
+/// a short link carries: answered to anyone who names it, before they have a
+/// device to enter with, as [`INVITATION_PATH`] answers whoever holds the
+/// invitation itself. Its body and answer are JSON, as a directory's are.
+pub const OPEN_INVITATION_PATH: &str = "/invitation/open";
+
+/// What a short link asks its host for: the invitation `workspace` keeps
+/// under `secret`, the link's `invite`
+/// (`tilo_workspace_join::native::bearer_text`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeptInvitation {
+    /// The workspace's id, as the link names it.
+    pub workspace: String,
+    /// The secret the link carries.
+    pub secret: String,
+}
+
+/// The invitation a short link names, as its workspace's host keeps it: the
+/// invitation's own text, which every way of joining takes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenedInvitation {
+    pub invitation: String,
+}
+
+/// What a host answers for an invitation it keeps no more, or never kept:
+/// the same for both, so a link tells nothing about invitations it does not
+/// name.
+pub const INVITATION_GONE: u16 = 410;
 
 /// The host's fetch proxy, below [`API_PREFIX`].
 pub const FETCH_PATH: &str = "/fetch";

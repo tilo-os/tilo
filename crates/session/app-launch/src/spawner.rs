@@ -42,7 +42,7 @@ use tilo_lock::MutexRecover as _;
 
 use crate::links::HeldLink;
 use crate::memory;
-use crate::plan::Planned;
+use crate::plan::{Kind, Planned};
 
 /// Why the system ended an app: what the launcher remembers of it.
 pub use launcher::memory_pressure::Cause;
@@ -502,7 +502,19 @@ impl Spawner {
     ) -> Result<(Started, Option<HeldLink>), SpawnError> {
         crate::name_surface(planned);
         let mut command = Command::new(&planned.program);
-        close_inherited(&mut command);
+        // A package's launch that hands nothing down marks the session's descriptors
+        // close-on-exec here, just before it starts, and adds no step to the child: a command
+        // without one starts with posix_spawn, which shares the session's memory until the exec,
+        // rather than a fork that copies the page tables of the whole session first (tens of
+        // milliseconds of every open, more on a busy machine). A descriptor some other thread
+        // opens between the two without close-on-exec reaches only the launcher, whose sandbox
+        // shim closes every descriptor it is not handed before the app runs
+        // (`launcher::landlock_shim`). An app the launcher does not confine, and a launch that
+        // hands descriptors down, mark them in the child, after the fork.
+        let marked_here = planned.kind == Kind::Package && handed.is_none();
+        if !marked_here {
+            close_inherited(&mut command);
+        }
         command
             .args(&planned.args)
             .env_clear()
@@ -513,7 +525,8 @@ impl Spawner {
             // Nothing the app writes ever reaches the session's own streams.
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let diagnostics = diagnostics_file(planned, &mut command);
+        let diagnostics = diagnostics_file(planned);
+        measure_startup(&mut command);
         let output = Arc::new(AppOutput::new(planned.app.clone(), diagnostics));
         let hold = match link {
             Some(_) => match launcher::launch_hold::install(&mut command) {
@@ -539,6 +552,13 @@ impl Spawner {
             // What the launcher said on its stderr for a launch it did not keep: a kept launch's
             // streams carry its app's output alone, so the log is told here instead.
             tracing::info!(app = %planned.app, "a machine app is unconfined, kept across a desktop restart");
+        }
+        if marked_here && let Err(error) = mark_inherited_close_on_exec() {
+            self.abandon(kept.as_ref());
+            return Err(SpawnError {
+                app: planned.app.clone(),
+                reason: format!("the session's descriptors could not be kept from it: {error}"),
+            });
         }
         let spawned = command.spawn();
         drop((command, handed_down));
@@ -1233,37 +1253,53 @@ impl Spawner {
 /// before the launcher's own `pre_exec` steps, which hand the app what it is given after this.
 #[cfg(target_os = "linux")]
 fn close_inherited(command: &mut Command) {
-    // SAFETY: only async-signal-safe calls happen between fork and exec: close_range, fcntl and
-    // sysconf; nothing is allocated.
+    // SAFETY: `mark_inherited_close_on_exec` makes only async-signal-safe calls (close_range,
+    // fcntl and sysconf) and allocates nothing.
     unsafe {
-        command.pre_exec(|| {
-            let closed = libc::syscall(
-                libc::SYS_close_range,
-                3,
-                libc::c_uint::MAX,
-                libc::CLOSE_RANGE_CLOEXEC,
-            );
-            if closed == 0 {
-                return Ok(());
-            }
-            // A kernel without close_range: the same flag, one descriptor at a time.
-            let limit = libc::sysconf(libc::_SC_OPEN_MAX);
-            let limit = i32::try_from(limit).unwrap_or(1024).max(3);
-            for fd in 3..limit {
-                if libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) == -1 {
-                    let error = std::io::Error::last_os_error();
-                    if error.raw_os_error() != Some(libc::EBADF) {
-                        return Err(error);
-                    }
-                }
-            }
-            Ok(())
-        });
+        command.pre_exec(mark_inherited_close_on_exec);
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 fn close_inherited(_: &mut Command) {}
+
+/// Mark every descriptor of this process beyond its standard streams close-on-exec: in a child
+/// between fork and exec ([`close_inherited`]), or in the session itself just before a launch
+/// that is started without a fork. Async-signal-safe: `close_range`, or `fcntl` and `sysconf` on a
+/// kernel without it; nothing is allocated.
+#[cfg(target_os = "linux")]
+fn mark_inherited_close_on_exec() -> std::io::Result<()> {
+    // SAFETY: plain syscalls on this process's own descriptor table.
+    unsafe {
+        let closed = libc::syscall(
+            libc::SYS_close_range,
+            3,
+            libc::c_uint::MAX,
+            libc::CLOSE_RANGE_CLOEXEC,
+        );
+        if closed == 0 {
+            return Ok(());
+        }
+        // A kernel without close_range: the same flag, one descriptor at a time.
+        let limit = libc::sysconf(libc::_SC_OPEN_MAX);
+        let limit = i32::try_from(limit).unwrap_or(1024).max(3);
+        for fd in 3..limit {
+            if libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) == -1 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::EBADF) {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+#[expect(clippy::unnecessary_wraps, reason = "the Linux function's signature")]
+const fn mark_inherited_close_on_exec() -> std::io::Result<()> {
+    Ok(())
+}
 
 /// Tell the launcher `command` starts to start `keeper` in `dir`, keeping `launch`.
 #[cfg(target_os = "linux")]
@@ -1527,31 +1563,29 @@ impl App {
 }
 
 /// The file an app's own diagnostics go to when the session's shell names a directory for them
-/// (`TILO_APP_STDERR_DIR`), with the app told where to write its startup timeline.
-fn diagnostics_file(planned: &Planned, command: &mut Command) -> Option<std::fs::File> {
-    // Where an app's own diagnostics go when the session's shell names a
-    // directory for them (`TILO_APP_STDERR_DIR`): a headless acceptance
-    // reads them there, and the log keeps them too.
-    std::env::var_os("TILO_APP_STDERR_DIR").and_then(|dir| {
-        let path = std::path::Path::new(&dir).join(format!("{}.log", planned.app));
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(file) = std::fs::File::create(&path) {
-            // The app's own startup timeline, one file per app: which of
-            // its steps (loader, fonts, records, first layout) the open
-            // was spent in, and the launcher's marks before it. It is
-            // written inside the app's own directory, the one place the
-            // sandbox lets it write; a measured session reads it from
-            // there. An app started any other way writes none.
-            command.env(
-                "TILO_STARTUP_METRICS_PATH",
-                launcher::appdir::SANDBOX_STARTUP_TIMELINE,
-            );
-            return Some(file);
-        }
-        None
-    })
+/// (`TILO_APP_STDERR_DIR`): a headless acceptance reads them there, and the log keeps them too.
+fn diagnostics_file(planned: &Planned) -> Option<std::fs::File> {
+    let dir = std::env::var_os("TILO_APP_STDERR_DIR")?;
+    let path = std::path::Path::new(&dir).join(format!("{}.log", planned.app));
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::File::create(&path).ok()
+}
+
+/// Tell the app `command` starts to write its startup timeline, when this session measures its
+/// launches ([`tilo_startup_metrics::STARTUP_TIMELINE_ENV`]): which of its steps (the launcher's,
+/// the sandbox's, loading, fonts, records, first layout) an open was spent in. It is written inside
+/// the app's own directory, the one place the sandbox lets it write, and its summary line reaches
+/// the session's log with the app's stderr; a measured session reads either. A session that does
+/// not measure costs its apps no timeline.
+fn measure_startup(command: &mut Command) {
+    if tilo_startup_metrics::session_measures_launches() {
+        command.env(
+            "TILO_STARTUP_METRICS_PATH",
+            launcher::appdir::SANDBOX_STARTUP_TIMELINE,
+        );
+    }
 }
 
 /// How `child` ended: its exit status, or the signal that killed it, with

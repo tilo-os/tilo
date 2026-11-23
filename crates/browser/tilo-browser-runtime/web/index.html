@@ -34,17 +34,7 @@
 // grammar order are still removed, and flagged, so admission refuses the
 // link instead of acting on one Tilo did not write.
 var hash=location.hash,mark=hash.indexOf('?'),found={},order=['invite','ticket','token','pair','install','link'],last=-1,bad=false;
-// A sealed invitation's link carries its key alone after the `#`, at the
-// site's `/i/<handle>` (sealed-link.mjs): it is the invitation's `invite`,
-// and leaves the address the same way.
-var sealedLink=function(pathname,fragment){
- return /^\/i\/[A-Za-z0-9_-]{16}$/.test(pathname)&&/^#[A-Za-z0-9_-]{43}$/.test(fragment);
-};
-var sealed=sealedLink(location.pathname,hash);
-if(sealed){
- found.invite=hash.slice(1);
- history.replaceState(history.state,'',location.pathname+location.search);
-}else if(mark>=0){
+if(mark>=0){
  var keep=[],parts=hash.slice(mark+1).split('&');
  for(var i=0;i<parts.length;i++){
   var part=parts[i],eq=part.indexOf('='),name=eq<0?part:part.slice(0,eq),slot=order.indexOf(name);
@@ -70,7 +60,7 @@ var carrying=function(){
  return false;
 };
 if(typeof addEventListener==='function'){
- var followed=function(){if(carrying()||sealedLink(location.pathname,location.hash))location.reload();};
+ var followed=function(){if(carrying())location.reload();};
  addEventListener('hashchange',followed);
  addEventListener('popstate',followed);
 }
@@ -297,6 +287,18 @@ document.addEventListener('click',function(e){
     .tilo-entry-card label { display: grid; gap: 6px; }
     .tilo-entry-card input { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--e-field-edge); background: var(--e-field); color: inherit; }
     .tilo-entry-card .tilo-entry-error { margin: 0; color: var(--e-problem); }
+    /* The person's 24 recovery words, shown once right after they are first let in
+       (recovery-words.mjs): every word with its position, a way to copy them, and the press
+       that says they kept them before anything else opens. */
+    .tilo-recovery { width: min(560px, calc(100vw - 32px)); gap: 16px; max-height: calc(100% - 32px); overflow: auto; }
+    .tilo-entry-card.tilo-recovery h2 { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.3; color: var(--e-heading); }
+    .tilo-entry-card .tilo-recovery-lead { font-size: 14px; line-height: 1.5; color: var(--e-body); }
+    .tilo-recovery-words { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px 14px; margin: 0; padding: 14px 16px; list-style: none; border-radius: 10px; background: var(--e-well); border: 1px solid var(--e-line); }
+    .tilo-recovery-word { display: flex; align-items: baseline; gap: 6px; min-width: 0; font: 14px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--e-text); }
+    .tilo-recovery-number { flex: none; min-width: 1.5em; text-align: right; font-size: 12px; color: var(--e-quiet); font-variant-numeric: tabular-nums; }
+    .tilo-recovery-text { overflow: hidden; text-overflow: ellipsis; }
+    @media (max-width: 560px) { .tilo-recovery-words { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    @media (max-width: 400px) { .tilo-recovery-words { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     /* An invitation, before the person joins (entry-page.mjs
        `invitationCard`): one sentence, who invited them and then the
        workspace as the heading, how many people are in it, and the role as
@@ -441,10 +443,9 @@ document.addEventListener('click',function(e){
     .refusal-link:hover { color: var(--e-link-hover); text-decoration-color: currentColor; }
     .refusal-link:focus-visible { outline: 2px solid var(--e-focus); outline-offset: 3px; border-radius: 2px; }
     .refusal-link:disabled { cursor: default; opacity: .6; }
-    #arrival-sign-in-note:empty, #arrival-invite-error:empty { display: none; }
+    #arrival-invite-error:empty { display: none; }
     /* The ways to sign in wrap as one, after the question; the dot between them only while both show. */
     .refusal-ways { display: inline-block; white-space: nowrap; }
-    .refusal-ways [hidden] + .refusal-or, .refusal-or:has(+ [hidden]) { display: none; }
     #arrival-invite-toggle { font-size: 13px; color: var(--e-faint); text-decoration-color: var(--e-faint-line); }
     #arrival-invite-toggle:hover { color: var(--e-soft); }
     #arrival-invite { margin-top: 12px; }
@@ -791,7 +792,6 @@ document.addEventListener('click',function(e){
       <h2 id="first-screen-sign-in">Sign in</h2>
       <button id="first-screen-agent-sign-in" class="fr-secondary" type="button">Sign in with your agent</button>
       <p id="first-screen-sign-in-note" data-problem="false"></p>
-      <button id="first-screen-passkey" class="fr-secondary" type="button" aria-busy="false"><span class="fr-spinner fr-busy" aria-hidden="true"></span>Use a passkey</button>
       <p class="fr-note">Or open a pairing link from a device where you’re signed in.</p>
     </aside>
     <p id="first-screen-status" class="fr-said" role="status"></p>
@@ -803,7 +803,7 @@ document.addEventListener('click',function(e){
   <div id="arrival" aria-hidden="true"><svg viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><p id="arrival-line"></p><span id="arrival-bar" hidden><span></span></span></div>
   <p id="arrival-note" role="status" hidden></p>
   <button id="arrival-retry" type="button">Try again</button>
-  <section id="arrival-refusal" aria-labelledby="arrival-refusal-heading"><div class="refusal-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-refusal-heading"></h1><p id="arrival-refusal-body"></p><form id="arrival-wait" class="refusal-field" novalidate><input id="arrival-wait-email" name="email" type="email" inputmode="email" autocomplete="email" spellcheck="false" autocapitalize="off" maxlength="254" placeholder="you@example.com" aria-label="Email" aria-describedby="arrival-wait-note"><button type="submit">Join the wait list</button></form><p id="arrival-wait-done" role="status"></p><p id="arrival-wait-again-line" class="refusal-note" hidden><span id="arrival-wait-again-prompt"></span> <button id="arrival-wait-again" class="refusal-link" type="button"></button></p><p id="arrival-wait-off" class="refusal-note"><span id="arrival-wait-change"></span> <button id="arrival-wait-leave" class="refusal-link" type="button"></button></p><p id="arrival-wait-note" class="refusal-note"></p><p id="arrival-wait-contact" class="refusal-note"></p><div class="refusal-alt"><p id="arrival-sign-in"><span id="arrival-sign-in-ask">Already have a Tilo identity?</span> <span class="refusal-ways"><button id="arrival-sign-in-agent" class="refusal-link" type="button">Sign in with your agent</button><span class="refusal-or" aria-hidden="true"> · </span><button id="arrival-sign-in-button" class="refusal-link" type="button">Use a passkey</button></span></p><p id="arrival-sign-in-note" role="alert"></p><p><button id="arrival-invite-toggle" class="refusal-link" type="button" aria-expanded="false" aria-controls="arrival-invite">Have an invite or pairing link?</button></p><form id="arrival-invite" class="refusal-field" hidden><input id="arrival-invite-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste an invite or pairing link" aria-label="Invite or pairing link"><button type="submit">Open</button><p id="arrival-invite-error" role="alert"></p></form></div></div><div class="refusal-foot"></div></section>
+  <section id="arrival-refusal" aria-labelledby="arrival-refusal-heading"><div class="refusal-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-refusal-heading"></h1><p id="arrival-refusal-body"></p><form id="arrival-wait" class="refusal-field" novalidate><input id="arrival-wait-email" name="email" type="email" inputmode="email" autocomplete="email" spellcheck="false" autocapitalize="off" maxlength="254" placeholder="you@example.com" aria-label="Email" aria-describedby="arrival-wait-note"><button type="submit">Join the wait list</button></form><p id="arrival-wait-done" role="status"></p><p id="arrival-wait-again-line" class="refusal-note" hidden><span id="arrival-wait-again-prompt"></span> <button id="arrival-wait-again" class="refusal-link" type="button"></button></p><p id="arrival-wait-off" class="refusal-note"><span id="arrival-wait-change"></span> <button id="arrival-wait-leave" class="refusal-link" type="button"></button></p><p id="arrival-wait-note" class="refusal-note"></p><p id="arrival-wait-contact" class="refusal-note"></p><div class="refusal-alt"><p id="arrival-sign-in"><span id="arrival-sign-in-ask">Already have a Tilo identity?</span> <span class="refusal-ways"><button id="arrival-sign-in-agent" class="refusal-link" type="button">Sign in with your agent</button></span></p><p><button id="arrival-invite-toggle" class="refusal-link" type="button" aria-expanded="false" aria-controls="arrival-invite">Have an invite or pairing link?</button></p><form id="arrival-invite" class="refusal-field" hidden><input id="arrival-invite-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste an invite or pairing link" aria-label="Invite or pairing link"><button type="submit">Open</button><p id="arrival-invite-error" role="alert"></p></form></div></div><div class="refusal-foot"></div></section>
   <section id="arrival-failure" aria-labelledby="arrival-failure-heading"><div class="failure-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-failure-heading"></h1><p id="arrival-failure-body"></p><div class="failure-actions"><button id="arrival-failure-host" type="button" hidden></button><button id="arrival-failure-retry" type="button" hidden>Try again</button></div><div id="arrival-failure-elsewhere" hidden><p id="arrival-failure-others-heading"></p><ul id="arrival-failure-others"></ul></div><details id="arrival-failure-details" hidden><summary id="arrival-failure-summary">Technical details</summary><pre id="arrival-failure-text"></pre><button id="arrival-failure-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
   <section id="arrival-reconnect" aria-labelledby="arrival-reconnect-heading"><div class="reconnect-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-reconnect-heading"></h1><p id="arrival-reconnect-body"></p><p id="arrival-reconnect-next" aria-hidden="true"></p><p id="arrival-reconnect-said" class="reconnect-said" role="status" aria-live="polite"></p><button id="arrival-reconnect-now" type="button" aria-busy="false"><span class="reconnect-spinner" aria-hidden="true"></span><span id="arrival-reconnect-now-label">Try now</span></button><a id="arrival-reconnect-host" class="reconnect-copy" target="_blank" rel="noopener" hidden></a><details id="arrival-reconnect-details"><summary id="arrival-reconnect-summary">Technical details</summary><pre id="arrival-reconnect-text"></pre><button id="arrival-reconnect-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
   <div id="bar"><span id="status" role="status">Loading Tilo…</span></div>

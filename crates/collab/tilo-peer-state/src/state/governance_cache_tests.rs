@@ -404,7 +404,7 @@ fn a_newcomer_reads_each_members_identity_once_however_many_people() {
         )
         .unwrap();
         let message = governor.workspace_message();
-        let _ = crate::governance_work::take();
+        let before = crate::work::now();
         page.receive_from_report(
             TransportOrigin::ServerDelta(owner.device_public_key),
             message,
@@ -421,7 +421,7 @@ fn a_newcomer_reads_each_members_identity_once_however_many_people() {
         page.governance().key_holders(now).unwrap();
         page.security_basis().unwrap().unwrap();
         page.durable().unwrap();
-        crate::governance_work::take()
+        crate::work::now().since(before)
     };
     let (few, many) = (work(30), work(300));
     for (people, work) in [(30_u64, few), (300, many)] {
@@ -436,8 +436,8 @@ fn a_newcomer_reads_each_members_identity_once_however_many_people() {
         );
     }
     assert_eq!(
-        (few.governance_reads, few.replays),
-        (many.governance_reads, many.replays),
+        (few.admission_reads, few.replays),
+        (many.admission_reads, many.replays),
         "the governance is read as often among 300 people as among 30"
     );
 }
@@ -459,7 +459,7 @@ fn a_records_writes_leave_the_security_basis_worked_out_once() {
     replica
         .receive(source, governor.workspace_message(), now)
         .unwrap();
-    let _ = crate::governance_work::take();
+    let before = crate::work::now();
     let basis = replica.security_basis().unwrap().unwrap();
     for message in messages {
         // As an owner publishes: a copy takes the write in and is compared
@@ -472,15 +472,16 @@ fn a_records_writes_leave_the_security_basis_worked_out_once() {
         replica = published;
     }
     assert_eq!(
-        crate::governance_work::take().security_bases,
+        crate::work::now().since(before).security_bases,
         1,
         "the basis is worked out once for one governance state"
     );
     // Governance that changes is a new state, whose basis is worked out anew.
+    let before = crate::work::now();
     let receipts = publish_receipts(&mut governor, &[("invocation-0", b"{}")]);
     replica.receive(source, receipts, now).unwrap();
     replica.security_basis().unwrap().unwrap();
-    assert_eq!(crate::governance_work::take().security_bases, 1);
+    assert_eq!(crate::work::now().since(before).security_bases, 1);
 }
 
 /// The keys of a group some members read are held by those people's devices

@@ -28,7 +28,7 @@ from pathlib import Path
 from .. import core
 from ..core import CheckFailed, ExpectedFailure, Unobservable, check, expect
 from ..sheets import ALLOW_ONCE, answer_sheet, deny_sheet
-from ..vm import VmError, wait_until
+from ..vm import VmError, address, wait_until
 
 AREA = "agent"
 
@@ -213,10 +213,11 @@ def new_note(ctx, res):
     page = created_resource(text_of(reply))
 
     def listed():
-        rows = [row for row in ctx.vm.actions(title) if row.get("application") == "so.tilo.notes"
-                or str(row.get("provider", "")).isdigit()]
+        rows = [row for row in ctx.vm.actions(title) if row["app_id"] == "so.tilo.notes"
+                or row["provider"].isdigit()]
         return rows if any(title in json.dumps(row, ensure_ascii=False)
-                           or (page and (row.get("semantic_identity") or {}).get("key") == page)
+                           or (page and (row["action"].get("semantic_identity") or {}).get("key")
+                               == page)
                            for row in rows) else None
 
     rows = wait_until(listed, 15, 1.0)
@@ -224,7 +225,7 @@ def new_note(ctx, res):
         seen = json.dumps(ctx.vm.actions(title), ensure_ascii=False)
         raise CheckFailed(f"the created note {title!r} is not among what the desktop lists for it "
                           f"(listing: {seen[:300]!r})")
-    res.metrics["listed_as"] = [row.get("id", "")[:120] for row in rows[:3]]
+    res.metrics["listed_as"] = ["#".join(address(row))[:120] for row in rows[:3]]
     ctx.shot("M03-notes-new-note")
 
 

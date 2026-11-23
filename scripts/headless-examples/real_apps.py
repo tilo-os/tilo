@@ -178,7 +178,7 @@ def control_call(socket_path: Path | str, payload: dict | str, timeout: float = 
 
 
 # The action model's frame version, as `tilo_actions::remote::REMOTE_ACTIONS_VERSION` names it.
-FRAME_VERSION = 2
+FRAME_VERSION = 3
 
 
 def frame(message: dict) -> dict:
@@ -190,7 +190,7 @@ def catalogue(ask, needle: str = "") -> list:
     """Every row a session lists that mentions `needle`, page by page: each a catalogue row
     (`provider`, `app_id`, `resource`, and the `action` with its `address`). `ask` sends one
     frame and answers the frame that came back."""
-    rows, query = [], {"needle": needle, "max_results": 256}
+    rows, query = [], {"needle": needle, "max_results": 64}
     while True:
         answer = ask(frame({"CatalogueRequest": {"correlation": 1, "query": query}}))
         result = answer["message"]["CatalogueResponse"]["result"]

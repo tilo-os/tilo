@@ -22,7 +22,8 @@ use tilo_actions::remote::Pending;
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
 use tilo_identity::store::IdentityProfile;
 
-use crate::pairing::Answer;
+/// What a step answers: its JSON, or the sentence saying why it did not happen.
+pub(crate) type Answer = Result<serde_json::Value, String>;
 
 pub(crate) use tilo_actions::remote::identity_admin::{
     ACTIVATE, DEVICES, LIST, PROTECT, REMOVE, RENAME, RESOURCE, REVOKE, STEPS,

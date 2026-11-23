@@ -348,22 +348,27 @@ fn a_locked_session_invokes_nothing_through_the_owner_socket() {
     unlock_through_the_development_socket(&mut session, root.path(), &dev, &owner);
 }
 
-/// A tool that drives the display unlocks the session the one way it unlocks — and the picture it
-/// takes before that says it is of the lock, so it never reads a dark lock as the shell behind it.
+/// A tool that drives the display unlocks the session the one way it unlocks — and no picture
+/// leaves the session while it is locked, not even through the development socket that drives it.
 fn unlock_through_the_development_socket(
     session: &mut Session,
     root: &Path,
     dev: &Path,
     owner: &Path,
 ) {
+    let locked_png = root.join("locked.png");
     let shot = ask(
         session,
         dev,
-        &json!({"op": "snapshot", "path": root.join("locked.png").to_string_lossy()}),
+        &json!({"op": "snapshot", "path": locked_png.to_string_lossy()}),
     );
     assert_eq!(
-        shot["ok"]["locked"], true,
-        "the picture is of the lock: {shot}"
+        shot["err"]["code"], "session_locked",
+        "a locked session takes no picture: {shot}"
+    );
+    assert!(
+        !locked_png.exists(),
+        "nothing was written for the refused picture"
     );
 
     // The screen leaves and the lock comes down with it, as for an accepted password.
@@ -388,6 +393,18 @@ fn unlock_through_the_development_socket(
         shown["state"]["workspace_tree"].is_object(),
         "the shell is shown again once it is unlocked: {shown}"
     );
+    let unlocked_png = root.join("unlocked.png");
+    let shot = ask(
+        session,
+        dev,
+        &json!({"op": "snapshot", "path": unlocked_png.to_string_lossy()}),
+    );
+    assert_eq!(
+        shot,
+        json!({"ok": {"frame": 0}}),
+        "the picture is taken once the session is unlocked"
+    );
+    assert!(unlocked_png.exists(), "the picture is written");
     let invoked = ask(session, owner, &invoking(&missing(), &json!({})));
     assert_eq!(
         refused(&invoked),

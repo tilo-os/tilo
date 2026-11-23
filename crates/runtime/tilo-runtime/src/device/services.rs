@@ -51,9 +51,10 @@ const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
 /// The broker's durable invocation journal: a retried invocation id never
 /// starts twice, across restarts too.
 pub(super) const INVOCATION_JOURNAL: &str = "invocations";
-/// Where a computer with no login keeps the id of the workspace founded on it, in the device's
-/// directory.
-const FOUNDED: &str = "workspace";
+/// Where a computer with no login keeps the id of the workspace founded on it for a person, in
+/// the device's directory: this, then the person's key in hex. A root that comes to this computer
+/// later founds a workspace of its own, never enters one another person founded here.
+const FOUNDED: &str = "workspace-of-";
 /// Where the device's workspace service and key service keep their state, in the device's
 /// directory.
 const OWN: &str = "own";
@@ -134,7 +135,18 @@ impl Identity {
     fn here() -> io::Result<Self> {
         let place = tilo_device_identity::login::Place::here(tilo_api::client::device_keys())
             .map_err(io::Error::other)?;
-        let login = tilo_device_identity::login::load(&place).map_err(io::Error::other)?;
+        // A login that ended, on a computer that holds its person's root, is no login: the
+        // computer is that person's own device, serves itself and adds their others.
+        let login = tilo_device_identity::login::load(&place)
+            .map_err(io::Error::other)?
+            .filter(|(_, device)| {
+                let ended = !device.reaches_a_server()
+                    && super::person::holds_root_of(&device.cert.user_public_key);
+                if ended {
+                    tracing::info!("this computer's login has ended and it holds the person's root: it serves as their own device");
+                }
+                !ended
+            });
         let (key, cert) = if let Some((key, device)) = &login {
             adopt_login(&place, device);
             (key.clone(), device.cert.clone())
@@ -277,7 +289,7 @@ impl Daemon {
         let (workspace_id, founded) = if let Some((_, device)) = &identity.login {
             (device.workspace.clone(), None)
         } else {
-            let founded = founded_workspace(identity.place.dir())?;
+            let founded = founded_workspace(identity.place.dir(), &identity.cert.user_public_key)?;
             (founded.to_string(), Some(founded))
         };
         let apps = Arc::new(apps::Apps::from_env(root, &workspace_id));
@@ -319,14 +331,19 @@ impl Daemon {
         let taking = take_work.is_some();
         let take_work =
             take_work_action_service(root, &workspaces, take_work, &replica_slot, stage)?;
-        // The device actions the daemon answers itself, and the one service that serves a
-        // ticket's certify call on the router already open below.
+        // The one action service the daemon's router answers the device actions on: the work
+        // this member takes from its server when it takes any, else its workspaces'. A ticket's
+        // certify call is admitted on it while a computer asks.
+        let actions = take_work.as_ref().map_or_else(
+            || super::ticket::device_actions(&identity.key, &workspaces),
+            take_work::TakesWork::actions,
+        );
+        // The device actions the daemon answers itself.
         stage("opening the device's tickets");
         let tickets = Arc::new({
             let _entered = tilo_rt::app().handle().enter();
             Tickets::new(
-                identity.key.clone(),
-                identity.cert.clone(),
+                (identity.key.clone(), identity.cert.clone()),
                 workspaces.endpoint(),
                 identity.login.clone(),
                 Arc::new(super::person::root),
@@ -336,6 +353,7 @@ impl Daemon {
                 }),
                 Some(Arc::clone(&workspaces)),
                 identity.place.clone(),
+                actions.clone(),
             )
         });
         stage("opening the person's store to their other devices");
@@ -348,7 +366,7 @@ impl Daemon {
             channels: Arc::clone(&brokers),
             fanout: Arc::clone(&fanout),
             take_work,
-            tickets: Some(tickets.service()),
+            actions,
             host: founded.map(|_| workspaces.service().as_ref()),
         })?;
         // What the person answers about this device's camera and microphone is kept in their own
@@ -440,10 +458,10 @@ impl Daemon {
     }
 }
 
-/// The workspace founded on this computer, which has no login: the one an earlier start
-/// founded, kept in the device's directory `dir`, or a new one.
-fn founded_workspace(dir: &Path) -> io::Result<WorkspaceId> {
-    let path = dir.join(FOUNDED);
+/// The workspace founded on this computer for `person`, as it has no login: the one an earlier
+/// start founded for them, kept in the device's directory `dir`, or a new one.
+fn founded_workspace(dir: &Path, person: &[u8; 32]) -> io::Result<WorkspaceId> {
+    let path = dir.join(format!("{FOUNDED}{}", hex::encode(person)));
     match std::fs::read_to_string(&path) {
         Ok(kept) => WorkspaceId::parse(kept.trim()).ok_or_else(|| {
             io::Error::new(
@@ -792,10 +810,6 @@ impl tilo_api::session::Here for Daemon {
             .collect()
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the provider is moved into the session it answers"
-    )]
     fn enter(&self, workspace: &str) -> Result<tilo_api::session::Reached, String> {
         let provider = self
             .provider_for(workspace)
@@ -861,6 +875,19 @@ impl AdmittedRuntimeSession {
         }
     }
 
+    /// Whether `caller` is who this run was admitted for. A program the person runs reaches
+    /// their own run as the local person, each in an execution of its own: that narrows what its
+    /// calls own, never who makes them. A run projected into one execution admits only that one.
+    fn admits(&self, caller: &Caller) -> bool {
+        let Some(projection) = &self.projection else {
+            return caller == self.admission.caller();
+        };
+        match (projection.execution_lease(), caller.execution_lease()) {
+            (None, Some(lease)) => *caller == projection.clone().in_execution(lease),
+            _ => caller == projection,
+        }
+    }
+
     /// Whether this call may run as the run's caller, now.
     ///
     /// A refusal says why it can be acted on: a run that ended is ended for
@@ -886,12 +913,7 @@ impl AdmittedRuntimeSession {
                 reason: format!("the device certificate does not verify ({error})"),
             });
         }
-        if caller
-            != self
-                .projection
-                .as_ref()
-                .unwrap_or_else(|| self.admission.caller())
-        {
+        if !self.admits(caller) {
             tracing::warn!(
                 caller = ?caller.acting(),
                 "a caller this run was not admitted for tried to act as it"
@@ -939,8 +961,7 @@ impl RuntimeActionProvider {
     fn is_the_person(&self, caller: &Caller) -> bool {
         self.session.as_ref().is_some_and(|session| {
             session.agent.is_none()
-                && (session.projection.as_ref() == Some(caller)
-                    || caller == session.admission.caller())
+                && (session.admits(caller) || caller == session.admission.caller())
         })
     }
 
@@ -1075,7 +1096,7 @@ impl ActionProvider for RuntimeActionProvider {
         if let Some(session) = &self.session {
             // Owner discovery remains the ordinary read path: no per-query
             // identity-store resolution. Opening a result uses retained ownership.
-            if session.projection.as_ref() == Some(caller) {
+            if session.projection.is_some() && session.admits(caller) {
                 if !self.admitted(caller) {
                     return Pending::ready(Err(ActionCallError::NotPermitted));
                 }
@@ -1357,8 +1378,9 @@ struct PersonalServing<'a> {
     /// The device action service this profile answers its server's work on, when it
     /// takes work at all.
     take_work: Option<take_work::TakesWork>,
-    /// The action service that serves a ticket's certify call while a new computer logs in.
-    tickets: Option<tilo_peer_state::actions::ActionService>,
+    /// The one action service the device actions are answered on: its workspaces', or the work
+    /// it takes from its server, admitting a ticket's certify call while a computer asks.
+    actions: tilo_peer_state::actions::ActionService,
     /// The workspace host this device runs, when it governs the workspace founded here: the
     /// person's keys open their sessions with it here.
     host: Option<&'a tilo_workspace_service::service::WorkspaceService>,
@@ -1393,7 +1415,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         channels,
         fanout,
         take_work,
-        tickets,
+        actions,
         host,
     } = serving;
     let person = cert.user_public_key;
@@ -1413,35 +1435,21 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         let _entered = runtime.enter();
         let mut router = iroh::protocol::Router::builder(workspaces.endpoint())
             .accept(tilo_peer_state::PERSONAL_ALPN, sync.clone());
-        // The workspace host answers the person's keys as every host does.
-        // Without one this device still answers its workspaces' devices on the
-        // device action service. A member that takes its server's work answers
-        // that service with that work's action service instead, registered
-        // after it.
-        let protocols = host.map_or_else(
-            || {
-                vec![(
-                    tilo_peer_state::actions::ACTIONS_ALPN.to_vec(),
-                    workspaces.copies().action_service().into(),
-                )]
-            },
-            tilo_workspace_service::service::WorkspaceService::protocols,
-        );
-        for (alpn, handler) in protocols {
-            router = router.accept(alpn, handler);
-        }
-        for (alpn, handler) in take_work
-            .map(take_work::TakesWork::protocols)
+        // The workspace host answers the person's keys as every host does. Every device answers
+        // the device actions once, on `actions`; a member that takes its server's work answers
+        // that work's terminals beside it.
+        for (alpn, handler) in host
+            .map(tilo_workspace_service::service::WorkspaceService::protocols)
             .into_iter()
             .flatten()
+            .filter(|(alpn, _)| alpn != tilo_peer_state::actions::ACTIONS_ALPN)
         {
             router = router.accept(alpn, handler);
         }
-        // A ticket's certify call, answered on the one router while a new computer asks: never a
-        // second endpoint of its own.
-        if let Some(tickets) = tickets {
-            router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, tickets);
+        if let Some((alpn, handler)) = take_work.map(take_work::TakesWork::terminals) {
+            router = router.accept(alpn, handler);
         }
+        router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, actions);
         router.spawn()
     };
     // The person's device fleet is filed under the identity this computer holds for them, when

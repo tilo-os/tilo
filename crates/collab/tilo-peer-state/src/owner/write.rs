@@ -27,14 +27,51 @@ pub enum WriteRefusal {
     /// once it has.
     #[error("the writes wait for {0}")]
     Waiting(crate::admission::MissingPrerequisite),
-    /// The workspace is not held here, or its record does not take the writes.
+    /// The workspace's record does not take the writes, for a reason this device has no class
+    /// for.
     #[error("{0}")]
     Refused(String),
+    /// The workspace refused the writes for a reason this device knows: the person is told it,
+    /// and `detail` stays for the log.
+    #[error("{detail}")]
+    Declined {
+        reason: neighbour_wire::RefusalReason,
+        detail: String,
+    },
     /// The workspace's rules refused the change before it went: the document it writes, the
     /// changes it carries and why, as a server's refusal of a change names them. Its author's
     /// session is told it, and it is filed where the person's activity reads it.
     #[error("{0}")]
     ChangeRefused(Box<crate::ChangeRefused>),
+}
+
+impl WriteRefusal {
+    /// Why the writes were not taken, as the person is told it.
+    #[must_use]
+    pub fn reason(&self) -> neighbour_wire::RefusalReason {
+        use neighbour_wire::RefusalReason;
+        match self {
+            Self::HistoryFull { .. } => RefusalReason::Full,
+            Self::Waiting(_) => RefusalReason::MissingDependency,
+            Self::Declined { reason, .. } => *reason,
+            Self::ChangeRefused(refused) => refused.reason_class(),
+            Self::Unsigned(_) | Self::Refused(_) => RefusalReason::Other,
+        }
+    }
+}
+
+impl From<crate::MembershipError> for WriteRefusal {
+    /// A device the workspace grants nothing is told why; a workspace whose rules have not
+    /// arrived yet decides once they have, so the writes wait for them.
+    fn from(error: crate::MembershipError) -> Self {
+        if matches!(error, crate::MembershipError::RulesMissing) {
+            return Self::Waiting(crate::admission::MissingPrerequisite::Rules);
+        }
+        Self::Declined {
+            reason: error.refusal_reason(),
+            detail: error.to_string(),
+        }
+    }
 }
 
 impl From<WriteRefusal> for String {
@@ -218,13 +255,9 @@ impl NativeWorkspaceOwner {
                         // This device could not decide the write: no verdict of
                         // this device's says anything about it.
                         Err(error) if error.is_device_failure() => Ok(false),
-                        Err(error) => live.workspace_mut().refuse_write(
-                            &device,
-                            message,
-                            &error.to_string(),
-                            signed,
-                            now,
-                        ),
+                        Err(error) => live
+                            .workspace_mut()
+                            .refuse_write(&device, message, error, signed, now),
                     };
                     match verdict {
                         Ok(filed) => kept |= filed,
@@ -741,7 +774,13 @@ impl NativeWorkspaceOwner {
             Err(crate::NotAdmitted::Waiting(prerequisite)) => {
                 Err(WriteRefusal::Waiting(prerequisite))
             }
-            Err(crate::NotAdmitted::Refused(reason)) => Err(WriteRefusal::Refused(reason)),
+            Err(crate::NotAdmitted::Refused { reason, detail }) => {
+                Err(WriteRefusal::Declined { reason, detail })
+            }
+            Err(crate::NotAdmitted::HistoryFull) => Err(WriteRefusal::HistoryFull {
+                app: route.0.to_owned(),
+                record: route.1.to_owned(),
+            }),
             Err(crate::NotAdmitted::ChangeRefused(refused)) => {
                 Err(WriteRefusal::ChangeRefused(refused))
             }

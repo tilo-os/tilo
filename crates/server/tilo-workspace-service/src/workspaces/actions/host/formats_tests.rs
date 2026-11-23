@@ -2,11 +2,6 @@
 //! their own workspace: theirs alone, and the zone their views are rendered in is the one they
 //! chose, else their browser's.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server's handle a test binds is kept until the test ends; dropping it earlier closes the server it drives"
-)]
-
 use serde_json::{Value, json};
 use tilo_actions::remote::formats;
 use tilo_actions::remote::{ActionCallError, Caller};
@@ -55,6 +50,10 @@ async fn a_persons_formats_are_a_resource_for_them_alone() {
     let (key, ada) = governor();
     let server = test_host(dir.path(), &key, &ada).await;
     let workspaces = server.workspaces();
+    // The device that made the root founds the person's own workspace, where their region is.
+    crate::workspaces::person_workspace::found(workspaces)
+        .await
+        .expect("the person's own workspace");
     let (workspace, workspace_id, service) = governed(workspaces).await;
     let bo = admit(workspaces, &workspace, &ada, 2).await;
     let (as_ada, as_bo) = (caller(&ada), caller(&bo));
@@ -168,6 +167,10 @@ async fn the_browsers_zone_is_taken_until_the_person_chooses_one() {
     let (key, ada) = governor();
     let server = test_host(dir.path(), &key, &ada).await;
     let workspaces = server.workspaces();
+    // The device that made the root founds the person's own workspace, where their region is.
+    crate::workspaces::person_workspace::found(workspaces)
+        .await
+        .expect("the person's own workspace");
     let (_, workspace_id, service) = governed(workspaces).await;
     let as_ada = caller(&ada);
     let zone = || async {

@@ -78,19 +78,30 @@ pub(crate) fn take(
 
 /// Every action of each resource `incoming` names, in place of what `held` holds of that
 /// resource: where it sits, or after the rest for a resource it did not hold.
-fn replace(held: &mut Vec<ActionDescriptor>, mut incoming: Vec<ActionDescriptor>) {
-    while let Some(first) = incoming.first() {
-        let resource = first.address.resource.clone();
-        let theirs: Vec<_> = incoming
-            .extract_if(.., |action| action.address.resource == resource)
-            .collect();
-        let at = held
-            .iter()
-            .position(|action| action.address.resource == resource)
-            .unwrap_or(held.len());
-        held.retain(|action| action.address.resource != resource);
-        held.splice(at..at, theirs);
+fn replace(held: &mut Vec<ActionDescriptor>, incoming: Vec<ActionDescriptor>) {
+    // Each resource's incoming actions, in the order the resources first come.
+    let mut order: Vec<String> = Vec::new();
+    let mut theirs: std::collections::HashMap<String, Vec<ActionDescriptor>> =
+        std::collections::HashMap::new();
+    for action in incoming {
+        let resource = action.address.resource.clone();
+        if !theirs.contains_key(&resource) {
+            order.push(resource.clone());
+        }
+        theirs.entry(resource).or_default().push(action);
     }
+    let mut out = Vec::with_capacity(held.len());
+    for action in std::mem::take(held) {
+        match theirs.remove(&action.address.resource) {
+            Some(replaced) => out.extend(replaced),
+            None if order.contains(&action.address.resource) => {}
+            None => out.push(action),
+        }
+    }
+    for resource in order {
+        out.extend(theirs.remove(&resource).unwrap_or_default());
+    }
+    *held = out;
 }
 
 impl AppWindow {

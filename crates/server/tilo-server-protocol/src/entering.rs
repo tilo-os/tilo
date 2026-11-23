@@ -15,7 +15,7 @@
 //! their user root and the one-time token that admits them, both kept on the
 //! host, and the workspace admits the device with that invitation as it
 //! admits every redemption. An invitation the device holds itself (a pasted
-//! or sealed link, or one a host handed a member device for a workspace of
+//! or short link, or one a host handed a member device for a workspace of
 //! the person's own) comes in the entry instead, with the token of the
 //! owner's pre-admission it was issued under when there is one
 //! ([`Through::Invitation`]): an invitation is the approval of whoever made

@@ -1,40 +1,57 @@
-//! Opening an on-demand record: a record a joining device is not replayed
-//! ([`crate::store::document_sync`]) is sent to it once it asks.
+//! Opening a record a session is not replayed: the host sends what its store
+//! keeps of it, then says it did.
+//!
+//! A workspace's records reach a device over its link to the workspace. A
+//! client that still reads them through its session — an agent's workspace
+//! actions, and the desktop's co-edit session — is answered here from the same
+//! store the link keeps, so what it reads is what the workspace holds. This
+//! goes with those clients' move onto the device link.
 
 use super::{AuthenticatedPeer, Envelope, PeerError, SessionCtx, WorkspaceOperation};
-use tilo_server_protocol::WorkspaceId;
+use tilo_peer_state::direct::DirectSync;
+use tilo_server_protocol::{DocumentAnswer, WorkspaceId};
 
-/// The recipient's policy snapshot for ordinary document frames. Attached
-/// devices instead replicate the workspace as stores or key holders.
-pub(super) struct DocumentRead {
+/// Who may read a record of a workspace: a device the workspace's host is attached
+/// to keeps all of it, and any other is sent a record the workspace's policy lets
+/// its person read.
+struct RecordRead {
+    /// This device belongs to a host the workspace is attached to: it keeps all of
+    /// the workspace, whether or not its person is a member.
+    attached: bool,
+    /// This workspace's admission is the one that decides who reads its records.
     governed: bool,
     access: Option<tilo_action_policy::MemberAccess>,
     reader: [u8; 32],
 }
 
-impl DocumentRead {
-    pub(super) fn of(
-        runtime: &crate::workspace::WorkspaceRuntime,
-        peer: &AuthenticatedPeer,
-    ) -> Self {
-        let governed = !runtime.attached(&peer.device_public_key)
-            && (runtime.admission == crate::workspace_access::AdmissionMode::Governed
-                || runtime.device_access.is_some());
-        let access = runtime
-            .device_access
-            .as_ref()
-            .and_then(|access| access.get(&peer.device_public_key))
-            .cloned();
+impl RecordRead {
+    fn of(runtime: &crate::workspace::WorkspaceRuntime, peer: &AuthenticatedPeer) -> Self {
+        let attached = runtime.attached(&peer.device_public_key);
         Self {
-            governed,
-            access,
+            attached,
+            governed: !attached
+                && (runtime.admission == crate::workspace_access::AdmissionMode::Governed
+                    || runtime.device_access.is_some()),
+            access: runtime
+                .device_access
+                .as_ref()
+                .and_then(|access| access.get(&peer.device_public_key))
+                .cloned(),
             reader: peer.user_public_key,
         }
     }
 
-    /// Governance and other non-document traffic use their own admission.
-    pub(super) fn allows(&self, store: &crate::store::WorkspaceStore, frame: &Envelope) -> bool {
-        let Some(body) = document_policy_body(store, frame) else {
+    /// Whether `frame`, a record's write, may be sent to this device: the record a
+    /// set of people reads is theirs alone, and the policy lets its person read it.
+    fn allows(&self, frame: &neighbour_wire::NeighbourMsg) -> bool {
+        let neighbour_wire::NeighbourMsg::AppDocument {
+            app_id,
+            cluster_id,
+            document_id,
+            readers,
+            ..
+        } = frame
+        else {
             return true;
         };
         if !self.governed {
@@ -43,101 +60,37 @@ impl DocumentRead {
         let Some(access) = &self.access else {
             return false;
         };
-        if let Some(neighbour_wire::KeyScope::Document {
-            workspace,
-            app,
-            document,
-            readers,
-        }) = key_scope(body)
-        {
-            return workspace.to_string() == access.workspace()
-                && readers.as_deref().is_none_or(|readers| {
-                    access
-                        .person_id()
-                        .is_some_and(|person| readers.split(',').any(|reader| reader == person))
-                })
-                && self.allows_route(store, access, &app, &document);
-        }
-        let Some((route, _)) = store.payloads().open_document(body) else {
-            return false;
-        };
-        if route.cluster_id != access.workspace() {
+        if cluster_id.as_str() != access.workspace() {
             return false;
         }
-        self.allows_route(store, access, &route.app_id, &route.document_id)
-    }
-
-    fn allows_route(
-        &self,
-        store: &crate::store::WorkspaceStore,
-        access: &tilo_action_policy::MemberAccess,
-        app: &str,
-        document: &str,
-    ) -> bool {
-        // Key frames do not name the record they open the keys of beyond its route: consult
-        // retained metadata even if the person whose record it is has since left the workspace.
-        let channel = neighbour_wire::app_document_group(app, document);
-        if !store.reaches_person(&channel, &self.reader) {
+        let named =
+            readers
+                .as_deref()
+                .is_none_or(|readers| match collab_types::Readers::parse(readers) {
+                    Some(collab_types::Readers::People(people)) => people.contains(&self.reader),
+                    Some(collab_types::Readers::EveryMember) => true,
+                    None => false,
+                });
+        if !named {
             return false;
         }
-        let node = collab_types::document_node(access.workspace(), app, document);
+        let node = collab_types::document_node(access.workspace(), app_id, document_id);
         let context = tilo_action_policy::Context::at_time(tilo_clock::wall());
         access.answer(&node, tilo_action_policy::ActionKind::Read, &context)
             == tilo_action_policy::Answer::Allow
     }
 }
 
-fn key_scope(body: &[u8]) -> Option<neighbour_wire::KeyScope> {
-    use neighbour_wire::NeighbourMsg;
-    if !NeighbourMsg::is_governance(body) && !NeighbourMsg::is_access_request(body) {
-        return None;
-    }
-    let (NeighbourMsg::MlsGovernance {
-        workspace: scope, ..
-    }
-    | NeighbourMsg::MlsAccessRequest {
-        workspace: scope, ..
-    }) = neighbour_wire::NeighbourMsg::decode(body).ok()?
-    else {
-        return None;
-    };
-    neighbour_wire::KeyScope::parse(&scope)
-}
-
-pub(super) fn document_policy_body<'a>(
-    store: &crate::store::WorkspaceStore,
-    frame: &'a Envelope,
-) -> Option<&'a [u8]> {
-    let Envelope::Delta { delta, .. } = frame else {
-        return None;
-    };
-    let body = crate::coedit::retention_view(delta).map_or(delta.as_slice(), |(_, _, body)| body);
-    let document = store.payloads().is_document(body);
-    let scoped_keys = || {
-        matches!(
-            key_scope(body),
-            Some(neighbour_wire::KeyScope::Document { .. })
-        )
-    };
-    (document || scoped_keys()).then_some(body)
-}
-
-/// Handle `OpenDocument`: under the admission a replay has, mark the record
-/// held by the device, so its live changes reach it from now on, then answer
-/// it in `answer` with everything retained of the record and, after it,
-/// [`Envelope::DocumentOpened`]; another person's own record is answered as
-/// not this device's, with nothing of it. The answer is written as a replay is: no live
-/// frame goes between its frames ([`super::answered_as_replay`]).
-/// A chain's head ([`neighbour_wire::chain_head`]) sends the chain's newest
-/// part, and the device follows the chain's heads from then on.
-/// Marking first means no change committed meanwhile is missed; one that is
-/// both sent and retained arrives twice, which a record takes as once.
+/// Handle `OpenDocument`: answer with everything this device's store keeps of
+/// the record on `channel`, one frame each, and then [`Envelope::DocumentOpened`]
+/// saying how many; another person's own record is answered as not this
+/// device's, with nothing of it. A chain's head ([`neighbour_wire::chain_head`])
+/// names whichever part is the chain's newest: that part is what is sent.
 pub(super) async fn handle_open_document(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &[WorkspaceId],
     envelope: Envelope,
-    answer: &mut Vec<Envelope>,
 ) -> Result<Option<Envelope>, PeerError> {
     let Envelope::OpenDocument {
         workspace_id,
@@ -146,7 +99,6 @@ pub(super) async fn handle_open_document(
     else {
         return Ok(None);
     };
-    let opened = crate::timing::start();
     let refused = |refusal: tilo_server_protocol::refusal::Refusal| {
         Ok(Some(Envelope::NotAuthorised {
             workspace_id,
@@ -165,221 +117,140 @@ pub(super) async fn handle_open_document(
     {
         return refused(crate::workspace_access::DenyReason::OutOfEnvironmentScope.refusal());
     }
-    let locking = crate::timing::start();
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return refused(tilo_server_protocol::refusal::Refusal::NotReady);
     };
-    crate::timing::event("document.open.lock", locking, 0);
-    // A chain's head names whichever part is the chain's newest: that part
-    // is what is sent.
-    let heading = crate::timing::start();
-    let head = {
-        let store = ws.lock().await.store.clone();
-        tokio::task::spawn_blocking(move || store.chain_head_channel(&requested))
-            .await
-            .map_err(|error| PeerError::Protocol(format!("record read: {error}")))??
+    // The workspace's one admission for a device reading its records, as a
+    // link's other end is admitted before it is sent any, and what this device
+    // may read of them.
+    let runtime = crate::workspace_io::fresh_membership(&ws).await?;
+    if !session.admits(&runtime, peer, WorkspaceOperation::State) {
+        return refused(tilo_server_protocol::refusal::Refusal::NotAMember(
+            "device not in workspace membership".into(),
+        ));
+    }
+    let read_policy = RecordRead::of(&runtime, peer);
+    drop(runtime);
+    let Some(link) = session
+        .admin
+        .and_then(|admin| admin.direct().link(workspace_id))
+    else {
+        return refused(tilo_server_protocol::refusal::Refusal::NotReady);
     };
-    crate::timing::event("document.open.head", heading, u64::from(head.is_some()));
-    let admitting = crate::timing::start();
-    let (store, governed) = {
-        let mut runtime = crate::workspace_io::fresh_membership(&ws).await?;
-        if !session.admits(&runtime, peer, WorkspaceOperation::State) {
-            return refused(tilo_server_protocol::refusal::Refusal::NotAMember(
-                "device not in workspace membership".into(),
-            ));
+    // A chain's head names a part and holds nothing of its own: the chain's
+    // newest part is what is sent, and the device follows the chain from then on
+    // (`Workspaces::watch_record`). Reading a store's frames touches the disk,
+    // so it reads on the blocking pool.
+    let kept = |channel: [u8; 32]| {
+        let link = link.clone();
+        async move {
+            tokio::task::spawn_blocking(move || link.kept_record(channel))
+                .await
+                .map_err(|error| PeerError::Protocol(format!("record read: {error}")))?
+                .map_err(|error| PeerError::Protocol(format!("record read: {error}")))
         }
-        // A document a set of people reads is theirs alone: another device is
-        // told so, and is sent nothing of it. A host the workspace is attached
-        // to keeps all of the workspace.
-        let read = head.unwrap_or(requested);
-        if !runtime.attached(&peer.device_public_key)
-            && !runtime.store.reaches_person(&read, &peer.user_public_key)
-        {
-            return Ok(Some(Envelope::DocumentOpened {
-                workspace_id,
-                channel: requested,
-                answer: tilo_server_protocol::DocumentAnswer::NotYours,
-            }));
-        }
-        let device = &peer.device_public_key;
-        runtime.hold_document(device, session.outbound, requested);
-        if let Some(head) = head {
-            runtime.hold_document(device, session.outbound, head);
-        }
-        (
-            runtime.store.clone(),
-            runtime
-                .workspace_authority
-                .as_ref()
-                .and_then(crate::workspaces::WorkspaceAuthority::workspaces),
-        )
     };
-    crate::timing::event("document.open.admission", admitting, 0);
-    // Sent whether or not the device holds the head already: an answer of no
-    // frames says the chain has no part at all, never "you have it", so a
-    // device whose copy has not opened yet never takes the chain as empty.
-    let read = head.unwrap_or(requested);
-    let frames = frames_of(store, governed, workspace_id, read).await?;
-    if !still_readable(&ws, peer, session, (requested, head), &frames).await? {
+    let mut read = requested;
+    let mut frames = kept(requested).await?.unwrap_or_default();
+    if frames.is_empty()
+        && let Some(part) = chain_head_part(&link, requested)
+    {
+        read = part;
+        frames = kept(part).await?.unwrap_or_default();
+    }
+    // A document a set of people reads is theirs alone: a device the record's
+    // readers do not name, or the workspace's policy no longer lets read it,
+    // is told so and sent nothing of it.
+    if !read_policy.attached && !frames.iter().all(|frame| read_policy.allows(frame)) {
         return Ok(Some(Envelope::DocumentOpened {
             workspace_id,
             channel: requested,
-            answer: tilo_server_protocol::DocumentAnswer::NotYours,
+            answer: DocumentAnswer::NotYours,
         }));
     }
-    let sent = u32::try_from(frames.len()).unwrap_or(u32::MAX);
-    crate::timing::event("document.open.total", opened, u64::from(sent));
-    answer.extend(frames);
+    // Watched before its frames go, as a replay's are: a write committed
+    // meanwhile reaches the connection too, and one sent twice a record takes
+    // as once. A device the record is not its own is never sent a write of it
+    // (`Workspaces::deliver_record_write` asks again).
+    if let Some(admin) = session.admin {
+        for channel in [requested, read] {
+            admin.watch_record(
+                workspace_id,
+                peer.device_public_key,
+                session.outbound,
+                session.disconnect,
+                channel,
+            );
+        }
+    }
+    let mut sent = 0_u32;
+    for message in &frames {
+        let Some(delta) = delta_of(
+            workspace_id,
+            tilo_peer_state::store::author_of(message).unwrap_or_default(),
+            message,
+        ) else {
+            continue;
+        };
+        session
+            .outbound
+            .send(delta)
+            .await
+            .map_err(|_| PeerError::Protocol("the session's writer ended".into()))?;
+        sent = sent.saturating_add(1);
+    }
     Ok(Some(Envelope::DocumentOpened {
         workspace_id,
         channel: requested,
-        answer: tilo_server_protocol::DocumentAnswer::Sent { frames: sent },
+        answer: DocumentAnswer::Sent { frames: sent },
     }))
 }
 
-/// Apply the current policy after loading the retained frames.
-async fn still_readable(
-    workspace: &crate::workspace::SharedWorkspace,
-    peer: &AuthenticatedPeer,
-    session: &SessionCtx<'_>,
-    (requested, head): ([u8; 32], Option<[u8; 32]>),
-    frames: &[Envelope],
-) -> Result<bool, PeerError> {
-    let mut runtime = crate::workspace_io::fresh_membership(workspace).await?;
-    let policy = DocumentRead::of(&runtime, peer);
-    let allowed = frames
-        .iter()
-        .all(|frame| policy.allows(&runtime.store, frame));
-    if !allowed {
-        let device = &peer.device_public_key;
-        runtime.unhold_document(device, session.outbound, &requested);
-        if let Some(head) = head {
-            runtime.unhold_document(device, session.outbound, &head);
+/// The channel of the newest part of the chain whose head `requested` names,
+/// as this device holds the workspace's records, or `None` when `requested` is
+/// no chain's head or no part of it is here. A part is numbered within its
+/// chain, so the newest is the greatest number kept.
+fn chain_head_part(link: &DirectSync, requested: [u8; 32]) -> Option<[u8; 32]> {
+    let mut newest: Option<(u64, [u8; 32])> = None;
+    for (app, record) in link.read(crate::documents::listing) {
+        let neighbour_wire::DocumentSync::Part { base, index } =
+            neighbour_wire::document_sync(&record)
+        else {
+            continue;
+        };
+        if neighbour_wire::app_document_group(&app, &neighbour_wire::chain_head(base)) != requested
+        {
+            continue;
+        }
+        let channel = neighbour_wire::app_document_group(&app, &record);
+        if newest.is_none_or(|(newest, _)| index > newest) {
+            newest = Some((index, channel));
         }
     }
-    drop(runtime);
-    Ok(allowed)
+    newest.map(|(_, channel)| channel)
 }
 
-/// Everything `store` retains of the document on `read`, beside the writes
-/// `governed`'s link keeps that the store's copy lacks: a linked member's
-/// write whose copy to the server has not landed yet is kept by the
-/// workspace's link, and sent from there, so a device never hears the document
-/// is absent while the workspace's host keeps it.
-async fn frames_of(
-    store: crate::store::WorkspaceStore,
-    governed: Option<crate::workspaces::Workspaces>,
+/// `message`, `author`'s frame of `workspace_id`, as a session carries it: the
+/// co-edit payload a client applies, which holds the frame's signed body as it
+/// is. A frame the workspace keeps as a checkpoint is carried as one. `None` for
+/// a frame that is no workspace's, or one that does not encode.
+pub(crate) fn delta_of(
     workspace_id: WorkspaceId,
-    read: [u8; 32],
-) -> Result<Vec<Envelope>, PeerError> {
-    let reading = crate::timing::start();
-    let frames = tokio::task::spawn_blocking(move || {
-        let mut frames = store.record_frames(&read)?;
-        if let Some(governed) = governed {
-            match governed.link_frames_lacking(workspace_id, read, &frames) {
-                Ok(lacking) => frames.extend(lacking),
-                Err(error) => {
-                    return Err(PeerError::Protocol(format!(
-                        "the workspace link's history of the document: {error}"
-                    )));
-                }
-            }
-        }
-        Ok::<_, PeerError>(frames)
+    author: [u8; 32],
+    message: &neighbour_wire::NeighbourMsg,
+) -> Option<Envelope> {
+    let (channel, retention) = neighbour_wire::retention(message, false)?;
+    let body = postcard::to_allocvec(message).ok()?;
+    let payload = if retention == neighbour_wire::Retention::Checkpoint {
+        crate::coedit::CoeditPayload::Checkpoint { channel, body }
+    } else {
+        crate::coedit::CoeditPayload::RetainedDelta { channel, body }
+    };
+    Some(Envelope::Delta {
+        workspace_id,
+        author_device_public_key: author,
+        authored_at_ns: tilo_clock::unix_now_ns(),
+        delta: payload.encode().ok()?,
+        signature: [0; 64],
     })
-    .await
-    .map_err(|error| PeerError::Protocol(format!("document read: {error}")))??;
-    let sent = u64::try_from(frames.len()).unwrap_or(u64::MAX);
-    crate::timing::event("document.open.frames", reading, sent);
-    Ok(frames)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::payloads::{NeighbourPayloads, Route, ShellPayloads as _};
-    use collab_types::{Ed25519PublicKey, SignedOp};
-    use tilo_action_policy::{Acting, Actor, MemberAccess, MemberId, Role, WorkspacePolicy};
-
-    #[test]
-    fn a_deleted_members_retained_record_keeps_its_private_key_replay() {
-        const APP: &str = "so.tilo.tube";
-        let root = tempfile::tempdir().unwrap();
-        let workspace = WorkspaceId::from_u128(1);
-        let store = crate::store::WorkspaceStore::open(root.path(), workspace, false).unwrap();
-        let reader = [1; 32];
-        let workspace_owner = [2; 32];
-        let record =
-            tilo_action_policy::roles::member_record("tube.watch-history", &hex::encode(reader))
-                .unwrap();
-        let route = Route {
-            app_id: APP.to_owned(),
-            cluster_id: workspace.to_string(),
-            document_id: record.clone(),
-            readers: None,
-        };
-        let device = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
-        let source = device.verifying_key().to_bytes();
-        let checkpoint = |channel, body| Envelope::Delta {
-            workspace_id: workspace,
-            author_device_public_key: source,
-            authored_at_ns: 1,
-            delta: crate::coedit::CoeditPayload::Checkpoint { channel, body }
-                .encode()
-                .unwrap(),
-            signature: [0; 64],
-        };
-        let mut operation = SignedOp::new_unsigned(
-            Vec::new(),
-            collab_types::document_artifact_id(APP, &route.cluster_id, &record),
-            Ed25519PublicKey::from_bytes(source),
-            collab_types::document_attestation_id(APP, &route.cluster_id, &record),
-            collab_types::OpKind::Change,
-            tilo_clock::wall(),
-            1,
-        );
-        collab_types::sign_op(&mut operation, &device).unwrap();
-        let channel = neighbour_wire::app_document_group(APP, &record);
-        let document = checkpoint(
-            channel,
-            NeighbourPayloads
-                .document_body(&source, &route, operation)
-                .unwrap(),
-        );
-        store
-            .retain_checkpoint(&channel, &crate::transport::encode(&document).unwrap())
-            .unwrap();
-        drop(store);
-
-        // The key message itself contains no record-owner descriptor.
-        let scope = neighbour_wire::KeyScope::document(workspace, APP, &record, None).unwrap();
-        let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
-            workspace: scope.to_string(),
-            request: Box::new(
-                collab_types::MlsAccessRequestV1::signed(scope.group(), vec![1], 1, &device)
-                    .unwrap(),
-            ),
-            delivery: 0,
-        };
-        let (key_channel, _) = neighbour_wire::retention(&message, false).unwrap();
-        let keys = checkpoint(key_channel, postcard::to_stdvec(&message).unwrap());
-        let store = crate::store::WorkspaceStore::open(root.path(), workspace, false).unwrap();
-        let mut policy = WorkspacePolicy::new(workspace.to_string(), hex::encode(workspace_owner));
-        policy.members.insert(hex::encode(reader), Role::Viewer);
-        let policy = policy.with_current_roles();
-        let access = |policy, reader| {
-            let actor = Acting::from(Actor::Member(MemberId::person(hex::encode(reader))));
-            DocumentRead {
-                governed: true,
-                access: Some(MemberAccess::new(policy, actor)),
-                reader,
-            }
-        };
-        assert!(access(policy.clone(), reader).allows(&store, &keys));
-        let mut policy = policy;
-        policy.members.remove(&hex::encode(reader));
-        let keeper = access(policy.with_current_roles(), workspace_owner);
-        assert!(!keeper.allows(&store, &keys));
-        assert!(!keeper.allows(&store, &document));
-    }
 }

@@ -22,11 +22,6 @@ use tilo_user_identity::{
     issue_device_cert_async, verify_issued_cert,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
-mod code;
-#[cfg(not(target_arch = "wasm32"))]
-pub use code::{VouchError, vouch_with_code};
-
 /// Answer the named pending request at `server`. When approved, the person's
 /// root certifies the device in that request, and returns its certificate for
 /// the approver's records.

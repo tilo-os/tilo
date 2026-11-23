@@ -324,15 +324,8 @@ tilo_test_env::scenario! {
 
 #[test]
 fn the_std_package_is_in_canonical_form() {
-    let std = Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
-    // The standard library, and the workspace's own state beside it.
-    for dir in [std.clone(), std.join("workspace")] {
-        in_canonical_form(&dir);
-    }
-}
-
-fn in_canonical_form(dir: &Path) {
-    let source = PackageSource::read_dir(dir).unwrap();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
+    let source = PackageSource::read_dir(&dir).unwrap();
     let out = format_package(&source).unwrap_or_else(|d| panic!("{}: {d:#?}", dir.display()));
     assert!(!out.files.is_empty());
     for (path, old, new) in &out.files {

@@ -9,30 +9,22 @@
 //! device's identity root
 //! ([`collaboration_identity_root`](tilo_identity::provisioning::collaboration_identity_root)).
 //! A Tilo session started on this account is that same person.
-//! A host lets the person in once its operator declares their user public key
-//! an owner (the local stack's `stack.sh owner KEY`), or it joins with an
-//! invitation.
+//! Approving a key asks the site only to take the person's proof and the key's
+//! certificate: nothing is read from the site's own entry, and no site's host
+//! is dialled.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
-use serde_json::Value;
 use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::persist::{load_device_key, read_device_cert};
 use tilo_enrollment::root::PersonSigner;
 use tilo_identity::provisioning::IdentityStorage;
-use tilo_server_client::https::Origin;
-use tilo_session_client::device::{self, Entering, Held};
 use tilo_user_identity::StatementSigner as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, SignInProof};
 
 use crate::login;
-
-/// How long approving waits for the site's entry to let the person in: the
-/// operator's declaration reaches the host within seconds.
-const ENTRY_WAIT: Duration = Duration::from_secs(60);
 
 /// The person this computer holds the root of.
 pub struct Person {
@@ -412,7 +404,6 @@ pub fn new_identity(name: Option<&str>, json: bool) -> Result<std::process::Exit
 /// What the person's Tilo is asked to sign at `<site>/sign-in?…`.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Asked {
-    pub site: String,
     pub audience: String,
     pub challenge: [u8; 32],
     pub return_to: String,
@@ -453,7 +444,6 @@ pub fn asked(location: &str) -> Result<Asked> {
         ),
     };
     Ok(Asked {
-        site: url.origin().ascii_serialization(),
         audience: field("audience")?,
         challenge: key("challenge")?,
         return_to: field("return")?,
@@ -522,88 +512,6 @@ pub fn answer(person: &Person, asked: &Asked) -> Result<Vec<(&'static str, Strin
     ])
 }
 
-/// The person in the site's home workspace, through its entry, as their
-/// page comes in: the host knows them from then on. Waits for the operator's
-/// declaration to reach the host.
-async fn through_entry(person: &Person, site: &str) -> Result<()> {
-    let http = login::http();
-    let (status, body) = Origin::new(&http, site)
-        .get("/entry.json")
-        .await
-        .map_err(|error| anyhow!("{site} was not reached: {error}"))?;
-    if status != 200 {
-        bail!("{site} names no Tilo host (HTTP {status})");
-    }
-    let entry: Value = serde_json::from_slice(&body)?;
-    let host = entry
-        .pointer("/home/host/origin")
-        .and_then(Value::as_str)
-        .with_context(|| format!("{site} names no Tilo host"))?;
-    let Some(workspace) = tilo_server_client::login::site_entry(&entry, host)
-        .and_then(|(_, path)| tilo_server_client::login::Entry { path }.workspace())
-    else {
-        return Ok(());
-    };
-    // The site publishes who its host is and where it is dialled (`home.host.info`): the host's
-    // `web-host.json` as one JSON object, written as a string the page reads by parsing it
-    // (`entry.json`, the web entry's `TILO_WEB_HOME_HOST_INFO`).
-    let info = tilo_server_client::login::entry_host(&entry)
-        .with_context(|| format!("{site} names no host certificate and address"))?;
-    let address: tilo_server_protocol::web::ServerAddress = info
-        .address
-        .clone()
-        .context("the host takes no device connections")?
-        .into();
-    let held = Held {
-        cert: person.cert.clone(),
-        server_cert: Some(info.server_cert.clone()),
-    };
-    let began = std::time::Instant::now();
-    loop {
-        let (cert, entry) = device::entry_request(
-            &info.server_cert,
-            &workspace,
-            &person.device,
-            Entering {
-                held: Some(&held),
-                root: Some(&person.root),
-                label: &person.cert.device_label,
-                name: &person.name,
-                token: None,
-            },
-        )
-        .await
-        .map_err(|refused| anyhow!(refused.message))?;
-        let session = tilo_session_client::start_session(
-            tilo_session_client::PeerConfig {
-                host: tilo_server_client::ServerAddress::published(&address),
-                cert,
-                server_cert: info.server_cert.clone(),
-                revocations: tilo_user_identity::RevocationList::new(),
-                entering: Some(entry),
-            },
-            std::sync::Arc::new(person.device.clone()),
-            std::sync::Arc::new(tilo_session_client::MemoryPeerStore::default()),
-        );
-        let entered = device::entered(&session).await;
-        session.close();
-        match entered {
-            Ok(_) => return Ok(()),
-            Err(refused) if refused.code == "invitation-only" && began.elapsed() < ENTRY_WAIT => {
-                tokio::time::sleep(Duration::from_secs(2)).await;
-            }
-            Err(refused) if refused.code == "invitation-only" => bail!(
-                "{site} takes people by invitation and has not let {} in yet. Open an invite \
-                 link someone sent you in a browser, or have whoever runs {site} make you an \
-                 owner (on the local stack: stack.sh owner {})",
-                person.who(),
-                person.user()
-            ),
-            Err(refused) => bail!("{site} did not let you in: {}", refused.message),
-        }
-    }
-}
-
 /// Approve the key `approve_url` asks for, as `person`'s Tilo on the web
 /// does once they agree: the link leads to the site's sign-in, which this
 /// answers with the person's proof and the key's certificate.
@@ -623,7 +531,6 @@ pub async fn approve(person: &Person, approve_url: &str) -> Result<()> {
         .with_context(|| format!("{approve_url} leads to no sign-in (HTTP {})", led.status()))?
         .to_owned();
     let asked = asked(&location)?;
-    through_entry(person, &asked.site).await?;
     let form = answer(person, &asked)?;
     let answered = http
         .post(&asked.return_to)
@@ -925,7 +832,6 @@ mod tests {
             "09".repeat(32),
         );
         let read = asked(&location).unwrap();
-        assert_eq!(read.site, "http://tilo.localhost:24120");
         assert_eq!(read.audience, "http://localhost:24110");
         assert_eq!(read.return_to, "http://localhost:24110/sign-in");
         assert!(read.server_key);

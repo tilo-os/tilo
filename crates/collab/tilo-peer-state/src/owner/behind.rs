@@ -93,7 +93,7 @@ impl NativeWorkspaceOwner {
                             },
                         )
                     })
-                    .map_err(|error| crate::AdmissionError::from(error.to_string())),
+                    .map_err(crate::AdmissionError::malformed),
                 )
             }
             Ok(None) => Some(Ok(crate::AdmissionReport::new(

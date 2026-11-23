@@ -18,7 +18,6 @@ use std::path::PathBuf;
 
 use collab_types::WorkspaceId;
 use tilo_server_protocol::metrics::WorkspaceEgress;
-use tilo_server_protocol::sealed_invitations as SealedInvitations;
 use tilo_server_protocol::{
     ComputeAccelerator, DeviceMeshProfile, MetricsSnapshot, PowerAvailability, ProcessLease,
     ServerConfig, ServiceCapabilities, TrustPolicy, WorkSetting,
@@ -81,7 +80,7 @@ fn json_encodings_are_pinned() {
         concat!(
             r#"{"kinds":{"actions":true,"indexing":true,"model_calls":true,"builds":true},"#,
             r#""from":"own_devices","#,
-            r#""when":{"charging_only":false,"free_cpu_percent":0,"free_memory_percent":0},"agents":false}"#,
+            r#""when":{"charging_only":false,"free_cpu_percent":0,"free_memory_percent":0}}"#,
         ),
     );
 
@@ -168,47 +167,27 @@ fn json_encodings_are_pinned() {
         r#"{"pid":4242,"start_time":987654321}"#,
     );
 
-    // The shelf a site keeps sealed invitations on.
-    let stored = SealedInvitations::Stored {
-        sealed: "c2VhbGVk".to_string(),
-        expires_at_ns: 1_700_000_000_000_000_000,
-        delete: "ZGVsZXRl".to_string(),
-        host: Some("https://host.example".to_string()),
+    // An invitation a workspace keeps, asked for by the secret its link carries.
+    let asked = tilo_server_protocol::web::KeptInvitation {
+        workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".to_string(),
+        secret: "c2VjcmV0".to_string(),
     };
     assert_json(
-        &stored,
-        r#"{"sealed":"c2VhbGVk","expiresAtNs":1700000000000000000,"delete":"ZGVsZXRl","host":"https://host.example"}"#,
-    );
-    // What a build that named no host left, and what it answered with, still
-    // reads.
-    assert_json(
-        &SealedInvitations::Stored {
-            host: None,
-            ..stored
-        },
-        r#"{"sealed":"c2VhbGVk","expiresAtNs":1700000000000000000,"delete":"ZGVsZXRl"}"#,
+        &asked,
+        r#"{"workspace":"6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71","secret":"c2VjcmV0"}"#,
     );
     assert_json(
-        &SealedInvitations::Fetched {
-            sealed: "c2VhbGVk".to_string(),
-            host: Some("https://host.example".to_string()),
+        &tilo_server_protocol::web::OpenedInvitation {
+            invitation: "aW52aXRhdGlvbg".to_string(),
         },
-        r#"{"sealed":"c2VhbGVk","host":"https://host.example"}"#,
+        r#"{"invitation":"aW52aXRhdGlvbg"}"#,
     );
-    assert_json(
-        &SealedInvitations::Fetched {
-            sealed: "c2VhbGVk".to_string(),
-            host: None,
-        },
-        r#"{"sealed":"c2VhbGVk"}"#,
+    assert!(
+        serde_json::from_str::<tilo_server_protocol::web::KeptInvitation>(
+            r#"{"workspace":"w","secret":"s","extra":1}"#
+        )
+        .is_err()
     );
-    assert_json(
-        &SealedInvitations::TakeBack {
-            delete: "ZGVsZXRl".to_string(),
-        },
-        r#"{"delete":"ZGVsZXRl"}"#,
-    );
-    assert!(serde_json::from_str::<SealedInvitations::Stored>(r#"{"sealed":"c2VhbGVk","expiresAtNs":1700000000000000000,"delete":"ZGVsZXRl","extra":1}"#).is_err());
 }
 
 tilo_test_env::scenario! {
@@ -273,7 +252,6 @@ users = ["abababababababababababababababababababababababababababababababab"]
 
 [work]
 from = "own_devices"
-agents = false
 
 [work.kinds]
 actions = true

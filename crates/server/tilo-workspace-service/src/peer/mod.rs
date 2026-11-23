@@ -12,60 +12,17 @@ mod access;
 mod access_audit;
 mod actions;
 mod admin;
-mod admission;
 mod agent_session;
-mod arriving;
-mod checkpoint;
-mod commit;
-mod compaction;
 mod delivery;
 mod dispatch;
-mod fanout;
 mod fetch;
-mod hello;
 mod live;
-mod records;
-mod replay;
+pub(crate) mod records;
 mod session;
-mod state;
 mod subscribe;
-mod sync;
-mod test_hooks;
 
-pub use admission::enqueue_from_host;
-pub(crate) use admission::{HostAdmission, enqueue_host_state};
-use admission::{enqueue_state, enqueue_state_inner};
-pub(crate) use arriving::Arriving;
-#[cfg(test)]
-use checkpoint::buffered_retention_prefix_with_limits;
-use checkpoint::{
-    RETENTION_PREFIX_BYTE_CAP, RETENTION_PREFIX_FRAME_CAP, ReplayPendingTarget, ReplayPendingWork,
-    buffered_retention_prefix, eligible_checkpoint_prefix,
-};
-#[cfg(test)]
-use delivery::write_state_delivery;
-use delivery::{
-    STATE_RUN, SessionCoding, delivery_workspace, encode_charged, write_presence,
-    write_state_deliveries,
-};
-use fanout::{LiveFanout, LiveFrame, live_budget};
-pub(crate) use replay::GovernanceCertificates;
-use replay::{
-    ReplayCatchup, ReplayWrite, ResumeLog, answered_as_replay, authorize_state_frame,
-    authorize_state_recipient, finish_replay_write, resume_document,
-};
-use session::inbound_bytes;
-#[cfg(test)]
-use session::{finish_peer_outcome, serve_peer_stream};
+use delivery::{encode_charged, write_presence};
 pub use session::{run_peer, run_peer_until};
-use state::{
-    FanoutStamp, PreparedRecipients, StateCommit, authorized_state_source, desktop_refusal,
-    file_refusal_of, governor_notice, governor_refusal, guarded_checkpoint_channel, handle_delta,
-    handle_delta_prefix, live_audience, unpublished,
-};
-pub use state::{Lag, StateSource};
-pub(crate) use state::{StateDelivery, StateSession, tell_governor};
-use test_hooks::test_point;
 
 use access::{
     action_peer_admitted, audit_subscriber_access, current_session, session_peer_authorized,
@@ -74,23 +31,15 @@ use access::{
 use actions::{RemoteActionRoute, handle_host_action, handle_remote_action};
 use admin::handle_workspaces;
 use agent_session::handle_agent_session;
-use commit::{admit_commit, handle_commit, over_storage};
-use compaction::handle_compaction;
 use dispatch::handle_envelope;
-#[cfg(test)]
-use dispatch::handle_inbound_frame;
 pub use fetch::FetchGrants;
-use hello::handle_host_hello;
-pub(crate) use live::answer_content;
 use live::{
     handle_content_want, handle_host_said, handle_live_join, handle_presence, handle_voice,
     route_document_content,
 };
 use records::handle_open_document;
-use subscribe::{Subscribed, Subscription, handle_subscribe, handle_unsubscribe, subscribe};
-use sync::handle_sync_request;
+use subscribe::{handle_subscribe, handle_unsubscribe};
 
-use crate::store::bounded::Invariant;
 use access_audit::AccessAudit;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -100,10 +49,6 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::auth::AuthenticatedPeer;
-use crate::persistence::{ReplayAdvance, ReplayHandle, ReplayTicket, WrittenBatch};
-use crate::store::StoreError;
-use crate::store::bounded::WorkLimit;
-use crate::store::replay::Step;
 use crate::transport::Envelope;
 use crate::workspace::{SharedWorkspace, Subscriber};
 use crate::workspace_access::{self, Decision, ServerTrust, WorkspaceOperation};
@@ -111,8 +56,8 @@ use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::refusal::Refusal;
 
-/// Maximum live fan-out backlog per connected peer. Deltas are durable before
-/// queueing; saturation disconnects the recipient for replay on reconnect.
+/// Maximum live fan-out backlog per connected peer: a peer that cannot keep
+/// up is disconnected, and is sent what it needs again when it reconnects.
 const PEER_OUTBOUND_CAPACITY: usize = 32;
 
 /// Reason a peer task ends.
@@ -126,11 +71,11 @@ pub enum PeerError {
     Io(#[from] std::io::Error),
     #[error("encode: {0}")]
     Encode(#[from] postcard::Error),
-    /// Backing store error.
-    #[error("store: {0}")]
-    Store(#[from] StoreError),
-    /// The peer produced a message we did not expect (e.g. Delta
-    /// for a workspace it never Subscribed to).
+    /// The workspace's files beside the store could not be read or written.
+    #[error("files: {0}")]
+    Files(#[from] crate::workspace_files::FilesError),
+    /// The peer produced a message we did not expect (e.g. presence
+    /// for a workspace it never subscribed to).
     #[error("peer protocol violation: {0}")]
     Protocol(String),
     /// The server does not admit this device, which holds no workspace here:
@@ -176,12 +121,6 @@ pub struct PeerContext {
     /// The devices this host certified for its browser environments, and the
     /// one record each reaches ([`crate::environment`]).
     pub environments: crate::environment::EnvironmentRegistry,
-    /// Mints and checks resumable subscribers' positions; `None` refuses
-    /// resumption, and a `SubscribeFrom` replays everything.
-    pub positions: Option<crate::position::PositionIssuer>,
-    /// Keeps retained document channels short; `None` never compacts and
-    /// refuses compaction volunteers.
-    pub compactor: Option<crate::compaction::Compactor>,
     /// The workspaces whose calls this host carries: a workspace a person owns
     /// (synced across their devices through this host) holds its calls
     /// there. `None` holds no carried call.
@@ -214,8 +153,6 @@ struct SessionCtx<'a> {
     /// This connection's queue for content its outbound channel could not
     /// take yet, one queue per sender ([`crate::content_queue`]).
     content: &'a Arc<crate::content_queue::ContentQueue>,
-    state_outbound: Option<&'a mpsc::Sender<StateDelivery>>,
-    connection_live: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
     own_user_public_key: &'a [u8; 32],
     metrics: &'a Arc<crate::metrics::Metrics>,
     trust_policy: &'a Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
@@ -228,27 +165,17 @@ struct SessionCtx<'a> {
     revocations: &'a Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     agents: &'a AgentRegistry,
     environments: &'a crate::environment::EnvironmentRegistry,
-    positions: Option<crate::position::PositionIssuer>,
-    compactor: Option<&'a crate::compaction::Compactor>,
-    /// This connection's resume log per resumed workspace.
-    resumes: &'a std::sync::Mutex<HashMap<WorkspaceId, ResumeLog>>,
     /// The agent this connection is a run of, once its device said so
     /// ([`Envelope::AgentSession`]): every request the
     /// connection makes from then on is that agent's, acting for the device's
     /// person, as the session's caller. Said once, it stays: a session
     /// handed to an agent is never handed back.
     agent: &'a std::sync::OnceLock<String>,
-    /// The connection's device only follows its channel groups
-    /// ([`Envelope::KeyFollower`]): its replays carry no device's request
-    /// to be admitted to one. Said once, it stays.
-    channel_reader: &'a std::sync::atomic::AtomicBool,
     /// The execution the host minted for this connection: an agent's or a
     /// key's requests on it are one run, whatever the client says
     /// ([`tilo_actions::remote::Caller::agent_session`]). Closed when the
     /// connection ends.
     execution: &'a tilo_actions::remote::ExecutionLease,
-    /// Workspaces whose live deliveries this connection could not take.
-    lag: &'a Arc<Lag>,
     /// Where this connection's workspaces post the presence they fan out to it;
     /// `None` takes each presence on the frame queue.
     presence: Option<&'a Arc<crate::presence_mailbox::PresenceMailbox>>,
@@ -303,33 +230,9 @@ impl SessionCtx<'_> {
     }
 }
 
-// Both ends trace the same publication hop; the client side lives with the
-// session client.
-pub(crate) use tilo_server_session::trace_native_publication;
-
 #[cfg(test)]
 #[allow(
     clippy::significant_drop_tightening,
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
-#[allow(
-    clippy::similar_names,
-    reason = "paired test fixtures are named after the roles they mirror"
-)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "each test spells out one end-to-end scenario"
-)]
 mod private_transport_tests;
-
-#[cfg(test)]
-mod retention_diagnostic_tests;
-
-#[cfg(test)]
-mod state_tests;
-
-#[cfg(all(test, feature = "agents"))]
-mod refused_change_tests;
-
-#[cfg(test)]
-mod state_delivery_tests;

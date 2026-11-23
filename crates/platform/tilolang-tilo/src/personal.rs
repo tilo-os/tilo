@@ -414,7 +414,7 @@ fn apply(content: &mut Map<String, Json>, edit: &Edit) {
 fn stamp(verb: &str, person: &str) -> Stamp {
     Stamp {
         verb: verb.to_owned(),
-        invoker: serde_json::to_string(&actor(person)).unwrap_or_default(),
+        invoker: Stamp::by(&actor(person)),
         invocation: uuid::Uuid::new_v4().to_string(),
         at: crate::host::system_time(),
         ..Stamp::default()

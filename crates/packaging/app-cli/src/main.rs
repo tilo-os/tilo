@@ -102,6 +102,11 @@ enum Cmd {
         /// when the store has no newer build of it this system can run.
         #[arg(long, requires = "app")]
         progress_lines: bool,
+        /// A scheduled run: a repository that cannot be read is reported and
+        /// retried, not a failure, since nobody asked for the answer now. An
+        /// offered update that fails to install still is.
+        #[arg(long, conflicts_with = "app")]
+        tolerate_unreachable: bool,
     },
     /// Go back to an older version of an installed app, keeping its saved
     /// state. An app the system image ships goes back to the image's version
@@ -238,6 +243,7 @@ fn main() -> ExitCode {
             from,
             trust,
             progress_lines,
+            tolerate_unreachable,
         } => {
             PROGRESS_LINES.store(progress_lines, Ordering::Relaxed);
             match (app, from) {
@@ -247,7 +253,7 @@ fn main() -> ExitCode {
                         eprintln!("app: {flag} goes with --from <file>");
                         ExitCode::FAILURE
                     }
-                    None => update(app.as_deref()),
+                    None => update(app.as_deref(), tolerate_unreachable),
                 },
                 (None, Some(_)) => {
                     eprintln!("app: --from needs the app it updates");
@@ -1021,7 +1027,7 @@ fn update_from(query: &str, from: &str, trust: &FileTrust) -> ExitCode {
     local_tapp::apply(from, &local_tapp::Change::Update(&id), trust, &mut progress)
 }
 
-fn update(query: Option<&str>) -> ExitCode {
+fn update(query: Option<&str>, tolerate_unreachable: bool) -> ExitCode {
     if let Some(query) = query {
         return change_one(query, true);
     }
@@ -1055,7 +1061,7 @@ fn update(query: Option<&str>) -> ExitCode {
         app_cli::install::sweep_abandoned_downloads(&staging);
     }
     let listing = app_cli::all_offers();
-    update_from_listing(&listing, &installed)
+    update_from_listing(&listing, &installed, tolerate_unreachable)
 }
 
 /// The offers newer than what is installed, with the installed version.
@@ -1082,9 +1088,13 @@ fn outdated<'a>(
 fn update_from_listing(
     listing: &app_cli::CatalogueListing,
     installed: &std::collections::HashMap<String, app_cli::InstalledVersion>,
+    tolerate_unreachable: bool,
 ) -> ExitCode {
     report_unreachable(&listing.unreachable);
-    let mut failed = !listing.unreachable.is_empty();
+    // A repository that cannot be read is a run that has to wait, not a change that
+    // failed: the scheduled run says so and the next hour tries again. Nobody gets
+    // to read it, so it cannot be a failure of the machine's apps.
+    let mut failed = !listing.unreachable.is_empty() && !tolerate_unreachable;
     let (outdated, checked) = outdated(listing, installed);
     if outdated.is_empty() {
         println!("{}", bulk_update_summary(installed.len(), checked, 0));
@@ -1351,6 +1361,19 @@ mod tests {
                 let cli = Cli::try_parse_from(["app", "u", "browser"]).expect("short update parses");
                 assert!(matches!(cli.cmd, Cmd::Update { app: Some(ref app), .. } if app == "browser"));
             }
+            {
+                let cli = Cli::try_parse_from(["app", "update", "--tolerate-unreachable"])
+                    .expect("the scheduled run's form parses");
+                assert!(matches!(
+                    cli.cmd,
+                    Cmd::Update { app: None, tolerate_unreachable: true, .. }
+                ));
+                assert!(
+                    Cli::try_parse_from(["app", "update", "browser", "--tolerate-unreachable"])
+                        .is_err(),
+                    "one app is asked for by a person: an unreadable repository is a failure"
+                );
+            }
         }
     }
 
@@ -1431,9 +1454,16 @@ mod tests {
                         detail: "connection refused".into(),
                     }],
                 };
+                let installed = std::collections::HashMap::new();
                 assert_eq!(
-                    update_from_listing(&listing, &std::collections::HashMap::new()),
-                    ExitCode::FAILURE
+                    update_from_listing(&listing, &installed, false),
+                    ExitCode::FAILURE,
+                    "a person asked now and the answer could not be read"
+                );
+                assert_eq!(
+                    update_from_listing(&listing, &installed, true),
+                    ExitCode::SUCCESS,
+                    "the scheduled run says so and tries again next hour"
                 );
             }
             {

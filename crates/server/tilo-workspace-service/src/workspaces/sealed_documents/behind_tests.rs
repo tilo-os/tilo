@@ -54,20 +54,17 @@ async fn admits(lounge: &Lounge, message: &NeighbourMsg) -> Option<String> {
 }
 
 /// The member's write `message`, kept by the server without the governor's copy being told.
-async fn kept_untold(lounge: &Lounge, message: &NeighbourMsg, checkpoint: bool) {
+fn kept_untold(lounge: &Lounge, message: &NeighbourMsg) {
     lounge
         .server
         .workspace_documents()
         .carry(
             lounge.workspace_id,
             lounge.member_key.verifying_key().to_bytes(),
-            crate::workspace_documents::HostCommit {
+            &crate::workspace_documents::HostCommit {
                 body: postcard::to_stdvec(message).unwrap(),
-                channel: neighbour_wire::retention(message, false).unwrap().0,
-                checkpoint,
             },
         )
-        .await
         .unwrap();
 }
 
@@ -88,7 +85,7 @@ async fn a_copy_without_the_second_write(
         doc.put(ROOT, "second", "kept").unwrap();
         doc.commit_edit("fixture", "title");
     });
-    kept_untold(lounge, &second, false).await;
+    kept_untold(lounge, &second);
     seal_and_send_title(
         &lounge.member,
         client,
@@ -190,7 +187,7 @@ async fn a_copy_that_passed_a_write_over_takes_it_in_again_on_load() {
 async fn a_copy_takes_a_kept_compaction_of_a_write_it_passed_over_on_load() {
     let (lounge, client) = lounge_with_client().await;
     let (state, second, compaction) = a_copy_without_the_second_write(&lounge, &client).await;
-    kept_untold(&lounge, &compaction, true).await;
+    kept_untold(&lounge, &compaction);
     tilo_test_env::within("the server folds the writes the compaction covers", async {
         while retained_writes(&lounge.server, lounge.workspace_id, DOCUMENT)
             .await
@@ -266,10 +263,9 @@ async fn a_members_compaction_of_the_nodes_fold_is_taken() {
     let fold = governed.peer().publication().sealed_history(APP, DOCUMENT)[0].clone();
     drop(governed);
     tilo_test_env::within("the server keeps the node's fold", async {
-        while retained_writes(&lounge.server, lounge.workspace_id, DOCUMENT)
+        while !retained_writes(&lounge.server, lounge.workspace_id, DOCUMENT)
             .await
-            .first()
-            != Some(&fold)
+            .contains(&fold)
         {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
@@ -292,7 +288,7 @@ async fn a_members_compaction_of_the_nodes_fold_is_taken() {
     let author = lounge.member_key.verifying_key().to_bytes();
     lounge
         .workspaces
-        .absorb_kept(
+        .absorb(
             &lounge.workspace,
             author,
             &postcard::to_stdvec(&compaction).unwrap(),
@@ -363,7 +359,7 @@ async fn a_copy_takes_a_compaction_that_arrives_live_over_a_write_it_lacks() {
     // The member's compaction reaches the copy as a live write, not through a load.
     lounge
         .workspaces
-        .absorb_kept(
+        .absorb(
             &lounge.workspace,
             author,
             &postcard::to_stdvec(&compaction).unwrap(),
@@ -539,7 +535,6 @@ async fn a_copy_takes_a_compaction_a_device_sends_over_a_write_it_lacks() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
     clippy::too_many_lines,
-    clippy::significant_drop_tightening,
     reason = "one story: the copy's missing keys, its restart, and the replay that takes it"
 )]
 async fn a_copy_takes_a_compaction_it_kept_before_its_keys_after_a_restart() {

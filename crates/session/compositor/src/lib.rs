@@ -581,6 +581,18 @@ impl Compositor {
         self.recorder.mark_after(took);
     }
 
+    /// Keep the frame trace in memory from now on, whatever the environment asks for: the turns a
+    /// check of the loop's timing reads back with [`Compositor::recorded_frames`].
+    pub fn record_frames(&mut self) {
+        self.recorder = tilo_frame_metrics::FrameRecorder::in_memory();
+    }
+
+    /// The turns recorded so far, oldest first.
+    #[must_use]
+    pub fn recorded_frames(&self) -> &[tilo_frame_metrics::FrameSample] {
+        self.recorder.samples()
+    }
+
     /// The workspace in front changed: its frames are timed until the shell rests.
     pub fn workspace_switched(&mut self) {
         self.data.state.workspace_switched();
@@ -2098,7 +2110,6 @@ impl Compositor {
     /// appeared carries that instant to the sheet, which does not take it as the person's answer.
     pub fn input_at(&mut self, event: InputEvent, at: Instant) -> Result<(), Error> {
         let now = Instant::now();
-        self.recorder.note_input(now);
         let events = self.keys.filter(event, now);
         for event in events {
             self.data.state.note_typing(&event, now);
@@ -2252,6 +2263,10 @@ impl Compositor {
         // A frame can move windows (a strip panning, a group resizing): the policy places them
         // where the surfaces just laid them out.
         self.data.state.rearrange();
+        // The input routed since the last frame is answered by the first frame drawn after it.
+        if let Some(at) = self.data.state.unanswered_input.take() {
+            self.recorder.note_input(at);
+        }
         let drawn_before = self.data.state.frames_drawn();
         let submitting = Instant::now();
         self.data.backend.render(&mut self.data.state)?;
@@ -2263,8 +2278,9 @@ impl Compositor {
                 Instant::now(),
                 Some(drawn),
             );
-        } else {
-            // Nothing was drawn: no frame will answer this turn's input.
+        } else if !self.owes_frame() {
+            // Nothing was drawn and nothing is owed: no frame will answer this turn's input. A
+            // frame held for the display's next blank still answers it when it is drawn.
             self.recorder.settle_unpainted_input();
         }
         // The frame is on the output now, so the clients that drew it hear about it before anything

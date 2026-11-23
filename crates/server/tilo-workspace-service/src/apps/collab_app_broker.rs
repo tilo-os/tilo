@@ -19,6 +19,7 @@ mod socket;
 pub(super) use directory::*;
 mod authority;
 mod catalogue;
+mod held_elsewhere;
 mod routing;
 use tilo_actions::remote::argument_digest;
 use tilo_app_id::apps::FILE_EXPLORER as NEARBY_TRANSFER_APP_ID;
@@ -361,6 +362,9 @@ pub struct AppBrokerState {
     /// `channel_id`: a write fanned out on a channel's route changes what
     /// its read answers, and wakes them ([`Self::wake_committed_reads`]).
     committed_waits: Mutex<HashMap<String, Vec<committed_document::LandedWake>>>,
+    /// Each window's records held in other workspaces, decided again on every policy change
+    /// ([`held_elsewhere`]).
+    held_elsewhere: Mutex<Vec<held_elsewhere::HeldSubscription>>,
     /// `Weak` so broker teardown isn't blocked by an outliving connection.
     fanout: Weak<FanoutState>,
     /// Durable validation, audit, redaction, and scrollback state.
@@ -593,6 +597,26 @@ impl AppBrokerState {
     fn invocation_stream(&self, peer_id: u64) -> Option<mpsc::UnboundedSender<InvocationEnvelope>> {
         tilo_broker_core::delivery::open_stream(&*self.publishers.streams.lock().ok()?, peer_id)
             .cloned()
+    }
+
+    /// The invocations delivered to `peer_id` that it has not finished, each with who the workspace
+    /// service admitted it for: what a write it makes while serving one is credited to.
+    fn delivered_to(&self, peer_id: u64) -> Vec<(tilo_actions::InvocationId, tilo_actions::Actor)> {
+        let pending = match self.pending_invocations.lock() {
+            Ok(pending) => pending,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        pending
+            .values()
+            .filter(|pending| pending.peer_id == peer_id)
+            .map(|pending| {
+                let actor = pending.context.invoker.as_ref().map_or_else(
+                    || tilo_actions::Actor::Member(pending.actor.clone()),
+                    |invoker| invoker.acting.by.clone(),
+                );
+                (pending.update.invocation(), actor)
+            })
+            .collect()
     }
 }
 

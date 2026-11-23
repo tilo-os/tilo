@@ -653,6 +653,11 @@ impl PersonState {
         }
     }
 
+    /// The person's own workspace, which holds their profile records and decides their changes.
+    fn workspace(&self) -> Option<String> {
+        tilo_actions::policy::roles::workspace_of_person(self.me.person_id()?)
+    }
+
     /// The record `P` the person keeps for themselves, in their own scope.
     pub(crate) fn open_profile<P: Resource>(&self) -> Option<PersonResource<P>> {
         debug_assert!(
@@ -672,7 +677,7 @@ impl PersonState {
     ) -> Option<PersonResource<P>> {
         let open = |record: StoredResource| -> Result<Opened, String> {
             let shared = self.shared_of::<P>(record)?;
-            let held = Rc::new(held::<P>(&shared));
+            let held = Rc::new(held::<P>(&shared).held_in(self.workspace()));
             *shared.held.borrow_mut() = Some(Rc::clone(&held));
             let weak = Rc::downgrade(&shared);
             Ok(Opened {

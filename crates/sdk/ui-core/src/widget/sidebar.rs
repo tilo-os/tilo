@@ -656,26 +656,6 @@ impl SidebarDrawer {
         }
     }
 
-    pub fn paint_toggle(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if self.toggle.rect.width() <= 0.0 {
-            return;
-        }
-        self.draw_toggle(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.toggle.rect,
-            self.toggle.hovered,
-        );
-    }
-
     /// The toggle's node in the window's semantic tree: a button named for
     /// what it does ("Show sidebar"), with its shortcut. Route an `Activate`
     /// on it back with [`Self::perform_toggle_action`].

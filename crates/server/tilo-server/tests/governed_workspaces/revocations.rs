@@ -270,8 +270,8 @@ async fn a_stand_in_revoked_in_a_workspace_is_refused_by_what_it_signs_after() {
     )
     .unwrap();
 
-    // He keeps the root with a passkey: his tablet announces the revocation his
-    // root signed in the workspace it shares with the server.
+    // His tablet announces the revocation his root signed in the workspace it
+    // shares with the server.
     let revoked_at = stand_in.issued_at_ns + 2;
     let mut revocation = RevocationEntry {
         user_public_key: bob.user_pk,
@@ -288,7 +288,7 @@ async fn a_stand_in_revoked_in_a_workspace_is_refused_by_what_it_signs_after() {
     // approval this host makes reads, and a restart reads again.
     let logged = tilo_test_env::within("the server keeps the revocation", async {
         loop {
-            if let Ok(entries) = tilo_server::store::load_revocations(state.path())
+            if let Ok(entries) = tilo_server::workspace_files::load_revocations(state.path())
                 && entries.iter().any(|known| known == &revocation)
             {
                 return entries;
@@ -378,7 +378,8 @@ async fn every_revocation_is_refused_after_a_restart() {
     let laptop_session = session(&server, &laptop, plans.workspace_id).await;
     publish(&laptop_session, &hello(&laptop, revoked.clone()));
     tilo_test_env::within("the server keeps every revocation", async {
-        while tilo_server::store::load_revocations(state.path()).map_or(0, |entries| entries.len())
+        while tilo_server::workspace_files::load_revocations(state.path())
+            .map_or(0, |entries| entries.len())
             < revoked.len()
         {
             tokio::task::yield_now().await;

@@ -109,7 +109,7 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
         .unwrap();
     let address = host.server.node_addr();
     let relay_url = address.relay_urls().next().cloned();
-    let page_host =
+    let server_address =
         || ServerAddress::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let chat = DocumentRoute {
         app_id: "so.tilo.chat".into(),
@@ -117,8 +117,20 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
         document: String::new(),
     };
 
-    let founder = arrive(page_host(), &host_device.cert, &lounge.workspace, "Founder").await;
-    let early = arrive(page_host(), &host_device.cert, &lounge.workspace, "Early").await;
+    let founder = arrive(
+        server_address(),
+        &host_device.cert,
+        &lounge.workspace,
+        "Founder",
+    )
+    .await;
+    let early = arrive(
+        server_address(),
+        &host_device.cert,
+        &lounge.workspace,
+        "Early",
+    )
+    .await;
     for page in [&founder, &early] {
         page.send(Cmd::Join(lounge.workspace_id)).unwrap();
         page.send(Cmd::OpenRoute(chat.clone())).unwrap();
@@ -160,7 +172,13 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
     );
 
     // A newcomer reads the record whole: the founding and both changes.
-    let guest = arrive(page_host(), &host_device.cert, &lounge.workspace, "Guest").await;
+    let guest = arrive(
+        server_address(),
+        &host_device.cert,
+        &lounge.workspace,
+        "Guest",
+    )
+    .await;
     guest.send(Cmd::Join(lounge.workspace_id)).unwrap();
     guest.send(Cmd::OpenRoute(chat.clone())).unwrap();
     guest

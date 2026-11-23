@@ -69,6 +69,8 @@ pub struct Held<P: Resource> {
     /// app's own: a document the app keeps for its whole workspace. Any other is one
     /// person's own, which only they change.
     granted: bool,
+    /// The workspace holding the record when it is not the window's ([`Self::held_in`]).
+    workspace: Option<String>,
     live: Live<P>,
     sync: Sync<P>,
     apply: Apply<P>,
@@ -101,6 +103,7 @@ impl<P: Resource> Held<P> {
             label,
             editable,
             granted: false,
+            workspace: None,
             live,
             sync: Box::new(sync),
             apply: Box::new(apply),
@@ -130,6 +133,13 @@ impl<P: Resource> Held<P> {
     /// keeps it instead of being left to one person.
     pub(crate) fn decided_by_grants(mut self) -> Self {
         self.granted = true;
+        self
+    }
+
+    /// The record is held in `workspace`, which decides its changes, rather than in the
+    /// window's: published as such ([`tilo_actions::ResourceSpec::workspace`]).
+    pub(crate) fn held_in(mut self, workspace: Option<String>) -> Self {
+        self.workspace = workspace;
         self
     }
 
@@ -239,6 +249,7 @@ impl<P: Resource> Held<P> {
         } else {
             route(published, &self.id, self.editable)
         };
+        published.workspace.clone_from(&self.workspace);
         // Read whether it is changed here or not: whoever may act on it
         // reads what it holds.
         if P::READABLE && self.read.is_some() && self.live.unreadable().is_none() {

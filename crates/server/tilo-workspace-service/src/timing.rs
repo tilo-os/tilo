@@ -99,14 +99,6 @@ pub fn window(step: &'static str, started: Option<Instant>) {
     drop(windows);
 }
 
-/// Run `work`, adding its duration to `step`'s [`window`].
-pub(crate) fn windowed<T>(step: &'static str, work: impl FnOnce() -> T) -> T {
-    let started = start();
-    let result = work();
-    window(step, started);
-    result
-}
-
 /// How long a phase of a write may wait before it is said while it still waits.
 const WAITED_LONG: Duration = Duration::from_secs(10);
 

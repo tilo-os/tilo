@@ -93,6 +93,8 @@ mod directory;
 mod display_settings;
 #[path = "displays.rs"]
 mod displays;
+#[path = "do_action.rs"]
+mod do_action;
 #[path = "fabric.rs"]
 mod fabric;
 #[path = "file_clipboard.rs"]
@@ -145,8 +147,6 @@ mod lockdown_live;
 mod log_says_once;
 #[path = "logging.rs"]
 mod logging;
-#[path = "lounge_e2e.rs"]
-mod lounge_e2e;
 #[path = "machine_isolation.rs"]
 mod machine_isolation;
 #[path = "machine_plan.rs"]

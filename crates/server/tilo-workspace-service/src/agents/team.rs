@@ -141,7 +141,7 @@ impl TurnTeam {
             offered: Vec::new(),
         };
         let caller = scope.reply(turn).caller;
-        if team.asker(&caller).await.is_ok() {
+        if team.on_turn(&caller).await.is_ok() {
             team.offered = rows()
                 .into_iter()
                 .filter(|row| {
@@ -154,9 +154,9 @@ impl TurnTeam {
         Arc::new(team)
     }
 
-    /// Who asked the turn of this agent `caller` is on, by their person id: the first check of
+    /// That `caller` is on a turn of this agent, whichever member asked it: the first check of
     /// everything here. Every other caller is answered what an unknown action is.
-    async fn asker(&self, caller: &Caller) -> Result<String, NotTaken> {
+    async fn on_turn(&self, caller: &Caller) -> Result<(), NotTaken> {
         let turn = HostedTurn {
             workspace: self.workspace_id,
             caller,
@@ -164,7 +164,7 @@ impl TurnTeam {
         };
         let asked = self.workspaces.asked_turn(&turn).await?;
         if asked.agent == self.agent.id.0 {
-            Ok(hex::encode(asked.person))
+            Ok(())
         } else {
             Err(NotTaken::UnknownAction)
         }
@@ -208,21 +208,23 @@ impl TurnTeam {
         decided.answer == Answer::Allow
     }
 
-    /// Whether the person `caller` works for changes the workspace's own documents as a
-    /// member: an editor or more, admitted now. The server's own person keeps theirs: a
-    /// listing leaves the server's own account out, and its agents work all the same.
-    async fn asker_edits(&self, caller: &Caller) -> bool {
-        let Some(person) = caller.turn_person().map(hex::encode) else {
-            return false;
-        };
+    /// Whether every person `caller`'s turn is decided for changes the workspace's own
+    /// documents as a member: an editor or more, admitted now. That is the person who asked
+    /// and, where the agent belongs to someone else, that person too: the turn does no more
+    /// than both may.
+    async fn people_edit(&self, caller: &Caller) -> bool {
         let Ok((_, kept)) = self.workspaces.kept_membership(&self.workspace).await else {
             return false;
         };
-        kept.get(&person).is_some_and(|mark| {
-            !mark.removed
-                && !mark.banned
-                && Role::parse(&mark.role).is_some_and(|role| role.includes(Role::Editor))
-        })
+        let people = caller.acting().people();
+        !people.is_empty()
+            && people.iter().all(|person| {
+                kept.get(*person).is_some_and(|mark| {
+                    !mark.removed
+                        && !mark.banned
+                        && Role::parse(&mark.role).is_some_and(|role| role.includes(Role::Editor))
+                })
+            })
     }
 
     /// The workspace's list of its agents, as the workspace keeps it now.
@@ -238,11 +240,16 @@ impl TurnTeam {
         crate::agents::opened::<WorkspaceAgents>(&mut doc)
     }
 
-    /// Apply `invoke` on the list as the turn's agent acting for `asker`, who asked the turn:
-    /// the list's own rules decide, and what it refuses is the error.
-    async fn on_list(&self, invoke: Invoke<WorkspaceAgents>, asker: &str) -> Result<(), String> {
+    /// Apply `invoke` on the list as `caller`'s turn acts: its agent, for the person who asked,
+    /// bounded by the person the agent belongs to where that is someone else. The list's own
+    /// rules decide, and what it refuses is the error.
+    async fn on_list(
+        &self,
+        invoke: Invoke<WorkspaceAgents>,
+        caller: &Caller,
+    ) -> Result<(), String> {
         let document = collab_types::workspace_document_id(KIND);
-        let by = self.agent.id.0.clone();
+        let acting = caller.acting().clone();
         self.workspaces
             .author_application(
                 &self.workspace,
@@ -253,7 +260,7 @@ impl TurnTeam {
                 |doc| {
                     let mut list =
                         tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                            .as_agent_for(&by, asker)
+                            .as_acting(acting)
                             .in_app(tilo_workspace_agent::OWNER, "Assistant");
                     // A replica stamps what it writes with a fixed day of its own unless told the time.
                     list.set_now_ms(tilo_clock::unix_now_ms_i64());
@@ -335,7 +342,7 @@ impl TurnTeam {
     async fn start(
         &self,
         given: &Map<String, Value>,
-        asker: &str,
+        caller: &Caller,
     ) -> Result<Result<Value, String>, NotTaken> {
         let mut new: NewSubAgent = read_as(given)?;
         // Named here where the starter gave no id, so it is told the id at once.
@@ -350,7 +357,7 @@ impl TurnTeam {
         let started = self
             .on_list(
                 WorkspaceAgents::START_SUB_AGENT.with(StartSubAgent { sub_agent: new }),
-                asker,
+                caller,
             )
             .await;
         if let Err(why) = started {
@@ -391,7 +398,7 @@ impl TurnTeam {
         request: &InvokeRequest,
     ) -> Result<InvocationUpdate, NotTaken> {
         let invocation = request.invocation;
-        let asker = self.asker(caller).await?;
+        self.on_turn(caller).await?;
         let address = &request.target.address;
         let verb = address.action.as_str();
         if address.resource != TEAM || ![READ, START, NOTE, STOP].contains(&verb) {
@@ -413,18 +420,18 @@ impl TurnTeam {
             } else {
                 Some(read_as::<Named>(given)?.agent)
             };
-            if !self.lets(caller, verb, named.as_deref()) || !self.asker_edits(caller).await {
+            if !self.lets(caller, verb, named.as_deref()) || !self.people_edit(caller).await {
                 return Err(NotTaken::NotPermitted);
             }
             match (verb, named) {
-                (START, _) => self.start(given, &asker).await?,
+                (START, _) => self.start(given, caller).await?,
                 (NOTE, Some(agent)) => match NonBlank::parse(&read_as::<Noted>(given)?.text) {
                     Some(text) => {
                         let noted = WorkspaceAgents::NOTE_SUB_AGENT.with(NoteSubAgent {
                             agent: Id::from_raw(agent.clone()),
                             text,
                         });
-                        match self.on_list(noted, &asker).await {
+                        match self.on_list(noted, caller).await {
                             Ok(()) => self.one(&agent).await,
                             Err(why) => Err(why),
                         }
@@ -435,7 +442,7 @@ impl TurnTeam {
                     let stopped = WorkspaceAgents::STOP_SUB_AGENT.with(StopSubAgent {
                         agent: Id::from_raw(agent.clone()),
                     });
-                    match self.on_list(stopped, &asker).await {
+                    match self.on_list(stopped, caller).await {
                         Ok(()) => self.one(&agent).await,
                         Err(why) => Err(why),
                     }

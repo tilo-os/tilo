@@ -62,21 +62,6 @@ impl ShellPayloads for NeighbourPayloads {
         .map_err(|error| error.to_string())
     }
 
-    fn host_identity(
-        &self,
-        cert: &tilo_user_identity::DeviceCert,
-    ) -> Result<([u8; 32], Vec<u8>), String> {
-        let hello = NeighbourMsg::IdentityHello {
-            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-            cert: Box::new(cert.clone()),
-            revocations: Vec::new(),
-        };
-        // Persisted: retained identity frames are keyed by this channel.
-        let channel = crate::store::compaction::hello_channel(&cert.device_public_key);
-        let body = postcard::to_stdvec(&hello).map_err(|error| error.to_string())?;
-        Ok((channel, body))
-    }
-
     fn checkpoint(&self, channel: &[u8; 32], body: &[u8]) -> Option<Checkpoint> {
         let msg = NeighbourMsg::decode(body).ok()?;
         if retention(&msg, false) != Some((*channel, Retention::Checkpoint)) {

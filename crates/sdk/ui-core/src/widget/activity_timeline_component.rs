@@ -116,10 +116,6 @@ impl DescribedActivityTimeline {
     pub fn timeline(&self) -> &ActivityTimeline {
         &self.timeline
     }
-
-    pub fn timeline_mut(&mut self) -> &mut ActivityTimeline {
-        &mut self.timeline
-    }
 }
 
 fn change(key: &str) -> Value {

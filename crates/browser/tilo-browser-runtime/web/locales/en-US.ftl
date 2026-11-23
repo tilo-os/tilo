@@ -69,12 +69,6 @@ arrival-wait-full = The wait list is full for now. Please try again in a few day
 arrival-wait-failed = That didn’t go through. Try again in a moment.
 arrival-sign-in-ask = Already have a Tilo identity?
 arrival-sign-in-agent = Sign in with your agent
-arrival-sign-in-passkey = Use a passkey
-arrival-sign-in-not-member = You’re signed in, but this identity isn’t in { $workspace } yet. Join the wait list, or ask someone in it for an invite.
-arrival-sign-in-not-member-unnamed = You’re signed in, but this identity isn’t in this workspace yet. Ask someone in it for an invite.
-arrival-sign-in-unknown = That passkey doesn’t open a Tilo identity this site knows. Use one you made on Tilo, or open Tilo where you already use it.
-arrival-sign-in-failed = Signing in didn’t work in this browser. Try again, or open Tilo where you already use it.
-arrival-sign-in-no-passkeys = Passkeys can’t be used here. On a device where you are signed in, choose “Pair a new device” and paste its link here.
 arrival-invite-toggle = Have an invite or pairing link?
 
 ## The reconnect screen: the page was not let in yet and tries again
@@ -176,3 +170,12 @@ entry-failure-refused-fallback = This link or invitation can’t be used.
 entry-failure-open-host = Open { $server }
 entry-failure-others = Or open another of your workspaces
 entry-failure-elsewhere = Or open one of these instead
+
+## The 24 recovery words, shown once right after a person is first let in
+# recovery-words.mjs: the only way back into Tilo if the person loses every
+# device. The words themselves are not translated.
+recovery-words-heading = Your 24 recovery words
+recovery-words-body = These 24 words are the only way back into Tilo if you lose every device. Write them down in order and keep them safe. Anyone who has them can be you.
+recovery-words-copy = Copy
+recovery-words-copied = Copied
+recovery-words-confirm = I’ve written them down

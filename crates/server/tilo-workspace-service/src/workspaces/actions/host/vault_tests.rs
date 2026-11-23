@@ -4,10 +4,6 @@
 //! another workspace reaches none of it, and an agent its member's device
 //! handed its session to reads it while its changes ask its person.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server's handle a test binds is kept until the test ends; dropping it earlier closes the server it drives"
-)]
 #![allow(
     clippy::too_many_lines,
     reason = "a vault's tests walk one subject each, whole"
@@ -28,7 +24,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{admit, caller, governed, settled};
-use crate::workspaces::fixtures::test_host_taking_part as test_host;
+use crate::workspaces::fixtures::{test_host, test_host_holding};
 use crate::workspaces::tests::{governor, guest_device};
 use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
 
@@ -1321,7 +1317,10 @@ async fn the_sign_ins_a_host_kept_are_the_vaults_once_it_starts() {
     const GRANT: &str = "an-access-token-only-the-grant-holds";
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
+    // Its key service keeps the workspace's document keys across a restart, as a server's does:
+    // the workspace's accounts are sealed for them.
+    let keys = Arc::new(crate::workspaces::fixtures::TestGroupKeys::default());
+    let server = test_host_holding(dir.path(), &key, &owner, Arc::clone(&keys)).await;
     let workspaces = server.workspaces().clone();
     let (_, workspace_id, _) = governed(&workspaces).await;
     let workspace = workspace_id.to_string();
@@ -1374,8 +1373,9 @@ async fn the_sign_ins_a_host_kept_are_the_vaults_once_it_starts() {
         .store(&reference, &authorization, KEY)
         .unwrap();
 
-    // The host starts again over the same state, and carries them over.
-    let server = test_host(dir.path(), &key, &owner).await;
+    // The host starts again over the same state and with the same key service, and carries them
+    // over.
+    let server = test_host_holding(dir.path(), &key, &owner, keys).await;
     let workspaces = server.workspaces();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while accounts::vault_dir_in(&root).exists() {

@@ -326,7 +326,7 @@ fn a_host_admits_by_what_its_vms_take_not_by_what_they_are_configured_at() {
     }) else {
         panic!("a full host makes the wake wait");
     };
-    assert_eq!(words, "Starting another machine for it, about 3 minutes.");
+    assert_eq!(words, "The machine is full until one of its VMs goes idle.");
     assert_eq!(
         service.load().waiting_mib,
         453,
@@ -1128,56 +1128,5 @@ fn a_deleted_vm_is_gone_from_the_host_and_deleting_it_again_is_done() {
             .iter()
             .all(|vm| vm.vm != "ws1/default"),
         "a restarted host does not find it"
-    );
-}
-
-/// The status listener is the network's way to a host, and it reads: it changes no VM. Waking,
-/// stopping, branching and deleting reach the host only on its own socket.
-#[test]
-fn the_status_listener_answers_status_and_changes_nothing() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = config(dir.path());
-    let source = with_disk(&config, "ws1", "acct-1", VmSize::Small, b"one", &[]);
-    let service = Arc::new(open_at(&config, 0));
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap().to_string();
-    service.serve_status(listener);
-    let ask = |request: &Request| {
-        let mut stream = std::net::TcpStream::connect(&address).unwrap();
-        FRAMING.write_value(&mut stream, request).unwrap();
-        FRAMING.read_value::<_, Reply>(&mut stream).unwrap()
-    };
-    assert!(matches!(
-        ask(&Request::Status),
-        Some(Reply::Status { vms, .. }) if vms.len() == 1
-    ));
-    for request in [
-        Request::Stop {
-            workspace: "ws1".into(),
-            environment: "default".into(),
-        },
-        Request::Branch {
-            vm: request("ws2", "acct-1", VmSize::Small),
-            from: "ws1".into(),
-        },
-        Request::Delete {
-            workspace: "ws1".into(),
-            environment: "default".into(),
-        },
-    ] {
-        assert_eq!(
-            ask(&request),
-            Some(Reply::Error("this listener answers Status only".into())),
-            "the network does not {request:?}"
-        );
-    }
-    assert!(
-        !config.state.join("vms").join("ws2").exists(),
-        "nothing was branched"
-    );
-    assert!(source.disk().is_file(), "nothing was deleted");
-    assert_eq!(
-        held(&service),
-        [("ws1/default".into(), "acct-1".into(), "Off".into())]
     );
 }

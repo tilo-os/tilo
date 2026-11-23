@@ -77,7 +77,6 @@ pub enum RowLeading<'a> {
     Signal(crate::widget::SignalLevel),
     Face(crate::presence::Face<'a>),
     Paint(&'a dyn Fn(&mut PaintCtx<'_>, Rect)),
-    AvatarSpace,
 }
 
 impl std::fmt::Debug for RowLeading<'_> {
@@ -97,7 +96,6 @@ impl std::fmt::Debug for RowLeading<'_> {
             Self::Signal(level) => f.debug_tuple("Signal").field(level).finish(),
             Self::Face(face) => f.debug_tuple("Face").field(face).finish(),
             Self::Paint(_) => f.write_str("Paint"),
-            Self::AvatarSpace => f.write_str("AvatarSpace"),
         }
     }
 }
@@ -833,11 +831,18 @@ impl<'a> ListRowFace<'a> {
             name.push(' ');
         }
         name.push_str(&title);
+        // A description explains the row after its name, and the secondary line is how it is
+        // painted: said once, there. Otherwise the secondary line is the row's own text, and a
+        // reader hears all of it as the row's name: a message is its sender and its subject.
+        if let Some(secondary) = self.secondary.filter(|s| !s.is_empty() && !self.described) {
+            name.push_str(", ");
+            name.push_str(secondary);
+        }
         name
     }
 
-    /// The row's accessibility node: a list item named by its badge and title, with the
-    /// subtitle, secondary line, meta, value, count, tags and status as its value, and one
+    /// The row's accessibility node: a list item named by its badge, title and secondary
+    /// line, with the subtitle, meta, value, count, tags and status as its value, and one
     /// button child per action.
     pub fn accessibility(&self, rect: Rect, action_target: impl Into<String>) -> AccessNode {
         let spans: String = self
@@ -854,14 +859,10 @@ impl<'a> ListRowFace<'a> {
             .collect::<Vec<_>>()
             .join(", ");
         let meta = self.meta.filter(|_| self.meta_spans.is_empty());
-        // A description explains the row after its name, and the secondary
-        // line is how it is painted: said once, never counted as a value too.
-        let secondary = self.secondary.filter(|_| !self.described);
         let mut value: Vec<&str> = self.tags.iter().map(|(label, _)| *label).collect();
         value.extend(
             [
                 self.subtitle,
-                secondary,
                 (!facts.is_empty()).then_some(facts.as_str()),
                 self.note,
                 meta,
@@ -934,7 +935,6 @@ enum Leading {
         tint: Option<AvatarTint>,
         agent: bool,
     },
-    AvatarSpace,
     Icon(Icon),
     Badge(String),
     Thumbnail(ImageData),
@@ -1541,15 +1541,6 @@ impl ListRow {
         self
     }
 
-    /// The person's picture in an [`Self::author_cell`].
-    #[must_use]
-    pub fn author_image(mut self, image: ImageData) -> Self {
-        if let Some(author) = &mut self.author {
-            author.image = Some(image);
-        }
-        self
-    }
-
     /// The leading avatar is an agent's own face ([`AvatarFace::agent`]), in its tint.
     #[must_use]
     pub fn agent_face(mut self) -> Self {
@@ -1557,14 +1548,6 @@ impl ListRow {
             *agent = true;
             *square = true;
         }
-        self
-    }
-
-    /// The width an avatar takes, left empty ([`RowLeading::AvatarSpace`]): for a row
-    /// without one in a list whose rows show avatars.
-    #[must_use]
-    pub fn avatar_space(mut self) -> Self {
-        self.leading = Some(Leading::AvatarSpace);
         self
     }
 
@@ -1894,12 +1877,6 @@ impl ListRow {
             trailing.on_disclosure_column = true;
         }
         row
-    }
-
-    /// The row's marks after its title (a status, a role), in order.
-    #[must_use]
-    pub fn tag_labels(&self) -> Vec<&str> {
-        self.tags.iter().map(|(label, _)| label.as_str()).collect()
     }
 
     /// Whether the trailing control sits under the text (the row is narrow).
@@ -2363,7 +2340,6 @@ impl ListRow {
                     };
                     RowLeading::Avatar(if *agent { avatar.agent() } else { avatar })
                 }
-                Leading::AvatarSpace => RowLeading::AvatarSpace,
                 Leading::Icon(icon) => RowLeading::Icon(*icon),
                 Leading::Badge(badge) => RowLeading::Badge(badge),
                 Leading::Thumbnail(image) => RowLeading::Thumbnail(image),

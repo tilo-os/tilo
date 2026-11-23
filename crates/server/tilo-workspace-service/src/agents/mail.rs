@@ -64,7 +64,7 @@ impl TurnMail {
     /// What `turn` reaches of its person's mail, where `reply` holds what its tools begin as.
     pub(super) async fn for_turn(agents: &Agents, turn: &Turn, reply: &Reply) -> Arc<Self> {
         let workspace_id = WorkspaceId::parse(&reply.workspace);
-        let narrowed = narrowing(&turn.agent, &reply.workspace);
+        let narrowed = turn.agent.bound_rules();
         let offered = if let Some(workspace) = workspace_id {
             let hosted = HostedTurn {
                 workspace,
@@ -94,7 +94,7 @@ impl TurnMail {
         let Some(workspace) = self.workspace_id else {
             return Err(ActionCallError::UnknownAction);
         };
-        let narrowed = narrowing(&self.agent, &self.workspace);
+        let narrowed = self.agent.bound_rules();
         let hosted = HostedTurn {
             workspace,
             caller,
@@ -214,13 +214,6 @@ impl TurnProvider for TurnMail {
     fn invoke(self: Arc<Self>, caller: Caller, request: InvokeRequest) -> Ending {
         Box::pin(async move { self.take(&caller, &request).await })
     }
-}
-
-/// The rules a turn of `agent` is decided by in `workspace`, where anything narrows it: what
-/// its entry bounds it to and, for a sub-agent, what keeps it from whoever started it. `None`
-/// for an agent nothing narrows.
-pub(super) fn narrowing(agent: &Agent, workspace: &str) -> Option<Vec<tilo_action_policy::Rule>> {
-    (agent.bound_rules().is_some() || agent.is_sub()).then(|| agent.turn_rules(workspace))
 }
 
 /// What carries out a person's answer to the question about a message their agent would send.

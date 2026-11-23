@@ -158,7 +158,7 @@ fn refused(error: &anyhow::Error) -> NearbyFailure {
         NearbyCause::Expired
     } else if said.contains("is not the ticket's secret") || said.contains("not a Tilo ticket") {
         NearbyCause::Wrong
-    } else if said.contains("can't be reached from here") {
+    } else if said.contains("can't be reached from here") || said.contains("did not take it") {
         NearbyCause::Unreached
     } else if said.contains("reaching Tilo on this computer") || said.contains("didn't start") {
         NearbyCause::NotStarted
@@ -336,7 +336,7 @@ fn ensure_daemon(place: &DaemonPlace) -> Result<(), NearbyFailure> {
 pub(crate) mod testing {
     //! A stand-in for this computer's daemon at the one place setup reaches
     //! it: the socket the real daemon serves Tilo's API on. It answers the two
-    //! calls `tilo login` makes, `GET /v1/workspaces` and the `devices#logIn`
+    //! calls `tilo login` makes, `account/workspaces#list` and the `devices#logIn`
     //! action, and keeps a login the real daemon would keep.
 
     use std::io::{Read as _, Write as _};
@@ -432,10 +432,12 @@ pub(crate) mod testing {
         let Ok((head, body)) = request(&mut stream) else {
             return;
         };
-        let (status, answer) = if head.starts_with("GET /v1/workspaces") {
+        let (status, answer) = if head.starts_with("POST /v1/resources/account")
+            && head.contains("workspaces/actions/list")
+        {
             (
                 200,
-                json!({"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}),
+                json!({"result": {"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}}),
             )
         } else if head.contains("/resources/devices/actions/logIn") {
             if matches!(answer, Answer::Hold) {

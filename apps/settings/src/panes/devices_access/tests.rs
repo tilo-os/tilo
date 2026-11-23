@@ -33,7 +33,6 @@ const DAY: i64 = 86_400_000;
 struct RecordingHost {
     asked: std::sync::Mutex<Vec<InvokeRequest>>,
     listed: std::sync::Mutex<serde_json::Value>,
-    asking: std::sync::Mutex<serde_json::Value>,
     sheet: std::sync::Mutex<Sheet>,
     /// What the MCP server answers of the person's agents. None answers
     /// here until a test says what.
@@ -92,7 +91,6 @@ impl RecordingHost {
         std::sync::Arc::new(Self {
             asked: std::sync::Mutex::default(),
             listed: std::sync::Mutex::new(listed),
-            asking: std::sync::Mutex::new(serde_json::json!({"asking": []})),
             sheet: std::sync::Mutex::default(),
             served: std::sync::Mutex::default(),
             refused: std::sync::Mutex::default(),
@@ -200,8 +198,7 @@ impl ui::tilo_actions::remote::ActionProvider for RecordingHost {
                 }
             };
         }
-        if (request.target == identity_admin::target(identity_admin::DEVICES)
-            || request.target == device_pairing::target(device_pairing::ASKING))
+        if request.target == identity_admin::target(identity_admin::DEVICES)
             && let Some(current) = &mut *self.current.lock().unwrap()
         {
             // A read this host keeps current: admitted, and answered with
@@ -215,8 +212,6 @@ impl ui::tilo_actions::remote::ActionProvider for RecordingHost {
         }
         let value = if request.target == identity_admin::target(identity_admin::DEVICES) {
             self.listed.lock().unwrap().clone()
-        } else if request.target == device_pairing::target(device_pairing::ASKING) {
-            self.asking.lock().unwrap().clone()
         } else if request.target == mcp_server::target(mcp_server::SERVER) {
             let answer = self.served.lock().unwrap().clone();
             let Some(answer) = answer else {
@@ -249,15 +244,11 @@ impl ui::tilo_actions::remote::ActionProvider for RecordingHost {
         _: &Caller,
         id: &ui::tilo_actions::InvocationId,
     ) -> Option<ui::tilo_actions::remote::InvocationState> {
-        let (target, sequence) = self.current.lock().unwrap().as_ref().and_then(|current| {
-            let (_, target) = current.reads.iter().find(|(read, _)| read == id)?;
-            Some((target.clone(), current.changes.saturating_add(1)))
+        let sequence = self.current.lock().unwrap().as_ref().and_then(|current| {
+            current.reads.iter().find(|(read, _)| read == id)?;
+            Some(current.changes.saturating_add(1))
         })?;
-        let value = if target == identity_admin::target(identity_admin::DEVICES) {
-            self.listed.lock().unwrap().clone()
-        } else {
-            self.asking.lock().unwrap().clone()
-        };
+        let value = self.listed.lock().unwrap().clone();
         Some(ui::tilo_actions::remote::InvocationState::new(
             *id,
             ui::tilo_actions::InvocationUpdate::Item {
@@ -321,7 +312,7 @@ fn record(now: i64) -> serde_json::Value {
 
 fn model_on(host: &std::sync::Arc<RecordingHost>) -> (AccessModel, ui::RemoteActions) {
     let remote = ui::RemoteActions::with_provider(host.clone(), Caller::local_person("owner"));
-    let mut model = AccessModel::asking(&remote);
+    let mut model = AccessModel::listed(&remote);
     model.poll(&remote);
     (model, remote)
 }
@@ -567,50 +558,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_request_appears_and_is_approved;
-    {
-        en();
-        let host = RecordingHost::new(record(0));
-        *host.asking.lock().unwrap() = serde_json::json!({"asking": [
-            {"ask": "dd", "label": "Safari on iPad", "code": "482 913", "via": "Pixel 9"},
-        ]});
-        let (mut model, remote) = model_on(&host);
-        assert_eq!(model.asking.len(), 1);
-        assert_eq!(
-            plain_all(asking_lines(&model.asking[0])),
-            ["Shows the code 482 913", "Asked on Pixel 9"]
-        );
-        model
-            .act(
-                &remote,
-                &DevicesAccessEffect::AnswerDevice {
-                    ask: "dd".into(),
-                    label: "Safari on iPad".into(),
-                    approve: true,
-                },
-                None,
-            )
-            .unwrap();
-        *host.asking.lock().unwrap() = serde_json::json!({"asking": []});
-        model.poll(&remote);
-        let answered = host.asked_at(&device_pairing::target(device_pairing::ANSWER));
-        assert_eq!(
-            answered,
-            [
-                serde_json::json!({"ask": "dd", "label": "Safari on iPad", "approve": true,
-                "confirm": true})
-                .as_object()
-                .unwrap()
-                .clone()
-            ]
-        );
-        model.poll(&remote);
-        assert!(
-            model.asking.is_empty(),
-            "an answered request no longer waits"
-        );
-    }
-
     phase connecting_asks_the_shell_for_its_setup;
     {
         en();
@@ -709,16 +656,6 @@ tilo_test_env::scenario! {
         assert_eq!(
             asks(offered(&nightly, "stop-session")),
             [("session".to_owned(), vec!["Nightly export #12".to_owned()])]
-        );
-        let asking = published_row(
-            &mut app,
-            &format!("settings.device-asking:{}", "dd".repeat(32)),
-        )
-        .expect("the device that asks is published");
-        assert_eq!(verbs(&asking), ["answer-device"], "approve or decline");
-        assert_eq!(
-            asks(offered(&asking, "answer-device")),
-            [("approve".to_owned(), Vec::new())]
         );
     }
 }
@@ -980,13 +917,11 @@ tilo_test_env::scenario! {
 }
 
 const OTHER_COMPUTER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
-const ASK: &str = "dd";
 const FIRST_SESSION: &str = "Claude Code #1";
 const SECOND_SESSION: &str = "Claude Code #2";
 
 /// What a person with more than one of everything has listed: this computer
-/// and another, a browser with two tabs, a device asking to join, and an
-/// agent with two sessions open.
+/// and another, a browser with two tabs, and an agent with two sessions open.
 fn a_full_list(now: i64) -> std::sync::Arc<RecordingHost> {
     let mut listed = record(now);
     listed.as_array_mut().unwrap().push(serde_json::json!({
@@ -994,9 +929,6 @@ fn a_full_list(now: i64) -> std::sync::Arc<RecordingHost> {
         "fingerprint": "22 22 22 22 22 22", "current": false, "revoked": false,
         "issued_ms": now - 9 * DAY, "last_active_ms": now - 2 * DAY}));
     let host = RecordingHost::new(listed);
-    *host.asking.lock().unwrap() = serde_json::json!({"asking": [
-        {"ask": ASK, "label": "Safari on iPad", "code": "482 913", "via": "Pixel 9"},
-    ]});
     *host.served.lock().unwrap() = Some(serde_json::json!({
         "endpoint": "https://mcp.tilo.sh",
         "grants": [{"id": LAPTOP_AGENT, "agent": "Claude Code", "device": "laptop",
@@ -1014,10 +946,6 @@ fn computer_row_id() -> String {
 
 fn browser_row_id() -> String {
     format!("settings.device-browser:{BROWSER}")
-}
-
-fn asking_row_id() -> String {
-    format!("settings.device-asking:{ASK}")
 }
 
 fn agent_row_id() -> String {
@@ -1110,7 +1038,7 @@ fn window_on_a_full_list(host: &std::sync::Arc<RecordingHost>) -> TestApp<Settin
     let mut app = window_on(host);
     tilo_test_env::wait_until("every list of the page to be read", || {
         app.settle();
-        [computer_row_id(), browser_row_id(), asking_row_id()]
+        [computer_row_id(), browser_row_id()]
             .iter()
             .all(|id| published_row(&mut app, id).is_some())
             && published_row(&mut app, &agent_row_id())
@@ -1165,8 +1093,8 @@ tilo_test_env::scenario! {
     fn the_rows_of_devices_and_access_are_a_surface_the_host_accepts;
 
     phase settings_opens_on_a_person_with_more_than_one_of_everything;
-    // Another computer, a browser with two tabs, a device asking to join and
-    // an agent with two sessions open: each put one address on its row
+    // Another computer, a browser with two tabs, and an agent with two
+    // sessions open: each put one address on its row
     // several times, and the host withdrew every action of Settings for it.
     {
         let host = a_full_list(now());
@@ -1191,12 +1119,6 @@ tilo_test_env::scenario! {
         let browser = published_row(&mut app, &browser_row_id()).unwrap();
         assert_eq!(verbs(&browser), ["revoke-browser"]);
         assert_eq!(asks(offered(&browser, "revoke-browser")), [reason_asked()]);
-
-        let asking = published_row(&mut app, &asking_row_id()).unwrap();
-        assert_eq!(verbs(&asking), ["answer-device"]);
-        let answer = offered(&asking, "answer-device");
-        assert_eq!(asks(answer), [("approve".to_owned(), Vec::new())]);
-        assert_eq!(answer.params()[0].ty, ui::tilo_actions::ParamType::Boolean);
 
         let agent = published_row(&mut app, &agent_row_id()).unwrap();
         assert_eq!(
@@ -1258,31 +1180,6 @@ tilo_test_env::scenario! {
 
 tilo_test_env::scenario! {
     fn a_press_on_the_page_reaches_the_rows_one_action_with_its_argument;
-
-    phase declining_declines_and_approving_approves;
-    // They were two actions under one address, and a button names its
-    // action by address: whichever was pressed, the first one ran.
-    {
-        for (button, approve) in [("decline", false), ("approve", true)] {
-            let host = a_full_list(now());
-            let mut app = window_on_a_full_list(&host);
-            press(&mut app, &format!("settings.access.asking.{ASK}.{button}"));
-            if approve {
-                // Letting a device in asks its person first.
-                assert!(app.confirm_asked().is_some(), "approving asks first");
-            }
-            assert_eq!(
-                asked_at_last(
-                    &mut app,
-                    &host,
-                    &device_pairing::target(device_pairing::ANSWER)
-                ),
-                [object(serde_json::json!({"ask": ASK, "label": "Safari on iPad",
-                    "approve": approve, "confirm": true}))],
-                "{button}"
-            );
-        }
-    }
 
     phase stopping_one_of_two_sessions_stops_that_one;
     {
@@ -1395,9 +1292,6 @@ tilo_test_env::scenario! {
             );
             assert!(refused.is_err(), "{arguments}: {refused:?}");
         }
-        // An answer nobody gave lets nobody in, and declines nobody.
-        let unanswered = app.call_on(&asking_row_id(), "answer-device", serde_json::json!({}));
-        assert!(unanswered.is_err(), "{unanswered:?}");
         // A session that is not one of the agent's open ones.
         let stranger = app.call_on(
             &agent_row_id(),
@@ -1406,11 +1300,7 @@ tilo_test_env::scenario! {
         );
         assert!(stranger.is_err(), "{stranger:?}");
         app.settle();
-        for target in [
-            revoke(),
-            device_pairing::target(device_pairing::ANSWER),
-            mcp_server::target(mcp_server::STOP),
-        ] {
+        for target in [revoke(), mcp_server::target(mcp_server::STOP)] {
             assert!(host.asked_at(&target).is_empty(), "{target:?}");
         }
     }
@@ -1592,7 +1482,6 @@ tilo_test_env::scenario! {
         let host = a_list_kept_current(0);
         let (model, _remote) = model_on(&host);
         assert_eq!(model.devices_read.kept, Kept::Current);
-        assert_eq!(model.asking_read.kept, Kept::Current);
         assert_eq!(model.wakes_in(), None, "nothing wakes the page to ask again");
         // A host that cannot say when its list changes is asked again while
         // the page is open, as before.
@@ -1795,157 +1684,5 @@ tilo_test_env::scenario! {
             "the row shows what the list says"
         );
         assert_eq!(times_listed(&host), 1, "and the host is not asked again");
-    }
-}
-
-tilo_test_env::scenario! {
-    fn security_review_letting_a_device_in_wants_its_callers_confirmation;
-
-    phase a_call_that_confirms_nothing_lets_no_device_in;
-    {
-        // Security review, 17 November 2026. Taking a device back asks its
-        // caller to confirm (`without_its_confirmation_nothing_is_taken_back`).
-        // Letting one in is the larger act: the device becomes the person.
-        // Called as the search or an agent calls it, confirming nothing, it
-        // must be passed on no more than a taking back is. It was passed
-        // on, marked as confirmed by its person.
-        let devices = a_full_list(now());
-        let mut app = window_on_a_full_list(&devices);
-        let answer = device_pairing::target(device_pairing::ANSWER);
-        let called = app.call_on(
-            &asking_row_id(),
-            "answer-device",
-            serde_json::json!({"approve": true}),
-        );
-        // As long as a pressed button's call is given to be passed on.
-        for _ in 0..200 {
-            app.settle();
-            if !devices.asked_at(&answer).is_empty() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let asked = devices.asked_at(&answer);
-        let confirmed: Vec<_> = devices
-            .asked()
-            .into_iter()
-            .filter(|request| request.target == answer)
-            .map(|request| request.confirmation)
-            .collect();
-        assert!(
-            asked.is_empty(),
-            "a call that confirmed nothing (answered {called:?}) was passed on to let the \
-             device in: {asked:?}, with the confirmation {confirmed:?}"
-        );
-    }
-}
-
-/// `passed_on` is given as long as a pressed button's call takes, and says
-/// that nothing was passed on.
-fn nothing_passed_on(app: &mut TestApp<SettingsShell>, passed_on: impl Fn() -> bool) -> bool {
-    for _ in 0..50 {
-        app.settle();
-        if passed_on() {
-            return false;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    true
-}
-
-tilo_test_env::scenario! {
-    fn letting_a_device_in_is_its_persons_own_act;
-
-    phase the_row_says_what_answering_asks_of_its_caller;
-    // Whoever reads the row's action knows before calling it: letting the
-    // device in wants a confirmation, declining wants none, and anyone
-    // acting for the person asks them first, whatever they were allowed.
-    {
-        let devices = a_full_list(now());
-        let mut app = window_on_a_full_list(&devices);
-        let row = published_row(&mut app, &asking_row_id()).unwrap();
-        let answer = offered(&row, "answer-device");
-        let approving = object(serde_json::json!({"approve": true}));
-        let declining = object(serde_json::json!({"approve": false}));
-        assert_eq!(
-            answer.confirmation_for_json(&approving),
-            ui::tilo_actions::ConfirmationPolicy::Confirm,
-            "letting a device in"
-        );
-        assert_eq!(
-            answer.confirmation_for_json(&declining),
-            ui::tilo_actions::ConfirmationPolicy::None,
-            "declining one"
-        );
-        let attended = ui::tilo_actions::ATTENDED_TAG;
-        assert!(
-            answer.contract.tags.iter().any(|tag| tag == attended),
-            "its person attends: {:?}",
-            answer.contract.tags
-        );
-    }
-
-    phase approve_asks_the_person_first_and_decline_does_not;
-    {
-        let answer = device_pairing::target(device_pairing::ANSWER);
-        let devices = a_full_list(now());
-        let mut app = window_on_a_full_list(&devices);
-        press(&mut app, &format!("settings.access.asking.{ASK}.approve"));
-        let (asked, _) = app.asking().expect("letting a device in asks first");
-        assert_eq!(
-            (asked.resource.clone(), asked.action.as_str()),
-            (asking_row_id(), "answer-device")
-        );
-        assert!(
-            nothing_passed_on(&mut app, || !devices.asked_at(&answer).is_empty()),
-            "nobody is let in before the person agreed"
-        );
-        assert_eq!(app.confirm_asked(), Some(asked));
-        assert_eq!(
-            asked_at_last(&mut app, &devices, &answer),
-            [object(serde_json::json!({"ask": ASK, "label": "Safari on iPad",
-                "approve": true, "confirm": true}))]
-        );
-
-        let devices = a_full_list(now());
-        let mut app = window_on_a_full_list(&devices);
-        press(&mut app, &format!("settings.access.asking.{ASK}.decline"));
-        assert_eq!(app.asking(), None, "declining asks nothing more");
-        assert_eq!(
-            asked_at_last(&mut app, &devices, &answer),
-            [object(serde_json::json!({"ask": ASK, "label": "Safari on iPad",
-                "approve": false, "confirm": true}))]
-        );
-    }
-
-    phase whoever_acts_for_the_person_lets_no_device_in;
-    // An agent, an automation and a bot each reach the action only as a
-    // call delivered for them. Even with a confirmation on it, such a call
-    // lets nobody in: Settings would pass it on to whoever keeps the
-    // person's devices as the person's own word.
-    {
-        let answer = device_pairing::target(device_pairing::ANSWER);
-        for acting in [
-            ui::tilo_actions::ActionInvoker::agent("scribe"),
-            ui::tilo_actions::ActionInvoker::automation("nightly"),
-            ui::tilo_actions::ActionInvoker::bot("helper"),
-        ] {
-            let devices = a_full_list(now());
-            let mut app = window_on_a_full_list(&devices);
-            let refused = {
-                let _for = ui::invocation_scope::InvokerScope::enter(acting.clone());
-                app.call_confirmed_on(
-                    &asking_row_id(),
-                    "answer-device",
-                    serde_json::json!({"approve": true}),
-                )
-            };
-            assert!(refused.is_err(), "{acting:?} was answered {refused:?}");
-            assert!(
-                nothing_passed_on(&mut app, || !devices.asked_at(&answer).is_empty()),
-                "{acting:?} had a device let in: {:?}",
-                devices.asked_at(&answer)
-            );
-        }
     }
 }

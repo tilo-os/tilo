@@ -22,7 +22,7 @@ from tilo import Entry, Invocation, Resource
 __all__ = [
     "Filesystem",
     "InstallProfile",
-    "PreparedSetupExpectation",
+    "MediaPreparedSetup",
     "RecentSource",
     "Source",
     "SourceIdentity",
@@ -46,9 +46,9 @@ class InstallProfile(TypedDict):
     wifi_ssid: str
     device_label: str
     enroll_local_identity: bool
-    prepared_setup: PreparedSetupExpectation | None
+    prepared_setup: MediaPreparedSetup | None
 
-class PreparedSetupExpectation(TypedDict):
+class MediaPreparedSetup(TypedDict):
     schema: int
     sealed_bytes: int
     ciphertext_sha256: str
@@ -89,7 +89,7 @@ ClearSourceArgs = TypedDict("ClearSourceArgs", {
 
 class Sources(Resource):
     """Image sources — `imager.sources`."""
-    __surface__ = "so.tilo.imager@4a37f2987b3e5ed3"
+    __surface__ = "so.tilo.imager@a069ab15651fe83e"
     @property
     def source(self) -> Source | None:
         """Read only."""

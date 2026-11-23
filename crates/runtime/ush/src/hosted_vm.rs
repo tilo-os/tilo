@@ -1472,7 +1472,7 @@ print("answered " + s.makefile("rb").readline().decode().strip(), flush=True)
         assert_eq!(String::from_utf8(out.take()).unwrap(), "ran cargo build\n");
         assert_eq!(
             String::from_utf8(err.take()).unwrap(),
-            "ush: cargo: Starting another machine for it, about 3 minutes. Waiting; Ctrl+C \
+            "ush: cargo: The machine is full until one of its VMs goes idle. Waiting; Ctrl+C \
              cancels.\n",
             "said once, however long it waits"
         );

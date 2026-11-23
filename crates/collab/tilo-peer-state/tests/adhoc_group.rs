@@ -699,10 +699,6 @@ async fn the_rest_keep_the_workspace_when_the_desktop_it_was_made_on_leaves() {
 /// enters the workspace after reads each of them, change for change, from it
 /// alone, and still does once that desktop starts again from its files.
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "each desktop keeps its service up until the test has it leave"
-)]
 async fn a_desktop_handed_the_workspace_keeps_all_of_it_when_the_one_that_handed_it_leaves_at_once()
 {
     const RESOURCES: [&str; 3] = [DOCUMENT, "tab:2", "tab:3"];

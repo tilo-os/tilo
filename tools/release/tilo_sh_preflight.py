@@ -363,6 +363,12 @@ def identity(volumes: Path) -> tuple[set[str], set[str]]:
     return keys, workspaces
 
 
+def documents(volumes: Path) -> int:
+    """How many files of workspace documents the volume holds: what the release must read back."""
+    return sum(1 for path in volumes.rglob("*") if path.is_file()
+               and (path.suffix in (".delta", ".pack", ".automerge") or path.name == ".journal"))
+
+
 def shape(value):
     """VALUE's keys, nested, with what they hold left out: the form of a JSON document. A list is
     only a list: the addresses a host reaches depend on the network it starts in."""
@@ -385,10 +391,11 @@ def host_info(pod: Pod) -> dict:
     """What the running Lounge's server wrote for the web entry's TILO_WEB_HOME_HOST_INFO."""
     container = f"{pod.pod}-room-service"
     result = run(*PODMAN, "exec", container, "sh", "-c",
-                 'cat "${TILO_WORKSPACES_STATE:-/run/tilo-workspaces}/$TILO_WORKSPACES_PERSISTENT/server/web-host.json"',
+                 'cat "${TILO_WORKSPACES_STATE:-/run/tilo-workspaces}/$TILO_WORKSPACES_PERSISTENT/server/server/web-host.json"',
                  capture_output=True, check=False)
     if result.returncode != 0:
-        die(f"the Lounge's server wrote no web-host.json: {result.stderr.strip()[-2000:]}")
+        die(f"the Lounge's server wrote no web-host.json, which the web entry's and the API's host lines "
+            f"are copied from: {result.stderr.strip()[-2000:]}")
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
@@ -457,15 +464,20 @@ def main() -> None:
         base = render(tree_at(infra, a.base, work / "base-tree"))
         step("live", base, secrets_, work, bool(a.state))
     (keys, workspaces) = identity(work / "volumes")
+    written = documents(work / "volumes")
+    if not a.no_base and not written:
+        die("the live build left no workspace documents on the volume: the upgrade would read nothing it wrote")
     step("release", release, secrets_, work, bool(a.state))
     (keys_after, workspaces_after) = identity(work / "volumes")
     # The device key is the Lounge's address: the web entry dials it and the VM hosts take work
-    # from it, so it is the one thing every release keeps. Its workspace may start afresh.
+    # from it. The Lounge's workspace and what it holds are the people's: a release that starts
+    # them afresh, or moves them aside, loses them.
     if keys and keys_after != keys:
         die(f"the Lounge's device key changed across the upgrade: before {sorted(keys)}, after {sorted(keys_after)}")
-    if workspaces_after - workspaces:
-        say(f"the Lounge's workspace is new: {sorted(workspaces)} before, {sorted(workspaces_after - workspaces)} now")
-    say(f"the release serves on the volume the live pods left, with the same device key ({sorted(keys_after)})")
+    if workspaces_after != workspaces:
+        die(f"the Lounge's workspace changed across the upgrade: before {sorted(workspaces)}, after {sorted(workspaces_after)}")
+    say(f"the release serves on the volume the live pods left ({written} document files), with the same "
+        f"device key ({sorted(keys_after)}) and workspace ({sorted(workspaces_after)})")
 
 
 if __name__ == "__main__":

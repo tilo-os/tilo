@@ -5,11 +5,6 @@
 //! The server is a stand-in on loopback: no real account, password or
 //! mailbox is touched.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server handle a test binds is kept until the test ends; dropping it earlier closes the service it drives"
-)]
-
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
@@ -21,7 +16,7 @@ use super::accounts_tests::asking;
 use tilo_server_protocol::WorkspaceId;
 
 use crate::workspaces::Workspaces;
-use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
+use crate::workspaces::tests::{governor, test_host};
 
 /// What an action answered.
 fn answered<T: serde::de::DeserializeOwned>(receipt: InvocationReceipt) -> T {
@@ -149,6 +144,7 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
         .await
         .unwrap_or_default();
     assert_eq!(app_password, "minted-app-password");
+    kept_soon(workspaces, workspace_id, "caldav").await;
     let calendar = kept_of_type(workspaces, workspace_id, "caldav")
         .await
         .expect("the calendar server is kept");

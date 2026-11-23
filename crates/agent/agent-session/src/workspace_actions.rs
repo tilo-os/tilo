@@ -381,19 +381,32 @@ impl WorkspaceActions {
         acts_for(caller, &hex::encode(link.user_public_key()))
     }
 
-    /// That an agent's turn asks for `request` under its own key: an agent working on its turn
-    /// acts only on an invocation its certified key signed, checked as the host checks one
-    /// that comes over the network ([`tilo_server_protocol::invocation::verify_invocation`]):
-    /// the signature, that it covers this very request, its freshness, the certificate's
-    /// chain to its person's root and its revocation, and that the key is the device the
-    /// caller names. Everyone else is admitted as they are.
+    /// That an agent acting with its own key asks for `request` under that key, checked as a
+    /// host checks one that comes over the network
+    /// ([`tilo_server_protocol::invocation::verify_agent_invocation`]): the signature, that it
+    /// covers this very request, its freshness, the certificate's chain to its person's root
+    /// and its revocation, that the key is an agent's grant reaching this workspace and that it
+    /// is the key the caller was admitted as. A device's own key never signs for an agent. An
+    /// agent a person's own device handed its session to is that device's to sign for, and
+    /// everyone else is admitted as they are.
     fn signed_by_agent(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<(), String> {
-        if caller.roster_created_at().is_none() {
+        let (Some(person), Some(key)) = (caller.user_public_key(), caller.device_public_key())
+        else {
+            return Ok(());
+        };
+        // A sub-agent works under the key of the agent that heads its line.
+        let Some(agent) = caller
+            .approved_agent()
+            .or_else(|| caller.acting().agent_id())
+        else {
+            return Ok(());
+        };
+        if caller.is_session_delegated() {
             return Ok(());
         }
         let revocations = self
@@ -402,19 +415,15 @@ impl WorkspaceActions {
             .get()
             .map(|link| link.revocations())
             .ok_or("the host's workspace actions are not running")?;
-        let cert = tilo_server_protocol::invocation::verify_invocation(
+        tilo_server_protocol::invocation::verify_agent_invocation(
             &workspace_id.to_string(),
             request,
+            (person, agent, key),
             &revocations,
             tilo_clock::unix_now_ns(),
         )
-        .map_err(|error| format!("{}: {error}", error.code()))?;
-        if caller.device_public_key() != Some(&cert.device_public_key)
-            || caller.user_public_key() != Some(&cert.user_public_key)
-        {
-            return Err("the invocation is signed by another key than the agent's".into());
-        }
-        Ok(())
+        .map(drop)
+        .map_err(|error| format!("{}: {error}", error.code()))
     }
 
     /// Whether `caller` may ask the host to run `request` at all. Anyone the
@@ -593,27 +602,6 @@ impl WorkspaceActions {
             RemoteActionMessage::ContentLinkRequest { correlation, link } => {
                 self.content_link(workspace_id, caller, correlation, link)
             }
-            RemoteActionMessage::SearchRequest {
-                correlation,
-                needle,
-                within,
-            } => {
-                let (done, answer) = pending();
-                let job = Job::Search {
-                    workspace_id,
-                    caller: caller.clone(),
-                    needle,
-                    within,
-                    done,
-                };
-                if let Err(Job::Search { done, .. }) = self.submit(job) {
-                    done.complete(Err(unavailable()));
-                }
-                answer.map(move |result| RemoteActionMessage::SearchResponse {
-                    correlation,
-                    result,
-                })
-            }
             RemoteActionMessage::ChangesRequest { correlation, after } => {
                 let (done, answer) = pending();
                 let job = Job::Changes {
@@ -668,12 +656,46 @@ impl WorkspaceActions {
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::ContentLinkResponse { .. }
-            | RemoteActionMessage::SearchResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::ChangedResponse { .. }
             | RemoteActionMessage::SurfaceResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
         })
+    }
+
+    /// What the workspace's search finds for `request` ([`tilo_actions::remote::search::FIND`]),
+    /// as `caller` may read it, answered as the invocation's receipt.
+    fn search_request(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<RemoteActionMessage> {
+        use tilo_actions::remote::search;
+        let invocation = request.invocation;
+        let query = match search::Query::of(request) {
+            Ok(query) => query,
+            Err(error) => {
+                return Pending::ready(RemoteActionMessage::Receipt(search::receipt(
+                    invocation,
+                    Err(error),
+                )));
+            }
+        };
+        let (done, answer) = pending();
+        let job = Job::Search {
+            workspace_id,
+            caller: caller.clone(),
+            needle: query.needle,
+            within: query.within,
+            done,
+        };
+        if let Err(Job::Search { done, .. }) = self.submit(job) {
+            done.complete(Err(ActionCallError::Unavailable {
+                reason: "the host's workspace actions are not running".into(),
+            }));
+        }
+        answer.map(move |found| RemoteActionMessage::Receipt(search::receipt(invocation, found)))
     }
 
     /// Admit `request` from `caller` and run it on the service's thread,
@@ -692,6 +714,10 @@ impl WorkspaceActions {
         // remembered as no run of its own.
         if tilo_actions::remote::workspace_invocations::is_listing(&request.target) {
             return self.invocations_request(workspace_id, caller, &request);
+        }
+        // So is the workspace's search, run on the service's thread as every reader is.
+        if tilo_actions::remote::search::is_find(&request.target) {
+            return self.search_request(workspace_id, caller, &request);
         }
         let receipt = |status| {
             Pending::ready(RemoteActionMessage::Receipt(InvocationReceipt {

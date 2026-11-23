@@ -364,8 +364,8 @@ notification-group-system = System
 notification-center-undo = Undo
 notification-not-now = Not now
 
-# Your devices: pairing a new one from another of yours, and administering
-# your identities, as Settings asks the session for them.
+# Your devices: administering your identities, as Settings asks the session
+# for them.
 search-action-identity-resource = Your identities
 search-action-identity-list = List your identities
 search-action-identity-list-subtitle = Show the identities on this device and which one new apps sign in as
@@ -379,17 +379,6 @@ search-action-identity-devices-list = List your trusted devices
 search-action-identity-devices-list-subtitle = Show the devices trusted under this workspace's identity and which are revoked
 search-action-identity-device-revoke = Revoke an identity device
 search-action-identity-device-revoke-subtitle = Permanently stop trusting a lost, retired, or compromised device
-search-action-identity-device-pair-resource = Nearby device pairing
-search-action-identity-device-pair-discover = Find a nearby device to pair
-search-action-identity-device-pair-discover-subtitle = Look on this network for a new device or home server waiting to join
-search-action-identity-device-pair-approve = Approve a nearby device
-search-action-identity-device-pair-approve-subtitle = Let the device found nearby join once both screens show the same code
-search-action-identity-device-pair-reject = Reject a nearby device
-search-action-identity-device-pair-reject-subtitle = Forget a device found nearby and stop approving it
-search-action-identity-device-pair-asking = Devices asking to be you
-search-action-identity-device-pair-asking-subtitle = The new devices your other devices found, waiting for you to approve them here
-search-action-identity-device-pair-answer = Answer a device asking to be you
-search-action-identity-device-pair-answer-subtitle = Approve or decline a device another of your devices found, as its notification does
 
 # A new device another of yours found: the banner that asks the person here.
 pairing-asks-title = A device asks to be you
@@ -440,7 +429,7 @@ workspace-settings-role-viewer = Viewer
 workspace-settings-role-admin = Admin
 workspace-settings-role-guest = Guest
 workspace-settings-role-owner-preview = Can manage people, permissions, and workspace settings.
-workspace-settings-role-moderator-preview = Can edit shared work, remove other people's messages, lock channels, and remove or ban editors and below.
+workspace-settings-role-moderator-preview = Can edit shared work, remove other people's messages, lock channels, and remove or ban members.
 workspace-settings-role-editor-preview = Can view, comment on, and edit shared work.
 workspace-settings-role-commenter-preview = Can view shared work and add comments, but cannot edit it.
 workspace-settings-role-viewer-preview = Can view shared work, but cannot comment or edit it.

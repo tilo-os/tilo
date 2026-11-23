@@ -194,10 +194,6 @@ impl Workspaces {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server handle a test binds is kept until the test ends"
-)]
 mod tests {
     use super::*;
     use crate::workspaces::listing::entry_tests::walk_in_as;

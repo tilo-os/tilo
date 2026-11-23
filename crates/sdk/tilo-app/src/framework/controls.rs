@@ -418,6 +418,7 @@ impl ActionTable {
             actions: vec![spec],
             views: Vec::new(),
             personal: published.personal,
+            workspace: published.workspace.clone(),
             resource_type: published.resource_type.clone(),
         }
     }

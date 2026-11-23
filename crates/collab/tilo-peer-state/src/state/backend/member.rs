@@ -53,7 +53,7 @@ fn current(
     let workspace = peer
         .workspace_doc
         .as_ref()
-        .ok_or(MembershipError::GovernanceMissing)?;
+        .ok_or(MembershipError::RulesMissing)?;
     let policy = workspace.workspace_policy(&peer.workspace);
     let key = key_text(source);
     // Decoded once per document state, not on every lookup.
@@ -109,7 +109,7 @@ fn current(
             },
         });
     let role = if delegate.is_some() {
-        crate::state::delegates::agent_role(role)
+        tilo_action_policy::roles::agent_policy::role(role)
     } else {
         role
     };

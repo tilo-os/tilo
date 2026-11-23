@@ -5,8 +5,8 @@ use super::{
     BTreeMap, Document, DocumentAdmission, DocumentMutation, DroppedInput, Duration,
     Ed25519PublicKey, Held, InboundState, InputDisposition, MemberAccess, MissingPrerequisite,
     NeighbourMsg, OpKind, ReceiveOutcome, Route, SignedOp, StatePeer, SystemTime, backend,
-    empty_genesis, empty_genesis_op, err, peer_handle, person_of, sealed_compaction,
-    sealed_history, workspace,
+    empty_genesis, empty_genesis_op, peer_handle, person_of, sealed_compaction, sealed_history,
+    workspace,
 };
 use crate::document;
 
@@ -50,12 +50,15 @@ impl StatePeer {
             // cleartext below, whichever of the two it is.
             let genesis = empty_genesis_op(app, record, &self.core.workspace, &envelope);
             if !envelope.is_whole_resource() && !genesis {
-                return Err("local app publication cannot create a record owner".into());
+                return Err(AdmissionError::malformed(
+                    "local app publication cannot create a record owner",
+                )
+                .into());
             }
             if genesis
                 && !self.signed_by_governor(&source)
                 && !self.may_create_document(
-                    &self.membership(source, now)?,
+                    &self.permissions(source, now)?,
                     &Route {
                         app: app.into(),
                         record: record.into(),
@@ -63,7 +66,10 @@ impl StatePeer {
                     now,
                 )
             {
-                return Err("the workspace does not let this device create the record".into());
+                return Err(AdmissionError::forbidden(
+                    "the workspace does not let this device create the record",
+                )
+                .into());
             }
         }
         self.admit_document(
@@ -81,10 +87,7 @@ impl StatePeer {
             false,
             false,
         )
-        .map_err(|error| match error {
-            AdmissionError::ChangeRefused(refused) => crate::NotAdmitted::ChangeRefused(refused),
-            other => crate::NotAdmitted::Refused(other.to_string()),
-        })
+        .map_err(crate::NotAdmitted::from)
     }
 
     #[expect(
@@ -109,21 +112,33 @@ impl StatePeer {
             readers,
         } = message
         else {
-            return Err("not a document message".into());
+            return Err(crate::AdmissionError::malformed("not a document message"));
         };
         if cluster_id != self.core.workspace
             || peer != peer_handle(&source)
             || envelope.author.as_bytes() != &source
         {
-            return Err("transport author or document workspace mismatch".into());
+            return Err(crate::AdmissionError::forbidden(
+                "transport author or document workspace mismatch",
+            ));
         }
+        // A frame is admitted only as the device whose key signed it. The
+        // store's keep checks this too (`retained::Frame::of`), but it runs
+        // after the engine has decided the frame, so a write that reached the
+        // engine any other way would otherwise decide an op no key signed.
+        collab_types::verify_op(&envelope).map_err(|error| {
+            crate::AdmissionError::forbidden(format!(
+                "the change is not signed by its author: {error}"
+            ))
+        })?;
         self.check_document_key_scope(
             (&app_id, &document_id),
             readers.as_deref(),
             envelope.encryption,
             now,
             retained_replay,
-        )?;
+        )
+        .map_err(crate::AdmissionError::malformed)?;
         // A piece of a compaction that spans several ops changes nothing on its
         // own: it is gathered, and the compaction is admitted once it is whole.
         let envelope = if collab_types::is_compaction_piece(&envelope)
@@ -131,7 +146,10 @@ impl StatePeer {
                 .publication()
                 .holds_sealed(&app_id, &document_id, &envelope)
         {
-            match self.gather_compaction_piece((&app_id, &document_id), *envelope)? {
+            match self
+                .gather_compaction_piece((&app_id, &document_id), *envelope)
+                .map_err(crate::AdmissionError::malformed)?
+            {
                 Some(head) => Box::new(head),
                 None => return Ok(AdmissionReport::metadata(ReceiveOutcome::default())),
             }
@@ -215,9 +233,7 @@ impl StatePeer {
                         said,
                     )))
                 }
-                other @ super::authority::AuthorizeRefusal::Denied(_) => {
-                    AdmissionError::Rejected(other.to_string())
-                }
+                super::authority::AuthorizeRefusal::Denied(refusal) => refusal,
             })? {
             // A device its person removed writes nothing more: only what the
             // workspace had taken of it is history, and a write this device
@@ -226,7 +242,7 @@ impl StatePeer {
             | super::authority::Authorized::Hold(MissingPrerequisite::RemovalCut)
                 if local_app =>
             {
-                return Err(super::MembershipError::Revoked.to_string().into());
+                return Err(super::MembershipError::Revoked.into());
             }
             super::authority::Authorized::Admit {
                 member,
@@ -259,7 +275,7 @@ impl StatePeer {
             &document_id,
             &envelope,
         )
-        .map_err(err)?;
+        .map_err(crate::AdmissionError::malformed)?;
         let route = Route {
             app: app_id.clone(),
             record: document_id,
@@ -361,7 +377,7 @@ impl StatePeer {
                     },
                 ));
             }
-            Err(error) => return Err(err(error).into()),
+            Err(error) => return Err(crate::AdmissionError::malformed(error)),
         }
         if envelope.kind == OpKind::Compaction
             && !matches!(
@@ -369,7 +385,9 @@ impl StatePeer {
                 collab_types::WholeDocumentPayload::Encrypted { .. }
             )
         {
-            return Err("a document compaction is only ever sealed".into());
+            return Err(crate::AdmissionError::malformed(
+                "a document compaction is only ever sealed",
+            ));
         }
         let mutation = match payload {
             // The write that seals the record waits behind the record's
@@ -455,17 +473,18 @@ impl StatePeer {
                 // A plaintext write to a record after it sealed is a
                 // downgrade, and refused, however its host sent it: live, or
                 // replayed from what its store kept.
-                return Err(
-                    "incomplete: authenticated persisted MLS group required; plaintext downgrade forbidden"
-                        .into(),
-                );
+                return Err(crate::AdmissionError::forbidden(
+                    "incomplete: authenticated persisted MLS group required; plaintext downgrade forbidden",
+                ));
             }
         };
         candidate.channel = inbound;
         if let DocumentMutation::Incremental(bytes) = &mutation {
-            let changes = collab_types::parse_changes(bytes).map_err(err)?;
+            let changes =
+                collab_types::parse_changes(bytes).map_err(crate::AdmissionError::malformed)?;
             collab_types::check_appearances(&changes, shows.as_ref())
-                .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
+                .map_err(|refusal| format!("document change forbidden: {refusal}"))
+                .map_err(crate::AdmissionError::malformed)?;
         }
         // A record's genesis is not a checkpoint: it is started empty, so
         // there is no retained history for the workspace to acknowledge.
@@ -505,7 +524,9 @@ impl StatePeer {
         // their devices publishing the record as it holds it carries no row
         // of its own, and is taken in as that device's own change rather
         // than held to a coverage that is not about it.
-        let coverage = self.governed_coverage(&route)?;
+        let coverage = self
+            .governed_coverage(&route)
+            .map_err(crate::AdmissionError::malformed)?;
         let covered_by = coverage.as_ref().map(|row| row.author);
         let owner_snapshot = matches!(&mutation, DocumentMutation::Snapshot(_))
             && !local_app
@@ -515,7 +536,9 @@ impl StatePeer {
             owner_snapshot && covered_by.is_none_or(|author| author == source);
         if governed_checkpoint {
             let DocumentMutation::Snapshot(bytes) = &mutation else {
-                return Err("only a whole document is a checkpoint".into());
+                return Err(crate::AdmissionError::malformed(
+                    "only a whole document is a checkpoint",
+                ));
             };
             let Some(coverage) = coverage.as_ref() else {
                 return self.defer(
@@ -570,7 +593,9 @@ impl StatePeer {
             {
                 tilo_automerge_isolate::Applied::Changed(_) => {}
                 tilo_automerge_isolate::Applied::MissingDependencies => {
-                    return Err("retained checkpoint snapshot is incomplete".into());
+                    return Err(crate::AdmissionError::malformed(
+                        "retained checkpoint snapshot is incomplete",
+                    ));
                 }
             }
             let heads = snapshot
@@ -586,17 +611,22 @@ impl StatePeer {
                 || coverage.payload_hash != *blake3::hash(&envelope.payload).as_bytes()
                 || coverage.heads != heads
             {
-                return Err("checkpoint does not match governed coverage".into());
+                return Err(crate::AdmissionError::malformed(
+                    "checkpoint does not match governed coverage",
+                ));
             }
             if coverage.watermarks.get(&hex::encode(source)).copied() != Some(envelope.seq) {
-                return Err("checkpoint author coverage mismatch".into());
+                return Err(crate::AdmissionError::forbidden(
+                    "checkpoint author coverage mismatch",
+                ));
             }
             candidate.covered_snapshot = Some(AcceptedCheckpoint::new(bytes.clone()));
             for (author, sequence) in &coverage.watermarks {
                 let key: [u8; 32] = hex::decode(author)
-                    .map_err(err)?
+                    .map_err(crate::AdmissionError::malformed)?
                     .try_into()
-                    .map_err(|_| "coverage key length")?;
+                    .map_err(|_| "coverage key length")
+                    .map_err(crate::AdmissionError::malformed)?;
                 let covered = candidate.covered.entry(author.clone()).or_default();
                 *covered = (*covered).max(*sequence);
                 let floor = candidate
@@ -655,17 +685,24 @@ impl StatePeer {
                 );
             }
             document::MergeOutcome::MissingDependencies => {
-                return Err("local publication has unresolved document dependencies".into());
+                return Err(crate::AdmissionError::rejected(
+                    neighbour_wire::RefusalReason::MissingDependency,
+                    "local publication has unresolved document dependencies",
+                ));
             }
         };
         if local_app && !candidate.doc.get_missing_deps(&[]).is_empty() {
-            return Err("local publication has unresolved document dependencies".into());
+            return Err(crate::AdmissionError::rejected(
+                neighbour_wire::RefusalReason::MissingDependency,
+                "local publication has unresolved document dependencies",
+            ));
         }
         if let Some(before) = &desktop_before {
             self.check_shared_desktop(&candidate.doc, before, &member, authorization_time)?;
         }
         if let Some(workspace) = self.core.workspace_doc.as_deref()
-            && let Some(policy) = workspace::media::parse(workspace).map_err(err)?
+            && let Some(policy) =
+                workspace::media::parse(workspace).map_err(crate::AdmissionError::malformed)?
         {
             workspace::media::validate_bound_chat_change(
                 &policy,
@@ -673,7 +710,7 @@ impl StatePeer {
                 &route.record,
                 &*candidate.doc,
             )
-            .map_err(err)?;
+            .map_err(crate::AdmissionError::malformed)?;
         }
         let primary = if self.core.exact_selected {
             let admitted = DocumentAdmission::from_op(
@@ -723,12 +760,14 @@ impl StatePeer {
             doc,
             before,
             &tilo_desktop_model::shared_resource::guard::Writer {
-                person: person_of(member)?,
+                person: person_of(member).map_err(crate::AdmissionError::forbidden)?,
                 members: members.as_ref(),
                 allows: &allows,
             },
         )
-        .map_err(|refusal| format!("document change forbidden: {refusal}").into())
+        .map_err(|refusal| {
+            crate::AdmissionError::forbidden(format!("document change forbidden: {refusal}"))
+        })
     }
 
     /// Keep a sealed write this replica holds no key for: its author, role,
@@ -747,11 +786,14 @@ impl StatePeer {
             DocumentAdmission::from_op(&self.core.workspace, &route.app, &route.record, &envelope)?;
         let folded = (envelope.kind == OpKind::Compaction)
             .then(|| sealed_compaction::covered(&envelope))
-            .transpose()?;
+            .transpose()
+            .map_err(crate::AdmissionError::malformed)?;
         // The number the compaction takes is its author's too: it stands for
         // that write of theirs now.
         let own = (*envelope.author.as_bytes(), envelope.seq);
-        let segments = self.compaction_segments(&route, &envelope)?;
+        let segments = self
+            .compaction_segments(&route, &envelope)
+            .map_err(crate::AdmissionError::malformed)?;
         let gathered = !segments.is_empty();
         Self::retain_sealed(
             &mut candidate,
@@ -805,17 +847,15 @@ impl StatePeer {
         envelope: SignedOp,
         segments: Vec<SignedOp>,
     ) -> Result<(), AdmissionError> {
-        let full = || -> AdmissionError {
-            "sealed record history is full; a key holder must compact it (PeerPublication::draft_sealed_compaction)"
-                .into()
-        };
+        let full = || AdmissionError::HistoryFull;
         if envelope.kind == OpKind::Compaction {
             let history: backend::SealedLog = sealed_compaction::supersede(
                 &candidate.sealed.to_vec(),
                 &candidate.channel.last_seq_per_author,
                 &envelope,
                 segments,
-            )?
+            )
+            .map_err(crate::AdmissionError::malformed)?
             .into();
             if !history.within_bounds() {
                 return Err(full());

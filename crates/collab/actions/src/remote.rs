@@ -70,7 +70,7 @@ pub mod person_vault;
 mod providers;
 mod readings;
 mod resource_read;
-mod search;
+pub mod search;
 pub mod server_account;
 pub mod session_actions;
 mod session_state;
@@ -153,7 +153,7 @@ use crate::params::ARGUMENTS_JSON_PREFIX;
 ///
 /// Additive changes keep the version; a change an older peer would misread
 /// bumps it, and [`RemoteActionFrame::decode`] refuses a version it does not know.
-pub const REMOTE_ACTIONS_VERSION: u16 = 2;
+pub const REMOTE_ACTIONS_VERSION: u16 = 3;
 
 /// Upper bound on one encoded frame: a provider pages its catalogue rather than raise this.
 pub const MAX_REMOTE_ACTION_FRAME_BYTES: usize = 1024 * 1024;
@@ -234,8 +234,8 @@ pub const WORKSPACE_MEMBER_ADDED: &str = "add";
 /// workspace holds. A person it does not hold is added by [`WORKSPACE_MEMBER_ADDED`], never
 /// given a place here.
 pub const WORKSPACE_MEMBER_PLACED: &str = "role";
-/// The action `workspace/members/<person>#remove` publishes: remove the person, ranked below
-/// whoever removes them or themselves.
+/// The action `workspace/members/<person>#remove` publishes: remove the person, as the
+/// workspace's grants on removing let whoever asks, or themselves.
 pub const WORKSPACE_MEMBER_REMOVED: &str = "remove";
 /// The invitations a workspace has open, under its governance root
 /// (`workspace/invitations`).
@@ -377,11 +377,26 @@ pub fn workspace_person(address: &ActionAddress) -> Option<&str> {
     .then_some(person)
 }
 
-/// Pairing a nearby device with the person's identity. The provider runs it —
-/// LAN discovery, and the approval an administrator authenticates — so no
-/// application starts a privileged process. It is answered under its own
-/// provider name, for the person at this device in the workspace they joined.
-pub mod device_pairing;
+/// Adding a computer to the person's devices with a one-use ticket: the computer's own daemon
+/// issues it, prints the one string, and the new computer logs in with it.
+pub mod device_tickets {
+    use super::{ActionAddress, RemoteActionTarget};
+
+    /// The provider the device's daemon answers tickets under.
+    pub const PROVIDER: &str = "tilo.device";
+    /// The resource the actions act on: the person's devices.
+    pub const RESOURCE: &str = "devices";
+    /// Serve a ticket for a new computer.
+    pub const ISSUE: &str = "issue";
+
+    #[must_use]
+    pub fn target(action: &str) -> RemoteActionTarget {
+        RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: ActionAddress::new(RESOURCE, action),
+        }
+    }
+}
 
 /// Machines a person prepared to install: the plan and its waiting entry in
 /// their Servers workspace, read and written through the session that holds
@@ -1040,6 +1055,13 @@ impl ActionCallError {
         matches!(self, Self::NotReady | Self::Unanswered)
     }
 
+    /// Whether `code` is the [`code`](Self::code) of a refusal the same call is asked again
+    /// for ([`Self::ask_again`]), as a failed invocation carries it.
+    #[must_use]
+    pub fn ask_again_code(code: &str) -> bool {
+        code == Self::NotReady.code() || code == Self::Unanswered.code()
+    }
+
     /// Whether the provider refused a directory action that asks for
     /// confirmation because the request named no revision
     /// ([`CONFIRMED_ACTION_NEEDS_REVISION`]).
@@ -1140,6 +1162,15 @@ pub trait ActionProvider {
     /// End this admitted transport run without cancelling its app jobs.
     fn retire_execution(&self, caller: &Caller) {
         caller.retire_execution();
+    }
+
+    /// Whether this provider answers the actions published under `provider`, the name a request
+    /// targets. A device's dispatcher answers its workspace's own, and a provider a device's
+    /// action service serves beside it (`ActionService::add_provider`) answers the one it names,
+    /// so one request reaches the provider it was meant for.
+    fn serves(&self, provider: &str) -> bool {
+        let _ = provider;
+        false
     }
 
     /// One page of what `caller` is offered. An action the caller may not
@@ -1471,21 +1502,6 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<String, ActionCallError>,
     },
-    /// Search what the caller's workspace holds by words, as the provider
-    /// searches it ([`ActionProvider::resource_search`]).
-    SearchRequest {
-        correlation: u64,
-        needle: String,
-        /// What the search is narrowed to; left out, everything the caller may read.
-        #[serde(default, skip_serializing_if = "Within::is_everything")]
-        within: Within,
-    },
-    /// Answer to [`Self::SearchRequest`], same correlation: what it found,
-    /// best first.
-    SearchResponse {
-        correlation: u64,
-        result: Result<Vec<Found>, ActionCallError>,
-    },
     /// Ask for the changes to the caller's workspace's records after
     /// `after`, a cursor an earlier answer gave ([`ActionProvider::change_feed`]).
     ChangesRequest {
@@ -1594,7 +1610,6 @@ impl RemoteActionMessage {
                 | Self::ContentGetRequest { .. }
                 | Self::ContentLinkRequest { .. }
                 | Self::Confirm { .. }
-                | Self::SearchRequest { .. }
                 | Self::ChangesRequest { .. }
                 | Self::ChangedRequest { .. }
                 | Self::SurfaceRequest { .. }
@@ -1761,6 +1776,11 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
                 correlation,
                 result,
             }),
+        // The workspace's search, asked as an action of its own, is answered by the provider's
+        // search at once: it runs nothing and is remembered as no invocation.
+        RemoteActionMessage::Invoke(request) if search::is_find(&request.target) => {
+            search::searched(provider, caller, &request).map(RemoteActionMessage::Receipt)
+        }
         RemoteActionMessage::Invoke(mut request) => {
             // How the answer travels is not part of what runs.
             let until = request.wait_ms.take().map(wait::deadline);
@@ -1812,11 +1832,6 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
             correlation,
             request,
         } => confirmed(provider, caller, correlation, &request),
-        RemoteActionMessage::SearchRequest {
-            correlation,
-            needle,
-            within,
-        } => search::searched(provider, caller, correlation, (&needle, &within)),
         RemoteActionMessage::ChangesRequest { correlation, after } => {
             changed(provider, caller, correlation, after.as_deref())
         }
@@ -1837,7 +1852,6 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         | RemoteActionMessage::ContentGetResponse { .. }
         | RemoteActionMessage::ContentLinkResponse { .. }
         | RemoteActionMessage::ConfirmResponse { .. }
-        | RemoteActionMessage::SearchResponse { .. }
         | RemoteActionMessage::ChangesResponse { .. }
         | RemoteActionMessage::ChangedResponse { .. }
         | RemoteActionMessage::SurfaceResponse { .. }
@@ -1913,12 +1927,6 @@ pub fn refuse(
             correlation: *correlation,
             result: Err(error),
         },
-        RemoteActionMessage::SearchRequest { correlation, .. } => {
-            RemoteActionMessage::SearchResponse {
-                correlation: *correlation,
-                result: Err(error),
-            }
-        }
         RemoteActionMessage::ChangesRequest { correlation, .. } => {
             RemoteActionMessage::ChangesResponse {
                 correlation: *correlation,
@@ -2040,9 +2048,10 @@ impl<T> InvocationLog<T> {
     /// # Errors
     ///
     /// Returns [`ActionCallError::InvocationConflict`] when the id belongs to
-    /// another caller or request, and [`ActionCallError::Unavailable`] while
-    /// an earlier start of the same invocation is still in flight or every
-    /// slot is held by an in-flight reservation.
+    /// another caller or request, [`ActionCallError::Unanswered`] while an
+    /// earlier start of the same invocation is still in flight, and
+    /// [`ActionCallError::Unavailable`] while every slot is held by an
+    /// in-flight reservation.
     pub fn reserve(
         &mut self,
         caller: &Caller,
@@ -2055,12 +2064,14 @@ impl<T> InvocationLog<T> {
             }
             // Asked again on the connection that replaced its own: it is this one's from now on.
             entry.caller.clone_from(caller);
+            // Its first start has not ended: a workspace action that runs whole as it starts
+            // (a server taking in a workspace's gigabytes) is still going. Nothing is known of
+            // what it did yet, so the caller asks the same invocation again, as for one whose
+            // answer was lost.
             return if entry.handle.is_some() {
                 Ok(Reservation::Admitted)
             } else {
-                Err(ActionCallError::Unavailable {
-                    reason: "the invocation is still being admitted; retry".into(),
-                })
+                Err(ActionCallError::Unanswered)
             };
         }
         while self.order.len() >= self.capacity {
@@ -3128,7 +3139,7 @@ mod tests {
                 }
                 assert!(matches!(
                     log.admit(&caller, &pending, || panic!("duplicate dispatch")),
-                    Err(ActionCallError::Unavailable { .. })
+                    Err(ActionCallError::Unanswered)
                 ));
                 assert_eq!(
                     log.reserve(&mallory(), &pending),
@@ -3166,7 +3177,7 @@ mod tests {
                     for request in &pending {
                         assert!(matches!(
                             log.admit(&caller, request, || panic!("duplicate dispatch")),
-                            Err(ActionCallError::Unavailable { .. })
+                            Err(ActionCallError::Unanswered)
                         ));
                     }
                 }
@@ -3193,9 +3204,10 @@ mod tests {
         assert!(
             matches!(
                 log.reserve(&alice(), &request),
-                Err(ActionCallError::Unavailable { .. })
+                Err(ActionCallError::Unanswered)
             ),
-            "a retry during the start neither runs twice nor pretends to be admitted"
+            "a retry during the start neither runs twice nor pretends to be admitted: it is \
+             asked again, as an answer lost on its way is"
         );
         assert_eq!(log.get(&alice(), &request.invocation), None);
         log.complete(&request.invocation, 9);

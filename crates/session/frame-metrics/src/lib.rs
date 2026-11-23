@@ -616,6 +616,15 @@ impl FrameRecorder {
         }
     }
 
+    /// Record every tick in memory from the first, writing no file: what a test reads back
+    /// through [`Self::samples`].
+    pub fn in_memory() -> Self {
+        let mut me = Self::disabled();
+        me.enabled = true;
+        me.env_enabled = true;
+        me
+    }
+
     /// Build from the process environment. Returns [`Self::disabled`] unless `TILO_FRAME_TRACE` or `TILO_FRAME_SUMMARY` is set.
     pub fn from_env() -> Self {
         let trace_path = std::env::var_os(TRACE_ENV);
@@ -1017,6 +1026,29 @@ impl Drop for FrameRecorder {
     fn drop(&mut self) {
         self.finish();
     }
+}
+
+/// The system's monotonic clock, in nanoseconds since boot: the clock a measurement
+/// outside the compositor (a boot, a sign-in) places the session's own records on.
+#[cfg(unix)]
+pub fn monotonic_time_ns() -> Option<u128> {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `now` is a valid, writable timespec for the duration of the call.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now) } != 0 {
+        return None;
+    }
+    u128::try_from(now.tv_sec)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(u128::try_from(now.tv_nsec).ok()?)
+}
+
+#[cfg(not(unix))]
+pub fn monotonic_time_ns() -> Option<u128> {
+    None
 }
 
 /// CPU time the calling thread has consumed.

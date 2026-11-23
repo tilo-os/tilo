@@ -409,6 +409,15 @@ for a surface that needs it, and `ui::gpu::draw_target_to_surface` copies or
 blits accordingly. vello's own `RenderContext::create_surface` always makes
 one (`Some`), so its behaviour is unchanged.
 
+## `vendor/vello/src/scene.rs`: COLRv1 blend modes
+
+Upstream's colour glyph painter maps COLRv1's Porter-Duff composite modes to
+`Compose` and every blend mode (`Screen` through `HslLuminosity`) to
+`SrcOver`. Every Noto Color Emoji flag lays a half-transparent white-to-black
+gradient over its colours with `SoftLight`; drawn over them instead, it greyed
+each flag. The blend modes now map to the matching `Mix` over `SrcOver`, which
+vello's GPU pipeline and `tilo-cpu-raster` both draw.
+
 ## `vendor/vello_encoding/src/encoding.rs`: append keeps forced state
 
 Upstream `Encoding::append` sets `self.flags = other.flags`. A glyph run

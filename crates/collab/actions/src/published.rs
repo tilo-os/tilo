@@ -240,6 +240,10 @@ pub struct ResourceFields {
     pub resource_kind: String,
     pub resource_label: String,
     pub semantic_identity: Option<ResourceSemanticIdentity>,
+    /// The workspace holding the resource when it is not the one the publishing window is open
+    /// in ([`crate::ResourceSpec::workspace`]): that workspace admits its actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 /// Starts a mark in a catalogue entry's text: [`LABEL_MARK`] after it stands
@@ -357,6 +361,7 @@ impl PublishedAction {
             resource_kind: self.resource_kind.clone(),
             resource_label: self.resource_label.clone(),
             semantic_identity: self.semantic_identity.clone(),
+            workspace: None,
         }
     }
 }

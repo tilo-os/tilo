@@ -2,16 +2,12 @@
 
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
-use tilo_enrollment::client::{NearbyApproval, approve_nearby_command};
-use tilo_identity::device_admin::ENROLL;
 use tilo_server::ServerConfig;
 use tilo_server_protocol::WorkSetting;
 
@@ -29,30 +25,6 @@ struct Cli {
 enum BrokerCommand {
     /// Apply the bounded JSON request read from stdin and restart affected services.
     Apply,
-    /// Open a one-minute LAN enrollment approval window.
-    ApproveEnrollment {
-        #[arg(long)]
-        identity_root: PathBuf,
-        #[arg(long)]
-        identity_dir: Option<PathBuf>,
-        #[arg(long = "workspace-id")]
-        workspace_ids: Vec<tilo_server_protocol::WorkspaceId>,
-        #[arg(long)]
-        expected_device: Option<String>,
-        #[arg(long)]
-        expected_service: Option<String>,
-    },
-    /// Approve an ordinary nearby personal device.
-    ApproveDevice {
-        #[arg(long)]
-        identity_root: PathBuf,
-        #[arg(long)]
-        identity_dir: PathBuf,
-        #[arg(long)]
-        expected_device: String,
-        #[arg(long)]
-        expected_service: String,
-    },
 }
 
 #[derive(Deserialize)]
@@ -271,70 +243,6 @@ fn home_for_uid(uid: u32) -> anyhow::Result<PathBuf> {
     Ok(account_for_uid(uid)?.home)
 }
 
-/// Every group `account` belongs to, the way a login gives them to it.
-fn account_groups(account: &Account) -> anyhow::Result<Vec<libc::gid_t>> {
-    let name = std::ffi::CString::new(account.name.as_str())?;
-    let mut capacity: libc::c_int = 64;
-    loop {
-        let mut groups = vec![0; usize::try_from(capacity)?];
-        let mut count = capacity;
-        // SAFETY: `name` is NUL-terminated and `groups` has workspace for `count`
-        // entries; getgrouplist writes at most that many and reports the
-        // number it needs in `count`.
-        let found = unsafe {
-            libc::getgrouplist(
-                name.as_ptr(),
-                account.gid,
-                groups.as_mut_ptr(),
-                &raw mut count,
-            )
-        };
-        if found >= 0 {
-            groups.truncate(usize::try_from(count)?);
-            return Ok(groups);
-        }
-        if count <= capacity || count > 65_536 {
-            bail!("requesting user's groups could not be listed");
-        }
-        capacity = count;
-    }
-}
-
-/// Run `command` with the invoking person's own credentials: their uid,
-/// primary group and supplementary groups, and the session directories their
-/// secret store answers on. Approving a device signs with the person's
-/// identity record, which only its owner can open.
-fn run_as_invoking_person(
-    command: &mut Command,
-    uid: u32,
-    account: &Account,
-) -> anyhow::Result<()> {
-    let groups = account_groups(account)?;
-    let gid = account.gid;
-    let runtime_dir = PathBuf::from(format!("/run/user/{uid}"));
-    command
-        .env("HOME", &account.home)
-        .env("XDG_RUNTIME_DIR", &runtime_dir)
-        .env(
-            "DBUS_SESSION_BUS_ADDRESS",
-            format!("unix:path={}", runtime_dir.join("bus").display()),
-        );
-    // SAFETY: the closure runs in the forked child before exec and calls only
-    // async-signal-safe credential syscalls on data prepared before the fork.
-    unsafe {
-        command.pre_exec(move || {
-            if libc::setgroups(groups.len(), groups.as_ptr()) != 0
-                || libc::setgid(gid) != 0
-                || libc::setuid(uid) != 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    Ok(())
-}
-
 fn validate_identity_root(identity_root: &Path, uid: u32, home: &Path) -> anyhow::Result<PathBuf> {
     let canonical = identity_root
         .canonicalize()
@@ -354,107 +262,6 @@ fn validate_identity_root(identity_root: &Path, uid: u32, home: &Path) -> anyhow
     Ok(canonical)
 }
 
-fn approve_enrollment(
-    identity_root: &Path,
-    identity_dir: Option<&Path>,
-    workspace_ids: &[tilo_server_protocol::WorkspaceId],
-    expected_device: Option<&str>,
-    expected_service: Option<&str>,
-) -> anyhow::Result<()> {
-    if workspace_ids.len() > 4096 {
-        bail!("too many workspaces");
-    }
-    let expected = match (expected_device, expected_service) {
-        (Some(device), Some(service)) => {
-            validate_peer_ids(device, service).context("invalid nearby home-server identity")?;
-            Some((device, service))
-        }
-        (None, None) => None,
-        _ => bail!("nearby device and service identities must be supplied together"),
-    };
-    let identity_dir = identity_dir.context("approving needs the person's identity directory")?;
-    approve_nearby(
-        identity_root,
-        identity_dir,
-        NearbyApproval::HomePeer {
-            workspaces: workspace_ids,
-            expected,
-        },
-        Duration::from_secs(90),
-        "home-server enrollment was not completed",
-    )
-}
-
-fn validate_identity_dir(path: &Path, uid: u32, home: &Path) -> anyhow::Result<PathBuf> {
-    let canonical_home = home.canonicalize().context("user home does not exist")?;
-    let canonical = path
-        .canonicalize()
-        .context("identity directory does not exist")?;
-    let metadata = std::fs::metadata(&canonical)?;
-    if !canonical.starts_with(canonical_home)
-        || metadata.uid() != uid
-        || metadata.mode() & 0o022 != 0
-    {
-        bail!("identity directory must be the requesting user's private data directory");
-    }
-    Ok(canonical)
-}
-
-fn validate_peer_ids(device: &str, service: &str) -> anyhow::Result<()> {
-    if device.len() != 64
-        || service.len() != 64
-        || hex::decode(device)
-            .ok()
-            .is_none_or(|bytes| bytes.len() != 32)
-        || hex::decode(service)
-            .ok()
-            .is_none_or(|bytes| bytes.len() != 32)
-    {
-        bail!("invalid nearby device identity");
-    }
-    Ok(())
-}
-
-fn enrollment_command_result(
-    output: &bounded_command::Output,
-    incomplete: &'static str,
-) -> anyhow::Result<()> {
-    if output.status.success() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let detail = stderr.trim();
-    if detail.is_empty() {
-        bail!("{incomplete} ({})", output.status);
-    }
-    bail!("{incomplete}: {detail}")
-}
-
-fn approve_nearby(
-    identity_root: &Path,
-    identity_dir: &Path,
-    approval: NearbyApproval<'_>,
-    timeout: Duration,
-    incomplete: &'static str,
-) -> anyhow::Result<()> {
-    let uid = invoking_uid()?;
-    let account = account_for_uid(uid)?;
-    let identity_root = validate_identity_root(identity_root, uid, &account.home)?;
-    let identity_dir = validate_identity_dir(identity_dir, uid, &account.home)?;
-    // The directory can be replaced during the window. Sign and write as
-    // the invoking person throughout the helper's lifetime.
-    let mut command = approve_nearby_command(
-        Path::new(ENROLL),
-        &identity_root,
-        &identity_dir,
-        uid,
-        approval,
-    );
-    run_as_invoking_person(&mut command, uid, &account)?;
-    let output = bounded_command::run_prepared(command, None, 1024 * 1024, timeout)?;
-    enrollment_command_result(&output, incomplete)
-}
-
 pub fn main() -> anyhow::Result<std::process::ExitCode> {
     // Automerge isolation workers re-enter this binary; serve them first.
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
@@ -467,44 +274,12 @@ fn run() -> anyhow::Result<()> {
     require_root()?;
     match Cli::parse().command {
         BrokerCommand::Apply => apply(&read_request()?),
-        BrokerCommand::ApproveEnrollment {
-            identity_root,
-            identity_dir,
-            workspace_ids,
-            expected_device,
-            expected_service,
-        } => approve_enrollment(
-            &identity_root,
-            identity_dir.as_deref(),
-            &workspace_ids,
-            expected_device.as_deref(),
-            expected_service.as_deref(),
-        ),
-        BrokerCommand::ApproveDevice {
-            identity_root,
-            identity_dir,
-            expected_device,
-            expected_service,
-        } => {
-            validate_peer_ids(&expected_device, &expected_service)?;
-            approve_nearby(
-                &identity_root,
-                &identity_dir,
-                NearbyApproval::PersonalDevice {
-                    device: &expected_device,
-                    service: &expected_service,
-                },
-                Duration::from_secs(600),
-                "personal-device enrollment was not completed",
-            )
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::process::ExitStatusExt;
 
     tilo_test_env::scenario! {
         fn the_broker_acts_as_the_account_that_asked;
@@ -517,7 +292,7 @@ mod tests {
             assert!(invoking_uid_from(None, Some("person")).is_err());
         }
 
-        phase enrollment_requests_run_as_the_invoking_user_with_bounded_diagnostics;
+        phase the_requesting_account_is_read_from_passwd;
         {
             {
                 let passwd = "root:x:0:0:root:/root:/bin/bash\ntilouser:x:42424:31337::/home/tilouser:/sbin/nologin\n";
@@ -530,42 +305,6 @@ mod tests {
                     })
                 );
                 assert_eq!(account_from_passwd(passwd, 7), None);
-            }
-            {
-                let error = enrollment_command_result(
-                    &bounded_command::Output {
-                        status: std::process::ExitStatus::from_raw(1 << 8),
-                        stdout: Vec::new(),
-                        stderr: b"requester lease expired\n".to_vec(),
-                    },
-                    "personal-device enrollment was not completed",
-                )
-                .unwrap_err();
-                assert_eq!(
-                    error.to_string(),
-                    "personal-device enrollment was not completed: requester lease expired"
-                );
-            }
-            {
-                let error = enrollment_command_result(
-                    &bounded_command::Output {
-                        status: std::process::ExitStatus::from_raw(2 << 8),
-                        stdout: Vec::new(),
-                        stderr: Vec::new(),
-                    },
-                    "home-server enrollment was not completed",
-                )
-                .unwrap_err();
-                assert_eq!(
-                    error.to_string(),
-                    "home-server enrollment was not completed (exit status: 2)"
-                );
-            }
-            // Phase `personal_device_ids_are_exact_ed25519_width_hex`.
-            {
-                assert!(validate_peer_ids(&"11".repeat(32), &"22".repeat(32)).is_ok());
-                assert!(validate_peer_ids("11", &"22".repeat(32)).is_err());
-                assert!(validate_peer_ids(&"zz".repeat(32), &"22".repeat(32)).is_err());
             }
             {
                 let request = ApplyRequest {

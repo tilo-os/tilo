@@ -100,7 +100,18 @@ impl Hosted {
         agents: &[&str],
         apps: &[&str],
     ) -> tilo_workspace_service::agents::ServerAgents {
-        let root = &self.root;
+        Box::pin(self.approving_as(&self.root, workspace, agents, apps)).await
+    }
+
+    /// [`Self::approving_for`], for agents the person whose root is `root` keeps: approved the
+    /// same way, from their page and on a laptop of theirs.
+    pub async fn approving_as(
+        &self,
+        root: &SigningKey,
+        workspace: &str,
+        agents: &[&str],
+        apps: &[&str],
+    ) -> tilo_workspace_service::agents::ServerAgents {
         let laptop = crate::support::enrol(
             root,
             "laptop",

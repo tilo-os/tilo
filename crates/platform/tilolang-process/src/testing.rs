@@ -31,9 +31,6 @@ pub struct Workspace {
     store: RefCell<Store>,
     /// The stamps of the writes the store took, oldest first.
     written: RefCell<Vec<tilo_resource_store::Stamp>>,
-    /// The leases whose claim stands now, by id, each its holder's device key in lowercase hex:
-    /// what [`Command::Leases`] answers, as the workspace's own document does on a device.
-    leases: RefCell<std::collections::BTreeMap<String, String>>,
 }
 
 impl Workspace {
@@ -52,33 +49,8 @@ impl Workspace {
                 Err(refused) => Err(refused.to_string()),
             };
         }
-        if matches!(command, Command::Leases) {
-            let leases: serde_json::Map<String, serde_json::Value> = self
-                .leases
-                .borrow()
-                .iter()
-                .map(|(id, device)| (id.clone(), serde_json::json!({ "device": device })))
-                .collect();
-            return Ok(Reply::Content(Some(
-                serde_json::json!({ "leases": leases }),
-            )));
-        }
         wire::read(&self.store.borrow(), &command, &|_| true)
             .ok_or_else(|| "the store answered no read".to_owned())
-    }
-
-    /// The lease `id` is held by the device `device` (its public key in lowercase hex) from now
-    /// on, or by none: a claim taken, taken over or lapsed, as the workspace's document says it.
-    pub fn lease(&self, id: &str, device: Option<&str>) {
-        let mut leases = self.leases.borrow_mut();
-        match device {
-            Some(device) => {
-                leases.insert(id.to_owned(), device.to_owned());
-            }
-            None => {
-                leases.remove(id);
-            }
-        }
     }
 
     /// The stamps of the writes the store took, oldest first: who wrote each and the

@@ -69,14 +69,10 @@ export const routes = {
   invocationOutput: (workspace: string, invocation: string) =>
     `${PREFIX}/workspaces/${segment(workspace)}/invocations/${segment(invocation)}/output`,
 
-  search: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/search`,
-  export: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/export`,
-  links: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/links`,
   views: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/views`,
   programs: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/programs`,
-  uploads: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/uploads`,
-  content: (workspace: string, content: string) =>
-    `${PREFIX}/workspaces/${segment(workspace)}/content/${segment(content)}`,
+  contents: (workspace: string, hash: string) =>
+    `${PREFIX}/workspaces/${segment(workspace)}/contents/${segment(hash)}`,
   events: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/events`,
 
   /** A new key, approved by the person: the device flow, beside the versioned API. */

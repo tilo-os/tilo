@@ -5,15 +5,17 @@
 //! beside its vault and model providers ([`Workspaces::workspace_root`]). The
 //! records use the same [`tilo_workspace_agent::learned::Learned`] resource
 //! as devices do, one document per workspace, and each change names who made
-//! it and for whom. The store is readable on disk by the server's own user.
+//! it and for whom. Each fact names the person it was learned about, and is
+//! read, corrected and forgotten for them alone
+//! ([`tilo_workspace_agent::learned::Fact::is_about`]). The store is readable on disk by the server's own user.
 //! Writes are serialized.
 //!
 //! Two callers reach it. Code linked into the server, which answers the
 //! turns of the workspace's agents and decides first whose turn it is
 //! ([`Workspaces::learned_about`], [`Workspaces::change_learned`]). And
 //! whoever the workspace's policy lets, through the provider [`PROVIDER`]
-//! ([`Store::LEARNED`]): they read the list, correct a fact, forget one, or
-//! write one down.
+//! ([`Store::LEARNED`]): they read their own facts, correct one, forget one,
+//! or write one down.
 //!
 //! Nothing a fact says is written to a log.
 
@@ -231,12 +233,14 @@ impl Workspaces {
         })
     }
 
-    /// The facts this server keeps in `workspace`, as the provider answers them.
-    fn learned_facts(&self, workspace: &str) -> Facts {
+    /// The facts this server keeps in `workspace` about `person`, as the provider answers them.
+    fn learned_facts(&self, workspace: &str, person: &[u8; 32]) -> Facts {
         let (learned, revision) = self.learned_kept(workspace).unwrap_or_default();
+        let person = hex::encode(person);
         let mut facts: Vec<FactView> = learned
             .facts
             .iter()
+            .filter(|(_, fact)| fact.is_about(&person))
             .map(|(id, fact)| FactView {
                 id: id.to_string(),
                 text: fact.text.clone(),
@@ -317,7 +321,7 @@ impl Workspaces {
             }
             _ => return Err(UnknownAction),
         };
-        answer(&changed.map(|()| self.learned_facts(&workspace)))
+        answer(&changed.map(|()| self.learned_facts(&workspace, &person)))
     }
 }
 

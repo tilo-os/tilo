@@ -196,15 +196,6 @@ impl CompletionSource {
         self.create = Some(create.into());
         self
     }
-
-    /// Whether picking from it runs a command rather than writing text.
-    #[must_use]
-    pub fn is_commands(&self) -> bool {
-        self.tiers
-            .iter()
-            .flat_map(|tier| &tier.candidates)
-            .any(|candidate| candidate.command.is_some())
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

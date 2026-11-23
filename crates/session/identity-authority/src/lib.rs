@@ -68,7 +68,7 @@ pub fn device_certificate(
 #[derive(Debug)]
 pub enum Readiness {
     /// The identity registry names the person, and this device holds their certificate here.
-    Ready(tilo_user_identity::DeviceCert),
+    Ready(Box<tilo_user_identity::DeviceCert>),
     /// This device holds an identity the registry has not named the person through yet: a login
     /// reads the identity directory as its files land, and the answer is a moment away.
     Pending,
@@ -99,7 +99,7 @@ pub fn device_readiness(workspace: &str, person: &str) -> Readiness {
     let named =
         tilo_identity::store::identity_for_workspace(workspace).is_ok_and(|named| named.is_some());
     match device_certificate(workspace, person) {
-        Ok(certificate) => Readiness::Ready(certificate),
+        Ok(certificate) => Readiness::Ready(Box::new(certificate)),
         Err(why) if named => Readiness::Refused(why),
         Err(_) => Readiness::Pending,
     }
@@ -139,7 +139,7 @@ impl tilo_workspace_service::apps::services::LocalPersonServices for NativeLocal
         let mut waiting = false;
         loop {
             match device_readiness(workspace, person) {
-                Readiness::Ready(certificate) => return Ok(certificate),
+                Readiness::Ready(certificate) => return Ok(*certificate),
                 Readiness::Refused(why) => return Err(why),
                 Readiness::Pending => {
                     if !waiting {

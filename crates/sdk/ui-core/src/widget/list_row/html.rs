@@ -81,7 +81,7 @@ impl ListRowFace<'_> {
         }
         let theme = cx.theme();
         match self.leading {
-            None | Some(RowLeading::AvatarSpace) => {}
+            None => {}
             Some(RowLeading::Icon(icon)) => {
                 let r = Rect::from_center_size(slot.center(), (m.icon, m.icon));
                 cx.icon("leading", r, icon, theme.text_dim);

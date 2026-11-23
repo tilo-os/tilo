@@ -322,27 +322,3 @@ impl SwipeActionProps {
         }
     }
 }
-
-impl ListRow {
-    /// The row with `props` as what swiping it across does.
-    #[must_use]
-    pub fn with_swipe(self, props: SwipeActionProps) -> Self {
-        let SwipeActionProps {
-            label,
-            icon,
-            destructive,
-            swipe,
-        } = props;
-        let icon = icon.unwrap_or(if destructive {
-            Icon::Trash
-        } else {
-            Icon::Check
-        });
-        let mut run = swipe.handler();
-        self.swipe_action(icon, label, destructive, move || {
-            if let Some(run) = run.as_mut() {
-                run();
-            }
-        })
-    }
-}

@@ -17,6 +17,7 @@ mod hdr_layers;
 pub mod input_config;
 mod input_source;
 mod libinput;
+mod phase;
 pub mod seat_diag;
 pub mod tablet;
 mod topology;
@@ -75,6 +76,7 @@ use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
 use crate::{Error, LoopData};
 use devices::{ModeInfo, select_mode};
+use phase::{FrameCost, PhaseWindow};
 use tilo_session_core::surface::{BackdropImage, BackdropRequest};
 use wake_check::{LitState, WakeCheck, WakeStage, WakeVerdict};
 
@@ -256,6 +258,9 @@ struct Inner {
     handover: Option<Handover>,
     /// The last topology line written, so it is written when it changes.
     topology: String,
+    /// This run's presented frames, summed for the interval summary the release's render
+    /// check reads.
+    phase: PhaseWindow,
 }
 
 /// What a desktop restarting in place hands to the run that follows: the descriptor the login's
@@ -458,6 +463,7 @@ impl DrmBackend {
             restart_handover,
             handover: None,
             topology: String::new(),
+            phase: PhaseWindow::default(),
         }));
 
         let udev = UdevBackend::new(&seat).map_err(|error| failed("udev", error))?;
@@ -945,6 +951,7 @@ fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
         renderers,
         primary,
         config,
+        phase,
         ..
     } = &mut *inner;
     let Some(primary) = *primary else {
@@ -952,7 +959,10 @@ fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     };
     let now = Instant::now();
     for gpu in gpus.values_mut() {
-        render_gpu(gpu, renderers, primary, config, state, now);
+        render_gpu(gpu, renderers, primary, config, state, now, phase);
+    }
+    if let Some(line) = phase.take(Instant::now()) {
+        eprintln!("{line}");
     }
 }
 
@@ -964,6 +974,7 @@ fn render_gpu(
     config: &DisplayConfig,
     state: &mut State,
     now: Instant,
+    phase: &mut PhaseWindow,
 ) {
     let Gpu {
         manager,
@@ -1041,34 +1052,49 @@ fn render_gpu(
             .as_ref()
             .is_some_and(|pass| pass.wanted().hdr.is_some());
         let frame = frame_scene(&mut renderer, state, &lit.output, hdr);
-        match lit.color.pass.take() {
-            Some(mut pass) => {
-                match pass.render(&mut renderer, frame.scene(), &frame.weights, &frame.layers) {
-                    Ok(states) => {
-                        submit(
-                            lit,
-                            &mut renderer,
-                            &[&pass],
-                            Some(&states),
-                            state,
-                            device,
-                            now,
-                        );
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, output = name, "colour pass skipped");
-                        submit(lit, &mut renderer, &frame.plain, None, state, device, now);
-                    }
-                }
-                lit.color.pass = Some(pass);
-            }
-            None => submit(lit, &mut renderer, &frame.plain, None, state, device, now),
-        }
+        draw_output(lit, &mut renderer, &frame, state, device, now, phase);
         if lit.queued {
             lit.pacing.queued(start, Instant::now(), lit.interval);
         } else {
             lit.next_frame = lit.pacing.idle(now, lit.interval, lit.vrr == Vrr::On);
         }
+    }
+}
+
+/// Draw `frame` for `lit` and queue it: through a colour pass when one is due, else the scene
+/// as built.
+fn draw_output<'r>(
+    lit: &mut Lit,
+    renderer: &mut Renderer<'r>,
+    frame: &Frame<'r>,
+    state: &mut State,
+    device: &DrmDevice,
+    now: Instant,
+    phase: &mut PhaseWindow,
+) {
+    match lit.color.pass.take() {
+        Some(mut pass) => {
+            match pass.render(renderer, frame.scene(), &frame.weights, &frame.layers) {
+                Ok(states) => {
+                    submit(
+                        lit,
+                        renderer,
+                        &[&pass],
+                        Some(&states),
+                        state,
+                        device,
+                        now,
+                        phase,
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(%error, output = lit.output.name(), "colour pass skipped");
+                    submit(lit, renderer, &frame.plain, None, state, device, now, phase);
+                }
+            }
+            lit.color.pass = Some(pass);
+        }
+        None => submit(lit, renderer, &frame.plain, None, state, device, now, phase),
     }
 }
 
@@ -1155,7 +1181,9 @@ fn submit<'r, E: RenderElement<Renderer<'r>>>(
     state: &mut State,
     device: &DrmDevice,
     now: Instant,
+    phase: &mut PhaseWindow,
 ) {
+    let started = Instant::now();
     match lit
         .surface
         .render_frame(renderer, elements, BACKGROUND, FrameFlags::DEFAULT)
@@ -1163,7 +1191,30 @@ fn submit<'r, E: RenderElement<Renderer<'r>>>(
         Ok(frame) => {
             // Clients draw their next frame now; an output with nothing new is asked again one
             // refresh later.
+            //
+            // A colour pass drew the frame itself, so nothing in it was scanned out alone.
+            let scanned_alone = states.is_none();
             let states = states.unwrap_or(&frame.states);
+            let bytes = lit.output.current_mode().map_or(0, |mode| {
+                phase::output_bytes(
+                    (
+                        u32::try_from(mode.size.w).unwrap_or(0),
+                        u32::try_from(mode.size.h).unwrap_or(0),
+                    ),
+                    lit.surface.format(),
+                )
+            });
+            phase.record(
+                Instant::now(),
+                FrameCost {
+                    direct: scanned_alone
+                        && phase::all_scanned_out(
+                            states.states.values().map(|shown| shown.presentation_state),
+                        ),
+                    submit_us: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+                    output_bytes: bytes,
+                },
+            );
             if let Some(feedback) = &lit.feedback {
                 state.send_scanout_feedback(
                     &lit.output,
@@ -1220,7 +1271,12 @@ fn vblank(
     metadata: Option<&DrmEventMetadata>,
 ) {
     let mut inner = inner.borrow_mut();
-    let Some(gpu) = inner.gpus.get_mut(&device) else {
+    let Inner {
+        gpus,
+        phase: window,
+        ..
+    } = &mut *inner;
+    let Some(gpu) = gpus.get_mut(&device) else {
         return;
     };
     let device = gpu.manager.device();
@@ -1238,6 +1294,9 @@ fn vblank(
         Err(error) => tracing::warn!(?error, output = lit.output.name(), "page flip not retired"),
     }
     lit.queued = false;
+    if retired {
+        window.flip();
+    }
     let shown = vblank_instant(metadata);
     lit.next_frame = lit.pacing.shown(shown, lit.interval, lit.vrr == Vrr::On);
     lit.pacing.log(&lit.output.name(), shown, lit.interval);

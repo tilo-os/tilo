@@ -2,8 +2,14 @@
 //! and the live installer reads back. Both sides check each field with these
 //! rules, so the Imager refuses exactly what the installer would ask to
 //! repair.
+//!
+//! [`media`] holds the profile the app edits as plain serde data, and
+//! [`profile`] the codec that frames it in the medium's reserved tail, so the
+//! standalone media tools take this crate alone.
 
+pub mod media;
 pub mod plan;
+pub mod profile;
 
 /// Purpose changes defaults, never the OS image or collaboration authority.
 pub const PURPOSES: [&str; 2] = ["computer", "server"];

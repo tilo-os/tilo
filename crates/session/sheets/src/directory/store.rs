@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use super::said;
 use tilo_workspace_directory::{
-    self as client, Granted, Listed, Person, Shelved, SiteError, home_listing, listings_of,
+    self as client, Granted, Listed, Person, SiteError, home_listing, listings_of,
 };
 
 /// Called whenever something landed, from the task that read or joined: what
@@ -20,8 +20,8 @@ use tilo_workspace_directory::{
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// A workspace this person chose to join: the name it was listed under, and
-/// the workspace itself with the way this device comes into it — its entry,
-/// or an invitation it holds.
+/// the workspace itself with the way this device comes into it — an
+/// invitation it holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Joined {
     /// The name the workspace was listed under, or the address a link named
@@ -30,10 +30,6 @@ pub struct Joined {
     pub name: String,
     /// The workspace joined, and how this device comes into it.
     pub granted: Granted,
-    /// The community site whose home this is, when nobody at the directory
-    /// asked for the join: the person's community joins on its own as their
-    /// session starts. `None` for a join a person chose.
-    pub community: Option<String>,
 }
 
 /// What the task is asked.
@@ -43,62 +39,15 @@ enum Ask {
         community: Option<url::Url>,
         site: Option<String>,
     },
-    /// Enter the workspace `entry` lets people into.
-    Join {
-        key: String,
-        name: String,
-        entry: url::Url,
-        host: Option<Box<tilo_server_protocol::web::PageHost>>,
-    },
-    /// Join the home workspace of the community `site`, with nobody at the
-    /// directory asking for it.
-    Community { site: url::Url },
-    /// Join what the person pasted: a sealed link, an invitation's text, a
-    /// site, or a workspace link.
+    /// Join what the person pasted: an invitation's text, or a link that
+    /// carries one or names the one its workspace keeps.
     Take { text: String, person: Person },
-    /// Seal `invitation` under a fresh key and leave it on `site`'s shelf,
-    /// for the link that names it.
-    Shelve {
-        invite: String,
-        invitation: Vec<u8>,
-        expires_at_ns: u64,
-        site: url::Url,
-        /// The origin of the host serving the workspace the invitation is
-        /// for, where the caller knows it: a page opening the link is told
-        /// where it admits into.
-        host: Option<String>,
-        /// The caller awaiting the link ([`Store::shelve_soon`]), answered by
-        /// the task itself: a store whose loop nobody runs still answers it.
-        /// Without one, the answer waits for the caller's loop.
-        awaiting: Option<tokio::sync::oneshot::Sender<Result<Shelved, String>>>,
-    },
-    /// Take a shelved invitation back: its link names nothing from now on.
-    Unshelve {
-        invite: String,
-        site: url::Url,
-        handle: String,
-        delete: String,
-    },
 }
 
 /// What the task answers.
 enum Answer {
     /// What the sites list, and what could not be read.
     Read(Snapshot),
-    /// Where joining the listing `key`, named `name`, stands: what it was
-    /// granted, or why it was not.
-    Joined {
-        key: String,
-        name: String,
-        granted: Result<Granted, String>,
-    },
-    /// Where joining the home workspace of the community `site` stands: the
-    /// name it goes by and what it was granted, `None` when the site serves
-    /// no home workspace to join.
-    Community {
-        site: String,
-        joined: Result<Option<(String, Granted)>, String>,
-    },
     /// Where joining what the person pasted stands, named `name` when it got
     /// far enough to know it.
     Taken {
@@ -106,31 +55,12 @@ enum Answer {
         name: String,
         granted: Result<Granted, String>,
     },
-    /// Where leaving `invite` on a site's shelf stands: its link, or why it
-    /// was not left.
-    Shelved {
-        invite: String,
-        result: Result<Shelved, String>,
-    },
-    /// Whether a shelved invitation was taken back.
-    Unshelved {
-        invite: String,
-        result: Result<(), String>,
-    },
 }
 
-/// What a site answered when its directory or its entry was read.
+/// What a site answered when its directory was read.
 struct Snapshot {
     listings: Vec<Listed>,
     failures: Vec<String>,
-}
-
-/// The community site whose home workspace this store was asked to join, and whether the site
-/// answered: a join still unanswered may bring a workspace onto the shell, and one that answered —
-/// letting the person in or not — is over ([`Store::community_answered`]).
-struct CommunityJoin {
-    site: String,
-    answered: bool,
 }
 
 /// The directories as last read, the joins asked for, and the task that
@@ -153,23 +83,10 @@ pub struct Store {
     /// The workspaces joined since the caller last took them, for the shell
     /// to add.
     joined: std::cell::RefCell<Vec<Joined>>,
-    /// The invitations left on a site's shelf, by the invitation's id: the
-    /// link the sheet hands over and what takes it back.
-    shelves: std::cell::RefCell<BTreeMap<String, Shelved>>,
-    /// Where leaving an invitation on a shelf stands, for the caller to show.
-    shelvings: std::cell::RefCell<Vec<(String, Result<Shelved, String>)>>,
     /// The name a site listed each workspace under, by its id: a join whose
     /// slot is made only once the host admits it keeps the name it was
     /// listed by ([`Store::listed_name`]).
     names: std::cell::RefCell<BTreeMap<String, String>>,
-    /// The community site each workspace was joined as its home through, by
-    /// the workspace granted: the person's community is theirs once a host
-    /// admits them to it, which is after the entry grants ([`Store::community_of`]).
-    communities: std::cell::RefCell<BTreeMap<String, String>>,
-    /// The community whose home workspace was asked for, while its site has
-    /// not answered: its join may still bring a workspace onto the shell
-    /// ([`Store::community_answered`]).
-    community: std::cell::RefCell<Option<CommunityJoin>>,
     asks: std::cell::RefCell<Option<mpsc::UnboundedSender<Ask>>>,
     answers: std::cell::RefCell<Option<mpsc::UnboundedReceiver<Answer>>>,
     /// What wakes the caller's loop as the task answers, so a directory being
@@ -219,112 +136,6 @@ impl Store {
         }
     }
 
-    /// Join `listing`, which the sheet knows as `key`, as `person`: the
-    /// caller enters it through its entry on the session it opens with the
-    /// entry's host. One join at a time.
-    ///
-    /// # Errors
-    /// Why no entry was asked: the listing lets people in by invitation only,
-    /// or the caller has no person to join as.
-    pub fn join(&self, key: &str, listing: &Listed, person: &Person) -> Result<(), String> {
-        let entry = listing.entry_url.clone().ok_or_else(|| {
-            let reason = format!("{} needs an invitation", listing.entry.name.trim());
-            tracing::info!(
-                target: JOIN_FLOW_TARGET,
-                workspace = %listing.entry.workspace,
-                key = %key,
-                site = %listing.host,
-                name = %listing.entry.name.trim(),
-                %reason,
-                outcome = "no entry asked",
-                "join: the listing names no entry"
-            );
-            reason
-        })?;
-        let Some(asks) = self.worker() else {
-            tracing::info!(
-                target: JOIN_FLOW_TARGET,
-                workspace = %listing.entry.workspace,
-                key = %key,
-                outcome = "no entry asked",
-                "join: the directory has no task to ask"
-            );
-            return Err("the directory has nowhere to ask".to_owned());
-        };
-        *self.joining.borrow_mut() = Some(key.to_owned());
-        self.failures.borrow_mut().remove(key);
-        *self.note.borrow_mut() = None;
-        tracing::info!(
-            target: JOIN_FLOW_TARGET,
-            workspace = %listing.entry.workspace,
-            key = %key,
-            site = %listing.host,
-            name = %listing.entry.name.trim(),
-            entry = %entry,
-            person = %hex::encode(person.user),
-            "join: entering through the entry"
-        );
-        if let Err(error) = asks.send(Ask::Join {
-            key: key.to_owned(),
-            name: listing.entry.name.clone(),
-            entry,
-            host: listing.entry_host.clone().map(Box::new),
-        }) {
-            *self.joining.borrow_mut() = None;
-            tracing::info!(
-                target: JOIN_FLOW_TARGET,
-                workspace = %listing.entry.workspace,
-                key = %key,
-                %error,
-                outcome = "no entry asked",
-                "join: the directory task is gone"
-            );
-            return Err(format!("the join was not asked of its entry: {error}"));
-        }
-        Ok(())
-    }
-
-    /// Join the home workspace of the community `site`, as `person`: what the
-    /// site's own `entry.json` names as its home, through the same entry a
-    /// listing's Join asks. Nobody at the directory chose this: its failure
-    /// is the log's, not a note where a person would look for one they asked
-    /// for.
-    ///
-    /// # Errors
-    /// Why nothing was asked: there is no task to ask.
-    pub fn join_community(&self, site: &url::Url, person: &Person) -> Result<(), String> {
-        let asked = self
-            .worker()
-            .ok_or_else(|| "the directory has nowhere to ask".to_owned())
-            .and_then(|asks| {
-                tracing::info!(
-                    target: JOIN_FLOW_TARGET,
-                    site = %site,
-                    person = %hex::encode(person.user),
-                    "join: asking the community site's home entry"
-                );
-                asks.send(Ask::Community { site: site.clone() })
-                    .map_err(|error| format!("the community site was not asked: {error}"))
-            });
-        *self.community.borrow_mut() = Some(CommunityJoin {
-            site: site.to_string(),
-            // Nothing is left to answer a join that could not be asked: it is over as it was asked.
-            answered: asked.is_err(),
-        });
-        asked
-    }
-
-    /// Whether the community `site`'s home workspace was asked for and the site answered: the
-    /// join is over, whether it let the person in or not. `false` before it is asked, and while
-    /// the site has not answered, which is while its workspace may still come onto the shell.
-    #[must_use]
-    pub fn community_answered(&self, site: &url::Url) -> bool {
-        self.community
-            .borrow()
-            .as_ref()
-            .is_some_and(|join| join.site == site.as_str() && join.answered)
-    }
-
     /// The listing `key` names, while it is listed.
     pub fn listing(&self, key: &str) -> Option<Listed> {
         self.listed
@@ -334,8 +145,32 @@ impl Store {
             .cloned()
     }
 
-    /// Join what the person pasted into the sheet — an invitation's text, a
-    /// site, or a workspace link — off the caller's loop.
+    /// Join `listing`, which the sheet knows as `key`: a workspace another
+    /// person's host keeps is joined with an invitation it sends, never by
+    /// entering through its site, so a listing with none is told to ask for
+    /// one.
+    ///
+    /// # Errors
+    /// What a person does instead: ask for an invitation.
+    pub fn join(&self, _key: &str, listing: &Listed, _person: &Person) -> Result<(), String> {
+        let name = listing.entry.name.trim();
+        tracing::info!(
+            target: JOIN_FLOW_TARGET,
+            workspace = %listing.entry.workspace,
+            key = %listing.key(),
+            site = %listing.host,
+            name = %name,
+            outcome = "no invitation",
+            "join: a listing is joined with an invitation, so nothing is asked of its site"
+        );
+        Err(format!(
+            "{name} needs an invitation: open it on its site, or paste the invite link someone \
+             in it sends you"
+        ))
+    }
+
+    /// Join what the person pasted into the sheet — an invitation's text or a
+    /// short link — off the caller's loop.
     ///
     /// # Errors
     /// Why nothing was asked: nothing was pasted.
@@ -406,55 +241,8 @@ impl Store {
         std::mem::take(&mut *self.joined.borrow_mut())
     }
 
-    /// Seal `invitation`, the signed bytes of one, under a fresh key and
-    /// leave it on `site`'s shelf, off the caller's loop: the link that names
-    /// it answers later, as [`Self::take_shelved`] takes it. The site is given
-    /// ciphertext, the invitation's life and a delete secret — never the key.
-    ///
-    /// # Errors
-    /// Why nothing was left: there is no task to ask.
-    pub fn shelve(
-        &self,
-        invite: &str,
-        invitation: Vec<u8>,
-        expires_at_ns: u64,
-        site: &url::Url,
-        host: Option<&str>,
-    ) -> Result<(), String> {
-        self.ask_shelve(invite, invitation, expires_at_ns, site, host, None)
-    }
-
-    fn ask_shelve(
-        &self,
-        invite: &str,
-        invitation: Vec<u8>,
-        expires_at_ns: u64,
-        site: &url::Url,
-        host: Option<&str>,
-        awaiting: Option<tokio::sync::oneshot::Sender<Result<Shelved, String>>>,
-    ) -> Result<(), String> {
-        let Some(asks) = self.worker() else {
-            return Err("the directory has nowhere to ask".to_owned());
-        };
-        asks.send(Ask::Shelve {
-            invite: invite.to_owned(),
-            invitation,
-            expires_at_ns,
-            site: site.clone(),
-            host: host.map(str::to_owned),
-            awaiting,
-        })
-        .map_err(|error| format!("the invitation was not left on its site: {error}"))
-    }
-
-    /// Take the invitations left on a shelf since this was last asked, each
-    /// with the invitation it was made for.
-    pub fn take_shelved(&self) -> Vec<(String, Result<Shelved, String>)> {
-        std::mem::take(&mut *self.shelvings.borrow_mut())
-    }
-
-    /// Hand over the invitation with the holder's native link when supplied.
-    /// A site's shelf can also carry the same signed invitation.
+    /// Hand over the invitation the workspace made: the link it answered
+    /// with, else the native link that names it at its host.
     ///
     /// # Errors
     /// `text` is not an invitation's bytes.
@@ -463,99 +251,13 @@ impl Store {
         made: &mut sheet::Making,
         mut created: sheet::Created,
         text: &str,
-        site: Option<&url::Url>,
-        host: Option<&str>,
     ) -> Result<(), String> {
-        let bytes = tilo_workspace_join::invitation_bytes(text)?;
         if created.link.is_empty() {
+            let bytes = tilo_workspace_join::invitation_bytes(text)?;
             created.link = tilo_workspace_join::native_invitation_link(&bytes);
         }
-        if let Some(site) = site
-            && self
-                .shelve(&created.invite, bytes, created.expires_at_ns, site, host)
-                .is_ok()
-        {
-            made.shelving(created);
-        } else {
-            made.handed_over(created);
-        }
+        made.handed_over(created);
         Ok(())
-    }
-
-    /// Take what a shelf answered since the sheet last looked: the site's
-    /// short link to show, or why it kept nothing. Whether one answered.
-    pub fn follow_shelf(&self, made: &mut sheet::Making) -> bool {
-        let answers = self.take_shelved();
-        let answered = !answers.is_empty();
-        for (invite, answer) in answers {
-            made.shelved(&invite, answer.map(|shelved| shelved.link));
-        }
-        answered
-    }
-
-    /// Take `invite` back: its site lets go of what it keeps
-    /// ([`Self::unshelve`]), and no link of this opening shows it.
-    pub fn take_back(&self, made: &mut sheet::Making, invite: &str) {
-        self.unshelve(invite);
-        made.revoked(invite);
-    }
-
-    /// Seal `invitation` onto `site`'s shelf and resolve to the link that
-    /// names it, for a caller that is itself async where the sheet takes the
-    /// same answer on its loop ([`Self::take_shelved`]): one shelf, one seal,
-    /// whichever way the link is handed back. The task answers this caller
-    /// directly, so the link arrives whether or not anyone runs the store's
-    /// loop: a page making a link in one press has none.
-    ///
-    /// # Errors
-    /// Why nothing was left, or why the shelf answered with nothing.
-    // The store is a handle to one task on the caller's own loop, not shared
-    // state: what it keeps of the shelf is kept on the thread that asked.
-    #[allow(
-        clippy::future_not_send,
-        reason = "the directory answers on the single thread that asked"
-    )]
-    pub async fn shelve_soon(
-        &self,
-        invite: &str,
-        invitation: Vec<u8>,
-        expires_at_ns: u64,
-        site: &url::Url,
-        host: Option<&str>,
-    ) -> Result<Shelved, String> {
-        let (left, answer) = tokio::sync::oneshot::channel();
-        self.ask_shelve(invite, invitation, expires_at_ns, site, host, Some(left))?;
-        let result = answer
-            .await
-            .map_err(|_| "the site's shelf went away without answering".to_owned())?;
-        self.kept_on_shelf(invite, &result);
-        result
-    }
-
-    /// Where the invitation `invite` was left, while its link still works.
-    pub fn shelved(&self, invite: &str) -> Option<Shelved> {
-        self.shelves.borrow().get(invite).cloned()
-    }
-
-    /// Take `invite` back off the shelf it was left on, off the caller's
-    /// loop: its link names nothing from then on. A link whose shelf is
-    /// unknown — this session made no such link — has nothing to take back;
-    /// the invitation itself is refused by its host when it is cancelled.
-    pub fn unshelve(&self, invite: &str) {
-        let Some(shelved) = self.shelves.borrow_mut().remove(invite) else {
-            return;
-        };
-        let Some(asks) = self.worker() else {
-            return;
-        };
-        if let Err(error) = asks.send(Ask::Unshelve {
-            invite: invite.to_owned(),
-            site: shelved.site,
-            handle: shelved.handle,
-            delete: shelved.delete,
-        }) {
-            tracing::warn!(%error, "the shelved invitation was not taken back");
-        }
     }
 
     /// Take what the task answered since the last call. Whether anything
@@ -593,66 +295,10 @@ impl Store {
                     });
                 }
             }
-            Answer::Joined { key, name, granted } => {
-                *self.joining.borrow_mut() = None;
-                match granted {
-                    Ok(granted) => self.granted(&key, &name, granted, None),
-                    Err(reason) => {
-                        tracing::info!(
-                            target: JOIN_FLOW_TARGET,
-                            key = %key,
-                            name = %name,
-                            %reason,
-                            outcome = "failed",
-                            "join: the workspace was not joined; the person stays where they were"
-                        );
-                        // The sheet says why, and the row says it was not
-                        // joined, to try again.
-                        self.failing(crate::words(
-                            "directory-join-failed",
-                            &[("name", &name), ("error", &reason)],
-                        ));
-                        self.failures.borrow_mut().insert(key, reason);
-                    }
-                }
-            }
-            Answer::Community { site, joined } => {
-                if let Some(join) = self.community.borrow_mut().as_mut() {
-                    // The join is over, however it went: a site that refused it, or that was not
-                    // reachable, brings no workspace onto the shell.
-                    join.answered |= join.site == site;
-                }
-                match joined {
-                    Ok(Some((name, granted))) => {
-                        tracing::info!(
-                            target: JOIN_FLOW_TARGET,
-                            site = %site,
-                            workspace = %granted.workspace,
-                            name = %name,
-                            outcome = "granted",
-                            "join: the community's home workspace is granted"
-                        );
-                        self.granted(&site, &name, granted, Some(&site));
-                    }
-                    Ok(None) => tracing::info!(
-                        target: JOIN_FLOW_TARGET,
-                        site = %site,
-                        outcome = "no home workspace",
-                        "join: the community site serves no home workspace to join"
-                    ),
-                    Err(reason) => tracing::info!(
-                        target: JOIN_FLOW_TARGET,
-                        site = %site,
-                        %reason,
-                        outcome = "failed",
-                        "join: the community site did not let this person in; their community stays unjoined"
-                    ),
-                }
-            }
             Answer::Taken { key, name, granted } => {
                 *self.joining.borrow_mut() = None;
                 match granted {
-                    Ok(granted) => self.granted(&key, &name, granted, None),
+                    Ok(granted) => self.granted(&key, &name, granted),
                     Err(reason) => {
                         tracing::info!(
                             target: JOIN_FLOW_TARGET,
@@ -666,43 +312,13 @@ impl Store {
                     }
                 }
             }
-            Answer::Shelved { invite, result } => self.left_on_shelf(invite, result),
-            Answer::Unshelved { invite, result } => {
-                if let Err(reason) = result {
-                    tracing::warn!(invite = %invite, %reason, "a shelved invitation was not taken back");
-                }
-            }
-        }
-    }
-
-    /// A site's answer to an invitation left on it: the link that names where
-    /// it waits, kept for as long as the invitation works, or why it was not
-    /// left.
-    pub(crate) fn left_on_shelf(&self, invite: String, result: Result<Shelved, String>) {
-        self.kept_on_shelf(&invite, &result);
-        self.shelvings.borrow_mut().push((invite, result));
-    }
-
-    /// Remember where `invite` was left, to take it back later, or say why
-    /// it was not.
-    fn kept_on_shelf(&self, invite: &str, result: &Result<Shelved, String>) {
-        match result {
-            Ok(shelved) => {
-                self.shelves
-                    .borrow_mut()
-                    .insert(invite.to_owned(), shelved.clone());
-            }
-            // The caller says why: no link is handed over without the site.
-            Err(reason) => {
-                tracing::warn!(invite = %invite, %reason, "an invitation was not left on its site");
-            }
         }
     }
 
     /// A join the task settled the way in for: keep the name it is listed by
     /// for the slot made once the host admits this device, and hand it to the
     /// caller.
-    fn granted(&self, key: &str, name: &str, granted: Granted, community: Option<&str>) {
+    fn granted(&self, key: &str, name: &str, granted: Granted) {
         self.failures.borrow_mut().remove(key);
         self.names
             .borrow_mut()
@@ -714,15 +330,9 @@ impl Store {
             outcome = "granted",
             "join: the workspace is joined and its slot is next"
         );
-        if let Some(site) = community {
-            self.communities
-                .borrow_mut()
-                .insert(granted.workspace.clone(), site.to_owned());
-        }
         self.joined.borrow_mut().push(Joined {
             name: name.to_owned(),
             granted,
-            community: community.map(str::to_owned),
         });
     }
 
@@ -737,20 +347,6 @@ impl Store {
             .get(workspace)
             .filter(|name| !name.trim().is_empty())
             .cloned()
-    }
-
-    /// The community site `workspace` was joined as its home through, while
-    /// the person's membership of it is not settled: the host admits this
-    /// device after the entry grants, and only then is the community theirs.
-    pub fn community_of(&self, workspace: &str) -> Option<String> {
-        self.communities.borrow().get(workspace).cloned()
-    }
-
-    /// Forget the site `workspace` was joined through, once its host admitted
-    /// this device or refused it: the join is settled either way, and a
-    /// refused one is asked again by the community's own follow.
-    pub fn forget_community(&self, workspace: &str) {
-        self.communities.borrow_mut().remove(workspace);
     }
 
     /// What became of the last read or join, when it went wrong.
@@ -784,26 +380,6 @@ async fn work(
     while let Some(ask) = asks.recv().await {
         let answer = match ask {
             Ask::Read { community, site } => Answer::Read(read(&client, community, site).await),
-            Ask::Join {
-                key,
-                name,
-                entry,
-                host,
-            } => Answer::Joined {
-                key,
-                name,
-                granted: client::through_entry(&entry, host.map(|host| *host))
-                    .map_err(|error| said(&error)),
-            },
-            Ask::Community { site } => Answer::Community {
-                joined: match &client {
-                    Ok(client) => client::join_home(client, &site)
-                        .await
-                        .map_err(|error| said(&error)),
-                    Err(error) => Err(format!("no network to join over: {}", said(error))),
-                },
-                site: site.to_string(),
-            },
             Ask::Take { text, person } => {
                 let taken = client::take(&client, &text, &person).await;
                 Answer::Taken {
@@ -812,46 +388,6 @@ async fn work(
                     granted: taken.granted.map_err(|error| said(&error)),
                 }
             }
-            Ask::Shelve {
-                invite,
-                invitation,
-                expires_at_ns,
-                site,
-                host,
-                awaiting,
-            } => {
-                let result = match &client {
-                    Err(error) => Err(format!("no network to leave it over: {}", said(error))),
-                    Ok(client) => {
-                        client::shelve(client, &site, host.as_deref(), &invitation, expires_at_ns)
-                            .await
-                            .map_err(|error| said(&error))
-                    }
-                };
-                match awaiting {
-                    // The caller awaiting the link takes it here, not from the
-                    // caller's loop, which nobody may be running.
-                    Some(awaiting) => {
-                        let _ = awaiting.send(result);
-                        continue;
-                    }
-                    None => Answer::Shelved { invite, result },
-                }
-            }
-            Ask::Unshelve {
-                invite,
-                site,
-                handle,
-                delete,
-            } => Answer::Unshelved {
-                invite,
-                result: match &client {
-                    Err(error) => Err(format!("no network to take it back over: {}", said(error))),
-                    Ok(client) => client::take_back(client, &site, &handle, &delete)
-                        .await
-                        .map_err(|error| said(&error)),
-                },
-            },
         };
         if answers.send(answer).is_err() {
             return;
@@ -919,16 +455,6 @@ async fn read(
                 {
                     listed.insert(0, home_listing(site, home));
                 }
-                // A site's own workspace is joined at its home, even when
-                // its directory lists it without an entry of its own.
-                if let Some(home) = &read.home {
-                    for listing in listed
-                        .iter_mut()
-                        .filter(|listing| listing.entry.community && listing.entry_url.is_none())
-                    {
-                        listing.entry_url.clone_from(&home.admission);
-                    }
-                }
                 listings.extend(listed);
             }
             Err(error) => failures.push(said(&error)),
@@ -950,8 +476,8 @@ async fn read(
 }
 
 /// A store with no task behind it still says what a join the caller settles
-/// became: those words are the sheet's, whether they come from an entry or from
-/// the caller's own enrollment.
+/// became: those words are the sheet's, whether they come from an invitation
+/// or from the caller's own enrollment.
 #[cfg(test)]
 mod tests {
     #[test]

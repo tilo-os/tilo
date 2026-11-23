@@ -26,8 +26,9 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    Approval, Approved, Approver, Asked, CERTIFY, CertifyAnswer, CertifyInput, Declined, Device,
-    Entry, ISSUE, LOG_IN, PROVIDER, Place, RESOURCE, SCOPE, TICKET_LIFETIME_NS, Ticket,
+    APPROVE, Approval, Approved, Approver, Asked, CERTIFY, CertifyAnswer, CertifyInput, Declined,
+    Device, Direction, Entry, ISSUE, LOG_IN, PENDING, PROVIDER, Place, REPORTED, RESOURCE, Report,
+    SCOPE, TICKET_LIFETIME_NS, Ticket,
 };
 use tilo_enrollment::root::PersonSigner;
 use tilo_lock::MutexRecover as _;
@@ -109,6 +110,40 @@ pub(crate) fn catalogue(query: &CatalogueQuery) -> CataloguePage {
                 ],
             ))),
             row(Some(descriptor(
+                PENDING,
+                "Sign a browser in",
+                "See the browser a sign-in ticket on another host waits for, and what signing it \
+                 in makes it.",
+                &[ActionParam::required(
+                    "ticket",
+                    ParamType::Text,
+                    "The ticket the browser's prompt carried.",
+                )],
+            ))),
+            row(Some(descriptor(
+                APPROVE,
+                "Approve a browser's sign-in",
+                "Sign the browser's certificate, so it enters the person's workspace.",
+                &[ActionParam::required(
+                    "ticket",
+                    ParamType::Text,
+                    "The ticket the browser's prompt carried.",
+                )],
+            ))),
+            row(Some(descriptor(
+                REPORTED,
+                "Report a login's step",
+                "Tell the browser that showed the ticket what this computer did as it logged in.",
+                &[
+                    ActionParam::required(
+                        "ticket",
+                        ParamType::Text,
+                        "The ticket this computer logged in with.",
+                    ),
+                    ActionParam::required("step", ParamType::Text, "What it did."),
+                ],
+            ))),
+            row(Some(descriptor(
                 LOG_IN,
                 "Log in with a ticket",
                 "Become one of the person's devices with a ticket another of their computers printed.",
@@ -129,6 +164,18 @@ pub(crate) fn catalogue(query: &CatalogueQuery) -> CataloguePage {
         ],
         query,
     )
+}
+
+/// The action service a daemon with no server's work answers the device actions on, as `key`:
+/// a request names the device it asks by its endpoint's key, so the workspaces' shared service
+/// serves only when it signs as that key, and a service of the device's own serves otherwise.
+pub(crate) fn device_actions(key: &SigningKey, workspaces: &ServiceWorkspaces) -> ActionService {
+    let shared = workspaces.copies().action_service();
+    if shared.device() == key.verifying_key().to_bytes() {
+        return shared;
+    }
+    let _entered = tilo_rt::app().handle().enter();
+    ActionService::new(key.clone(), Arc::new(NoActions))
 }
 
 /// `page`, the workspace's apps, with the daemon's own `tilo.device` provider beside them: listed
@@ -397,21 +444,21 @@ struct Inner {
 }
 
 impl Tickets {
-    /// Serve tickets from this daemon.
+    /// Serve tickets from this daemon, on `service`: the one action service its router answers
+    /// the device actions on, which admits a ticket's certify call while a computer asks.
     ///
     /// # Panics
     /// Outside a runtime context, where an answer could not be followed.
     pub(crate) fn new(
-        key: SigningKey,
-        cert: DeviceCert,
+        (key, cert): (SigningKey, DeviceCert),
         endpoint: Endpoint,
         login: Option<(SigningKey, Device)>,
         root: RootSource,
         founded: Option<Founded>,
         workspaces: Option<Arc<ServiceWorkspaces>>,
         place: Place,
+        service: ActionService,
     ) -> Self {
-        let service = ActionService::new(key.clone(), Arc::new(NoActions));
         Self(Arc::new(Inner {
             key,
             cert,
@@ -428,16 +475,14 @@ impl Tickets {
         }))
     }
 
-    /// The action service the daemon's router answers the device actions ALPN with.
-    pub(crate) fn service(&self) -> ActionService {
-        self.0.service.clone()
-    }
-
-    /// Whether `request` is one of the two device actions.
+    /// Whether `request` is one of the device actions.
     pub(crate) fn answers(request: &InvokeRequest) -> bool {
         request.target.provider == PROVIDER
             && request.target.address.resource == RESOURCE
-            && matches!(request.target.address.action.as_str(), ISSUE | LOG_IN)
+            && matches!(
+                request.target.address.action.as_str(),
+                ISSUE | LOG_IN | PENDING | APPROVE | REPORTED
+            )
     }
 
     /// What the issued certificate grants, as `args` names it: a member device, or one that
@@ -464,7 +509,8 @@ impl Tickets {
         };
         let args = Value::Object(argument.clone());
         let action = request.target.address.action.clone();
-        let waiting = action == LOG_IN || args.get("wait").and_then(Value::as_bool) == Some(true);
+        let waiting = matches!(action.as_str(), LOG_IN | PENDING | APPROVE | REPORTED)
+            || args.get("wait").and_then(Value::as_bool) == Some(true);
         if !waiting {
             let update = match self.issue(&args) {
                 Ok(value) => succeeded(invocation, value),
@@ -484,6 +530,9 @@ impl Tickets {
         self.0.runtime.spawn(async move {
             let answer = match action.as_str() {
                 LOG_IN => served.log_in(&args).await,
+                PENDING => served.pending(&args).await,
+                APPROVE => served.approve(&args).await,
+                REPORTED => served.report(&args).await,
                 _ => served.waited().await,
             };
             let update = match answer {
@@ -536,12 +585,16 @@ impl Tickets {
             Some(here) => (here.cert.user_public_key, &here.cert.capabilities),
             None => (self.0.cert.user_public_key, &self.0.cert.capabilities),
         };
-        // A device puts on a ticket only what it holds itself: the same rule every grant follows.
-        let capability = Self::capability(args);
-        if !capability.grants_no_more_than(capabilities) {
+        // A device puts on a ticket only what it holds itself: the same rule every grant follows,
+        // unless it holds the person's root, which certifies whatever the person approves. One
+        // running on an operating system Tilo does not control adds computers as such.
+        let mut capability = Self::capability(args);
+        capability.foreign |= capabilities.foreign;
+        let root = (self.0.root)()?;
+        if root.is_none() && !capability.grants_no_more_than(capabilities) {
             bail!("this device isn't an administrator, so it can't add one");
         }
-        let root = (self.0.root)()?.ok_or_else(|| {
+        let root = root.ok_or_else(|| {
             anyhow!(
                 "This computer does not hold your identity, so it cannot add a device: run \
                  `tilo device add` on the one that does."
@@ -680,6 +733,12 @@ impl Tickets {
             .context("a ticket is needed")?;
         let ticket = Ticket::parse(ticket)
             .map_err(|_| anyhow!("This is not a Tilo ticket: ask for a new one."))?;
+        if ticket.direction != Direction::Login {
+            bail!(
+                "That ticket signs a browser in: run `tilo device add <ticket>` with it on this \
+                 computer."
+            );
+        }
         let agent = args
             .get("agent")
             .and_then(Value::as_str)
@@ -696,6 +755,128 @@ impl Tickets {
             "workspace_name": device.workspace_name,
             "host_origin": device.host_origin,
         }))
+    }
+
+    /// `ticket`'s text, parsed: what a device action names the host and direction by.
+    fn ticket_in(args: &Value, direction: Direction) -> Result<Ticket> {
+        let text = args
+            .get("ticket")
+            .and_then(Value::as_str)
+            .context("a ticket is needed")?;
+        let ticket = Ticket::parse(text)
+            .map_err(|_| anyhow!("This is not a Tilo ticket: ask for a new one."))?;
+        match ticket.direction {
+            Direction::Login if direction == Direction::SignIn => bail!(
+                "This ticket logs a computer in: run `tilo login <ticket>` with it, not \
+                 `tilo device add`."
+            ),
+            Direction::SignIn if direction == Direction::Login => bail!(
+                "This ticket signs a browser in: run `tilo device add <ticket>` with it, not \
+                 `tilo login`."
+            ),
+            _ => {}
+        }
+        Ok(ticket)
+    }
+
+    /// Call `action` on the host `ticket` names, as this computer's login, in the workspace that
+    /// login enters: what a device of the person's does on the host that served a ticket.
+    async fn at_host(&self, ticket: &Ticket, action: &str, argument: Value) -> Result<Value> {
+        use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
+        let (key, here) = tilo_device_identity::login::load(&self.0.place)?
+            .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
+        let issuer = tilo_api::daemon::enter::address_of(&ticket.issuer)?;
+        let dialed = tilo_server_client::ServerAddress::at(issuer);
+        let service = ActionService::new(key, Arc::new(NoActions));
+        let device = Arc::new(service.remote(&self.0.endpoint, &dialed.addr(), &here.workspace));
+        let Value::Object(argument) = argument else {
+            bail!("a device action asks with its arguments");
+        };
+        let request = InvokeRequest {
+            on_behalf_of: None,
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(RESOURCE, action),
+            },
+            argument: InvokeArgument::Json(argument),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let settled = device
+            .invoke_until_settled(request, Duration::from_secs(60))
+            .await;
+        match settled {
+            Some(Ok(InvocationUpdate::Succeeded { output, .. })) => {
+                Ok(output.value.unwrap_or(Value::Null))
+            }
+            Some(Ok(InvocationUpdate::Failed { error, .. })) => {
+                bail!("{}", error.message.trim_end_matches('.'))
+            }
+            Some(Ok(_)) | None => bail!(tilo_api::daemon::enter::UNREACHED),
+            Some(Err(error)) => Err(anyhow!(certify_refused(&error))),
+        }
+    }
+
+    /// The browser a sign-in `ticket` waits for, as the host sees it.
+    async fn pending(&self, args: &Value) -> Result<Value> {
+        let ticket = Self::ticket_in(args, Direction::SignIn)?;
+        self.at_host(&ticket, PENDING, json!({"secret": ticket.secret_hex()}))
+            .await
+    }
+
+    /// Sign the browser's certificate for the sign-in `ticket`, so it is signed in.
+    async fn approve(&self, args: &Value) -> Result<Value> {
+        let ticket = Self::ticket_in(args, Direction::SignIn)?;
+        let cert: Option<tilo_user_identity::DeviceCert> = args
+            .get("cert")
+            .cloned()
+            .and_then(|cert| serde_json::from_value(cert).ok());
+        let (_key, here) = tilo_device_identity::login::load(&self.0.place)?
+            .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
+        let answer = self
+            .at_host(
+                &ticket,
+                APPROVE,
+                json!({
+                    "secret": ticket.secret_hex(),
+                    "cert": cert,
+                    "label": here.cert.device_label,
+                }),
+            )
+            .await?;
+        Ok(match &cert {
+            Some(cert) => json!({
+                "label": cert.device_label,
+                "device": hex::encode(cert.device_public_key),
+            }),
+            None => answer,
+        })
+    }
+
+    /// Tell the browser that showed `ticket` what this computer did as it logged in.
+    async fn report(&self, args: &Value) -> Result<Value> {
+        let ticket = Self::ticket_in(args, Direction::Login)?;
+        let report: Report =
+            serde_json::from_value(Value::Object(args.as_object().cloned().unwrap_or_default()))
+                .map_err(|_| anyhow!("a report names its ticket and step"))?;
+        let step = serde_json::to_value(report.step)?;
+        self.at_host(
+            &ticket,
+            REPORTED,
+            json!({
+                "ticket": ticket.encode(),
+                "step": step,
+                "agent": report.agent,
+                "detail": report.detail,
+            }),
+        )
+        .await?;
+        Ok(json!({}))
     }
 
     /// Ask the device that issued `ticket` to have the person's root certify this computer's key,
@@ -719,8 +900,15 @@ impl Tickets {
         let serde_json::Value::Object(argument) = serde_json::to_value(&input)? else {
             bail!("the certify input is an object");
         };
-        let service = ActionService::new(self.0.key.clone(), Arc::new(NoActions));
-        let device = Arc::new(service.remote(&self.0.endpoint, &dialed.addr(), SCOPE));
+        // Asked as this computer's own key, the one the certificate is for: the daemon's shared
+        // action service may sign as its workspace service instead.
+        let device = Arc::new(
+            ActionService::new(self.0.key.clone(), Arc::new(NoActions)).remote(
+                &self.0.endpoint,
+                &dialed.addr(),
+                SCOPE,
+            ),
+        );
         let request = InvokeRequest {
             on_behalf_of: None,
             invocation: InvocationId::new(),
@@ -809,6 +997,11 @@ fn certify_refused(error: &ActionCallError) -> String {
             )
         }
         ActionCallError::UnknownAction => tilo_api::daemon::enter::TOO_OLD.to_owned(),
+        ActionCallError::Unavailable { reason } => format!(
+            "The device that made this ticket did not take it: {}. If its `tilo device add` \
+             ended, ask for a new ticket.",
+            reason.trim_end_matches('.')
+        ),
         _ => "The device that made this ticket can't be reached from here: it may be asleep, or \
               its `tilo device add` ended. Ask for a new ticket."
             .to_owned(),

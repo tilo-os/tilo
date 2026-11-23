@@ -62,9 +62,6 @@ pub struct Caller {
     pub agent: bool,
     /// The person an agent acts for.
     pub on_behalf_of: Option<String>,
-    /// The device that signed for the caller, by its public key in lowercase hex, when the API
-    /// admitted it from another device than this host's.
-    pub device: Option<String>,
 }
 
 impl Caller {
@@ -90,7 +87,6 @@ impl From<&tilo_actions::ActionInvoker> for Caller {
             actor: invoker.acting.by.clone(),
             agent: !invoker.acting.is_person(),
             on_behalf_of: invoker.acting.acted_for_person().map(str::to_owned),
-            device: invoker.device.as_ref().map(|device| device.id.clone()),
         }
     }
 }

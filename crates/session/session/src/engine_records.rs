@@ -875,11 +875,19 @@ impl crate::Shared {
         }) else {
             return;
         };
-        if !self
-            .engine
-            .as_ref()
-            .is_some_and(|engine| engine.holds(workspace))
-        {
+        let Some(engine) = &self.engine else {
+            return;
+        };
+        // Who holds the workspace's keys is read from the enrollment this device committed: one
+        // still enrolling, as in a workspace its own service has just founded, names nobody yet,
+        // and the workspace would refuse every record moved there.
+        if !engine.workspaces().contains(&workspace) {
+            return;
+        }
+        // A move the workspace refused waits for this device's keys or its record of the
+        // workspace to move on, rather than being asked again on every pass.
+        let standing = (engine.keys().generation(), engine.owner().revision());
+        if self.app_stores.get() == AppStores::Refused(standing) {
             return;
         }
         let workspace = workspace.to_string();
@@ -889,10 +897,27 @@ impl crate::Shared {
         let Some(store) = (self.held_stores)(workspace, runtime) else {
             return;
         };
-        if let Err(error) = self.services.borrow_mut().keep_in_workspace(&store) {
-            tracing::warn!(%error, "the apps' resources are not kept in the workspace");
+        match self.services.borrow_mut().keep_in_workspace(&store) {
+            Ok(_) => self.app_stores.set(AppStores::Kept),
+            Err(error) => {
+                self.app_stores.set(AppStores::Refused(standing));
+                tracing::warn!(%error, "the apps' resources are not kept in the workspace");
+            }
         }
     }
+}
+
+/// Where moving the apps' resources into the workspace the person is in stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AppStores {
+    /// Not moved yet: the session is in no workspace this device is enrolled in.
+    #[default]
+    Unmoved,
+    /// The workspace refused them while this device's keys and its record of its workspaces stood
+    /// here.
+    Refused((u64, u64)),
+    /// Every app's resources are kept there.
+    Kept,
 }
 
 /// The store of a workspace this device's own service holds, none while the service is not open.

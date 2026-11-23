@@ -129,12 +129,16 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd"
 # package .config/nextest-capabilities.toml names first runs the capability probe
 # (tools/ci/capability_filter.py), handed the same way (tools/tests/test_capability_filter.py
 # holds every such package to it).
+# The apps the session opens are built with the `fast` profile, each in an invocation of its own:
+# the app-open budget test times their startup, which only means something for an optimised build.
+# The launcher that starts them is built the same way: the session runs the copy of it t places
+# beside the session's own binary, and its sandbox set-up is part of every open the test times.
 # The Lounge tests start the workspace service, which `tilo-server` has only with `agents`, for both
 # packages whose tests start it: a featured artifact is built in an invocation of its own, so it
 # moves no unit of this family's build. The pam-tilo tests load the PAM module as libpam does:
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo,
 # which the pam-module setup step hands to the tests (.config/nextest.toml).
-starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime", "tasks:tasks", "passwords:passwords", "model-providers:model-providers", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "tilolang-process:tilolang-process", "launcher:tilo-launcher"], package-service = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"] }
+starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "launcher:tilo-launcher@fast", "tilo-runtime:tilo-runtime@fast", "tasks:tasks@fast", "passwords:passwords@fast", "model-providers:model-providers@fast", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "tilolang-process:tilolang-process", "launcher:tilo-launcher"], package-service = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
@@ -828,7 +832,7 @@ heavy = true
 [[check]]
 name = "workspace-service-features"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "for features in '' device-keys apps agents apps,test-support agents,test-support; do\n    cargo check --locked -p tilo-workspace-service --all-targets ${features:+--features \"$features\"} || exit 1\ndone\n"
+run = "for features in '' device-keys apps agents apps,agents apps,test-support agents,test-support; do\n    cargo check --locked -p tilo-workspace-service --all-targets ${features:+--features \"$features\"} || exit 1\ndone\n"
 
 [[check]]
 name = "android"
@@ -1527,6 +1531,10 @@ heavy = true
 name = "sdk-macos"
 # Installs packages (npm, PyPI, rustup) from hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
+# The generated app outside the repository resolves its own dependencies, the SDK among them as
+# a git dependency on this tree, so it needs cargo's network; t turns it off where it hands a job
+# the state's crates.
+env = { CARGO_NET_OFFLINE = "false" }
 run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\n# The Mac's own tilo test cache, which outlives jobs as the Linux nodes' does (font-catalog.py's\n# default): $TMPDIR is each job's own, and the fonts were downloaded again in every run.\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\ncargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package\nbin=${CARGO_TARGET_DIR:-$PWD/target}/debug\nrustup target add wasm32-unknown-unknown\n# The template takes the SDK from this tree as a git repository (`--sdk-git file://\u2026`, at HEAD):\n# commit the tree here, so HEAD is exactly the files checked, a working tree's changes included.\nif ! git rev-parse --git-dir >/dev/null 2>&1; then\n  git init -q\n  git add -A\n  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@localhost GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@localhost git commit -q -m 'the checked tree'\nfi\nTILO_SDK_SOURCE=git cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture\nfor app in calculator; do\n  bundle=$(\"$bin/tilo-app\" build --target macos \"apps/$app\" | tail -n 1)\n  plutil -lint \"$bundle/Contents/Info.plist\"\n  codesign --verify --deep --strict \"$bundle\"\n  \"$bundle/Contents/MacOS/$app\" --shots \"$TMPDIR/$app.png\"\n  test -s \"$TMPDIR/$app.png\"\ndone\n\"$bin/tilo-app\" package --target macos apps/calculator --output \"$TMPDIR/Calculator-macos.zip\" --force\ntest -s \"$TMPDIR/Calculator-macos.zip\"\ntest -s \"$TMPDIR/Calculator-macos.zip.json\"\n"
 requires = ["os=macos", "arch=arm64"]
 on = ["dispatch", "idle"]
@@ -4918,9 +4926,9 @@ default = false
 name = "installer-cycle-x86_64"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt tools/ci/packages/installer-cycle.txt && rm -rf /var/tmp/tilo-installer-cycle && TILO_VM_DISPLAY=2d TILO_ACCEL=kvm TILO_DISTROBOX= TILO_MEM=8192 TILO_VM_CYCLE=installer-cycle TILO_INSTALLER_CYCLE_STORAGE=/var/tmp/tilo-installer-cycle TILO_BOOT_WAIT_SECS=1800 TILO_INSTALLER_CYCLE_MAX_INSTALL_SECONDS=3600 bash os/dev/test-installer-cycle.sh /target/publish/dev-installer-medium/x86_64/disk.qcow2 --graphics software --out /target/installer-cycle"
+run = "set -euo pipefail\nencoder_dir=\"$CARGO_TARGET_DIR/imager-profile\"\ncargo build --release --locked --manifest-path tools/imager-profile/Cargo.toml --target-dir \"$encoder_dir\"\nencoder=\"$encoder_dir/release/tilo-imager-profile\"\ntest -f \"$encoder\" && test ! -L \"$encoder\" && test -x \"$encoder\"\nencoder_sha256=\"$(sha256sum \"$encoder\" | awk '{print $1}')\"\nbash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt tools/ci/packages/installer-cycle.txt\nrm -rf /var/tmp/tilo-installer-cycle\nTILO_PROFILE_ENCODER=\"$encoder\" TILO_PROFILE_ENCODER_SHA256=\"$encoder_sha256\" TILO_VM_DISPLAY=2d TILO_ACCEL=kvm TILO_DISTROBOX= TILO_MEM=8192 TILO_VM_CYCLE=installer-cycle TILO_INSTALLER_CYCLE_STORAGE=/var/tmp/tilo-installer-cycle TILO_BOOT_WAIT_SECS=1800 TILO_INSTALLER_CYCLE_MAX_INSTALL_SECONDS=3600 bash os/dev/test-installer-cycle.sh /target/publish/dev-installer-medium/x86_64/disk.qcow2 --graphics software --out /target/installer-cycle\n"
 needs = ["dev-installer-medium-x86_64", "tilo-vm-binary-x86_64"]
-env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm", TILO_CYCLE_DIR = "/var/tmp/tilo-installer-cycle/cycle" }
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/installer-cycle/**"]
@@ -6755,7 +6763,7 @@ requires = ["arch=x86_64"]
 isolation = "nested"
 # What it found, not what it ran: each flow's pages, reports and consoles, and each of the stack's
 # own logs; the site it served is the web entry's laid-out context again.
-outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/signin/**", "/target/e2e/boot/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/visa/**", "/target/e2e/entry/**", "/target/e2e/passkey/**", "/target/e2e/wait-list/**", "/target/e2e/onboarding/**"]
+outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/signin/**", "/target/e2e/boot/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/visa/**", "/target/e2e/entry/**", "/target/e2e/wait-list/**", "/target/e2e/onboarding/**"]
 # What a failure keeps of why: every service's log, which says which of them did not answer.
 evidence = ["/target/e2e/state/logs/**"]
 timeout_secs = 1800
@@ -6763,9 +6771,8 @@ timeout_secs = 1800
 # A stranger's way into tilo.sh, end to end, on a whole stack of its own, brought up the way
 # production's manifests bring it up (test-onboarding.sh, one flow of the e2e check's): the wait
 # list and its confirmation mail, the invitation an owner sends from the workspace's wait list, the
-# workspace the link lands them in with the agent setup, the passkey that brings them back on a
-# browser that forgot the site, a second workspace they make, and a visitor with no invitation who
-# still cannot get in. Nested, because the stack's services are sandboxed with bwrap (stack.sh).
+# workspace the link lands them in with the agent setup, a second workspace they make, and a
+# visitor with no invitation who still cannot get in. Nested, because the stack's services are sandboxed with bwrap (stack.sh).
 # Its browsers are as bounded as the flow is, not as a developer's machine is: three people's pages
 # are open at once here (the operator's, the stranger's, and the browser that signs in), where the
 # supervisor's two-browser bound and ten-minute lifetime (tools/web/owned_browser.py) are one agent's
@@ -7817,7 +7824,7 @@ requires = ["arch=any"]
 on = ["dispatch"]
 
 # The local tilo.sh stack's VM host (os/containers/tilo-sh/vm-host.sh): the same image,
-# privileged with a loop-backed state disk, the placer that places workspaces' VMs on it, and
+# privileged with a loop-backed state disk, its member device, and
 # the guest image this checkout built instead of a release's. It is what a hosted workspace
 # needs under it locally: its Linux programs and its Browser run in its VM there. The check
 # boots it and holds it to a workspace's VM waking from that guest and running a program,

@@ -2,10 +2,6 @@
 //! compute claims an offloaded invocation's turn only when everything it needs
 //! is here, and a member device asking it over the device action service gets
 //! the turn run there.
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the host, its workspaces and the devices' action services are this test's subject until its last assertion"
-)]
 
 use std::sync::Mutex;
 
@@ -19,7 +15,7 @@ use super::fixtures::entry_join_as;
 use super::servers::{self, Servers};
 use super::tests::{governor, guest_device, test_host};
 use super::*;
-use crate::work::{HostJobs, Ineligible, Job, NotTaken, Turn, takes_turn};
+use crate::work::{HostJobs, HostLinux, Ineligible, Job, NotTaken, Turn, takes_turn};
 
 /// The jobs a device runs, as a test sets them: whether it runs the transform,
 /// keeps the inputs and has room, and what each run was given.
@@ -98,7 +94,11 @@ fn job(input: [u8; 32]) -> Job {
 
 /// The person's entry for `device` among their servers, offering compute when
 /// `compute` says so: the Servers workspace founded here, the device enrolled.
-async fn offer_compute(host: &super::fixtures::TestHost, device: &DeviceCert, compute: bool) {
+pub(super) async fn offer_compute(
+    host: &super::fixtures::TestHost,
+    device: &DeviceCert,
+    compute: bool,
+) {
     let workspaces = host.workspaces();
     let admin = person_workspace_id(&device.user_public_key);
     if servers::read(workspaces).await.is_err() {
@@ -172,7 +172,7 @@ async fn a_device_claims_a_turn_only_when_everything_it_needs_is_here() {
             let taken = takes_turn(workspaces, &workspace, &turn).await;
             assert_eq!(taken.err(), Some(NotTaken::Ineligible(why)), "{why}");
             let Turn::Invocation { id, .. } = turn else {
-                unreachable!("the turns asked here are invocations");
+                unreachable!("an invocation's turn")
             };
             assert_eq!(
                 workspaces
@@ -210,7 +210,7 @@ async fn a_device_claims_a_turn_only_when_everything_it_needs_is_here() {
 
     let turn = turn(&editor);
     let Turn::Invocation { id, .. } = &turn else {
-        unreachable!("the turn asked here is an invocation");
+        unreachable!("an invocation's turn")
     };
     let lease = format!("invocation/{}", id.0);
     let claim = takes_turn(workspaces, &workspace, &turn).await.unwrap();
@@ -235,40 +235,83 @@ async fn a_device_claims_a_turn_only_when_everything_it_needs_is_here() {
     host.shutdown().await;
 }
 
-/// An agent's answer to an ask is taken under the ask's own lease, and only by a device the
-/// workspace lets open the ask: never on the word of the engine asking.
+/// Linux machines as a test sets them: whether there is room for another.
+struct Linux {
+    room: bool,
+}
+
+impl HostLinux for Linux {
+    fn machine_lease(&self) -> String {
+        tilo_peer_state::vm_lease("default")
+    }
+
+    fn has_room(&self) -> bool {
+        self.room
+    }
+
+    fn runs(&self) -> Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> {
+        Arc::new(tilo_actions::remote::TestProvider::new())
+    }
+}
+
+/// A Linux run is taken by a device that runs Linux machines and has room for
+/// one more, or that keeps the workspace's machine already, room or not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_ask_is_taken_under_its_own_lease_by_a_device_that_opens_it() {
+async fn a_device_takes_a_linux_run_when_it_runs_linux_and_has_room() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();
-    let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let ask = |app: &str| Turn::Ask {
-        app: app.to_owned(),
-        ask: "root-asks/ask-1".to_owned(),
+    let workspace = workspaces.create("Build").await.unwrap().workspace;
+    let turn = || Turn::Linux {
+        id: tilo_actions::InvocationId::new(),
+        requester: cert.device_public_key,
+        run: Box::new(tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::environment_commands::target(),
+            argument: tilo_actions::remote::InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }),
+    };
+    let refused = |why: Ineligible| {
+        let workspace = workspace.clone();
+        async move {
+            let taken = takes_turn(workspaces, &workspace, &turn()).await;
+            assert_eq!(taken.err(), Some(NotTaken::Ineligible(why)), "{why}");
+        }
     };
 
-    let elsewhere = "a workspace this device does not hold";
-    let refused = takes_turn(workspaces, elsewhere, &ask("so.tilo.agent")).await;
+    refused(Ineligible::RunsNoLinux).await;
+    workspaces.run_linux(Arc::new(Linux { room: false }));
+    refused(Ineligible::NoRoomForLinux).await;
     assert_eq!(
-        refused.err(),
-        Some(NotTaken::Ineligible(Ineligible::CannotOpen)),
-        "a device that cannot open the ask does not take it"
+        Ineligible::NoRoomForLinux.to_string(),
+        "this device has no room for another Linux machine"
     );
+    workspaces.run_linux(Arc::new(Linux { room: true }));
+    takes_turn(workspaces, &workspace, &turn())
+        .await
+        .expect("a device with room takes it")
+        .release()
+        .await;
 
-    let claim = takes_turn(workspaces, &workspace, &ask("so.tilo.agent"))
+    // The device keeping the workspace's machine takes its runs, full or not.
+    workspaces
+        .write_lease(&workspace, &tilo_peer_state::vm_lease("default"), 30_000)
         .await
         .unwrap();
-    assert_eq!(
-        workspaces
-            .lease_holder(&workspace, "ask/root-asks/ask-1")
-            .await
-            .unwrap(),
-        Some(cert.device_public_key),
-        "the ask's lease is named by the ask alone"
-    );
-    claim.release().await;
+    workspaces.run_linux(Arc::new(Linux { room: false }));
+    takes_turn(workspaces, &workspace, &turn())
+        .await
+        .expect("the device keeping the machine takes it")
+        .release()
+        .await;
     host.shutdown().await;
 }
 
@@ -360,76 +403,5 @@ async fn a_member_device_asks_and_the_host_runs_its_turn() {
     for endpoint in endpoints {
         endpoint.close().await;
     }
-    host.shutdown().await;
-}
-
-/// The workspace's leases as an app reads them (`workspace.leases`): the device whose claim
-/// stands, by its key in hex, until the claim lapses or is let go, after which the lease names
-/// no device and is left out.
-#[cfg(feature = "apps")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_app_reads_a_leases_live_holder_until_its_claim_lapses() {
-    use tilo_resource_store::wire::{Command, Reply};
-
-    let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let host = test_host(dir.path(), &key, &cert).await;
-    let workspaces = host.workspaces();
-    // The service answers an app's reads as this device, as a desktop's does.
-    workspaces.set_member_device(Arc::new(MemberDevice {
-        cert: cert.clone(),
-        signer: Arc::new(key.clone()),
-    }));
-    let workspace = workspaces.create("Desk").await.unwrap().workspace;
-    let leases = || async {
-        let reply = workspaces
-            .own_resource_command(&workspace, "so.tilo.lang.desk", Command::Leases)
-            .await
-            .expect("the host answers the workspace's leases");
-        let Reply::Content(Some(state)) = reply else {
-            panic!("the leases are answered as the workspace's state: {reply:?}");
-        };
-        state
-    };
-    assert_eq!(
-        leases().await,
-        serde_json::json!({ "leases": {} }),
-        "a workspace nobody claimed anything in holds no lease"
-    );
-
-    let lease = "ask/1";
-    let ttl_ms = 30_000;
-    workspaces
-        .write_lease(&workspace, lease, ttl_ms)
-        .await
-        .unwrap();
-    let holder = hex::encode(cert.device_public_key);
-    assert_eq!(
-        leases().await,
-        serde_json::json!({ "leases": { lease: { "device": holder } } }),
-        "the claim that stands names its device, as `invoker.device()` names one"
-    );
-
-    // Read past the claim's deadline and the clock skew devices allow, the claim has lapsed:
-    // the lease names nobody, though the claim is still written.
-    let lapsed = tilo_clock::unix_now_ns()
-        .saturating_add(ttl_ms.saturating_mul(1_000_000))
-        .saturating_add(tilo_peer_state::CLOCK_SKEW_NS)
-        .saturating_add(1_000_000_000);
-    let state = workspaces.workspace(&workspace).await.unwrap();
-    let read_then =
-        super::resources::leases_reading(&state.lock().await.peer(), super::system_time(lapsed));
-    assert_eq!(
-        read_then,
-        serde_json::json!({ "leases": {} }),
-        "a lapsed claim names no device"
-    );
-
-    workspaces.write_lease(&workspace, lease, 0).await.unwrap();
-    assert_eq!(
-        leases().await,
-        serde_json::json!({ "leases": {} }),
-        "a claim let go names no device either"
-    );
     host.shutdown().await;
 }

@@ -40,10 +40,10 @@ pub(in crate::state) fn bindings<E>(
 pub(in crate::state) fn ready<E>(
     policy: &WorkspaceMediaV1,
     check: impl FnMut(&str, &str) -> Result<bool, E>,
-    basis: impl FnOnce() -> Result<[u8; 32], E>,
+    unpromoted: impl FnOnce() -> Result<bool, E>,
 ) -> Result<(), ReadinessError<E>> {
     bindings(policy, true, check)?;
-    if basis().map_err(ReadinessError::Source)? != policy.authorization_basis {
+    if unpromoted().map_err(ReadinessError::Source)? {
         return Err(ReadinessError::Unreconciled);
     }
     Ok(())

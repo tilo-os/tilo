@@ -343,3 +343,59 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// [`fixture`], holding a policy written again with the same governance under
+/// a basis an earlier build derived from it, as a device keeps it.
+fn earlier_build_fixture() -> (StatePeer, SigningKey, SigningKey, SystemTime) {
+    let (mut peer, root, key, now) = fixture(1);
+    let mut policy = media::parse(peer.admitted_workspace().unwrap())
+        .unwrap()
+        .unwrap();
+    policy.authorization_basis = [5; 32];
+    policy.authorization_revision = media::next_counter(policy.authorization_revision).unwrap();
+    let doc = peer.core.workspace_doc.as_mut().unwrap();
+    doc.put(
+        ROOT,
+        media::FIELD,
+        automerge::ScalarValue::Bytes(media::encode(&policy).unwrap()),
+    )
+    .unwrap();
+    doc.commit();
+    (peer, root, key, now)
+}
+tilo_test_env::scenario! {
+    fn a_call_policy_another_build_based_is_written_again_under_this_ones;
+
+    phase the_policy_is_restored_and_ready_for_calls;
+    {
+        let (peer, _, _, now) = earlier_build_fixture();
+        assert!(peer.validated_media_policy().unwrap().is_some());
+        peer.media().validate_media_governance_for_publication().unwrap();
+        let restored = StatePeer::restore(
+            &peer.durable().unwrap(),
+            peer.workspace_id(),
+            peer.owner_certificates()[0].clone(),
+            vec![],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(
+            restored.validated_media_policy().unwrap().unwrap().authorization_basis,
+            [5; 32]
+        );
+    }
+
+    phase the_device_writes_it_again_once_under_this_builds_basis;
+    {
+        let (mut peer, _, key, now) = earlier_build_fixture();
+        assert!(peer.media_mut().reconcile_media_governance(&key, now).unwrap());
+        let policy = peer.validated_media_policy().unwrap().unwrap();
+        assert_eq!(policy.authorization_revision, 3);
+        assert_eq!(
+            policy.authorization_basis,
+            media::security_basis(peer.admitted_workspace().unwrap(), &[]).unwrap()
+        );
+        assert!(!peer.media_mut().reconcile_media_governance(&key, now).unwrap());
+    }
+}

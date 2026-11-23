@@ -152,7 +152,8 @@ curl -sS "$api/workspaces" -H "$agent" -H "$json" -d '{"name": "Applicant: someo
 
 # Later, for review: your backend takes the letter out and hands a person the link to it.
 bytes=$(curl -sS --fail-with-body "$api/workspaces/$jane/content/$letter" -H "$auth" | wc -c)
-link=$(curl -sS --fail-with-body "$api/workspaces/$jane/links?path=word-processor" -H "$auth" | jq -r .link)
+link=$(curl -sS --fail-with-body "$api/workspaces/$jane/resources/word-processor/actions/share-link" \
+  -H "$auth" -H "$json" -d '{}' | jq -r .result.url)
 echo "the letter is $bytes bytes; a person opens it at $link"
 ```
 
@@ -310,7 +311,7 @@ tilo workspace people ls -w applicant-jane-doe
 tilo workspace people name "Jane Doe" -w applicant-jane-doe   # what its people and your invitations call you
 ```
 
-Following the link signs them in to Tilo (with a passkey, or by approving an agent) and lands them in the
+Following the link signs them in to Tilo (by approving an agent) and lands them in the
 workspace as that role. No mail is sent: hand the link over yourself. From then on, the resource links your
 agent hands over open straight in the resource's app for them.
 

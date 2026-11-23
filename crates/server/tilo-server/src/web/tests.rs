@@ -102,9 +102,7 @@ fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
         endpoint: None,
         allowed_origins: vec![],
         workspaces: server.workspaces().cloned(),
-        envelopes: envelopes::Envelopes::new(server.state_root().join("envelopes")),
-        profiles: Arc::new(envelopes::Envelopes::of(
-            envelopes::Kind::Profile,
+        profiles: Arc::new(profiles::Profiles::new(
             server.state_root().join("profiles"),
         )),
         fetch: None,
@@ -112,12 +110,8 @@ fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
         content_links: Arc::default(),
         presence: Arc::new(live::Authority::new(server.web_context().server.clone())),
         page_errors: page_errors::PageErrors::default(),
-        shelf: Arc::new(shelf::Shelf::opening(
-            server.state_root().join("invitations"),
-            tilo_clock::unix_now_ns(),
-        )),
         site: site.and_then(Site::new),
-        login_codes: Arc::new(login_codes::LoginCodes::new(None)),
+        tickets: tickets::Tickets::new(server.web_context().certification.clone()),
         wait_list: Arc::default(),
     }
 }
@@ -251,10 +245,6 @@ tilo_test_env::scenario! {
 /// them with are the ones the group admits it with, and the host hands none.
 #[cfg(feature = "agents")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server and its workspaces serve the page until the server shuts down at the end"
-)]
 async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
     let signer = SigningKey::from_bytes(&[71; 32]);
     // A workspace service's node, which takes part in its workspaces' channels.
@@ -289,10 +279,6 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
 /// names it, though the host no longer lets in who was in it; a workspace that
 /// stays, or that the host never held, is not.
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server governs the workspaces until it shuts down at the end"
-)]
 async fn the_host_says_a_workspace_was_deleted_to_whoever_names_it() {
     let root = SigningKey::from_bytes(&[131; 32]);
     let host = host(&root, 132, tilo_user_identity::DeviceCapabilities::member());
@@ -335,10 +321,6 @@ async fn the_host_says_a_workspace_was_deleted_to_whoever_names_it() {
 /// through a proxy. Nobody is let in over HTTP: a device enters through the
 /// entry on its session with the host, so the entry has no `join` route.
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server governs the workspace until it shuts down at the end"
-)]
 async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
     let root = SigningKey::from_bytes(&[121; 32]);
     let host = host(&root, 122, tilo_user_identity::DeviceCapabilities::member());
@@ -453,10 +435,6 @@ async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
 /// whose beacons send nothing sends it: a plain `no-cors` POST from another
 /// origin, its body as large as a page sends.
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server governs the workspace until it shuts down at the end"
-)]
 async fn a_page_that_could_not_open_its_workspace_reaches_the_host_log() {
     #[derive(Clone, Default)]
     struct Sink(Arc<std::sync::Mutex<Vec<u8>>>);
@@ -530,114 +508,88 @@ async fn a_page_that_could_not_open_its_workspace_reaches_the_host_log() {
     }
 }
 
-/// The shelf answers a site's own `/i/<handle>`: an inviter leaves sealed
-/// bytes, a redeemer fetches exactly those, and the inviter takes them back.
-/// The site reads no key, because no request carries one.
+/// A short link names an invitation its workspace keeps: whoever follows it
+/// asks this host for the invitation by the link's secret, before they are
+/// anyone the host knows, from any site's page. The host answers it while it
+/// stands, and once it is taken back answers what it answers for a secret it
+/// never issued.
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server holds the shelf until it shuts down at the end"
-)]
-async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
-    use tilo_server_protocol::sealed_invitations::{Fetched, Stored, TakeBack};
+async fn an_invitation_its_workspace_keeps_is_opened_by_its_links_secret() {
+    use tilo_server_protocol::web::{KeptInvitation, OPEN_INVITATION_PATH, OpenedInvitation};
 
     let root = SigningKey::from_bytes(&[131; 32]);
     let host = host(&root, 132, tilo_user_identity::DeviceCapabilities::member());
+    let (_, owner) = device(&root, 133, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let server = server_at(&state, host.identity(), ServerConfig::default()).await;
+    let workspaces = server.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+    workspaces.enter(&workspace, &owner).await.unwrap();
+    let invitation = workspaces
+        .issue(
+            &workspace,
+            &owner,
+            crate::workspaces::IssueInvitationRequest {
+                request_id: [1; 32],
+                role: Role::Editor,
+                recipient_user_public_key: None,
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let secret = tilo_peer_state::join::native::bearer_text(&invitation.signed_invitation);
     let (addr, serving) = serve_web(Arc::new(web_of(&server, &host))).await;
 
-    let handle = "abcdefghijklmnop";
-    let delete = "a".repeat(43);
-    let sealed = "c2VhbGVkIGludml0YXRpb24";
-    let stored = serde_json::to_vec(&Stored {
-        sealed: sealed.to_owned(),
-        expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
-        delete: delete.clone(),
-        host: None,
-    })
-    .unwrap();
-    // Below the site's own path, as `entry.json` names it, and with no
-    // credentials: the inviter's device signs nothing at the site.
-    let head = format!(
-        "POST /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://app.example\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-        stored.len()
-    );
-    let (status, head, _) = exchange(addr, &head, &stored).await;
-    assert_eq!(status, 204, "{head}");
-    assert_eq!(
-        header_value(&head, "access-control-allow-origin"),
-        Some("*"),
-        "any site's page may leave one"
-    );
+    let ask = |workspace: &str, secret: &str| {
+        let body = serde_json::to_vec(&KeptInvitation {
+            workspace: workspace.to_owned(),
+            secret: secret.to_owned(),
+        })
+        .unwrap();
+        let head = format!(
+            "POST /peer/v1{OPEN_INVITATION_PATH} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://app.example\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        async move { exchange(addr, &head, &body).await }
+    };
 
-    let (status, head, body) = exchange(
-        addr,
-        &format!(
-            "GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://app.example\r\n\r\n"
-        ),
-        b"",
-    )
-    .await;
+    let (status, head, body) = ask(&workspace, &secret).await;
     assert_eq!(status, 200, "{head}");
+    let opened: OpenedInvitation = serde_json::from_slice(&body).unwrap();
     assert_eq!(
-        header_value(&head, "content-type"),
-        Some("application/json")
-    );
-    let fetched: Fetched = serde_json::from_slice(&body).unwrap();
-    assert_eq!(fetched.sealed, sealed);
-    assert!(
-        !String::from_utf8_lossy(&body).contains(&delete),
-        "the site gives back no delete secret"
+        tilo_peer_state::join::invitation_bytes(&opened.invitation).unwrap(),
+        invitation.signed_invitation,
+        "the host answers the invitation the workspace issued, byte for byte"
     );
 
-    // A preflight from a page on another site.
-    let (status, head, _) = exchange(
-        addr,
-        &format!(
-            "OPTIONS /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://app.example\r\nAccess-Control-Request-Method: DELETE\r\n\r\n"
-        ),
-        b"",
-    )
-    .await;
-    assert_eq!(status, 204, "{head}");
-    assert!(
-        header_value(&head, "access-control-allow-methods")
-            .unwrap_or_default()
-            .contains("delete"),
-        "{head}"
-    );
+    // A secret it never issued, and the right secret in another workspace,
+    // name nothing.
+    let other = workspaces.create("Elsewhere").await.unwrap().workspace;
+    for (workspace, secret) in [
+        (workspace.as_str(), "a".repeat(43)),
+        (other.as_str(), secret.clone()),
+        (workspace.as_str(), "short".to_owned()),
+    ] {
+        let (status, head, _) = ask(workspace, &secret).await;
+        assert_eq!(status, 410, "{head}");
+    }
 
-    // A stranger holding the link can fetch, but takes nothing back.
-    let wrong = serde_json::to_vec(&TakeBack {
-        delete: "b".repeat(43),
-    })
-    .unwrap();
-    let head = format!(
-        "DELETE /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
-        wrong.len()
-    );
-    let (status, head, _) = exchange(addr, &head, &wrong).await;
-    assert_eq!(status, 403, "{head}");
-
-    let right = serde_json::to_vec(&TakeBack {
-        delete: delete.clone(),
-    })
-    .unwrap();
-    let head = format!(
-        "DELETE /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
-        right.len()
-    );
-    let (status, head, _) = exchange(addr, &head, &right).await;
-    assert_eq!(status, 204, "{head}");
-
-    // The link now names an invitation that is gone, and says so.
-    let (status, head, body) = exchange(
-        addr,
-        &format!("GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"),
-        b"",
-    )
-    .await;
+    // Taken back, the invitation is gone for whoever holds the link.
+    workspaces
+        .cancel(
+            &workspace,
+            &owner,
+            crate::workspaces::CancelInvitationRequest {
+                request_id: [2; 32],
+                invite_id: invitation.invite_id,
+            },
+        )
+        .await
+        .unwrap();
+    let (status, head, body) = ask(&workspace, &secret).await;
     assert_eq!(status, 410, "{head}");
     assert!(
         String::from_utf8_lossy(&body).contains("gone"),
@@ -665,80 +617,10 @@ fn a_site_named_with_its_default_port_is_the_same_site() {
     assert!(Site::new("not an address").is_none());
 }
 
-/// A person who opens an invitation's link at the host's own address is sent
-/// to the site's page for it, which is the page that takes the link: a link
-/// handed out before links moved to the site still works. The page's own
-/// request for the invitation's bytes — and any request that already reached
-/// the host through the site — is answered here, as it was.
-#[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server holds the shelf until it shuts down at the end"
-)]
-async fn a_browser_that_opens_a_link_at_the_host_is_sent_to_its_site() {
-    let root = SigningKey::from_bytes(&[141; 32]);
-    let host = host(&root, 142, tilo_user_identity::DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
-    let site = "https://app.example";
-    let (addr, serving) = serve_web(Arc::new(web_of_at(
-        &server,
-        &host,
-        Some(&format!("{site}/")),
-    )))
-    .await;
-
-    let handle = "abcdefghijklmnop";
-    let browser = format!(
-        "GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAccept: text/html,application/xhtml+xml\r\n\r\n"
-    );
-    let (status, head, _) = exchange(addr, &browser, b"").await;
-    assert_eq!(status, 302, "{head}");
-    let page = format!("{site}/i/{handle}");
-    assert_eq!(
-        header_value(&head, "location"),
-        Some(page.as_str()),
-        "the browser is sent to the site's page, with the key still in its fragment: {head}"
-    );
-    assert_eq!(
-        header_value(&head, "cache-control"),
-        Some("no-store"),
-        "nothing keeps a link's stop"
-    );
-
-    // The page's own request for the invitation's bytes asks for no page, and
-    // is answered by the shelf, which holds nothing under that handle.
-    let bytes = format!(
-        "GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAccept: */*\r\n\r\n"
-    );
-    let (status, head, _) = exchange(addr, &bytes, b"").await;
-    assert_eq!(status, 410, "{head}");
-
-    // A request that arrived through the site already is not sent on: the
-    // site's page fetched it from here, and sending it back would be a loop.
-    let through = format!(
-        "GET /i/{handle} HTTP/1.1\r\nHost: app.example\r\nConnection: close\r\nAccept: text/html\r\n\r\n"
-    );
-    let (status, head, _) = exchange(addr, &through, b"").await;
-    assert_eq!(status, 410, "{head}");
-
-    // A host that knows no site answers as it always has.
-    let (unhosted, second) = serve_web(Arc::new(web_of(&server, &host))).await;
-    let (status, head, _) = exchange(unhosted, &browser, b"").await;
-    assert_eq!(status, 410, "{head}");
-    second.abort();
-
-    stop(server, serving).await;
-}
-
 /// A browser that opens an address this host does not serve asks for a page,
 /// not for a text body: it is sent on to the site the host belongs to. A
 /// caller that asks for data keeps its answer.
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server holds the shelf until it shuts down at the end"
-)]
 async fn a_browser_that_opens_an_unknown_address_is_sent_to_the_site() {
     let root = SigningKey::from_bytes(&[151; 32]);
     let host = host(&root, 152, tilo_user_identity::DeviceCapabilities::member());
@@ -773,116 +655,6 @@ async fn a_browser_that_opens_an_unknown_address_is_sent_to_the_site() {
     second.abort();
 
     stop(server, serving).await;
-}
-
-/// A link is pasted into a message and read days later, so what it names
-/// outlives the server that was handed it: an invitation left before a restart
-/// is fetched back, and taken back, on the server that comes up next on the same
-/// state — and one that lapsed while nothing was running says so.
-#[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the first server holds the shelf until it shuts down halfway"
-)]
-async fn a_sealed_invitation_outlives_the_server_it_was_left_on() {
-    use tilo_server_protocol::sealed_invitations::{Fetched, Stored, TakeBack};
-
-    let root = SigningKey::from_bytes(&[133; 32]);
-    let signer = host(&root, 134, tilo_user_identity::DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let keeping = "abcdefghijklmnop";
-    let lapsing = "ponmlkjihgfedcba";
-    let delete = "a".repeat(43);
-    let sealed = "c2VhbGVkIGludml0YXRpb24";
-
-    let leaving = |expires_at_ns| {
-        serde_json::to_vec(&Stored {
-            sealed: sealed.to_owned(),
-            expires_at_ns,
-            delete: delete.clone(),
-            host: Some("https://server.example".to_owned()),
-        })
-        .unwrap()
-    };
-    let post = |handle: &str, body: &[u8]| {
-        format!(
-            "POST /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        )
-    };
-    let get = |handle: &str| {
-        format!("GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-    };
-
-    // The server this site reached first, with one invitation that outlasts it
-    // and one that lapses while it is down.
-    let first = server_at(&state, signer.identity(), ServerConfig::default()).await;
-    let (addr, serving) = serve_web(Arc::new(web_of(&first, &signer))).await;
-    // Dated once the server is up: starting one can take longer than the
-    // second the lapsing invitation lives.
-    let now = tilo_clock::unix_now_ns();
-    let lapse_at = now + 1_000_000_000;
-    for (handle, expires_at_ns) in [(keeping, now + 600_000_000_000), (lapsing, lapse_at)] {
-        let body = leaving(expires_at_ns);
-        let (status, head, _) = exchange(addr, &post(handle, &body), &body).await;
-        assert_eq!(status, 204, "{head}");
-    }
-    stop(first, serving).await;
-
-    // The server that comes up next, on the state the first one kept.
-    let next = server_at(&state, signer.identity(), ServerConfig::default()).await;
-    let (addr, serving) = serve_web(Arc::new(web_of(&next, &signer))).await;
-
-    let (status, head, body) = exchange(addr, &get(keeping), b"").await;
-    assert_eq!(status, 200, "{head}");
-    let fetched: Fetched = serde_json::from_slice(&body).unwrap();
-    assert_eq!(fetched.sealed, sealed);
-    assert_eq!(fetched.host.as_deref(), Some("https://server.example"));
-    assert!(
-        !String::from_utf8_lossy(&body).contains(&delete),
-        "the site gives back no delete secret"
-    );
-
-    // The secret it was left with still takes it back, and the disk lets go.
-    let take_back = serde_json::to_vec(&TakeBack {
-        delete: delete.clone(),
-    })
-    .unwrap();
-    let head = format!(
-        "DELETE /i/{keeping} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
-        take_back.len()
-    );
-    let (status, head, _) = exchange(addr, &head, &take_back).await;
-    assert_eq!(status, 204, "{head}");
-    assert!(
-        !state
-            .path()
-            .join("invitations")
-            .join(format!("{keeping}.json"))
-            .exists(),
-        "a taken-back invitation is off the state disk"
-    );
-
-    // What lapsed while the server was down is gone, and gone from the disk.
-    while tilo_clock::unix_now_ns() <= lapse_at {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    let (status, head, body) = exchange(addr, &get(lapsing), b"").await;
-    assert_eq!(status, 410, "{head}");
-    assert!(
-        String::from_utf8_lossy(&body).contains("gone"),
-        "the refusal says the invitation is gone"
-    );
-    assert!(
-        !state
-            .path()
-            .join("invitations")
-            .join(format!("{lapsing}.json"))
-            .exists(),
-        "a lapsed invitation is collected"
-    );
-
-    stop(next, serving).await;
 }
 
 /// One request to the listener at `addr`: its status, its header block
@@ -1197,27 +969,6 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
 /// POST `body` as JSON to `path`, as `forwarded_for` behind a proxy when
 /// named: the status, the header block and the body. HTTP/1.0, so the
 /// body arrives whole rather than chunked.
-/// The tab's first follow of a code the host offered: the host keeps it from then on, so a
-/// computer can resolve it.
-async fn keep_code(
-    addr: SocketAddr,
-    created: &tilo_server_protocol::login_code::Created,
-    link: Option<&str>,
-) -> tilo_server_protocol::login_code::Polled {
-    let (code, _, polled) = call_json(
-        addr,
-        tilo_server_protocol::login_code::FOLLOW_ROUTE,
-        &serde_json::json!({
-            "follow": created.follow,
-            "offer": {"code": created.code, "expires_at_ms": created.expires_at_ms, "link": link},
-        }),
-        None,
-    )
-    .await;
-    assert_eq!(code, 200, "{polled}");
-    serde_json::from_value(polled).unwrap()
-}
-
 async fn call_json(
     addr: SocketAddr,
     path: &str,
@@ -1260,575 +1011,6 @@ async fn call_json_named(
     let body = &reply[split.checked_add(4).unwrap()..];
     let json = serde_json::from_slice(body).unwrap_or(serde_json::Value::Null);
     (status, header, json)
-}
-
-/// A login code over the host's routes: made, resolved once, followed with
-/// its steps, and guessing codes runs out of tries for the guesser.
-#[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server serves the routes until it shuts down at the end"
-)]
-async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
-    use tilo_server_protocol::login_code as wire;
-    let root = SigningKey::from_bytes(&[141; 32]);
-    let host = host(&root, 142, DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
-    let (addr, serving) = serve_web(Arc::new(web_of(&server, &host))).await;
-
-    let link = format!(
-        "https://tilo.sh/#/w/6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71?pair={}{}",
-        hex::encode([0xab; 32]),
-        hex::encode([0x7f; 16])
-    );
-    let (code, _, created) = call_json(
-        addr,
-        wire::CREATE_ROUTE,
-        &serde_json::json!({ "link": link }),
-        None,
-    )
-    .await;
-    assert_eq!(code, 200, "{created}");
-    let created: wire::Created = serde_json::from_value(created).unwrap();
-    // Offered, not kept: a visitor who never copies the prompt leaves nothing on the host.
-    let (code, _, _) = call_json(
-        addr,
-        wire::RESOLVE_ROUTE,
-        &serde_json::json!({ "code": created.code }),
-        Some("192.0.2.77"),
-    )
-    .await;
-    assert_eq!(
-        code, 404,
-        "an offered code resolves only once its tab kept it"
-    );
-    let mut forged = created.clone();
-    forged.expires_at_ms += 1;
-    let (code, _, _) = call_json(
-        addr,
-        wire::FOLLOW_ROUTE,
-        &serde_json::json!({
-            "follow": created.follow,
-            "offer": {"code": forged.code, "expires_at_ms": forged.expires_at_ms, "link": link},
-        }),
-        None,
-    )
-    .await;
-    assert_eq!(code, 404, "an offer the host did not make is not kept");
-    let polled = keep_code(addr, &created, Some(&link)).await;
-    assert!(!polled.resolved && !polled.expired);
-    let (code, _, refused) = call_json(
-        addr,
-        wire::CREATE_ROUTE,
-        &serde_json::json!({ "link": "https://tilo.sh/#/w/x" }),
-        None,
-    )
-    .await;
-    assert_eq!(code, 400, "{refused}");
-
-    let (code, _, resolved) = call_json(
-        addr,
-        wire::RESOLVE_ROUTE,
-        &serde_json::json!({ "code": created.code.to_ascii_lowercase() }),
-        None,
-    )
-    .await;
-    assert_eq!(code, 200, "{resolved}");
-    let resolved: wire::Resolved = serde_json::from_value(resolved).unwrap();
-    assert_eq!(resolved.link.as_deref(), Some(link.as_str()));
-    let (code, _, _) = call_json(
-        addr,
-        wire::RESOLVE_ROUTE,
-        &serde_json::json!({ "code": created.code }),
-        None,
-    )
-    .await;
-    assert_eq!(code, 404, "a code resolves once");
-
-    for step in ["logged-in", "tools-added", "logged-in"] {
-        let (code, _, body) = call_json(
-            addr,
-            wire::STEP_ROUTE,
-            &serde_json::json!({ "report": resolved.report, "step": step, "agent": "Claude Code" }),
-            None,
-        )
-        .await;
-        assert_eq!(code, 204, "{body}");
-    }
-    let (code, _, _) = call_json(
-        addr,
-        wire::STEP_ROUTE,
-        &serde_json::json!({ "report": created.follow, "step": "entered" }),
-        None,
-    )
-    .await;
-    assert_eq!(code, 404, "only the report secret reports");
-    let (code, _, polled) = call_json(
-        addr,
-        wire::FOLLOW_ROUTE,
-        &serde_json::json!({ "follow": created.follow }),
-        None,
-    )
-    .await;
-    assert_eq!(code, 200);
-    let polled: wire::Polled = serde_json::from_value(polled).unwrap();
-    assert!(polled.resolved && !polled.expired);
-    assert_eq!(polled.agent.as_deref(), Some("Claude Code"));
-    assert_eq!(
-        polled.steps,
-        [
-            wire::Step::Resolved,
-            wire::Step::LoggedIn,
-            wire::Step::ToolsAdded
-        ]
-    );
-
-    let (_, _, fresh) = call_json(addr, wire::CREATE_ROUTE, &serde_json::json!({}), None).await;
-    let fresh: wire::Created = serde_json::from_value(fresh).unwrap();
-    keep_code(addr, &fresh, None).await;
-    for _ in 0..login_codes::MISSES_PER_ADDRESS {
-        let (code, _, _) = call_json(
-            addr,
-            wire::RESOLVE_ROUTE,
-            &serde_json::json!({ "code": "222-2222" }),
-            Some("203.0.113.9"),
-        )
-        .await;
-        assert_eq!(code, 404);
-    }
-    let (code, header, _) = call_json(
-        addr,
-        wire::RESOLVE_ROUTE,
-        &serde_json::json!({ "code": fresh.code }),
-        Some("203.0.113.9"),
-    )
-    .await;
-    assert_eq!(code, 429, "the guesser is out of tries");
-    assert!(header.contains("retry-after: 60"), "{header}");
-    let (code, _, _) = call_json(
-        addr,
-        wire::RESOLVE_ROUTE,
-        &serde_json::json!({ "code": fresh.code }),
-        Some("198.51.100.4"),
-    )
-    .await;
-    assert_eq!(code, 200, "another client still resolves its code");
-
-    stop(server, serving).await;
-}
-
-/// Signing a person in again through their agent, the one way: a device of
-/// the person claims the tab's code, reads the tab's waiting request back
-/// through it, and answers it with a certificate it signs itself. The tab is
-/// issued it over the ordinary certification path, and with it enters the
-/// person's workspace. A certificate a device signed is no device, so it
-/// cannot claim, and says why.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server serves the routes until it shuts down at the end"
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one sign-in, in order, from the claim to the tab entering"
-)]
-async fn a_device_of_the_person_signs_the_tab_in() {
-    use tilo_server_client::certify::CertificationOutcome;
-    use tilo_server_protocol::login_code as wire;
-    use tilo_user_identity::{
-        CERTIFICATION_SCHEMA_VERSION, CertificationRequest, RevocationList, verify_device_cert_at,
-    };
-
-    // The person's root is on their computer, which serves them too.
-    let person = SigningKey::from_bytes(&[181; 32]);
-    let user = person.verifying_key().to_bytes();
-    let node = host(&person, 182, DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let server = server_at(&state, node.identity(), ServerConfig::default()).await;
-    let workspaces = server.workspaces().unwrap().clone();
-    let workspace = workspaces.create("Studio").await.unwrap();
-    let web = Arc::new(web_of(&server, &node));
-    web.serve_code_requests();
-    let (addr, serving) = serve_web(Arc::clone(&web)).await;
-    let as_hex = |cert: &DeviceCert| hex::encode(postcard::to_allocvec(cert).unwrap());
-    let (cli_key, mut cli_cert) = device(&person, 183, DeviceCapabilities::member());
-    cli_cert.device_label = "Claude Code on laptop".into();
-    tilo_user_identity::sign_device_cert(&mut cli_cert, &person).unwrap();
-    let cli_cert_hex = as_hex(&cli_cert);
-    let (member_key, _) = device(&person, 186, DeviceCapabilities::member());
-
-    // A browser tab of that person, signed in by the laptop.
-    let tab_request = |key: &SigningKey| {
-        let now = tilo_clock::unix_now_ns();
-        CertificationRequest {
-            version: CERTIFICATION_SCHEMA_VERSION,
-            user_public_key: user,
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "Firefox on phone".into(),
-            requested: DeviceCapabilities::member(),
-            nonce: rand::random(),
-            invite: [0; 16],
-            issued_at_ns: now,
-            expires_at_ns: now + 60_000_000_000,
-            signature: [0; 64],
-        }
-        .sign(key)
-        .unwrap()
-    };
-    let signed_in_before = SigningKey::from_bytes(&[187; 32]);
-    let chained = tilo_user_identity::issue_device_cert_as_device(
-        &tab_request(&signed_in_before),
-        &cli_key,
-        &cli_cert,
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
-    let chained_hex = as_hex(&chained);
-
-    let sign_in_code = || async {
-        let (_, _, created) =
-            call_json(addr, wire::CREATE_ROUTE, &serde_json::json!({}), None).await;
-        let created: wire::Created = serde_json::from_value(created).unwrap();
-        keep_code(addr, &created, None).await;
-        let (_, _, resolved) = call_json(
-            addr,
-            wire::RESOLVE_ROUTE,
-            &serde_json::json!({ "code": created.code }),
-            None,
-        )
-        .await;
-        let resolved: wire::Resolved = serde_json::from_value(resolved).unwrap();
-        (created, resolved)
-    };
-    let claim = |report: &str, key: &SigningKey, cert: &str| {
-        let signed_at_ns = tilo_clock::unix_now_ns();
-        let digest = wire::claim_digest(report, signed_at_ns).unwrap();
-        let signature = tilo_user_identity::StatementSigner::sign_digest(key, &digest).unwrap();
-        serde_json::json!({
-            "report": report,
-            "cert": cert,
-            "signed_at_ns": signed_at_ns,
-            "signature": hex::encode(signature),
-        })
-    };
-
-    // A certificate one of the person's devices signed answers a tab and is
-    // no device itself, so it cannot claim: refused, saying so by name. Nor
-    // can a claim signed by another key than the certificate's.
-    let (_, resolved) = sign_in_code().await;
-    for (key, cert, reason) in [
-        (&signed_in_before, &chained_hex, "not-a-device"),
-        (&member_key, &cli_cert_hex, "signature"),
-    ] {
-        let (code, _, refused) = call_json(
-            addr,
-            wire::CLAIM_ROUTE,
-            &claim(&resolved.report, key, cert),
-            None,
-        )
-        .await;
-        assert_eq!(code, 403, "{refused}");
-        assert_eq!(refused["reason"], reason, "{refused}");
-    }
-
-    // The person's own device claims, to sign the tab in itself.
-    let (created, resolved) = sign_in_code().await;
-    let report = resolved.report.clone();
-    let (code, _, claimed) = call_json(
-        addr,
-        wire::CLAIM_ROUTE,
-        &claim(&report, &cli_key, &cli_cert_hex),
-        None,
-    )
-    .await;
-    assert_eq!(code, 200, "{claimed}");
-    let waiting = || async {
-        let (code, _, waiting) = call_json(
-            addr,
-            wire::WAITING_ROUTE,
-            &serde_json::json!({ "report": report }),
-            None,
-        )
-        .await;
-        assert_eq!(code, 200, "{waiting}");
-        serde_json::from_value::<wire::WaitingRequest>(waiting).unwrap()
-    };
-    assert_eq!(waiting().await.request, None, "the tab has not asked yet");
-    let (_, _, polled) = call_json(
-        addr,
-        wire::FOLLOW_ROUTE,
-        &serde_json::json!({ "follow": created.follow }),
-        None,
-    )
-    .await;
-    let claimed: wire::Polled = serde_json::from_value(polled).unwrap();
-    let claimed = claimed.claimed.expect("the tab learns whom it signs in as");
-    let mut invite = [0; 16];
-    hex::decode_to_slice(&claimed.invite, &mut invite).unwrap();
-
-    // The tab asks to be certified with that invite, as any new device asks.
-    let tab = SigningKey::from_bytes(&[184; 32]);
-    let now = tilo_clock::unix_now_ns();
-    let request = CertificationRequest {
-        version: tilo_user_identity::CERTIFICATION_SCHEMA_VERSION,
-        user_public_key: user,
-        device_public_key: tab.verifying_key().to_bytes(),
-        device_label: "Firefox on laptop".into(),
-        requested: DeviceCapabilities::member(),
-        nonce: rand::random(),
-        invite,
-        issued_at_ns: now,
-        expires_at_ns: now + 60_000_000_000,
-        signature: [0; 64],
-    }
-    .sign(&tab)
-    .unwrap();
-    let asking = {
-        let server_addr = server.node_addr();
-        let tab = tab.clone();
-        let request = request.clone();
-        tokio::spawn(async move {
-            let endpoint = endpoint(&tab).await;
-            let outcome = tilo_server_client::certify::request_certification(
-                &endpoint,
-                server_addr,
-                request,
-                |_| {},
-            )
-            .await
-            .unwrap();
-            endpoint.close().await;
-            outcome
-        })
-    };
-
-    // The computer reads the tab's request back through the code.
-    let waited = tilo_test_env::within("the tab's request", async {
-        loop {
-            if let Some(waited) = waiting().await.request {
-                break waited;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
-    .await;
-    let waited: CertificationRequest = postcard::from_bytes(&hex::decode(waited).unwrap()).unwrap();
-    assert_eq!(waited, request);
-
-    // The claiming device's certificate of exactly that request answers it.
-    let certify = |cert: &tilo_user_identity::DeviceCert| {
-        serde_json::json!({
-            "report": report,
-            "cert": hex::encode(postcard::to_allocvec(cert).unwrap()),
-        })
-    };
-    let issue = || {
-        tilo_user_identity::issue_device_cert_as_device(
-            &waited,
-            &cli_key,
-            &cli_cert,
-            &RevocationList::new(),
-            tilo_clock::unix_now_ns(),
-        )
-        .unwrap()
-    };
-    let mut forged = issue();
-    forged.signature[0] ^= 1;
-    let (code, _, _) = call_json(addr, wire::CERTIFY_ROUTE, &certify(&forged), None).await;
-    assert_eq!(code, 403, "a certificate the device did not sign");
-    let cert = issue();
-    let (code, _, said) = call_json(addr, wire::CERTIFY_ROUTE, &certify(&cert), None).await;
-    assert_eq!(code, 204, "{said}");
-    let (code, _, _) = call_json(addr, wire::CERTIFY_ROUTE, &certify(&cert), None).await;
-    assert_eq!(code, 409, "the claim certifies once");
-
-    let outcome = tilo_test_env::within("the tab's certificate", asking)
-        .await
-        .unwrap();
-    let CertificationOutcome::Issued { cert: issued, .. } = outcome else {
-        panic!("the claiming device certifies the tab: {outcome:?}")
-    };
-    assert_eq!(issued, cert);
-    assert_eq!(
-        issued.issuer.as_deref(),
-        Some(&cli_cert),
-        "the claiming device signed it"
-    );
-    verify_device_cert_at(&issued, tilo_clock::unix_now_ns()).unwrap();
-    let (_, _, polled) = call_json(
-        addr,
-        wire::FOLLOW_ROUTE,
-        &serde_json::json!({ "follow": created.follow }),
-        None,
-    )
-    .await;
-    let polled: wire::Polled = serde_json::from_value(polled).unwrap();
-    assert!(polled.steps.contains(&wire::Step::Approved), "{polled:?}");
-
-    // The tab is the person now: it enters their workspace.
-    workspaces
-        .enter(&workspace.workspace, &issued)
-        .await
-        .expect("the person's own device enters their workspace");
-
-    stop(server, serving).await;
-}
-
-/// The tab that wrote a setting-up link, answering as its person's root: what
-/// the page asks the host, in process, once it may.
-struct TabRoot(crate::certification::CertificationProtocol);
-
-impl tilo_server_client::MemberServer for TabRoot {
-    async fn ask(
-        &self,
-        approval: &tilo_server_protocol::certify::MemberApproval,
-    ) -> Result<tilo_server_protocol::certify::ApproverReply, tilo_server_client::CertifyError>
-    {
-        Ok(self
-            .0
-            .member_approve(approval.clone(), tilo_clock::unix_now_ns()))
-    }
-}
-
-/// A computer that types the code a person's tab shows, the moment the tab
-/// shows it: the tab is not yet let into a workspace this host serves, so the
-/// host knows nothing of that person but the code they handed their agent.
-/// The request waits for the tab, which certifies it, instead of being
-/// refused as "another user identity". A request no code names is still
-/// refused.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server serves the routes until it shuts down at the end"
-)]
-async fn a_computer_setting_up_for_a_tab_not_yet_let_in_waits_for_the_tab() {
-    use tilo_server_client::certify::CertificationOutcome;
-    use tilo_server_protocol::login_code as wire;
-    use tilo_user_identity::CertificationRequest;
-
-    let owner = SigningKey::from_bytes(&[171; 32]);
-    let host = host(&owner, 172, DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
-    let web = Arc::new(web_of(&server, &host));
-    web.serve_code_requests();
-    let (addr, serving) = serve_web(Arc::clone(&web)).await;
-
-    // The person's first tab: its root, and the link it writes into the code
-    // its agent's prompt carries.
-    let person = SigningKey::from_bytes(&[173; 32]);
-    let user = person.verifying_key().to_bytes();
-    let invite = [0x5e; 16];
-    let link = format!(
-        "https://tilo.sh/#/w/6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71?pair={}{}",
-        hex::encode(user),
-        hex::encode(invite)
-    );
-    let (_, _, created) = call_json(
-        addr,
-        wire::CREATE_ROUTE,
-        &serde_json::json!({ "link": link }),
-        None,
-    )
-    .await;
-    let created: wire::Created = serde_json::from_value(created).unwrap();
-    keep_code(addr, &created, Some(&link)).await;
-    let (_, _, resolved) = call_json(
-        addr,
-        wire::RESOLVE_ROUTE,
-        &serde_json::json!({ "code": created.code }),
-        None,
-    )
-    .await;
-    let resolved: wire::Resolved = serde_json::from_value(resolved).unwrap();
-    assert_eq!(resolved.link.as_deref(), Some(link.as_str()));
-
-    let computer = SigningKey::from_bytes(&[174; 32]);
-    let request_for = |device: &SigningKey, invite: [u8; 16]| {
-        let now = tilo_clock::unix_now_ns();
-        CertificationRequest {
-            version: tilo_user_identity::CERTIFICATION_SCHEMA_VERSION,
-            user_public_key: user,
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Claude Code on build-box".into(),
-            requested: DeviceCapabilities::member(),
-            nonce: rand::random(),
-            invite,
-            issued_at_ns: now,
-            expires_at_ns: now + 30_000_000_000,
-            signature: [0; 64],
-        }
-        .sign(device)
-        .unwrap()
-    };
-    let ask = |device: SigningKey, invite: [u8; 16], pending: tokio::sync::oneshot::Sender<()>| {
-        let host_addr = server.node_addr();
-        let request = request_for(&device, invite);
-        async move {
-            let endpoint = endpoint(&device).await;
-            let outcome = tilo_server_client::certify::request_certification(
-                &endpoint,
-                host_addr,
-                request,
-                |_| {
-                    let _ = pending.send(());
-                },
-            )
-            .await
-            .unwrap();
-            endpoint.close().await;
-            outcome
-        }
-    };
-
-    // A code nobody typed names nothing, so a request it never named is
-    // refused, as before.
-    let (refused, _) = tokio::sync::oneshot::channel();
-    let outcome = tilo_test_env::within(
-        "a refusal",
-        ask(SigningKey::from_bytes(&[175; 32]), [0x5f; 16], refused),
-    )
-    .await;
-    assert!(
-        matches!(outcome, CertificationOutcome::Denied(_)),
-        "{outcome:?}"
-    );
-
-    // The computer the prompt names runs `tilo login` at once: its request
-    // waits for the tab rather than being turned away.
-    let (queued, queued_rx) = tokio::sync::oneshot::channel();
-    let asking = ask(computer.clone(), invite, queued);
-    tokio::pin!(asking);
-    tokio::select! {
-        outcome = &mut asking => panic!("answered before the tab could: {outcome:?}"),
-        sent = queued_rx => assert!(sent.is_ok(), "the host refused the computer, not queued it"),
-    };
-
-    // The tab is let in and answers the request it wrote the link for.
-    let tab = TabRoot(web.context.certification.clone());
-    let waiting = tilo_server_client::pending_pairings(&tab, &person)
-        .await
-        .unwrap();
-    let [request] = waiting.as_slice() else {
-        panic!("one request waits for the tab: {waiting:?}")
-    };
-    assert_eq!(request.request.invite, invite);
-    let issued =
-        tilo_enrollment::certification::answer_pairing(&tab, &person, request.request_digest, true)
-            .await
-            .unwrap()
-            .expect("a certificate");
-    let outcome = tilo_test_env::within("the tab's answer", asking).await;
-    let CertificationOutcome::Issued { cert, .. } = outcome else {
-        panic!("the computer is certified: {outcome:?}")
-    };
-    assert_eq!(cert, issued);
-    assert_eq!(cert.device_public_key, computer.verifying_key().to_bytes());
-    assert_eq!(cert.user_public_key, user);
-
-    stop(server, serving).await;
 }
 
 /// The secret `mail` carries for `parameter`, as the page it lands on reads
@@ -2181,88 +1363,6 @@ fn the_host_address_follows_the_endpoint_relay() {
     assert_eq!(address.endpoint_addr, relayed);
 }
 
-/// A server a front publishes under a second name. Told that name at its
-/// start, it makes the setup code a page that came by it asks for, and the
-/// code is that name's. A name it was not told stays another server,
-/// whatever name a request gives the one it reached.
-#[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server serves the routes until it shuts down at the end"
-)]
-async fn a_server_told_its_second_name_makes_the_setup_code_whatever_a_request_calls_it() {
-    use tilo_server_protocol::login_code as wire;
-    let root = SigningKey::from_bytes(&[143; 32]);
-    let keeper = host(&root, 144, DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let server = server_at(&state, keeper.identity(), ServerConfig::default()).await;
-    let mut web = web_of(&server, &keeper);
-    web.login_codes = Arc::new(
-        login_codes::LoginCodes::new(Some("http://127.0.0.1:24500".into()))
-            .reached_also_at(vec!["https://tilo.wifi.example:24500".into()]),
-    );
-    let (addr, serving) = serve_web(Arc::new(web)).await;
-
-    let pair = format!("{}{}", hex::encode([0xab; 32]), hex::encode([0x7f; 16]));
-    let naming = |named: &str| {
-        format!(
-            "https://tilo.wifi.example:24520/#/@{named}/w/6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71?pair={pair}"
-        )
-    };
-    // A page that came by the second name; its front hands the request on
-    // under the first.
-    let second = naming("tilo.wifi.example:24500");
-    let (code, _, created) = call_json_named(
-        addr,
-        "127.0.0.1:24500",
-        wire::CREATE_ROUTE,
-        &serde_json::json!({ "link": second }),
-        None,
-    )
-    .await;
-    assert_eq!(code, 200, "{created}");
-    let created: wire::Created = serde_json::from_value(created).unwrap();
-    let polled = keep_code(addr, &created, Some(second.as_str())).await;
-    assert!(!polled.resolved && !polled.expired);
-    let (code, _, resolved) = call_json(
-        addr,
-        wire::RESOLVE_ROUTE,
-        &serde_json::json!({ "code": created.code }),
-        None,
-    )
-    .await;
-    assert_eq!(code, 200, "{resolved}");
-    assert_eq!(
-        resolved["link"], second,
-        "the code is for the name the page came by"
-    );
-    // A name the server was not told: refused, also to a request that calls
-    // it by that very name.
-    let third = naming("elsewhere.example:24500");
-    for named in [
-        "elsewhere.example:24500",
-        "tilo.wifi.example:24500",
-        "127.0.0.1:24500",
-    ] {
-        let (code, _, refused) = call_json_named(
-            addr,
-            named,
-            wire::CREATE_ROUTE,
-            &serde_json::json!({ "link": third }),
-            None,
-        )
-        .await;
-        assert_eq!(code, 400, "{refused}");
-        assert!(
-            refused["error"]
-                .as_str()
-                .is_some_and(|said| said.contains("names another")),
-            "{refused}"
-        );
-    }
-    stop(server, serving).await;
-}
-
 /// The other origins a server is told it is reached under are origins as its
 /// public one is, and stand beside one: anything else stops the start.
 #[test]
@@ -2297,4 +1397,91 @@ fn another_origin_a_server_is_reached_under_is_an_origin_beside_its_public_one()
         checked_origins(&config(None), &also("https://tilo.wifi.example:24500")).is_err(),
         "no second name without a first"
     );
+}
+
+/// A page asks its host for the ticket its agent works with, follows it, and gets a ticket for
+/// each direction it asks in: what the ticket routes answer, and what they refuse.
+#[tokio::test]
+async fn a_page_asks_its_host_for_the_ticket_its_agent_works_with() {
+    use tilo_device_identity::login::Direction;
+
+    let root = SigningKey::from_bytes(&[151; 32]);
+    let keeper = host(&root, 152, DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = server_at(&state, keeper.identity(), ServerConfig::default()).await;
+    let mut web = web_of(&server, &keeper);
+    let endpoint = iroh::EndpointId::from_bytes(&keeper.cert.device_public_key).unwrap();
+    web.server_info.address = Some(ServerAddress {
+        endpoint_addr: iroh::EndpointAddr::new(endpoint),
+        relay_url: None,
+        web: None,
+    });
+    let (addr, serving) = serve_web(Arc::new(web)).await;
+
+    // Setting up: the ticket names the person and the workspace their computer enters.
+    let (code, _, minted) = call_json(
+        addr,
+        tickets::MINT_ROUTE,
+        &serde_json::json!({
+            "user": hex::encode(root.verifying_key().to_bytes()),
+            "workspace": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+            "name": "Studio",
+        }),
+        None,
+    )
+    .await;
+    assert_eq!(code, 200, "{minted}");
+    let id = minted["id"].as_str().unwrap().to_owned();
+    let ticket = tilo_device_identity::login::Ticket::parse(minted["ticket"].as_str().unwrap())
+        .expect("the page is shown a ticket");
+    assert_eq!(ticket.direction, Direction::Login);
+    let (code, _, asked) = call_json(
+        addr,
+        tickets::ASKED_ROUTE,
+        &serde_json::json!({"id": id}),
+        None,
+    )
+    .await;
+    assert_eq!(code, 200, "{asked}");
+    assert!(
+        asked["steps"].as_array().is_some_and(Vec::is_empty),
+        "{asked}"
+    );
+    assert!(
+        asked.get("asked").is_none() && asked.get("certified").is_none(),
+        "{asked}"
+    );
+
+    // Signing a browser in: the ticket names no person, and no workspace.
+    let (code, _, minted) = call_json(
+        addr,
+        tickets::MINT_ROUTE,
+        &serde_json::json!({"direction": "sign-in"}),
+        None,
+    )
+    .await;
+    assert_eq!(code, 200, "{minted}");
+    let ticket = tilo_device_identity::login::Ticket::parse(minted["ticket"].as_str().unwrap())
+        .expect("the page is shown a ticket");
+    assert_eq!(ticket.direction, Direction::SignIn);
+
+    // A setup ticket without its person is no request this route takes, and a ticket no page
+    // made is none to answer.
+    let (code, _, refused) = call_json(
+        addr,
+        tickets::MINT_ROUTE,
+        &serde_json::json!({"workspace": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"}),
+        None,
+    )
+    .await;
+    assert_eq!(code, 400, "{refused}");
+    let (code, _, refused) = call_json(
+        addr,
+        tickets::ASKED_ROUTE,
+        &serde_json::json!({"id": hex::encode([9; 32])}),
+        None,
+    )
+    .await;
+    assert_eq!(code, 404, "{refused}");
+    stop(server, serving).await;
 }

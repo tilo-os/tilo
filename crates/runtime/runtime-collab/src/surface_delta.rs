@@ -224,6 +224,15 @@ impl SurfaceTable {
         actions
     }
 
+    /// The workspace holding the published resource `resource`, when another workspace than the
+    /// window's holds it ([`ResourceFields::workspace`]).
+    #[must_use]
+    pub fn workspace_of(&self, resource: &str) -> Option<&str> {
+        self.resources
+            .get(resource)
+            .and_then(|(_, held)| held.fields.workspace.as_deref())
+    }
+
     /// Whether it holds the shape `id`.
     #[must_use]
     pub fn holds(&self, id: &ShapeId) -> bool {
@@ -314,6 +323,17 @@ impl SurfacePublication {
         prior: Option<(&Self, &[E])>,
         descriptors: &[E],
     ) -> (SurfaceDelta, Self) {
+        Self::next_held(prior, descriptors, &|_| None)
+    }
+
+    /// [`Self::next`], with `held` naming the workspace holding each resource that another
+    /// workspace than the window's holds ([`ResourceFields::workspace`]).
+    #[must_use]
+    pub fn next_held<E: SurfaceEntry>(
+        prior: Option<(&Self, &[E])>,
+        descriptors: &[E],
+        held: &dyn Fn(&str) -> Option<String>,
+    ) -> (SurfaceDelta, Self) {
         let empty = Self::default();
         let (base, base_descriptors) = prior.unwrap_or((&empty, &[]));
         let mut delta = SurfaceDelta {
@@ -344,7 +364,9 @@ impl SurfacePublication {
         for name in order {
             let indices = groups.remove(name).unwrap_or_default();
             let old = base.resources.get(name);
+            let workspace = held(name);
             if let Some(old) = old
+                && old.resource.fields.workspace == workspace
                 && old.indices.len() == indices.len()
                 && indices
                     .iter()
@@ -379,7 +401,8 @@ impl SurfacePublication {
                 members.push(id);
                 shapes.push((id, shape));
             }
-            let Some(fields) = fields else { continue };
+            let Some(mut fields) = fields else { continue };
+            fields.workspace = workspace;
             let template = template_id(&members);
             let resource = SurfaceResource {
                 resource: name.to_owned(),
@@ -443,9 +466,11 @@ impl SurfacePublication {
         for name in changed {
             let held = self.resources.get(*name)?;
             let descriptor = descriptors.get(*held.indices.first()?)?;
+            let mut fields = descriptor.exported().resource_fields();
+            fields.workspace.clone_from(&held.resource.fields.workspace);
             resources.push(SurfaceResource {
                 resource: (*name).to_owned(),
-                fields: descriptor.exported().resource_fields(),
+                fields,
                 template: held.resource.template,
             });
         }
@@ -521,6 +546,7 @@ mod tests {
                 resource_kind: "notes.page".into(),
                 resource_label: label.into(),
                 semantic_identity: None,
+                workspace: None,
             },
             template: id(template),
         }

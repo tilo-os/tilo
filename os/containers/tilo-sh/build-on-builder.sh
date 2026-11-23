@@ -51,10 +51,14 @@ labelled() {
 
 build_programs() {
   cd "$repo"
+  # The server and its worker are built apart from the rest, as the Lounge image builds them:
+  # in one build Cargo turns on every feature any of the programs asks of a shared crate for
+  # all of them, and the server would link the desktop libraries the daemon needs.
   cargo build --locked --profile lounge-local --features tilo-server/agents \
-    -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilo-runtime -p tilolang-process \
-    --bin tilo-server --bin tilo-server-admin --bin discord-worker --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilo-runtime \
-    --bin tilolang-process || return
+    -p tilo-server -p discord-worker --bin tilo-server --bin tilo-server-admin --bin discord-worker || return
+  cargo build --locked --profile lounge-local \
+    -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilo-runtime -p tilolang-process \
+    --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilo-runtime --bin tilolang-process || return
   # An example is built with its package's dev-dependencies, and Cargo turns their features on
   # for every package in the same build: built beside the server, it would build the server with
   # its test-only features (fixture fonts its app workers cannot load). It is built on its own.

@@ -23,6 +23,8 @@ mod framing;
 mod idle_inhibit;
 #[path = "headless/ime.rs"]
 mod ime;
+#[path = "headless/input_latency.rs"]
+mod input_latency;
 #[path = "headless/liveness.rs"]
 mod liveness;
 #[path = "headless/lock_keyboard.rs"]
@@ -2893,5 +2895,59 @@ fn a_surface_hears_how_long_the_display_holds_a_frame() {
         heard.borrow().last().copied(),
         Some(Duration::from_nanos(1_000_000_000_000 / 144_000)),
         "the shortest interval is the one the screens are shown at"
+    );
+}
+
+/// The login's first presented frame reaches the flight record with the system's monotonic
+/// clock, so a boot or sign-in measurement outside the compositor can place the moment the
+/// desktop first showed. The compositor program is the one run here, and what it wrote is
+/// exactly the stream the flight recorder relays into `latest.log`. It parks once the frame
+/// is out, so it is stopped as soon as the line arrives rather than waited on.
+#[test]
+fn the_first_presented_frame_is_logged_on_the_monotonic_clock() {
+    use std::io::BufRead as _;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let mut compositor = std::process::Command::new(env!("CARGO_BIN_EXE_tilo-compositor"))
+        .args(["--backend", "headless", "--", "/bin/sh", "-c", "sleep 5"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run the compositor");
+    let stderr = compositor.stderr.take().expect("the compositor's stderr");
+    let (lines, heard) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if lines.send(line).is_err() {
+                return;
+            }
+        }
+    });
+    let line = loop {
+        match heard.recv_timeout(Duration::from_secs(20)) {
+            Ok(line) if line.starts_with("FRAME-LIFECYCLE serial=") => break line,
+            Ok(_) => {}
+            Err(error) => {
+                let _ = compositor.kill();
+                panic!("no first presented frame was logged ({error})");
+            }
+        }
+    };
+    let _ = compositor.kill();
+    let _ = compositor.wait();
+    assert!(line.contains("event=render-retired"), "{line}");
+    let reading = line
+        .split("monotonic_us=")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no monotonic time in {line}"));
+    assert!(
+        reading.parse::<u64>().is_ok_and(|us| us > 0),
+        "the clock's reading: {line}"
     );
 }

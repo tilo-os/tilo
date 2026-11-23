@@ -22,9 +22,9 @@
 //! placeholder.
 //!
 //! The session's own look at its displays is no copy: a check driving the
-//! session through its development socket reads them as they are drawn, the
-//! lock screen included, so what the person in front of the display sees can
-//! be checked too ([`Held`]).
+//! session reads them as they are drawn, so what the person in front of the
+//! display sees can be checked too ([`Held`]). Its development socket takes no
+//! picture while the session is locked.
 
 use std::collections::BTreeSet;
 

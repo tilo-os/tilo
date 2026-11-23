@@ -57,7 +57,7 @@ def portal_dialog(ctx) -> dict | None:
 
 def sheet_rows(ctx) -> list[dict]:
     try:
-        return [r for r in ctx.vm.actions(programmatic=True) if r.get("application") == SHEET]
+        return [r for r in ctx.vm.actions() if r.get("app_id") == SHEET]
     except VmError:
         return []
 

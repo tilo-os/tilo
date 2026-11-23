@@ -62,7 +62,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     let sheets = browser.create(SHEETS);
     browser.put_layout();
     let writer = browser.create(WRITER);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
 
     // The agent's computer enters the workspace as a device of the person's,
     // as `tilo login` does, and serves the projection over its session.
@@ -273,7 +273,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     )
     .await;
     assert_eq!(again["result"]["isError"], false, "{again}");
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     assert_eq!(
         layout_windows(&mut browser, &sheets.document),
         1,
@@ -339,7 +339,7 @@ async fn an_app_an_agent_opens_reaches_the_persons_layout() {
     let hosted = start(&root, &host, state.path()).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     browser.put_layout();
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     let agent = Browser::open(&hosted, &computer, &host).await;
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
@@ -489,7 +489,7 @@ impl Guest {
         if layout {
             browser.put_layout();
         }
-        browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+        crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
         let agent =
             super::resource_support::open_admitted_peer(&hosted, &computer, &lounge, &cluster)
                 .await;
@@ -752,7 +752,7 @@ async fn an_agents_command_lands_after_another_devices_terminal_closed() {
         .entry(session.clone())
         .or_default()
         .push(([0; 32], bytes));
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
 
     let agent = Browser::open(&hosted, &computer, &host).await;
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
@@ -997,7 +997,7 @@ async fn leaves_who_is_here(ending: Ending) {
     let hosted = start(&root, &host, state.path()).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let _sheets = browser.create(SHEETS);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     let person = hex::encode(root.verifying_key().to_bytes());
     let agent = Browser::open(&hosted, &computer, &host).await;
     tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code")
@@ -1100,7 +1100,7 @@ async fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
     let hosted = start(&root, &host, state.path()).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let _sheets = browser.create(SHEETS);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     let person = hex::encode(root.verifying_key().to_bytes());
     let mut seen = std::collections::BTreeSet::new();
     for run in 0..4 {
@@ -1170,7 +1170,7 @@ async fn a_quiet_agent_stays_while_its_session_lasts() {
     let hosted = start(&root, &host, state.path()).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let _sheets = browser.create(SHEETS);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     let person = hex::encode(root.verifying_key().to_bytes());
     // One `tilo mcp` of the computer's, listed once it lists the workspace.
     let mut runs = Vec::new();
@@ -1252,7 +1252,7 @@ async fn an_agent_is_present_waiting_as_soon_as_it_connects() {
     let hosted = start(&root, &host, state.path()).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let _sheets = browser.create(SHEETS);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     let person = hex::encode(root.verifying_key().to_bytes());
 
     let agent = Browser::open(&hosted, &computer, &host).await;
@@ -1320,7 +1320,7 @@ async fn the_run_after_one_that_ended_is_on_the_page_at_once() {
     let hosted = start(&root, &host, state.path()).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let _sheets = browser.create(SHEETS);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     let person = hex::encode(root.verifying_key().to_bytes());
     for run in 0..3 {
         let agent = Browser::open(&hosted, &computer, &host).await;
@@ -1382,7 +1382,7 @@ async fn an_agents_writes_answer_without_waiting_out_a_timeout() {
     let hosted = start(&root, &host, state.path()).await;
     // The person's page is in, and has written no layout.
     let browser = Browser::open(&hosted, &browser_device, &host).await;
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
 
     let agent = Browser::open(&hosted, &computer, &host).await;
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;

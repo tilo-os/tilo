@@ -525,11 +525,354 @@ fn value_end(text: &str, start: usize) -> Option<usize> {
 
 // The agents
 
+/// A tool a person runs an agent in, whose own command adds MCP servers: what `tilo login` adds
+/// Tilo's server with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tool {
+    /// Claude Code.
+    Claude,
+    /// Codex.
+    Codex,
+    /// Gemini CLI.
+    Gemini,
+    /// Cursor, the CLI and the editor.
+    Cursor,
+    /// `OpenCode`.
+    OpenCode,
+    /// Amp.
+    Amp,
+}
+
+impl Tool {
+    /// Every tool Tilo adds itself to.
+    pub const ALL: &'static [Self] = &[
+        Self::Claude,
+        Self::Codex,
+        Self::Gemini,
+        Self::Cursor,
+        Self::OpenCode,
+        Self::Amp,
+    ];
+
+    /// As the person's workspace names it.
+    #[must_use]
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude Code",
+            Self::Codex => "Codex",
+            Self::Gemini => "Gemini CLI",
+            Self::Cursor => "Cursor",
+            Self::OpenCode => "OpenCode",
+            Self::Amp => "Amp",
+        }
+    }
+
+    /// How the person starts it again with the conversation kept, since it reads its servers
+    /// only as it starts.
+    #[must_use]
+    pub fn restart(self) -> &'static str {
+        match self {
+            Self::Claude => "/exit, then `claude --continue`",
+            Self::Codex => "/quit, then `codex resume --last`",
+            Self::Gemini => "/quit, then `gemini --resume latest`",
+            Self::OpenCode => "/exit, then `opencode --continue`",
+            Self::Cursor => "start `cursor-agent` again; it reads its servers as it starts",
+            Self::Amp => "nothing: Amp reloads its servers as it runs",
+        }
+    }
+
+    /// The programs its process runs under, as a process tree names them.
+    fn programs(self) -> &'static [&'static str] {
+        match self {
+            Self::Claude => &["claude", "claude-code"],
+            Self::Codex => &["codex"],
+            Self::Gemini => &["gemini", "gemini-cli"],
+            Self::Cursor => &["cursor-agent", "cursor"],
+            Self::OpenCode => &["opencode"],
+            Self::Amp => &["amp"],
+        }
+    }
+
+    /// The program that adds a server with its own command.
+    fn cli(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Gemini => "gemini",
+            Self::Cursor => "cursor-agent",
+            Self::OpenCode => "opencode",
+            Self::Amp => "amp",
+        }
+    }
+
+    /// The tool's own command that registers the stdio server `name` running `program args`.
+    fn cli_add(self, name: &str, program: &Path, args: &[&str]) -> Vec<std::ffi::OsString> {
+        let mut add: Vec<std::ffi::OsString> = match self {
+            Self::Claude | Self::Gemini => ["mcp", "add", "--scope", "user"]
+                .map(std::ffi::OsString::from)
+                .to_vec(),
+            Self::Codex | Self::Amp | Self::OpenCode | Self::Cursor => {
+                ["mcp", "add"].map(std::ffi::OsString::from).to_vec()
+            }
+        };
+        add.push(name.into());
+        if self == Self::OpenCode {
+            add.push("--global".into());
+        }
+        // Gemini CLI takes the command and its arguments positionally; the rest after a `--`.
+        if self != Self::Gemini {
+            add.push("--".into());
+        }
+        add.push(program.as_os_str().to_owned());
+        add.extend(args.iter().map(std::ffi::OsString::from));
+        add
+    }
+
+    /// The file this tool keeps its MCP servers in, where Tilo can read it back: `None` for one
+    /// that keeps them in a shape `tilo agent check --config` does not read.
+    fn config(self) -> Option<PathBuf> {
+        let home = PathBuf::from(std::env::var_os("HOME")?);
+        let config =
+            std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| home.join(".config"), PathBuf::from);
+        Some(match self {
+            Self::Claude => home.join(".claude.json"),
+            Self::Gemini => home.join(".gemini/settings.json"),
+            Self::Cursor => home.join(".cursor/mcp.json"),
+            Self::OpenCode => config.join("opencode/opencode.json"),
+            Self::Amp => config.join("amp/settings.json"),
+            // Codex keeps its servers in TOML, which the check does not read.
+            Self::Codex => return None,
+        })
+    }
+}
+
+/// What became of Tilo's tools for an agent.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Added {
+    /// The tool's own configuration holds the server, and its check confirmed it.
+    Verified,
+    /// The command was run, and Tilo could not read the configuration back.
+    Unverified,
+    /// Adding the server did not work, for the reason given.
+    Failed(String),
+}
+
+/// Add Tilo's MCP server to `tool` with the tool's own command, and confirm it where Tilo can
+/// read the configuration back (`tilo agent check --config`).
+#[must_use]
+pub fn add_tools(tool: Tool, tilo: &Path) -> Added {
+    let program = tool.cli();
+    let output = Command::new(program)
+        .args(tool.cli_add(SERVER, tilo, &["mcp"]))
+        .output();
+    match output {
+        Ok(output) => {
+            let said = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if !output.status.success() && !said.contains("already exists") {
+                return Added::Failed(
+                    said.trim()
+                        .lines()
+                        .next()
+                        .unwrap_or("its own command did not add it")
+                        .to_owned(),
+                );
+            }
+        }
+        Err(error) => return Added::Failed(format!("{program} did not run: {error}")),
+    }
+    let Some(config) = tool.config() else {
+        return Added::Unverified;
+    };
+    // What the tool's own configuration holds is what counts, not that a command said it
+    // worked: the check reads it back and asks the server it names.
+    let checked = Command::new(tilo)
+        .args(["agent", "check", "--config"])
+        .arg(&config)
+        .output();
+    match checked {
+        Ok(checked) => {
+            print!("{}", String::from_utf8_lossy(&checked.stdout));
+            if checked.status.success() {
+                Added::Verified
+            } else {
+                Added::Failed(format!(
+                    "{} does not hold Tilo's server yet",
+                    config.display()
+                ))
+            }
+        }
+        Err(error) => Added::Failed(format!("tilo agent check did not run: {error}")),
+    }
+}
+
+/// The tool running this command: its environment's markers first, then the processes it runs
+/// under, nearest first.
+#[must_use]
+pub fn detect_here() -> Option<Tool> {
+    from_env().or_else(|| {
+        ancestors()
+            .into_iter()
+            .find_map(|process| from_process(&process))
+    })
+}
+
+/// The tool the environment says runs this: each sets its own markers in the commands it runs.
+fn from_env() -> Option<Tool> {
+    let set = |name: &str| std::env::var(name).is_ok_and(|value| !value.is_empty());
+    if std::env::var("CLAUDECODE").as_deref() == Ok("1") || set("CLAUDE_CODE_ENTRYPOINT") {
+        return Some(Tool::Claude);
+    }
+    if [
+        "CODEX_SANDBOX",
+        "CODEX_MANAGED_BY_NPM",
+        "CODEX_MANAGED_BY_BUN",
+    ]
+    .into_iter()
+    .any(set)
+    {
+        return Some(Tool::Codex);
+    }
+    if set("GEMINI_CLI") {
+        return Some(Tool::Gemini);
+    }
+    if set("CURSOR_AGENT") {
+        return Some(Tool::Cursor);
+    }
+    if set("OPENCODE") {
+        return Some(Tool::OpenCode);
+    }
+    None
+}
+
+/// The tool a process is: by its program's name, or, for an agent that runs on Node, by its
+/// script's.
+fn from_process(process: &Process) -> Option<Tool> {
+    let base = |path: &str| -> String {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        name.strip_suffix(".js")
+            .or_else(|| name.strip_suffix(".mjs"))
+            .or_else(|| name.strip_suffix(".cjs"))
+            .unwrap_or(name)
+            .to_lowercase()
+    };
+    let mut names = vec![base(&process.comm)];
+    names.extend(process.args.iter().take(2).map(|arg| base(arg)));
+    let found = Tool::ALL.iter().copied().find(|tool| {
+        names
+            .iter()
+            .any(|name| tool.programs().contains(&name.as_str()))
+    });
+    // An agent that runs on Node names its tool in the script it runs
+    // (`…/@anthropic-ai/claude-code/cli.js`).
+    found.or_else(|| {
+        let packages = [
+            ("@anthropic-ai/claude-code/", Tool::Claude),
+            ("@openai/codex/", Tool::Codex),
+            ("@google/gemini-cli/", Tool::Gemini),
+            ("@sourcegraph/amp/", Tool::Amp),
+        ];
+        process.args.iter().take(2).find_map(|arg| {
+            packages
+                .iter()
+                .find(|(package, _)| arg.contains(package))
+                .map(|(_, tool)| *tool)
+        })
+    })
+}
+
+/// One process this one runs under.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Process {
+    /// Its program's name (`comm`).
+    pub comm: String,
+    /// Its arguments, the program first.
+    pub args: Vec<String>,
+}
+
+/// How far up the process tree to look.
+const ANCESTORS: usize = 24;
+
+/// The processes this one runs under, its parent first.
+#[cfg(target_os = "linux")]
+fn ancestors() -> Vec<Process> {
+    let mut found = Vec::new();
+    let mut pid = std::os::unix::process::parent_id();
+    while pid > 1 && found.len() < ANCESTORS {
+        let proc = PathBuf::from(format!("/proc/{pid}"));
+        let Ok(stat) = std::fs::read_to_string(proc.join("stat")) else {
+            break;
+        };
+        let comm = std::fs::read_to_string(proc.join("comm"))
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        let args = std::fs::read(proc.join("cmdline"))
+            .unwrap_or_default()
+            .split(|byte| *byte == 0)
+            .filter(|arg| !arg.is_empty())
+            .map(|arg| String::from_utf8_lossy(arg).into_owned())
+            .collect();
+        found.push(Process { comm, args });
+        // `pid (comm) state ppid …`: the name may hold spaces and parentheses.
+        let parent = stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().nth(1))
+            .and_then(|ppid| ppid.parse().ok());
+        match parent {
+            Some(parent) if parent != pid => pid = parent,
+            _ => break,
+        }
+    }
+    found
+}
+
+#[cfg(target_os = "macos")]
+fn ancestors() -> Vec<Process> {
+    let ps = |pid: u32, field: &str| -> Option<String> {
+        let output = Command::new("/bin/ps")
+            .args(["-o", field, "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    let mut found = Vec::new();
+    let mut pid = std::os::unix::process::parent_id();
+    while pid > 1 && found.len() < ANCESTORS {
+        let Some(comm) = ps(pid, "comm=") else { break };
+        let args = ps(pid, "args=")
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        found.push(Process { comm, args });
+        match ps(pid, "ppid=").and_then(|ppid| ppid.parse().ok()) {
+            Some(parent) if parent != pid => pid = parent,
+            _ => break,
+        }
+    }
+    found
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn ancestors() -> Vec<Process> {
+    Vec::new()
+}
+
 /// The agent `tilo login` and `tilo agent check` run for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Agent {
     /// As the person's workspace names it: `Reviewer`.
     pub name: String,
+    /// The tool it runs in, when this command runs inside one, whose own configuration Tilo adds
+    /// its server to.
+    pub tool: Option<Tool>,
 }
 
 /// What `tilo login` calls an agent that gave no name.
@@ -540,14 +883,25 @@ pub const UNKNOWN_AGENT: &str = "Your agent";
 pub fn named(name: &str) -> Agent {
     Agent {
         name: name.trim().chars().take(64).collect(),
+        tool: None,
     }
 }
 
-/// The agent `--agent` names, or [`UNKNOWN_AGENT`] when it names none.
+/// The agent `--agent` names, or [`UNKNOWN_AGENT`] when it names none, run by the tool this
+/// command runs in.
 #[must_use]
 pub fn given(name: Option<&str>) -> Agent {
-    name.filter(|name| !name.trim().is_empty())
-        .map_or_else(|| named(UNKNOWN_AGENT), named)
+    let tool = detect_here();
+    match name.filter(|name| !name.trim().is_empty()) {
+        Some(name) => Agent {
+            tool,
+            ..named(name)
+        },
+        None => Agent {
+            tool,
+            ..named(UNKNOWN_AGENT)
+        },
+    }
 }
 
 #[cfg(test)]
@@ -609,6 +963,62 @@ mod tests {
             Some(vec!["mcp".to_owned()])
         );
         assert_eq!(find_server("{}", SERVER), None);
+    }
+
+    #[test]
+    fn a_tool_adds_tilos_server_with_its_own_command() {
+        let words = |tool: Tool| -> Vec<String> {
+            tool.cli_add(SERVER, Path::new("/opt/tilo"), &["mcp"])
+                .iter()
+                .map(|word| word.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(
+            words(Tool::Claude),
+            [
+                "mcp",
+                "add",
+                "--scope",
+                "user",
+                "tilo",
+                "--",
+                "/opt/tilo",
+                "mcp"
+            ]
+        );
+        assert_eq!(
+            words(Tool::Codex),
+            ["mcp", "add", "tilo", "--", "/opt/tilo", "mcp"]
+        );
+        // Gemini CLI takes the command positionally, without the `--`.
+        assert_eq!(
+            words(Tool::Gemini),
+            ["mcp", "add", "--scope", "user", "tilo", "/opt/tilo", "mcp"]
+        );
+    }
+
+    #[test]
+    fn a_tool_is_recognized_by_the_process_it_runs_as() {
+        let as_claude = Process {
+            comm: "claude".into(),
+            args: vec!["claude".into()],
+        };
+        assert_eq!(from_process(&as_claude), Some(Tool::Claude));
+        let on_node = Process {
+            comm: "node".into(),
+            args: vec![
+                "node".into(),
+                "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js".into(),
+            ],
+        };
+        assert_eq!(from_process(&on_node), Some(Tool::Claude));
+        assert_eq!(
+            from_process(&Process {
+                comm: "bash".into(),
+                args: vec!["bash".into()],
+            }),
+            None
+        );
     }
 
     #[test]

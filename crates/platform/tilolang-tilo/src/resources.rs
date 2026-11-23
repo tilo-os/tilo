@@ -1697,21 +1697,6 @@ impl ResourceStore {
         self.inner.listings.borrow_mut().clear();
     }
 
-    /// The workspace's own state as code reads it (`workspace.leases`), asked of the device that
-    /// holds the workspace now ([`Command::Leases`]): never kept here, since the device that
-    /// holds a lease can change at any moment.
-    ///
-    /// # Errors
-    /// Why the workspace's host could not be asked, or answered something else.
-    pub fn workspace_state(&self) -> Result<Json, String> {
-        match self.inner.port.command(Command::Leases)? {
-            Reply::Content(Some(state)) => Ok(state),
-            other => Err(format!(
-                "the workspace's host answered its leases with {other:?}"
-            )),
-        }
-    }
-
     fn command(&self, command: Command) -> Result<Reply, StoreError> {
         if command.writes() {
             self.forget_versions_of(&command);
@@ -3096,7 +3081,7 @@ impl ResourceStore {
             })
             .or(burst)
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let actor_text = |actor: &Actor| serde_json::to_string(actor).unwrap_or_default();
+        let actor_text = Stamp::by;
         let from = note.from.as_ref().and_then(|from| {
             let ty = if from.ty.is_empty() {
                 self.type_of_id(&id_of(from))?
@@ -5043,11 +5028,11 @@ impl Store for ResourceStore {
         &self,
         at: &ResourceRef,
         fields: &[FieldSpec],
-        change: &str,
+        (first, last): (&str, &str),
     ) -> Result<Vec<(FieldId, FieldValue, FieldValue)>, StoreError> {
         let at = &*self.typed(at);
-        let before = self.at_change(at, change, false)?;
-        let after = self.at_change(at, change, true)?;
+        let before = self.at_change(at, first, false)?;
+        let after = self.at_change(at, last, true)?;
         let mut written = Vec::new();
         for field in fields {
             let entry = self.field(&at.ty, &field.id);

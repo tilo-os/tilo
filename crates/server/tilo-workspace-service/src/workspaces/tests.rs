@@ -10,7 +10,7 @@ use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
     admit_view_reader, device_cert, entry_join, governor, governor_with, restricted_until,
-    signed_pre_admission, test_host, test_host_taking_part, test_host_with_grants,
+    signed_pre_admission, test_host, test_host_with_grants,
 };
 
 mod access_projection;
@@ -23,6 +23,7 @@ pub(crate) mod large_document;
 mod link_windows;
 #[cfg(feature = "agents")]
 mod lookup;
+mod one_copy_two_writers;
 mod restart_parts;
 
 #[tokio::test]
@@ -409,7 +410,7 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
             .await
             .err()
             .unwrap(),
-        "this host takes part in no channel of the source's workspace",
+        "source channel keys unavailable",
         "the authorized reader reaches the existing-key boundary without creating channel state"
     );
     assert_eq!(
@@ -576,7 +577,7 @@ async fn a_seeded_workspace_default_record_names_the_default_id() {
 
 #[cfg(feature = "agents")]
 #[tokio::test]
-async fn governor_application_authoring_survives_publication_tail_rollover() {
+async fn an_app_record_authored_here_survives_its_changes_rolling_over() {
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -653,7 +654,7 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
             .unwrap()
             .map(|(value, _)| value.as_u64()),
         Some(Some(1)),
-        "rollover must publish the new governor mutation into the retained source"
+        "rollover must publish the new change into the kept source"
     );
     server.shutdown().await;
 }
@@ -696,14 +697,10 @@ fn a_peer_state_of_an_older_layout_opens_and_is_written_again_in_todays() {
             .unwrap();
     let path = created.path.clone();
     drop(created);
-    // The same state under the version before: what an earlier build wrote.
-    let (mut stored, mut peer) = kept_peer_state(&path);
-    assert_eq!(
-        peer.first(),
-        Some(&11),
-        "today's layout is one byte of version"
-    );
-    peer[0] = 10;
+    // The same state as the version before kept it: what an earlier build wrote.
+    let (mut stored, peer) = kept_peer_state(&path);
+    let peer = tilo_peer_state::kept_before_own_removal(&peer).unwrap();
+    assert_eq!(postcard::take_from_bytes::<u32>(&peer).unwrap().0, 11);
     stored.peer = vec![peer_parts::PeerPart::Inline(peer)];
     std::fs::write(&path, postcard::to_stdvec(&stored).unwrap()).unwrap();
 
@@ -717,6 +714,113 @@ fn a_peer_state_of_an_older_layout_opens_and_is_written_again_in_todays() {
         tilo_peer_state::DURABLE_VERSION,
         "the file names the state in today's layout"
     );
+    let reopened = GovernedWorkspace::open(path, None).unwrap();
+    assert_eq!(reopened.summary().name, "Team");
+}
+
+/// A document write as a build before this one published it: the member's own record it was,
+/// `own`, before its reader set.
+fn published_before_own_removal(
+    write: &neighbour_wire::NeighbourMsg,
+    own: Option<(&str, [u8; 32])>,
+) -> Vec<u8> {
+    let neighbour_wire::NeighbourMsg::AppDocument { readers, .. } = write else {
+        panic!("a document write");
+    };
+    let mut bytes = postcard::to_allocvec(write).unwrap();
+    let today = postcard::to_allocvec(readers).unwrap();
+    bytes.truncate(bytes.len().saturating_sub(today.len()));
+    bytes.extend(postcard::to_allocvec(&own).unwrap());
+    bytes.extend(today);
+    bytes
+}
+
+/// A workspace whose publications an earlier build kept, document writes among them that named
+/// the member's own record they were, opens with every one of them read as this build writes
+/// it, so each is carried and served; its files hold them so from then on.
+#[test]
+fn publications_an_earlier_build_kept_open_in_todays_layout() {
+    use neighbour_wire::NeighbourMsg;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let created =
+        GovernedWorkspace::create(dir.path(), "Team", &cert, &key, None, SystemTime::now())
+            .unwrap();
+    let path = created.path.clone();
+    drop(created);
+    let write = |seq: u64, readers: Option<&str>| NeighbourMsg::AppDocument {
+        peer: 3,
+        app_id: "so.tilo.workspace".into(),
+        cluster_id: "team".into(),
+        document_id: format!("uuid:{seq}"),
+        envelope: Box::new(collab_types::SignedOp::new_unsigned(
+            vec![0xDE, 0xAD, 0xBE, 0xEF],
+            collab_types::ArtifactId(uuid::Uuid::from_bytes([0x11; 16])),
+            collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+            collab_types::AttestationId(uuid::Uuid::from_bytes([0x22; 16])),
+            collab_types::OpKind::Change,
+            SystemTime::UNIX_EPOCH,
+            seq,
+        )),
+        readers: readers.map(str::to_owned),
+    };
+    // Two in the publications file, one in the record's own tail after them, each as that
+    // build wrote it; the record has carried none of them yet.
+    let writes = [
+        (write(1, None), None),
+        (write(2, Some("members")), Some(("notes.page", [7; 32]))),
+        (write(3, None), Some(("notes.page", [9; 32]))),
+    ];
+    let kept: Vec<Publication> = writes
+        .iter()
+        .map(|(write, own)| {
+            let bytes = published_before_own_removal(write, *own);
+            assert!(
+                NeighbourMsg::decode(&bytes).is_err(),
+                "that layout does not read as today's"
+            );
+            Publication {
+                bytes: bytes.into(),
+                checkpoint: false,
+            }
+        })
+        .collect();
+    let mut stored: document_format::StoredResource =
+        postcard::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+    let (mut file, mut filed) =
+        appended::Appended::<Publication>::open(&path, PUBLICATIONS, stored.filed_publications)
+            .unwrap();
+    filed.append(&mut stored.outgoing);
+    let carried = filed.len();
+    filed.extend(kept[..2].iter().cloned());
+    stored.filed_publications = file.file(&filed).unwrap();
+    stored.outgoing = kept[2..].to_vec();
+    stored.published = carried;
+    std::fs::write(&path, postcard::to_stdvec(&stored).unwrap()).unwrap();
+
+    let restored = GovernedWorkspace::open(path.clone(), None).unwrap();
+    let to_carry: Vec<NeighbourMsg> = restored.record.outgoing[restored.record.published..]
+        .iter()
+        .map(|publication| NeighbourMsg::decode(&publication.bytes).unwrap())
+        .collect();
+    let expected: Vec<NeighbourMsg> = writes.iter().map(|(write, _)| write.clone()).collect();
+    assert_eq!(
+        to_carry, expected,
+        "each is carried as today's build reads it"
+    );
+    drop(restored);
+
+    let stored: document_format::StoredResource =
+        postcard::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+    let (_, mut filed) =
+        appended::Appended::<Publication>::open(&path, PUBLICATIONS, stored.filed_publications)
+            .unwrap();
+    filed.extend(stored.outgoing);
+    let written: Vec<NeighbourMsg> = filed[carried..]
+        .iter()
+        .map(|publication| NeighbourMsg::decode(&publication.bytes).unwrap())
+        .collect();
+    assert_eq!(written, expected, "the files hold them in today's layout");
     let reopened = GovernedWorkspace::open(path, None).unwrap();
     assert_eq!(reopened.summary().name, "Team");
 }
@@ -830,10 +934,6 @@ fn a_heavy_tail_compacts_and_a_light_one_does_not() {
 
 #[cfg(feature = "agents")]
 #[tokio::test]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the server remains live through the policy assertions and its consuming shutdown"
-)]
 async fn applications_are_prepared_for_the_current_owner_only() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -897,15 +997,11 @@ async fn assert_canonical_chat_preparation(
             .await
             .unwrap()
     );
-    let prepared = {
-        let current = workspaces.workspace(workspace).await.unwrap();
-        current
-            .lock()
-            .await
-            .peer()
-            .document("so.tilo.chat", "")
-            .expect("canonical Chat record exists")
-    };
+    let prepared = workspaces
+        .resource_document(workspace, "so.tilo.chat", "")
+        .await
+        .unwrap()
+        .expect("canonical Chat record exists");
     assert!(!prepared.is_empty());
     let caller =
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key);
@@ -918,7 +1014,7 @@ async fn assert_canonical_chat_preparation(
     let retained = workspaces
         .resource_view_document(workspace_id, &caller, &source)
         .await
-        .expect("the already-owned governor primary has a signed retained source");
+        .expect("the already-owned primary has a signed kept source");
     let mut original = automerge::AutoCommit::load(&prepared).unwrap();
     let mut arrived = automerge::AutoCommit::load(&retained.bytes).unwrap();
     assert_eq!(arrived.get_heads(), original.get_heads());
@@ -935,19 +1031,15 @@ async fn assert_canonical_chat_preparation(
             .await
             .unwrap()
     );
-    {
-        let current = workspaces.workspace(workspace).await.unwrap();
-        assert_eq!(
-            current
-                .lock()
-                .await
-                .peer()
-                .document("so.tilo.chat", "")
-                .unwrap(),
-            prepared,
-            "preparing again must preserve the actual original document"
-        );
-    }
+    assert_eq!(
+        workspaces
+            .resource_document(workspace, "so.tilo.chat", "")
+            .await
+            .unwrap()
+            .unwrap(),
+        prepared,
+        "preparing again must preserve the actual original document"
+    );
 }
 
 /// The workspace's copy of `record` of `app`, when it has one.
@@ -957,17 +1049,19 @@ async fn workspace_resource(
     workspace: &str,
     (app, record): (&str, &str),
 ) -> Option<automerge::AutoCommit> {
-    let current = workspaces.workspace(workspace).await.unwrap();
-    let bytes = current.lock().await.peer().document(app, record);
+    let bytes = workspaces
+        .resource_document(workspace, app, record)
+        .await
+        .unwrap();
     bytes.map(|bytes| automerge::AutoCommit::load(&bytes).unwrap())
 }
 
-/// The governor starts a workspace record no app factory makes, such as the
+/// The host starts a workspace record no app factory makes, such as the
 /// shared desktop, then changes it in place: the record keeps its graph, an
 /// unchanged pass publishes nothing, and another certificate is refused.
 #[cfg(feature = "agents")]
 #[tokio::test]
-async fn governor_authors_a_workspace_record_no_factory_makes() {
+async fn the_host_authors_a_workspace_record_no_factory_makes() {
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     const DESKTOP: (&str, &str) = ("so.tilo.browser-desktop", "desktop");
     let scratch = tempfile::tempdir().unwrap();
@@ -1035,16 +1129,13 @@ async fn governor_authors_a_workspace_record_no_factory_makes() {
     clippy::too_many_lines,
     reason = "one authoring pass: granted, written, read back through the native view and the voice binding"
 )]
-async fn governor_application_authoring_preserves_native_view_and_voice_binding() {
+async fn an_authored_chat_keeps_its_native_view_and_voice_binding() {
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = test_host(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces();
-    let created = workspaces
-        .create("Native governor authoring")
-        .await
-        .unwrap();
+    let created = workspaces.create("Native host authoring").await.unwrap();
     let catalogue = tilo_agent_session::AppCatalogue::native();
     assert_unprepared_authoring_refused(workspaces, &created.workspace, &cert, &catalogue).await;
     workspaces
@@ -1136,26 +1227,27 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
     let retained = workspaces
         .resource_view_document(created.workspace_id, &caller, &source)
         .await
-        .expect("native replay accepts the actual governor-authored publication");
+        .expect("native replay accepts the actual publication the host authored");
     let mut doc = automerge::AutoCommit::load(&retained.bytes).unwrap();
     assert!(doc.get(ROOT, "preserved_native_marker").unwrap().is_some());
     let current = workspaces.workspace(&created.workspace).await.unwrap();
     let guard = current.lock().await;
     let binding = guard
-        .peer()
-        .media()
-        .resolve_media_binding("so.tilo.chat", "", &voice)
+        .call_binding("so.tilo.chat", "", &voice)
+        .await
         .expect("the same native source resolves through production voice admission");
     assert_eq!(binding.channel_id, voice);
+    drop(guard);
+    let committed = workspaces
+        .resource_document(&created.workspace, "so.tilo.chat", "")
+        .await
+        .unwrap()
+        .expect("the workspace reads its Chat");
     assert_eq!(
         doc.get_heads(),
-        guard
-            .peer()
-            .plaintext_complete_heads("so.tilo.chat", "")
-            .unwrap(),
-        "native view bytes and the governor's voice binding share the committed graph"
+        automerge::AutoCommit::load(&committed).unwrap().get_heads(),
+        "native view bytes and the voice binding share the committed graph"
     );
-    drop(guard);
     server.shutdown().await;
 }
 
@@ -1449,12 +1541,11 @@ async fn a_member_asks_for_a_channel_through(
 impl AskedForKeys {
     /// Whether the workspace kept the member's request among the records it
     /// retains for the devices that take part in its channels.
-    async fn retains_the_request(&self) -> bool {
+    fn retains_the_request(&self) -> bool {
         let workspace_id = WorkspaceId::parse(&self.workspace).unwrap();
         self.server
             .workspace_documents()
             .retained(workspace_id)
-            .await
             .is_ok_and(|retained| {
                 retained.iter().any(|retained| {
                     postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&retained.body).is_ok_and(
@@ -1487,19 +1578,14 @@ impl AskedForKeys {
     }
 }
 
-/// security.md, "What a workspace host reads and originates": a host that runs
-/// no channel service takes part in no channel and holds no channel key, and
-/// keeps what the workspace's channels are made of like any other governance,
-/// for whoever takes part.
+/// A host keeps what the workspace's channels are made of like any other
+/// governance, for whoever takes part: a member's request for a channel's group
+/// is kept for the devices that link later.
 #[tokio::test]
-async fn a_store_host_retains_what_its_members_send_for_a_channels_group() {
+async fn a_host_keeps_what_its_members_send_for_a_channels_group() {
     let asked = a_member_asks_for_a_channel(DeviceCapabilities::member()).await;
     assert!(
-        asked.workspaces.device_keys().is_none(),
-        "a host runs no channel service and holds no channel keys"
-    );
-    assert!(
-        asked.retains_the_request().await,
+        asked.retains_the_request(),
         "the workspace retained the member's request for its channels"
     );
     asked.shut_down().await;
@@ -1515,46 +1601,34 @@ async fn a_request_the_server_kept_is_not_kept_again_as_the_hosts() {
         a_member_asks_for_a_channel_through(DeviceCapabilities::member(), super::Carried::Kept)
             .await;
     assert!(
-        !asked.retains_the_request().await,
+        !asked.retains_the_request(),
         "the host kept a second copy of a request its server keeps as the member's"
     );
     asked.shut_down().await;
 }
 
-/// A decision does not wait for workspace in its workspace owner's queue. With
-/// the owner stalled on the workspace's first change and more changes behind it
-/// than its queue holds, every decision still settles and answers, and a
-/// pre-admission still takes the workspace; once the owner moves, every change
-/// is retained, in the order the workspace published them.
+/// Every decision is kept when it is answered, and what it published is carried
+/// on the workspace's link in the order the workspace published it: a host that
+/// stops right after the last answer starts with all of them, and a
+/// pre-admission among them takes the workspace as it stands.
 #[tokio::test]
-async fn decisions_settle_while_their_workspace_owner_is_stalled() {
+async fn every_decision_is_kept_and_carried_once_it_is_answered() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Public").await.unwrap();
-    let records = workspaces.inner.host.records.clone();
-    // The creation's own changes are retained before the owner stalls.
-    records.retained(created.workspace_id).await.unwrap();
-    let root = dir
-        .path()
-        .join("workspaces")
-        .join(created.workspace_id.to_string());
-    let (release, reached) = crate::store::test_barrier::install(&root, "state-persist");
-    // Each name is one governance change: more than the owner queues.
+    // Each name is one governance change.
     for index in 0..48 {
         tilo_test_env::within(
-            format!("rename {index} while the owner is stalled"),
+            format!("rename {index}"),
             workspaces.rename(&created.workspace, &format!("Public {index}")),
         )
         .await
         .unwrap();
     }
-    tilo_test_env::within("the owner stalls on the first change", reached)
-        .await
-        .unwrap();
     tilo_test_env::within(
-        "a pre-admission while the owner is stalled",
+        "a pre-admission among the renames",
         workspaces.pre_admit(
             &cert,
             PreAdmitRequest {
@@ -1567,40 +1641,33 @@ async fn decisions_settle_while_their_workspace_owner_is_stalled() {
     )
     .await
     .unwrap();
-    drop(release);
-    let retained = tilo_test_env::within(
-        "every change retained once the owner moves",
-        records.retained(created.workspace_id),
-    )
-    .await
-    .unwrap();
-    let published: Vec<Vec<u8>> = {
+    {
         let governed = workspaces.workspace(&created.workspace).await.unwrap();
         let governed = governed.lock().await;
-        governed
-            .record
-            .outgoing
-            .iter()
-            .filter(|publication| !publication.checkpoint)
-            .map(|publication| publication.bytes.to_vec())
-            .collect()
-    };
-    assert!(
-        published.len() >= 48,
-        "{} changes published",
-        published.len()
-    );
-    let host = cert.device_public_key;
-    let mut bodies = retained
-        .iter()
-        .filter(|body| body.author == host)
-        .map(|body| &body.body);
-    for change in &published {
         assert!(
-            bodies.any(|body| body == change),
-            "a published change is retained, after the ones published before it"
+            governed.record.outgoing.len() >= 48,
+            "{} changes published",
+            governed.record.outgoing.len()
+        );
+        assert_eq!(
+            governed.record.published,
+            governed.record.outgoing.len(),
+            "every change the workspace published is carried on its link once answered"
         );
     }
+    server.shutdown().await;
+
+    let server = test_host(dir.path(), &key, &cert).await;
+    assert_eq!(
+        server
+            .workspaces()
+            .summary(&created.workspace)
+            .await
+            .unwrap()
+            .name,
+        "Public 47",
+        "the host starts again with every decision it answered"
+    );
     server.shutdown().await;
 }
 
@@ -1979,103 +2046,6 @@ async fn titles_shared(workspaces: &Workspaces, workspace: &str) -> Vec<String> 
     titles_in(governed.peer().admitted_workspace().unwrap())
 }
 
-/// A document write the workspace refused is filed as this device's verdict in
-/// the workspace's own document, signed by its device and naming the write's
-/// route, author and sequence: one fact, carried by the sync that already
-/// carries the workspace. A change to the workspace's topology names no record
-/// and files nothing, and the same write again keeps the verdict held.
-#[tokio::test]
-async fn a_refused_document_write_is_filed_in_the_workspaces_document() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let server = test_host(dir.path(), &key, &cert).await;
-    let workspaces = server.workspaces().clone();
-    let workspace = workspaces.create("Studio").await.unwrap().workspace;
-    let (member, member_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
-    let member_key = SigningKey::from_bytes(&[3; 32]);
-    let author = collab_types::Ed25519PublicKey::from_bytes(member_key.verifying_key().to_bytes());
-    let (app, record) = ("so.tilo.notes", "notes");
-    let mut envelope = collab_types::SignedOp::new_unsigned(
-        vec![7; 12],
-        collab_types::document_artifact_id(app, &workspace, record),
-        author,
-        collab_types::document_attestation_id(app, &workspace, record),
-        collab_types::OpKind::Change,
-        SystemTime::now(),
-        7,
-    );
-    collab_types::sign_op(&mut envelope, &member_key).unwrap();
-    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::AppDocument {
-        peer: tilo_peer_state::peer_handle(member_key.verifying_key().as_bytes()),
-        app_id: app.into(),
-        cluster_id: workspace.clone(),
-        document_id: record.into(),
-        envelope: Box::new(envelope),
-        readers: None,
-    })
-    .unwrap();
-    let reason = "record read forbidden: notes/main";
-    workspaces
-        .publish_refusal(&workspace, &body, reason)
-        .await
-        .unwrap();
-    {
-        let state = workspaces.workspace(&workspace).await.unwrap();
-        let governed = state.lock().await;
-        let held = governed.peer().workspace().write_refusals();
-        assert_eq!(held.len(), 1, "the workspace files its verdict: {held:?}");
-        let refusal = &held[0];
-        assert_eq!(
-            refusal.author, member.device_public_key,
-            "the write's author"
-        );
-        assert_eq!(refusal.by, cert.device_public_key, "the refusing device");
-        assert!(
-            refusal.signed_by(&cert.device_public_key),
-            "signed as its own"
-        );
-        assert_eq!(
-            (refusal.app.as_str(), refusal.record.as_str()),
-            (app, record)
-        );
-        assert_eq!(refusal.seq, 7);
-        assert_eq!(refusal.reason, neighbour_wire::RefusalReason::Forbidden);
-        assert_eq!(refusal.detail, reason);
-    }
-    // A topology change is no record's write: it names no route for a verdict.
-    let topology = terminals_opened(&workspaces, &workspace, &member, member_salt).await;
-    workspaces
-        .publish_refusal(
-            &workspace,
-            &topology,
-            "a change of layout is no record write",
-        )
-        .await
-        .unwrap();
-    // The same write again keeps the verdict the workspace already holds.
-    workspaces
-        .publish_refusal(&workspace, &body, reason)
-        .await
-        .unwrap();
-    let state = workspaces.workspace(&workspace).await.unwrap();
-    let governed = state.lock().await;
-    assert_eq!(
-        governed
-            .peer()
-            .workspace()
-            .write_refusals()
-            .iter()
-            .filter(|refusal| refusal.author == member.device_public_key)
-            .count(),
-        1,
-        "one verdict per write's author and route"
-    );
-    drop(governed);
-    drop(state);
-    drop(workspaces);
-    server.shutdown().await;
-}
-
 /// A member's windows are the workspace's: the governor takes the change in, and
 /// every member sees the windows.
 #[allow(
@@ -2133,52 +2103,17 @@ async fn windows_closed(
     .unwrap()
 }
 
-/// Every entry the store under `root` archived.
-fn archived_bytes(root: &std::path::Path) -> Vec<Vec<u8>> {
-    let mut found = Vec::new();
-    let mut dirs = vec![
-        root.join(crate::store::RETAINED_DIR)
-            .join(crate::store::compaction::ARCHIVE_DIR),
-    ];
-    while let Some(dir) = dirs.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                dirs.push(path);
-            } else if let Ok(bytes) = std::fs::read(&path) {
-                found.push(bytes);
-            }
-        }
-    }
-    found
-}
-
 /// Whether `title` occurs in `frame`, a frame a device's replay delivers:
 /// in its bytes as encoded for the wire, or in any operation of a workspace
 /// document change it carries once decoded (a change's columns may be
 /// compressed, which a search of the raw bytes alone would miss).
-fn replayed_frame_carries(frame: &crate::transport::Envelope, title: &str) -> bool {
+fn replayed_frame_carries(frame: &neighbour_wire::NeighbourMsg, title: &str) -> bool {
     let needle = title.as_bytes();
-    let wire = crate::frame::encode(frame).unwrap();
+    let wire = postcard::to_allocvec(frame).unwrap();
     if wire.windows(needle.len()).any(|window| window == needle) {
         return true;
     }
-    let crate::transport::Envelope::Delta { delta, .. } = frame else {
-        return false;
-    };
-    let Some(
-        crate::coedit::CoeditPayload::Checkpoint { body, .. }
-        | crate::coedit::CoeditPayload::RetainedDelta { body, .. },
-    ) = crate::coedit::CoeditPayload::decode(delta)
-    else {
-        return false;
-    };
-    let Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, .. }) =
-        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body)
-    else {
+    let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = frame else {
         return false;
     };
     changes.iter().any(|bytes| {
@@ -2223,29 +2158,17 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
 
     let (c, c_cert) = guest_device();
     entry_join(&workspaces, &cert, &workspace, (&c, &c_cert), 21).await;
-    // Whatever the workspace published is retained before C's replay is read.
-    workspaces
-        .inner
-        .host
-        .records
-        .retained(created.workspace_id)
-        .await
-        .unwrap();
-    let workspace = workspaces
-        .inner
-        .host
-        .workspaces
-        .lock()
-        .await
-        .get(&created.workspace_id)
-        .cloned()
-        .expect("the server hosts the workspace");
-    let (replayed, archived) = {
-        let runtime = workspace.lock().await;
-        (
-            crate::store::test_support::replay_frames(&runtime.store),
-            archived_bytes(runtime.store.root()),
-        )
+    // What a device joining now is sent: a workspace's history reaches a device
+    // over its link, whose holder sends the workspace and a signed checkpoint of
+    // each of its records, as the link's catch-up builds them.
+    let replayed = {
+        let governed = workspaces.workspace(&workspace).await.unwrap();
+        let governed = governed.lock().await;
+        let mut holder = governed.peer().clone();
+        holder
+            .publication_mut()
+            .bootstrap_messages(&key, SystemTime::now())
+            .unwrap()
     };
     assert!(
         !replayed.is_empty(),
@@ -2258,13 +2181,6 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
                 .any(|frame| replayed_frame_carries(frame, title)),
             "a member who joins later is replayed {title:?}, \
              a window withdrawn before they joined"
-        );
-        assert!(
-            archived.iter().any(|bytes| {
-                crate::frame::decode(bytes.get(4..).unwrap_or_default())
-                    .is_ok_and(|frame| replayed_frame_carries(&frame, title))
-            }),
-            "the server keeps {title:?} archived for those who held it"
         );
     }
     drop(workspaces);

@@ -114,15 +114,15 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          default), administrator or owner. Opened in any
                          browser, it makes the person's identity on the spot
                          and lets them in
-  stack.sh tilo workspace servers add ORIGIN -w WORKSPACE
-                         the stack's owner has the stack at ORIGIN (its site,
-                         e.g. https://127.0.0.1:34000) keep WORKSPACE as well:
+  stack.sh tilo workspace servers add HOST-LINE -w WORKSPACE
+                         the stack's owner has the stack whose own
+                         web-host.json is HOST-LINE keep WORKSPACE as well:
                          both keep it and a change on either reaches the
                          other. That stack takes it only for a person it let
                          in: make this stack's owner one of its people there
                          first (stack.sh owner KEY there, KEY this stack's
                          \$TILO_SH_STATE/owner/key). servers ls and servers
-                         remove ORIGIN too
+                         remove NAME too
   stack.sh browser       a Chromium on a fresh profile, opened on the local site
   stack.sh check
                          bring the stack up and run the end-to-end check on it
@@ -296,8 +296,8 @@ last_port=$control_port  # the highest port a stack on this base takes
 server_origin=http://127.0.0.1:$server_port
 live_origin=http://127.0.0.1:$live_port
 api_origin=http://localhost:$api_port
-# A name of its own under localhost, not an address: a passkey's relying
-# party is the page's host name, and a browser refuses one on an address.
+# A name of its own under localhost, not an address: a browser's secure
+# context is the page's host name, which an address does not give it.
 site_host=tilo.localhost
 site_origin=http://$site_host:$site_port
 # The site's health check, at the address the web entry listens on: the names
@@ -608,8 +608,7 @@ caddy_image=docker.io/library/caddy@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79b
 # start NAME ARGS…: one service's container, replacing any stopped one of the
 # same name. Every container is this stack's own (named tilo-sh-local-*).
 # Each resolves the site's name as production's resolve tilo.sh: the
-# images' own resolvers know nothing of *.localhost, and the API server keeps the
-# invitations it hands over on the site's shelf, at that name.
+# images' own resolvers know nothing of *.localhost.
 start() {
   local name=$1
   shift
@@ -842,7 +841,7 @@ web_env() {
     "TILO_WEB_HOME_ENTRY=$server_origin/peer/v1/directory/$workspace/" \
     "TILO_WEB_DIRECTORY=$server_origin/peer/v1/directory" \
     "TILO_WEB_API=$api_origin" \
-    "TILO_WEB_SHELF=http://127.0.0.1:$plain_port" \
+    "TILO_WEB_SERVER=http://127.0.0.1:$plain_port" \
     "TILO_RELEASES_ORIGIN=http://127.0.0.1:$releases_port/tilo-cli"
 }
 
@@ -1033,13 +1032,6 @@ takes no other login.
 EOF
 }
 
-# `link` as the page a person on this machine opens: the server names
-# tilo.sh's page for an invitation whose entry is reached from this machine
-# alone (`wait_list.rs`), and this stack serves its own site here.
-opened_here() {
-  printf '%s\n' "${1/#https:\/\/tilo.sh\//$site_origin/}"
-}
-
 # invite [WORKSPACE] [-- --role ROLE] [--email ADDRESS]: an invite link to
 # WORKSPACE (the Lounge when none), made by the stack's own person, its owner,
 # with `tilo workspace people invite`, as any owner makes one. Opened in any browser,
@@ -1067,9 +1059,7 @@ invite_link() {
     esac
   done
   [[ -n $workspace ]] || workspace=$(lounge_id)
-  local link
-  link=$(owner_tilo workspace people invite --role "$role" "${asked[@]}" -w "$workspace" | head -1)
-  opened_here "$link"
+  owner_tilo workspace people invite --role "$role" "${asked[@]}" -w "$workspace" | head -1
 }
 
 # The Lounge's workspace id, once it runs.
@@ -1139,7 +1129,7 @@ as_owner() {
   HOME=$home XDG_CONFIG_HOME=$home/.config XDG_STATE_HOME=$home/.local/state \
     XDG_DATA_HOME=$home/.local/share XDG_CACHE_HOME=$home/.cache \
     TILO_IDENTITY_ROOT=$home/.local/share/tilo \
-    TILO_API_URL=$api_origin TILO_SITE=$site_origin "$(find_tilo)" "$@"
+    TILO_API_URL=$api_origin TILO_SITE=$site_origin "$(find_tilo)" "$@" 9>&-
 }
 
 # The user public key of the stack's own person, made the first time: the
@@ -1232,7 +1222,7 @@ owner_link() {
   link=$(owner_tilo workspace people invite --role administrator -w "$(lounge_id)" | head -1) \
     || die 'the Lounge made no administrator link'
   say 'opening this link in any browser makes that person an administrator of the Lounge:'
-  opened_here "$link"
+  printf '%s\n' "$link"
 }
 
 # The mails the entry sent, oldest first: who to, the subject and the links in
@@ -1335,23 +1325,21 @@ vm_host() {
 }
 
 # The ticket this stack's VM host joins the person's devices with: printed on
-# the stack's own person's device (`tilo device add --capability admin`), once
-# per VM host state disk, and kept until the disk it belongs to is wiped.
+# the stack's own person's device (`tilo device add --capability admin`) at each
+# start. The host spends it once and keeps its login on its own state disk,
+# which is root's; a host that already holds one ignores the ticket it is given.
+# A ticket lets a computer in, so no failure prints it.
 host_ticket() {
-  local kept=$vm_state/ticket
-  if [[ ! -s $kept ]]; then
-    local issued
-    issued=$(owner_person device add --capability admin --server --json --no-wait) \
-      || die 'the stack'"'"'s person printed no ticket for the VM host (tilo device add)'
-    python3 -c 'import json,sys; print(json.load(sys.stdin)["ticket"])' <<<"$issued" > "$kept" \
-      || die "the stack's person printed no ticket: $issued"
-    chmod 600 "$kept"
-  fi
-  TILO_VM_TICKET=$(cat "$kept")
+  local issued
+  issued=$(owner_person device add --capability admin --server --json --no-wait) \
+    || die 'the stack'"'"'s person printed no ticket for the VM host (tilo device add)'
+  TILO_VM_TICKET=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["ticket"])' <<<"$issued") \
+    || die "the stack's person printed no ticket (tilo device add --json answered no \"ticket\")"
 }
 
 # The tilo command to drive the stack with: TILO_SH_TILO_BIN, else this
-# checkout's release build the site serves at /releases, else the command the
+# checkout's release build the site serves at /releases (with the daemon
+# tilo-runtime it starts from beside itself), else the command the
 # stack built for itself (the same one, before the site packs it), else a build
 # left here. The stack's own build is where it runs; a build left here is not on
 # the build server, so a command that acts on a stack there finds its command
@@ -1361,7 +1349,7 @@ find_tilo() {
   local tarball=$state/releases/tilo-cli/latest/tilo-linux-x86_64.tar.gz candidate
   if [[ -s $tarball ]]; then
     mkdir -p "$state/cli"
-    tar -xzf "$tarball" -C "$state/cli" tilo && { printf '%s' "$state/cli/tilo"; return; }
+    tar -xzf "$tarball" -C "$state/cli" tilo tilo-runtime && { printf '%s' "$state/cli/tilo"; return; }
   fi
   for candidate in "$programs/tilo" "$repo/target/release/tilo" "$repo/target/debug/tilo"; do
     [[ -x $candidate ]] && { printf '%s' "$candidate"; return; }
@@ -1542,14 +1530,17 @@ build_programs() {
     from=$repo/target/$builder_stage/programs
   else
     say "building the programs ($cargo build --profile $profile; only what changed compiles)"
-    # The stand-in mail server is an example, built apart: an example brings its package's
-    # dev-dependencies, whose features Cargo turns on for every package in the same build, and the
-    # server built with its test-only features loads fixture fonts its app workers cannot.
+    # Three builds, as the images build them: Cargo turns on every feature any package of a
+    # build asks of a shared crate for all of them. The server and its worker apart from the
+    # rest, or the server would link the desktop libraries the daemon needs and the Lounge image
+    # does not carry; the stand-in mail server, an example, apart too, since it brings its
+    # package's dev-dependencies, and a server built with test-only features loads fixture fonts
+    # its app workers cannot.
     (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-server/agents \
-      -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilo-runtime -p tilolang-process \
-      "${oauth_programs[@]}" \
-      --bin tilo-server --bin tilo-server-admin --bin discord-worker --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilo-runtime \
-      --bin tilolang-process >&2 \
+      -p tilo-server -p discord-worker --bin tilo-server --bin tilo-server-admin --bin discord-worker >&2 \
+      && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" \
+        -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilo-runtime -p tilolang-process \
+        --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilo-runtime --bin tilolang-process >&2 \
       && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" \
         -p tilo-account-probe --example mail_stand_in >&2) \
       || die "the build failed (above); if it built but did not bring the programs back, TILO_SH_CARGO names another cargo drop-in to build with"
@@ -1744,8 +1735,9 @@ bundle_whole() {
 from_t() { [[ -z ${TILO_SH_PROGRAMS:-} && $build == t ]]; }
 t_fetched=$native/t
 
-# t_build WHAT CHECK…: one t run of the CHECKs for this checkout, and what the
-# run made (every check's outputs, its needs' too) fetched into $t_fetched.
+# t_build WHAT CHECK…: one t run of the CHECKs for this checkout, and what
+# each CHECK made fetched into $t_fetched: `t outputs` gives one check's own
+# outputs alone, so each named check is fetched.
 # A checkout with no changes is built as its commit (--rev): git's files,
 # never ones edited while the build runs. One with changes is built as t
 # finds it when the run starts, which is when t takes its copy.
@@ -1762,11 +1754,14 @@ t_build() {
     || die "t could not build $what (run $run; t log CHECK says why)"
   say "$what built on t ($((SECONDS - began))s)"
   began=$SECONDS
-  local log=$state/logs/t-outputs-${1//\//-}.log
   mkdir -p "$t_fetched" "$state/logs"
-  (cd "$repo" && t outputs "$1" --run "$run" --to "$t_fetched" > "$log" 2>&1) \
-    || { tail -5 "$log" >&2; die "t could not give run $run's outputs ($log)"; }
-  say "$what fetched: $(grep -cv ' (unchanged)$' "$log") files new or changed, $(grep -c ' (unchanged)$' "$log") kept ($((SECONDS - began))s)"
+  local check log
+  for check in "$@"; do
+    log=$state/logs/t-outputs-${check//\//-}.log
+    (cd "$repo" && t outputs "$check" --run "$run" --to "$t_fetched" > "$log" 2>&1) \
+      || { tail -5 "$log" >&2; die "t could not give run $run's outputs of $check ($log)"; }
+    say "$check fetched: $(grep -cv ' (unchanged)$' "$log") files new or changed, $(grep -c ' (unchanged)$' "$log") kept ($((SECONDS - began))s)"
+  done
 }
 
 # The bundle as its build.json lists it: t's fetch keeps files an earlier
@@ -2326,7 +2321,7 @@ up() {
   fi
   if [[ -n $link ]]; then
     say 'opening this link in any browser makes that person an administrator of the Lounge'
-    opened_here "$link"
+    printf '%s\n' "$link"
   else
     say 'the Lounge made no administrator link: stack.sh owner asks again'
   fi
@@ -2431,7 +2426,7 @@ up_images() {
 
   # The web entry: its image listens on 8080 alone, so it gets its own
   # network, published on the port tls serves the site from, from which it reaches the server's
-  # plain listener (its shelf) and the releases on this machine's loopback.
+  # plain listener (the pages it renders) and the releases on this machine's loopback.
   start_releases
   local web_args=() info
   info=$(host_info)

@@ -660,14 +660,16 @@ pub(crate) fn shell_not_shared_notice(
 pub(crate) fn tell_shell_not_taken(
     notifications: &std::cell::RefCell<crate::notifications::SessionNotifications>,
     tree: &tilo_desktop_model::Layout,
-    (id, why): (tilo_desktop_model::WorkspaceId, String),
+    (id, reason): (
+        tilo_desktop_model::WorkspaceId,
+        neighbour_wire::RefusalReason,
+    ),
 ) {
     let workspace = tree
         .workspaces
         .iter()
         .find(|workspace| workspace.id() == id)
         .map(|workspace| workspace.name.as_str());
-    let reason = neighbour_wire::RefusalReason::of(&why);
     notifications
         .borrow()
         .tell(&shell_not_shared_notice(workspace, reason));

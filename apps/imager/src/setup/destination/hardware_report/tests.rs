@@ -119,16 +119,9 @@ tilo_test_env::scenario! {
             .iter()
             .flat_map(|row| drawn(row.as_ref()))
             .collect::<Vec<_>>();
-        for kind in [
-            ComponentKind::Graphics,
-            ComponentKind::Fingerprint,
-            ComponentKind::Wifi,
-        ] {
-            assert!(
-                text.contains(&component_title(kind)),
-                "{} is named",
-                kind.key()
-            );
+        for component in &report.components {
+            let named = format!("{}, {}", component_title(component.kind), reason_text(component));
+            assert!(text.contains(&named), "{named} in {text:?}");
         }
         assert!(text.iter().any(|line| line.contains("amdgpu")));
         assert!(text.iter().any(|line| line.contains("Goodix reader")));
@@ -157,7 +150,8 @@ tilo_test_env::scenario! {
         ]);
         let rows = component_rows(&report);
         let first = drawn(rows[0].as_ref());
-        assert!(first.contains(&component_title(ComponentKind::Boot)));
+        let boot = format!("{}, {}", component_title(ComponentKind::Boot), t("installer-hardware-reason-legacy-boot"));
+        assert!(first.contains(&boot), "{first:?}");
     }
 
     phase a_component_with_no_next_step_still_says_the_release_was_not_checked;

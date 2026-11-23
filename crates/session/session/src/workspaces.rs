@@ -42,7 +42,7 @@ use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_sheets::SheetState as _;
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
-use tilo_user_identity::{CommunityState, WorkspaceDirectory, WorkspaceMeta};
+use tilo_user_identity::{WorkspaceDirectory, WorkspaceMeta};
 
 use crate::directory;
 use crate::platform::notice::Notices;
@@ -399,14 +399,24 @@ impl Personal {
         }
     }
 
+    /// Whether `workspace` is the person's own, which holds what is theirs alone (their devices,
+    /// their settings, this list). This device holds it, but the shell never counts it as one to
+    /// work in; the list never names it.
+    fn is_own(&self, workspace: WorkspaceId) -> bool {
+        workspace.to_string()
+            == tilo_server_protocol::servers::person_workspace_id(
+                &self.identity.device_cert.user_public_key,
+            )
+    }
+
     /// The workspace the shell started with, while it is not known whether the person has
     /// workspaces of their own: it is neither founded nor listed meanwhile.
     pub(crate) const fn seed(&self) -> Option<WorkspaceId> {
         self.seed
     }
 
-    /// Whether the person's list names a workspace of theirs besides `except`: one this device
-    /// or another of theirs made, or one a host of theirs lists.
+    /// Whether the person's list names a workspace of theirs besides `except`: one this device or
+    /// another of theirs made, or one a host of theirs lists.
     fn names_besides(&self, except: WorkspaceId) -> bool {
         entries_of(&self.directory)
             .iter()
@@ -432,7 +442,9 @@ impl Personal {
             return false;
         };
         let theirs = |workspace: &WorkspaceId| {
-            *workspace != seed && (!self.borrowed.contains(workspace) || owned.contains(workspace))
+            *workspace != seed
+                && !self.is_own(*workspace)
+                && (!self.borrowed.contains(workspace) || owned.contains(workspace))
         };
         let has = self.names_besides(seed)
             || held.iter().any(theirs)
@@ -500,32 +512,6 @@ impl Personal {
                     .and_then(|(_, entry)| entry.host_devices.first().copied())
             })
             .is_none_or(|host| host == self.device)
-    }
-
-    /// What this person decided about the community at `site` , as all their devices hold it:
-    /// `None` while they decided nothing, which is when their community is joined for them.
-    pub(crate) fn community(&self, site: &str) -> Option<CommunityState> {
-        self.directory.community(site)
-    }
-
-    /// Record what this person decided about the community at `site` : [`CommunityState::Pending`]
-    /// as their API is asked, and [`CommunityState::Decided`] once the site let them in — their
-    /// decision from then on, including after they leave it. It is the person's, not this session's,
-    /// so their other devices are told of it. Whether it changed anything.
-    pub(crate) fn decide_community(&mut self, site: &str, state: CommunityState) -> bool {
-        let changed = match self.directory.set_community(site, state) {
-            Ok(changed) => changed,
-            Err(error) => {
-                tracing::warn!(%error, %site, "what this person decided about their community was not kept");
-                return false;
-            }
-        };
-        if changed {
-            // Not a pass over the session: the list moved all the same.
-            self.published = None;
-            self.persist();
-        }
-        changed
     }
 
     /// Write what changed on this device since the person's devices
@@ -708,11 +694,7 @@ impl Personal {
         handle: &DesktopHandle,
         unknown_here: &dyn Fn(WorkspaceId) -> bool,
     ) -> Adoption {
-        let own = tilo_server_protocol::servers::person_workspace_id(
-            &self.identity.device_cert.user_public_key,
-        );
-        let mut entries = entries_of(&self.directory);
-        entries.retain(|(workspace, _)| workspace.to_string() != own);
+        let entries = entries_of(&self.directory);
         let mut adoption = Adoption::default();
         let present: Vec<WorkspaceId> =
             handle.read(|tree| tree.workspaces.iter().map(Workspace::id).collect());
@@ -953,16 +935,8 @@ impl Personal {
             .into_iter()
             .map(|(workspace, _)| workspace)
             .collect();
-        // The person's own workspace holds what is theirs alone (their devices, their settings,
-        // this list): Settings shows what is in it, and the shell never shows it as a workspace.
-        let own = tilo_server_protocol::servers::person_workspace_id(
-            &self.identity.device_cert.user_public_key,
-        );
         let mut moved = false;
         for (workspace, entry) in listed {
-            if workspace.to_string() == own {
-                continue;
-            }
             let host = entry.host.host.writes_for();
             let Ok(hint) = postcard::to_allocvec(&entry.host) else {
                 continue;
@@ -1318,11 +1292,6 @@ impl crate::Shared {
         } else if let Some(personal) = &self.personal {
             personal.borrow_mut().joined(workspace);
         }
-        // A session the host started with a short link learns what it joined only here, and the
-        // authority it waits for is asked of it.
-        self.boot_join
-            .borrow_mut()
-            .joined(&joined.granted.workspace);
         self.redeem_invitation(joined);
         Ok(())
     }
@@ -1532,8 +1501,8 @@ impl crate::Shared {
                     }
                 }
                 // This computer could not take the workspace in: nothing was
-                // refused, so the workspace it made for the join stays, the
-                // community stays listed, and its row offers the join again.
+                // refused, so the workspace it made for the join stays and
+                // the join is offered again.
                 Err(error) if error.is_device_failure() => {
                     tracing::warn!(
                         target: JOIN_FLOW_TARGET,
@@ -1564,10 +1533,6 @@ impl crate::Shared {
                     // The sheet says why to a person who opens it again, and the banner says it
                     // where they are now.
                     tracing::warn!(%key, %error, "a workspace was not joined");
-                    // A community whose host refused this device is not joined: the join is
-                    // forgotten, and the community's own follow asks its API again when a network
-                    // comes back.
-                    self.directory_store.forget_community(&key);
                 }
             }
             if enrolled.member {
@@ -1771,11 +1736,9 @@ impl crate::Shared {
 
     /// Settle the workspace the shell started with on a device that kept none
     /// ([`Personal::seed`]) against what the person has: what the hosts of the workspaces this
-    /// device holds list for them, unless this computer is still joining the community it was set
-    /// up for — its site has not answered — or redeeming an invitation, which list them once it is
-    /// in. A join under way is the person having a workspace, so settling the seed before it lands
-    /// would make the shell's own workspace theirs and list it to their other devices; one whose
-    /// site answered brings no workspace, so it holds the seed back no longer.
+    /// device holds list for them, unless it is redeeming an invitation, which lists them once it
+    /// is in. A join under way is the person having a workspace, so settling the seed before it
+    /// lands would make the shell's own workspace theirs and list it to their other devices.
     fn settle_seed(
         &self,
         personal: &mut Personal,
@@ -1790,11 +1753,7 @@ impl crate::Shared {
             .map(|engine| engine.workspaces())
             .unwrap_or_default();
         let joining = self.directory_store.joining().is_some() || self.directory_store.settling();
-        let community = self
-            .community
-            .borrow()
-            .joining(personal, &self.directory_store);
-        let listed = if joining || community {
+        let listed = if joining {
             None
         } else {
             hosted.map_or_else(
@@ -2043,19 +2002,6 @@ impl crate::Shared {
                 "join: the host admitted this device but the session would not make the workspace"
             );
             self.directory_store.set_note(Some(error));
-            return;
-        }
-        // A community whose home this workspace is is the person's from here on: no device of
-        // theirs asks its API again — not to join it, and not to rejoin it once they left. Only
-        // now, with the workspace on the shell: a community marked decided when its host refused the
-        // enrollment was never joined, and nothing asked again.
-        if let Some(site) = self.directory_store.community_of(workspace_id) {
-            if let Some(personal) = &self.personal {
-                personal
-                    .borrow_mut()
-                    .decide_community(&site, CommunityState::Decided);
-            }
-            self.directory_store.forget_community(workspace_id);
         }
     }
 }

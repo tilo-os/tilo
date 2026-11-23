@@ -29,9 +29,12 @@ const WINDOW_MENU: &str = "This window";
 /// The session with the shell as the whole screen and the seeded apps: the framed canvas is in
 /// front of it, and the seeded notes stand on the shell as its windows.
 fn session(root: &std::path::Path) -> (Session, Vec<String>) {
-    let session = crate::common::seeded_session(root);
+    let mut session = crate::common::seeded_session(root);
+    // The notes app publishes what its seed holds once it has read it, after the session started.
+    until(&mut session, "the seed's two notes published", |session| {
+        note_ids(session).len() >= 2
+    });
     let notes = note_ids(&session);
-    assert!(notes.len() >= 2, "the seed keeps two notes: {notes:?}");
     (session, notes.into_iter().take(2).collect())
 }
 
@@ -195,18 +198,25 @@ fn strip_of(session: &Session, record: &str) -> String {
         )
 }
 
-/// Show the strip `strip` as the one in front, as a press on its window's "Bring to front" does:
-/// the shell's own `focus_strip`, through the API.
-fn focus_strip(session: &mut Session, root: &std::path::Path, strip: &str) {
-    let mut repl = Api::open(session, root);
-    let (answer, failed) = repl.run(
-        session,
-        &format!(r#"shell.focus_strip(shell.viewing, strip: "{strip}")"#),
-    );
-    assert!(!failed, "the shell focuses strip {strip}: {answer}");
+/// Bring the window that shows `record` to the front, as its "Bring to front" does: the session's
+/// `activate` of its place, which shows its strip in front and gives its window the keyboard.
+fn bring_to_front(session: &mut Session, record: &str) {
+    let place = crate::common::places(session)
+        .into_iter()
+        .find(|place| place.resource == record)
+        .unwrap_or_else(|| panic!("the shell holds a place for {record}"));
     session
-        .step(std::time::Duration::from_millis(16))
-        .expect("a frame");
+        .invoke(
+            &tilo_session_core::layout::Item::Place.resource(&place.key),
+            "activate",
+            &serde_json::Map::new(),
+        )
+        .unwrap_or_else(|error| panic!("the window of {record} comes to the front: {error:?}"));
+    until(
+        session,
+        &format!("the window of {record} in front"),
+        |session| crate::common::layout(session).front == place.strip,
+    );
 }
 
 /// Press the pill of the window named `window`: the "This window" menu at the trailing end of that
@@ -296,17 +306,17 @@ fn only_a_window_behind_offers_bring_to_front_in_strips() {
     );
 
     for (front, back) in [(&one_name, &other_name), (&other_name, &one_name)] {
-        let front_strip = strip_of(&session, if front == &one_name { &one } else { &other });
-        focus_strip(&mut session, root.path(), &front_strip);
+        bring_to_front(&mut session, if front == &one_name { &one } else { &other });
 
         // The window in front: its own menu lists the window's commands and no way to come to
         // the front it is already in front of.
         press_window_menu(&mut session, front);
-        assert!(
-            !session.shell_says("Bring to front"),
-            "{front:?} is in front, so its own menu offers no way to come to the front of itself: \
-             {:?}",
-            session.accessible_labels()
+        // The shell draws the menu from the layout it last heard: the front reaches it a few
+        // frames after the session took it.
+        until(
+            &mut session,
+            &format!("{front:?}'s own menu offering no way to come to the front of itself"),
+            |session| !session.shell_says("Bring to front"),
         );
         dismiss_menu(&mut session);
 

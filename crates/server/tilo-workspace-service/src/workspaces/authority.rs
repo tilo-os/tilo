@@ -15,10 +15,11 @@
 //!    lets its person: the governance action, invitation or change is
 //!    checked against the workspace's policy, read under the workspace's lock so a
 //!    role change and an administration call cannot race. A Moderator
-//!    removes and bans those ranked below; a member the owner granted
-//!    `invite` invites, never above their own role; an administrator holds
-//!    every governance action over every member who is not an administrator;
-//!    an Editor by role alone governs nothing.
+//!    removes, bans and restricts members by its role's grants, as anyone
+//!    granted those actions does; a member the owner granted `invite`
+//!    invites, never above their own role; an administrator holds every
+//!    governance action; the workspace keeps its owner whoever asks; an Editor
+//!    by role alone governs nothing.
 //!
 //! An agent's call is decided by its own grants first, where it is asked
 //! ([`super::actions::agents`]); here it is held to what its person may, as
@@ -340,9 +341,7 @@ fn decide_by_governance(
     let decided = match op {
         WorkspaceOp::Host(_) => return Err(CollaborationError::new(HOST_PERSON_ONLY)),
         WorkspaceOp::Govern(action) => member.policy.check_action(&authority, action, &cx, false),
-        WorkspaceOp::Invite(role) => member
-            .policy
-            .check_invite(person, &authority, role, &cx, false),
+        WorkspaceOp::Invite(role) => member.policy.check_invite(&authority, role, &cx, false),
         WorkspaceOp::InviteAdministrator => member
             .policy
             .check_administrator_invite(person, &authority, &cx, false),

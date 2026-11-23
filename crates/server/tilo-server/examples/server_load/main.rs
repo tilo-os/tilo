@@ -28,12 +28,7 @@
 //! divides by members and hours. Fan-out latency is publish to receipt
 //! by each other member of the workspace; pointer and caret latency are the same
 //! for each pointer move and caret the server forwarded (one it coalesced
-//! away under a later one is never received, and not counted). Store fsyncs per edit divides the file
-//! and directory barriers the server's workspace stores issued by the deltas
-//! it committed; listed entries per edit divides the directory entries they
-//! listed to retain them the same way. Compaction's own CPU time and the
-//! document signatures it verified are reported beside them, per
-//! member-hour and per edit.
+//! away under a later one is never received, and not counted).
 //!
 //! Packets are counted where QUIC already counts them, on each
 //! member's connection ([`Packets`]): the datagrams the members
@@ -319,12 +314,6 @@ struct Window {
     transport_bytes: u64,
     app_bytes: u64,
     live_bytes: u64,
-    /// Deltas the server committed and fanned out.
-    deltas: u64,
-    store_fsyncs: u64,
-    store_listed_entries: u64,
-    compaction_cpu_s: f64,
-    compaction_signature_checks: u64,
     packets: Packets,
     hours: f64,
 }
@@ -339,19 +328,6 @@ impl Window {
                 .saturating_sub(before.transport_bytes_sent),
             app_bytes: after.bytes_sent.saturating_sub(before.bytes_sent),
             live_bytes: after.bytes_sent_live.saturating_sub(before.bytes_sent_live),
-            deltas: after.deltas_received.saturating_sub(before.deltas_received),
-            store_fsyncs: after.store_fsyncs.saturating_sub(before.store_fsyncs),
-            store_listed_entries: after
-                .store_listed_entries
-                .saturating_sub(before.store_listed_entries),
-            compaction_cpu_s: float(
-                after
-                    .compaction_cpu_ns
-                    .saturating_sub(before.compaction_cpu_ns),
-            ) / 1e9,
-            compaction_signature_checks: after
-                .compaction_signature_checks
-                .saturating_sub(before.compaction_signature_checks),
             packets,
             hours: elapsed.as_secs_f64() / SECONDS_PER_HOUR,
         }
@@ -456,39 +432,6 @@ impl Report {
         self.per_member_hour(|window| float(window.packets.server_ack_only()))
     }
 
-    /// Store fsyncs per committed delta: what durability costs an edit.
-    fn store_fsyncs_per_edit(&self) -> Vec<f64> {
-        self.windows
-            .iter()
-            .filter(|window| window.deltas > 0)
-            .map(|window| float(window.store_fsyncs) / float(window.deltas))
-            .collect()
-    }
-
-    /// Directory entries listed per committed delta: zero while every
-    /// lineage's index is current, a lineage's length when it is not.
-    fn store_listed_entries_per_edit(&self) -> Vec<f64> {
-        self.windows
-            .iter()
-            .filter(|window| window.deltas > 0)
-            .map(|window| float(window.store_listed_entries) / float(window.deltas))
-            .collect()
-    }
-
-    /// Compaction's thread CPU, in milliseconds per member-hour.
-    fn compaction_cpu_ms(&self) -> Vec<f64> {
-        self.per_member_hour(|window| window.compaction_cpu_s * 1e3)
-    }
-
-    /// Document signatures compaction verified per committed delta.
-    fn compaction_signature_checks_per_edit(&self) -> Vec<f64> {
-        self.windows
-            .iter()
-            .filter(|window| window.deltas > 0)
-            .map(|window| float(window.compaction_signature_checks) / float(window.deltas))
-            .collect()
-    }
-
     /// Resident memory each connected, active member adds to the server.
     fn rss_mib(&self) -> Vec<f64> {
         let members = float(u64::try_from(self.members).unwrap_or(u64::MAX));
@@ -524,10 +467,6 @@ impl Report {
                 "server.fanout_ms": kpi("ms", self.fanout_ms.clone()),
                 "server.relay.presence_pointer_ms": kpi("ms", self.pointer_ms.clone()),
                 "server.relay.presence_caret_ms": kpi("ms", self.caret_ms.clone()),
-                "server.store_fsyncs_per_edit": kpi("count", self.store_fsyncs_per_edit()),
-                "server.store_listed_entries_per_edit": kpi("count", self.store_listed_entries_per_edit()),
-                "server.compaction_cpu_ms_per_collab_hour": kpi("ms", self.compaction_cpu_ms()),
-                "server.compaction_signature_checks_per_edit": kpi("count", self.compaction_signature_checks_per_edit()),
             },
         })
     }
@@ -541,10 +480,7 @@ impl Report {
              client_data_packets_per_collab_hour_p50={:.0} datagrams_per_collab_hour_p50={:.0} \
              ack_only_datagrams_per_collab_hour_p50={:.0} fanout_ms_p50={:.1} fanout_ms_p99={:.1} \
              presence_pointer_ms_p50={:.1} presence_pointer_ms_p99={:.1} \
-             presence_caret_ms_p50={:.1} presence_caret_ms_p99={:.1} \
-             store_fsyncs_per_edit_p50={:.3} store_listed_entries_per_edit_p50={:.3} \
-             compaction_cpu_ms_per_collab_hour_p50={:.1} \
-             compaction_signature_checks_per_edit_p50={:.3}",
+             presence_caret_ms_p50={:.1} presence_caret_ms_p99={:.1}",
             self.members,
             self.workspaces,
             self.windows.len(),
@@ -566,10 +502,6 @@ impl Report {
             nearest_rank(&self.pointer_ms, 99),
             nearest_rank(&self.caret_ms, 50),
             nearest_rank(&self.caret_ms, 99),
-            median(self.store_fsyncs_per_edit()),
-            median(self.store_listed_entries_per_edit()),
-            median(self.compaction_cpu_ms()),
-            median(self.compaction_signature_checks_per_edit()),
         )
     }
 }

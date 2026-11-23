@@ -13,16 +13,17 @@
 //      address left on it is confirmed through the mail the entry sends;
 //   2. the operator hands an invite link over in one press, and invites that
 //      address from the workspace's own wait list, which mails the invitation;
-//   3. the stranger follows the invitation's link and joins; the workspace
-//      opens, and the setup offered inside it sets Tilo up through their
-//      agent (`tilo login`, then the agent adds Tilo's MCP server) in that workspace;
+//   3. the stranger follows the invitation's link and joins; joining founds
+//      their person, so the entry shows their 24 recovery words once — this
+//      reads them from the card and checks they restore the same person — and
+//      the workspace opens, where the setup offered inside it sets Tilo up
+//      through their agent (`tilo login`, then the agent adds Tilo's MCP
+//      server) in that workspace;
 //   3b. the same person on a browser new to the site signs in with their
 //      agent: the entry's wait list offers it, and the computer `tilo login`
 //      set up is a device of theirs, which signs the new tab in;
-//   4. they keep themselves with a passkey, their browser forgets the site,
-//      and the passkey brings them back into a workspace of their own;
-//   5. they make a second workspace and are in it;
-//   6. someone else with no invitation still cannot get in, and leaves an
+//   4. they make a second workspace and are in it;
+//   5. someone else with no invitation still cannot get in, and leaves an
 //      address on the wait list.
 //
 // The mails are the entry's own, kept by the mail sink the stack points it at:
@@ -43,7 +44,7 @@ import {chmodSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {FIRST_SCREEN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit, shellMetrics, machine, browserMemory} from './waits.mjs';
+import {stepLimit, shellMetrics, machine, browserMemory, confirmRecoveryWords} from './waits.mjs';
 import {mailLink, poll, pressText, waitForMail, waitingCard} from './shell.mjs';
 
 const [site, server, work, tiloBin, stack] = process.argv.slice(2);
@@ -166,7 +167,7 @@ const until = async (tab, expression, what, timeout = stepLimit(4)) => {
  * been to the site before, so the site treats it as a first visit. A person
  * who has been here before (`setupDone`) opens the site itself, not its first
  * screen: the workspace's own desktop, as the people who run it see it. */
-const visit = async (name, {passkey = false, setupDone = false} = {}) => {
+const visit = async (name, {setupDone = false} = {}) => {
   const browser = await launch();
   browsers.push(browser);
   const tab = await browser.tab({firstScreen: true});
@@ -199,22 +200,9 @@ const visit = async (name, {passkey = false, setupDone = false} = {}) => {
     }
   });
   await tab.send('Emulation.setDeviceMetricsOverride', shellMetrics).catch(() => {});
-  if (passkey) await authenticator(tab);
   said.push({name, tab});
   return {name, tab, browser};
 };
-/** The platform authenticator a person's device has: resident, verified, and
- * answering PRF, which is what opens a Tilo identity. */
-const authenticator = async tab => {
-  const enabled = await tab.send('WebAuthn.enable', {enableUI: false});
-  if (enabled.error) await fail(`no WebAuthn: ${enabled.error.message}`);
-  const added = await tab.send('WebAuthn.addVirtualAuthenticator', {options: {protocol: 'ctap2', transport: 'internal',
-    hasResidentKey: true, hasUserVerification: true, isUserVerified: true, hasPrf: true}});
-  if (added.error) await fail(`no virtual authenticator: ${added.error.message}`);
-};
-/** The page's own identity module: the one it holds its person in. */
-const identityModule = `await import(new URL('identity.mjs', new URL('.', (document.querySelector('link[rel="modulepreload"][href], script[type="module"][src]').href
-  || document.querySelector('script[type="module"][src]').src))).href)`;
 /** Who this page is, and which workspace it holds. */
 const person = tab => tab.evaluate(`JSON.stringify({
   user: (() => { try { return JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.userPublicKey ?? null; } catch { return null; } })(),
@@ -340,9 +328,27 @@ const firstScreenShown = `(document.documentElement.dataset.firstScreen !== unde
  * and comes back — as the operator does — instead of landing on the wait list. */
 const arrive = async (page, {expected}) => {
   const deadline = Date.now() + stepLimit(6);
+  // What the page reaches first: a decision on the entry, or — once it lets the
+  // person in — the 24 recovery words it shows them before anything opens.
+  const arrivedOrWords = `(() => {
+    const root = document.documentElement;
+    if (['done', 'stopped'].includes(root.dataset.arrival)) return 'settled';
+    return document.querySelector('[data-card="recovery-words"]') ? 'words' : '';
+  })()`;
   for (;;) {
     await page.tab.navigate(site);
-    await until(page.tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, `${page.name} arriving`, stepLimit(6));
+    let settledBy = Date.now() + stepLimit(6);
+    for (;;) {
+      const stage = await page.tab.waitFor(arrivedOrWords, {timeout: Math.max(1000, settledBy - Date.now())}).catch(() => '');
+      if (stage === 'words') {
+        await keepRecoveryWords(page);
+        // The card is kept: the page goes on to open the workspace.
+        settledBy = Date.now() + stepLimit(6);
+        continue;
+      }
+      if (stage === 'settled') break;
+      await fail(`${page.name} arriving never happened: ${JSON.stringify(await state(page.tab))} — "${(await pageText(page.tab)).slice(0, 300)}"`);
+    }
     const seen = await state(page.tab);
     report.steps.push({step: `${page.name} arrived`, ...seen});
     if (seen.arrival === 'done' || expected === 'refused') return seen;
@@ -378,7 +384,7 @@ const tilo = async (env, args) => new Promise(resolve => {
  * later, so a prompt an earlier copy left there is not this one. */
 const copied = async (tab, before) => {
   const read = `navigator.clipboard.readText().then(text =>
-    text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`;
+    text.match(/(?:tilo|sh -s) (?:login|device add) /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`;
   // The clipboard is the browser's, not the page's: a write landing is no
   // change the page tells anyone about, so this is the one wait here that
   // reads on a clock, and it holds a few steps.
@@ -390,8 +396,55 @@ const copied = async (tab, before) => {
   await fail('the prompt never reached the clipboard');
 };
 const commandOf = prompt => {
-  const match = prompt.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})(?: --site (\S+?))?(?:,|\s|$)/);
-  return match ? {code: match[1], site: match[2] ?? null} : null;
+  const login = prompt.match(/(?:tilo|sh -s) login (\S+)/);
+  const add = prompt.match(/(?:tilo|sh -s) device add (\S+)/);
+  const text = login?.[1] ?? add?.[1];
+  if (!text) return null;
+  return {text, kind: add ? 'device add' : 'login',
+    ticket: /^tilo1[0-9a-f]+$/.test(text) ? text : null,
+    code: /^[2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4}$/.test(text) ? text : null,
+    site: prompt.match(/--site (\S+?)(?:,|\s|$)/)?.[1] ?? null};
+};
+/** The page's own identity module: the one it holds its person in. */
+const identityModule = `await import(new URL('identity.mjs', new URL('.', (document.querySelector('link[rel="modulepreload"][href], script[type="module"][src]').href
+  || document.querySelector('script[type="module"][src]').src))).href)`;
+
+/** The 24 recovery words, shown once right after a browser's person is first
+ * let in, and confirmed before anything else opens. The words are read from
+ * the card the person sees, checked to be 24 words, and derived again to that
+ * person's key: the same phrase has to restore the same root. Then they say
+ * they kept them, and the page goes on. */
+const keepRecoveryWords = async page => {
+  const shown = JSON.parse(await until(page.tab, `(() => {
+    const card = document.querySelector('[data-card="recovery-words"]');
+    if (!card) return '';
+    return JSON.stringify([...card.querySelectorAll('.tilo-recovery-word')]
+      .map(item => (item.querySelector('.tilo-recovery-text')?.textContent ?? '').trim()));
+  })()`, `${page.name} shown the 24 recovery words`, stepLimit(10)));
+  if (shown.length !== 24) await fail(`the recovery card shows ${shown.length} words, not 24: ${shown.join(' ')}`);
+  if (!shown.every(word => /^[a-z]+$/.test(word))) await fail(`the recovery card carries something other than words: ${shown.join(' ')}`);
+  const restored = await page.tab.evaluate(`(async () => {
+    const id = ${identityModule};
+    return id.recoveryWordsPublicKey(${JSON.stringify(shown.join(' '))});
+  })()`).catch(error => fail(`the 24 words did not read back: ${error?.message ?? error}`));
+  const person = await page.tab.evaluate(`(async () => {
+    const id = ${identityModule};
+    return (await id.browserIdentity({create: false}))?.userPublicKey ?? null;
+  })()`).catch(() => null);
+  if (!person) await fail(`${page.name} keeps no person the 24 words could restore`);
+  if (restored !== person) await fail(`the 24 words restore ${restored}, not ${page.name}'s person (${person})`);
+  // The card in both themes, while it is up, before it is confirmed away.
+  await page.tab.evaluate(`document.documentElement.dataset.look = 'light'`);
+  await dump(page.tab, `recovery-words-${page.name}-light`);
+  await page.tab.evaluate(`document.documentElement.dataset.look = 'dark'`);
+  await dump(page.tab, `recovery-words-${page.name}-dark`);
+  await page.tab.evaluate(`delete document.documentElement.dataset.look`);
+  console.log(`ok: ${page.name} was shown the 24 recovery words, which restore their person (${person.slice(0, 12)}…)`);
+  report.recovery = {...report.recovery, [page.name]: {words: shown.length, restores: person, screenshots: [`recovery-words-${page.name}-light.png`, `recovery-words-${page.name}-dark.png`]}};
+  mark(`${page.name} was shown their 24 recovery words, which restore their person`);
+  // Kept, as a person presses it; the shared press every other founder uses.
+  await confirmRecoveryWords(page.tab);
+  await until(page.tab, `!document.querySelector('[data-card="recovery-words"]')`, `${page.name}'s words card closing`, stepLimit(4));
 };
 
 try {
@@ -439,7 +492,7 @@ try {
 
   // -- 1. a stranger at the wait list ----------------------------------------
   step('a stranger arriving at the wait list');
-  const stranger = await visit('stranger', {passkey: true});
+  const stranger = await visit('stranger');
   await arrive(stranger, {expected: 'refused'});
   await until(stranger.tab, `document.documentElement.dataset.refusal === 'wait-list'`, "the entry showing its wait list", stepLimit(6));
   await until(stranger.tab, `document.documentElement.dataset.waitList === 'form'`, 'the wait list offering its field');
@@ -449,7 +502,7 @@ try {
     body: document.getElementById('arrival-refusal-body')?.textContent?.trim() ?? null,
     note: document.getElementById('arrival-wait-note')?.textContent?.trim() ?? null,
     button: document.querySelector('#arrival-wait button')?.textContent?.trim() ?? null,
-    signIn: document.getElementById('arrival-sign-in-button')?.textContent?.trim() ?? null,
+    signIn: document.getElementById('arrival-sign-in-agent')?.textContent?.trim() ?? null,
     contact: document.getElementById('arrival-wait-contact')?.textContent?.trim() ?? null,
   })`);
   await dump(stranger.tab, '1-wait-list');
@@ -495,7 +548,7 @@ try {
     `(() => {
       const shared = document.querySelector('[data-card=share] input[name=link]')?.value;
       if (shared && shared !== ${JSON.stringify(clipboardBefore)}) return 'shared:' + shared;
-      return navigator.clipboard.readText().then(text => text.includes('/i/') && text !== ${JSON.stringify(clipboardBefore)} ? 'copied:' + text : '', () => '');
+      return navigator.clipboard.readText().then(text => /\\?invite=[A-Za-z0-9_-]{43}$/.test(text) && text !== ${JSON.stringify(clipboardBefore)} ? 'copied:' + text : '', () => '');
     })()`, stepLimit(8));
   if (!handed) await fail(`one press did not hand over an invite link, on the clipboard or in a card: ${JSON.stringify(await state(operator.tab))} — "${(await pageText(operator.tab)).slice(0, 300)}"`);
   report.copiedLink = String(handed).replace(/#.*/, '#…');
@@ -537,7 +590,7 @@ try {
   report.sent = await operator.tab.evaluate(`document.querySelector('.tilo-waiting-sent')?.textContent?.trim() ?? null`);
   const invitation = await mailArrived('the invitation mail', 2);
   report.invitationMail = {to: invitation.to, from: invitation.from, subject: invitation.subject};
-  const inviteLink = mailLink(invitation, 'invite') ?? (invitation.text.match(/https?:\/\/\S+\/i\/[A-Za-z0-9_-]{16}#[A-Za-z0-9_-]{43}/) ?? [])[0];
+  const inviteLink = mailLink(invitation, 'invite') ?? (invitation.text.match(/https?:\/\/\S+#(?:\/@[^\s/]+)?\/w\/[0-9a-f-]{36}\?invite=[A-Za-z0-9_-]{43}/) ?? [])[0];
   if (!inviteLink) await fail(`the invitation mail carries no link: ${(invitation.text ?? '').slice(0, 400)}`);
   report.inviteLink = inviteLink.replace(/#.*/, '#…');
   await pressText(operator.tab, 'Close', '.tilo-waiting');
@@ -548,6 +601,9 @@ try {
   // -- 3. the stranger follows it, joins, and sets Tilo up through an agent ---
   step('the invitation bringing the stranger into a workspace of their own');
   await stranger.tab.navigate(inviteLink);
+  // Their identity is founded on the way in: the 24 words are shown once,
+  // before the workspace opens, to write down and keep.
+  await keepRecoveryWords(stranger);
   // Someone let in off the wait list asked to get in, so the link joins them at
   // once, with no card to press: the invitation admits them to the Lounge, and
   // their page opens a workspace of their own to work in, with the Lounge one
@@ -606,9 +662,9 @@ try {
   const prompt = await copied(stranger.tab, beforeCopy);
   report.prompt = prompt;
   const setup = commandOf(prompt);
-  if (!setup) await fail(`the prompt names no tilo login code: ${prompt}`);
+  if (!setup) await fail(`the prompt names no tilo login ticket: ${prompt}`);
   const env = await agentEnv();
-  const login = await tilo(env, ['login', setup.code, '--site', setup.site ?? site]);
+  const login = await tilo(env, setup.ticket ? ['login', setup.ticket] : ['login', setup.code, ...(setup.site ? ['--site', setup.site] : [])]);
   report.login = login;
   if (login.code !== 0) await fail(`tilo login failed (${login.code}): ${login.stderr}${login.stdout}`);
   // The agent adds Tilo's server to its own configuration, as the login's
@@ -687,10 +743,31 @@ try {
   report.signInPrompt = signInPrompt;
   await dump(returning.tab, '5-sign-in-with-agent');
   const signIn = commandOf(signInPrompt);
-  if (!signIn) await fail(`the sign-in prompt names no tilo login code: ${signInPrompt}`);
-  const claimed = await tilo(env, ['login', signIn.code, '--site', signIn.site ?? site]);
+  if (!signIn) await fail(`the sign-in prompt names no ticket or code: ${signInPrompt}`);
+  const claimed = await tilo(env, signIn.kind === 'device add'
+    ? ['device', 'add', signIn.ticket]
+    : ['login', signIn.code, ...(signIn.site ? ['--site', signIn.site] : [])]);
   report.signInLogin = claimed;
   if (claimed.code !== 0) await fail(`tilo login of the sign-in code failed (${claimed.code}): ${claimed.stderr}${claimed.stdout}`);
+  // The person's root stays in the tab that set it up, so the computer that ran `tilo device add`
+  // holds none: it hands the signing on to the person's devices, and the first tab, which does
+  // hold their root, asks about the browser it would sign in — naming the device and what
+  // certifying it makes it — and approves it.
+  if (signIn.kind === 'device add') {
+    if (!/handed the signing on/.test(claimed.stdout)) {
+      await fail(`tilo device add did not hand the signing on from a computer with no root: ${claimed.stdout}${claimed.stderr}`);
+    }
+    const askedAbout = await until(stranger.tab, `(() => {
+      const bar = document.getElementById('tilo-sign-in');
+      return bar && !bar.hidden ? bar.innerText.trim() : '';
+    })()`, 'the first tab asking about the browser signing in', stepLimit(8));
+    report.signInAsked = askedAbout;
+    if (!/becomes one of your devices/.test(askedAbout)) {
+      await fail(`the first tab's ask names no device of the person's: ${askedAbout}`);
+    }
+    await pressId(stranger.tab, 'tilo-sign-in-allow');
+    mark('the first tab approved the browser signing in');
+  }
   // The person asked their agent to sign them in on this tab, so the tab asks
   // them nothing about whose device it becomes: that card, which warns of a
   // link someone else made, is for a link handed to a device.
@@ -714,47 +791,7 @@ try {
   mark('a browser new to the site signed the person in with their agent');
   console.log(`ok: "Sign in with your agent" showed its code, and the person's computer signed the tab in to ${signedIn.title}`);
 
-  // -- 4. a passkey brings the same person back, to a workspace of theirs -----
-  // Kept from the person's own desktop, as "Keep with passkey" does. A
-  // passkey is made in the tab a person is looking at: the second tab opened
-  // above closed, and this one is in front again before the browser is asked.
-  step('the passkey kept, and bringing the person back to a workspace of theirs');
-  await stranger.tab.front();
-  const kept = await stranger.tab.evaluate(`(async () => {
-    const id = ${identityModule};
-    const person = await id.browserIdentity();
-    try {
-      const envelope = await person.keepWithPasskey({userName: 'wait list passkey'});
-      // Where the passkey signs in from: the hosts that know this person keep
-      // the envelope their passkey opens, as "Keep your name and work" does.
-      await id.publishEnvelope({origin: ${JSON.stringify(hostOrigin)}, identity: person});
-      return JSON.stringify({person: person.userPublicKey, wraps: (envelope?.wraps ?? []).filter(wrap => wrap.kind === 'passkey').length});
-    } catch (error) { return JSON.stringify({error: String(error?.message ?? error), code: error?.code ?? error?.name}); }
-  })()`).then(JSON.parse).catch(error => ({error: error.message}));
-  report.passkey = kept;
-  if (kept.error) await fail(`the passkey was not registered: ${kept.error} (${kept.code})`);
-  if (kept.person !== report.landed.user) await fail(`the passkey was made for ${kept.person}, not the person in the workspace`);
-  // The browser forgets the site, as a person who cleared it, or one on a
-  // computer that never had it: the authenticator alone remembers them.
-  await stranger.tab.send('Storage.clearDataForOrigin', {origin: siteOrigin, storageTypes: 'all'});
-  await arrive(stranger, {expected: 'refused'});
-  await until(stranger.tab, `document.documentElement.dataset.refusal === 'wait-list'`, 'the entry after the browser forgot the site', stepLimit(6));
-  await pressId(stranger.tab, 'arrival-sign-in-button');
-  const back = await until(stranger.tab, `(['done', 'stopped'].includes(document.documentElement.dataset.arrival) && !document.documentElement.dataset.refusal) ? 'in' : (document.getElementById('arrival-sign-in-note')?.textContent?.trim() || '')`,
-    'the passkey signing the person in', stepLimit(10));
-  if (back !== 'in') await fail(`the passkey did not sign the person in: ${back}`);
-  await until(stranger.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.userPublicKey`,
-    'the person back in a workspace', stepLimit(8));
-  const returned = await person(stranger.tab);
-  report.returned = returned;
-  if (returned.user !== kept.person) await fail(`the passkey signed in ${returned.user}, not ${kept.person}`);
-  await until(stranger.tab, OWN_WORKSPACE, 'the person back in their own workspace', stepLimit(3));
-  report.returnedTo = await ownWorkspace(stranger.tab);
-  await dump(stranger.tab, '6-passkey-back');
-  console.log(`ok: a passkey signed the same person back in, to ${report.returnedTo}`);
-  mark('a passkey signed the person back in to their own workspace');
-
-  // -- 5. a second workspace -------------------------------------------------
+  // -- 4. a second workspace -------------------------------------------------
   step('a second workspace the person makes');
   await search(stranger.tab, 'new workspace', 'New workspace');
   await until(stranger.tab, `document.querySelector('.tilo-entry-card input') !== null`, 'the card asking what to name it', stepLimit(6));
@@ -771,7 +808,9 @@ try {
     const chosen = JSON.parse(globalThis.localStorage.getItem('tilo-chosen-workspace') ?? 'null');
     const entered = JSON.parse(globalThis.localStorage.getItem('tilo-entered-workspaces') ?? '[]');
     const kept = (Array.isArray(entered) ? entered : []).find(entry => entry.workspace === chosen?.workspace);
-    const open = document.documentElement.dataset.entry === 'open'
+    // The entry says it opened the workspace; the page the server renders
+    // for it (\`/w/<workspace>\`) is past the entry and only says it arrived.
+    const open = (document.documentElement.dataset.entry === 'open' || location.pathname.startsWith('/w/'))
       && ['done', 'stopped'].includes(document.documentElement.dataset.arrival);
     return open && kept?.name === ${JSON.stringify(named)} ? chosen.workspace : '';
   })()`;
@@ -779,15 +818,15 @@ try {
   if (before) await fail(`a workspace named ${named} was open before the person made one: ${before}`);
   await pressText(stranger.tab, 'Create', '.tilo-entry-card');
   const made = await until(stranger.tab, opened, 'the second workspace opening', stepLimit(10));
-  if (made === report.returned?.workspace) await fail(`the second workspace is the first one again: ${made}`);
+  if (made === report.landed?.workspace) await fail(`the second workspace is the first one again: ${made}`);
   report.secondWorkspace = {workspace: made, name: named, title: await stranger.tab.evaluate(`document.title`)};
   await dump(stranger.tab, '7-second-workspace');
   console.log(`ok: the person made and opened a second workspace (${named}, ${made})`);
   mark('the person made a second workspace');
 
-  // -- 6. a visitor with no invitation is still out --------------------------
+  // -- 5. a visitor with no invitation is still out --------------------------
   step('a visitor with no invitation, who still cannot get in');
-  const visitor = await visit('visitor', {passkey: false});
+  const visitor = await visit('visitor');
   await arrive(visitor, {expected: 'refused'});
   await until(visitor.tab, `document.documentElement.dataset.refusal === 'wait-list'`, 'the last visitor meeting the wait list', stepLimit(6));
   const other = 'grace@example.org';

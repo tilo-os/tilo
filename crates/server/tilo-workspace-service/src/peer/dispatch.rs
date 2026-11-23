@@ -2,108 +2,152 @@
 //! ([`Envelope`]).
 
 use super::{
-    Arc, AuthenticatedPeer, Envelope, PeerError, RemoteActionRoute, ReplayCatchup, ReplayHandle,
-    ReplayTicket, SessionCtx, Subscription, handle_agent_session, handle_commit, handle_compaction,
-    handle_content_want, handle_delta, handle_host_action, handle_host_hello, handle_host_said,
-    handle_live_join, handle_open_document, handle_presence, handle_remote_action,
-    handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice, handle_workspaces,
-    route_document_content,
+    AuthenticatedPeer, Envelope, PeerError, RemoteActionRoute, SessionCtx, handle_agent_session,
+    handle_content_want, handle_host_action, handle_host_said, handle_live_join,
+    handle_open_document, handle_presence, handle_remote_action, handle_subscribe,
+    handle_unsubscribe, handle_voice, handle_workspaces, route_document_content,
 };
-#[cfg(test)]
-use super::{ReplayWrite, answered_as_replay, finish_replay_write};
 use tilo_server_protocol::WorkspaceId;
 
-/// Handle one successfully-decoded inbound envelope: dispatch to
-/// [`handle_envelope`], then write any replay backlog to the wire —
-/// followed by the direct reply, if any. Pending on-disk backlog
-/// files are cleaned up only after being written, so a write failure
-/// leaves them intact for the next reconnect.
-#[cfg(test)]
-pub(super) async fn handle_inbound_frame<W>(
-    env: Envelope,
+/// The reply to an envelope that carried a workspace's records, which reach
+/// a device over its link to the workspace rather than a session: the
+/// session ends with it, as for any envelope the host does not take.
+/// A session client's write, until it moves onto actions.
+///
+/// A session carries the client's signed document writes as `Commit`, and, from
+/// a client that writes them straight to the link, as `Delta`; its identity hello
+/// arrives as `Delta` too. This is only the transport into the device link's
+/// one admission: the frame is admitted by [`tilo_peer_state::direct::DirectSync::admit_one`] exactly as
+/// the workspace's link admits a frame, after the same author check
+/// ([`tilo_peer_state::direct::DirectSync::admits_author`]) against the same roster, into the same store
+/// and replica. A `Commit` is answered with the host order once the frame is
+/// kept; a `Delta` is answered nothing.
+async fn handle_session_write(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &mut Vec<WorkspaceId>,
-    write: &mut W,
-) -> Result<(), PeerError>
-where
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let replaying = answered_as_replay(&env);
-    let mut ticket = None;
-    let mut answer = Vec::new();
-    let reply = handle_envelope(peer, env, session, subscribed, &mut ticket, &mut answer).await?;
-    let pending = std::sync::atomic::AtomicUsize::new(usize::from(replaying));
-    Box::pin(finish_replay_write(
-        ReplayWrite {
-            ticket,
-            answer,
-            reply,
-            replaying,
-        },
-        peer,
-        session,
-        &pending,
-        write,
-    ))
-    .await
+    env: Envelope,
+) -> Result<Option<Envelope>, PeerError> {
+    use tilo_server_protocol::refusal::Refusal;
+    let (workspace_id, op, author, delta) = match env {
+        Envelope::Commit {
+            workspace_id,
+            op,
+            author_device_public_key,
+            delta,
+            ..
+        } => (workspace_id, Some(op), author_device_public_key, delta),
+        Envelope::Delta {
+            workspace_id,
+            author_device_public_key,
+            delta,
+            ..
+        } => (workspace_id, None, author_device_public_key, delta),
+        _ => return Ok(None),
+    };
+    let refused = |refusal: Refusal| {
+        op.map(|op| Envelope::CommitRefused {
+            workspace_id,
+            op,
+            refusal,
+        })
+    };
+    // The session authenticated `peer`; its write names the author it signs as.
+    if author != peer.device_public_key {
+        return Ok(refused(Refusal::NotAMember(
+            "the write names another device than the session's".into(),
+        )));
+    }
+    let Some(
+        crate::coedit::CoeditPayload::Checkpoint { body, .. }
+        | crate::coedit::CoeditPayload::RetainedDelta { body, .. },
+    ) = crate::coedit::CoeditPayload::decode(&delta)
+    else {
+        return Ok(refused(Refusal::NotAllowed(
+            "the write does not decode".into(),
+        )));
+    };
+    let Ok(message) = neighbour_wire::NeighbourMsg::decode(&body) else {
+        return Ok(refused(Refusal::NotAllowed(
+            "the write is not a message".into(),
+        )));
+    };
+    // What may arrive is what the link itself admits: a member's signed record
+    // frame, the workspace's own changes, a device's identity hello (its
+    // certificate and revocations, which take the link's hello path), or a
+    // channel's governance and a device's request to join its group, which the
+    // link answers from the geneses it carries and hands to the channel's
+    // members. Nothing else is a frame of the workspace. Each goes through the
+    // same author and member checks below, and the link's one admission.
+    if !matches!(
+        message,
+        neighbour_wire::NeighbourMsg::AppDocument { .. }
+            | neighbour_wire::NeighbourMsg::SyncResp { .. }
+            | neighbour_wire::NeighbourMsg::IdentityHello { .. }
+            | neighbour_wire::NeighbourMsg::MlsGovernance { .. }
+            | neighbour_wire::NeighbourMsg::MlsAccessRequest { .. }
+    ) {
+        tracing::debug!(
+            %workspace_id,
+            kind = message.kind(),
+            "a session carried no frame of the workspace; nothing was admitted"
+        );
+        return Ok(None);
+    }
+    let Some(workspaces) = session.admin else {
+        return Ok(refused(Refusal::NotReady));
+    };
+    let Some(link) = workspaces.direct().link(workspace_id) else {
+        return Ok(refused(Refusal::NotReady));
+    };
+    if let Err(reason) = link.admits_author(author) {
+        return Ok(refused(Refusal::NotAMember(reason)));
+    }
+    // The link hands the frame to its own reader, which follows it into the
+    // workspace's copy as it follows any link's frame: one admission, one
+    // follow, one notice to whoever follows the workspace's records.
+    link.admit_one(author, message).await;
+    Ok(op.map(|op| Envelope::Committed {
+        workspace_id,
+        op,
+        seq: crate::workspace_documents::host_order(),
+    }))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per envelope kind: the dispatcher is a table, read top to bottom"
-)]
+fn not_on_a_session(kind: &str) -> PeerError {
+    PeerError::Protocol(format!(
+        "{kind}: a workspace's records travel over the device link, not a session"
+    ))
+}
+
 pub(super) async fn handle_envelope(
     peer: &AuthenticatedPeer,
     env: Envelope,
     session: &SessionCtx<'_>,
     subscribed: &mut Vec<WorkspaceId>,
-    replay: &mut Option<(WorkspaceId, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
-    answer: &mut Vec<Envelope>,
 ) -> Result<Option<Envelope>, PeerError> {
     match env {
         Envelope::Subscribe { workspace_id } => {
-            handle_subscribe(
-                peer,
-                session,
-                subscribed,
-                replay,
-                workspace_id,
-                Subscription::Whole,
-            )
-            .await
-        }
-        Envelope::SubscribeFrom {
-            workspace_id,
-            position,
-        } => {
-            handle_subscribe(
-                peer,
-                session,
-                subscribed,
-                replay,
-                workspace_id,
-                Subscription::From(position),
-            )
-            .await
+            handle_subscribe(peer, session, subscribed, workspace_id).await
         }
         Envelope::Unsubscribe { workspace_id } => {
             handle_unsubscribe(peer, session, subscribed, workspace_id).await
         }
-        env @ Envelope::Delta { .. } => handle_delta(peer, session, subscribed, env).await,
+        env @ (Envelope::Delta { .. } | Envelope::Commit { .. }) => {
+            handle_session_write(peer, session, env).await
+        }
+        env @ Envelope::OpenDocument { .. } => {
+            handle_open_document(peer, session, subscribed, env).await
+        }
+        env @ (Envelope::SubscribeFrom { .. }
+        | Envelope::CompactVolunteer { .. }
+        | Envelope::Compacted { .. }
+        | Envelope::PeerServerHello { .. }) => Err(not_on_a_session(env.kind())),
         env @ Envelope::Presence { .. } => {
             handle_presence(peer, session, subscribed, env).await
         }
         env @ Envelope::DocumentContentWant { .. } => {
             handle_content_want(peer, session, subscribed, env).await
         }
-        Envelope::PeerServerHello { hosted_workspaces } => {
-            handle_host_hello(peer, session, hosted_workspaces).await
-        }
-        Envelope::SyncRequest {
-            workspace_id,
-            have_heads,
-        } => handle_sync_request(peer, session, workspace_id, have_heads).await,
         Envelope::Ping => Ok(Some(Envelope::Pong)),
         Envelope::RemoteAction {
             workspace_id,
@@ -127,19 +171,11 @@ pub(super) async fn handle_envelope(
             route_document_content(peer, session, subscribed, env).await;
             Ok(None)
         }
-        env @ Envelope::Commit { .. } => handle_commit(peer, session, subscribed, env).await,
-        env @ (Envelope::CompactVolunteer { .. } | Envelope::Compacted { .. }) => {
-            handle_compaction(peer, session, subscribed, env).await;
-            Ok(None)
-        }
         env @ (Envelope::VoiceCall { .. }
         | Envelope::VoiceJoin { .. }
         | Envelope::VoiceLeave { .. }
         | Envelope::VoiceShow { .. }
         | Envelope::VoiceCalls { .. }) => handle_voice(peer, session, subscribed, env).await,
-        env @ Envelope::OpenDocument { .. } => {
-            handle_open_document(peer, session, subscribed, env, answer).await
-        }
         Envelope::LiveJoin { workspace_id } => {
             handle_live_join(peer, session, subscribed, workspace_id).await
         }
@@ -156,15 +192,15 @@ pub(super) async fn handle_envelope(
                 peer, session, subscribed, request_id, &label,
             )))
         }
-        Envelope::KeyFollower => {
-            session
-                .channel_reader
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            Ok(None)
-        }
-        // Envelopes the server only *sends*, never receives; ignore
-        // silently so a peer bug doesn't wedge the connection.
-        Envelope::CompactRequest { .. }
+        // A device that only follows its channel groups said so to a host
+        // that replayed it records; it is no different from any other here.
+        Envelope::KeyFollower
+        // Envelopes the server only *sends*, never receives, and an ask for a
+        // workspace's state on a session, which reaches a device over its link
+        // to the workspace instead: ignore silently so a peer bug doesn't wedge
+        // the connection, and a client still asking reads on.
+        | Envelope::SyncRequest { .. }
+        | Envelope::CompactRequest { .. }
         | Envelope::Ready { .. }
         | Envelope::NotAuthorised { .. }
         | Envelope::Pong

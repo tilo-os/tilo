@@ -1639,19 +1639,6 @@ impl Checker<'_> {
         {
             return self.invoke_made_from(recv, args, span);
         }
-        // `workspace.leases.get(key)`: a field of the workspace's own resource, asked of it as
-        // of any record.
-        if let ExprKind::Field { base, name: fname } = &recv.kind
-            && self.names_platform(base)
-            && matches!(&base.kind, ExprKind::Ident(n) if n == "workspace")
-            && let Some(b) = self.workspace_root(&fname.name)
-        {
-            if let Some((key, f)) = self.container_field(&b, fname) {
-                return self.container_method(b, &key, &f, name, args, span);
-            }
-            let r = self.field_read(b, fname);
-            return self.value_method(r, name, args, span);
-        }
         // `a.items.insert(x)` needs the record and the field, not the field's value.
         if let ExprKind::Field { base, name: fname } = &recv.kind
             && !self.names_import(base)
@@ -2483,22 +2470,6 @@ impl Checker<'_> {
             (Ty::Actor, "kind") if args.is_empty() => {
                 Ex::host(Imp::ActorKind, vec![r], Ty::Choice("actor_kind"))
             }
-            // The device that signed for the invoker of this invocation, by its public key in
-            // lowercase hex: what a lease names its holder by (`workspace.leases`). Only the
-            // invoker has one: a member is a person, not one of their devices.
-            (Ty::Actor, "device") if args.is_empty() => {
-                if matches!(r.kind, Ek::Host(Imp::Invoker, _)) {
-                    Ex::host(Imp::InvokerDevice, vec![], Ty::Text)
-                } else {
-                    self.err(
-                        "E027",
-                        name.span,
-                        "`device` is the device that signed for this invocation, so only \
-                         `invoker.device()` reads one: another actor is a person, not a device",
-                    );
-                    Ex::error()
-                }
-            }
             (Ty::Actor, "role") if args.is_empty() => {
                 Ex::host(Imp::ActorRole, vec![r], Ty::Option(Box::new(Ty::Text)))
             }
@@ -2634,7 +2605,7 @@ impl Checker<'_> {
             (other, _) => {
                 let t = self.show(other);
                 let known = match other {
-                    Ty::Actor => "name, kind, role, device".to_owned(),
+                    Ty::Actor => "name, kind, role".to_owned(),
                     Ty::Action => "then, made_from".to_owned(),
                     other => super::methods::described(other),
                 };

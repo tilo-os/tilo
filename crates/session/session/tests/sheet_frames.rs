@@ -50,11 +50,7 @@ fn snapshot(session: &mut Session, socket: &Path, path: &Path) -> image::RgbaIma
         socket,
         &json!({"op": "snapshot", "path": path.to_str().unwrap()}),
     );
-    assert_eq!(
-        answer,
-        json!({"ok": {"frame": 0, "locked": false}}),
-        "{answer}"
-    );
+    assert_eq!(answer, json!({"ok": {"frame": 0}}), "{answer}");
     image::open(path).expect("a PNG").into_rgba8()
 }
 

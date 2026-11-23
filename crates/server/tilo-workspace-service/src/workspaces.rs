@@ -30,15 +30,12 @@ mod appended;
 mod applications;
 mod authored;
 mod authority;
-mod bootstrap;
 mod branch;
 mod moderation_history;
 pub use branch::{BranchContent, BranchFileKeys, Branched};
 mod channel_governance;
-mod commit;
-mod mcp_server;
-pub(crate) use bootstrap::member_bootstrap;
 mod collaboration;
+mod commit;
 mod content;
 mod creating;
 mod delete;
@@ -46,12 +43,12 @@ mod delete;
 pub mod fixtures;
 mod genesis;
 mod machines;
+mod mcp_server;
 pub use machines::WorkspaceMachines;
 mod names;
 pub use names::PersonNames;
 mod surfaces;
 pub use content::{ContentKeeper, WholeDocuments, WorkspaceContent};
-mod desktop_writes;
 mod device_actions;
 mod follow;
 mod founding;
@@ -61,29 +58,25 @@ mod work_tests;
 pub use follow::ResourceWrite;
 #[cfg(test)]
 mod device_rejoin_tests;
-#[cfg(test)]
-mod hard_stop_tests;
+mod holding;
 #[cfg(test)]
 mod returning_person_tests;
-pub(crate) use desktop_writes::writes_desktop;
-mod holding;
 pub(crate) use holding::{HostWorkspaceRequest, decode_hex, owner, work_takes};
+mod links;
 mod member;
 pub use member::{AdmittedWrite, MemberDevice, MemberMaterial};
 mod run_admission;
 pub use run_admission::{Refusal, SessionAdmission};
+mod carried;
 mod host_invitations;
 mod hosts;
-mod link_follow;
-mod session_carry;
-pub(crate) use link_follow::carry_admitted;
-mod carried;
 use carried::Carried;
 mod clock;
 pub(crate) use clock::system_time;
 mod delegated_work;
 mod listing;
 mod memberships;
+mod opened_records;
 mod own;
 mod ownership;
 #[cfg(not(target_arch = "wasm32"))]
@@ -158,10 +151,7 @@ use publication::{Change, SinceBase, starts_over, withdraws};
 #[cfg(test)]
 use publication::{MAX_PUBLICATION_TAIL, MIN_PUBLICATION_TAIL_BYTES, based};
 mod document_format;
-mod publisher;
 mod record_authority;
-#[cfg(feature = "agents")]
-pub mod repaired_documents;
 mod resources;
 #[cfg(feature = "agents")]
 pub use resources::RecordFailure;
@@ -208,9 +198,6 @@ mod wait_list;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-// The tests below take it from here, as they take the rest they read.
-#[cfg(test)]
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_peer_state::store::{Appetite, Store as LinkStore};
@@ -234,9 +221,7 @@ pub use collaboration::{AddMemberRequest, CollaborationError, GovernanceCompleti
 pub use listing::EntryRefusal;
 pub use pages::PreAdmitRequest;
 use tilo_server_protocol::WorkspaceId;
-pub use wait_list::{
-    Mailbox, SealedInvitations, Secrets as WaitListSecrets, WaitListMail, WaitListed,
-};
+pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListMail, WaitListed};
 
 // The administration vocabulary (the actions' names and answers), under the
 // daemon's historic paths.
@@ -258,8 +243,6 @@ const DOCUMENT_VERSION: u32 = 5;
 /// through to the workspace file. A hard stop loses at most these; replaying
 /// what the server retains brings them back.
 const KEEP_FOLLOWED: Duration = Duration::from_secs(1);
-/// Record writes the workspace authority has yet to look at, per workspace.
-const DOCUMENT_NOTICES: usize = 256;
 
 /// One governance message this workspace has published, in publication order.
 /// Its bytes are shared by every copy of the record, so the workspace file's
@@ -337,9 +320,6 @@ struct GovernedWorkspace {
     /// Whom moderation removed, and when: the public entry keeps them out for
     /// the day.
     removals: removals::Removals,
-    /// Admits the governance each settle retains to the host's order, after
-    /// the workspace's lock is released.
-    publisher: Arc<publisher::WorkspacePublisher>,
     /// Member writes to follow before compacting a sealed record history
     /// again, after a compaction failed: each attempt opens and merges the
     /// whole history.
@@ -351,11 +331,6 @@ struct GovernedWorkspace {
         )
     )]
     compaction_wait: usize,
-    /// The workspace's shared desktop as members' writes of it are decided,
-    /// followed from the first such write ([`desktop_writes`]).
-    desktop: Option<tilo_desktop_model::shared_resource::guard::DesktopGuard>,
-    /// The segments of members' larger desktop writes, until each is whole.
-    desktop_segments: collab_types::DocumentReassembler,
     /// Members' writes the governor took in that the workspace file lacks.
     unkept: bool,
     /// Whether writing them through is due already ([`Workspaces::keep_soon`]).
@@ -366,10 +341,6 @@ struct GovernedWorkspace {
     /// ([`Workspaces::join_soon`]).
     #[cfg(feature = "device-keys")]
     asking: std::collections::BTreeSet<(String, String)>,
-    /// The workspace's document started over from a base at an admission, and
-    /// what the server retains of it from before is still to be archived,
-    /// ahead of the base's publication ([`Workspaces::settle`]).
-    rebased: bool,
     /// Whether something the workspace published since its document last
     /// started over overwrote or deleted a value ([`withdraws`]): a shared
     /// window closed, a member removed, a name changed. A newcomer replayed
@@ -448,11 +419,18 @@ impl GovernedWorkspace {
                 )
             })?;
         let mut parts = peer_parts::PeerParts::open(&path)?;
-        let (publications, published) =
+        let (mut publications, published) =
             appended::Appended::open(&path, PUBLICATIONS, stored.filed_publications)?;
         let (receipts, receipted) =
             appended::Appended::open(&path, RECEIPTS, stored.filed_receipts)?;
-        let record = WorkspaceDocumentEntry::read(stored, published, receipted);
+        let mut record = WorkspaceDocumentEntry::read(stored, published, receipted);
+        // Publications an earlier build kept in its layout are written again in today's with the
+        // record, the publications file whole, so no later start reads the older one.
+        let republished = publication::brought_up(&mut record.outgoing)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if republished {
+            publications.unsure();
+        }
         // The record names the workspace's owner, a fact of its membership
         // that every holder keeps as it was handed over; the device opening
         // it only writes what this host changes, and is never taken for the
@@ -495,9 +473,11 @@ impl GovernedWorkspace {
             Self::assemble(record, peer, path, parts, (publications, receipts), device)?;
         if let Some(today) = today {
             workspace.record.peer = today;
+        }
+        if older || republished {
             workspace
                 .persist()
-                .map_err(|error| format!("peer state written again in today's layout: {error}"))?;
+                .map_err(|error| format!("workspace written again in today's layout: {error}"))?;
         }
         Ok(workspace)
     }
@@ -535,15 +515,11 @@ impl GovernedWorkspace {
             member: member::member_of(&path),
             path,
             device: device.cloned(),
-            publisher: Arc::default(),
             compaction_wait: 0,
-            desktop: None,
-            desktop_segments: collab_types::DocumentReassembler::default(),
             unkept: false,
             keeping: false,
             #[cfg(feature = "device-keys")]
             asking: std::collections::BTreeSet::new(),
-            rebased: false,
             since_base: SinceBase::Withdrew,
             published_heads,
             holders: holding::Holders::default(),
@@ -599,12 +575,7 @@ impl GovernedWorkspace {
     /// join receipts added since the last write are appended to their files
     /// first.
     fn file_write(&mut self) -> Result<peer_parts::FileWrite, String> {
-        // What the publisher could not admit is not published yet, whatever
-        // `published` says until the next settle takes the failure back.
-        let published = match self.publisher.unretained_from() {
-            Some(first) if first < self.record.published => first,
-            _ => self.record.published,
-        };
+        let published = self.record.published;
         let log = &self.record.collaboration;
         let filed_publications = self.publications.file(&self.record.outgoing)?;
         let filed_receipts = self.receipts.file(&log.join_completions)?;
@@ -825,7 +796,6 @@ impl GovernedWorkspace {
                 || (self.since_base == SinceBase::Withdrew
                     && !member_roots(&candidate, now).is_subset(&member_roots(replica, now))));
         let mut since_base = self.since_base;
-        let mut rebased = false;
         if started_over || adopted {
             // Keep unchanged record checkpoints on their own channels; replacing
             // those baselines could discard member writes. A record changed by
@@ -833,10 +803,8 @@ impl GovernedWorkspace {
             let changed_documents = changed_records(&candidate, replica, (key, now), generation)?;
             // The workspace's document starts over from a base holding its
             // state as it stands, with none of the history that led there.
-            if adopted {
-                rebased = true;
-            } else {
-                rebased = candidate.rebase_workspace()?;
+            if !adopted {
+                candidate.rebase_workspace()?;
             }
             since_base = SinceBase::Added;
             record.outgoing = base_publications(
@@ -876,7 +844,6 @@ impl GovernedWorkspace {
         }
         self.published_heads = candidate.workspace_heads();
         *replica = candidate;
-        self.rebased |= rebased;
         self.since_base = since_base;
         crate::timing::event(
             "workspace.governance_commit",
@@ -944,17 +911,18 @@ const RELEASED: &str = "released";
 pub(crate) struct WorkspaceServices {
     pub(crate) workspaces: WorkspaceRegistry,
     pub(crate) access: crate::service::GovernedAccessWriter,
-    pub(crate) records: crate::workspace_documents::WorkspaceDocuments,
     pub(crate) endpoint: iroh::Endpoint,
     pub(crate) cert: DeviceCert,
     pub(crate) key: SigningKey,
     pub(crate) revocations: Arc<std::sync::RwLock<RevocationList>>,
-    /// The host's metrics, which the sessions it dials count in too.
-    pub(crate) metrics: Arc<crate::metrics::Metrics>,
     /// Pre-admissions each workspace keeps, spent ones included.
     pub(crate) max_pre_admissions: usize,
-    /// The live handshake trust policy, for [`crate::workspace_access::decide`]
-    /// and for what a host holding a workspace with this one carries.
+    /// The live handshake trust policy, which an admission is decided with
+    /// ([`crate::workspace_access::decide`]).
+    #[cfg_attr(
+        not(any(feature = "agents", test)),
+        expect(dead_code, reason = "only a host with agents of its own decides")
+    )]
     pub(crate) trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     /// Agent delegations, for [`crate::workspace_access::decide`] and for
     /// refusing an agent the administration only a person holds.
@@ -970,9 +938,6 @@ pub(crate) struct WorkspaceServices {
     /// What this keeper says of itself among the holders of the workspaces it serves, which
     /// its signed address carries.
     pub(crate) holder: Arc<std::sync::RwLock<HolderClaim>>,
-    /// Each device whose session to this host authenticated: a host it
-    /// dials and could not reach is dialled again then.
-    pub(crate) arrivals: crate::attach::Arrivals,
     /// The channel service of the device this host runs on, when the
     /// embedder runs one: the host seals and opens the records of the
     /// workspaces it governs with its keys and admits nobody.
@@ -1019,6 +984,8 @@ struct WorkspacesInner {
     /// The direct links of the workspaces governed here, one per workspace,
     /// answering a device's dial by the workspace it names.
     direct: tilo_peer_state::direct::Serving,
+    /// What the workspaces kept here hold, read and written in process.
+    records: crate::workspace_documents::WorkspaceDocuments,
     /// The member copies this device holds ([`member`]).
     member: member::Members,
     /// The runs admitted to this service's workspaces, whose calls are
@@ -1080,6 +1047,9 @@ struct WorkspacesInner {
     person_names: std::sync::RwLock<Option<Arc<dyn PersonNames>>>,
     /// Each record write of a member the governor's copy took in.
     document_writes: tokio::sync::broadcast::Sender<ResourceWrite>,
+    /// The records sessions opened, and where a write of one goes
+    /// ([`opened_records`]).
+    opened_records: opened_records::OpenedRecords,
     /// Moves whenever a person's own settings kept here — their mail
     /// accounts — changed, so a window following them reads them again
     /// ([`person_settings`]).
@@ -1103,11 +1073,6 @@ struct WorkspacesInner {
     /// ([`person_telling`]).
     #[cfg(not(target_arch = "wasm32"))]
     telling: person_telling::Telling,
-    /// What the changes a record's repair kept wait for, by record, so a
-    /// member's write to it is only tried against them when it could release
-    /// one ([`repaired_documents`]).
-    #[cfg(feature = "agents")]
-    repairs: repaired_documents::Repairs,
     /// What members asking for content are answered from.
     content: content::ContentSlot,
     /// Channel access requests and commits of members waiting for the device's
@@ -1119,9 +1084,6 @@ struct WorkspacesInner {
     /// Those waiting for their workspace's next write of the changes it staged,
     /// by workspace.
     queued_writes: std::sync::Mutex<HashMap<String, Vec<collaboration::Written>>>,
-    /// Linked members' writes on their way to the server's sessions, each
-    /// workspace's in order, each tried until it lands.
-    session_carriers: session_carry::SessionCarriers,
     /// How many members' windows each workspace could not take in because they
     /// build on history it no longer has
     /// ([`unbuildable_windows::missing_history`]), by workspace.
@@ -1129,9 +1091,6 @@ struct WorkspacesInner {
     /// When each workspace was last written to, and a ping after each entry
     /// that changed: the directory's own, beside the entries' governance.
     directory: listing::Directory,
-    /// Whether the records its workspaces hold in the clear are sealed: only once
-    /// the host's operator decided it (the server's `reseal`).
-    resealing: std::sync::atomic::AtomicBool,
     /// The entry's wait list, once whoever runs the server offers one
     /// ([`Workspaces::offer_wait_list`], [`Workspaces::mail_wait_list`]).
     entry: wait_list::EntrySettings,
@@ -1192,15 +1151,12 @@ pub struct MemberMark {
     pub banned: bool,
 }
 
-/// What [`Workspaces::refound_document`] did: which record was founded again,
-/// and how many retained entries its old history took to the archive.
+/// What [`Workspaces::refound_document`] did: which record was founded again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(feature = "agents")]
 pub struct Refounded {
     pub app: String,
     pub record: String,
-    /// Entries archived off the channel, beside the replay and never deleted.
-    pub archived: usize,
 }
 
 /// The authority governing one workspace, as the workspace's governance refers to it.
@@ -1262,6 +1218,28 @@ fn only_a_notice(message: &neighbour_wire::NeighbourMsg) -> bool {
 }
 
 impl Workspaces {
+    /// What the workspaces kept here hold, read and written in process: what
+    /// a service the embedder runs beside them reads and writes through.
+    #[must_use]
+    pub fn documents(&self) -> crate::workspace_documents::WorkspaceDocuments {
+        self.inner.records.clone()
+    }
+
+    /// The direct links of the workspaces governed here, as the host's own
+    /// device: a member device of a workspace syncs with it here, and catches
+    /// up from the history the host keeps.
+    #[must_use]
+    pub fn direct(&self) -> tilo_peer_state::direct::Serving {
+        self.inner.direct.clone()
+    }
+
+    /// In-process access to the records of the workspaces this host keeps, for
+    /// a service embedded in the host process.
+    #[must_use]
+    pub fn workspace_documents(&self) -> crate::workspace_documents::WorkspaceDocuments {
+        self.inner.records.clone()
+    }
+
     /// The address this device answers at, as its endpoint has it now.
     pub(super) fn endpoint_addr(&self) -> iroh_base::EndpointAddr {
         self.inner.host.endpoint.addr()
@@ -1339,6 +1317,10 @@ impl Workspaces {
     }
 
     /// Open every workspace recorded under `dir` and bind each to the server, pinned.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "opening a workspace walks every step of its state in order"
+    )]
     pub(crate) async fn open(
         host: WorkspaceServices,
         dir: PathBuf,
@@ -1353,6 +1335,21 @@ impl Workspaces {
             device_actions::action_service(Arc::clone(&workspaces), host.key.clone());
         let store =
             LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;
+        // What a host from before the device store kept in its own store of
+        // changes moves into this one, once, before any workspace is served.
+        if let Some(state_root) = dir.parent() {
+            crate::history_move::move_into_store(state_root, &store)?;
+        }
+        let store = Arc::new(store);
+        let direct = tilo_peer_state::direct::Serving::new();
+        let records = crate::workspace_documents::WorkspaceDocuments::new(
+            host.workspaces.clone(),
+            Arc::clone(&store),
+            direct.clone(),
+            host.cert.device_public_key,
+            host.cert.user_public_key,
+            host.key.clone(),
+        );
         #[cfg(not(target_arch = "wasm32"))]
         let models = Arc::new(person_model::Models::new());
         let this = Self {
@@ -1362,8 +1359,9 @@ impl Workspaces {
                 #[cfg(any(test, feature = "test-support"))]
                 speaks_no_catch_up: std::sync::atomic::AtomicBool::new(false),
                 draining: std::sync::atomic::AtomicBool::new(false),
-                store: Arc::new(store),
-                direct: tilo_peer_state::direct::Serving::new(),
+                store,
+                direct,
+                records,
                 member: member::Members::default(),
                 executions: Arc::new(run_admission::ExecutionPins::new()),
                 dir: dir.clone(),
@@ -1383,6 +1381,7 @@ impl Workspaces {
                 machines: std::sync::RwLock::default(),
                 person_names: std::sync::RwLock::default(),
                 document_writes: tokio::sync::broadcast::channel(256).0,
+                opened_records: opened_records::OpenedRecords::default(),
                 person_settings_moved: tokio::sync::watch::channel(0).0,
                 #[cfg(not(target_arch = "wasm32"))]
                 models: Arc::clone(&models),
@@ -1394,16 +1393,12 @@ impl Workspaces {
                 mail_watches: mail_watch::MailWatches::default(),
                 #[cfg(not(target_arch = "wasm32"))]
                 telling: person_telling::Telling::default(),
-                #[cfg(feature = "agents")]
-                repairs: repaired_documents::Repairs::default(),
                 content: content::ContentSlot::default(),
                 channel_notices: std::sync::Mutex::default(),
                 queued_admissions: std::sync::Mutex::default(),
                 queued_writes: std::sync::Mutex::default(),
-                session_carriers: session_carry::SessionCarriers::default(),
                 unbuildable_windows: std::sync::Mutex::default(),
                 directory: listing::Directory::default(),
-                resealing: std::sync::atomic::AtomicBool::new(false),
                 host,
                 entry: wait_list::EntrySettings::default(),
                 releasing: AsyncMutex::new(()),
@@ -1474,7 +1469,6 @@ impl Workspaces {
             if let Err(error) = self.hand_kept_workspace_over(&mut workspace).await {
                 tracing::error!(workspace = %workspace.workspace(), %error, "a workspace this host keeps for a person was not handed to them");
             }
-            Box::pin(self.keep_link_history(workspace.workspace(), workspace.workspace_id())).await;
             self.recall(&mut workspace)
                 .await
                 .map_err(|e| format!("recall: {e}"))?;
@@ -1501,8 +1495,6 @@ impl Workspaces {
         // The servers the person's document names hold the workspaces it
         // says they do, on every device of theirs that holds it.
         self.follow_servers();
-        #[cfg(feature = "agents")]
-        self.follow_repaired_documents();
     }
 
     /// Stop taking work under leases until this process ends: the server is
@@ -1557,10 +1549,8 @@ impl Workspaces {
         self.inner.workspaces.lock().await.remove(workspace);
         self.inner.readings.forget(workspace);
         self.inner.direct.release(governed.workspace_id());
-        // Its sessions to the other holders end with it, and what it was
-        // publishing lands before what this host served of it goes.
+        // Its sessions to the other holders end with it.
         drop(std::mem::take(&mut governed.holders));
-        Arc::clone(&governed.publisher).flushed().await;
         self.stop_serving(governed.workspace_id()).await?;
         tracing::info!(%workspace, workspace_id = %governed.workspace_id(), "governed workspace released");
         // Nobody lists a workspace this host governs no longer.
@@ -1680,12 +1670,6 @@ impl Workspaces {
         &self.inner.host.cert
     }
 
-    /// The work this device takes: whether it runs its workspaces' agents among it.
-    #[must_use]
-    pub fn work(&self) -> &tilo_server_protocol::WorkSetting {
-        &self.inner.host.work
-    }
-
     /// Whether this server's own person governs `governed`: they own it, or
     /// its governance keeps them as an administrator of a workspace that is
     /// no person's own here. A workspace a deployment handed to its owner is
@@ -1741,6 +1725,13 @@ impl Workspaces {
     /// [`takes_turn`](crate::work::takes_turn)'s to say, live, each time.
     pub fn run_jobs(&self, jobs: Arc<dyn crate::work::HostJobs>) {
         self.inner.jobs.serve(jobs);
+    }
+
+    /// Take the Linux turns of this device's workspaces' devices on `linux`
+    /// ([`crate::work::Turn::Linux`]): a workspace's shell commands, terminals,
+    /// machine and Browser.
+    pub fn run_linux(&self, linux: Arc<dyn crate::work::HostLinux>) {
+        self.inner.jobs.serve_linux(linux);
     }
 
     /// Answer the workspaces' governance actions their member devices ask on the device action
@@ -2013,24 +2004,6 @@ impl Workspaces {
             .collect()
     }
 
-    /// The workspace-join contract's membership answer for `device`, a
-    /// device the workspace just admitted to subscribe ([`member_bootstrap`]).
-    pub(crate) async fn subscriber_bootstrap(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-    ) -> Option<(Vec<u8>, crate::peer::GovernanceCertificates)> {
-        let workspace = self.workspace(workspace).await.ok()?;
-        let workspace = workspace.lock().await;
-        member_bootstrap(
-            &workspace.peer(),
-            &workspace.record.owner,
-            workspace.workspace_id(),
-            workspace.record.generation,
-            device,
-        )
-    }
-
     async fn workspace(
         &self,
         workspace: &str,
@@ -2059,35 +2032,9 @@ impl Workspaces {
         let host = &self.inner.host;
         let workspace = governed.workspace().to_owned();
         let workspace_id = governed.workspace_id();
-        let open = host.workspaces.lock().await.contains_key(&workspace_id);
-        if !open {
-            let store = crate::store::WorkspaceStore::open_with_payloads(
-                host.access.state_root(),
-                workspace_id,
-                true,
-                host.access.shell_payloads().clone(),
-            )
-            .map_err(|error| error.to_string())?;
-            if store
-                .load_snapshot()
-                .map_err(|error| error.to_string())?
-                .is_none()
-            {
-                let baseline = governed
-                    .peer()
-                    .admitted_workspace()
-                    .ok_or("workspace governance missing")?
-                    .clone()
-                    .save();
-                store
-                    .save_snapshot(&baseline)
-                    .map_err(|error| error.to_string())?;
-            }
-        }
         let runtime_state = crate::workspace_io::get_or_initialize(
             &host.workspaces,
             host.access.state_root().to_path_buf(),
-            host.access.shell_payloads(),
             workspace_id,
             crate::workspace_access::AdmissionMode::Governed,
             crate::peer::MAX_HELD_WORKSPACES,
@@ -2095,8 +2042,6 @@ impl Workspaces {
         .await
         .map_err(|error| error.to_string())?;
         let mut runtime = runtime_state.lock().await;
-        let public = Self::entry_of(governed).is_listed();
-        runtime.store.set_documents_when_opened(public);
         // This server's authority serves the workspace: never auto-enrol,
         // even if the workspace was autobound before the authority took it.
         if std::mem::replace(
@@ -2114,42 +2059,26 @@ impl Workspaces {
             workspaces: Arc::downgrade(&self.inner),
             workspace: workspace.clone(),
         });
-        if runtime.governor_tap.is_none() {
-            let (tap, notices) = crate::workspace::governor_tap(DOCUMENT_NOTICES);
-            runtime.governor_tap = Some(tap);
-            self.follow(workspace, notices);
+        if !runtime.followed {
+            runtime.followed = true;
+            self.follow(workspace);
         }
         Ok(())
     }
 
-    /// Follow each record write a member makes, see [`Self::absorb`], and
-    /// replay what the server retains each time an app surface arrives: the
-    /// writes held for it, those let go past the held queue's bound
+    /// Replay what the device store keeps each time an app surface arrives:
+    /// the writes held for it, those let go past the held queue's bound
     /// included, are taken in then rather than when the next write lands.
-    fn follow(
-        &self,
-        workspace: String,
-        mut notices: tokio::sync::mpsc::Receiver<crate::workspace::GovernorNotice>,
-    ) {
+    fn follow(&self, workspace: String) {
         let workspaces = Arc::downgrade(&self.inner);
         let mut arrivals = crate::surfaces::arrivals();
         arrivals.mark_unchanged();
         tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    notice = notices.recv() => {
-                        let Some(crate::workspace::GovernorNotice { author, body, taken }) = notice else { break };
-                        let Some(inner) = workspaces.upgrade() else { break };
-                        if let Err(error) = (Self { inner }).absorb_kept(&workspace, author, &body).await {
-                            tracing::warn!(%workspace, author = %hex::encode(author), %error, "governed workspace did not follow a record write");
-                        }
-                        let _ = taken.send(());
-                    }
-                    Ok(()) = arrivals.changed() => {
-                        let Some(inner) = workspaces.upgrade() else { break };
-                        (Self { inner }).replay_soon(workspace.clone());
-                    }
-                }
+            while arrivals.changed().await.is_ok() {
+                let Some(inner) = workspaces.upgrade() else {
+                    break;
+                };
+                (Self { inner }).replay_soon(workspace.clone());
             }
         });
     }
@@ -2161,7 +2090,7 @@ impl Workspaces {
             return;
         };
         let workspace_id = state.lock().await.workspace_id();
-        let retained = match self.inner.host.records.retained_settled(workspace_id).await {
+        let retained = match self.inner.records.retained_settled(workspace_id) {
             Ok(retained) => retained,
             Err(error) => {
                 tracing::warn!(%workspace, %error, "governed workspace did not replay what its members wrote");
@@ -2289,22 +2218,11 @@ impl Workspaces {
         .map(|()| None)
     }
 
-    /// [`Self::absorb`] for `body`, a write the server already keeps: one a
-    /// member sent over its session, which the governor follows as it is kept.
-    async fn absorb_kept(
-        &self,
-        workspace: &str,
-        author: [u8; 32],
-        body: &[u8],
-    ) -> Result<(), String> {
-        self.absorb_carried(workspace, author, body, Carried::Kept)
-            .await
-    }
-
-    /// Take in the record write `body` of `author`, which reached the host
-    /// over the workspace's direct link: [`Self::absorb_carried`].
+    /// Take in the record write `body` of `author`, which the device store
+    /// keeps: it came over the workspace's link, or is replayed from the
+    /// store ([`Self::absorb_carried`]).
     async fn absorb(&self, workspace: &str, author: [u8; 32], body: &[u8]) -> Result<(), String> {
-        self.absorb_carried(workspace, author, body, Carried::Unkept)
+        self.absorb_carried(workspace, author, body, Carried::Kept)
             .await
     }
 
@@ -2381,7 +2299,7 @@ impl Workspaces {
             // refuses here is an error of the write, not a verdict to file for another device.
             // A member's reaches it as their driver's answer, filed where they read it.
             return match refused {
-                Some(reason) if author == host.cert.device_public_key => Err(reason),
+                Some(reason) if author == host.cert.device_public_key => Err(reason.to_string()),
                 _ => Ok(()),
             };
         }
@@ -2469,8 +2387,9 @@ impl Workspaces {
         )?;
         // The write that starts a document is told like every write after
         // it: an agent a person's first message asks is woken by it.
-        self.tell_followers(&workspace, author, (app_id, document_id), &message, false)
+        self.tell_followers(&workspace, author, &message, false)
             .await;
+        self.wrote_frame(workspace.workspace(), &message);
         self.settle(&mut workspace).await
     }
 
@@ -2617,50 +2536,37 @@ impl Workspaces {
     }
 
     /// Refound `record` of `app` from what the governor itself can still read,
-    /// when its retained history lost the base its deltas were written over.
+    /// when its kept history lost the base its deltas were written over.
     ///
-    /// A record whose retained checkpoint is gone while deltas over it remain
+    /// A record whose kept checkpoint is gone while deltas over it remain
     /// cannot be read by anyone: the governor's own reader meets changes whose
     /// history it lacks, and every device that joins afterwards is replayed a
     /// tail that builds on changes no frame carries. Nothing a member sends
     /// can repair it — a snapshot of the record as one device holds it is not
     /// the record's history — so the repair is the governor's own: it writes
     /// the record as it stands as the workspace's next checkpoint of the
-    /// record, which founds the route again for every device reading it.
-    ///
-    /// Nothing is deleted. What the channel retained until now is archived
-    /// ([`WorkspaceStore::archive_channel`]) under the retained directory,
-    /// beside the replay that is read, and out of it: an operator can go back
-    /// to it, and the history that made the record unreadable is kept where it
-    /// cannot stop the workspace being used.
+    /// record, which founds the route again for every device reading it. The
+    /// store keeps the frames before it, which a newer checkpoint covers.
     ///
     /// # Errors
     ///
     /// The workspace is not governed here, the record is not one the governor
     /// holds, or the new checkpoint could not be published.
     #[cfg(feature = "agents")]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace is read under one lock before the checkpoint is built from it"
+    )]
     pub async fn refound_document(
         &self,
         workspace: &str,
         app: &str,
         record: &str,
     ) -> Result<Refounded, CollaborationError> {
-        let governed = self.workspace(workspace).await?;
-        let workspace_id = governed.lock().await.workspace_id();
-        let hosted = self
-            .inner
-            .host
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace_id)
-            .cloned()
-            .ok_or_else(|| CollaborationError::new("the workspace is not hosted here"))?;
-        let channel = neighbour_wire::app_document_group(app, record);
         let state = self.workspace(workspace).await?;
         let now = tilo_clock::wall();
         let host = &self.inner.host;
-        let (readable, keys) = {
+        let keys = {
             let workspace = state.lock().await;
             if !workspace.peer().holds_document(app, record) {
                 return Err(CollaborationError::new("the record is not held here"));
@@ -2670,24 +2576,15 @@ impl Workspaces {
                 .await
                 .map_err(CollaborationError::new)?
                 .ok_or_else(|| CollaborationError::new("the record does not read"))?;
-            let keys = workspace.document_keys(app, record).await;
-            drop(workspace);
-            (readable, keys)
-        };
-        // Keep what the channel retained until now beside the replay: never
-        // deleted, never read by a device joining after this.
-        let archived =
-            crate::compaction::owner_run(&hosted, move |store| store.archive_channel(&channel))
+            let keys = workspace
+                .document_keys(app, record)
                 .await
                 .map_err(CollaborationError::new)?;
-        drop(hosted);
+            (readable, keys)
+        };
+        let (readable, sealed) = keys;
         let mut workspace = state.lock().await;
         let mut candidate = workspace.peer().clone();
-        let sealed = match keys {
-            Ok(Some(keys)) => Some(keys),
-            Ok(None) => None,
-            Err(error) => return Err(CollaborationError::new(error)),
-        };
         // The record as it reads, published as the workspace's next checkpoint
         // of the route: a whole record, sealed where the record is sealed,
         // admitted as this state's own write so the replay that follows
@@ -2708,18 +2605,15 @@ impl Workspaces {
         // The new checkpoint is what a device joining now is replayed: wait
         // for it to be admitted to the host's order and durable before the
         // operator is told the record reads again.
-        host.records.settled(workspace_id).await;
         tracing::warn!(
             workspace = %workspace.workspace(),
             %app,
             %record,
-            archived,
-            "a record whose base its history lost was refounded; its old history is archived"
+            "a record whose base its history lost was refounded"
         );
         Ok(Refounded {
             app: app.to_owned(),
             record: record.to_owned(),
-            archived,
         })
     }
 
@@ -2756,7 +2650,7 @@ impl Workspaces {
         message: neighbour_wire::NeighbourMsg,
         (app, record): (String, String),
         compact: bool,
-    ) -> Option<String> {
+    ) -> Option<tilo_peer_state::AdmissionError> {
         let following = crate::timing::start();
         // A sealed compaction this copy is behind in is taken as the record's base rather than
         // refused ([`GovernedWorkspace::follow_kept`]).
@@ -2769,6 +2663,10 @@ impl Workspaces {
             self.join_soon(workspace, app.clone(), record.clone());
             return followed.refused;
         }
+        // Joining the record's channel is what names its app and record, and
+        // only a build with device keys joins one.
+        #[cfg(not(feature = "device-keys"))]
+        let _ = (&app, &record);
         if followed.changed {
             self.landed(workspace, &message);
             self.keep_soon(workspace);
@@ -2792,20 +2690,21 @@ impl Workspaces {
         }
         #[cfg(not(feature = "device-keys"))]
         let _ = compact;
-        self.tell_followers(workspace, author, (app, record), &message, false)
+        self.tell_followers(workspace, author, &message, false)
             .await;
+        self.wrote_frame(workspace.workspace(), &message);
         followed.refused
     }
 
     /// File this device's verdict on the write `message` carried, which
-    /// admission refused because `reason`, and publish it as the workspace's
+    /// admission refused as `refusal` says, and publish it as the workspace's
     /// next governance: its author reads it live, and every member keeps it.
     /// Answers nothing about the write: that it did not land is the verdict.
     async fn file_refusal(
         &self,
         workspace: &mut GovernedWorkspace,
         message: &neighbour_wire::NeighbourMsg,
-        reason: &str,
+        refusal: &tilo_peer_state::AdmissionError,
     ) -> Result<(), String> {
         let host = &self.inner.host;
         let now = tilo_clock::wall();
@@ -2815,7 +2714,7 @@ impl Workspaces {
             |_, candidate| {
                 let filed = candidate
                     .workspace_mut()
-                    .refuse_write(&host.cert, message, reason, &host.key, now)?;
+                    .refuse_write(&host.cert, message, refusal, &host.key, now)?;
                 Ok((filed, filed))
             },
             |record, _| Ok(record.collaboration.clone()),
@@ -2824,43 +2723,6 @@ impl Workspaces {
             return Ok(());
         }
         self.settle(workspace).await
-    }
-
-    /// File this device's verdict on `body`, a message it refused because
-    /// `reason`, and publish it as the workspace's next governance: the
-    /// write's author reads it live or on catch-up, and every member keeps it.
-    /// A body that is no document write (a change to the workspace's topology,
-    /// say) names no app record and sequence for a verdict to join, and files
-    /// nothing.
-    ///
-    /// # Errors
-    /// Why the verdict was not filed, or `body` is not a message.
-    pub(crate) async fn publish_refusal(
-        &self,
-        workspace: &str,
-        body: &[u8],
-        reason: &str,
-    ) -> Result<(), String> {
-        let message: neighbour_wire::NeighbourMsg =
-            neighbour_wire::NeighbourMsg::decode(body).map_err(|error| error.to_string())?;
-        let neighbour_wire::NeighbourMsg::AppDocument { cluster_id, .. } = &message else {
-            return Ok(());
-        };
-        // A change names the workspace whose document it writes, and its verdict is filed there: it
-        // is the workspace whose document it refused, and the one its author's session reads the
-        // verdict in. A document of a workspace this server does not keep is filed where the change
-        // was sent instead, so no refusal of a write is left unfiled.
-        let target = if cluster_id != workspace && self.workspace(cluster_id).await.is_ok() {
-            cluster_id.as_str()
-        } else {
-            workspace
-        };
-        let state = self
-            .workspace(target)
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut governed = state.lock().await;
-        self.file_refusal(&mut governed, &message, reason).await
     }
 
     /// Forget this device's verdicts on the writes of `message`'s route up to
@@ -2919,15 +2781,10 @@ impl Workspaces {
     /// published, then re-derive its calls' key holders. Runs after each
     /// decision, before the decision is answered.
     ///
-    /// The changes are handed to the workspace's [`publisher::WorkspacePublisher`]
-    /// here, under the workspace's lock, in publication order, each with its
-    /// place reserved so that whoever reads the workspace's retention waits for
-    /// it. The publisher admits them to the host's order and waits for them
-    /// to be durable after the lock is released: the next decision waits
-    /// neither for workspace in the workspace owner's queue, which a crowd fills,
-    /// nor behind this one's disk writes (and every member write the host
-    /// queued before them). A change the publisher could not admit is
-    /// published again by the next settle.
+    /// The changes are kept at the device store and carried on the
+    /// workspace's link here, under the workspace's lock, in publication
+    /// order. A change that could not be kept is published again by the next
+    /// settle.
     async fn settle(&self, workspace: &mut GovernedWorkspace) -> Result<(), String> {
         let host = &self.inner.host;
         // A page's device certificate lasts an hour: the row it left goes with
@@ -2950,76 +2807,20 @@ impl Workspaces {
         // What the workspace keeps as keys its person revoked: refused with how to approve another,
         // and dropped from its access, so every caller is told what to do.
         let revoked = collaboration::revoked_keys(workspace);
-        let dropped = host
-            .access
+        host.access
             .replace(workspace.workspace_id(), access, revoked)
             .await
             .map_err(|error| error.to_string())?;
         crate::timing::event("workspace.settle.access", accessing, 0);
-        // A device the workspace no longer admits is sent to no one: what it
-        // retained to introduce itself goes, unless it brings a revocation
-        // this workspace holds nowhere else. Every newcomer is sent the
-        // revocations the workspace holds beside its governance, and the
-        // hellos that bring any other: a hello can be the only record of a
-        // revocation, of a device no workspace row lists, and forgetting it
-        // would let that device in again.
-        if !dropped.is_empty() {
-            let hosted = host
-                .workspaces
-                .lock()
-                .await
-                .get(&workspace.workspace_id())
-                .cloned();
-            if let Some(hosted) = hosted {
-                let held = workspace.peer().revocations();
-                let forgotten = crate::compaction::owner_run(&hosted, move |store| {
-                    let payloads = std::sync::Arc::clone(store.payloads());
-                    store.forget_hellos(&dropped, &|body| {
-                        payloads.identity(body).is_some_and(|(_, brought)| {
-                            brought.iter().any(|entry| !held.contains(entry))
-                        })
-                    })
-                })
-                .await?;
-                tracing::debug!(workspace = %workspace.workspace(), forgotten, "forgot the hellos of devices the workspace no longer admits");
-            }
-        }
         let settling = crate::timing::start();
-        let device_access = workspace.peer().governance().projection(&members, now)?;
+        let (device_access, _) = workspace.peer().governance().projection(&members, now)?;
         host.access
             .replace_access(workspace.workspace_id(), device_access)
             .await
             .map_err(|error| error.to_string())?;
         crate::timing::event("workspace.settle.device_access", settling, 0);
         let publishing = crate::timing::start();
-        let publisher = Arc::clone(&workspace.publisher);
-        if workspace.rebased {
-            publisher.flushed().await;
-            self.archive_workspace_history(workspace).await?;
-            workspace.rebased = false;
-        }
-        let epoch = publisher.reconcile(&mut workspace.record.published);
-        let workspace_id = workspace.workspace_id();
-        let (publications, unreadable) = workspace.unpublished(&host.records);
-        self.announce(workspace, &publications);
-        if let Err(error) = unreadable {
-            // What precedes it is still published, in order.
-            publisher.push(
-                &host.records,
-                workspace.workspace(),
-                workspace_id,
-                epoch,
-                publications,
-            );
-            return Err(error);
-        }
-        publisher.push(
-            &host.records,
-            workspace.workspace(),
-            workspace_id,
-            epoch,
-            publications,
-        );
+        workspace.publish(&self.inner.records)?;
         crate::timing::event("workspace.settle.publish", publishing, 0);
         let observing = crate::timing::start();
         self.observe_calls(workspace);
@@ -3027,29 +2828,6 @@ impl Workspaces {
         self.governance_moved(workspace);
         crate::timing::event("workspace.settle.observe", observing, 0);
         Ok(())
-    }
-
-    /// Hand the governance `workspace` just committed to its direct link: the
-    /// link carries it to the member devices it holds, and to this device's
-    /// own replica when the workspace is hosted here, so a member's device
-    /// follows a decision at once rather than at its next catch-up.
-    fn announce(&self, workspace: &GovernedWorkspace, publications: &[publisher::Publication]) {
-        if publications.is_empty() {
-            return;
-        }
-        let Some(link) = self.inner.direct.link(workspace.workspace_id()) else {
-            return;
-        };
-        for publication in publications {
-            match neighbour_wire::NeighbourMsg::decode(&publication.commit.body) {
-                Ok(message) => {
-                    if let Err(error) = link.send(message) {
-                        tracing::debug!(%error, "governance did not reach the workspace's links");
-                    }
-                }
-                Err(error) => tracing::warn!(%error, "a governance publication did not encode"),
-            }
-        }
     }
 
     /// Note `workspace`'s governance as it now stands, then tell whoever
@@ -3072,30 +2850,6 @@ impl Workspaces {
         let _ = self.inner.changes.send(name);
         // Whose workspaces those are changed: what their devices list.
         self.personal_changed();
-    }
-
-    /// Archive what the server retains of `workspace`'s document, once every
-    /// governance change published before is retained: the workspace starts over
-    /// from the base its next publication carries, and the history before it is
-    /// no newcomer's to read.
-    async fn archive_workspace_history(&self, workspace: &GovernedWorkspace) -> Result<(), String> {
-        let host = &self.inner.host;
-        let workspace_id = workspace.workspace_id();
-        let identity = workspace.workspace().to_owned();
-        host.records.settled(workspace_id).await;
-        let Some((channel, _)) =
-            neighbour_wire::retention(&workspace.peer().workspace_message(), true)
-        else {
-            return Err("the workspace's document has no retention channel".into());
-        };
-        let hosted = host.workspaces.lock().await.get(&workspace_id).cloned();
-        let workspace = hosted.ok_or("the workspace is not hosted here")?;
-        let archived =
-            crate::compaction::owner_run(&workspace, move |store| store.archive_channel(&channel))
-                .await?;
-        drop(workspace);
-        tracing::info!(workspace = %identity, archived, "the workspace's history before an admission is archived");
-        Ok(())
     }
 
     /// The revocations this host holds from its people's roots, as they stand now.

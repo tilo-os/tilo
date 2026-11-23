@@ -607,7 +607,6 @@ impl Workspaces {
             .workspace_id();
         let reached = self
             .inner
-            .host
             .records
             .host_presence(workspace_id, body.clone())
             .await?;

@@ -9,6 +9,13 @@
 # tools that unexpectedly require Rust shared libraries.
 set -euo pipefail
 
+# A cache in front of this wrapper (a t job's) asks the compiler it was handed
+# about itself with a bare flag and no compiler argument. Cargo never does: it
+# hands the real compiler first. Answer with the toolchain's rustc.
+if [[ $# -eq 0 || $1 == -* ]]; then
+    exec rustc "$@"
+fi
+
 compiler="$1"
 shift
 compiler_command=("$compiler")

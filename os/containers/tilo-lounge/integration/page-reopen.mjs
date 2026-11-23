@@ -15,6 +15,7 @@ import {execFileSync} from 'node:child_process';
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, pinnedCertificates, servedCertificate, sleep} from '../../../../tools/web/chrome.mjs';
+import {confirmRecoveryWords} from './waits.mjs';
 
 const [site, server, workspace, out] = process.argv.slice(2);
 if (!site || !server || !workspace || !out) {
@@ -82,6 +83,9 @@ try {
   // waits four minutes for it, as page-notes does, and presses the card's way
   // in once.
   for (let i = 0; i < 960; i++) {
+    // The person is founded on the way in: their 24 recovery words are shown
+    // once and hold the page until kept, so the card is confirmed as it comes.
+    await confirmRecoveryWords(tab);
     const seen = await tab.evaluate(`(() => {
       if (location.pathname.startsWith('/w/')) return 'handed';
       if (document.documentElement.dataset.arrival === 'stopped') return 'stopped';

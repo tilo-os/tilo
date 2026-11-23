@@ -231,8 +231,6 @@ pub struct Instance {
     /// The person's formats and language, as the session resolved them: what the instance writes
     /// its dates and clocks in, and the language its window reads every word in.
     pub locale: runtime_portal::process_link::Locale,
-    /// This device, by its public key in lowercase hex ([`InstanceRequest::device`]).
-    pub device: Option<String>,
 }
 
 /// How a process is started: the command for one on `runtime` and `app_runtime`, keeping `storage`
@@ -416,19 +414,12 @@ impl Processes {
         };
         let module_len = module.len() as u64;
         let module = tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?;
-        let documents_under = Some(
-            tilo_action_policy::earlier::held()
-                .documents_under(&instance.app)
-                .to_owned(),
-        )
-        .filter(|id| *id != instance.app);
         let request = InstanceRequest {
             app: instance.app.clone(),
             workspace: instance.workspace.clone(),
             instance: instance.instance,
             person: instance.person,
             module_len,
-            documents_under,
             // An instance with no patch connection draws nothing: it runs the app's actions for
             // whoever invokes them.
             shows: if instance.patch.is_some() {
@@ -452,7 +443,6 @@ impl Processes {
                 std::collections::BTreeMap::new()
             },
             access: instance.access,
-            device: instance.device,
         };
         let fds = InstanceFds {
             broker: instance.collaboration,

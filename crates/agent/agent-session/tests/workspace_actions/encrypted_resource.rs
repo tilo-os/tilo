@@ -99,12 +99,11 @@ async fn a_remote_encrypted_record_and_its_part_are_read_cold_after_a_host_resta
     for (_, mutation) in source.take_document_mutations().unwrap() {
         publisher.peer.write(part_route.clone(), &mutation).unwrap();
     }
-    publisher.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&publisher.peer.barrier().unwrap()).unwrap();
     let retained = hosted
         .server
         .workspace_documents()
         .retained(workspace.workspace_id)
-        .await
         .unwrap();
     assert!(
         retained.iter().any(|body| {

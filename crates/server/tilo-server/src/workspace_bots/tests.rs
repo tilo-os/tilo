@@ -3,15 +3,11 @@
     clippy::expect_used,
     reason = "in a test these are the assertion, not a hazard"
 )]
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "every test here keeps its server and workspace alive to the end"
-)]
 
 use tilo_moderation::{Case, JudgeError, Outcome, Verdict};
 
 use super::*;
-use crate::workspaces::fixtures::{governor, test_host_taking_part};
+use crate::workspaces::fixtures::{governor, test_host};
 use automerge::AutoCommit;
 use serde_json::Value;
 use tilo_action_policy::{Answer, KindSet, TreePath};
@@ -81,7 +77,7 @@ pub(super) async fn bot_server(
     // The native apps name their surfaces as the host first runs them.
     let _ = AppCatalogue::native();
     crate::surfaces::decide_receipt(&state.join("surfaces"));
-    test_host_taking_part(state, key, cert).await
+    test_host(state, key, cert).await
 }
 
 /// A new member of `workspace` of their own person, admitted through its entry

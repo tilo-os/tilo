@@ -43,10 +43,9 @@ struct StoredProjection {
     foreign: bool,
 }
 
-/// A grant the code defines and a policy gives back when it loads: a built-in role's, or the one
-/// each person holds for their own records.
+/// A grant the code defines and a policy gives back when it loads: a built-in role's.
 fn is_code_grant(grant: &tilo_action_policy::Grant) -> bool {
-    roles::is_role_grant(grant) || roles::is_person_record_grant(grant)
+    roles::is_role_grant(grant)
 }
 
 impl From<StoredProjection> for AppActionAuthorityProjection {

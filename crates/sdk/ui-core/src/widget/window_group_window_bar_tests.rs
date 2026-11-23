@@ -192,6 +192,11 @@ fn a_maximized_window_keeps_its_bar_above_its_content() {
 }
 
 fn lay_out_in_strip(g: &mut WindowGroup, theme: &Theme) {
+    lay_out_in_strip_of(g, theme, W, H - TOP);
+}
+
+/// Lay `g` out in a strip `width` by `height`, standing under the shell's bar.
+fn lay_out_in_strip_of(g: &mut WindowGroup, theme: &Theme, width: f64, height: f64) {
     let mut taffy = TaffyTree::<()>::new();
     let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = g.build_layout(&mut taffy, theme, &mut map);
@@ -199,8 +204,8 @@ fn lay_out_in_strip(g: &mut WindowGroup, theme: &Theme) {
         .new_with_children(
             Style {
                 size: Size {
-                    width: Dimension::length(f32_of_f64(W)),
-                    height: Dimension::length(f32_of_f64(H - TOP)),
+                    width: Dimension::length(f32_of_f64(width)),
+                    height: Dimension::length(f32_of_f64(height)),
                 },
                 ..Default::default()
             },
@@ -216,30 +221,38 @@ fn lay_out_in_strip(g: &mut WindowGroup, theme: &Theme) {
     g.apply_layout(&taffy, node, Point::new(0.0, TOP));
 }
 
+/// The shell's bar shown over a window takes its top: the window is the space below the bar,
+/// its top edge moved down by the bar's height and its bottom edge where the strip ends, so no
+/// edge of it leaves the screen, at a desktop's size and a phone's.
 #[test]
-fn the_shell_bar_shown_over_a_window_moves_it_down_whole() {
-    let mut theme = Theme::dark();
-    theme.reduce_motion = true;
-    let mut g = page_group();
-    lay_out_in_strip(&mut g, &theme);
-    let before = g.get_rect();
-    g.set_top_overlay_inset(TOP);
-    lay_out_in_strip(&mut g, &theme);
-    let after = g.get_rect();
-    assert!(
-        (after.y0 - (before.y0 + TOP)).abs() < 0.5,
-        "moved down by the shell bar: {before:?} to {after:?}"
-    );
-    assert!(
-        (after.height() - before.height()).abs() < 0.5,
-        "moved, not resized: {before:?} to {after:?}"
-    );
-    g.set_top_overlay_inset(0.0);
-    lay_out_in_strip(&mut g, &theme);
-    assert!(
-        (g.get_rect().y0 - before.y0).abs() < 0.5,
-        "and back up when it hides"
-    );
+fn the_shell_bar_shown_over_a_window_leaves_it_the_space_below() {
+    for (width, height) in [(W, H - TOP), (390.0, 844.0), (360.0, 640.0)] {
+        for mut theme in [Theme::light(), Theme::dark()] {
+            theme.reduce_motion = true;
+            let mut g = page_group();
+            lay_out_in_strip_of(&mut g, &theme, width, height);
+            let before = g.get_rect();
+            g.set_top_overlay_inset(TOP);
+            lay_out_in_strip_of(&mut g, &theme, width, height);
+            let after = g.get_rect();
+            assert!(
+                (after.y0 - (before.y0 + TOP)).abs() < 0.5,
+                "at {width}x{height} its top moves down by the shell bar: {before:?} to {after:?}"
+            );
+            assert!(
+                (after.y1 - before.y1).abs() < 0.5,
+                "at {width}x{height} its bottom edge stays on the screen, where the strip ends: \
+                 {before:?} to {after:?}"
+            );
+            g.set_top_overlay_inset(0.0);
+            lay_out_in_strip_of(&mut g, &theme, width, height);
+            assert!(
+                (g.get_rect().y0 - before.y0).abs() < 0.5
+                    && (g.get_rect().y1 - before.y1).abs() < 0.5,
+                "and it is whole again when the bar hides"
+            );
+        }
+    }
 }
 
 #[test]

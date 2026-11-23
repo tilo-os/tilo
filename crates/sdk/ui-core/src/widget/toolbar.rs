@@ -459,12 +459,6 @@ impl Toolbar {
         self.open_menu(false);
     }
 
-    pub fn open_command_menu(&mut self, index: usize) {
-        if self.is_shown(index) {
-            self.open_item_menu(index, false);
-        }
-    }
-
     pub fn shown_menu(&self) -> Option<(Option<usize>, &ContextMenu)> {
         if let Some((index, menu)) = &self.item_menu {
             return Some((Some(*index), menu));

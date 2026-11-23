@@ -23,6 +23,7 @@ use std::sync::Arc;
 use collab_types::signer::DeviceSigner;
 use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
+use tilo_peer_state::MissingPrerequisite;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::direct::{Answered, DirectSync, Kept};
@@ -31,37 +32,14 @@ use tilo_peer_state::join::{
     JoinTransportResponse, TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1, TransportHint,
 };
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
+use tilo_peer_state::owner::WriteRefusal;
 use tilo_peer_state::owner::session::hosted_by;
-use tilo_peer_state::owner_commit::{
-    CommitBinding, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest,
-};
+use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 use super::{GovernedWorkspace, Workspaces, appended, peer_parts};
-use crate::workspace_documents::{HostCommit, WorkspaceAdmission};
-
-/// An authenticated local write queued in the workspace's retention order.
-pub(super) struct LocalDocumentAdmission {
-    message: NeighbourMsg,
-    binding: CommitBinding,
-    aggregate_hash: [u8; 32],
-    admission: WorkspaceAdmission,
-}
-
-impl LocalDocumentAdmission {
-    pub(super) async fn durable(self) -> Result<(NeighbourMsg, OwnerCommitReceipt), String> {
-        let order = self.admission.durable().await?;
-        Ok((
-            self.message,
-            OwnerCommitReceipt {
-                binding: self.binding,
-                generation: order.max(1),
-                aggregate_hash: self.aggregate_hash,
-            },
-        ))
-    }
-}
+use crate::workspace_documents::HostCommit;
 
 /// The member copies a device holds: the links of the workspaces it joined,
 /// by workspace while each is up, and the device they act as.
@@ -968,17 +946,10 @@ impl Workspaces {
         }
         let device = self.member_identity()?;
         let body = commit.body.clone();
-        let admission = crate::timing::said_if_long(
-            "the member copy's order",
-            self.inner
-                .host
-                .records
-                .carry(workspace_id, device.device(), commit),
-        )
-        .await?;
-        let order =
-            crate::timing::said_if_long("the member copy keeping the write", admission.durable())
-                .await?;
+        let order = self
+            .inner
+            .records
+            .carry(workspace_id, device.device(), &commit)?;
         let message: NeighbourMsg =
             NeighbourMsg::decode(&body).map_err(|error| error.to_string())?;
         // This device's own write is this copy's from the moment it is made, as the engine's was:
@@ -1000,7 +971,7 @@ impl Workspaces {
         } = &message
         {
             // A member copy's own write tells whoever follows its records, as a served write does.
-            self.note_document_write(workspace, app_id, document_id);
+            self.wrote(workspace, app_id, document_id);
             // The frame's hash is what the serving device names its answer by; the write is
             // noted before it goes out, so an answer that comes back at once finds it.
             self.inner.member.note_served(
@@ -1284,14 +1255,10 @@ impl Workspaces {
             .into_iter()
             .next()
             .map(|message| {
-                let (channel, retention) = neighbour_wire::retention(&message, false)
+                neighbour_wire::retention(&message, false)
                     .ok_or_else(|| "the receipt carries no retention route".to_owned())?;
                 let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
-                Ok::<_, String>(HostCommit {
-                    body,
-                    channel,
-                    checkpoint: retention == neighbour_wire::Retention::Checkpoint,
-                })
+                Ok::<_, String>(HostCommit { body })
             })
             .transpose()?;
         // A receipt whose change produced nothing is one the workspace already
@@ -1312,14 +1279,16 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not held here, the request is not a document write of this device's, or
-    /// the write could not be kept.
+    /// [`WriteRefusal::Waiting`] while this device is still taking the workspace in (joining it,
+    /// or opening it as it starts): the same write is kept once it holds it. Otherwise the
+    /// request is not a document write of this device's, or the write could not be kept.
     pub async fn commit_local_document(
         &self,
         workspace: &str,
         request: OwnerCommitRequest,
-    ) -> Result<OwnerCommitReceipt, String> {
-        let workspace_id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
+    ) -> Result<OwnerCommitReceipt, WriteRefusal> {
+        let workspace_id = WorkspaceId::parse(workspace)
+            .ok_or_else(|| WriteRefusal::Refused(format!("{workspace} is not a workspace id")))?;
         let device = self.signing_device();
         let CommitOperation::Document {
             app,
@@ -1328,14 +1297,18 @@ impl Workspaces {
             readers,
         } = &request.operation
         else {
-            return Err("a local commit is a document write".into());
+            return Err(WriteRefusal::Refused(
+                "a local commit is a document write".into(),
+            ));
         };
         if envelope.author.as_bytes() != &device.device() {
-            return Err("the document's signer differs from this device".into());
+            return Err(WriteRefusal::Refused(
+                "the document's signer differs from this device".into(),
+            ));
         }
         let member = self.is_member(workspace).await?;
         if !member && self.governed_copy(workspace_id).await.is_none() {
-            return Err("this device holds no such workspace".into());
+            return Err(WriteRefusal::Waiting(MissingPrerequisite::Workspace));
         }
         let message = NeighbourMsg::AppDocument {
             peer: neighbour_wire::peer_handle(&device.device()),
@@ -1347,22 +1320,17 @@ impl Workspaces {
         };
         let binding = request.binding()?;
         if !member {
-            return self.commit_own_document(workspace, request).await;
+            return Ok(self.commit_own_document(workspace, request).await?);
         }
-        let Some((channel, retention)) = neighbour_wire::retention(&message, false) else {
-            return Err("the write carries no retention route".into());
-        };
+        if neighbour_wire::retention(&message, false).is_none() {
+            return Err(WriteRefusal::Refused(
+                "the write carries no retention route".into(),
+            ));
+        }
         let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
         let aggregate_hash = *blake3::hash(&body).as_bytes();
         let order = self
-            .commit_member_document(
-                workspace,
-                HostCommit {
-                    body,
-                    channel,
-                    checkpoint: retention == neighbour_wire::Retention::Checkpoint,
-                },
-            )
+            .commit_member_document(workspace, HostCommit { body })
             .await?;
         Ok(OwnerCommitReceipt {
             binding,
@@ -1393,34 +1361,21 @@ impl Workspaces {
         if self.governed_copy(workspace_id).await.is_none() {
             return Err("this workspace is not governed here".into());
         }
-        let (message, receipt) = self
-            .retain_local_document(workspace_id, device.device(), &request)
-            .await?;
+        let (message, receipt) =
+            self.retain_local_document(workspace_id, device.device(), &request)?;
         let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
         self.absorb(workspace, device.device(), &body).await?;
-        self.carry_to_links(workspace, device.device(), &message);
         Ok(receipt)
     }
 
-    /// Order and retain a locally drafted document, using its authenticated writer.
-    pub(super) async fn retain_local_document(
+    /// Keep a locally drafted document, using its authenticated writer, and
+    /// carry it on the workspace's link.
+    pub(super) fn retain_local_document(
         &self,
         workspace_id: WorkspaceId,
         author: [u8; 32],
         request: &OwnerCommitRequest,
     ) -> Result<(NeighbourMsg, OwnerCommitReceipt), String> {
-        self.enqueue_local_document(workspace_id, author, request)
-            .await?
-            .durable()
-            .await
-    }
-
-    pub(super) async fn enqueue_local_document(
-        &self,
-        workspace_id: WorkspaceId,
-        author: [u8; 32],
-        request: &OwnerCommitRequest,
-    ) -> Result<LocalDocumentAdmission, String> {
         let CommitOperation::Document {
             app,
             document: record,
@@ -1445,30 +1400,19 @@ impl Workspaces {
             readers: readers.clone(),
         };
         let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
-        let Some((route, retention)) = neighbour_wire::retention(&message, false) else {
-            return Err("the write carries no retention route".into());
-        };
         let aggregate_hash = *blake3::hash(&body).as_bytes();
-        let admission = self
+        let order = self
             .inner
-            .host
             .records
-            .carry(
-                workspace_id,
-                author,
-                HostCommit {
-                    body,
-                    channel: route,
-                    checkpoint: retention == neighbour_wire::Retention::Checkpoint,
-                },
-            )
-            .await?;
-        Ok(LocalDocumentAdmission {
+            .carry(workspace_id, author, &HostCommit { body })?;
+        Ok((
             message,
-            binding,
-            aggregate_hash,
-            admission,
-        })
+            OwnerCommitReceipt {
+                binding,
+                generation: order.max(1),
+                aggregate_hash,
+            },
+        ))
     }
 
     /// Write `command`, this device's own membership change (a lease it
@@ -1514,15 +1458,10 @@ impl Workspaces {
             .into_iter()
             .next()
             .ok_or("the membership change wrote nothing")?;
-        let (channel, retention) = neighbour_wire::retention(&message, false)
-            .ok_or("the write carries no retention route")?;
+        neighbour_wire::retention(&message, false).ok_or("the write carries no retention route")?;
         let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
         drop(governed);
-        Ok(HostCommit {
-            body,
-            channel,
-            checkpoint: retention == neighbour_wire::Retention::Checkpoint,
-        })
+        Ok(HostCommit { body })
     }
 
     /// Ticks true when `workspace`'s member copy is linked to the device
@@ -1721,35 +1660,9 @@ impl Workspaces {
     pub(super) async fn bind_member(&self, governed: &GovernedWorkspace) -> Result<(), String> {
         let services = &self.inner.host;
         let workspace_id = governed.workspace_id();
-        let open = services.workspaces.lock().await.contains_key(&workspace_id);
-        if !open {
-            let store = crate::store::WorkspaceStore::open_with_payloads(
-                services.access.state_root(),
-                workspace_id,
-                true,
-                services.access.shell_payloads().clone(),
-            )
-            .map_err(|error| error.to_string())?;
-            if store
-                .load_snapshot()
-                .map_err(|error| error.to_string())?
-                .is_none()
-            {
-                let baseline = governed
-                    .peer()
-                    .admitted_workspace()
-                    .ok_or("workspace governance missing")?
-                    .clone()
-                    .save();
-                store
-                    .save_snapshot(&baseline)
-                    .map_err(|error| error.to_string())?;
-            }
-        }
         let runtime_state = crate::workspace_io::get_or_initialize(
             &services.workspaces,
             services.access.state_root().to_path_buf(),
-            services.access.shell_payloads(),
             workspace_id,
             crate::workspace_access::AdmissionMode::Governed,
             crate::peer::MAX_HELD_WORKSPACES,
@@ -1896,13 +1809,7 @@ impl Workspaces {
             return;
         };
         let mut governed = state.lock().await;
-        let retained = match self
-            .inner
-            .host
-            .records
-            .retained(governed.workspace_id())
-            .await
-        {
+        let retained = match self.inner.records.retained(governed.workspace_id()) {
             Ok(retained) => retained,
             Err(error) => {
                 tracing::warn!(%workspace, %error, "a member copy did not read the writes it kept");
@@ -1928,7 +1835,7 @@ impl Workspaces {
                 continue;
             };
             // The keys may have made a kept record readable: whoever follows it is told.
-            self.note_document_write(workspace, app_id, document_id);
+            self.wrote(workspace, app_id, document_id);
             // A resource's document is the store's, which takes it in as it does at the copy's
             // start ([`Self::recall_member_resources`]).
             if collab_types::is_store_document(document_id) {
@@ -1945,14 +1852,8 @@ impl Workspaces {
                     .await
                     .changed;
             if taken {
-                self.tell_followers(
-                    &governed,
-                    frame.author,
-                    (app_id.clone(), document_id.clone()),
-                    &message,
-                    true,
-                )
-                .await;
+                self.tell_followers(&governed, frame.author, &message, true)
+                    .await;
                 took = true;
             }
         }
@@ -1967,12 +1868,7 @@ impl Workspaces {
         governed: &mut GovernedWorkspace,
         link: Option<&DirectSync>,
     ) -> Result<(), String> {
-        let retained = self
-            .inner
-            .host
-            .records
-            .retained(governed.workspace_id())
-            .await?;
+        let retained = self.inner.records.retained(governed.workspace_id())?;
         for frame in retained {
             let Ok(message) = NeighbourMsg::decode(&frame.body) else {
                 continue;
@@ -2105,9 +2001,9 @@ impl Workspaces {
         else {
             return Ok(());
         };
-        let Some((route, retention)) = neighbour_wire::retention(message, false) else {
+        if neighbour_wire::retention(message, false).is_none() {
             return Ok(());
-        };
+        }
         let state = self.workspace(workspace).await.map_err(|e| e.to_string())?;
         let mut governed = state.lock().await;
         // A write the copy's own receive refuses may still be a compaction the
@@ -2120,14 +2016,9 @@ impl Workspaces {
         // otherwise a folder's sync hears of the serving device's edits only
         // when it next reads every record.
         if taken || landed {
-            self.tell_followers(
-                &governed,
-                author,
-                (app_id.clone(), document_id.clone()),
-                message,
-                history,
-            )
-            .await;
+            self.tell_followers(&governed, author, message, history)
+                .await;
+            self.wrote(workspace, app_id, document_id);
             if taken {
                 self.keep_soon(&mut governed);
             }
@@ -2145,22 +2036,14 @@ impl Workspaces {
         // Kept before the copy is let go, so the copy taking in what it kept once its keys
         // arrive ([`Self::take_in_what_keys_open`]) reads this write too, if this copy could not
         // take it in.
-        let kept = self
-            .inner
-            .host
-            .records
-            .carry(
-                governed.workspace_id(),
-                author,
-                HostCommit {
-                    body: body.to_vec(),
-                    channel: route,
-                    checkpoint: retention == neighbour_wire::Retention::Checkpoint,
-                },
-            )
-            .await?;
+        self.inner.records.carry(
+            governed.workspace_id(),
+            author,
+            &HostCommit {
+                body: body.to_vec(),
+            },
+        )?;
         drop(governed);
-        kept.durable().await?;
         Ok(())
     }
 }
@@ -2168,6 +2051,10 @@ impl Workspaces {
 #[cfg(test)]
 #[path = "member_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "agent_turn_tests.rs"]
+mod agent_turn_tests;
 
 /// The workspaces at `paths` opened, a few at a time: each reads its own files, and one at
 /// a time made a start wait for every workspace's history in turn.

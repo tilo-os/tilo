@@ -172,7 +172,7 @@ impl TurnPages {
         reply: &Reply,
     ) -> Arc<Self> {
         let workspace_id = reply.provider.workspace;
-        let narrowed = narrowing(&turn.agent, &reply.workspace);
+        let narrowed = turn.agent.bound_rules();
         let asked_as = HostedTurn {
             workspace: workspace_id,
             caller: &reply.caller,
@@ -216,7 +216,7 @@ impl TurnPages {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Result<InvocationUpdate, ActionCallError> {
-        let narrowed = narrowing(&self.agent, &self.workspace);
+        let narrowed = self.agent.bound_rules();
         let asked_as = HostedTurn {
             workspace: self.workspace_id,
             caller,
@@ -403,13 +403,6 @@ impl TurnProvider for TurnPages {
     fn invoke(self: Arc<Self>, caller: Caller, request: InvokeRequest) -> Ending {
         Box::pin(async move { self.take(&caller, request).await })
     }
-}
-
-/// The rules a turn of `agent` is decided by in `workspace`, where anything narrows it: what
-/// its entry bounds it to and, for a sub-agent, what keeps it from whoever started it. `None`
-/// for an agent nothing narrows.
-fn narrowing(agent: &Agent, workspace: &str) -> Option<Vec<tilo_action_policy::Rule>> {
-    (agent.bound_rules().is_some() || agent.is_sub()).then(|| agent.turn_rules(workspace))
 }
 
 /// The page action `action` as an agent's rules name it: an action of the Browser app, on

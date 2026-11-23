@@ -6,11 +6,6 @@
 //! accounts the workspace keeps, and another member's add or removal must
 //! reach it when it happens.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server handle a test binds is kept until the test ends; dropping it earlier closes the host it drives"
-)]
-
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::person_accounts::{self, MailAccounts, MailArrivals};
@@ -19,7 +14,7 @@ use tilo_actions::remote::{
 };
 
 use super::super::tests::{admit, caller, governed, settled};
-use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
+use crate::workspaces::tests::{governor, test_host};
 
 /// A request of one of the accounts actions, with `argument` when it has one.
 pub(super) fn asking(action: &str, argument: Value) -> InvokeRequest {

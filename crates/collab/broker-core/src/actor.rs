@@ -408,10 +408,33 @@ impl BrokerActor {
         &self,
         workspace: &Workspace,
         now: u64,
+        published: (&PublishedSurface, &PublishedAction),
+    ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
+        self.admit_in(workspace, now, published, true)
+    }
+
+    /// [`Self::admit_published_in`] for an action of a record `workspace` holds while the
+    /// window publishing it is open in another (`ResourceSpec::workspace`): decided where the
+    /// record is held, as that workspace's grants say, never by the roles of the window's. The
+    /// route record is the window's, so its own restrictions are not asked here.
+    pub fn admit_held_in(
+        &self,
+        workspace: &Workspace,
+        now: u64,
+        published: (&PublishedSurface, &PublishedAction),
+    ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
+        self.admit_in(workspace, now, published, false)
+    }
+
+    fn admit_in(
+        &self,
+        workspace: &Workspace,
+        now: u64,
         (surface, action): (&PublishedSurface, &PublishedAction),
+        route_record: bool,
     ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
         let refused = || "caller no longer authorized for invocation".to_owned();
-        let record = if self.is_agent() {
+        let record = if self.is_agent() || !route_record {
             None
         } else {
             Some(canonical_document(&surface.route.document_id)?)

@@ -16,11 +16,18 @@ tilo_automerge_isolate::test_worker!();
 #[path = "common/mod.rs"]
 mod common;
 
+#[cfg(feature = "agents")]
+#[path = "linux_browser.rs"]
+mod linux_browser;
+#[cfg(feature = "agents")]
+#[path = "linux_terminal.rs"]
+mod linux_terminal;
+#[cfg(feature = "agents")]
+#[path = "linux_turn.rs"]
+mod linux_turn;
 #[path = "machines.rs"]
 mod machines;
 
-#[path = "anti_entropy_recovers_lost_delta.rs"]
-mod anti_entropy_recovers_lost_delta;
 #[path = "auth_reject.rs"]
 mod auth_reject;
 #[cfg(feature = "agents")]
@@ -32,14 +39,8 @@ mod browser_transport;
 mod client_owns_its_endpoint;
 #[path = "coedit_through_host.rs"]
 mod coedit_through_host;
-#[path = "commit_dedup.rs"]
-mod commit_dedup;
 #[path = "device_certification.rs"]
 mod device_certification;
-#[path = "durable_host_restart.rs"]
-mod durable_host_restart;
-#[path = "end_to_end_sync.rs"]
-mod end_to_end_sync;
 #[path = "governed_workspace_access.rs"]
 mod governed_workspace_access;
 #[path = "governed_workspaces.rs"]
@@ -53,11 +54,6 @@ mod holder_copies;
 mod hosted_browser;
 #[path = "hosting_member.rs"]
 mod hosting_member;
-#[cfg(unix)]
-#[path = "live_session.rs"]
-mod live_session;
-#[path = "multi_host.rs"]
-mod multi_host;
 #[cfg(target_os = "linux")]
 #[path = "offloadable_action.rs"]
 mod offloadable_action;
@@ -65,18 +61,6 @@ mod offloadable_action;
 #[cfg(feature = "agents")]
 #[path = "persistent_workspace.rs"]
 mod persistent_workspace;
-#[cfg(feature = "agents")]
-#[path = "placed_browser.rs"]
-mod placed_browser;
-#[cfg(feature = "agents")]
-#[path = "placed_machine.rs"]
-mod placed_machine;
-#[cfg(feature = "agents")]
-#[path = "placed_shell.rs"]
-mod placed_shell;
-#[cfg(feature = "agents")]
-#[path = "placed_terminal.rs"]
-mod placed_terminal;
 #[path = "presence_batching.rs"]
 mod presence_batching;
 #[path = "record_content_routing.rs"]
@@ -85,8 +69,6 @@ mod record_content_routing;
 mod region_follows;
 #[path = "remote_action_routing.rs"]
 mod remote_action_routing;
-#[path = "server_cost.rs"]
-mod server_cost;
 #[path = "server_daemon.rs"]
 mod server_daemon;
 #[path = "server_member_copy.rs"]
@@ -95,8 +77,6 @@ mod server_member_copy;
 mod servers_document;
 #[path = "servers_operations.rs"]
 mod servers_operations;
-#[path = "store_and_forward.rs"]
-mod store_and_forward;
 #[path = "surface_content.rs"]
 mod surface_content;
 #[path = "tenant_isolation.rs"]

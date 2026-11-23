@@ -248,10 +248,6 @@ impl Workspace for InviteWorkspace {
             answer(value.map(drop));
         });
     }
-
-    fn shelf(&self) -> (Option<url::Url>, Option<String>) {
-        (crate::platform::directory::community_site(), None)
-    }
 }
 
 /// Whether `person` may invite someone into `workspace` from this device, as the workspace's own

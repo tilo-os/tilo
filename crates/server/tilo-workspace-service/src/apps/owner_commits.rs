@@ -135,6 +135,7 @@ impl OwnerCommitService for NativeOwnerCommits {
                     copies
                         .commit_local_document(&committing.workspace, committing.clone())
                         .await
+                        .map_err(String::from)
                 }),
             )
             .await?;

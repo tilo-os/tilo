@@ -357,6 +357,10 @@ pub struct State {
     /// The outputs whose next frame must be drawn: something that shows changed on them since the
     /// last one. An idle session draws nothing.
     pub(crate) redraw: Vec<Output>,
+    /// When the first input the displays have not answered yet was routed: the next frame drawn
+    /// answers it, and the frame trace times it from here. Every input reaches the desktop through
+    /// [`State::route_input`], whichever device or link it came from.
+    pub(crate) unanswered_input: Option<Instant>,
     /// The compositor's event loop, for work the window manager schedules.
     pub(crate) loop_handle:
         Option<smithay::reexports::calloop::LoopHandle<'static, crate::LoopData>>,
@@ -510,6 +514,7 @@ impl State {
             pointer_placed: false,
             super_tap: None,
             redraw: Vec::new(),
+            unanswered_input: None,
             loop_handle: None,
             key_latency: tilo_frame_metrics::key_latency::KeyLatency::default(),
             switch_latency: tilo_frame_metrics::switch_latency::SwitchLatency::default(),
@@ -1052,6 +1057,7 @@ impl State {
                 | InputEvent::PointerAxis(_)
         );
         self.note_input();
+        self.unanswered_input.get_or_insert_with(Instant::now);
         // What a capture takes never reaches the desktop.
         if let Some(observed) = event.clone().observed((self.pointer.x, self.pointer.y))
             && self
@@ -2884,10 +2890,23 @@ impl State {
 
     /// The frame `serial` of `output` reached the display: answer the keys it carried, and close a
     /// workspace switch when it was the resting frame.
+    ///
+    /// The session's first presented frame is logged with the system's monotonic clock, so a
+    /// measurement outside the compositor (a boot, a sign-in) can place the moment the desktop
+    /// first showed on its own clock.
     pub(crate) fn frame_presented(&self, serial: u64, output: &str) {
         let at = Instant::now();
-        self.frames_presented
+        let before = self
+            .frames_presented
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if before == 0 {
+            let monotonic_us = tilo_frame_metrics::monotonic_time_ns()
+                .map_or_else(|| "none".to_owned(), |ns| (ns / 1_000).to_string());
+            eprintln!(
+                "FRAME-LIFECYCLE serial={serial} event=render-retired output={output} \
+                 monotonic_us={monotonic_us}"
+            );
+        }
         if let Ok(mut presented) = self.presented_outputs.lock()
             && !presented.contains(output)
         {

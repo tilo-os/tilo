@@ -23,7 +23,7 @@ use super::super::ServiceWorkspaceActions as Service;
 use super::super::tests::{admit, caller, governed};
 use super::turn_use_tests::on_turn;
 use super::vault_tests::{ask, files_holding};
-use crate::workspaces::fixtures::test_host_taking_part as serving;
+use crate::workspaces::fixtures::test_host as serving;
 use crate::workspaces::hosted_use::{
     HostedTurn, OpenAsk, PageField, PageText, TurnRelease, UseAnswer,
 };

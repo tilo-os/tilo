@@ -28,7 +28,7 @@ use tilo_server_protocol::WorkspaceId;
 
 /// The retained bodies `author` wrote to `route`, and whether each is sealed
 /// on the route's channel.
-async fn retained_by(
+fn retained_by(
     hosted: &super::Hosted,
     workspace: WorkspaceId,
     route: &DocumentRoute,
@@ -38,7 +38,6 @@ async fn retained_by(
         .server
         .workspace_documents()
         .retained(workspace)
-        .await
         .unwrap()
         .into_iter()
         .filter(|body| body.author == author)
@@ -69,7 +68,7 @@ async fn until_retained(
 ) -> Vec<bool> {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let sealed = retained_by(hosted, workspace, route, author).await;
+        let sealed = retained_by(hosted, workspace, route, author);
         if sealed.len() >= count {
             return sealed;
         }
@@ -141,7 +140,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     // The owner's page writes a Sheets record. It is sealed on its channel,
     // which this host takes part in.
     let route = page.create(SHEETS);
-    page.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&page.peer.barrier().unwrap()).unwrap();
     let written = until_retained(
         &hosted,
         workspace.workspace_id,
@@ -318,7 +317,7 @@ async fn a_host_opens_a_sealed_record_of_a_workspace_it_handed_its_person() {
     let mut page = open_admitted_peer(&hosted, &page_device, &host, &workspace.workspace).await;
 
     let route = page.create(SHEETS);
-    page.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&page.peer.barrier().unwrap()).unwrap();
     let written = until_retained(
         &hosted,
         workspace.workspace_id,
@@ -366,7 +365,7 @@ async fn a_host_opens_a_sealed_record_of_a_workspace_it_handed_its_person() {
     .await;
     let mut member = open_admitted_peer(&hosted, &bo_device, &host, &workspace.workspace).await;
     let theirs = member.create(SHEETS);
-    member.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&member.peer.barrier().unwrap()).unwrap();
     let written = until_retained(
         &hosted,
         workspace.workspace_id,

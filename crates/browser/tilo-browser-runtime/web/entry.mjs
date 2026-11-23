@@ -17,7 +17,6 @@
  */
 import {admit} from './admission.mjs';
 import {takeLinkSecrets} from './link-secrets.mjs';
-import {sealedHandle, sealedLink} from './sealed-link.mjs';
 import {nameSiteServer} from './site-host.mjs';
 import {listedWorkspaces, workspaceAt} from './workspaces.mjs';
 
@@ -25,10 +24,7 @@ import {listedWorkspaces, workspaceAt} from './workspaces.mjs';
  * embedder?}`; `embedder` is the origin of the site that embeds the page, if
  * any. */
 export async function readEntry({mode, location, fetch = globalThis.fetch}) {
-  // A sealed invitation's link opens the page at `/i/<handle>`, whose files
-  // and configuration are the site's own: the page names the site, not the
-  // address the link happened to reach it at.
-  const base = new URL(mode === 'app' ? '../' : sealedHandle(location.pathname) ? '/' : './', location.href);
+  const base = new URL(mode === 'app' ? '../' : './', location.href);
   base.search = '';
   base.hash = '';
   let config = {};
@@ -153,10 +149,6 @@ export async function boot({mode, window = globalThis, status, deps, onStep = ()
   const loading = status?.textContent ?? '';
   // A machine to set up, or an account to link, is not admission.
   const {install: _install, link: _link, ...secrets} = takeLinkSecrets(window);
-  // A site's sealed invitation (`https://<site>/i/<handle>#<key>`): the
-  // workspace is the invitation's to name, so the page learns it on the way
-  // in and reads no route from the address.
-  const sealed = sealedLink({location: window.location, secrets});
   // The runtime (most of the page's download) loads while the entry is read
   // and the route chosen; admission waits for it, as the way in is its to say.
   const loaded = deps.loadRuntime();
@@ -168,9 +160,7 @@ export async function boot({mode, window = globalThis, status, deps, onStep = ()
   void linked.catch(() => {});
   let route;
   try {
-    route = sealed
-      ? {mode: 'desktop', target: {scope: {kind: 'sealed', site: sealed.site, handle: sealed.handle}}}
-      : chosenRoute({location: window.location, mode, home: entry.home, chosen: deps.chosenWorkspace?.() ?? null})
+    route = chosenRoute({location: window.location, mode, home: entry.home, chosen: deps.chosenWorkspace?.() ?? null})
         ?? homeRoute({location: window.location, mode, home: entry.home})
         ?? atSiteServer(initialRoute({link: await linked, location: window.location, mode, home: entry.home}), entry, secrets);
   } catch (error) {
@@ -198,18 +188,20 @@ export async function boot({mode, window = globalThis, status, deps, onStep = ()
   // Nothing to mount: an embed shows its site's fallback until the visitor
   // does something (`entry-page.mjs`).
   if (idle) return null;
-  if (peer) deps.onAdmitted?.(peer);
-  // A sealed invitation's link admits into a workspace the page learns on the
-  // way in: from here on it is in it, as a link to that workspace says.
-  // So does a wait-list invitation that opened the person's own workspace in
-  // place of the one its link names.
-  const sealedAdmitted = Boolean((sealed || ownFirst) && peer);
-  if (sealedAdmitted) {
+  // The page hears it was let in before anything is handed over; it may ask
+  // the person something first (the 24 recovery words, shown once), so its
+  // answer is awaited.
+  if (peer) await deps.onAdmitted?.(peer);
+  // A wait-list invitation that opened the person's own workspace in place of
+  // the one its link names: from here on the page is in that one, as a link
+  // to it says.
+  const ownAdmitted = Boolean(ownFirst && peer);
+  if (ownAdmitted) {
     route = {mode: 'desktop', target: {scope: {kind: 'workspace', host: new URL(peer.origin).origin, workspace: peer.workspace}}};
   }
   // An invitation whose server only it names (one reached over iroh alone) admits at that
   // server: the link from here on names it, so the next visit comes back to it.
-  const admittedElsewhere = !sealedAdmitted && Boolean(peer?.origin) && route.target.scope.kind === 'workspace'
+  const admittedElsewhere = !ownAdmitted && Boolean(peer?.origin) && route.target.scope.kind === 'workspace'
     && new URL(peer.origin).origin !== route.target.scope.host;
   if (admittedElsewhere) {
     route = {...route, target: {...route.target, scope: {...route.target.scope, host: new URL(peer.origin).origin}}};
@@ -217,7 +209,7 @@ export async function boot({mode, window = globalThis, status, deps, onStep = ()
   say(loading);
   onStep('open');
   // A link that named no workspace is in the one its server's entry admitted to.
-  if (peer && route.target.scope.kind === 'workspace' && (sealedAdmitted || admittedElsewhere || !route.target.scope.workspace)) {
+  if (peer && route.target.scope.kind === 'workspace' && (ownAdmitted || admittedElsewhere || !route.target.scope.workspace)) {
     route = {...route, target: {...route.target, scope: {...route.target.scope, workspace: peer.workspace}}};
   }
   // The web version is the page the server renders of a workspace: this

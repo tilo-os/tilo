@@ -55,10 +55,6 @@ impl Workspaces {
     /// The workspace is not governed here, its Linux machine could not be
     /// deleted, or the deletion could not be recorded. Once recorded, what is
     /// left of it is removed when the host opens again.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
-    )]
     pub async fn delete(&self, workspace: &str) -> Result<(), String> {
         let governed = self
             .inner

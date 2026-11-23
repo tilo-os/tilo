@@ -83,16 +83,16 @@ test('every entry page inlines the scrubber verbatim as its first script', () =>
   }
 });
 
-test('a sealed invitation keeps only its handle in the address', () => {
-  const key = 'A'.repeat(43);
-  const out = scrub(`https://tilo.sh/i/abcdefghijklmnop#${key}`);
-  assert.equal(out.url, 'https://tilo.sh/i/abcdefghijklmnop');
-  assert.deepEqual({...out.secrets}, {invite: key});
-  for (const write of out.writes) assert.ok(!write.includes(key), `${write} holds the key`);
-  // A key alone is an invitation's only at the route that opens one: at any
-  // other address the fragment is the page's own, and left alone.
-  const elsewhere = scrub(`https://tilo.sh/#${key}`);
-  assert.equal(elsewhere.url, `https://tilo.sh/#${key}`);
+test('a short link keeps only its workspace in the address', () => {
+  const secret = 'A'.repeat(43);
+  const out = scrub(`https://tilo.sh/#/@node.example/w/abc?invite=${secret}`);
+  assert.equal(out.url, 'https://tilo.sh/#/@node.example/w/abc');
+  assert.deepEqual({...out.secrets}, {invite: secret});
+  for (const write of out.writes) assert.ok(!write.includes(secret), `${write} holds the secret`);
+  // A secret alone after the `#` is no link's: the fragment is the page's
+  // own, and left alone.
+  const elsewhere = scrub(`https://tilo.sh/#${secret}`);
+  assert.equal(elsewhere.url, `https://tilo.sh/#${secret}`);
   assert.deepEqual({...elsewhere.secrets}, {});
 });
 
@@ -105,8 +105,4 @@ test('a link followed in a tab already on the site loads the page again with its
   // A route the page moves to itself carries no secret, and is not loaded again.
   page.move('#/w/abc/so.tilo.chat/-', undefined, 'popstate');
   assert.equal(page.reloads.length, 1);
-  // A sealed link's key after the `#` is its invitation too: the page at its
-  // shelf loads again to read it.
-  page.move(`#${'B'.repeat(43)}`, '/i/abcdefghijklmnop');
-  assert.equal(page.reloads.length, 2);
 });

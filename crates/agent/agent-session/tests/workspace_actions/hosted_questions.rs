@@ -7,9 +7,9 @@
 //! server kept, once, and the agent is asked once what came of it. "Always" lets exactly that
 //! action stand for them, so the next one goes ahead unasked. "No" does nothing. Anything else
 //! they write is no answer: it asks the agent as ever, and the question still waits.
+use super::hosted_agent_turns::SCOUT;
 use super::hosted_secret_use::{Hosted, does};
 use tilo_server::workspaces::person_model::scripted::Reply;
-use tilo_workspace_service::agents::ServerAgents;
 use tilo_workspace_service::asks::AskState;
 
 /// What the agent is told when its person is asked first.
@@ -50,8 +50,8 @@ async fn shelves_then_removes(hosted: &Hosted, words: &str, book: &str) {
 
 /// The server stops and starts again: whatever ran its agents is gone, and what works them now
 /// knows only what the records and the server's own store hold.
-fn restart(hosted: &mut Hosted) {
-    hosted.agents = ServerAgents::for_test(hosted.workspaces.clone(), hosted.actions.clone(), None);
+async fn restart(hosted: &mut Hosted) {
+    hosted.agents = hosted.server.approving(&hosted.workspace, &[SCOUT]).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -84,7 +84,7 @@ async fn an_action_that_asks_first_waits_in_the_reply_and_is_done_once_on_its_pe
     // Nobody answered: a look does nothing, however often the server looks, also after a
     // restart.
     hosted.agents.look(&hosted.workspace).await.unwrap();
-    restart(&mut hosted);
+    restart(&mut hosted).await;
     hosted.agents.look(&hosted.workspace).await.unwrap();
     assert_eq!(hosted.workspaces.open_asks(&hosted.workspace).len(), 1);
     assert!(
@@ -125,7 +125,7 @@ async fn an_action_that_asks_first_waits_in_the_reply_and_is_done_once_on_its_pe
     // It ran once: nothing is kept any more, and a later look, after a restart too, finds
     // nothing to do.
     assert!(hosted.workspaces.open_asks(&hosted.workspace).is_empty());
-    restart(&mut hosted);
+    restart(&mut hosted).await;
     hosted.agents.look(&hosted.workspace).await.unwrap();
     assert!(
         hosted

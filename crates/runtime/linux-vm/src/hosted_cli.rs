@@ -11,7 +11,6 @@ use linux_vm::hosted::files::{self, Served};
 use linux_vm::hosted::firecracker::Machine;
 use linux_vm::hosted::guest;
 use linux_vm::hosted::jail;
-use linux_vm::hosted::placement::Host;
 use linux_vm::hosted::service::{Service, ServiceConfig};
 use linux_vm::hosted::vm::{Settings, system_clock};
 
@@ -21,7 +20,7 @@ usage: tilo-linux-vm hosted <command>
   serve --state DIR --run DIR --kernel VMLINUX [--initramfs FILE] [--cmdline TEXT]
         [--disk-image RAW] [--firecracker PATH] [--plans FILE] [--idle-suspend SECONDS]
         [--evict-notice FILE] [--memory-mib MIB] [--memory-reserve-mib MIB]
-        [--memory-headroom-mib MIB] [--status-listen ADDR]
+        [--memory-headroom-mib MIB]
         [--move-listen SOCKET] [--server-endpoint ADDR:PORT]
         (--jail-helper PATH [--jail-config FILE] | --unjailed)
                          own this host's workspace VMs; listens on RUN/hosted.sock.
@@ -47,8 +46,6 @@ usage: tilo-linux-vm hosted <command>
                          that waits; when the node's free memory falls under
                          the reserve, the VMs' balloons are asked for memory
                          back before any wake is refused.
-                         --status-listen answers Status alone over TCP, for a
-                         placer.
                          --move-listen accepts what another machine sends over
                          SOCKET: a VM that moves to this machine, or a replica copy
                          of one it is kept for. Same user only.
@@ -60,16 +57,6 @@ usage: tilo-linux-vm hosted <command>
                          reachable from outside, or a loopback address when
                          the server runs on the host itself.
   status --run DIR       every VM, its phase and its last wake
-  place --listen ADDR
-        (--statefulset NAMESPACE/NAME --status-port PORT --max N
-         | --hosts NAME=ADDR[,NAME=ADDR])
-                         say which host takes a workspace's VM nobody keeps
-                         (the first with room), and start hosts, the
-                         StatefulSet's pods NAME-0, NAME-1, …, as their VMs fill
-                         them: past three quarters, or for any VM waiting.
-                         --hosts names a stack's hosts and where each answers
-                         Status, for a stack that runs a known set of machines
-                         and starts none
   fetch-guest --images DIR [--ref REF]
                          fetch the pinned guest image into DIR and print the
                          kernel's and the root filesystem's paths
@@ -172,7 +159,6 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         "fetch-guest" => fetch_guest(&Flags::parse(rest, &[])?),
         "status" => ask(&Flags::parse(rest, &[])?, &Request::Status),
         "run" => run(rest),
-        "place" => place(&Flags::parse(rest, &[])?),
         "browser-open" => {
             let flags = Flags::parse(rest, &[])?;
             ask(
@@ -384,11 +370,6 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
             .serve_moves(std::path::Path::new(socket))
             .map_err(|e| format!("--move-listen {socket}: {e}"))?;
     }
-    if let Some(address) = flags.get("--status-listen") {
-        let listener = std::net::TcpListener::bind(address)
-            .map_err(|e| format!("--status-listen {address}: {e}"))?;
-        service.serve_status(listener);
-    }
     eprintln!(
         "tilo-linux-vm hosted: serving {}",
         service.config().socket().display()
@@ -433,143 +414,6 @@ fn vm_size(flags: &Flags) -> Result<linux_vm::hosted::size::VmSize, String> {
     })
 }
 
-/// The VM hosts as a Kubernetes `StatefulSet`: its replicas, read and set through the API server
-/// with the pod's service account.
-struct StatefulSetScale {
-    namespace: String,
-    name: String,
-    port: String,
-}
-
-impl StatefulSetScale {
-    const ACCOUNT: &'static str = "/var/run/secrets/kubernetes.io/serviceaccount";
-
-    fn call(&self, method: &str, body: Option<&str>) -> Result<serde_json::Value, String> {
-        let token = std::fs::read_to_string(format!("{}/token", Self::ACCOUNT))
-            .map_err(|e| format!("the service account's token: {e}"))?;
-        let url = format!(
-            "https://kubernetes.default.svc/apis/apps/v1/namespaces/{}/statefulsets/{}/scale",
-            self.namespace, self.name
-        );
-        let mut command = std::process::Command::new("curl");
-        command
-            .args(["-fsS", "--max-time", "10", "-X", method])
-            .args(["--cacert", &format!("{}/ca.crt", Self::ACCOUNT)])
-            .args(["-H", &format!("Authorization: Bearer {}", token.trim())]);
-        if let Some(body) = body {
-            command
-                .args(["-H", "Content-Type: application/merge-patch+json"])
-                .args(["--data", body]);
-        }
-        let output = command
-            .arg(url)
-            .output()
-            .map_err(|e| format!("curl: {e}"))?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
-        }
-        serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
-    }
-}
-
-impl linux_vm::hosted::placement::Scale for StatefulSetScale {
-    fn hosts(&self) -> Result<Vec<Host>, String> {
-        let scale = self.call("GET", None)?;
-        let count = scale
-            .get("spec")
-            .and_then(|spec| spec.get("replicas"))
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|count| usize::try_from(count).ok())
-            .ok_or_else(|| format!("no replicas in {scale}"))?;
-        Ok((0..count)
-            .map(|index| {
-                let (namespace, name, port) = (&self.namespace, &self.name, &self.port);
-                Host::new(
-                    &format!("{name}-{index}"),
-                    &format!("{name}-{index}.{name}.{namespace}.svc:{port}"),
-                )
-            })
-            .collect())
-    }
-
-    fn set_hosts(&self, count: usize) -> Result<(), String> {
-        eprintln!("tilo-linux-vm hosted place: starting hosts up to {count}");
-        self.call(
-            "PATCH",
-            Some(&format!(r#"{{"spec":{{"replicas":{count}}}}}"#)),
-        )
-        .map(|_| ())
-    }
-}
-
-/// Place VMs on the hosts the environment names: a `StatefulSet`'s, which it scales, or the named
-/// hosts of a stack that runs a known set of machines, which it never starts.
-fn place(flags: &Flags) -> Result<ExitCode, String> {
-    use linux_vm::hosted::placement::{FixedHosts, Placer, Scale, read_load};
-
-    let scale: Box<dyn Scale> = match (flags.get("--statefulset"), flags.get("--hosts")) {
-        (Some(statefulset), None) => {
-            let (namespace, name) = statefulset
-                .split_once('/')
-                .ok_or("--statefulset takes NAMESPACE/NAME")?;
-            Box::new(StatefulSetScale {
-                namespace: namespace.to_owned(),
-                name: name.to_owned(),
-                port: flags.need("--status-port")?.to_owned(),
-            })
-        }
-        (None, Some(hosts)) => Box::new(FixedHosts::parse(hosts)?),
-        _ => {
-            return Err(format!(
-                "place names its hosts once: --statefulset NAMESPACE/NAME --status-port PORT, or \
-                 --hosts NAME=ADDR[,NAME=ADDR]\n{USAGE}"
-            ));
-        }
-    };
-    let max: usize = match flags.get("--max") {
-        Some(max) => max.parse().map_err(|_| "--max takes a count".to_string())?,
-        None if flags.get("--hosts").is_some() => scale.hosts()?.len(),
-        None => return Err("--statefulset needs --max (the most hosts to start)".to_string()),
-    };
-    let hosts = scale.hosts().map_or_else(
-        |_| "them".to_owned(),
-        |hosts| {
-            hosts
-                .iter()
-                .map(|host| host.name.clone())
-                .collect::<Vec<_>>()
-                .join(", ")
-        },
-    );
-    let placer = Arc::new(Placer::new(max, scale, Box::new(read_load), system_clock()));
-    let address = flags.need("--listen")?;
-    let listener =
-        std::net::TcpListener::bind(address).map_err(|e| format!("--listen {address}: {e}"))?;
-    let answering = Arc::clone(&placer);
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else {
-                continue;
-            };
-            let placer = Arc::clone(&answering);
-            std::thread::spawn(move || {
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-                if let Ok(Some(request)) = control::FRAMING.read_value::<_, Request>(&mut stream) {
-                    let reply = placer.handle(request);
-                    let _ = control::FRAMING.write_value(&mut stream, &reply);
-                }
-            });
-        }
-    });
-    eprintln!("tilo-linux-vm hosted place: placing on {hosts}, at most {max}, on {address}");
-    while !STOP.load(Ordering::SeqCst) {
-        placer.rescale();
-        std::thread::sleep(Duration::from_secs(10));
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-/// Wake a workspace's VM and run one program in it, as ush would.
 fn run(args: &[String]) -> Result<ExitCode, String> {
     use linux_vm::hosted::control::VmRequest;
     use linux_vm_protocol::client::{self, LaunchIo};

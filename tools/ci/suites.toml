@@ -283,7 +283,6 @@ suites = [
   "os/tests/test_fetch_windows_direct_manifests.py",
   "os/tests/windows_direct_install_orchestrator_test.py",
   "os/tests/nearby_privileged_processes_test.sh",
-  "os/tests/nearby_cleanup_test.py",
   "os/tests/vm_release_check_invariants.sh",
   "os/tests/windows_guest_powershell_syntax.py",
   "os/tests/server_firstboot_sibling.sh",
@@ -620,7 +619,7 @@ name = "browser-runtime-web"
 # and the scripts that assemble the web core. app-installer reads the Rust
 # app catalogue. bundle-update runs the split modules' loader that wasm-split's
 # main.rs writes.
-inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/runtime/tilo-identity/tests/fixtures/identity-record.json", "crates/collab/reference/tests/links.json"]
+inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "crates/runtime/tilo-identity/tests/fixtures/identity-record.json", "crates/collab/reference/tests/links.json"]
 suites = [
   "crates/browser/tilo-browser-runtime/web/person.test.mjs",
   "crates/browser/tilo-browser-runtime/web/first-screen.test.mjs",
@@ -636,8 +635,8 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
   "crates/browser/tilo-browser-runtime/web/site-host.test.mjs",
   "crates/browser/tilo-browser-runtime/web/scrub.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/sealed-link.test.mjs",
   "crates/browser/tilo-browser-runtime/web/reconnect.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/recovery-words.test.mjs",
   "crates/browser/tilo-browser-runtime/web/failure-screen.test.mjs",
   "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
@@ -700,12 +699,6 @@ readers = [
   "crates/sdk/ui-core/src/component/coverage_tests.rs",
 ]
 
-
-[[cargo]]
-package = "tilo-api"
-# A host's info as the host writes it, the fixture the API image check hands the server.
-inputs = ["os/containers/tilo-api/host-info.json"]
-readers = ["crates/server/tilo-api/src/tests.rs"]
 
 [[cargo]]
 package = "tilo-app-package"
@@ -1390,13 +1383,10 @@ readers = ["crates/packaging/tilo-app-package-cli/src/main.rs"]
 
 [[cargo]]
 package = "tilo-imager-profile"
-# Compiles the imager's profile modules, whose rules include the locale list.
-inputs = [
-  "apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs",
-  "crates/session/install-profile-model/src/lib.rs", "crates/session/install-profile-model/locales.txt",
-  "os/usr/libexec/tilo-installer-profile-extract",
-]
-readers = ["tools/imager-profile/src/main.rs", "tools/imager-profile/tests/embed.rs"]
+# Takes the profile model and codec as a crate dependency; its tests run the
+# live media's extractor beside it.
+inputs = ["os/usr/libexec/tilo-installer-profile-extract"]
+readers = ["tools/imager-profile/tests/embed.rs"]
 
 [[cargo]]
 package = "disks"

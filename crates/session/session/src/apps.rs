@@ -175,6 +175,10 @@ struct State {
     sign_in_tabs: BTreeMap<u64, u64>,
     /// Sign-in pages whose sign-in ended before the shell made their tab.
     sign_ins_over: std::collections::BTreeSet<u64>,
+    /// Whether the session was told to end ([`crate::termination::asked`]): a stop of the
+    /// session's whole process group, a logout or a shutdown, ends its apps in the same stroke,
+    /// and an app ended by that stop did not stop working.
+    session_ending: fn() -> bool,
     /// What the tool a launch opens was asked to show, for the one launch being planned
     /// (`TILO_TOOL_CONTEXT`): set only while a launch a service asked for is being started, and
     /// read where it is planned.
@@ -365,6 +369,7 @@ impl Apps {
                 planned: BTreeMap::new(),
                 sign_in_tabs: BTreeMap::new(),
                 sign_ins_over: std::collections::BTreeSet::new(),
+                session_ending: crate::termination::asked,
                 tool_context: None,
                 broker: None,
                 wake,
@@ -763,7 +768,6 @@ impl Apps {
             chooser: resources.chooser,
             opens: hosted.opens,
             locale: Self::person_locale(),
-            device: crate::fs_authority::device_key().map(hex::encode),
         });
     }
 
@@ -2064,7 +2068,6 @@ impl Apps {
                 chooser: resources.chooser,
                 opens: tilo_app_launch::Opens::default(),
                 locale: Self::person_locale(),
-                device: crate::fs_authority::device_key().map(hex::encode),
             })
             .map_err(|error| ApiError::Failed(error.to_string()))?;
         Ok(())

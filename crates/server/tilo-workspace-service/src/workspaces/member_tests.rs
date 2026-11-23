@@ -24,22 +24,48 @@ async fn shared(
     name: &str,
     seed: u8,
 ) -> (TestHost, (SigningKey, DeviceCert), WorkspaceSummary, String) {
+    shared_with(serving_state, name, seed, laptop(seed)).await
+}
+
+/// The laptop of the person of `seed`.
+fn laptop(seed: u8) -> (SigningKey, DeviceCert) {
+    device_cert(
+        &SigningKey::from_bytes(&[seed; 32]),
+        "laptop",
+        DeviceCapabilities::member(),
+    )
+}
+
+/// [`shared`], inviting `device`.
+pub(super) async fn shared_with(
+    serving_state: &std::path::Path,
+    name: &str,
+    seed: u8,
+    device: (SigningKey, DeviceCert),
+) -> (TestHost, (SigningKey, DeviceCert), WorkspaceSummary, String) {
     let (serving_key, serving_cert) = governor();
     let serving = test_host(serving_state, &serving_key, &serving_cert).await;
+    invited(serving, &serving_cert, name, seed, device).await
+}
+
+/// `serving` creates the workspace `name` and invites `device` into it: the serving device, the
+/// device it invites, the workspace and the invitation's text.
+async fn invited(
+    serving: TestHost,
+    serving_cert: &DeviceCert,
+    name: &str,
+    seed: u8,
+    device: (SigningKey, DeviceCert),
+) -> (TestHost, (SigningKey, DeviceCert), WorkspaceSummary, String) {
     let created = serving
         .workspaces()
         .create(name)
         .await
         .expect("a workspace is created");
-    let device = device_cert(
-        &SigningKey::from_bytes(&[seed; 32]),
-        "laptop",
-        DeviceCapabilities::member(),
-    );
     let issued = serving
         .workspaces()
         .pre_admit(
-            &serving_cert,
+            serving_cert,
             PreAdmitRequest {
                 request_id: [seed; 32],
                 grant: signed_pre_admission(&created.workspace, &[seed; 8]),
@@ -54,7 +80,7 @@ async fn shared(
 }
 
 /// A service on `state`, serving the member copies of `(key, cert)`.
-async fn member_service(
+pub(super) async fn member_service(
     state: &std::path::Path,
     (key, cert): (SigningKey, DeviceCert),
 ) -> TestHost {
@@ -543,15 +569,11 @@ async fn served_answers_with_the_refusal_of_a_write_the_workspace_refused() {
         envelope: Box::new(write.envelope.clone()),
         readers: None,
     };
-    let (channel, retention) =
-        neighbour_wire::retention(&elsewhere, false).expect("the write's channel");
     copies
         .commit_member_document(
             &workspace,
             crate::workspace_documents::HostCommit {
                 body: postcard::to_stdvec(&elsewhere).expect("the write encodes"),
-                channel,
-                checkpoint: retention == neighbour_wire::Retention::Checkpoint,
             },
         )
         .await
@@ -719,6 +741,92 @@ async fn a_write_made_while_the_serving_device_is_away_is_kept_and_reaches_it_la
         .await
         .as_deref(),
         Some("written-while-away")
+    );
+    drop(copies);
+    member.shutdown().await;
+    serving.shutdown().await;
+}
+
+/// A write made while this device is still taking a workspace in (it joins, or opens the
+/// workspace as it starts) waits rather than being refused: the person hears nothing, and the same
+/// write, made again once the device holds the workspace, is kept and reaches its serving device.
+#[tokio::test]
+async fn a_write_before_the_workspace_is_held_here_waits_and_lands_once_it_is() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Joining", 48).await;
+    let workspace = created.workspace.clone();
+    serving_writes(
+        &serving,
+        &workspace,
+        ("test.app", "record"),
+        ("value", "by-the-serving-device"),
+    )
+    .await;
+    let member = member_service(member_state.path(), device).await;
+    let copies = member.workspaces().clone();
+
+    let early = copies
+        .own_write(
+            &workspace,
+            ("test.app", "record"),
+            None,
+            &snapshot("value", "written-while-joining"),
+            false,
+            false,
+            None,
+        )
+        .await;
+    assert_eq!(
+        early.err(),
+        Some(tilo_peer_state::owner::WriteRefusal::Waiting(
+            tilo_peer_state::MissingPrerequisite::Workspace
+        )),
+        "a write before the workspace is held here waits for it, not refused"
+    );
+
+    let workspace_id = copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    catching_up(&copies, workspace_id).await;
+    let change = change_of(
+        &copies,
+        &workspace,
+        ("test.app", "record"),
+        ("value", "written-while-joining"),
+    )
+    .await;
+    copies
+        .own_write(
+            &workspace,
+            ("test.app", "record"),
+            None,
+            &change,
+            false,
+            false,
+            None,
+        )
+        .await
+        .expect("the write is kept once the workspace is held here");
+    tilo_test_env::within("the write reaches the serving device", async {
+        copies
+            .served(&workspace, &[("test.app", "record")])
+            .expect("the copy waits on its serving device")
+            .await
+            .expect("the serving device keeps the write");
+    })
+    .await;
+    assert_eq!(
+        served_value(
+            serving.workspaces(),
+            &workspace,
+            ("test.app", "record"),
+            "value"
+        )
+        .await
+        .as_deref(),
+        Some("written-while-joining")
     );
     drop(copies);
     member.shutdown().await;
@@ -899,7 +1007,13 @@ async fn a_copy_taking_in_its_kept_writes_lets_the_devices_other_work_run_meanwh
 
     let serving_state = tempfile::tempdir().unwrap();
     let member_state = tempfile::tempdir().unwrap();
-    let (serving, device, created, invitation) = shared(serving_state.path(), "Kept", 46).await;
+    // The serving device seals what it writes, as a device taking part in the workspace's key
+    // groups does: a sealed write is what a copy keeps until its keys open it.
+    let (serving_key, serving_cert) = governor();
+    let serving =
+        super::super::fixtures::test_host(serving_state.path(), &serving_key, &serving_cert).await;
+    let (serving, device, created, invitation) =
+        invited(serving, &serving_cert, "Kept", 46, laptop(46)).await;
     let workspace = created.workspace.clone();
     let member = member_service(member_state.path(), device).await;
     let copies = member.workspaces().clone();
@@ -910,22 +1024,37 @@ async fn a_copy_taking_in_its_kept_writes_lets_the_devices_other_work_run_meanwh
     catching_up(&copies, workspace_id).await;
     let records = ["first", "second", "third"];
     for record in records {
-        serving_writes(
-            &serving,
-            &workspace,
-            ("test.app", record),
-            ("value", record),
-        )
-        .await;
+        let route = tilo_peer_state::document_frame::DocumentRoute {
+            app_id: "test.app".into(),
+            cluster_id: workspace.clone(),
+            document: record.into(),
+        };
+        let sealed = serving
+            .workspaces()
+            .own_route_keys(&route, true)
+            .await
+            .expect("the serving device's key service answers")
+            .expect("the group opens");
+        serving
+            .workspaces()
+            .own_write(
+                &workspace,
+                ("test.app", record),
+                None,
+                &snapshot("value", record),
+                true,
+                true,
+                Some(&sealed),
+            )
+            .await
+            .expect("the serving device writes its record");
     }
     tilo_test_env::within("the copy keeps the serving device's writes", async {
         loop {
             let kept = copies
                 .inner
-                .host
                 .records
                 .retained(workspace_id)
-                .await
                 .expect("the copy's kept writes read")
                 .iter()
                 .filter(|frame| {

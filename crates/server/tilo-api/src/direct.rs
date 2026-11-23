@@ -762,11 +762,10 @@ mod tests {
             "Ada's laptop",
         )
         .unwrap();
-        let hooks = format!("/v1/workspaces/{WORKSPACE}/webhooks");
-
-        let new = serde_json::json!({"url": "http://127.0.0.1:9/hook"}).to_string();
-        let (status, kept) = asked(&direct, "POST", &hooks, &new).await;
-        assert_eq!(status, 201, "{kept}");
+        let create = "/v1/resources/account/webhooks/actions/create";
+        let new = |url: &str| serde_json::json!({"workspace": WORKSPACE, "url": url}).to_string();
+        let (status, kept) = asked(&direct, "POST", create, &new("http://127.0.0.1:9/hook")).await;
+        assert_eq!(status, 200, "{kept}");
         for own in [
             "https://127.0.0.1/hook",
             "https://10.0.0.7/hook",
@@ -774,8 +773,7 @@ mod tests {
             "http://10.0.0.7/hook",
             "http://example.com/hook",
         ] {
-            let new = serde_json::json!({"url": own}).to_string();
-            let (status, refused) = asked(&direct, "POST", &hooks, &new).await;
+            let (status, refused) = asked(&direct, "POST", create, &new(own)).await;
             assert_eq!(
                 (status, &refused["error"]["code"]),
                 (400, &serde_json::json!("invalid_arguments")),
@@ -788,9 +786,10 @@ mod tests {
         earlier.id = "wh_earlier".into();
         earlier.url = "https://10.0.0.7/hook".into();
         direct.server.store.add_webhook(earlier).unwrap();
-        let (status, listed) = asked(&direct, "GET", &hooks, "").await;
+        let list = "/v1/resources/account/webhooks/actions/list";
+        let (status, listed) = asked(&direct, "POST", list, "{}").await;
         assert_eq!(status, 200, "{listed}");
-        let rows = listed["webhooks"].as_array().unwrap();
+        let rows = listed["result"]["webhooks"].as_array().unwrap();
         assert_eq!(rows.len(), 2, "{listed}");
         for row in rows {
             let why = row["undelivered"].as_str();

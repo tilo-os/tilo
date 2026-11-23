@@ -882,6 +882,9 @@ pub struct Person {
     /// The identity the first use of this machine provisioned for them: the record each of their
     /// devices carries, and the root secret devices certify their own keys with.
     identity: tempfile::TempDir,
+    /// Whether the next device made is their first: the one that made their root, which founds
+    /// their own workspace. Every later device is taken into it by one that holds it.
+    first_device: std::sync::atomic::AtomicBool,
 }
 
 impl Person {
@@ -908,6 +911,7 @@ impl Person {
             public: root.group_public_key(),
             root,
             identity,
+            first_device: std::sync::atomic::AtomicBool::new(true),
         }
     }
 
@@ -998,6 +1002,15 @@ impl Person {
             &self.identity.path().join("config/tilo/identity"),
             &root.join("config/tilo/identity"),
         );
+        // Only the device that made the person's root founds their own workspace: a later one
+        // carries the record without that mark, and asks a device of theirs to take it in.
+        if !self
+            .first_device
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            tilo_identity::provisioning::clear_founding_mark(&root.join("config/tilo/identity"))
+                .expect("a later device of the person's founds nothing");
+        }
         // This device relays through this machine's loopback relay, as the site does: no session
         // of a test reaches the person's relays or their directory out on the internet.
         test_server::relay_through_loopback_in(&root.join("config"), &root.join("data"));
@@ -1454,6 +1467,8 @@ impl Device {
                 ),
             )
             .env("TILO_APP_STDERR_DIR", &logs)
+            // Every launch writes its startup timeline, which the open-budget test reads.
+            .env(tilo_startup_metrics::STARTUP_TIMELINE_ENV, "1")
             // The tests of this process mount the trees this device's session serves, so the
             // session records this process as the Files endpoint the login's unit would be.
             .env("TILO_FILES_ENDPOINT_PID", std::process::id().to_string())
@@ -1900,12 +1915,15 @@ impl Device {
         );
     }
 
-    /// The workspace's open of the installed app `app`, as this device lists it.
+    /// The workspace's open of the installed app `app`, in the workspace in front: what the
+    /// launcher invokes. The catalogue lists it only while the app is closed, and the open of an
+    /// app already running brings its window up the same way, so it is never looked up there.
     pub fn open_target(&self, app: &str) -> RemoteActionTarget {
-        let resource = format!("{}{app}", tilo_actions::remote::APPLICATION_RESOURCE_PREFIX);
-        tilo_test_env::wait_for(format!("{} offering to open {app}", self.label), || {
-            self.offered(&resource, tilo_actions::remote::APPLICATION_OPEN_ACTION)
-        })
+        let workspace =
+            tilo_test_env::wait_for(format!("{} showing a workspace", self.label), || {
+                self.showing()
+            });
+        tilo_actions::remote::application_open_target(&workspace, app)
     }
 
     /// What this device publishes as `resource`'s `action`, whoever publishes it.
@@ -2330,6 +2348,58 @@ pub fn at(provider: &str, resource: &str, action: &str) -> RemoteActionTarget {
         provider: provider.to_owned(),
         address: tilo_actions::ActionAddress::new(resource, action),
     }
+}
+
+/// The settings section `section` (`appearance`, `power`), as the settings service publishes it:
+/// the resource whose `field-edit` action a control, a script or an agent runs.
+pub fn setting_section(section: &str) -> String {
+    format!("settings:settings.{section}")
+}
+
+/// The `field-edit` of the settings section `section`, as Settings and Quick Settings run it.
+pub fn setting(section: &str) -> RemoteActionTarget {
+    at(
+        tilo_actions::remote::settings_resources::PROVIDER,
+        &setting_section(section),
+        "field-edit",
+    )
+}
+
+/// What a field edit of the settings section `section` asks for: setting `field` to `value`.
+pub fn setting_edit(field: &str, value: &Value) -> Value {
+    json!({"edit": {"path": [{"field": field}], "op": "set", "value": value}})
+}
+
+/// Set `field` of `section` to `value` on `device`, as the person does in Settings, once it
+/// settled: a change the settings refused is the assertion.
+///
+/// The sections are resources of the person's own workspace, so the edit is not offered until
+/// this session reads it there: the set is asked again until it is.
+pub fn set_setting(device: &Device, section: &str, field: &str, value: &Value) {
+    let target = setting(section);
+    let edit = setting_edit(field, value);
+    let until = tilo_test_env::hang_deadline();
+    let mut answer = device.act_wait(&target, &edit);
+    while answer["err"]["code"].as_str() == Some("unknown_action") {
+        assert!(
+            Instant::now() < until,
+            "{} is never offered {section}'s field edit: {answer}\n{}",
+            device.label,
+            device.diagnostic()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        answer = device.act_wait(&target, &edit);
+    }
+    if answer["err"]["code"].as_str() == Some(CONFIRMATION_REQUIRED) {
+        answer = device.act_confirming(&target, &edit);
+    }
+    assert_eq!(
+        answer["update"]["state"],
+        json!("succeeded"),
+        "{} sets {section}.{field}: {answer}\n{}",
+        device.label,
+        device.diagnostic()
+    );
 }
 
 /// The session's own verb that makes a new workspace, as the workspace menu invokes it.

@@ -452,6 +452,9 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # The events the actor hands the session, which its own tests hand the sync
 # directly: the membership epoch on them is the actor's to mint.
 tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
+# What a person types at their desktop: `tilo do` lists the catalogue and runs one
+# action over the control socket the session serves here.
+tilo-control = { path = "../control-cli" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Chat's own writers, which post a message into a part as its window does: what the person's

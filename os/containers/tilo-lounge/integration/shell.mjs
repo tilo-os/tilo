@@ -168,7 +168,7 @@ export const waitForMail = async (dir, what, count, timeout = stepLimit(6)) => {
  * confirmation's `wait-list-confirm=<secret>` or an invitation's `invite=<key>`. */
 export const mailLink = (mail, marker) => {
   const text = `${mail.text ?? ''}\n${mail.html ?? ''}`;
-  return text.match(new RegExp(`https?://[^\\s"'<>]*${marker}[=:][0-9a-zA-Z-]+`))?.[0] ?? null;
+  return text.match(new RegExp(`https?://[^\\s"'<>]*${marker}[=:][0-9a-zA-Z_-]+`))?.[0] ?? null;
 };
 /** A person leaves `address` on the entry's wait list, as the page's own form
  * takes it. The driver waits on what the page says next. */

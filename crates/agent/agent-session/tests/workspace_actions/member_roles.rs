@@ -448,7 +448,7 @@ async fn content_steps_answer_beside_a_request_that_holds_the_workspaces_thread(
     let server = start(&root, &machine, state.path()).await;
     let mut browser = Browser::open(&server, &browser_device, &machine).await;
     browser.create(TASKS);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
 
     let membership = Membership::of(
         &server,
@@ -583,7 +583,7 @@ async fn the_first_write_into_an_empty_chain_is_taken() {
     let site = start(&root, &server, state.path()).await;
     let mut browser = Browser::open(&site, &browser_device, &server).await;
     let tasks = browser.create(TASKS);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     let tasks_provider = resource_provider(&tasks);
     let issues = ui::resource::chain_resource_id(&ui::resource::DocumentId::derived(
         "issues",
@@ -620,7 +620,7 @@ async fn a_members_first_write_founds_a_chain_the_workspace_holds_no_part_of() {
     let hosted = start(&root, &host, state.path()).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let tasks = browser.create(TASKS);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
     let membership = Membership::of(
         &hosted,
         &host,
@@ -714,7 +714,7 @@ async fn agents_asked() -> Asked {
     let server = start(&root, &device, state.path()).await;
     let mut page = Browser::open(&server, &page_device, &device).await;
     let assistant_doc = page.create(ui::tilo_workspace_agent::OWNER);
-    page.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&page.peer.barrier().unwrap()).unwrap();
     let membership = Membership::of(
         &server,
         &device,

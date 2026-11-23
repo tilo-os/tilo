@@ -1766,6 +1766,26 @@ fn a_task_whose_assignee_the_page_shows() -> (Replica, Value, ViewInstance, Stri
     (ada, task, page, key)
 }
 
+/// The words of the history a window of Tasks shows of `task` under its bar's History.
+fn history_texts(ada: &Replica, task: &Value) -> Vec<String> {
+    let Value::Ref(at) = task else {
+        panic!("a task: {task:?}")
+    };
+    let viewer = ada.host.viewer().clone();
+    let mut history = ada
+        .host
+        .runtime()
+        .open_written_view(
+            &viewer,
+            tilolang_tilo::instance::WINDOW_HISTORY,
+            &viewer,
+            vec![Value::resource(&at.target)],
+        )
+        .unwrap();
+    history.poll_patches().unwrap();
+    texts(history.tree())
+}
+
 /// The text a person field hands back for the person `id`: their identity as the runtime sent it.
 fn pick(id: &str) -> Value {
     Value::text(tilolang_tilo::runtime::ids::actor_text(&Actor::from(
@@ -1833,20 +1853,20 @@ tilo_test_env::scenario! {
             "the chip shows nobody"
         );
 
-        // The picks fold into one step of the task's history, the way one person's changes made in
-        // a row do, and the step reads with what its last change did. The page itself draws the
-        // assignee as a chip, with no label beside it.
-        let shown = texts(page.tree());
+        // The picks fold into one step of the task's history with its making, the way one person's
+        // changes made in a row do, and a step that made the task says so whatever followed it.
+        // The page itself draws the assignee as a chip, with no label beside it.
+        let shown = history_texts(&ada, &task);
         assert!(
-            shown.join(" ").contains("You unassigned it"),
-            "clearing the assignee last, the step says so: {shown:?}"
+            shown.join(" ").contains("You created it"),
+            "the step that made the task leads with its making: {shown:?}"
+        );
+        assert!(
+            !shown.join(" ").contains("You unassigned it"),
+            "the picks after the making stand under it, not in its lead: {shown:?}"
         );
         pick_the_assignee(&ada, &mut page, &key, &pick("ben"));
         let shown = texts(page.tree());
-        assert!(
-            shown.join(" ").contains("You assigned it to"),
-            "assigned last, the step says that instead: {shown:?}"
-        );
         assert!(
             !shown.iter().any(|text| text == "Assignee"),
             "the assignee is a chip, not a labelled field: {shown:?}"
@@ -2341,8 +2361,8 @@ fn labels(commands: &[Command]) -> Vec<&str> {
         .collect()
 }
 
-/// The home list's drawn row for a task.
-fn home_row<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
+/// The home list's drawn row for a task, with its menu when `menu`.
+fn home_row<'a>(view: &'a mut ViewInstance, want: &Value, menu: bool) -> &'a UiNode {
     view.poll_patches().unwrap();
     let list = view
         .tree()
@@ -2370,6 +2390,12 @@ fn home_row<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
         }
     }
     let index = found.unwrap_or_else(|| panic!("no drawn row for the task"));
+    if menu {
+        // As the window asks when the person opens the row's menu.
+        let key = view.row_key(&list, index);
+        view.menu_row(&list, key.as_deref());
+        view.poll_patches().unwrap();
+    }
     view.row(&list, index)
         .expect("the row it listed")
         .expect("the row it listed")
@@ -2378,7 +2404,7 @@ fn home_row<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
 /// The menu a task's row offers: the part of the item the row presents, not one of a row drawn
 /// inside it — a task opened in the row holds rows of its own.
 fn row_menu<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
-    let row = home_row(view, want);
+    let row = home_row(view, want, true);
     let item = row
         .of_kind("ui.ListItem")
         .into_iter()
@@ -2404,7 +2430,7 @@ fn row_commands(view: &mut ViewInstance, want: &Value) -> Vec<Command> {
 
 /// The command a task's row runs when it is swiped, as its label reads.
 fn row_swipe(view: &mut ViewInstance, want: &Value) -> Option<String> {
-    let row = home_row(view, want);
+    let row = home_row(view, want, false);
     let swipe = row
         .of_kind("part")
         .into_iter()

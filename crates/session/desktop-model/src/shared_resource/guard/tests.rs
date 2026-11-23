@@ -511,7 +511,7 @@ tilo_test_env::scenario! {
 
     phase a_view_of_the_layout_is_a_record_of_the_desktop;
     // Who writes a person's view of the layout is the workspace's policy's to say
-    // (`tilo_action_policy::roles::person_view_grant`); the desktop knows it for one of its records.
+    // (`tilo_action_policy::roles::own_records`); the desktop knows it for one of its records.
     {
         use crate::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
         use crate::person_view::resource_of;

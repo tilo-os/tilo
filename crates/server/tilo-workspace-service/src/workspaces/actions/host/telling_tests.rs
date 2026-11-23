@@ -26,7 +26,7 @@ use super::super::tests::{caller, settled};
 use super::own_tests::{create_own, let_in, open};
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::TestHost;
-use crate::workspaces::tests::{governor, guest_device, test_host_taking_part as test_host};
+use crate::workspaces::tests::{governor, guest_device, test_host};
 
 pub(super) const ASSISTANT: &str = "assistant";
 

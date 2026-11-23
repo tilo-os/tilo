@@ -243,26 +243,10 @@ fn rest_mention(text: &str) -> Option<Mention> {
                 len: text.len().saturating_sub(used.len()),
             });
         }
-        if let Some(arg) = rest.strip_prefix("/search?q=") {
-            let (arg, used) = token(arg);
-            return Some(Mention {
-                call: Call::Find,
-                arg: (!arg.is_empty()).then(|| arg.to_owned()),
-                len: text.len().saturating_sub(used.len()),
-            });
-        }
         if let Some(arg) = rest.strip_prefix("/views?path=") {
             let (arg, used) = token(arg);
             return Some(Mention {
                 call: Call::View,
-                arg: (!arg.is_empty()).then(|| arg.to_owned()),
-                len: text.len().saturating_sub(used.len()),
-            });
-        }
-        if let Some(arg) = rest.strip_prefix("/links?path=") {
-            let (arg, used) = token(arg);
-            return Some(Mention {
-                call: Call::Link,
                 arg: (!arg.is_empty()).then(|| arg.to_owned()),
                 len: text.len().saturating_sub(used.len()),
             });
@@ -388,13 +372,12 @@ fn render(call: Call, arg: Option<&str>, surface: Surface) -> String {
                     ),
                 },
             ),
-            Call::Find => arg.map_or_else(
-                || format!("GET /v1/workspaces/{WORKSPACE}/search"),
-                |arg| format!("GET /v1/workspaces/{WORKSPACE}/search?q={arg}"),
-            ),
-            Call::Link => arg.map_or_else(
-                || format!("GET /v1/workspaces/{WORKSPACE}/links"),
-                |arg| format!("GET /v1/workspaces/{WORKSPACE}/links?path={arg}"),
+            Call::Find => {
+                format!("POST /v1/workspaces/{WORKSPACE}/resources/search/actions/find")
+            }
+            Call::Link => format!(
+                "POST /v1/workspaces/{WORKSPACE}/resources/{}/actions/share-link",
+                arg.unwrap_or("{path}")
             ),
             Call::Status => format!("GET /v1/workspaces/{WORKSPACE}/invocations/{{invocation}}"),
         },

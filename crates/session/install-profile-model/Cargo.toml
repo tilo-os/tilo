@@ -5,11 +5,18 @@ edition = "2024"
 publish = false
 license.workspace = true
 
+[features]
+# The app keeps the profile in its resource document: its model and schema
+# derive from the plain types here. The standalone media tools take the crate
+# without this, so their build resolves no document stack.
+model = ["dep:tilo-resource"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-
-[dev-dependencies]
 serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
 
 [lints]
 workspace = true

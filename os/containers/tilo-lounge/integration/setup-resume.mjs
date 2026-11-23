@@ -35,7 +35,7 @@ import {execFile} from 'node:child_process';
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
-import {stepLimit, shellMetrics, machine} from './waits.mjs';
+import {stepLimit, shellMetrics, machine, keepRecoveryWords} from './waits.mjs';
 import {clock} from './timing.mjs';
 
 const [site, server, tiloBin, out] = process.argv.slice(2);
@@ -248,7 +248,7 @@ const copy = async (tab, id) => {
   // change the page tells anyone about, so this is the one wait here that
   // reads on a clock, and it holds a step.
   const read = `navigator.clipboard.readText().then(text =>
-    text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`;
+    text.match(/(?:tilo|sh -s) (?:login|device add) /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`;
   for (const deadline = Date.now() + stepLimit(1); Date.now() < deadline;) {
     const text = await tab.evaluate(read).catch(() => '');
     if (text) return text;
@@ -256,7 +256,8 @@ const copy = async (tab, id) => {
   }
   return null;
 };
-const codeOf = prompt => prompt?.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})/)?.[1] ?? null;
+const codeOf = prompt => prompt?.match(/(?:tilo|sh -s) login (tilo1[0-9a-f]+)/)?.[1]
+  ?? prompt?.match(/(?:tilo|sh -s) device add (\S+)/)?.[1] ?? null;
 const steps = tab => tab.evaluate(`document.getElementById('first-screen-steps')?.innerText ?? ''`).catch(() => '');
 
 // The agent's computer, as agent-setup.mjs makes it: its own home, where the
@@ -267,7 +268,7 @@ const computer = name => {
   return {PATH: `${join(home, 'bin')}:${process.env.PATH}`, HOME: home, XDG_STATE_HOME: join(home, 'state'),
     XDG_CONFIG_HOME: join(home, 'config')};
 };
-// `tilo login CODE --agent Reviewer` on that computer, then what its words ask
+// `tilo login TICKET --agent Reviewer` on that computer, then what its words ask
 // of the agent: Tilo's server added to the agent's own configuration and
 // confirmed with `tilo agent check --config`. A promise of how both ended, and
 // `asked`, which resolves once the login says it waits for the person's tab,
@@ -275,7 +276,7 @@ const computer = name => {
 const login = (code, env) => {
   let saidWaiting;
   const asked = new Promise(resolve => { saidWaiting = resolve; });
-  const child = execFile(tiloBin, ['login', code, '--site', site, '--agent', 'Reviewer'], {env, timeout: 600_000, maxBuffer: 1 << 20});
+  const child = execFile(tiloBin, ['login', code, '--agent', 'Reviewer'], {env, timeout: 600_000, maxBuffer: 1 << 20});
   let stdout = '', stderr = '';
   child.stdout.on('data', chunk => { stdout += chunk; });
   child.stderr.on('data', chunk => { stderr += chunk; if (/Waiting for the person/.test(stderr)) saidWaiting(true); });
@@ -299,6 +300,10 @@ let frame = await firstFrame(tab);
 // entry's answer (first-screen.inline.js): the screen is held at the first frame,
 // and shown once the entry let the person in.
 check(frame.step === null && frame.held, '1. a browser new here holds the first screen at its first frame, until the entry answers', JSON.stringify(frame));
+// The join behind the held first screen founds the person: the entry shows
+// their 24 recovery words once, and the screen waits for them to be kept
+// before it offers to set up.
+await keepRecoveryWords(tab, 'setup: founded');
 // Nothing of the person's is made while they are still deciding: the button
 // offers the prompt, and pressing it makes the code — and with it, on the
 // host, the workspace the code names.
@@ -416,6 +421,9 @@ await close(tab);
 const later = await browser.context();
 tab = await tabIn(later, 'closed-mid-way');
 await tab.navigate(site);
+// Another person's browser: its person is founded too, so the card comes
+// once here before the first screen offers to set up.
+await keepRecoveryWords(tab, 'setup 6: founded');
 await makePrompt(tab);
 const promptC = await copy(tab, 'first-screen-agent');
 const agentC = login(codeOf(promptC), computer('two'));
@@ -445,6 +453,7 @@ await close(tab);
 const third = await browser.context();
 tab = await tabIn(third, 'expiry');
 await tab.navigate(site);
+await keepRecoveryWords(tab, 'setup 7: founded');
 await makePrompt(tab);
 const promptD = await copy(tab, 'first-screen-agent');
 // The code's ten minutes pass while the tab is closed: kept as having run out.
@@ -477,6 +486,7 @@ await close(tab);
 const quick = await browser.context();
 tab = await tabIn(quick, 'login-at-once');
 await tab.navigate(site);
+await keepRecoveryWords(tab, 'setup 9: founded');
 const offerE = await makePrompt(tab);
 const agentE = login(codeOf(offerE), computer('four'));
 report.admittedBeforeQuickAgent = await tab.evaluate(`!!localStorage.getItem('tilo-host-memberships')`);

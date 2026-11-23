@@ -7,17 +7,12 @@
 //! message vocabulary itself.
 //!
 //! [`NeighbourPayloads`] answers them for the desktop's peer-sync messages
-//! (`NeighbourMsg`); it is the only place compaction, surface admission,
-//! retained-checkpoint replacement and the live checkpoint check decode one.
+//! (`NeighbourMsg`); it is the only place surface admission decodes one.
 //!
 //! The adapter is injected, not looked up: a host takes one when it opens
 //! ([`ServiceConfig::shell_payloads`](crate::service::ServiceConfig::shell_payloads),
-//! [`NeighbourPayloads`] by default) and hands it to the compactor and to every
-//! workspace store it opens, and the peer session asks the store of the
-//! workspace it serves. Workspace governance still uses the desktop's
-//! vocabulary directly.
-//! An adapter that classifies nothing makes the host keep every entry and
-//! fold none: unknown data never grants removal.
+//! [`NeighbourPayloads`] by default). Workspace governance still uses the
+//! desktop's vocabulary directly.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -98,17 +93,6 @@ pub trait ShellPayloads: Send + Sync + 'static {
         op: collab_types::SignedOp,
     ) -> Result<Vec<u8>, String>;
 
-    /// The channel and retained body that introduce `cert` to the devices a
-    /// replay reaches.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the body cannot be encoded.
-    fn host_identity(
-        &self,
-        cert: &tilo_user_identity::DeviceCert,
-    ) -> Result<([u8; 32], Vec<u8>), String>;
-
     /// What checkpoint `body`, framed for `channel`, is: `None` unless it is
     /// one whole message (no trailing bytes) that retains as a checkpoint on
     /// exactly that channel.
@@ -157,7 +141,7 @@ pub trait ShellPayloads: Send + Sync + 'static {
 
 /// The desktop's adapter, as a host
 /// ([`ServiceConfig::new`](crate::service::ServiceConfig::new)) and
-/// [`WorkspaceStore::open`](crate::store::WorkspaceStore::open) wire it.
+/// [`WorkspaceStore::open`](crate::workspace_files::WorkspaceFiles::open) wire it.
 #[must_use]
 pub fn neighbour() -> Arc<dyn ShellPayloads> {
     Arc::new(NeighbourPayloads)

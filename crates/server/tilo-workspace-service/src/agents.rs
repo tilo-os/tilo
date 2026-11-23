@@ -69,6 +69,7 @@ use tilo_actions::remote::workspace_events;
 use tilo_actions::remote::workspace_initiative;
 use turn_provider::TurnProvider;
 
+pub mod agent_keys;
 pub mod assistant;
 pub mod events;
 pub mod initiative;
@@ -560,7 +561,7 @@ type Searched = Pending<Result<Vec<tilo_actions::remote::Found>, ActionCallError
 /// What a turn on this server finds in what its workspace holds.
 ///
 /// The workspace's action service searches what the workspace holds for every device that asks
-/// it ([`RemoteActionMessage::SearchRequest`]): each resource by what its app tells search
+/// it ([`tilo_actions::remote::search::FIND`]): each resource by what its app tells search
 /// about it, and the files of the workspace's folder. A turn this server carries out asks the
 /// same service the same question, as the caller its tools act as: the person's session,
 /// handed to the agent on that turn with the rules the turn is decided by. So a turn finds what
@@ -579,18 +580,13 @@ impl tilo_actions::remote::ResourceSearch for WorkspaceActionProvider {
         needle: &str,
         within: &tilo_actions::remote::Within,
     ) -> Searched {
-        self.serve(
-            caller,
-            RemoteActionMessage::SearchRequest {
-                correlation: 0,
-                needle: needle.to_owned(),
-                within: within.clone(),
-            },
-        )
-        .map(|answer| match answer {
-            RemoteActionMessage::SearchResponse { result, .. } => result,
-            _ => Err(unavailable()),
-        })
+        use tilo_actions::remote::search;
+        let request = search::Query::request(InvocationId::new(), needle, within);
+        self.serve(caller, RemoteActionMessage::Invoke(request))
+            .map(|answer| match answer {
+                RemoteActionMessage::Receipt(receipt) => search::found(receipt),
+                _ => Err(unavailable()),
+            })
     }
 }
 
@@ -621,8 +617,8 @@ impl ChangeFeed for WorkspaceActionProvider {
 /// Run the agents of the workspaces a person's own device holds, in the device's own workspace
 /// service once `service` holds it: the one engine a host runs, in this one daemon, with its
 /// turns' calls decided by the device's broker (`actions`) as the person's own calls are. It
-/// begins every turn its workspaces' records ask of their agents ([`ServerAgents::run`]). A
-/// service whose work runs no agents runs none here.
+/// takes every turn its workspaces' records ask of their agents that is this device's to take
+/// ([`ServerAgents::run`], [`crate::work::takes_turn`]).
 pub async fn on_device(
     service: crate::service::ServiceSlot,
     actions: Arc<dyn ActionProvider + Send + Sync>,
@@ -633,17 +629,24 @@ pub async fn on_device(
 
 /// [`on_device`] for the service whose `workspaces` the device opened already.
 pub async fn run_on_device(workspaces: Workspaces, actions: Arc<dyn ActionProvider + Send + Sync>) {
-    if !workspaces.work().agents {
-        return;
-    }
     // The person's own device calls the model their workspace linked where it is, one on their
     // own network or on this machine included: a local model answers with no network at all.
     workspaces.call_private_model_addresses(true);
     telling::start(&workspaces);
+    // Each agent signs its calls with a key of its own, made here from its person's root.
+    let keys = match agent_keys::FleetAgentKeys::from_env() {
+        Ok(keys) => Arc::new(keys),
+        Err(error) => {
+            tracing::warn!("this device runs no agents: its identity store is not open ({error})");
+            return;
+        }
+    };
     tracing::info!(
         "this device runs its workspaces' agents, each on the model its workspace linked"
     );
-    ServerAgents::on_device(workspaces, actions).run().await;
+    ServerAgents::on_device(workspaces, actions, keys)
+        .run()
+        .await;
 }
 
 /// Whether a write to `app`'s records may ask the agents here something: Chat's, the tracker's,
@@ -653,7 +656,7 @@ fn wakes(app: &str) -> bool {
 }
 
 /// What carries one turn's model calls, made fresh for each turn on its own thread: a test's
-/// script, standing where a workspace's model would ([`ServerAgents::for_test`]).
+/// script, standing where a workspace's model would ([`ServerAgents::scripted`]).
 pub type Model = Arc<dyn Fn() -> Option<Box<dyn PlanTurns>> + Send + Sync>;
 
 /// Something a person asked an agent, and where its answer goes.
@@ -674,7 +677,7 @@ pub enum Ask {
         attempt: u32,
         /// Whether what it is about is the asker's and the agent's alone: every member who may
         /// read it is one of the two ([`crate::asks::private_to`]). Only
-        /// there is a turn told and does it keep what its agent learns about its keeper
+        /// there is a turn told and does it keep what its agent learns about the person who asked
         /// ([`learned`]).
         private: bool,
     },
@@ -773,55 +776,115 @@ pub trait SessionDevices: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<[u8; 32]>> + Send + 'a>>;
 }
 
-/// What runs each agent as its own approved key on a host: where its approval is read, and the
-/// signing sessions that hold the keys. A person's own device has none, and its agents act
-/// through its broker, held to their own bound.
-type Roster = Option<(Arc<dyn SessionDevices>, tilo_agent_session::AgentSessions)>;
+/// What each agent acts under: on a host, its own approved key, where its approval is read and
+/// the signing sessions that hold the keys; on the person's device, the key that device makes
+/// for it ([`agent_keys`]).
+#[derive(Clone)]
+enum Roster {
+    Hosted(Arc<dyn SessionDevices>, tilo_agent_session::AgentSessions),
+    Device(Arc<dyn agent_keys::AgentKeys>),
+}
 
-/// `agent` of `workspace`, working for `person`: what everything it does there goes as. On a
-/// host that is its own approved key, each invocation signed by that key; on the person's own
-/// device it is the agent their device hands its turns to, which the device's broker holds to
-/// the agent's own bound.
+/// `agent` of `workspace` as its own key, working for `person`: what everything it does there
+/// goes as, each invocation signed by that key.
 ///
 /// # Errors
-/// The agent has no keeper, or no approved signing session for the workspace, or the person is
-/// admitted on no device here.
+/// The agent belongs to no person; on a host, no approved signing session for the workspace; on a
+/// device, no key of its own there.
 async fn agent_caller(
     roster: &Roster,
-    workspaces: &Workspaces,
     workspace: WorkspaceId,
     agent: &Agent,
     person: [u8; 32],
 ) -> Result<Caller, String> {
-    let Some((server, sessions)) = roster else {
-        let device = workspaces
-            .work_device(
-                workspace,
-                person,
-                &tilo_action_policy::MemberId::agent(agent.id.0.clone()),
-            )
-            .await
-            .ok_or("the person who asked is admitted here on no device")?;
-        return Ok(Caller::authenticated(person, device)
-            .in_workspace(workspace.to_string())
-            .delegated_to(agent.id.0.clone())
-            .named(&agent.name));
-    };
-    let keeper = tilo_action_policy::PersonId::parse(&agent.keeper)
+    let root = tilo_action_policy::PersonId::parse(&agent.keeper)
         .ok()
-        .and_then(|keeper| keeper.root())
-        .ok_or("the hosted agent has no keeper")?;
-    let device = server
-        .session_device(sessions, workspace, &agent.id.0, &keeper)
-        .await
-        .filter(|device| {
-            sessions.matches_roster(device, workspace, &agent.id.0, &keeper, agent.created_at)
-        })
-        .ok_or("the hosted agent has no approved signing session for this workspace")?;
-    Ok(Caller::delegated_agent(agent.id.0.clone(), keeper, device)
+        .and_then(|its| its.root())
+        .ok_or("the agent belongs to no person")?;
+    let key = match roster {
+        Roster::Hosted(server, sessions) => server
+            .session_device(sessions, workspace, &agent.id.0, &root)
+            .await
+            .filter(|device| {
+                sessions.matches_roster(device, workspace, &agent.id.0, &root, agent.created_at)
+            })
+            .ok_or("the hosted agent has no approved signing session for this workspace")?,
+        Roster::Device(keys) => keys.grant(workspace, &agent.id.0, &agent.name, root)?,
+    };
+    let caller = Caller::delegated_agent(agent.id.0.clone(), root, key)
         .in_workspace(workspace.to_string())
         .named(&agent.name)
-        .on_roster(agent.created_at, person))
+        .on_roster(agent.created_at, person);
+    Ok(match roster {
+        // A host reads the agent's bound where it decides its approved key; on the person's
+        // device the agent carries the one its record keeps, which the device's broker holds
+        // it to.
+        Roster::Hosted(..) => caller,
+        Roster::Device(_) => caller.held_to(agent.turn_rules(&workspace.to_string())),
+    })
+}
+
+/// The agents' keys an engine holds apart from its keeper's: on a host, the approved signing
+/// sessions of its roster. A device makes an agent's key from its keeper's root, so only the
+/// keeper's devices hold one there.
+struct EngineKeys(Roster);
+
+impl crate::work::AgentEngine for EngineKeys {
+    fn holds<'a>(
+        &'a self,
+        workspace: &'a str,
+        agent: &'a str,
+        keeper: &'a [u8; 32],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async move {
+            let (Roster::Hosted(server, sessions), Some(workspace)) =
+                (&self.0, WorkspaceId::parse(workspace))
+            else {
+                return false;
+            };
+            server
+                .session_device(sessions, workspace, agent, keeper)
+                .await
+                .is_some()
+        })
+    }
+}
+
+/// The turn of work `turn` of `workspace` is, which one device takes
+/// ([`crate::work::takes_turn`]): named after its agent and the place it was asked in, about
+/// the record that keeps the ask.
+///
+/// # Errors
+/// The agent names no keeper by their root.
+pub(super) fn agent_turn(workspace: &str, turn: &Turn) -> Result<crate::work::Turn, String> {
+    let (app, record) = match &turn.ask {
+        Ask::Asked { app, ask, .. } => (app.as_str(), ask.as_str()),
+        Ask::Issue { record, .. } => (TASKS, record.as_str()),
+    };
+    let (_, _, place) = going::place(workspace, turn);
+    agent_turn_at(&turn.agent, place, (app, record))
+}
+
+/// [`agent_turn`] for `agent` answering at `place` about `record` of `app`.
+///
+/// # Errors
+/// The agent names no keeper by their root.
+pub(super) fn agent_turn_at(
+    agent: &Agent,
+    place: String,
+    (app, record): (&str, &str),
+) -> Result<crate::work::Turn, String> {
+    let keeper = tilo_action_policy::PersonId::parse(&agent.keeper)
+        .map_err(|error| format!("the agent names no keeper: {error}"))?
+        .root()
+        .ok_or("the agent names no keeper by their root")?;
+    Ok(crate::work::Turn::Agent {
+        agent: agent.id.0.clone(),
+        place,
+        keeper,
+        app: app.to_owned(),
+        record: record.to_owned(),
+    })
 }
 
 /// The agents a host runs for the workspaces it governs.
@@ -861,28 +924,28 @@ impl ServerAgents {
         devices: Arc<dyn SessionDevices>,
         sessions: tilo_agent_session::AgentSessions,
     ) -> Self {
-        Self::build(workspaces, actions.into(), None, Some((devices, sessions)))
+        Self::build(
+            workspaces,
+            actions.into(),
+            None,
+            Roster::Hosted(devices, sessions),
+        )
     }
 
     /// The agents a person's own device runs for the workspaces it holds: their turns' calls go
-    /// through the device's broker (`actions`), decided there as the person's own calls are.
+    /// through the device's broker (`actions`), each signed by the agent's own key from `keys`.
     #[must_use]
     pub fn on_device(
         workspaces: Workspaces,
         actions: Arc<dyn ActionProvider + Send + Sync>,
+        keys: Arc<dyn agent_keys::AgentKeys>,
     ) -> Self {
-        Self::build(workspaces, EngineActions::Device(actions), None, None)
-    }
-
-    /// Exercise turn machinery in fixtures that do not provision peer sessions.
-    #[cfg(feature = "test-support")]
-    #[must_use]
-    pub fn for_test(
-        workspaces: Workspaces,
-        actions: impl Into<EngineActions>,
-        model: Option<Model>,
-    ) -> Self {
-        Self::build(workspaces, actions.into(), model, None)
+        Self::build(
+            workspaces,
+            EngineActions::Device(actions, Arc::clone(&keys)),
+            None,
+            Roster::Device(keys),
+        )
     }
 
     fn build(
@@ -891,6 +954,8 @@ impl ServerAgents {
         model: Option<Model>,
         roster: Roster,
     ) -> Self {
+        // The device takes the turns of its workspaces' agents that are its own from now on.
+        workspaces.run_agents(Arc::new(EngineKeys(roster.clone())));
         let agents = Self {
             workspaces,
             actions,
@@ -936,11 +1001,9 @@ impl ServerAgents {
         agent: &Agent,
         person: [u8; 32],
     ) -> Result<Caller, String> {
-        // A sub-agent this server works acts under the approval of the agent that heads its
-        // line; on a person's own device the agent their device hands the turn to is the one
-        // that works.
-        if agent.sub.is_none() || self.roster.is_none() {
-            return agent_caller(&self.roster, &self.workspaces, workspace, agent, person).await;
+        // A sub-agent acts under the approval of the agent that heads its line.
+        if agent.sub.is_none() {
+            return agent_caller(&self.roster, workspace, agent, person).await;
         }
         let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let roster = self
@@ -950,11 +1013,9 @@ impl ServerAgents {
         // A line whose head is gone ends at the sub-agent itself, which holds no approval:
         // nothing is done in its name then.
         let approved = roster.root_of(agent);
-        Ok(
-            agent_caller(&self.roster, &self.workspaces, workspace, approved, person)
-                .await?
-                .working_under(agent.id.0.clone(), &agent.name),
-        )
+        Ok(agent_caller(&self.roster, workspace, approved, person)
+            .await?
+            .working_under(agent.id.0.clone(), &agent.name))
     }
 
     /// These agents, told the devices this server placed itself for its workspaces' windows:
@@ -1050,11 +1111,6 @@ impl ServerAgents {
     /// # Errors
     /// The workspace's records could not be read.
     pub async fn look(&self, workspace: &str) -> Result<(), String> {
-        // A workspace is worked by the device that holds it: a device that keeps only a member
-        // copy of one leaves its agents to that device, so no agent answers twice.
-        if self.workspaces.is_member(workspace).await? {
-            return Ok(());
-        }
         // What a person answered about a use of their vault is carried out
         // whether or not anything asks an agent now.
         Box::pin(self.settle_uses(workspace)).await;
@@ -1142,6 +1198,11 @@ impl ServerAgents {
                     let agents = self.clone();
                     let workspace = workspace.to_owned();
                     tokio::spawn(async move {
+                        // The device whose turn it is ends it.
+                        if agents.claim(&workspace, &turn).await.is_none() {
+                            drop(held);
+                            return;
+                        }
                         let ended = (turn.agent.id.0.clone(), turn.ask.clone());
                         if let Err(error) = agents.end(&workspace, &turn, &Outcome::Cancelled).await
                         {
@@ -1175,11 +1236,16 @@ impl ServerAgents {
                     let agents = self.clone();
                     let workspace = workspace.to_owned();
                     tokio::spawn(async move {
+                        // Another device whose turn it is answers it, or none that may.
+                        let Some(claim) = agents.claim(&workspace, &turn).await else {
+                            drop(held);
+                            return;
+                        };
                         let agent = turn.agent.id.0.clone();
                         // Boxed, as in `answer`: the task holds a pointer to the turn and
                         // carries none of it in a future of its own.
                         let (ended_on, ended) =
-                            Box::pin(agents.answer_going(&workspace, &turn, &held)).await;
+                            Box::pin(agents.answer_going(&workspace, &turn, &held, claim)).await;
                         if let Err(error) = ended {
                             tracing::warn!(%workspace, %agent, %error, "a host agent's turn did not finish");
                         }
@@ -1190,6 +1256,28 @@ impl ServerAgents {
             }
         }
         current
+    }
+
+    /// This device's claim on `turn` of `workspace`: none where another device takes it, or
+    /// this one may not ([`crate::work::takes_turn`]). The claim is named after the agent and
+    /// the place it was asked in: whatever is written there while the turn goes is answered on
+    /// the device that has it, and a claim stays until it goes unwritten for a minute, so the
+    /// device that answered in a conversation answers what is written there next.
+    async fn claim(&self, workspace: &str, turn: &Turn) -> Option<Arc<crate::work::Claim>> {
+        let ask = match agent_turn(workspace, turn) {
+            Ok(ask) => ask,
+            Err(error) => {
+                tracing::warn!(%workspace, agent = %turn.agent.id.0, %error, "nobody answers for an agent");
+                return None;
+            }
+        };
+        match crate::work::takes_turn(&self.workspaces, workspace, &ask).await {
+            Ok(claim) => Some(Arc::new(claim)),
+            Err(not_taken) => {
+                tracing::debug!(%workspace, agent = %turn.agent.id.0, %not_taken, "this device does not take an agent's turn");
+                None
+            }
+        }
     }
 
     /// Look at `workspace` once a turn ended on `past`: its place is free, so what waited for
@@ -1241,7 +1329,11 @@ impl ServerAgents {
             .document_routes(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        if !routes.iter().any(|(app, _)| app == TASKS) && self.found_tracker(workspace).await {
+        // The device that founded the workspace founds its tracker; the others wait for it.
+        if !routes.iter().any(|(app, _)| app == TASKS)
+            && !self.workspaces.is_member(workspace).await?
+            && self.found_tracker(workspace).await
+        {
             routes = self
                 .workspaces
                 .document_routes(workspace)
@@ -1377,10 +1469,7 @@ impl ServerAgents {
         let roster: BTreeMap<String, Agent> = agents
             .agents
             .iter()
-            // A sub-agent worked elsewhere is its own runner's.
-            .filter(|agent| {
-                agent.is_active() && agent.mcp_client.is_none() && sub_agents::worked_here(agent)
-            })
+            .filter(|agent| agent.is_active() && agent.mcp_client.is_none())
             .map(|agent| (agent.id.0.clone(), agent.clone()))
             .collect();
         self.add_members(workspace, &roster).await;
@@ -1440,14 +1529,18 @@ impl ServerAgents {
     /// Answer `turn` in `workspace`: tell the person it is taken, work through the agent's tools
     /// until the model has its answer, and give the answer where the ask was made. A turn of
     /// the same agent that goes in the same conversation already is left to go on, and a
-    /// message that is owed no answer any more is not begun ([`Self::owed_now`]).
+    /// message that is owed no answer any more is not begun ([`Self::owed_now`]). A turn that
+    /// is another device's is left to it ([`Self::claim`]).
     ///
     /// # Errors
     /// The person is not admitted here on any device, or the answer could not be written.
     pub async fn answer(&self, workspace: &str, turn: &Turn) -> Result<(), String> {
         match self.going.enter(workspace, turn) {
             going::Entered::Began(held) => {
-                let (_, ended) = Box::pin(self.answer_going(workspace, turn, &held)).await;
+                let Some(claim) = self.claim(workspace, turn).await else {
+                    return Ok(());
+                };
+                let (_, ended) = Box::pin(self.answer_going(workspace, turn, &held, claim)).await;
                 drop(held);
                 ended
             }
@@ -1467,8 +1560,8 @@ impl ServerAgents {
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or("the ask names no person")?;
         // A host serves only a person it admits on a device of theirs; on the person's own
-        // device, the caller is that device ([`agent_caller`]).
-        if self.roster.is_some()
+        // device the person is the one whose root made the agent's key ([`agent_caller`]).
+        if matches!(self.roster, Roster::Hosted(..))
             && self
                 .workspaces
                 .person_device(workspace_id, person)
@@ -1589,6 +1682,7 @@ impl ServerAgents {
         workspace: &str,
         turn: &Turn,
         going: &going::Going,
+        claim: Arc<crate::work::Claim>,
     ) -> (Ask, Result<(), String>) {
         // The place is this turn's own from here on, and nothing else answers in it: what the
         // workspace owes now is what begins.
@@ -1602,7 +1696,8 @@ impl ServerAgents {
             Err(error) => return (turn.ask.clone(), Err(error)),
         };
         let began = turn.ask.clone();
-        let reply = scope.reply(&turn);
+        let mut reply = scope.reply(&turn);
+        reply.claim = Some((claim, going.stop_flag()));
         if Self::left_begun(&reply).await {
             // Its steps may have changed things already, and nothing says which: starting over
             // would do them twice. It ends here, and asking again is the person's to do.
@@ -1620,13 +1715,13 @@ impl ServerAgents {
             self.sub_ended(&scope, &turn, &left, false).await;
             return (turn.ask, ended);
         }
-        // An ask's turn is this server's only once its claim holds: another device of the
-        // workspace that claimed it first answers it instead.
+        // The turn is this device's: its claim holds ([`Self::claim`]), and its reply starts.
         if let Some(replying) = &reply.replying {
-            match replying.take().await {
-                Ok(true) => {}
-                Ok(false) => return (turn.ask, Ok(())),
-                Err(error) => return (turn.ask, Err(error)),
+            if let Err(error) = reply.kept().await {
+                return (turn.ask, Err(error));
+            }
+            if let Err(error) = replying.take().await {
+                return (turn.ask, Err(error));
             }
         }
         if matches!(turn.ask, Ask::Asked { .. })
@@ -2018,10 +2113,7 @@ impl TurnScope {
             .clone()
             .in_agent_session(&session)
             .asked(&turn.asked)
-            .on_roster_turn(cause.clone())
-            // On the person's own device, the agent their device hands the turn to, held to the
-            // bound its own record carries.
-            .on_turn(cause, turn.agent.turn_rules(&self.workspace));
+            .on_roster_turn(cause);
         let provider = self.provider.clone();
         Reply {
             provider,
@@ -2030,6 +2122,7 @@ impl TurnScope {
             ask: turn.ask.clone(),
             written: written::Written::of(turn),
             replying: self.replying.clone(),
+            claim: None,
         }
     }
 }
@@ -2045,12 +2138,34 @@ struct Reply {
     written: written::Written,
     /// Where the reply of a turn made from an ask is written.
     replying: Option<asked::Replying>,
+    /// This device's claim on the turn, with the turn's stop: renewed with each write, and the
+    /// turn stops once another device has it ([`Self::kept`]).
+    claim: Option<(Arc<crate::work::Claim>, Arc<std::sync::atomic::AtomicBool>)>,
 }
 
 impl Reply {
-    /// Tell the person what the agent is doing now. A note Chat does not take costs the person
-    /// the step alone, and [`Self::work`] says why.
+    /// Whether the turn is still this device's, its claim pushed out again: a turn another
+    /// device took is stopped and writes nothing more, so one device answers.
+    ///
+    /// # Errors
+    /// Another device has the turn.
+    async fn kept(&self) -> Result<(), String> {
+        let Some((claim, stop)) = &self.claim else {
+            return Ok(());
+        };
+        if claim.renew().await {
+            return Ok(());
+        }
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        Err("another device took this turn".to_owned())
+    }
+
+    /// Tell the person what the agent is doing now, as a step on the ask's reply. A step the
+    /// reply does not take costs the person the step alone.
     async fn doing(&self, did: &str) {
+        if self.kept().await.is_err() {
+            return;
+        }
         if let Some(replying) = &self.replying {
             replying.step(did, "", false).await;
         }
@@ -2076,6 +2191,7 @@ impl Reply {
     /// The reply did not keep that it ended.
     async fn went_on(&self) -> Result<(), String> {
         if let Some(replying) = &self.replying {
+            self.kept().await?;
             return replying
                 .finish(&self.written.below(WENT_ON), crate::asks::AskState::Done)
                 .await;
@@ -2089,12 +2205,14 @@ impl Reply {
     /// The reply did not keep how it ended, and whoever works the turn reads why.
     async fn finished(&self, outcome: &Outcome) -> Result<(), String> {
         if let Some(replying) = &self.replying {
+            self.kept().await?;
             let (words, state) = self.written.ending(outcome);
             return replying.finish(&words, state).await;
         }
         match &self.ask {
             Ask::Asked { .. } => Err("the ask's reply is not open here".to_owned()),
             Ask::Issue { record, issue, .. } => {
+                self.kept().await?;
                 let words = match outcome {
                     Outcome::Answered(words) | Outcome::Stopped(words) | Outcome::Failed(words) => {
                         words.as_str()
@@ -2458,7 +2576,7 @@ impl tilo_agent_turn::Model for Asking {
 struct Answering<'a> {
     scope: &'a TurnScope,
     going: &'a going::Going,
-    /// What a turn that is its keeper's own keeps of what it learns ([`learned`]).
+    /// What a turn that knows and keeps facts keeps of what it learns ([`learned`]).
     keeping: Option<&'a learned::Keeping>,
     /// Which of the turn's tools only read, by its server's own word of each.
     reads: Mutex<HashSet<String>>,
@@ -2546,7 +2664,7 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
         answer
     }
 
-    /// What the turn keeps about its keeper is carried out here, and the view or document it
+    /// What the turn keeps about its person is carried out here, and the view or document it
     /// answers with;
     /// every other tool is the agent tools'.
     async fn own(&self, call: &ToolCall) -> Option<tilo_agent_turn::Answer> {

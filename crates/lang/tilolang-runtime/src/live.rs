@@ -72,6 +72,9 @@ pub(crate) struct Bound {
     /// Whether the row stands open into its item where it stands: its document is built here,
     /// and in no closed row. A row is built again when it opens or closes.
     pub open: bool,
+    /// Whether the row builds the menu of the item it shows: the host asked for it. A row is
+    /// built again when that changes.
+    pub menu: bool,
     pub retained: Vec<Retained>,
 }
 
@@ -97,6 +100,7 @@ impl Bound {
             changes_at: None,
             says_new: false,
             open: stub.open,
+            menu: stub.menu,
             retained: Vec::new(),
         }
     }
@@ -547,6 +551,7 @@ impl Live {
             changes_at: None,
             says_new: false,
             open: false,
+            menu: true,
             retained: Vec::new(),
         };
         let mut live = Self {
@@ -629,6 +634,7 @@ impl Live {
                 args,
                 lazy: false,
                 open: false,
+                menu: true,
                 depth: 1,
             },
             false,
@@ -1046,7 +1052,7 @@ impl Live {
         // A row of a `list` that stands a divider where its unseen part starts: the divider
         // already says which rows are new, so a row there says it no further.
         let says_new = row.as_deref().is_some_and(|path| self.row_says_new(path));
-        let open = self.bound(id).is_some_and(|b| b.open);
+        let (open, menu) = self.bound(id).map_or((false, true), |b| (b.open, b.menu));
         let old: HashMap<String, BoundId> = old_children
             .iter()
             .filter_map(|c| self.bound(*c).map(|b| (b.key.clone(), *c)))
@@ -1081,6 +1087,7 @@ impl Live {
                 prefix,
                 says_new,
                 open,
+                menu,
                 boundaries: Some(&mut builder),
             }),
         );
@@ -1980,16 +1987,20 @@ impl Boundaries for Builder<'_> {
                     && b.args == stub.args
             });
             if same {
-                let (rendered, dirty, opened) =
-                    self.live.bound(id).map_or((false, false, false), |b| {
-                        (b.rendered, self.live.dirty.contains(&id), b.open)
+                let (rendered, dirty, opened, menu) = self
+                    .live
+                    .bound(id)
+                    .map_or((false, false, false, true), |b| {
+                        (b.rendered, self.live.dirty.contains(&id), b.open, b.menu)
                     });
                 self.new.push(id);
-                if opened != stub.open {
-                    // The row it stands in opened or closed into its item: the call runs again,
-                    // its tree holding the item's document or not.
+                if opened != stub.open || menu != stub.menu {
+                    // The row it stands in opened or closed into its item, or its menu was
+                    // asked for or let go: the call runs again, its tree holding the item's
+                    // document or menu or not.
                     if let Some(b) = self.live.bound_mut(id) {
                         b.open = stub.open;
+                        b.menu = stub.menu;
                     }
                     if !rendered && lazy {
                         return Ok(Vec::new());

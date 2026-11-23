@@ -123,7 +123,7 @@ def _open_beside(ctx, app: DailyApp):
     """Open `app` without closing what is open; its group, window and processes."""
     surfaces0 = {f["window"] for f in ctx.vm.windows()}
     before = _procs(ctx)
-    group, _ = ctx.open_app(_action_id(app), "applications")
+    group, _ = ctx.open_app(_action_id(app))
 
     def presented():
         return next((f for f in ctx.vm.windows() if f["window"] not in surfaces0
@@ -154,7 +154,7 @@ def kept_through_restart(ctx, res):
         # workspace of its own, so the others stand in a workspace behind the one in front: a
         # login reads that one's layout as it reads every other.
         if n == len(KEPT_APPS) - 1 and n > 0:
-            ctx.vm.invoke(core.SESSION, core.CHROME_NEW_WORKSPACE, {"name": f"acc-{token}"})
+            ctx.vm.invoke(core.SESSION, *core.CHROME_NEW_WORKSPACE, {"name": f"acc-{token}"})
         gid, sid, procs = _open(ctx, res, app) if n == 0 else _open_beside(ctx, app)
         frame = _frame(ctx, sid)
         place = place_of_surface(ctx.state(), sid)

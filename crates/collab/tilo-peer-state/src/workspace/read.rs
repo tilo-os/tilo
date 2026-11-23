@@ -80,7 +80,7 @@ pub(crate) fn visit_governance_entries<R: WorkspaceRead, E>(
     read: &R,
     mut visitor: impl for<'a> FnMut(GovernanceEntry<'a>) -> Result<(), E>,
 ) -> Result<(), ReadError<E>> {
-    crate::governance_work::governance_read();
+    crate::work::admission_read();
     let root = automerge::ROOT;
     let owner = read.visit_property(&root, "owner", Selection::Winner, |value| {
         if let WorkspaceValue::Str(value) = value {
@@ -582,7 +582,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn workspace_read_adapter_governance_reads_valid_fields_and_conflict_winners;
+        fn workspace_read_adapter_admission_reads_valid_fields_and_conflict_winners;
 
         phase workspace_read_adapter_governance_ignores_list_and_text_but_reads_later_valid_fields;
         {

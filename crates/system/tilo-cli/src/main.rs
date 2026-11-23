@@ -193,9 +193,14 @@ enum Cmd {
                       tilo -w jane-doe do pdf-viewer/application.pdf#read-form-fields\n\n\
                       `tilo action list` shows what this desktop can do; in a hosted workspace,\n\
                       `tilo ls -w <workspace>` lists what it holds. Options are written name=value; a\n\
-                      single value goes to the one the action needs. With -w, the path is\n\
+                      single value goes to the one the action needs; name=@- reads that value from\n\
+                      standard input, for a secret that should stand in no command line. With -w, the path is\n\
                       app/resource#action in that hosted workspace, over Tilo's API (key:\n\
-                      TILO_API_KEY, or this computer's own when it logged in)."
+                      TILO_API_KEY, or this computer's own when it logged in).\n\n\
+                      On a computer that holds the person's identity, --in-person does it as the\n\
+                      person themselves rather than as the computer's agent: what only they\n\
+                      answer, such as a question their agent asks them\n\
+                      (chat/Messages#answer-question message=<id> answer=allow)."
     )]
     Do {
         /// The action's name, as `tilo action list` lists it, or words of its title.
@@ -496,6 +501,9 @@ enum DeviceCmd {
                       logs in with it reaches this one directly, and this one certifies it as your device."
     )]
     Add {
+        /// The ticket a browser's sign-in prompt carried: sign that browser in as you, instead
+        /// of printing a ticket for a computer.
+        ticket: Option<String>,
         /// What the new computer is: an ordinary member device, or one that administers your
         /// other devices.
         #[arg(long, value_enum, default_value_t = device::Adding::Member)]
@@ -533,6 +541,11 @@ enum DeviceCmd {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// This computer's device key, as hex, made now when it has none. A command that then
+    /// talks to this computer's daemon asks it of a child, as reading the key makes the process
+    /// that reads it one the daemon refuses.
+    #[command(hide = true)]
+    PublicKey,
     /// Which account on this device is the person its identity belongs to: the one whose
     /// proof, signed by the identity's key, names its uid. Prints `NAME UID:GID`; exits 2 when
     /// several prove it. The system asks this as root when it prepares the store.
@@ -1004,6 +1017,7 @@ fn run_system_command(cmd: DeviceCmd) -> Result<ExitCode> {
             | DeviceCmd::Ls { .. }
             | DeviceCmd::Revoke { .. }
             | DeviceCmd::LocalPerson { .. }
+            | DeviceCmd::PublicKey
     ) {
         require_system_provider()?;
     }
@@ -1032,6 +1046,10 @@ fn app_open(args: &[OsString], spelling: &tilo_control::front::Spelling) -> Resu
     Ok(desktop::run_open(&app, &items, spelling))
 }
 
+/// `tilo do`'s option that does the action as the person, not as this computer's agent
+/// ([`person`]).
+const IN_PERSON: &str = "--in-person";
+
 /// `tilo do`: in the hosted workspace `-w` names, else on this desktop. A
 /// `-w` or `--json` after the action lands in its options, and is taken out.
 /// Both answer the one typed shape of Tilo's API, said by one renderer
@@ -1053,13 +1071,22 @@ fn run_do(
     }
     let json = reach.json | args.iter().any(|arg| arg == "--json");
     args.retain(|arg| arg != "--json");
+    let in_person = args.iter().any(|arg| arg == IN_PERSON);
+    args.retain(|arg| arg != IN_PERSON);
     let reach = api::Reach { json, ..reach };
     let Some(workspace) = workspace else {
         return desktop::run_action(desktop::ActionCmd::Run { action, args }, json, spelling);
     };
     let keyed = reach.key_file.is_some() || std::env::var_os(api::KEY_ENV).is_some();
-    if person::answers(&action, keyed) {
+    if person::answers(&action, keyed, in_person) {
         return person::run(&workspace, &action, &args, json);
+    }
+    if in_person {
+        eprintln!(
+            "tilo: {IN_PERSON} acts as the person whose identity this computer holds, with no key named; \
+             this computer holds none (tilo login --new-identity), or a key was named"
+        );
+        return ExitCode::FAILURE;
     }
     hosted::act(reach, &workspace, &action, &args)
 }
@@ -1544,18 +1571,27 @@ fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
         }
         DeviceCmd::Health { gpu: _, json } => health::run_gpu(json),
         DeviceCmd::Add {
+            ticket,
             capability,
             json,
             no_wait,
             plan,
             server,
-        } => device::add(json, capability, no_wait, plan.as_deref(), server),
+        } => device::add(
+            ticket.as_deref(),
+            json,
+            capability,
+            no_wait,
+            plan.as_deref(),
+            server,
+        ),
         DeviceCmd::Ls { json } => device::list(json),
         DeviceCmd::Revoke {
             device: which,
             reason,
             yes,
         } => device::revoke(&which, reason, yes),
+        DeviceCmd::PublicKey => login::print_public_key(),
         DeviceCmd::LocalPerson {
             identity_root,
             passwd,
@@ -2829,20 +2865,21 @@ mod tests {
                 Cli::try_parse_from(["tilo", "workspace", "branch", "Research"]).is_err(),
                 "a branch is named"
             );
+            let server_line = r#"{"origin":"https://tilo.sh"}"#;
             let servers = Cli::try_parse_from([
-                "tilo", "workspace", "servers", "add", "https://tilo.sh", "-w", "Tilo",
+                "tilo", "workspace", "servers", "add", server_line, "-w", "Tilo",
             ])
             .expect("workspace servers add parses");
             assert!(matches!(
                 servers.cmd,
                 Cmd::Workspace {
                     cmd: hosted::WorkspaceCmd::Servers {
-                        cmd: hosted::ServersCmd::Add { ref origin }
+                        cmd: hosted::ServersCmd::Add { ref host }
                     }
-                } if origin == "https://tilo.sh"
+                } if host == server_line
             ));
             let moved = Cli::try_parse_from([
-                "tilo", "workspace", "servers", "move", "https://old.test", "https://tilo.sh",
+                "tilo", "workspace", "servers", "move", "old.example.com", server_line,
                 "-w", "Tilo",
             ])
             .expect("workspace servers move parses");
@@ -2852,7 +2889,7 @@ mod tests {
                     cmd: hosted::WorkspaceCmd::Servers {
                         cmd: hosted::ServersCmd::Move { ref from, ref to }
                     }
-                } if from == "https://old.test" && to == "https://tilo.sh"
+                } if from == "old.example.com" && to == server_line
             ));
             let list = Cli::try_parse_from(["tilo", "action", "list", "volume"]).expect("action list parses");
             assert!(matches!(

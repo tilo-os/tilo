@@ -895,9 +895,9 @@ tilo_test_env::scenario! {
         }
         let bob = Authority::person(workspace.party(BOB));
         workspace
-            .check_invite(BOB, &bob, Role::Editor, &cx(), false)
+            .check_invite(&bob, Role::Editor, &cx(), false)
             .expect("editor invites editor");
-        let refused = workspace.check_invite(BOB, &bob, Role::Owner, &cx(), false);
+        let refused = workspace.check_invite(&bob, Role::Owner, &cx(), false);
         assert_eq!(refused, Err(Refusal::OwnerRole));
         let add = Change::AddMember {
             person: CAROL.into(),
@@ -927,14 +927,11 @@ tilo_test_env::scenario! {
         ));
         let carol = Authority::person(workspace.party(CAROL));
         assert_eq!(
-            workspace.check_invite(CAROL, &carol, Role::Editor, &cx(), false),
-            Err(Refusal::AboveActorRole {
-                actor: Some(Role::Commenter),
-                wanted: Role::Editor
-            })
+            workspace.check_invite(&carol, Role::Editor, &cx(), false),
+            Err(Refusal::AboveActorRole(Role::Editor))
         );
         workspace
-            .check_invite(CAROL, &carol, Role::Viewer, &cx(), false)
+            .check_invite(&carol, Role::Viewer, &cx(), false)
             .expect("commenter invites viewer");
     }
 
@@ -1237,7 +1234,6 @@ tilo_test_env::scenario! {
             "workspace r: reading and undoable changes allowed, outside effects ask first. \
          workspace r › so.tilo.browser-desktop › desktop.person-view: undoable changes not allowed. \
          workspace r › so.tilo.messages › messages.drafts: reading and undoable changes not allowed. \
-         workspace r › so.tilo.tube › tube.watch-history: reading and undoable changes not allowed. \
          workspace r › tilo.workspace: undoable changes and outside effects not allowed. \
          workspace r › anywhere › moderation: undoable changes and outside effects not allowed."
         );
@@ -1293,9 +1289,8 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             sentences(&viewer, &Ids),
-            "workspace r › so.tilo.tube › tube.watch-history: reading and undoable changes not \
-         allowed. workspace r › so.tilo.messages › messages.drafts: reading and undoable changes \
-         not allowed. workspace r: reading allowed."
+            "workspace r › so.tilo.messages › messages.drafts: reading and undoable changes not \
+         allowed. workspace r: reading allowed."
         );
         let owner = roles::role_preset(Role::Owner, "r").assign(
             "o",
@@ -1305,9 +1300,8 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             sentences(&owner, &Ids),
-            "workspace r › so.tilo.tube › tube.watch-history: reading and undoable changes not \
-         allowed. workspace r › so.tilo.messages › messages.drafts: reading and undoable changes \
-         not allowed. workspace r: everything allowed."
+            "workspace r › so.tilo.messages › messages.drafts: reading and undoable changes not \
+         allowed. workspace r: everything allowed."
         );
     }
 
@@ -1429,13 +1423,13 @@ tilo_test_env::scenario! {
             Grantee::person(ALICE),
         ));
         let bob = Authority::person(workspace.party(BOB));
-        let refused = workspace.check_invite(BOB, &bob, Role::Viewer, &cx(), false);
+        let refused = workspace.check_invite(&bob, Role::Viewer, &cx(), false);
         assert!(
             matches!(refused, Err(Refusal::NeedsApproval(_))),
             "{refused:?}"
         );
         workspace
-            .check_invite(BOB, &bob, Role::Viewer, &cx(), true)
+            .check_invite(&bob, Role::Viewer, &cx(), true)
             .expect("approved");
     }
 
@@ -1784,6 +1778,43 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_turn_for_another_member_and_its_sub_agent_do_what_both_people_may;
+    {
+        // Bob's agent answers Carol: Bob may not touch mail, Carol may.
+        let mut workspace = workspace_with_members(&[(BOB, Role::Editor), (CAROL, Role::Editor)]);
+        workspace.grants.push(Grant::new(
+            "bob-no-mail",
+            Grantee::person(BOB),
+            mail(),
+            KindSet::ALL,
+            Answer::Deny,
+            alice(),
+        ));
+        let decided = |acting: &Acting, node: &TreePath| {
+            let granted = acting.handed_preset("r");
+            Authority::of_acting(acting, &workspace, &granted)
+                .decide(node, ActionKind::Undoable, &cx())
+                .answer
+        };
+        let for_carol = Acting::handed_agent("scout", CAROL);
+        let answering_carol = for_carol.clone().agent_of(BOB);
+        let sub_agent = answering_carol.clone().handed_on("helper");
+        assert_eq!(decided(&for_carol, &archive()), Answer::Allow);
+        for (who, acting) in [("the turn", &answering_carol), ("its sub-agent", &sub_agent)] {
+            assert_eq!(
+                decided(acting, &archive()),
+                Answer::Deny,
+                "{who} does nothing its agent's person may not: {acting:?}"
+            );
+            let notes = TreePath::workspace("r").app("notes").action("append");
+            assert_eq!(
+                decided(acting, &notes),
+                Answer::Allow,
+                "and is not refused for being Bob's agent: {acting:?}"
+            );
+        }
+    }
+
     phase a_foreign_device_never_governs;
     {
         let workspace = workspace_with_members(&[]);
@@ -1936,31 +1967,28 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_agents_role_never_exceeds_its_person_its_admission_or_the_cap;
-    // An agent's role is the least of its person's, what its admission grants
-    // and the agent cap: it never holds more than either, and never governs.
+    phase each_role_holds_the_grants_of_those_it_hands_out;
+    // A role hands out another when each of that role's grants is within its
+    // own: the built-in roles nest, Viewer to Owner, and none holds a wider one.
+    {
+        for (index, held) in Role::ALL.into_iter().enumerate() {
+            for (other, wanted) in Role::ALL.into_iter().enumerate() {
+                assert_eq!(held.includes(wanted), other <= index, "{held} / {wanted}");
+            }
+        }
+    }
+
+    phase an_agents_role_never_exceeds_its_person_or_the_cap;
+    // An agent acts as its person, within the agent cap, and never governs.
     {
         use roles::agent_policy;
         for person in Role::ALL {
-            for granted in Role::ALL {
-                let role = agent_policy::role(person, granted);
-                assert!(person.includes(role), "{person} / {granted} gave {role}");
-                assert!(granted.includes(role), "{person} / {granted} gave {role}");
-                assert!(agent_policy::ROLE_CAP.includes(role));
-                assert_ne!(role, Role::Owner, "an agent never governs");
-            }
+            let role = agent_policy::role(person);
+            assert!(person.includes(role), "{person} gave {role}");
+            assert!(agent_policy::ROLE_CAP.includes(role), "{person} gave {role}");
         }
-        assert_eq!(agent_policy::role(Role::Owner, Role::Editor), Role::Editor);
-        assert_eq!(agent_policy::role(Role::Owner, Role::Owner), Role::Editor);
-        assert_eq!(
-            agent_policy::role(Role::Owner, Role::Commenter),
-            Role::Commenter
-        );
-        assert_eq!(
-            agent_policy::role(Role::Commenter, Role::Editor),
-            Role::Commenter
-        );
-        assert_eq!(agent_policy::role(Role::Viewer, Role::Editor), Role::Viewer);
+        assert_eq!(agent_policy::role(Role::Owner), Role::Editor);
+        assert_eq!(agent_policy::role(Role::Commenter), Role::Commenter);
     }
 }
 
@@ -2014,32 +2042,30 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_moderator_reaches_only_members_below_moderator;
+    phase membership_changes_are_decided_by_grants_and_keep_the_owner;
     {
         let mut workspace = workspace_with_members(&[
             (BOB, Role::Editor),
             (CAROL, Role::Moderator),
-            ("m2", Role::Moderator),
+            ("d0d", Role::Moderator),
         ]);
         let policy = workspace.clone();
         let carol = Authority::person(policy.party(CAROL));
-        for person in ["m2", ALICE] {
-            for change in [
-                Change::RemoveMember {
-                    person: person.into(),
-                },
-                Change::Ban {
-                    person: person.into(),
-                },
-            ] {
-                let before = workspace.clone();
-                assert!(
-                    workspace
-                        .apply(CAROL, &carol, change, &cx(), false)
-                        .is_err()
-                );
-                assert_eq!(workspace, before, "nothing is written");
-            }
+        // The workspace keeps its owner, whoever asks.
+        for change in [
+            Change::RemoveMember {
+                person: ALICE.into(),
+            },
+            Change::Ban {
+                person: ALICE.into(),
+            },
+        ] {
+            let before = workspace.clone();
+            assert_eq!(
+                workspace.apply(CAROL, &carol, change, &cx(), false),
+                Err(Refusal::Owner)
+            );
+            assert_eq!(workspace, before, "nothing is written");
         }
         assert_eq!(
             workspace.apply(
@@ -2051,21 +2077,62 @@ tilo_test_env::scenario! {
                 &cx(),
                 false
             ),
-            Err(Refusal::NotBelowActor {
-                actor: Some(Role::Moderator),
-                target: Role::Moderator
-            })
+            Err(Refusal::Themselves)
         );
+        // The Moderator role's grant on removing reaches another Moderator as
+        // it reaches an Editor: no role ranks a member out of reach.
         workspace
             .apply(
                 CAROL,
                 &carol,
-                Change::RemoveMember { person: BOB.into() },
+                Change::RemoveMember {
+                    person: "d0d".into(),
+                },
                 &cx(),
                 false,
             )
             .unwrap();
-        assert!(!workspace.is_member(BOB));
+        assert!(!workspace.is_member("d0d"));
+
+        // An Editor holds no grant on removing, so removes nobody.
+        let bob = Authority::person(workspace.party(BOB));
+        let remove_carol = Change::RemoveMember {
+            person: CAROL.into(),
+        };
+        assert!(matches!(
+            workspace.check(BOB, &bob, &remove_carol, &cx(), true),
+            Err(Refusal::NotPermitted(_))
+        ));
+        // Given an Ask grant on it, the Editor's removal asks first, and an
+        // approved one goes ahead, a Moderator's included.
+        let owner = workspace.clone();
+        let owner = Authority::person(owner.party(ALICE));
+        workspace
+            .apply(
+                ALICE,
+                &owner,
+                Change::Grant(Grant::new(
+                    "bob-remove",
+                    Grantee::person(BOB),
+                    roles::governance_action("r", governance::REMOVE_MEMBER),
+                    KindSet::OUTSIDE,
+                    Answer::Ask,
+                    Grantee::person(ALICE),
+                )),
+                &cx(),
+                false,
+            )
+            .unwrap();
+        let policy = workspace.clone();
+        let bob = Authority::person(policy.party(BOB));
+        assert!(matches!(
+            workspace.check(BOB, &bob, &remove_carol, &cx(), false),
+            Err(Refusal::NeedsApproval(_))
+        ));
+        workspace
+            .apply(BOB, &bob, remove_carol, &cx(), true)
+            .unwrap();
+        assert!(!workspace.is_member(CAROL));
     }
 
     phase a_change_naming_software_as_a_person_is_refused;
@@ -2188,7 +2255,7 @@ tilo_test_env::scenario! {
         assert_eq!(workspace.restricted_until(BOB, &Context::at(until)), None);
     }
 
-    phase a_restriction_reaches_only_below_and_lifts_once;
+    phase a_restriction_keeps_the_owner_and_lifts_once;
     {
         let mut workspace = workspace_with_members(&[(BOB, Role::Editor), (CAROL, Role::Moderator)]);
         let policy = workspace.clone();
@@ -2206,10 +2273,10 @@ tilo_test_env::scenario! {
             workspace.check(CAROL, &carol, &on(ALICE), &cx(), false),
             Err(Refusal::Owner)
         );
-        assert!(matches!(
+        assert_eq!(
             workspace.check(CAROL, &carol, &on(CAROL), &cx(), false),
-            Err(Refusal::NotBelowActor { .. })
-        ));
+            Err(Refusal::Themselves)
+        );
         assert_eq!(
             workspace.check(
                 CAROL,
@@ -2546,8 +2613,6 @@ tilo_test_env::scenario! {
             serde_json::from_value(serde_json::to_value(&stored).unwrap()).unwrap();
         let mut expected = vec![adjustment];
         expected.extend(roles::workspace_role_grants("r", &alice()));
-        expected.push(roles::person_view_grant("r", ALICE));
-        expected.push(roles::person_view_grant("r", BOB));
         expected.push(custom);
         assert_eq!(loaded.grants, expected);
         assert_eq!(stored.clone().with_current_roles().grants, expected);
@@ -2606,10 +2671,6 @@ tilo_test_env::scenario! {
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one walk: each person's change to the layout, and every other person's refusal"
-)]
 fn each_person_changes_their_own_view_of_the_layout_and_no_one_elses() {
     let mut workspace = WorkspacePolicy::new("r", ALICE);
     for (person, role) in [(BOB, Role::Editor), (CAROL, Role::Viewer)] {
@@ -2701,12 +2762,10 @@ fn each_person_changes_their_own_view_of_the_layout_and_no_one_elses() {
             false,
         )
         .unwrap();
-    assert!(
-        !workspace
-            .grants
-            .iter()
-            .any(|grant| grant.id == roles::person_view_grant_id(BOB)),
-        "one who leaves keeps no grant on their view"
+    assert_eq!(
+        answer(&workspace, BOB, BOB, ActionKind::Undoable),
+        Answer::Deny,
+        "one who leaves no longer changes their view"
     );
     let stored: WorkspacePolicy =
         serde_json::from_value(serde_json::to_value(&workspace).unwrap()).unwrap();
@@ -2717,10 +2776,10 @@ fn each_person_changes_their_own_view_of_the_layout_and_no_one_elses() {
 }
 
 /// A person's private record (what they watched, what they are writing and have not sent) is
-/// theirs by a grant the workspace gives each of its people: no role reaches another's, and
+/// theirs as one of the workspace's people: no role reaches another's, and
 /// owning the workspace does not either, wherever the record is asked from.
 #[test]
-fn each_persons_private_record_is_theirs_alone_by_the_workspaces_grant() {
+fn each_persons_private_record_is_theirs_alone() {
     let (owner, editor) = ("aa".repeat(32), "bb".repeat(32));
     let mut workspace = WorkspacePolicy::new("r", owner.clone());
     let held = workspace.clone();
@@ -2736,9 +2795,8 @@ fn each_persons_private_record_is_theirs_alone_by_the_workspaces_grant() {
             false,
         )
         .expect("the owner admits a member");
-    let history = |of: &str| {
-        roles::member_record("tube.watch-history", of).expect("a person id names a record")
-    };
+    let history =
+        |of: &str| roles::member_record("messages.drafts", of).expect("a person id names a record");
     let answer = |workspace: &WorkspacePolicy, person: &str, node: &TreePath, kind| {
         Authority::person(workspace.party(person))
             .decide(node, kind, &cx())
@@ -2746,7 +2804,7 @@ fn each_persons_private_record_is_theirs_alone_by_the_workspaces_grant() {
     };
     for (person, other) in [(&owner, &editor), (&editor, &owner)] {
         let theirs = TreePath::workspace("r")
-            .app("so.tilo.tube")
+            .app("so.tilo.messages")
             .resource(history(person));
         for kind in [ActionKind::Read, ActionKind::Undoable] {
             assert_eq!(
@@ -2763,8 +2821,8 @@ fn each_persons_private_record_is_theirs_alone_by_the_workspaces_grant() {
     }
     // A part of the record is decided as the record.
     let part = TreePath::workspace("r")
-        .app("so.tilo.tube")
-        .kind("tube.watch-history")
+        .app("so.tilo.messages")
+        .kind("messages.drafts")
         .resource(format!("derived:part@{}", history(&editor)));
     assert_eq!(
         answer(&workspace, &owner, &part, ActionKind::Read),
@@ -2780,15 +2838,15 @@ fn each_persons_private_record_is_theirs_alone_by_the_workspaces_grant() {
         "share-history",
         Grantee::person(owner.clone()),
         TreePath::workspace("r")
-            .app("so.tilo.tube")
-            .kind("tube.watch-history")
+            .app("so.tilo.messages")
+            .kind("messages.drafts")
             .resource(history(&editor)),
         KindSet::READ,
         Answer::Allow,
         Grantee::person(editor.clone()),
     ));
     let editors = TreePath::workspace("r")
-        .app("so.tilo.tube")
+        .app("so.tilo.messages")
         .resource(history(&editor));
     assert_eq!(
         answer(&shared, &owner, &editors, ActionKind::Read),

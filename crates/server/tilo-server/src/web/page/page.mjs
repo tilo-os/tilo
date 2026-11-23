@@ -14,6 +14,10 @@ const DEVICES = 'tilo-browser-devices';
 // The name the store of device keys had before (`device-key.mjs`).
 const STORE_BEFORE = 'custody';
 const MAX_FRAME = 8 * 1024 * 1024;
+// The element number the question sheet a host asks this person stands under:
+// an app numbers its own elements from one, and the sheet is no app's
+// (`tilo_server_protocol::page::QUESTION_PATCH_ID`).
+const QUESTION_PATCH = '4294967295';
 
 // ---- BLAKE3 of one block (the handshake's digests are 59 bytes) ----
 
@@ -292,30 +296,20 @@ async function session(config, device) {
   };
 }
 
-// ---- The person this browser is ----
-
-/** The site that handed this browser over, from the page's own address
- * (`<entry>w/<workspace>[/<app>]`): the entry serves its modules and
- * `version.json` above it. */
-function entryBase() {
-  const at = location.pathname.indexOf('/w/');
-  return at < 0 ? '/' : location.pathname.slice(0, at + 1);
-}
-
-/** This build's `identity.mjs`, the very module the entry loaded before it
- * handed this browser over: served under the site's own version directory,
- * `version.json` naming the version it serves now. A page pressed before it
- * is in waits on it, so no read is made twice and a failed one is tried
- * again on the next press. */
+// ---- This browser's person ----
+// The site's own modules are served above the page's address (`<entry>w/<workspace>`), under the
+// version directory `version.json` names: the person's root lives there (`identity.mjs`), which
+// is what approves a browser waiting to be signed in. A page pressed before it is in waits on it.
 let identityLoading = null;
 function identityModule() {
   identityLoading ??= (async () => {
-    const base = new URL(entryBase(), location.href);
+    const at = location.pathname.indexOf('/w/');
+    const base = new URL(at < 0 ? '/' : location.pathname.slice(0, at + 1), location.href);
     const response = await fetch(new URL('version.json', base), {cache: 'no-store'});
     if (!response.ok) throw new Error(`the site answered ${response.status}`);
     const {version} = await response.json();
     return import(new URL(`v/${version}/identity.mjs`, base).href);
-  })().catch((error) => {
+  })().catch(error => {
     identityLoading = null;
     throw error;
   });
@@ -329,9 +323,8 @@ function start() {
   const page = document.getElementById('tilo-page');
   const style = document.getElementById('tilo-page-css');
   const base = `/w/${config.address.workspace}` + (config.address.app ? `/${config.address.app}` : '');
-  // Where this host's own routes are reached over HTTP, which the page hands
-  // the browser's person to: the envelope a passkey opens is kept there, so
-  // a browser that keeps nothing fetches it from the same place.
+  // Where this host's own routes are reached over HTTP: its public origin, which the page asks
+  // who its person is (the site's modules) and what waits for them to approve.
   const peer = typeof config.peer === 'string' && config.peer ? config.peer : null;
   // The workspace this page is, as the entry that handed the browser over
   // named it: an address carries no name.
@@ -360,89 +353,6 @@ function start() {
   const say = (state, words) => {
     page.dataset.state = state;
     page.textContent = words ?? '';
-  };
-
-  // The person's own actions, which only this browser can run: the root lives
-  // here (`identity.mjs`), so the passkey ceremony happens in the page,
-  // inside the person's press, and the host keeps no part of it. A row is
-  // drawn disabled and offered once the page's own module and runtime are in,
-  // so the passkey sheet follows the press at once.
-  let browserKept = null;
-  const browserKeptNow = () => (browserKept ??= identityModule().then(async (id) => {
-    const person = await id.browserIdentity({create: false});
-    const wraps = person?.envelope?.wraps ?? [];
-    return {passkey: wraps.some(wrap => wrap.kind === 'passkey'), kept: wraps.length > 0};
-  }).catch((error) => { browserKept = null; throw error; }));
-  // What the page says of the browser's own actions: under the search bar,
-  // where a person reads it.
-  const sayOnPage = (words, state) => {
-    let said = page.querySelector('[data-browser-status]');
-    if (!said) {
-      said = document.createElement('p');
-      said.dataset.browserStatus = '';
-      said.className = 'tilo-search-notice';
-      said.setAttribute('role', 'status');
-      const anchor = page.querySelector('.tilo-search-bar') ?? page.firstElementChild;
-      if (anchor) anchor.after(said); else page.prepend(said);
-    }
-    said.textContent = words ?? '';
-    if (state) said.dataset.state = state; else delete said.dataset.state;
-  };
-  // Offer the browser's rows once the page can run them: a person already
-  // kept with a passkey has nothing to keep, and one kept at all has no
-  // reason to be signed in as somebody else here.
-  const armBrowserRows = () => {
-    if (!page.querySelector('[data-a=browser]')) { delete page.dataset.browser; return; }
-    if (!peer) {
-      for (const row of page.querySelectorAll('[data-a=browser]')) row.remove();
-      page.dataset.browser = 'no-peer';
-      sayOnPage('This page cannot keep you on another browser.');
-      return;
-    }
-    browserKeptNow().then(({passkey, kept}) => {
-      page.dataset.browser = kept ? 'kept' : 'ready';
-      for (const row of [...page.querySelectorAll('[data-a=browser]')]) {
-        const answered = row.dataset.browser === 'keep-with-passkey' ? passkey : kept;
-        if (answered) row.remove(); else row.disabled = false;
-      }
-    }, (error) => {
-      page.dataset.browser = 'unavailable';
-      sayOnPage('This page cannot keep you on another browser: the site’s own modules did not load.');
-      console.warn('identity: the page’s modules did not load', error);
-    });
-  };
-  // What a browser row's press runs, here: the ceremony is asked straight
-  // from the press, so the person's answer may follow it.
-  const browserAction = async (action) => {
-    for (const row of page.querySelectorAll('[data-a=browser]')) row.disabled = true;
-    try {
-      const id = await identityModule();
-      if (action === 'keep-with-passkey') {
-        const person = await id.browserIdentity();
-        sayOnPage('Waiting for your passkey…');
-        await person.keepWithPasskey({});
-        // The host keeps the envelope a browser that keeps nothing fetches:
-        // the passkey alone opens nothing without it.
-        await id.publishEnvelope({origin: peer, identity: person});
-        browserKept = null;
-        sayOnPage('A passkey now opens you on any browser.', 'kept');
-        armBrowserRows();
-      } else if (action === 'sign-in-with-passkey') {
-        sayOnPage('Waiting for your passkey…');
-        await id.signInWithPasskey({fetchEnvelope: root => id.fetchEnvelope(root, [peer])});
-        // The person the passkey named is this browser's from now on: the
-        // site's entry lets them in as themselves, in a workspace of theirs.
-        location.assign(new URL(entryBase(), location.href).href);
-      } else {
-        sayOnPage('This page cannot do that.');
-        armBrowserRows();
-      }
-    } catch (error) {
-      sayOnPage(error?.code ? error.message : 'That did not work. Try again.', 'failed');
-      console.warn('identity:', error);
-      browserKept = null;
-      armBrowserRows();
-    }
   };
 
   const addressOf = () => {
@@ -572,7 +482,6 @@ function start() {
     reconcile();
     focusAsked();
     follow();
-    armBrowserRows();
   };
 
   // Where the view puts the focus (a new note's title), the page does too.
@@ -653,6 +562,15 @@ function start() {
     style.textContent = css;
     delete page.dataset.state;
     page.innerHTML = body;
+    // Where a question the host asks this person stands over the app: the
+    // sheet is patched in here, and empty until one comes.
+    if (!page.querySelector(`[data-p="${QUESTION_PATCH}"]`)) {
+      const holder = document.createElement('div');
+      holder.dataset.p = QUESTION_PATCH;
+      holder.className = 'tilo-question-sheet';
+      holder.hidden = true;
+      page.append(holder);
+    }
     editable(page);
     focusAsked();
     typingBack(held);
@@ -661,13 +579,9 @@ function start() {
     const kept = held && page.querySelector(held.key);
     if (kept && (kept.dataset.a === 'value' || kept.dataset.a === 'edit')) act(kept, {value: held.value});
     follow();
-    armBrowserRows();
     // The page says it arrived, as the entry it came from did: what a tool
-    // waits for is the same marker on either. An entry that opened the
-    // workspace this page is says so too, as the entry page's own marker
-    // names it.
+    // waits for is the same marker on either.
     document.documentElement.dataset.arrival = 'done';
-    document.documentElement.dataset.entry = 'open';
     if (!performance.getEntriesByName('tilo-page-shown').length) performance.mark('tilo-page-shown');
   };
 
@@ -755,10 +669,6 @@ function start() {
       act(element, 'activate');
     } else if (action === 'value' && element.dataset.v !== undefined) {
       act(element, {value: element.dataset.v});
-    } else if (action === 'browser') {
-      // The person's own actions run here, in this press (`browserAction`).
-      event.preventDefault();
-      browserAction(element.dataset.browser);
     } else if (action === 'back') {
       event.preventDefault();
       // The column behind the one in front comes to the front, as a narrow
@@ -818,6 +728,102 @@ function start() {
     restoring = true;
     ask({open: addressOf()});
   });
+
+  // ---- A browser of the person's waiting to be signed in ----
+  // A tab that holds no root shows a ticket, and the person runs `tilo device add` with it on a
+  // device of theirs. That device may hold no root either: it hands the signing on, and this
+  // page, which holds the person's root, is where it happens. The page lists what waits for its
+  // person (`identity.mjs`'s `signInsWaiting`, the host's `devices#pending` list) and asks about
+  // one: the device's name and what certifying it makes it. The root signs, the host answers the
+  // tab's request, and the tab is signed in. A request the host does not mark as a sign-in is a
+  // device pairing, which is the person's own Tilo's to ask about, not this page's.
+  let signInAsked = null;
+  let personHeld = null;
+  let personAbsent = false;
+  const signInsAnswered = new Set();
+  const signInBar = () => {
+    let bar = document.getElementById('tilo-sign-in');
+    if (bar) return bar;
+    bar = document.createElement('div');
+    bar.id = 'tilo-sign-in';
+    bar.hidden = true;
+    bar.setAttribute('role', 'alertdialog');
+    bar.innerHTML = '<p></p><button type="button" id="tilo-sign-in-allow" data-sign-in-answer="allow">Sign in</button>'
+      + '<button type="button" id="tilo-sign-in-deny" data-sign-in-answer="deny">Not now</button>';
+    bar.addEventListener('click', event => {
+      const answer = event.target.closest('[data-sign-in-answer]');
+      if (!answer) return;
+      event.preventDefault();
+      answerSignInShown(answer.dataset.signInAnswer === 'allow');
+    });
+    document.body.append(bar);
+    return bar;
+  };
+  const showSignIn = request => {
+    signInAsked = request;
+    const bar = signInBar();
+    bar.dataset.signIn = request.label;
+    bar.querySelector('p').textContent =
+      `Sign “${request.label}” in? It becomes one of your devices: ${request.capability}.`;
+    for (const button of bar.querySelectorAll('button')) button.hidden = false;
+    bar.hidden = false;
+  };
+  const hideSignIn = () => {
+    signInAsked = null;
+    const bar = document.getElementById('tilo-sign-in');
+    if (!bar) return;
+    bar.hidden = true;
+    delete bar.dataset.signIn;
+  };
+  const answerSignInShown = async approved => {
+    const request = signInAsked;
+    if (!request) return;
+    signInsAnswered.add(request.digest);
+    const bar = document.getElementById('tilo-sign-in');
+    // The bar says how it ended in place of the answer, then goes.
+    for (const button of bar?.querySelectorAll('button') ?? []) button.hidden = true;
+    try {
+      const id = await identityModule();
+      const host = await id.approvalHost(peer);
+      await id.answerSignIn(host, personHeld, request.digest, approved);
+      signInAsked = null;
+      if (bar) {
+        bar.querySelector('p').textContent = approved
+          ? `“${request.label}” is signed in.`
+          : `“${request.label}” was not signed in.`;
+        setTimeout(hideSignIn, 4000);
+      }
+    } catch (error) {
+      // Answered nowhere: the next look asks again.
+      signInsAnswered.delete(request.digest);
+      if (bar) {
+        for (const button of bar.querySelectorAll('button')) button.hidden = false;
+        bar.querySelector('p').textContent = 'That did not work. Try again.';
+      }
+      console.warn('sign-in: answering the waiting browser', error);
+    }
+  };
+  const lookForSignIns = async () => {
+    if (!peer || signInAsked || personAbsent) return;
+    try {
+      const id = await identityModule();
+      if (!personHeld) {
+        // Opening the person reads the runtime; a browser that keeps nobody stops here, cheaply.
+        if (!(await id.keptIdentity().catch(() => null))?.rootPublicKey) { personAbsent = true; return; }
+        personHeld = await id.browserIdentity({create: false}).catch(() => null);
+        if (!personHeld) return;
+      }
+      const host = await id.approvalHost(peer);
+      const waiting = await id.signInsWaiting(host, personHeld).catch(() => []);
+      const next = waiting.find(request => !signInsAnswered.has(request.digest));
+      if (next) showSignIn(next);
+    } catch (error) {
+      // The host not reached, its modules not in: the next look tries again.
+      console.warn('sign-in: the browsers waiting', error);
+    }
+  };
+  lookForSignIns();
+  setInterval(lookForSignIns, 2000);
 
   const connect = async () => {
     if (!config.link || !globalThis.WebTransport) { say('refused', 'This browser cannot open this page.'); return; }

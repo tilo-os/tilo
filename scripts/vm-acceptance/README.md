@@ -307,7 +307,8 @@ run here on every full run instead, on the dev disk under KVM:
   its own", how its main process ended, and `data/<check>-<n>-session-restart.log`: the
   unit's state, the ended run's flight record (`previous.log`) and panic reports, and the
   kernel's, coredump's and user manager's lines (`acceptance/session_unit.py`). P03 reads
-  the same unit at the end of the run.
+  the same unit at the end of the run, and each failed unit's own journal for what it last
+  said (the boot's whole user journal is larger than one `tilo-vm` command returns).
 - A16 is `app_startup_check.py`'s judgement over every app the run launched.
 - A17 opens and closes Files, ends the account's compositor with SIGSEGV from root (as the
   crash A15 caught did), waits for `Restart=`'s next session to answer and opens Files
@@ -316,8 +317,9 @@ run here on every full run instead, on the dev disk under KVM:
 - R08 signs the dev account (`os/account.env`) in at seat0's greeter through its console
   action `sign-in@greeter`, as a person's passcode does, and times each step from the
   request: the user manager, the `tilo-session` wrapper, the compositor process, its first
-  presented frame (the `FRAME-LIFECYCLE serial=1` line's `monotonic_us`, on the clock the
-  probe reads from `/proc/timer_list`) and its control socket answering `state-dump`.
+  presented frame (the first `FRAME-LIFECYCLE event=render-retired` line's `monotonic_us`,
+  on the clock the probe reads from `/proc/timer_list`) and its control socket answering
+  `state-dump`.
   Usable is the later of the last two. It does so twice, the account's first sign-in (cold
   caches and first-login setup) and, after signing out, the next one, held to
   `sign_in_first_usable_s` and `sign_in_again_usable_s` (10 s each). It starts a second

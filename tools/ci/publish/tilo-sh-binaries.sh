@@ -26,11 +26,14 @@ target=${CARGO_TARGET_DIR:-$repo_root/target}
 rm -rf "$out"
 mkdir -p "$out/bin"
 # The API server starts a task's tilolang programs in tilolang-process, which it finds beside
-# itself: one build, one directory.
+# itself: one build, one directory. The VM host's start derives the server's endpoint id from the
+# server's device key with tilo-server-admin (vm-host.sh).
 cargo build --locked --profile lounge-check -p tilo-api -p fake-discord -p tilolang-process \
-  -p tilo-account-probe --example mail_stand_in \
-  --bin tilo-api --bin fake-discord --bin tilolang-process
-for bin in tilo-api fake-discord tilolang-process; do cp "$target/lounge-check/$bin" "$out/bin/"; done
+  -p tilo-server -p tilo-account-probe --example mail_stand_in \
+  --bin tilo-api --bin fake-discord --bin tilolang-process --bin tilo-server-admin
+for bin in tilo-api fake-discord tilolang-process tilo-server-admin; do
+  cp "$target/lounge-check/$bin" "$out/bin/"
+done
 # The stand-in mail server is an example, since it makes a certificate with the
 # crate's test-time dependencies; the stack starts it as mail-stand-in.
 cp "$target/lounge-check/examples/mail_stand_in" "$out/bin/mail-stand-in"

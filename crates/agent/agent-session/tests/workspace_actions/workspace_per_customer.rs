@@ -343,14 +343,17 @@ async fn a_backend_keeps_a_labelled_workspace_and_a_key_per_customer() {
         working.spawn(async move {
             let token = key["token"].as_str().unwrap().to_owned();
             let url = key["mcp_url"].as_str().unwrap().to_owned();
-            work(&api, &url, &token, &format!("Checklist of cus_{customer}")).await;
+            let (page, _) = work(&api, &url, &token, &format!("Checklist of cus_{customer}")).await;
             // Its key lists its own workspace, and no other.
             let own = listed(&api, &token, &json!({})).await;
-            assert_eq!(own, [key["workspace"].as_str().unwrap()]);
+            let workspace = key["workspace"].as_str().unwrap().to_owned();
+            assert_eq!(own, [workspace.as_str()]);
+            (customer, workspace, page)
         });
     }
+    let mut pages = Vec::new();
     while let Some(worked) = working.join_next().await {
-        worked.unwrap();
+        pages.push(worked.unwrap());
     }
 
     // Revoked keys stop at once, mid-session; the rest go on.
@@ -401,25 +404,29 @@ async fn a_backend_keeps_a_labelled_workspace_and_a_key_per_customer() {
         }
     }
 
-    // Each workspace exports whole, with its labels and its agent's page.
-    for (customer, workspace) in workspaces.iter().enumerate() {
-        let (status, export) = rest(
+    // Each workspace is found by its label, and reads its agent's page.
+    for (customer, workspace, page) in &pages {
+        let id = format!("cus_{customer}");
+        assert_eq!(
+            listed(&api, &key, &json!({"customer_id": id})).await,
+            std::slice::from_ref(workspace)
+        );
+        let (status, read) = rest(
             &api,
             &key,
             hyper::Method::GET,
-            &format!("/v1/workspaces/{workspace}/export"),
+            &format!(
+                "/v1/workspaces/{workspace}/resources/{}",
+                tilo_api::client::encode_path(page)
+            ),
             b"",
             &[],
         )
         .await;
-        assert_eq!(status, 200, "{export}");
-        let id = format!("cus_{customer}");
-        assert_eq!(export["workspace"]["labels"]["customer_id"], id.as_str());
+        assert_eq!(status, 200, "{read}");
         assert!(
-            export["resources"]
-                .to_string()
-                .contains(&format!("Checklist of {id}")),
-            "{id}'s export holds its page: {export}"
+            read.to_string().contains(&format!("Checklist of {id}")),
+            "{id}'s page reads: {read}"
         );
     }
 
@@ -507,7 +514,6 @@ fn route_against(template: &str, other: &str, page: &str, content: &str, grant: 
         .replace("{action}", "rename")
         .replace("{run}", "00000000-0000-4000-8000-000000000001")
         .replace("{content}", content)
-        .replace("{webhook}", "00000000-0000-4000-8000-000000000002")
         .replace("{grant}", grant)
 }
 
@@ -618,6 +624,10 @@ async fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() 
             ("account/keys#revoke", json!({"grant": b_grant})),
             ("account/workspaces#create", json!({"name": "cus_c"})),
             (
+                "account/webhooks#create",
+                json!({"workspace": b, "url": "https://example.com/hook"}),
+            ),
+            (
                 "account/workspaces#branch",
                 json!({"workspace": b, "name": "cus_c"}),
             ),
@@ -635,7 +645,6 @@ async fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() 
         let route = route_against(operation.path, &b, &b_page, &b_content, &b_grant);
         let body = match operation.id {
             "runProgram" => json!({"program": "notes"}),
-            "createWebhook" => json!({"url": "https://example.com/hook"}),
             _ => json!({"title": PLANTED}),
         };
         let (status, answer) = rest(

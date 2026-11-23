@@ -21,9 +21,11 @@ impl Workspaces {
     /// document follow it only once it is handed to them.
     ///
     /// # Errors
-    /// The workspace is not held here, a founding write finds the document held already, or the
-    /// workspace refused the write: [`WriteRefusal::ChangeRefused`] names the document it
-    /// refused, the changes it carried and why, as a server's refusal of a change does.
+    /// [`WriteRefusal::Waiting`] while this device is still taking the workspace in, or what the
+    /// write needs is not here yet: the write is made again once it is. Otherwise a founding write
+    /// finds the document held already, or the workspace refused the write:
+    /// [`WriteRefusal::ChangeRefused`] names the document it refused, the changes it carried and
+    /// why, as a server's refusal of a change does.
     pub(crate) async fn own_write(
         &self,
         workspace: &str,
@@ -36,9 +38,11 @@ impl Workspaces {
     ) -> Result<AppWrite, WriteRefusal> {
         let device = self.signing_device();
         let now = tilo_clock::wall();
+        // A workspace this device does not hold yet is one it is still joining or opening: the
+        // write is made once it holds it, and nobody is told of a refusal.
         let state = crate::timing::said_if_long("opening the workspace", self.workspace(workspace))
             .await
-            .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
+            .map_err(|_| WriteRefusal::Waiting(tilo_peer_state::MissingPrerequisite::Workspace))?;
         let drafting = crate::timing::start();
         let (mut request, author) = {
             let governed = crate::timing::said_if_long("the workspace's lock", state.lock()).await;
@@ -74,8 +78,7 @@ impl Workspaces {
             "the commit to the workspace",
             self.commit_local_document(workspace, request),
         )
-        .await
-        .map_err(WriteRefusal::Refused)?;
+        .await?;
         crate::timing::event("own_write.commit", committing, 0);
         Ok(AppWrite {
             peer: neighbour_wire::peer_handle(&device.device()),

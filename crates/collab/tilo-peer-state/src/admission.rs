@@ -12,8 +12,15 @@ pub enum AdmissionError {
     WriterSelectionRequired,
     ConflictingSequence,
     ResourceLimit,
-    /// The input was refused by the workspace's rules.
-    Rejected(String),
+    /// The sealed history of the record the input writes has no room for it: a device holding
+    /// the record's keys compacts it, and the input is taken then.
+    HistoryFull,
+    /// The input was refused by the workspace's rules: why, as its author is told it, and the
+    /// refusing device's own words.
+    Rejected {
+        reason: neighbour_wire::RefusalReason,
+        detail: String,
+    },
     /// The workspace's rules refused a document change: the document it writes, the changes it
     /// carries and why, as a server's refusal of a change names them. Its author's session is
     /// told the same shape, and so is every device the change is sent to.
@@ -30,6 +37,45 @@ impl AdmissionError {
     pub fn is_device_failure(&self) -> bool {
         matches!(self, Self::Device(_))
     }
+
+    /// The input refused for `reason`, said in `detail`.
+    pub fn rejected(reason: neighbour_wire::RefusalReason, detail: impl std::fmt::Display) -> Self {
+        Self::Rejected {
+            reason,
+            detail: detail.to_string(),
+        }
+    }
+
+    /// The input is not the shape the workspace admits: it does not decode, or what it says does
+    /// not fit what it claims to be.
+    pub fn malformed(detail: impl std::fmt::Display) -> Self {
+        Self::rejected(neighbour_wire::RefusalReason::Malformed, detail)
+    }
+
+    /// The writer may not do this: the workspace's rules and the writer's role withhold it.
+    pub fn forbidden(detail: impl std::fmt::Display) -> Self {
+        Self::rejected(neighbour_wire::RefusalReason::Forbidden, detail)
+    }
+
+    /// Why the input was refused, as its author is told it.
+    #[must_use]
+    pub fn reason(&self) -> neighbour_wire::RefusalReason {
+        use neighbour_wire::RefusalReason;
+        match self {
+            Self::WriterSelectionRequired => RefusalReason::Malformed,
+            Self::ConflictingSequence => RefusalReason::Conflict,
+            Self::ResourceLimit | Self::HistoryFull => RefusalReason::Full,
+            Self::Rejected { reason, .. } => *reason,
+            Self::ChangeRefused(refused) => refused.reason_class(),
+            Self::Device(_) => RefusalReason::Other,
+        }
+    }
+}
+
+impl From<crate::MembershipError> for AdmissionError {
+    fn from(error: crate::MembershipError) -> Self {
+        Self::rejected(error.refusal_reason(), error)
+    }
 }
 impl std::fmt::Display for AdmissionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -41,26 +87,21 @@ impl std::fmt::Display for AdmissionError {
                 f.write_str("signed operation conflicts with exact admitted sequence")
             }
             Self::ResourceLimit => f.write_str("exact admission index quota exceeded"),
-            Self::Rejected(reason) | Self::Device(reason) => f.write_str(reason),
+            Self::HistoryFull => f.write_str(
+                "sealed record history is full; a key holder must compact it \
+                 (PeerPublication::draft_sealed_compaction)",
+            ),
+            Self::Rejected { detail, .. } => f.write_str(detail),
+            Self::Device(reason) => f.write_str(reason),
             Self::ChangeRefused(refused) => f.write_str(&refused.reason),
         }
     }
 }
 impl std::error::Error for AdmissionError {}
-impl From<String> for AdmissionError {
-    fn from(value: String) -> Self {
-        Self::Rejected(value)
-    }
-}
-impl From<&str> for AdmissionError {
-    fn from(value: &str) -> Self {
-        Self::Rejected(value.into())
-    }
-}
 impl From<tilo_automerge_isolate::Rejected> for AdmissionError {
     fn from(value: tilo_automerge_isolate::Rejected) -> Self {
         if value.refuses_input() {
-            Self::Rejected(value.to_string())
+            Self::malformed(value)
         } else {
             Self::Device(value.to_string())
         }
@@ -70,7 +111,7 @@ impl From<crate::workspace::AdmissionFailure> for AdmissionError {
     fn from(value: crate::workspace::AdmissionFailure) -> Self {
         match value {
             crate::workspace::AdmissionFailure::Refused(refusal) => {
-                Self::Rejected(refusal.to_string())
+                Self::rejected(refusal.reason(), refusal)
             }
             crate::workspace::AdmissionFailure::Device(reason) => Self::Device(reason),
         }
@@ -116,8 +157,7 @@ impl DocumentAdmission {
         record: &str,
         op: &collab_types::SignedOp,
     ) -> Result<Self, AdmissionError> {
-        let bytes = collab_types::canonical_bytes(op)
-            .map_err(|e| AdmissionError::Rejected(e.to_string()))?;
+        let bytes = collab_types::canonical_bytes(op).map_err(AdmissionError::malformed)?;
         Ok(Self {
             key: AdmissionKey {
                 workspace: workspace.into(),
@@ -132,7 +172,8 @@ impl DocumentAdmission {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MissingPrerequisite {
-    Governance,
+    /// The workspace's rules: its members, roles and grants.
+    Rules,
     Certificate,
     DocumentCheckpoint,
     CheckpointCoverage,
@@ -150,11 +191,14 @@ pub enum MissingPrerequisite {
     /// here yet ([`crate::removals`]): whether the write is history is
     /// decided once it is.
     RemovalCut,
+    /// The workspace itself: this device is still taking it in (joining it, or opening it as
+    /// it starts), and decides the write once it holds it.
+    Workspace,
 }
 impl std::fmt::Display for MissingPrerequisite {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Governance => "the workspace's governance",
+            Self::Rules => "the workspace's rules",
             Self::Certificate => "its author's certificate",
             Self::DocumentCheckpoint => "its record's checkpoint",
             Self::CheckpointCoverage => "the governance covering its checkpoint",
@@ -164,6 +208,7 @@ impl std::fmt::Display for MissingPrerequisite {
             Self::AppSurface => "its app surface",
             Self::EarlierWrite => "an earlier write of its author to its record",
             Self::RemovalCut => "the cut of its author's removal",
+            Self::Workspace => "the workspace, which this device is still taking in",
         })
     }
 }
@@ -621,7 +666,10 @@ impl ExactAdmissions {
         self.marks = std::sync::Arc::new(marks);
         self.mark_bytes = bytes;
         if self.iter().any(|(key, _)| self.covers(key)) {
-            return Err("exact admission entry at or below its writer's mark".into());
+            return Err(AdmissionError::rejected(
+                neighbour_wire::RefusalReason::Conflict,
+                "exact admission entry at or below its writer's mark",
+            ));
         }
         if self.total_bytes(0, 0) > MAX_EXACT_ADMISSION_BYTES {
             return Err(AdmissionError::ResourceLimit);
@@ -678,7 +726,7 @@ impl ExactAdmissions {
     pub(crate) fn digested_parts(
         &self,
     ) -> Result<(crate::state::StretchDigest, Vec<u8>), AdmissionError> {
-        let rejected = |e: postcard::Error| AdmissionError::Rejected(e.to_string());
+        let rejected = |e: postcard::Error| AdmissionError::malformed(e);
         let settled = if let Some(settled) = self.settled.digest.get() {
             *settled
         } else {
@@ -707,7 +755,7 @@ impl ExactAdmissions {
     /// [`Self::encode`] in two parts: the settled entries, shared and
     /// encoded once per settling, then the rest.
     pub(crate) fn encode_parts(&self) -> Result<(std::sync::Arc<[u8]>, Vec<u8>), AdmissionError> {
-        let rejected = |e: postcard::Error| AdmissionError::Rejected(e.to_string());
+        let rejected = |e: postcard::Error| AdmissionError::malformed(e);
         let settled = if let Some(settled) = self.settled.encoded.get() {
             settled.clone()
         } else {

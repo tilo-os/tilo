@@ -14,7 +14,7 @@ use super::{
 /// already verified: the agent acts for that person, as the least of the
 /// person's role and the agent cap, in its session alone.
 pub(super) fn admit_agent_cert(admitted: &mut AdmittedJoinIdentity, cert: AgentCert) {
-    admitted.role = roles::agent_policy::role(admitted.role, roles::agent_policy::ROLE_CAP);
+    admitted.role = roles::agent_policy::role(admitted.role);
     admitted.agent_id = Some(cert.agent_id.clone());
     admitted.session_delegated = true;
     admitted.agent_cert = Some(Box::new(cert));
@@ -179,6 +179,52 @@ impl AppBrokerState {
             .ok_or_else(|| "the turn the agent answers is over".to_owned())
     }
 
+    /// That an agent working for its person on this device asks for `request` under the key
+    /// its person certified for it, held to the bound its record keeps, checked as a host checks
+    /// one ([`tilo_server_protocol::invocation::verify_agent_invocation`]) against the
+    /// revocations the workspace's document records. Everyone else is admitted as they are.
+    pub(super) fn signed_by_agent(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> Result<(), tilo_actions::remote::ActionCallError> {
+        use tilo_actions::remote::ActionCallError;
+        let (Some(person), Some(key)) = (caller.user_public_key(), caller.device_public_key())
+        else {
+            return Ok(());
+        };
+        if caller.roster_created_at().is_none() {
+            return Ok(());
+        }
+        let refused = |reason: String| ActionCallError::Refused { reason };
+        let workspace = caller.workspace().ok_or(ActionCallError::NotPermitted)?;
+        // A sub-agent works under the key of the agent that heads its line.
+        let agent = caller
+            .approved_agent()
+            .ok_or(ActionCallError::NotPermitted)?;
+        let revocations = self
+            .membership
+            .as_ref()
+            .and_then(|membership| membership.workspace_revocations(workspace))
+            .ok_or_else(|| refused("this device holds no revocations of the workspace".into()))?;
+        let cert = tilo_server_protocol::invocation::verify_agent_invocation(
+            workspace,
+            request,
+            (person, agent, key),
+            &revocations,
+            tilo_clock::unix_now_ns(),
+        )
+        .map_err(|error| refused(format!("{}: {error}", error.code())))?;
+        // A key its person's device made acts only as far as the record it read bounds it: one
+        // whose bound nobody read is refused, never left unbounded.
+        if cert.capabilities.agent.is_some() && caller.granted(&[]).is_empty() {
+            return Err(refused(
+                "the agent's bound was not read, so it may act on nothing".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Whether agents in `workspace` act only in an agent session
     /// ([`crate::apps::services::AgentSessions::confines`]).
     pub fn confines_agents(&self, workspace: &str) -> bool {
@@ -224,7 +270,7 @@ pub(super) fn admit_listed_agent(
     if !roster.lists(workspace, agent_id) {
         return Err(format!("the workspace keeps no active agent {agent_id}"));
     }
-    admitted.role = roles::agent_policy::role(admitted.role, roles::agent_policy::ROLE_CAP);
+    admitted.role = roles::agent_policy::role(admitted.role);
     admitted.agent_id = Some(agent_id.to_string());
     admitted.session_delegated = true;
     Ok(())

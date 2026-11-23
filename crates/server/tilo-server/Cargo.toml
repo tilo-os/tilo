@@ -19,7 +19,7 @@ path = "src/lib.rs"
 test-support = ["tilo-workspace-service/test-support"]
 # The workspaces' records and roster agents on the host (`--workspace-documents`):
 # tilo-agent-session, which links every web app, as the app-serving protocol.
-agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/files", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-workspace-emoji", "dep:collaboration", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs"]
+agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/files", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-workspace-emoji", "dep:collaboration", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs", "dep:tilo-sheets"]
 web = ["tilo-workspace-service/device-keys", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac", "dep:ring"]
 
 [[bin]]
@@ -66,7 +66,6 @@ path = "src/home_peer_control/main.rs"
 #   peers without any external service.
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-tilo-socket = { path = "../../platform/tilo-socket" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock", features = ["local"] }
@@ -189,6 +188,9 @@ tilo-desktop-model = { path = "../../session/desktop-model" }
 # A persistent public workspace keeps its owner and spectator roots in the host's
 # secret store.
 tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
+# The shared question sheet's words and pictures: a page draws an agent's
+# question in the same words a native session's sheet does.
+tilo-sheets = { path = "../../session/sheets", optional = true }
 # The persistent workspace's moderation agent and its model provider.
 tilo-moderation = { path = "../../collab/moderation", features = ["host"], optional = true }
 # A persistent public workspace's chat opens with the operator's channels.
@@ -222,8 +224,6 @@ tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-ide
 tilo-content = { path = "../../system/content", features = ["dir"] }
 bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
-# The launcher contract the app broker starts and attests a hosted workspace's apps through.
-tilo-broker-core = { path = "../../collab/broker-core" }
 # Installed packages and their integrity records.
 package-store = { path = "../../packaging/package-store", features = ["store"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
@@ -312,6 +312,8 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-suppor
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
+# A Linux turn's takeover is proven past its claim's minute with the process's wall clock pinned.
+tilo-clock = { path = "../../platform/tilo-clock", features = ["local", "test-support"] }
 # The offloadable action the offload journey runs: a batch of thumbnails.
 tilo-thumbnail = { path = "../../media/thumbnail" }
 # The app that publishes it, whose handler is its local run, and the content
@@ -357,13 +359,6 @@ test = true
 [[example]]
 name = "move_server_content"
 required-features = ["web"]
-test = true
-
-# A one-off: repairs a record whose history holds a writer's sequence twice,
-# keeping what both of its branches wrote.
-[[example]]
-name = "repair_record_sequences"
-required-features = ["agents"]
 test = true
 
 [lints]

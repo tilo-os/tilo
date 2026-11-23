@@ -62,12 +62,11 @@ impl PartRowHost for Lent<'_> {
     }
 
     fn press_history(&mut self, control: HistoryControl) {
-        let Some(history) = self.frame.history.as_mut() else {
-            return;
-        };
-        if let Err(error) =
-            crate::history_mode::host::press_window_control(history.as_mut(), control)
-        {
+        if let Err(error) = crate::history_mode::host::press_offered(
+            self.frame.root.as_mut(),
+            self.frame.history.as_deref_mut(),
+            control,
+        ) {
             tracing::warn!(%error, "window parts: History did not run");
         }
         self.frame.invalidate_local();

@@ -260,20 +260,21 @@ impl FrameHarness {
     /// session, the runner's part row) shows it: none while the app has no History to open.
     #[must_use]
     pub fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
-        self.history
-            .as_deref()
-            .and_then(crate::history_mode::host::window_control)
+        crate::history_mode::host::offered_control(self.root.as_ref(), self.history.as_deref())
     }
 
     /// Press the window's History control as the bar hands the press over: it runs on the app's History
-    /// API, as the History shortcut does, and never reaches the app.
+    /// API, as the History shortcut does, or on the widget of the app's tree that offered it.
     pub fn press_window_history(&mut self) -> Result<(), String> {
         self.invalidate_local();
         let control = self
             .window_history_control()
             .ok_or("History is unavailable")?;
-        let history = self.history.as_mut().ok_or("History is unavailable")?;
-        crate::history_mode::host::press_window_control(history.as_mut(), control)?;
+        crate::history_mode::host::press_offered(
+            self.root.as_mut(),
+            self.history.as_deref_mut(),
+            control,
+        )?;
         self.relayout();
         Ok(())
     }

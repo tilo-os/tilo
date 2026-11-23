@@ -91,7 +91,6 @@ pub(super) fn text_result(
 /// The typed answer of a call that did not run: what it was, and what would
 /// work instead.
 pub(super) fn refused(failure: &Failure, retry_safe: bool) -> Value {
-    use tilo_actions::remote::ActionCallError;
     let message = failure.message.as_str();
     // A failure with no host error of its own may name the code itself
     // (`unknown_action: …`): that is what a caller acts on, and the words
@@ -114,21 +113,23 @@ pub(super) fn refused(failure: &Failure, retry_safe: bool) -> Value {
             "next_steps":[tilo_actions::remote::APPROVE_AGAIN],
         }});
     }
-    let (code, next) = match &failure.host {
-        Some(ActionCallError::NotReady) if retry_safe => (
-            "not_ready",
+    // A refusal that came as words (a lookup the workspace did not answer, said on its way
+    // through the path's resolution) keeps the code it starts with, and is told what to do
+    // the same as the typed refusal of that code.
+    let code = match &failure.host {
+        Some(host) => host.code(),
+        None => named,
+    };
+    let next = match code {
+        "not_ready" if retry_safe => {
             "retry the same call once what it waits for arrived: tilo_watch says when the \
              workspace serves this session"
-                .to_owned(),
-        ),
-        Some(ActionCallError::Unanswered) => (
-            "unanswered",
+        }
+        "unanswered" => {
             "call again with the same invocation_id: it answers what the call did, and runs it \
              once if it never arrived"
-                .to_owned(),
-        ),
-        Some(other) => (other.code(), String::new()),
-        None => (named, String::new()),
+        }
+        _ => "",
     };
     let mut error = json!({"code": code, "message": message});
     if let Some(fields) = error.as_object_mut()
@@ -137,6 +138,26 @@ pub(super) fn refused(failure: &Failure, retry_safe: bool) -> Value {
         fields.insert("next_steps".into(), json!([next]));
     }
     json!({"status":"failed","error":error})
+}
+
+/// Whether `failure` is answered by asking the same call again under the same invocation id:
+/// the workspace was not serving this session yet (`not_ready`), or did not answer in time
+/// (`unanswered`), whether the host's typed refusal said so or the words it came as do.
+pub(super) fn asks_again(failure: &Failure) -> bool {
+    match &failure.host {
+        Some(host) => host.ask_again(),
+        None => matches!(coded(&failure.message).0, "not_ready" | "unanswered"),
+    }
+}
+
+/// The typed answer of a call under invocation `id` that `failure` says to ask again
+/// ([`asks_again`]): the refusal, with the id the same call is asked again under.
+pub(super) fn refused_under(failure: &Failure, id: &str, retry_safe: bool) -> Value {
+    let mut answer = refused(failure, retry_safe);
+    if let Some(fields) = answer.as_object_mut() {
+        fields.insert("invocation_id".into(), json!(id));
+    }
+    answer
 }
 
 /// The codes a refusal is documented with (`docs/tilo-sh/errors.md`), and the two a caller

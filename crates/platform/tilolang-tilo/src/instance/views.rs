@@ -56,6 +56,7 @@ impl Instance {
         match host.open_layer_at(&self.app, &self.root_view) {
             Ok((target, view)) => {
                 self.root = Some(Shown::new(target, self.spaced(Level::Root, view)));
+                self.leave_history();
                 let closed = self.detail.take().is_some() | self.facts.take().is_some();
                 if closed {
                     self.out.push(ToUi::Close);
@@ -101,6 +102,11 @@ impl Instance {
         let Some(app) = self.host() else {
             return;
         };
+        // Opening something else closes the window's history: the level shows what it opens.
+        if self.leave_history().is_some() {
+            self.detail = None;
+            self.out.push(ToUi::Close);
+        }
         if self
             .detail
             .as_ref()
@@ -198,6 +204,7 @@ impl Instance {
         press: u64,
     ) {
         if self.show_in_place(target) {
+            self.close_history();
             if let Some(front) = front {
                 self.out.push(ToUi::Front {
                     front,
@@ -260,6 +267,7 @@ impl Instance {
 
     /// Close the detail level: Back.
     pub fn close_detail(&mut self) {
+        self.leave_history();
         if let Some(shown) = self.detail.take() {
             self.seen_in_window(&shown.target);
             self.lenses_changed = true;
@@ -337,7 +345,7 @@ impl Instance {
             let first = 0..FIRST_ROWS.min(rows.len());
             // Which row a list shows open is its list's to say: the host asks for it with the
             // rows it shows, and the open a view kept arrives with that ask.
-            let requested = rows.request(first, None);
+            let requested = rows.request(first, (None, None));
             sent.push(rows_message(
                 &host, &*names, &handle, level, &list, requested,
             ));

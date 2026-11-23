@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 use js_sys::{Function, Promise, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
+use tilo_device_identity::login::{Approved, Asked};
 use tilo_live::live::Track;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_client::https::{HttpClient, HttpFuture};
@@ -702,66 +703,26 @@ fn request_id(text: &str) -> Result<[u8; 32], JsError> {
         .map_err(|_| js_error("request id must be 32 bytes"))
 }
 
-/// The short link of `invitation` (its signed text, as the host made it) for
-/// the page at `base`: the invitation sealed under a key the link alone
-/// carries and left on that site's shelf. `host` is the origin of the host
-/// it admits into, which the link names so whoever follows it knows where the
-/// workspace is. Resolves to `https://<site>/i/<handle>#<key>`.
+/// The invitation a link's `secret` names, as the page takes it: the
+/// invitation `workspace` keeps at the host `host` (its web origin), asked of
+/// that host by the secret a short link carries. An invitation's own text is
+/// answered as it came, so every link joins the same way. Resolves to the
+/// invitation's text, as [`inspect_invitation`] and [`invitation_entry`] take
+/// it.
 ///
 /// # Errors
 ///
-/// `base` is not a web address, `invitation` does not verify, or the site
-/// could not be reached to keep it — the invitation's own text still works
-/// then, which the caller hands over instead.
-#[wasm_bindgen(js_name = sealedInvitationLink)]
-pub async fn sealed_invitation_link(
-    base: String,
+/// The host could not be reached, or keeps no invitation under the secret
+/// any more: spent, lapsed or taken back.
+#[wasm_bindgen(js_name = openInvitation)]
+pub async fn open_invitation(
     host: String,
-    invitation: String,
+    workspace: String,
+    secret: String,
 ) -> Result<String, JsError> {
-    let origin = base.trim().trim_end_matches('/');
-    let site = tilo_workspace_directory::web_origin(&format!("{origin}/")).map_err(js_error)?;
-    let join = tilo_workspace_join::decode_and_verify_invitation_text(
-        &invitation,
-        None,
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .map_err(js_error)?;
-    // The shelf this leaves it on lives as long as the invitation: the link
-    // is used, not kept, so no caller takes it back from here.
-    let store = tilo_sheets::directory::Store::default();
-    store
-        .shelve_soon(
-            &hex::encode(join.invite_id()),
-            join.signed_invitation().to_vec(),
-            join.grant().expires_at_ns,
-            &site,
-            Some(&host),
-        )
+    tilo_workspace_directory::kept_invitation(&host, &workspace, &secret)
         .await
-        .map(|shelved| shelved.link)
         .map_err(js_error)
-}
-
-/// The invitation the link's `secret` names (its handle and the key in the
-/// link's fragment), as the page takes it: fetched from the shelf of `site`
-/// and opened with that key. An invitation's own text is answered as it came,
-/// so every build's links join the same way. Resolves to JSON:
-/// `{invitation, host?}`, the invitation's text as [`inspect_invitation`] and
-/// [`invitation_entry`] take it, and the origin of the host it admits into where
-/// the device that left it named one.
-///
-/// # Errors
-///
-/// The shelf could not be reached, holds nothing under the handle any more,
-/// or the key does not open what it answered with.
-#[wasm_bindgen(js_name = redeemInvitation)]
-pub async fn redeem_invitation(site: String, secret: String) -> Result<String, JsError> {
-    let sealed = tilo_workspace_directory::sealed_invitation(&site, &secret)
-        .await
-        .map_err(js_error)?;
-    serde_json::to_string(&sealed).map_err(|error| js_error(error.to_string()))
 }
 
 /// What `invitation` (the signed invitation's bytes) offers at the host
@@ -985,55 +946,6 @@ pub async fn certify_with_root(
     .map_err(js_error)
 }
 
-/// `refusal` as the page reads it: an `Error` named `LoginCodeError`, with the host's HTTP
-/// `status` (0 unreached) and the kind of refusal as `code`
-/// ([`tilo_server_client::login_code::CodeRefusal::code`]).
-fn code_error(refusal: &tilo_server_client::login_code::CodeRefusal) -> JsValue {
-    let error = js_sys::Error::new(&refusal.message);
-    error.set_name("LoginCodeError");
-    let _ = Reflect::set(&error, &"code".into(), &refusal.code().into());
-    let _ = Reflect::set(&error, &"status".into(), &refusal.status.into());
-    error.into()
-}
-
-/// Make a login code at the host `post` reaches, naming `link` (this tab's pairing link, setting
-/// up through an agent) or nothing (asking to be signed in by a device of the person). Resolves
-/// to `{code, follow, expires_at_ms}` JSON.
-///
-/// # Errors
-///
-/// Rejects with a `LoginCodeError` ([`code_error`]).
-#[wasm_bindgen(js_name = createLoginCode)]
-pub async fn create_login_code(post: Function, link: Option<String>) -> Result<String, JsValue> {
-    let made = tilo_server_client::login_code::create(&PageHttp(post), link)
-        .await
-        .map_err(|refusal| code_error(&refusal))?;
-    serde_json::to_string(&made).map_err(|error| js_error(error).into())
-}
-
-/// Where the code this tab follows with the secret `follow` is: the host's `Polled`, as JSON.
-/// `offer` is the code as it was made, `{code, expires_at_ms, link?}` JSON: the host keeps a code
-/// only once its tab follows it with that, which the tab does once its person uses the code.
-///
-/// # Errors
-///
-/// Rejects with a `LoginCodeError` ([`code_error`]), or a malformed offer.
-#[wasm_bindgen(js_name = followLoginCode)]
-pub async fn follow_login_code(
-    post: Function,
-    follow: String,
-    offer: Option<String>,
-) -> Result<String, JsValue> {
-    let offer = offer
-        .map(|offer| serde_json::from_str::<tilo_server_protocol::login_code::Offer>(&offer))
-        .transpose()
-        .map_err(js_error)?;
-    let polled = tilo_server_client::login_code::follow(&PageHttp(post), &follow, offer)
-        .await
-        .map_err(|refusal| code_error(&refusal))?;
-    serde_json::to_string(&polled).map_err(|error| js_error(error).into())
-}
-
 /// Revoke `keyHex`, a device key of this person's, with the root the page
 /// holds (`root`): resolves to the root-signed revocation as JSON, which the
 /// page keeps beside the person. It
@@ -1117,8 +1029,10 @@ impl PairingHost {
 
     /// The new devices waiting here for the member root the page holds
     /// (`root`) to pair them: `[{digest, pairingCode, label, device, invite,
-    /// requestedAtMs}]` JSON, keys, digest and invite as hex (`invite` null
-    /// for a request no invite asked for).
+    /// requestedAtMs, signIn, capability}]` JSON, keys, digest and invite as hex
+    /// (`invite` null for a request no invite asked for). `signIn` is set for a
+    /// tab a page's sign-in ticket expects, and `capability` then says what
+    /// certifying it makes it (`null` for any other device).
     ///
     /// # Errors
     /// The host was not reached, or turned the root away.
@@ -1139,6 +1053,10 @@ impl PairingHost {
                         "invite": (entry.request.invite != [0; 16])
                             .then(|| hex::encode(entry.request.invite)),
                         "requestedAtMs": entry.requested_at_ns / 1_000_000,
+                        "signIn": entry.sign_in,
+                        "capability": entry
+                            .sign_in
+                            .then(tilo_device_identity::login::tab_capability),
                     })
                 })
                 .collect(),
@@ -1319,6 +1237,10 @@ use js_state::{
 pub struct WasmPeer {
     id: u32,
     device_key: [u8; 32],
+    /// This tab's device signer, as the session signs: what approves a computer a ticket named.
+    signer: Arc<dyn DeviceSigner>,
+    /// This tab's device certificate, signed by the person's root: the approver of a computer.
+    own_cert: DeviceCert,
     pub(crate) handle: Link,
     /// This page's device in its person's workspaces, over the same session: how it enters them.
     device: Device,
@@ -1412,6 +1334,45 @@ impl WasmPeer {
 
 #[wasm_bindgen]
 impl WasmPeer {
+    /// Approve the computer that asked with a ticket this tab's host serves: sign the member
+    /// certificate the host built for it with this tab's root (`root`), and sign the question with
+    /// this tab's device key. Resolves to the [`Approved`] JSON the host checks with
+    /// `check_approval` before it answers the computer.
+    ///
+    /// `asked` is the [`Asked`] JSON the host handed the page.
+    ///
+    /// # Errors
+    ///
+    /// The question is malformed, the root is not the person's, or a signature failed.
+    #[wasm_bindgen(js_name = approveAsked)]
+    pub async fn approve_asked(&self, root: JsValue, asked: String) -> Result<String, JsError> {
+        let asked: Asked = serde_json::from_str(&asked).map_err(js_error)?;
+        if asked.user_public_key != self.own_cert.user_public_key {
+            return Err(js_error("this tab approves computers of the person it is"));
+        }
+        let root = PageSigner::from_js(&root)?;
+        if root.device_public_key() != asked.user_public_key {
+            return Err(js_error(
+                "the root that signs the certificate is not the person's",
+            ));
+        }
+        let mut cert = asked.cert.clone();
+        tilo_user_identity::sign_device_cert_async(&mut cert, &root)
+            .await
+            .map_err(js_error)?;
+        let signature = self
+            .signer
+            .sign(asked.digest.to_vec())
+            .await
+            .map_err(|error| js_error(error.0))?;
+        serde_json::to_string(&Approved {
+            cert,
+            approver: self.own_cert.clone(),
+            signature,
+        })
+        .map_err(js_error)
+    }
+
     /// Start a session. `configJson` is `{cert, hostCert}` from
     /// [`certify_device`], optionally with `displayName`. With `namespace`
     /// (`{profile, device}` JSON, whose storage the page has opened) the
@@ -1453,6 +1414,7 @@ impl WasmPeer {
             ));
         }
         let signer: Arc<dyn DeviceSigner> = Arc::new(signer);
+        let kept_signer = Arc::clone(&signer);
         let store = peer_store(
             namespace,
             record,
@@ -1517,6 +1479,8 @@ impl WasmPeer {
         Ok(Self {
             id,
             device_key,
+            signer: kept_signer,
+            own_cert: reporter_cert,
             durable_events: handle.events_where(is_durable),
             live_events: handle.events_where(is_live),
             voice_events: handle.events_where(is_voice),

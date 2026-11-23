@@ -67,18 +67,6 @@ class WorkspaceExport:
     resources: Sequence[Mapping[str, Any]]
     unread: Sequence[Mapping[str, Any]]
 
-    @classmethod
-    def of(cls, raw: Mapping[str, Any]) -> WorkspaceExport:
-        workspace = raw.get("workspace")
-        resources = raw.get("resources")
-        unread = raw.get("unread")
-        return cls(
-            workspace=WorkspaceInfo.of(workspace if isinstance(workspace, Mapping) else {}),
-            exported_at_ms=int(raw.get("exported_at_ms") or 0),
-            resources=[r for r in resources or [] if isinstance(r, Mapping)],
-            unread=[u for u in unread or [] if isinstance(u, Mapping)],
-        )
-
 
 @dataclass(frozen=True)
 class WorkspaceList:
@@ -243,7 +231,7 @@ class MintedKey:
 class Invitation:
     """An invitation into a workspace: the link that brings one person in.
 
-    Following `link` signs them in (with a passkey, or by approving an agent)
+    Following `link` signs them in (by approving an agent)
     and lands them in the workspace as `role`. No mail is sent: with an
     `email`, `sent` is false and `next` says to hand the link over.
     """

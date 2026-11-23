@@ -469,14 +469,6 @@ thread_local! {
     static PAGE_GPU: std::cell::RefCell<Option<SharedGpu>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Lend apps the device a browser page renders with, so their own GPU work (the video editor's
-/// compositor) runs on it: a page cannot wait for a device of its own, and two devices would not share
-/// textures.
-#[cfg(target_arch = "wasm32")]
-pub fn provide_page_gpu(gpu: Option<SharedGpu>) {
-    PAGE_GPU.with_borrow_mut(|slot| *slot = gpu);
-}
-
 /// Handles to the process-wide shared wgpu device every [`OffscreenRenderer`] draws through: an app
 /// doing its own headless GPU work (the video editor's compositor) borrows these rather than starting
 /// a second `wgpu::Instance`, which is why the shared context exists.

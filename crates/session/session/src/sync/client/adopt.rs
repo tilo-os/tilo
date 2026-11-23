@@ -1,8 +1,7 @@
-//! A workspace taken in: entered through its entry or redeemed from an invitation the shell made for
-//! it, or entered as a further device of the person at the device hosting it. However this device
-//! came to take part in a workspace another device serves, its own workspace service holds a member
-//! copy of it, synced with that device: the copy every read and write of the workspace goes
-//! through.
+//! A workspace taken in: redeemed from an invitation the shell made for it, or entered as a further
+//! device of the person at the device hosting it. However this device came to take part in a
+//! workspace another device serves, its own workspace service holds a member copy of it, synced
+//! with that device: the copy every read and write of the workspace goes through.
 
 use std::sync::Arc;
 
@@ -48,9 +47,9 @@ fn join_client(
     Ok((client, true))
 }
 
-/// Come into the workspace the shell made for the join, through its entry or with an invitation: this
-/// device becomes a member of the workspace, takes in what it held before it arrived, and takes part
-/// in it from then on.
+/// Come into the workspace the shell made for the join, with the invitation it holds: this device
+/// becomes a member of the workspace, takes in what it held before it arrived, and takes part in it
+/// from then on.
 /// The workspace's state arrives as the host's answer: a person who joins late reads the whole
 /// history, not only what is recorded from now on.
 /// Renew this device's certificate before it is presented: a device that slept past the end of its
@@ -100,42 +99,6 @@ pub(super) async fn redeem(
                 .ok_or("the native invitation link is malformed")?;
             (client, hosted_here, invitation)
         }
-        tilo_workspace_directory::Way::Entry { host, .. } => {
-            let hint = tokio::time::timeout(
-                REDEEM_WITHIN,
-                through_entry(
-                    endpoint.clone(),
-                    &identity,
-                    host.map(|host| *host),
-                    request.workspace_id,
-                    &request.name,
-                ),
-            )
-            .await
-            .map_err(|_| "the workspace's host did not answer".to_owned())??;
-            let client = tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint);
-            let (bootstrap, at) = tokio::time::timeout(
-                REDEEM_WITHIN,
-                tilo_peer_state::owner::enroll::admit_as_member(
-                    client,
-                    identity,
-                    owner.clone(),
-                    request.workspace_id,
-                    hint,
-                    tilo_clock::wall(),
-                ),
-            )
-            .await
-            .map_err(|_| "the workspace's host did not answer".to_owned())??;
-            tokio::time::timeout(
-                SETTLE_WITHIN,
-                take_part_in(&owner, request.workspace_id, link, network),
-            )
-            .await
-            .map_err(|_| "the workspace was not taken in time".to_owned())??;
-            hold_on_service(own_service, &bootstrap, &at).await;
-            return Ok(());
-        }
     };
     let enrollment = tokio::time::timeout(
         REDEEM_WITHIN,
@@ -172,101 +135,6 @@ pub(super) async fn redeem(
         .await;
     }
     Ok(())
-}
-
-/// How long the entry's host may take to answer the entry, beyond the bound it holds an entry to
-/// itself: the connection takes some.
-const ENTRY_ANSWER_SLACK: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// Enter `workspace` through its entry, as this computer's person named `name`: the host the site
-/// published for the entry (`host`) says who it is, and this device's session with it asks to enter
-/// in its first message, as every device enters a workspace through its entry
-/// ([`tilo_server_protocol::entering`]). The entry decides there by the workspace's own rules, and the
-/// workspace admits this device's own certificate. Answers the host's signed address for the
-/// workspace, where this device then takes its state as a member's device does; the session itself
-/// ends with the answer, since this device takes part over its own peer network.
-async fn through_entry(
-    endpoint: iroh::Endpoint,
-    identity: &DeviceIdentity,
-    host: Option<tilo_server_protocol::web::PageHost>,
-    workspace: InviteWorkspaceId,
-    name: &str,
-) -> Result<tilo_peer_state::join::TransportHint, String> {
-    use tilo_server_protocol::entering::{Entered, Entering, Through};
-    let topic = workspace;
-    let host = host.ok_or("the site names no host certificate and address")?;
-    let address = host
-        .address
-        .ok_or("the workspace's host takes no device sessions")?;
-    let (cert, _) = identity.current_material(topic)?;
-    let mut request_id = [0; 32];
-    getrandom::fill(&mut request_id).map_err(|error| error.to_string())?;
-    let entering = Entering {
-        workspace: workspace.to_string(),
-        name: tilo_server_protocol::web::kept(
-            name,
-            tilo_server_protocol::web::MAX_DISPLAY_NAME_CHARS,
-        ),
-        request_id,
-        through: Through::Entry,
-    };
-    let session = tilo_server_session::ServerClient::connect_with_signer(
-        endpoint,
-        address.endpoint_addr,
-        Some(host.server_cert.user_public_key),
-        Some(host.server_cert.device_public_key),
-        tilo_server_session::ClientCredentials {
-            cert,
-            signer: identity.signer.as_ref(),
-            revocations: tilo_user_identity::RevocationList::new(),
-            entering: Some(tilo_server_session::Entry {
-                entering,
-                // This device's channels ask for the workspace's keys as a member, once it holds
-                // the workspace.
-                access: None,
-                server_cert: host.server_cert,
-            }),
-        },
-    )
-    .await
-    .map_err(|error| format!("the workspace's host could not be reached: {error}"))?;
-    let answer = tokio::time::timeout(
-        tilo_server_protocol::entering::ENTERING_DEADLINE.saturating_add(ENTRY_ANSWER_SLACK),
-        session.recv(),
-    )
-    .await;
-    let failure = session.handshake_failure();
-    // The endpoint is this device's own, which its peer network goes on using: only the session's
-    // connection is closed.
-    session.disconnect().await;
-    let entered = match answer {
-        Ok(Some(tilo_server_protocol::transport::Envelope::Entered(entered))) => entered,
-        Ok(Some(_)) => {
-            return Err("the workspace's host answered the entry with something else".into());
-        }
-        Ok(None) => {
-            return Err(failure.map_or_else(
-                || "the workspace's host ended the session without answering".to_owned(),
-                |error| format!("the workspace's host did not prove itself: {error}"),
-            ));
-        }
-        Err(_) => return Err("the workspace's host did not answer".into()),
-    };
-    match entered {
-        Entered::Admitted {
-            workspace: admitted,
-            host: Some(hint),
-            ..
-        } if admitted == workspace.to_string() => postcard::from_bytes(&hint)
-            .map_err(|error| format!("the workspace's host named no address of its own: {error}")),
-        Entered::Admitted { host: None, .. } => {
-            Err("the workspace's host named no address to take the workspace from".into())
-        }
-        Entered::Admitted { .. } => {
-            Err("the workspace's host admitted this device elsewhere".into())
-        }
-        Entered::Refused(refusal) => Err(refusal.reason().to_owned()),
-    }
 }
 
 /// The peer network a workspace taken in is carried on: its actor, and where what it hears of the

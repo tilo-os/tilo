@@ -3,7 +3,7 @@
 use super::Route;
 use super::{
     AdmissionError, AdmissionReport, DocumentAdmission, DroppedInput, InputDisposition,
-    MissingPrerequisite, NeighbourMsg, ReceiveOutcome, StatePeer, SystemTime, VecDeque, err,
+    MissingPrerequisite, NeighbourMsg, ReceiveOutcome, StatePeer, SystemTime, VecDeque,
 };
 use crate::admission::DropReason;
 use automerge::transaction::Transactable as _;
@@ -132,7 +132,8 @@ impl StatePeer {
             prerequisite,
             now,
         } = held;
-        let bytes = crate::postcard_sink::encoded_len(&message, usize::MAX).map_err(err)?;
+        let bytes = crate::postcard_sink::encoded_len(&message, usize::MAX)
+            .map_err(crate::AdmissionError::malformed)?;
         // A write held for the changes or the checkpoint its record builds on
         // waits for history: its sender holds it, and is asked for it. Held
         // already, it was asked for when it first came.
@@ -164,7 +165,10 @@ impl StatePeer {
         if self.core.native_cut_publisher.is_some()
             && full(self.core.pending.len(), self.core.pending_bytes)
         {
-            return Err("app prerequisite queue full; fresh checkpoint required".into());
+            return Err(crate::AdmissionError::rejected(
+                neighbour_wire::RefusalReason::Full,
+                "app prerequisite queue full; fresh checkpoint required",
+            ));
         }
         if bytes > MAX_HELD_BYTES {
             let input = dropped_input(
@@ -178,7 +182,7 @@ impl StatePeer {
             report.summary.deferred = false;
             return Ok(report);
         }
-        if prerequisite == MissingPrerequisite::Governance
+        if prerequisite == MissingPrerequisite::Rules
             && self
                 .core
                 .pending
@@ -209,7 +213,8 @@ impl StatePeer {
             let Some((author, oldest, replayed)) = self.core.pending.pop_front() else {
                 break;
             };
-            let size = crate::postcard_sink::encoded_len(&oldest, usize::MAX).map_err(err)?;
+            let size = crate::postcard_sink::encoded_len(&oldest, usize::MAX)
+                .map_err(crate::AdmissionError::malformed)?;
             self.core.pending_bytes = self.core.pending_bytes.saturating_sub(size);
             match self.decide_held(author, &oldest, replayed, now) {
                 Decided::Admitted(admitted, taken) => {
@@ -378,7 +383,7 @@ impl StatePeer {
                 let held = self.route_heads(&route);
                 self.missed.routes.entry(route).or_insert(held);
             }
-            Some(MissingPrerequisite::Governance) => {
+            Some(MissingPrerequisite::Rules) => {
                 if self.missed.governance.is_none() {
                     self.missed.governance = Some(self.governance().heads());
                 }

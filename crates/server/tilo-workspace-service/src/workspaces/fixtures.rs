@@ -244,12 +244,6 @@ impl TestHost {
         self.host.node_addr()
     }
 
-    /// The compactor of its workspaces.
-    #[cfg(all(test, feature = "agents"))]
-    pub(crate) fn compactor(&self) -> &crate::compaction::Compactor {
-        self.host.compactor()
-    }
-
     /// Stop the host, then its router and endpoint.
     pub async fn shutdown(self) {
         self.host.shutdown().await;
@@ -418,7 +412,10 @@ impl GroupKeys for TestGroupKeys {
     }
 }
 
-/// A certified host of `cert`'s device keeping its state under `state_root`.
+/// A certified host of `cert`'s device keeping its state under `state_root`,
+/// taking part in its workspaces' channels as every server that governs
+/// workspaces does: what its members seal it opens, and what it writes itself
+/// it seals.
 ///
 /// # Panics
 ///
@@ -439,25 +436,20 @@ pub async fn test_host_with_grants(
     cert: &DeviceCert,
     grants: Option<usize>,
 ) -> TestHost {
-    host_on(state_root, key, cert, None, grants).await
+    host_on(
+        state_root,
+        key,
+        cert,
+        DeviceKeyGroups {
+            keys: Arc::<TestGroupKeys>::default(),
+            sink: None,
+        },
+        grants,
+    )
+    .await
 }
 
-/// The same host, run on a device that takes part in its workspaces' channels,
-/// as a server whose device owns workspaces does: what its members seal it opens,
-/// and what it writes itself it seals.
-///
-/// # Panics
-///
-/// The endpoint cannot bind or the host cannot open.
-pub async fn test_host_taking_part(
-    state_root: &Path,
-    key: &SigningKey,
-    cert: &DeviceCert,
-) -> TestHost {
-    test_host_holding(state_root, key, cert, Arc::default()).await
-}
-
-/// [`test_host_taking_part`] whose device holds `keys`: the same keys open
+/// [`test_host`] whose device holds `keys`: the same keys open
 /// what a host before it on the same state sealed, as a device's channel
 /// service keeps its keys across a restart.
 ///
@@ -474,19 +466,19 @@ pub async fn test_host_holding(
         state_root,
         key,
         cert,
-        Some(DeviceKeyGroups { keys, sink: None }),
+        DeviceKeyGroups { keys, sink: None },
         None,
     )
     .await
 }
 
 /// `cert`'s device hosting under `state_root`, taking part in the workspaces'
-/// channels through `channels` when it is given.
+/// channels through `channels`.
 async fn host_on(
     state_root: &Path,
     key: &SigningKey,
     cert: &DeviceCert,
-    channels: Option<DeviceKeyGroups>,
+    channels: DeviceKeyGroups,
     grants: Option<usize>,
 ) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -521,7 +513,7 @@ async fn host_on(
             revocations: RevocationList::new(),
         },
         endpoint.clone(),
-        channels,
+        Some(channels),
     )
     .await
     .expect("the host opens");
@@ -603,21 +595,20 @@ pub async fn project_access(workspaces: &Workspaces, workspace: &str) {
         .workspace(workspace)
         .await
         .expect("a governed workspace");
-    let (device_access, heads, workspace_id) = {
+    let (device_access, workspace_id) = {
         let governed = state.lock().await;
         let device_access = governed
             .peer()
             .governance()
             .governed_device_access(tilo_clock::wall())
             .expect("the workspace's device_access");
-        let heads = governed.peer().governance().held_heads();
-        (device_access, heads, governed.workspace_id())
+        (device_access, governed.workspace_id())
     };
     workspaces
         .inner
         .host
         .access
-        .replace_access(workspace_id, (device_access, heads))
+        .replace_access(workspace_id, device_access)
         .await
         .expect("the server projects the workspace's device_access");
 }

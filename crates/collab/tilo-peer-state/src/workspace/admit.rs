@@ -116,7 +116,7 @@ pub struct AdmittedWorkspace {
 pub enum WorkspaceRefusal {
     /// The sender is not the workspace's owner and nothing is held to check
     /// its membership against.
-    GovernanceMissing,
+    RulesMissing,
     /// The sender may not change the workspace.
     WriteForbidden,
     /// The batch does not decode, or isolated admission refused it.
@@ -164,7 +164,7 @@ pub enum WorkspaceRefusal {
 impl std::fmt::Display for WorkspaceRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::GovernanceMissing => f.write_str("workspace governance missing"),
+            Self::RulesMissing => f.write_str("the workspace's rules are not here yet"),
             Self::WriteForbidden => f.write_str("workspace write forbidden"),
             Self::Malformed(error)
             | Self::Coverage(error)
@@ -189,6 +189,33 @@ impl std::fmt::Display for WorkspaceRefusal {
                 f,
                 "the shortcut `{shortcut}` names who saved it without their device's proof"
             ),
+        }
+    }
+}
+
+impl WorkspaceRefusal {
+    /// The class of the refusal, as the batch's writer is told it.
+    #[must_use]
+    pub const fn reason(&self) -> neighbour_wire::RefusalReason {
+        use neighbour_wire::RefusalReason;
+        match self {
+            Self::RulesMissing => RefusalReason::MissingDependency,
+            Self::WriteForbidden
+            | Self::GovernanceWriter
+            | Self::Membership(_)
+            | Self::ReceiptWriter
+            | Self::RefusalWriter
+            | Self::ShortcutAuthorship(_) => RefusalReason::Forbidden,
+            Self::Malformed(_)
+            | Self::DeclaredWorkspaceMismatch
+            | Self::Coverage(_)
+            | Self::Media(_) => RefusalReason::Malformed,
+            Self::Refounded
+            | Self::ReceiptImmutable
+            | Self::RedemptionImmutable
+            | Self::Removals(_)
+            | Self::Delegations(_)
+            | Self::Durability(_) => RefusalReason::Conflict,
         }
     }
 }
@@ -327,7 +354,7 @@ fn holder_writes(
     input: &WorkspaceAdmission<'_>,
     changes: &[Vec<u8>],
 ) -> Result<AdmittedWorkspace, AdmissionFailure> {
-    let before = input.before.ok_or(WorkspaceRefusal::GovernanceMissing)?;
+    let before = input.before.ok_or(WorkspaceRefusal::RulesMissing)?;
     let at = super::membership::dependency_state(before, changes).map_err(membership)?;
     let named = crate::state::keeping_devices_of(&at)
         .iter()
@@ -587,7 +614,7 @@ fn may_write(
     let SenderAccess::Member { person, foreign } = source.access else {
         return Ok(true);
     };
-    let before = before.ok_or(WorkspaceRefusal::GovernanceMissing)?;
+    let before = before.ok_or(WorkspaceRefusal::RulesMissing)?;
     let policy = crate::workspace::policy_of(before, workspace);
     let person = hex::encode(person);
     if policy.active_role(&person).is_none() {

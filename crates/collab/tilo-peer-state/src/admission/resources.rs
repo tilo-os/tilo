@@ -87,10 +87,12 @@ pub(super) fn decode_index(bytes: &[u8]) -> Result<ExactAdmissions, AdmissionErr
     if bytes.len() > MAX_EXACT_ADMISSION_BYTES {
         return Err(AdmissionError::ResourceLimit);
     }
-    let (value, tail): (WireIndex, _) = postcard::take_from_bytes(bytes)
-        .map_err(|error| AdmissionError::Rejected(error.to_string()))?;
+    let (value, tail): (WireIndex, _) =
+        postcard::take_from_bytes(bytes).map_err(AdmissionError::malformed)?;
     if !tail.is_empty() || !matches_wire(&value, bytes) {
-        return Err("noncanonical exact admission index".into());
+        return Err(crate::AdmissionError::malformed(
+            "noncanonical exact admission index",
+        ));
     }
     Ok(value.0)
 }

@@ -26,7 +26,7 @@ use tilo_action_policy::roles::agent_policy;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_join::delegation::{Delegate, Delegation};
 
-use super::{GovernedIdentity, Role, SystemTime, err, now_ns, workspace};
+use super::{GovernedIdentity, SystemTime, err, now_ns, workspace};
 use crate::join::WorkspaceId;
 
 /// What a governed identity carries when its device is a delegate of its
@@ -115,12 +115,6 @@ impl GovernedIdentity {
             row.acting(&self.device_cert, workspace, now_ns)
         })
     }
-}
-
-/// The role an agent acts with when its person holds `role`: its person's,
-/// within what its delegation grants (the agent cap), so it never governs.
-pub(crate) fn agent_role(role: Role) -> Role {
-    agent_policy::role(role, agent_policy::ROLE_CAP)
 }
 
 /// One delegated agent on a workspace's roster.

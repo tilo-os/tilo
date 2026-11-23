@@ -7,9 +7,7 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, ViewCx};
 use ui::icons::Icon;
 use ui::tilo_actions::remote::mcp_server::{self, Grant, Reach, Server};
-use ui::tilo_actions::remote::{
-    Confirmation, InvokeArgument, RemoteActionTarget, device_pairing, session_actions,
-};
+use ui::tilo_actions::remote::{Confirmation, InvokeArgument, RemoteActionTarget, session_actions};
 use ui::tilo_resource::{self, Effect as _};
 use ui::widget::{
     Button, ButtonRole, Column, Container, DisclosureGroup, DisclosureRow, Element, ListRow, Row,
@@ -23,7 +21,7 @@ use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
-    Item, SettingsSection, block, note, page, row, rows, section, thing_row, untitled,
+    Item, SettingsSection, block, note, page, row, rows, section, untitled,
 };
 use ui::tilo_actions::remote::identity_admin::KeyKind;
 
@@ -70,21 +68,6 @@ pub enum DevicesAccessEffect {
         #[param("The session's name, as History names it")]
         session: String,
     },
-    /// Approve or decline a device asking to be the person. Approving lets
-    /// the device act as the person from then on, so it is theirs alone to
-    /// do: its row asks for their confirmation ([`answering_risk`]), anyone
-    /// acting for them asks them first, and an agent's or an automation's
-    /// call lets nobody in.
-    #[effect(kind = "outside")]
-    #[effect(job, row, attended)]
-    AnswerDevice {
-        #[param("The ask's id, as the list of asking devices names it")]
-        ask: String,
-        #[param("The name the device is let in under")]
-        label: String,
-        #[param("Whether it is let in: true approves it, false declines it")]
-        approve: bool,
-    },
     /// Name a device of the person's: what their device lists read it by from
     /// then on. Two computers set up the same way enroll under one name, so
     /// the person tells them apart here.
@@ -120,9 +103,6 @@ pub(crate) fn answer(
     cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let area = area(app).ok_or_else(crate::area::missing)?;
-    if effect.lets_in() && !asked_by_the_person() {
-        return Err(t("settings-access-answer-yourself"));
-    }
     area.model()
         .borrow_mut()
         .act(&area.remote, &effect, Some(cx.reply()))?;
@@ -143,39 +123,6 @@ impl DevicesAccessEffect {
             Self::RevokeDevice { .. } | Self::RevokeBrowser { .. } | Self::RevokeAgent { .. }
         )
     }
-
-    /// Whether it lets a device in as the person.
-    const fn lets_in(&self) -> bool {
-        matches!(self, Self::AnswerDevice { approve: true, .. })
-    }
-}
-
-/// What answering a device risks, by what its caller answers: letting it in
-/// hands it everything the person may do, so that asks for their
-/// confirmation as handing out a credential does; declining it risks
-/// nothing. An answer that does not read as a decline is taken as letting
-/// it in.
-fn answering_risk(args: &ui::tilo_actions::ActionArgs) -> ui::tilo_actions::RiskLevel {
-    let declines = args
-        .to_json()
-        .get("approve")
-        .and_then(serde_json::Value::as_bool)
-        == Some(false);
-    if declines {
-        ui::tilo_actions::RiskLevel::None
-    } else {
-        ui::tilo_actions::RiskLevel::Privileged
-    }
-}
-
-/// Whether the call being answered is the person's own: made at this device,
-/// or delivered for the person acting themselves from a device of theirs.
-/// Settings passes what it is asked on to whoever keeps the person's devices
-/// as the person's own word, so what an agent, an automation, a bot or an
-/// app asks for them is never passed on as that.
-fn asked_by_the_person() -> bool {
-    ui::invocation_scope::current_invoker()
-        .is_none_or(|invoker| invoker.acting.direct_person().is_some())
 }
 
 crate::area::pane_area! {
@@ -210,7 +157,6 @@ pub struct DevicesAccessArea {
 pub struct AccessSample {
     pub devices: Vec<DeviceView>,
     pub api: Server,
-    pub asking: Vec<Asking>,
     pub now_ms: i64,
 }
 
@@ -232,7 +178,7 @@ impl DevicesAccessArea {
         self.model.get_or_init(|| {
             Rc::new(RefCell::new(match &self.scene {
                 Some(sample) => AccessModel::shown(sample.clone()),
-                None => AccessModel::asking(&self.remote),
+                None => AccessModel::listed(&self.remote),
             }))
         })
     }
@@ -264,8 +210,7 @@ impl DevicesAccessArea {
             .agents()
             .into_iter()
             .map(|agent| agent_row(&agent, &draft));
-        let asking = model.asking.iter().map(asking_row);
-        devices.chain(agents).chain(asking).collect()
+        devices.chain(agents).collect()
     }
 }
 
@@ -276,26 +221,6 @@ pub(crate) struct Device;
 #[derive(tilo_resource::Row)]
 #[row(kind = "settings.agent-grant", label = "Agent", effects = DevicesAccessEffect)]
 pub(crate) struct AgentGrant;
-
-pub(crate) struct AskingDevice;
-
-impl tilo_resource::words::RowType for AskingDevice {
-    const KIND: &'static str = "settings.device-asking";
-    const LABEL: &'static str = "Device asking to join";
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
-pub struct Asking {
-    pub ask: String,
-    pub label: String,
-    pub code: String,
-    pub via: String,
-}
-
-#[derive(serde::Deserialize)]
-struct AskingAnswer {
-    asking: Vec<Asking>,
-}
 
 enum Entry<'a> {
     Device(&'a DeviceView),
@@ -561,8 +486,6 @@ pub struct AccessModel {
     api: Server,
     api_followed: Option<ui::Followed>,
     api_seen: u64,
-    asking: Vec<Asking>,
-    asking_read: Listed,
     pending: Vec<Pending>,
     /// What the person took back here, until the lists show it gone: its row
     /// says it is being removed and offers nothing more.
@@ -580,13 +503,8 @@ const ASK_AGAIN_MS: i64 = 4000;
 /// and its list still names it: after that the row shows what the list says.
 const LEAVING_SHOWN_MS: i64 = 10_000;
 
-/// Where the devices asking to be the person are listed.
-fn asking_listed() -> RemoteActionTarget {
-    device_pairing::target(device_pairing::ASKING)
-}
-
 impl AccessModel {
-    fn asking(remote: &ui::RemoteActions) -> Self {
+    fn listed(remote: &ui::RemoteActions) -> Self {
         let mut model = Self::empty();
         model.api_followed =
             Some(remote.follow(mcp_server::target(mcp_server::SERVER), InvokeArgument::None));
@@ -594,7 +512,6 @@ impl AccessModel {
         model
             .devices_read
             .ask(remote, crate::device_fleet::listed(), now);
-        model.asking_read.ask(remote, asking_listed(), now);
         model
     }
 
@@ -603,8 +520,6 @@ impl AccessModel {
         model.devices = sample.devices;
         model.devices_read.answered = true;
         model.api = sample.api;
-        model.asking = sample.asking;
-        model.asking_read.answered = true;
         model.now_ms = Some(sample.now_ms);
         model
     }
@@ -616,8 +531,6 @@ impl AccessModel {
             api: Server::default(),
             api_followed: None,
             api_seen: 0,
-            asking: Vec::new(),
-            asking_read: Listed::default(),
             pending: Vec::new(),
             leaving: Vec::new(),
             left: 0,
@@ -648,14 +561,11 @@ impl AccessModel {
                 )
                 .ok()
             });
-        [
-            self.devices_read.asked_again_in(now),
-            self.asking_read.asked_again_in(now),
-        ]
-        .into_iter()
-        .flatten()
-        .chain(shown)
-        .min()
+        [self.devices_read.asked_again_in(now)]
+            .into_iter()
+            .flatten()
+            .chain(shown)
+            .min()
     }
 
     /// Hold `of`, what the person just took back, as leaving.
@@ -747,22 +657,6 @@ impl AccessModel {
                     None,
                 )
             }
-            DevicesAccessEffect::AnswerDevice {
-                ask,
-                label,
-                approve,
-            } => {
-                let mut arguments = serde_json::Map::new();
-                arguments.insert("ask".into(), ask.clone().into());
-                arguments.insert("label".into(), label.clone().into());
-                arguments.insert("approve".into(), (*approve).into());
-                arguments.insert("confirm".into(), true.into());
-                remote.invoke(
-                    device_pairing::target(device_pairing::ANSWER),
-                    InvokeArgument::Json(arguments),
-                    Some(Confirmation::Confirmed),
-                )
-            }
             DevicesAccessEffect::ShowConnect => remote.invoke(
                 session_actions::target(session_actions::SHOW_CONNECT),
                 InvokeArgument::Json(serde_json::Map::new()),
@@ -829,14 +723,9 @@ impl AccessModel {
         // A host that answered a list once cannot say when it changes: it is
         // asked again while the page is open. One that keeps the read
         // current says so itself, and is never asked again.
-        if self.pending.is_empty() {
-            if self.devices_read.asked_again_in(now) == Some(0) {
-                self.devices_read
-                    .ask(remote, crate::device_fleet::listed(), now);
-            }
-            if self.asking_read.asked_again_in(now) == Some(0) {
-                self.asking_read.ask(remote, asking_listed(), now);
-            }
+        if self.pending.is_empty() && self.devices_read.asked_again_in(now) == Some(0) {
+            self.devices_read
+                .ask(remote, crate::device_fleet::listed(), now);
         }
         if self.settle_pending(now) {
             // What the person did here changed a list: a host that answered
@@ -844,9 +733,6 @@ impl AccessModel {
             if self.devices_read.kept == Kept::Once {
                 self.devices_read
                     .ask(remote, crate::device_fleet::listed(), now);
-            }
-            if self.asking_read.kept == Kept::Once {
-                self.asking_read.ask(remote, asking_listed(), now);
             }
             changed = true;
         }
@@ -876,19 +762,6 @@ impl AccessModel {
             }
             changed |= before != (true, self.devices_read.error.clone());
             changed |= self.listed_anew();
-        }
-        let first = !self.asking_read.answered;
-        if let Some(answer) = self.asking_read.take() {
-            changed |= first;
-            let asking = answer
-                .and_then(|value| {
-                    serde_json::from_value::<AskingAnswer>(value.unwrap_or_default())
-                        .map_err(|_| t("settings-access-unreadable"))
-                })
-                .map(|answered| answered.asking)
-                .unwrap_or_default();
-            changed |= self.asking != asking;
-            self.asking = asking;
         }
         changed
     }
@@ -1048,9 +921,6 @@ impl AccessModel {
 
     fn page(&self, cx: &ViewCx<Settings>, ui_state: &PageState) -> Element {
         let mut sections = vec![Self::intro_section(cx)];
-        if !self.asking.is_empty() {
-            sections.push(self.requests_section(cx));
-        }
         sections.push(self.agents_section(cx, ui_state));
         sections.push(self.devices_section(cx, ui_state));
         page(sections)
@@ -1135,15 +1005,6 @@ impl AccessModel {
             return Some(t("settings-access-unlisted"));
         }
         (!self.devices_read.answered).then(|| t("settings-access-reading"))
-    }
-
-    fn requests_section(&self, cx: &ViewCx<Settings>) -> SettingsSection {
-        let items = self
-            .asking
-            .iter()
-            .map(|asking| asking_item(cx, asking))
-            .collect();
-        section(&t("settings-access-requests"), rows(items))
     }
 }
 
@@ -1706,85 +1567,6 @@ fn agent_item(
             extra,
         ),
     )
-}
-
-/// The answer to a device that asks, as its row offers it: once, bound to
-/// the ask, asking whether it is let in. Approving and declining are the two
-/// values of that one parameter, never two actions under one address.
-fn asking_row(asking: &Asking) -> LiveRow {
-    let bindings = ui::tilo_resource::RowBindings::new().spec(
-        SettingsEffect::from(DevicesAccessEffect::AnswerDevice {
-            ask: asking.ask.clone(),
-            label: asking.label.clone(),
-            // What the row holds until its caller answers: nobody is let in
-            // by an answer that was not given.
-            approve: false,
-        })
-        .bound_asking(&["approve"])
-        // Letting the device in wants its caller's confirmation.
-        .with_risk(answering_risk),
-    );
-    LiveRow::typed_with::<AskingDevice>(
-        format!("settings.device-asking:{}", asking.ask),
-        asking.label.clone(),
-        &bindings,
-    )
-}
-
-fn asking_lines(asking: &Asking) -> Vec<String> {
-    vec![
-        t_args(
-            "settings-access-asking-code",
-            &[("code", asking.code.clone().into())],
-        ),
-        t_args(
-            "settings-access-asking-via",
-            &[("device", asking.via.clone().into())],
-        ),
-    ]
-}
-
-fn asking_item(cx: &ViewCx<Settings>, asking: &Asking) -> Item {
-    let live = asking_row(asking);
-    let dispatcher = cx.dispatcher();
-    let answer = |approve: bool| DevicesAccessEffect::AnswerDevice {
-        ask: asking.ask.clone(),
-        label: asking.label.clone(),
-        approve,
-    };
-    let decline = crate::on_row::bind_invocation(
-        &dispatcher,
-        &live,
-        Button::new(
-            &format!("settings.access.asking.{}.decline", asking.ask),
-            &t("settings-access-decline"),
-        ),
-        answer(false),
-    );
-    let approve = crate::on_row::bind_invocation(
-        &dispatcher,
-        &live,
-        Button::new(
-            &format!("settings.access.asking.{}.approve", asking.ask),
-            &t("settings-access-approve"),
-        )
-        .role(ButtonRole::Primary),
-        answer(true),
-    );
-    row(Box::new(
-        thing_row(
-            &format!("settings.access.asking.{}", asking.ask),
-            &asking.label,
-            &asking_lines(asking),
-            Some(Box::new(
-                Row::new()
-                    .no_wrap()
-                    .push(Box::new(decline))
-                    .push(Box::new(approve)),
-            )),
-        )
-        .icon(Icon::MonitorSmartphone),
-    ))
 }
 
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {

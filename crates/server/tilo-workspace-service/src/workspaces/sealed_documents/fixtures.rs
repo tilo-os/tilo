@@ -449,13 +449,6 @@ impl SealingMember {
         page
     }
 
-    /// `change` made to the member's replica and let go, never signed or sent: what a page that
-    /// held a record's keys before the record itself did with a change it wrote in that moment,
-    /// before its writes waited for their record. Its next write builds on it.
-    pub fn lets_go<R>(&self, change: impl FnOnce(&mut automerge::AutoCommit) -> R) -> R {
-        change(&mut self.document.lock().unwrap())
-    }
-
     /// The member's next write of the record, `change` made to its replica,
     /// sealed and signed as its page publishes it.
     pub fn seal<R>(
@@ -469,6 +462,23 @@ impl SealingMember {
         let changes = document.save_after(&heads);
         *self.document.lock().unwrap() = document;
         (result, self.seal_changes(workspace, changes))
+    }
+
+    /// The member's first write of a part it starts, as a device publishes it: the part whole,
+    /// sealed as the checkpoint that founds the record at a device holding none of it.
+    pub fn founds<R>(
+        &self,
+        workspace: &str,
+        change: impl FnOnce(&mut automerge::AutoCommit) -> R,
+    ) -> (R, NeighbourMsg) {
+        let mut document = self.document();
+        let result = change(&mut document);
+        let whole = collab_types::DocumentMutation::Snapshot(document.save());
+        *self.document.lock().unwrap() = document;
+        (
+            result,
+            self.seal_mutation(&self.keys, workspace, &whole, ContentRetention::Checkpoint),
+        )
     }
 
     /// The member's next write of the record carrying `changes`, whichever
@@ -496,14 +506,27 @@ impl SealingMember {
         workspace: &str,
         changes: Vec<u8>,
     ) -> NeighbourMsg {
+        self.seal_mutation(
+            keys,
+            workspace,
+            &collab_types::DocumentMutation::Incremental(changes),
+            ContentRetention::Delta,
+        )
+    }
+
+    /// `mutation` as the member's next write of the record, sealed under `keys` as `retention`
+    /// and signed.
+    fn seal_mutation(
+        &self,
+        keys: &ContentKeys,
+        workspace: &str,
+        mutation: &collab_types::DocumentMutation,
+        retention: ContentRetention,
+    ) -> NeighbourMsg {
         let (app, record) = (self.route.0.as_str(), self.route.1.as_str());
-        let plaintext = collab_types::DocumentMutation::Incremental(changes)
-            .encode()
-            .unwrap();
+        let plaintext = mutation.encode().unwrap();
         let artifact = collab_types::document_artifact_id(app, workspace, record);
-        let (metadata, payload) = keys
-            .seal_content(artifact, ContentRetention::Delta, &plaintext)
-            .unwrap();
+        let (metadata, payload) = keys.seal_content(artifact, retention, &plaintext).unwrap();
         let author =
             collab_types::Ed25519PublicKey::from_bytes(self.key.verifying_key().to_bytes());
         let seq = self

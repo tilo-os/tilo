@@ -10,8 +10,15 @@ pub enum NotAdmitted {
     /// Kept: the workspace has not admitted what it waits for here yet, and
     /// the write is admitted once it is.
     Waiting(MissingPrerequisite),
-    /// Why the document refused the write.
-    Refused(String),
+    /// Why the document refused the write, as its author is told it, and the refusing device's
+    /// own words.
+    Refused {
+        reason: neighbour_wire::RefusalReason,
+        detail: String,
+    },
+    /// The sealed history of the record has no room for the write: it waits for a device holding
+    /// the record's keys to compact it.
+    HistoryFull,
     /// The workspace's rules refused the change before it went: the document it writes, the
     /// changes it carries and why, as a server's refusal of a change names them.
     ChangeRefused(Box<crate::ChangeRefused>),
@@ -21,21 +28,29 @@ impl std::fmt::Display for NotAdmitted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Waiting(prerequisite) => write!(f, "the write waits for {prerequisite}"),
-            Self::Refused(reason) => f.write_str(reason),
+            Self::Refused { detail, .. } => f.write_str(detail),
+            Self::HistoryFull => AdmissionError::HistoryFull.fmt(f),
             Self::ChangeRefused(refused) => f.write_str(&refused.reason),
         }
     }
 }
 
-impl From<String> for NotAdmitted {
-    fn from(reason: String) -> Self {
-        Self::Refused(reason)
+impl From<AdmissionError> for NotAdmitted {
+    fn from(error: AdmissionError) -> Self {
+        match error {
+            AdmissionError::ChangeRefused(refused) => Self::ChangeRefused(refused),
+            AdmissionError::HistoryFull => Self::HistoryFull,
+            other => Self::Refused {
+                reason: other.reason(),
+                detail: other.to_string(),
+            },
+        }
     }
 }
 
-impl From<&str> for NotAdmitted {
-    fn from(reason: &str) -> Self {
-        Self::Refused(reason.to_owned())
+impl From<crate::MembershipError> for NotAdmitted {
+    fn from(error: crate::MembershipError) -> Self {
+        AdmissionError::from(error).into()
     }
 }
 
@@ -62,7 +77,7 @@ impl StatePeer {
             self.permissions(*envelope.author.as_bytes(), now),
             Err(super::MembershipError::Revoked)
         ) {
-            return Err(super::MembershipError::Revoked.to_string().into());
+            return Err(super::MembershipError::Revoked.into());
         }
         self.lookup_exact_document_parts(
             *envelope.author.as_bytes(),
@@ -285,7 +300,7 @@ impl StatePeer {
         // comparing the index with a copy of it from before made every write
         // cost every entry the index held since it last settled.
         let evidence = DocumentAdmission::from_op(&self.core.workspace, app, document, &envelope)
-            .map_err(|error| NotAdmitted::Refused(error.to_string()))?;
+            .map_err(NotAdmitted::from)?;
         // A compaction takes the number of the last write of its author it
         // folds, so that number is held already; what is new is the compaction
         // itself, and its evidence is the mark its fold leaves.
@@ -296,9 +311,10 @@ impl StatePeer {
         let report = self.admit_local((app, document), readers, envelope, now)?;
         let outcome = &report.summary;
         if outcome.duplicate {
-            return Err(NotAdmitted::Refused(
-                "native local document signed sequence is stale".into(),
-            ));
+            return Err(NotAdmitted::Refused {
+                reason: neighbour_wire::RefusalReason::Conflict,
+                detail: "native local document signed sequence is stale".into(),
+            });
         }
         if outcome.deferred || outcome.incomplete.is_some() || outcome.rejected != 0 {
             let incomplete = outcome
@@ -309,17 +325,21 @@ impl StatePeer {
                 super::InputDisposition::RetryLater(prerequisite) => {
                     NotAdmitted::Waiting(prerequisite.clone())
                 }
-                _ => NotAdmitted::Refused(format!(
-                    "native local document was incomplete or rejected, not newly admitted{incomplete}"
-                )),
+                _ => NotAdmitted::Refused {
+                    reason: neighbour_wire::RefusalReason::Malformed,
+                    detail: format!(
+                        "native local document was incomplete or rejected, not newly admitted{incomplete}"
+                    ),
+                },
             });
         }
         let settled = self.core.exact_admissions.get(&evidence.key) == Some(&evidence.operation_id)
             || (compaction && self.core.exact_admissions.covers(&evidence.key));
         if held || !self.core.exact_selected || !settled {
-            return Err(NotAdmitted::Refused(
-                "native local document has no exact admission evidence".into(),
-            ));
+            return Err(NotAdmitted::Refused {
+                reason: neighbour_wire::RefusalReason::Malformed,
+                detail: "native local document has no exact admission evidence".into(),
+            });
         }
         Ok(())
     }
@@ -521,7 +541,9 @@ mod tests {
         else {
             panic!("expected actual signed document publication")
         };
-        let named = envelope.with_surface(Some([0x42; 32]));
+        // The surface is signed with the rest of the op, as the broker names it before signing.
+        let mut named = envelope.with_surface(Some([0x42; 32]));
+        collab_types::sign_op(&mut named, &key).unwrap();
         let before = peer.document("test.app", "tab:1").unwrap();
         assert_eq!(
             peer.admit_new_local_document("test.app", "tab:1", named, now)
@@ -609,7 +631,10 @@ mod tests {
             assert_eq!(
                 peer.admit_new_local_document("test.app", "tab:1", *stale, now)
                     .unwrap_err(),
-                NotAdmitted::Refused("native local document signed sequence is stale".into())
+                NotAdmitted::Refused {
+                    reason: neighbour_wire::RefusalReason::Conflict,
+                    detail: "native local document signed sequence is stale".into(),
+                }
             );
             assert_eq!(peer.durable().unwrap(), before);
 

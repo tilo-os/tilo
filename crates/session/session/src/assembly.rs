@@ -261,10 +261,6 @@ pub(crate) struct Shared {
     /// ([`crate::hosted_browser::HostedBrowser`]).
     #[cfg(target_os = "linux")]
     pub(crate) hosted_browser: RefCell<Option<crate::hosted_browser::HostedBrowser>>,
-    /// The community site this computer is configured with, joined on its
-    /// own as the session starts.
-    #[cfg(target_os = "linux")]
-    pub(crate) community: RefCell<crate::community::Community>,
     /// The lock, as the session publishes it for the lock screen to show.
     #[cfg(target_os = "linux")]
     pub(crate) lock: crate::lock_service::Lock,
@@ -345,6 +341,9 @@ pub(crate) struct Shared {
     /// the session runs itself keep their resources, as the apps' windows do.
     #[cfg(target_os = "linux")]
     pub(crate) held_stores: crate::engine_records::HeldStores,
+    /// Where moving the apps' resources into the workspace stands.
+    #[cfg(target_os = "linux")]
+    pub(crate) app_stores: Cell<crate::engine_records::AppStores>,
     /// The workspaces' shared desktops, as their records hold them: what each
     /// device that shows a workspace puts on its own session, and what this one
     /// writes back.

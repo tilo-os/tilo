@@ -38,7 +38,7 @@ pub(super) struct Notes {
     running: Arc<Mutex<bool>>,
     /// Which publication the bound ids belong to: a restart changes it.
     publication: &'static str,
-    invoked: Arc<Mutex<Vec<InvokeRequest>>>,
+    pub(super) invoked: Arc<Mutex<Vec<InvokeRequest>>>,
     /// How many times the app's directory moves on while a level is being
     /// read: while it is above zero the app's top level comes in two pages,
     /// and asking for the second finds the revision changed.
@@ -72,6 +72,9 @@ pub(super) struct Notes {
     long: Arc<Mutex<Option<usize>>>,
     /// What the workspace says of its installed apps.
     workspace: Arc<Mutex<Installed>>,
+    /// The surface the installed Notes publishes when set: the actions its package declares,
+    /// as the workspace's listing carries them.
+    surface: Arc<Mutex<Option<String>>>,
     /// Why the session cannot say which apps run, when it cannot.
     unreachable: Arc<Mutex<Option<ActionCallError>>>,
     /// Notes the notebook holds beyond Todo and Groceries, each with its
@@ -175,6 +178,7 @@ impl Notes {
             slow: Arc::default(),
             long: Arc::default(),
             workspace: Arc::new(Mutex::new(Installed::Openable)),
+            surface: Arc::default(),
             unreachable: Arc::default(),
             more: Arc::default(),
             answered: Arc::default(),
@@ -278,6 +282,20 @@ impl Notes {
 
     fn installed(self, installed: Installed) -> Self {
         *self.workspace.lock().unwrap() = installed;
+        self
+    }
+
+    /// The same Notes installed, its package declaring `actions`.
+    fn declaring(self, actions: &[&str]) -> Self {
+        *self.surface.lock().unwrap() = Some(
+            json!({"resources": [{
+                "kind": "notes.notebook",
+                "label": "Notes",
+                "version": 1,
+                "shows": actions,
+            }]})
+            .to_string(),
+        );
         self
     }
 
@@ -588,7 +606,7 @@ impl Notes {
                 surface: None,
             };
             let installed = *self.workspace.lock().unwrap();
-            return match installed {
+            let mut rows = match installed {
                 Installed::Openable => vec![open(APP, "Notes"), open("so.tilo.sheets", "Sheets")],
                 Installed::SheetsClosedToAgent => {
                     let mut sheets = open("so.tilo.sheets", "Sheets");
@@ -617,6 +635,16 @@ impl Notes {
                 }
                 Installed::Nothing | Installed::Unreadable => Vec::new(),
             };
+            // An installed app's row carries the surface its package publishes.
+            let declaring = self.surface.lock().unwrap().clone();
+            if let Some(surface) = declaring {
+                for row in &mut rows {
+                    if row.resource.id == format!("app.{APP}") {
+                        row.surface = Some(surface.clone());
+                    }
+                }
+            }
+            return rows;
         }
         let text = |name: &'static str, required: bool| {
             if required {
@@ -2486,6 +2514,41 @@ tilo_test_env::scenario! {
                 "{text}"
             );
             assert!(!text.contains("delete, slow"), "no wall of names: {text}");
+            // Named by the app alone, an action that does not exist is no such action either:
+            // the caller is told so, and nothing is run.
+            let (text, failed) = tool(
+                &agent(&host),
+                "tilo_do",
+                json!({"path": "notes#not-a-real-action"}),
+            )
+            .await;
+            assert!(failed, "an unknown action is refused: {text}");
+            assert!(
+                text.contains("has no action not-a-real-action")
+                    && text.contains("tilo_ls notes lists them"),
+                "{text}"
+            );
+            // An app that does not run yet declares its actions in the surface its package
+            // publishes: a name none of them has is no action of it, and nothing starts for it.
+            let stopped = Notes::new(false)
+                .installed(Installed::Openable)
+                .declaring(&["new-note"]);
+            let (text, failed) = tool(
+                &agent(&stopped),
+                "tilo_do",
+                json!({"path": "notes#not-a-real-action"}),
+            )
+            .await;
+            assert!(failed, "a stopped app's unknown action is refused: {text}");
+            assert!(
+                text.starts_with("unknown_action:")
+                    && text.contains("notes has no action not-a-real-action"),
+                "refused as no such action, at once: {text}"
+            );
+            assert!(
+                stopped.invoked.lock().unwrap().is_empty(),
+                "nothing was started for it"
+            );
             let (text, failed) = tool(&agent(&host), "tilo_do", json!({"path": "notes/Todo"})).await;
             assert!(failed && text.contains("name the action"), "{text}");
             // An action its permissions deny the agent is refused as not allowed, with where

@@ -25,15 +25,10 @@ use std::path::{Path, PathBuf};
 use tilo_actions::remote::Caller;
 use tilo_lock::MutexRecover as _;
 use tilo_workspace_service::workspaces::Workspaces;
-use tilo_workspace_service::workspaces::account_logins::DECLINED;
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::platform::records::Changes;
-
-/// The longest a refused sign-in is held to be decided again as the workspace's copy on this
-/// device catches up ([`sign_in`]).
-const SIGN_IN_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// What a connector's ask for the sign-in of another workspace's account is refused with.
 const OTHER_WORKSPACE: &str = "That account is another workspace's";
@@ -47,9 +42,6 @@ pub(crate) struct Scope {
     keep: fn(&accounts::Account) -> bool,
     /// The app a sign-in's use says signed in.
     signs_in_for: String,
-    /// The entries whose sign-in the person said no to while this connection lasts: not asked
-    /// about again until the app asks anew.
-    declined: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
 }
 
 impl Scope {
@@ -59,7 +51,6 @@ impl Scope {
             workspace: None,
             keep: sign_ins::is_file_account,
             signs_in_for: tilo_app_id::apps::FILE_EXPLORER.to_owned(),
-            declined: std::sync::Arc::default(),
         }
     }
 
@@ -69,7 +60,6 @@ impl Scope {
             workspace: Some(workspace.to_owned()),
             keep: |_| true,
             signs_in_for: app.to_owned(),
-            declined: std::sync::Arc::default(),
         }
     }
 }
@@ -88,8 +78,6 @@ struct Answering {
     by: Caller,
     changes: Changes,
     tasks: tokio::runtime::Handle,
-    /// How long a refused sign-in is held to be decided again: [`SIGN_IN_WAIT`].
-    sign_in_wait: std::time::Duration,
 }
 
 static SERVED: std::sync::Mutex<Served> = std::sync::Mutex::new(Served::Waiting(Vec::new()));
@@ -105,6 +93,7 @@ pub(crate) fn hand(connector: &OwnedFd, app: &str, workspace: &str) -> std::io::
         Served::Waiting(waiting) => waiting.push((stream, scope)),
         Served::Open(open) => open.answer(stream, scope),
     }
+    drop(served);
     Ok(())
 }
 
@@ -116,7 +105,6 @@ impl Answering {
             by,
             changes,
             tasks: tokio::runtime::Handle::current(),
-            sign_in_wait: SIGN_IN_WAIT,
         }
     }
 
@@ -311,77 +299,22 @@ async fn answer(answering: &Answering, scope: &Scope, ask: Ask) -> Answer {
                 };
             }
             let by = answering.by.clone().in_workspace(workspace.clone());
-            sign_in(answering, scope, (&workspace, &item), &by).await
-        }
-    }
-}
-
-/// The sign-in kept in `item` for `workspace`'s account, as `by`: released, once the workspace's
-/// host asked its person where its rules ask first, or refused. A refusal is decided again each time the workspace's records or rules change on this
-/// device, until [`SIGN_IN_WAIT`] passed: a device that just joined, or just had the entry kept
-/// on another device, holds the workspace's rules, the vault's keys and its document a moment
-/// after the account names the entry, and a sign-in asked in that moment is answered once they
-/// are here rather than refused for good.
-async fn sign_in(
-    answering: &Answering,
-    scope: &Scope,
-    (workspace, item): (&str, &str),
-    by: &Caller,
-) -> Answer {
-    if scope.declined.lock_recover().contains(item) {
-        return Answer::Refused {
-            error: DECLINED.into(),
-        };
-    }
-    let now = tokio::time::Instant::now();
-    let deadline = now.checked_add(answering.sign_in_wait).unwrap_or(now);
-    // Followed before the first decision, so a change while it is made is not missed.
-    let mut records = answering.changes.waiter();
-    let mut rules = answering.workspaces.governance_changes();
-    loop {
-        let command = Command::ReleaseAccountSecret {
-            item: item.to_owned(),
-        };
-        let refused = match crate::account_passwords::answer(
-            &answering.workspaces,
-            workspace,
-            &scope.signs_in_for,
-            by,
-            command,
-        )
-        .await
-        {
-            Ok(Reply::AccountSecret { secret, .. }) => return Answer::SignIn { secret },
-            Ok(_) => crate::account_passwords::REFUSED.to_owned(),
-            // The person said no when the workspace's host asked them: it is theirs to ask again.
-            Err(error) if error == DECLINED => {
-                scope.declined.lock_recover().insert(item.to_owned());
-                return Answer::Refused { error };
+            let command = Command::ReleaseAccountSecret { item };
+            match crate::account_passwords::answer(
+                &answering.workspaces,
+                &workspace,
+                &scope.signs_in_for,
+                &by,
+                command,
+            )
+            .await
+            {
+                Ok(Reply::AccountSecret { secret, .. }) => Answer::SignIn { secret },
+                Ok(_) => Answer::Refused {
+                    error: crate::account_passwords::REFUSED.into(),
+                },
+                Err(error) => Answer::Refused { error },
             }
-            Err(error) => error,
-        };
-        let changed = async {
-            loop {
-                tokio::select! {
-                    told = records.recv() => match told {
-                        Some(changed) if changed.workspace == workspace => return,
-                        Some(_) => {}
-                        None => std::future::pending::<()>().await,
-                    },
-                    told = rules.recv() => match told {
-                        // Behind on the rules: one missed may be this workspace's.
-                        Ok(changed) if changed == workspace => return,
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => return,
-                        Ok(_) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            std::future::pending::<()>().await;
-                        }
-                    },
-                }
-            }
-        };
-        if tokio::time::timeout_at(deadline, changed).await.is_err() {
-            return Answer::Refused { error: refused };
         }
     }
 }

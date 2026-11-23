@@ -42,8 +42,8 @@ pub struct Device {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Servers {
     pub group: Group,
-    /// What the site field is called for assistive tools.
-    pub origin_label: String,
+    /// What the host-line field is called for assistive tools.
+    pub host_label: String,
     pub add_label: String,
     pub remove_label: String,
     pub rows: Vec<Server>,
@@ -201,17 +201,17 @@ fn servers_section(servers: &Servers, parts: &Parts) -> Element {
     }
     let submitting = parts.clone();
     let field = Box::new(
-        TextInput::from_state(&parts.server_origin)
-            .with_id("ws-general-server-origin")
-            .with_accessible_name(servers.origin_label.clone())
-            // What the field takes, in the field: a site field with no visible
-            // name reads as an empty box Add sits beside.
-            .with_placeholder(servers.origin_label.clone())
-            .on_submit_view(move |_| submitting.ask_server_origin()),
+        TextInput::from_state(&parts.server_host)
+            .with_id("ws-general-server-host")
+            .with_accessible_name(servers.host_label.clone())
+            // What the field takes, in the field: a field with no visible name
+            // reads as an empty box Add sits beside.
+            .with_placeholder(servers.host_label.clone())
+            .on_submit_view(move |_| submitting.ask_server_host()),
     );
     let asking = parts.clone();
     let add = Button::new("ws-general-server-add", &servers.add_label)
-        .on_effect(move || asking.ask_server_origin());
+        .on_effect(move || asking.ask_server_host());
     items.push(Box::new(
         Row::new()
             .with_rhythm(Rhythm::Related)
@@ -397,7 +397,7 @@ pub(super) fn sample() -> General {
                 "A change on one reaches the others, and people can open the \
                  workspace from any of them.",
             ),
-            origin_label: "Another server's site".to_owned(),
+            host_label: "Another server's web-host.json line".to_owned(),
             add_label: "Add".to_owned(),
             remove_label: "Remove".to_owned(),
             rows: vec![

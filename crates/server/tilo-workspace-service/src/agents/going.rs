@@ -33,16 +33,16 @@ use super::{Ask, Turn};
 
 /// Where an agent has one turn at a time: the workspace, the agent, and the conversation, or
 /// for an issue its ask.
-type Place = (String, String, String);
+pub(super) type Place = (String, String, String);
 
-fn place(workspace: &str, turn: &Turn) -> Place {
+pub(super) fn place(workspace: &str, turn: &Turn) -> Place {
     let at = match &turn.ask {
         Ask::Asked { .. } => turn.conversation.clone(),
         Ask::Issue {
             record,
             issue,
             cause,
-        } => format!("{record}\0{issue}\0{cause}"),
+        } => format!("{record}/{issue}/{cause}"),
     };
     (workspace.to_owned(), turn.agent.id.0.clone(), at)
 }

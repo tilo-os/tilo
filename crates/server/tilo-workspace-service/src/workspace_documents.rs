@@ -1,54 +1,45 @@
-//! A workspace's durable records, for a service the host process embeds.
+//! A workspace's kept records, for a service the host process embeds.
 //!
 //! A page asks the host to run an app action on a record nobody has open.
 //! The service answering it (the app action server) must read the record as
-//! the host retains it and commit the action's change the way a device
-//! commits one: ordered, retained, fanned out to every subscriber and queued
-//! for offline members. [`WorkspaceDocuments`] is that boundary, without a network hop:
+//! the host keeps it and write the action's change the way a device writes
+//! one: kept at the device's store and carried to every device on the
+//! workspace's link. [`WorkspaceDocuments`] is that boundary, without a network hop:
 //!
-//! - [`WorkspaceDocuments::retained`] is what a first-time subscriber is replayed —
-//!   every retained checkpoint and delta of the workspace, as the signed
-//!   document bodies they carry with their authenticated authors;
-//! - [`WorkspaceDocuments::commit`] admits one signed document body authored by this
-//!   host's own device, exactly as a device's `Commit` is admitted.
+//! - [`WorkspaceDocuments::retained`] is what a device that links is replayed:
+//!   each channel's governance, then every kept write of the workspace, as the
+//!   signed bodies they carry with their authors;
+//! - [`WorkspaceDocuments::commit`] keeps and carries one signed body this
+//!   host's own device wrote.
 //!
-//! The host signs as itself; a page opening the frame checks the signature
-//! against the author the host stamped, as for any device.
+//! The host signs as itself; a device opening the frame checks the signature
+//! against its author, as for any device.
 
-#[cfg(not(target_arch = "wasm32"))]
-use tilo_clock::unix_now_ns;
-
-#[cfg(not(target_arch = "wasm32"))]
-use crate::coedit::CoeditPayload;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::peer::WorkspaceRegistry;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::transport::Envelope;
 #[cfg(not(target_arch = "wasm32"))]
-use tilo_lock::MutexRecover as _;
+use neighbour_wire::NeighbourMsg;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_server_protocol::WorkspaceId;
 
 #[cfg(not(target_arch = "wasm32"))]
-/// One retained document body of a workspace, as its author signed it.
+/// One kept body of a workspace, as its author signed it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RetainedBody {
-    /// The device the host authenticated when it admitted the body.
+    /// The device that signed it.
     pub author: [u8; 32],
-    /// The encoded signed document message.
+    /// The encoded signed message.
     pub body: Vec<u8>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// One signed document body to admit as this host's own change.
+/// One signed body this host's own device wrote, to keep and carry.
 #[derive(Clone, Debug)]
 pub struct HostCommit {
-    /// The encoded signed document message.
+    /// The encoded signed message.
     pub body: Vec<u8>,
-    /// Its retention channel.
-    pub channel: [u8; 32],
-    /// Whether it replaces the channel's checkpoint.
-    pub checkpoint: bool,
 }
 
 /// What a device's own roles read and write its workspaces' documents through, shared with
@@ -60,153 +51,38 @@ pub use tilo_peer_state::workspace_documents::{
 };
 
 #[cfg(not(target_arch = "wasm32"))]
-/// In-process access to the workspaces this server hosts.
+/// In-process access to the workspaces this server keeps.
 #[derive(Clone)]
 pub struct WorkspaceDocuments {
     workspaces: WorkspaceRegistry,
+    store: std::sync::Arc<tilo_peer_state::store::Store>,
+    direct: tilo_peer_state::direct::Serving,
     device: [u8; 32],
     user: [u8; 32],
     signing_key: ed25519_dalek::SigningKey,
-    metrics: std::sync::Arc<crate::metrics::Metrics>,
-    inflight: std::sync::Arc<Inflight>,
-}
-
-/// The host commits each workspace has queued that are not durable yet.
-/// A caller may queue a commit and wait for it later, off its own lock;
-/// whoever reads the workspace's retention meanwhile must still see it.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Default)]
-struct Inflight {
-    open: std::sync::Mutex<std::collections::HashMap<WorkspaceId, Open>>,
-    settled: tokio::sync::Notify,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Default)]
-struct Open {
-    next: u64,
-    queued: std::collections::BTreeSet<u64>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Inflight {
-    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<WorkspaceId, Open>> {
-        self.open.lock_recover()
-    }
-
-    fn queue(self: &std::sync::Arc<Self>, workspace_id: WorkspaceId) -> Ticket {
-        let mut open = self.lock();
-        let entry = open.entry(workspace_id).or_default();
-        let number = entry.next;
-        entry.next = entry.next.wrapping_add(1);
-        entry.queued.insert(number);
-        drop(open);
-        Ticket {
-            inflight: std::sync::Arc::clone(self),
-            workspace_id,
-            number,
-        }
-    }
-
-    /// Whether every commit queued for `workspace_id` before `next` is
-    /// durable (or abandoned).
-    fn settled_before(&self, workspace_id: WorkspaceId, next: u64) -> bool {
-        self.lock()
-            .get(&workspace_id)
-            .is_none_or(|open| open.queued.first().is_none_or(|first| *first >= next))
-    }
-
-    /// Wait until every commit queued for `workspace_id` so far is durable.
-    async fn settle(&self, workspace_id: WorkspaceId) {
-        let Some(next) = self.lock().get(&workspace_id).map(|open| open.next) else {
-            return;
-        };
-        loop {
-            let notified = self.settled.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            if self.settled_before(workspace_id, next) {
-                return;
-            }
-            notified.await;
-        }
-    }
-}
-
-/// One queued host commit, until it is durable or given up.
-#[cfg(not(target_arch = "wasm32"))]
-struct Ticket {
-    inflight: std::sync::Arc<Inflight>,
-    workspace_id: WorkspaceId,
-    number: u64,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for Ticket {
-    fn drop(&mut self) {
-        let mut open = self.inflight.lock();
-        if let Some(entry) = open.get_mut(&self.workspace_id) {
-            entry.queued.remove(&self.number);
-            if entry.queued.is_empty() {
-                open.remove(&self.workspace_id);
-            }
-        }
-        drop(open);
-        self.inflight.settled.notify_waiters();
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-/// A host commit holding its place in the workspace's order, not yet
-/// waited on: [`WorkspaceDocuments::retained`] waits for it until it is durable.
-pub(crate) struct WorkspaceAdmission {
-    admission: crate::peer::HostAdmission,
-    _ticket: Ticket,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl WorkspaceAdmission {
-    /// Wait until the commit is durable and published; returns its host
-    /// order.
-    pub(crate) async fn durable(self) -> Result<u64, String> {
-        self.admission.durable().await
-    }
-
-    /// [`Self::durable`], running `then` on the outcome before whoever reads
-    /// the workspace's retention stops waiting for this commit: what `then`
-    /// records about it is in place by the time a reader sees it retained.
-    pub(crate) async fn durable_then<R>(self, then: impl FnOnce(&Result<u64, String>) -> R) -> R {
-        let Self {
-            admission,
-            _ticket: ticket,
-        } = self;
-        let outcome = admission.durable().await;
-        let result = then(&outcome);
-        drop(ticket);
-        result
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl WorkspaceDocuments {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         workspaces: WorkspaceRegistry,
+        store: std::sync::Arc<tilo_peer_state::store::Store>,
+        direct: tilo_peer_state::direct::Serving,
         device: [u8; 32],
         user: [u8; 32],
         signing_key: ed25519_dalek::SigningKey,
-        metrics: std::sync::Arc<crate::metrics::Metrics>,
     ) -> Self {
         Self {
             workspaces,
+            store,
+            direct,
             device,
             user,
             signing_key,
-            metrics,
-            inflight: std::sync::Arc::default(),
         }
     }
 
-    /// This host's device key: the author of what [`Self::commit`] admits.
+    /// This host's device key: the author of what [`Self::commit`] keeps.
     #[must_use]
     pub const fn device(&self) -> [u8; 32] {
         self.device
@@ -224,157 +100,50 @@ impl WorkspaceDocuments {
         &self.signing_key
     }
 
-    /// [`Self::retained`] once every write the workspace's persistence
-    /// owner took before the call is durable: members' writes as well as
-    /// host commits, so a write the workspace's governor was handed is in it.
+    /// Every kept body of `workspace_id`: each channel's governance, in the
+    /// order it was kept, then every kept write, in the store's order.
     ///
     /// # Errors
     ///
-    /// As [`Self::retained`], or the owner did not settle.
-    pub(crate) async fn retained_settled(
+    /// A kept frame could not be read back.
+    pub fn retained(&self, workspace_id: WorkspaceId) -> Result<Vec<RetainedBody>, String> {
+        let mut bodies = Vec::new();
+        for (author, message) in self.store.channels(workspace_id) {
+            bodies.push(body_of(author, &message)?);
+        }
+        let mut cursors = Vec::new();
+        loop {
+            let replay = self
+                .store
+                .replay(
+                    workspace_id,
+                    &cursors,
+                    tilo_peer_state::store::Budget::default(),
+                )
+                .map_err(|error| error.to_string())?;
+            tilo_peer_state::store::advance(&mut cursors, &replay.frames);
+            for message in &replay.frames {
+                let author = tilo_peer_state::store::author_of(message).unwrap_or_default();
+                bodies.push(body_of(author, message)?);
+            }
+            if !replay.more {
+                return Ok(bodies);
+            }
+        }
+    }
+
+    /// Every kept body of `workspace_id`, as [`Self::retained`] once the
+    /// writes this host made are durable: the store is durable when it
+    /// answers, so this is the same read.
+    ///
+    /// # Errors
+    ///
+    /// A kept frame could not be read back.
+    pub(crate) fn retained_settled(
         &self,
         workspace_id: WorkspaceId,
     ) -> Result<Vec<RetainedBody>, String> {
-        let hosted = self.workspaces.lock().await;
-        let workspace = hosted.get(&workspace_id).cloned();
-        drop(hosted);
-        let workspace = workspace.ok_or("the workspace is not hosted here")?;
-        let owner = crate::persistence::handle(&workspace).await;
-        drop(workspace);
-        let done = owner
-            .submit_prepared_wait(
-                1,
-                async { Ok(()) },
-                // A fence: it retains nothing.
-                |state, ()| {
-                    state.retaining_only();
-                    Ok(())
-                },
-                |result| async { result },
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        crate::persistence::receipt(done)
-            .await
-            .map_err(|error| error.to_string())?;
-        self.retained(workspace_id).await
-    }
-
-    /// Every retained document body of `workspace_id`, checkpoints before
-    /// the deltas retained after them, including every host commit queued
-    /// before the call.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the guard only lives for the lookup; the value kept is a clone"
-    )]
-    pub async fn retained(&self, workspace_id: WorkspaceId) -> Result<Vec<RetainedBody>, String> {
-        self.inflight.settle(workspace_id).await;
-        let ws = self
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace_id)
-            .cloned()
-            .ok_or("the workspace is not hosted here")?;
-        let encoded = {
-            let guard = ws.lock().await;
-            guard
-                .store
-                .load_retained()
-                .map_err(|error| error.to_string())?
-        };
-        // Retained entries are whole frames: a length prefix, then the
-        // envelope. One that does not decode is counted and reported, not
-        // read as absent.
-        let mut unreadable = 0_usize;
-        let bodies = encoded
-            .iter()
-            .filter_map(|raw| {
-                let envelope = raw
-                    .get(4..)
-                    .ok_or_else(|| "shorter than its length prefix".to_owned())
-                    .and_then(|frame| {
-                        crate::frame::decode(frame).map_err(|error| error.to_string())
-                    });
-                let Ok(envelope) = envelope else {
-                    unreadable = unreadable.saturating_add(1);
-                    return None;
-                };
-                match envelope {
-                    Envelope::Delta {
-                        author_device_public_key,
-                        delta,
-                        ..
-                    } => match CoeditPayload::decode(&delta) {
-                        Some(
-                            CoeditPayload::Checkpoint { body, .. }
-                            | CoeditPayload::RetainedDelta { body, .. },
-                        ) => Some(RetainedBody {
-                            author: author_device_public_key,
-                            body,
-                        }),
-                        None => {
-                            unreadable = unreadable.saturating_add(1);
-                            None
-                        }
-                    },
-                    _ => None,
-                }
-            })
-            .collect();
-        if unreadable > 0 {
-            tracing::warn!(
-                workspace_id = %workspace_id,
-                unreadable,
-                "retained frames of the workspace do not decode; they are left out"
-            );
-        }
-        Ok(bodies)
-    }
-
-    /// The channel governance `workspace_id` retains, each frame with its
-    /// author, in order: what a linking device is handed, as a server session
-    /// replays it.
-    pub(crate) async fn channel_governance(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> Vec<([u8; 32], neighbour_wire::NeighbourMsg)> {
-        let Ok(retained) = self.retained(workspace_id).await else {
-            return Vec::new();
-        };
-        retained
-            .into_iter()
-            .filter_map(|retained| {
-                let message: neighbour_wire::NeighbourMsg =
-                    neighbour_wire::NeighbourMsg::decode(&retained.body).ok()?;
-                message
-                    .governance_workspace()
-                    .is_some()
-                    .then_some((retained.author, message))
-            })
-            .collect()
-    }
-
-    /// Keep what `workspace_id` commits for `device` alone until the device
-    /// subscribes, which the entry just let it in to do
-    /// ([`crate::peer::Arriving`]). False for a workspace this host does not
-    /// hold.
-    pub(crate) async fn expect_arrival(&self, workspace_id: WorkspaceId, device: [u8; 32]) -> bool {
-        let workspace = {
-            let workspaces = self.workspaces.lock().await;
-            let Some(workspace) = workspaces.get(&workspace_id).cloned() else {
-                return false;
-            };
-            workspace
-        };
-        workspace.lock().await.arriving.expect(device);
-        true
-    }
-
-    /// Wait until every host commit queued for `workspace_id` so far is
-    /// durable.
-    pub(crate) async fn settled(&self, workspace_id: WorkspaceId) {
-        self.inflight.settle(workspace_id).await;
+        self.retained(workspace_id)
     }
 
     /// Publish `body` on `workspace_id`'s presence as this host's own, to
@@ -404,149 +173,104 @@ impl WorkspaceDocuments {
         Ok(delivered)
     }
 
-    /// Bounded existing ciphertext for one channel, without changing retention.
+    /// The kept bodies of `channel`, one record's route, up to `max_bytes` of them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::retained`].
     #[cfg(feature = "agents")]
-    pub async fn view_channel(
+    pub fn view_channel(
         &self,
         workspace: WorkspaceId,
         channel: [u8; 32],
         max_bytes: usize,
     ) -> Result<Vec<RetainedBody>, String> {
-        self.inflight.settle(workspace).await;
-        let ws = self
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace)
-            .cloned()
-            .ok_or("the workspace is not hosted here")?;
-        let guard = ws.lock().await;
-        let encoded = guard
-            .store
-            .load_view_channel(&channel, max_bytes)
-            .map_err(|error| error.to_string())?;
-        drop(guard);
-        drop(ws);
-        encoded
-            .into_iter()
-            .map(|raw| {
-                let (author, payload) = crate::store::retained::payload(&raw, workspace)
-                    .ok_or("invalid retained source frame")?;
-                let body = match payload {
-                    CoeditPayload::Checkpoint { body, .. }
-                    | CoeditPayload::RetainedDelta { body, .. } => body,
-                };
-                Ok(RetainedBody { author, body })
-            })
-            .collect()
+        let mut bytes = 0_usize;
+        let mut kept = Vec::new();
+        for retained in self.retained(workspace)? {
+            let Ok(message) = NeighbourMsg::decode(&retained.body) else {
+                continue;
+            };
+            if neighbour_wire::retention(&message, false).map(|(route, _)| route) != Some(channel) {
+                continue;
+            }
+            bytes = bytes.saturating_add(retained.body.len());
+            if bytes > max_bytes {
+                break;
+            }
+            kept.push(retained);
+        }
+        Ok(kept)
     }
 
-    /// Admit `commit` to `workspace_id` as this host's own change: ordered,
-    /// retained, fanned out to every subscriber and queued for offline
-    /// members. Returns its host order.
-    pub async fn commit(
+    /// Keep `commit`, a body this host's own device signed, and carry it to
+    /// every device on `workspace_id`'s link.
+    ///
+    /// Answers the host order it was kept at.
+    ///
+    /// # Errors
+    ///
+    /// The body does not decode, or the store could not keep it.
+    pub fn commit(&self, workspace_id: WorkspaceId, commit: &HostCommit) -> Result<u64, String> {
+        self.carry(workspace_id, self.device, commit)
+    }
+
+    /// Keep `commit`, `author`'s signed body, and carry it to every device on
+    /// `workspace_id`'s link: live to those linked now, and kept for those that
+    /// link later.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::commit`].
+    pub(crate) fn carry(
         &self,
         workspace_id: WorkspaceId,
-        commit: HostCommit,
+        author: [u8; 32],
+        commit: &HostCommit,
     ) -> Result<u64, String> {
-        self.enqueue(workspace_id, commit).await?.durable().await
-    }
-
-    /// [`Self::commit`] without waiting for durability: the commit holds its
-    /// place in the workspace's order once this returns.
-    pub(crate) async fn enqueue(
-        &self,
-        workspace_id: WorkspaceId,
-        commit: HostCommit,
-    ) -> Result<WorkspaceAdmission, String> {
-        let reservation = self.reserve(workspace_id);
-        self.enqueue_reserved(workspace_id, commit, reservation)
-            .await
-    }
-
-    /// Hold a place for a host commit of `workspace_id` that is admitted
-    /// later, with [`Self::enqueue_reserved`]: from now on
-    /// [`Self::retained`] waits for it as for a commit already queued,
-    /// until it is durable or the reservation is dropped.
-    pub(crate) fn reserve(&self, workspace_id: WorkspaceId) -> Reservation {
-        Reservation(self.inflight.queue(workspace_id))
-    }
-
-    /// [`Self::enqueue`] for a commit whose place `reservation` holds.
-    pub(crate) async fn enqueue_reserved(
-        &self,
-        workspace_id: WorkspaceId,
-        commit: HostCommit,
-        reservation: Reservation,
-    ) -> Result<WorkspaceAdmission, String> {
-        self.enqueue_as(workspace_id, self.device, commit, reservation)
-            .await
-    }
-
-    /// Admit `commit`, `author`'s frame the workspace admitted on another
-    /// carrier (its direct link), in `author`'s name: ordered, retained and
-    /// fanned out to every subscriber like the host's own, so a member that
-    /// takes part through a server session reads what a linked member wrote,
-    /// live and on catch-up.
-    pub(crate) async fn carry(
-        &self,
-        workspace_id: WorkspaceId,
-        author: [u8; 32],
-        commit: HostCommit,
-    ) -> Result<WorkspaceAdmission, String> {
-        let reservation = self.reserve(workspace_id);
-        self.enqueue_as(workspace_id, author, commit, reservation)
-            .await
-    }
-
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the guard only lives for the lookup; the value kept is a clone"
-    )]
-    async fn enqueue_as(
-        &self,
-        workspace_id: WorkspaceId,
-        author: [u8; 32],
-        commit: HostCommit,
-        reservation: Reservation,
-    ) -> Result<WorkspaceAdmission, String> {
-        let payload = if commit.checkpoint {
-            CoeditPayload::Checkpoint {
-                channel: commit.channel,
-                body: commit.body,
-            }
-        } else {
-            CoeditPayload::RetainedDelta {
-                channel: commit.channel,
-                body: commit.body,
-            }
-        };
-        let delta = payload.encode().map_err(|error| error.to_string())?;
-        let ws = self
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace_id)
-            .cloned()
-            .ok_or("the workspace is not hosted here")?;
-        let envelope = Envelope::Delta {
-            workspace_id,
-            author_device_public_key: author,
-            authored_at_ns: unix_now_ns(),
-            delta,
-            signature: [0; 64],
-        };
-        let admission =
-            crate::peer::enqueue_host_state(&ws, envelope, std::sync::Arc::clone(&self.metrics))
-                .await?;
-        Ok(WorkspaceAdmission {
-            admission,
-            _ticket: reservation.0,
-        })
+        let message = NeighbourMsg::decode(&commit.body).map_err(|error| error.to_string())?;
+        if let Some(link) = self.direct.link(workspace_id) {
+            link.carry(author, &message)?;
+            return Ok(host_order());
+        }
+        if let Ok(frame) = tilo_peer_state::store::Frame::of(&message) {
+            self.store
+                .retain(workspace_id, &frame)
+                .map_err(|error| error.to_string())?;
+        } else if message.governance_workspace().is_some() {
+            self.store
+                .keep_channel(workspace_id, author, &message)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(host_order())
     }
 }
 
-/// A host commit [`WorkspaceDocuments::retained`] already waits for, not yet in
-/// its workspace's order.
+/// The host order of a write kept now: wall-clock nanoseconds, forced strictly
+/// past the previous one so a clock step never reorders.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct Reservation(Ticket);
+pub(crate) fn host_order() -> u64 {
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let now = tilo_clock::wall()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
+        });
+    let previous = LAST
+        .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |last| Some(now.max(last.saturating_add(1))),
+        )
+        .unwrap_or_default();
+    now.max(previous.saturating_add(1))
+}
+
+/// `message`, `author`'s, as a kept body.
+#[cfg(not(target_arch = "wasm32"))]
+fn body_of(author: [u8; 32], message: &NeighbourMsg) -> Result<RetainedBody, String> {
+    Ok(RetainedBody {
+        author,
+        body: postcard::to_allocvec(message).map_err(|error| error.to_string())?,
+    })
+}

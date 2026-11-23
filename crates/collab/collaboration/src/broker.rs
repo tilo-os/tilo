@@ -4615,6 +4615,8 @@ struct SdkRoute {
     workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,
     /// The queries the app holds open in the device's store: each one's task carrying its pages.
     resource_queries: std::collections::HashMap<u64, tokio::task::AbortHandle>,
+    /// The task carrying what the holding workspaces say of the records the app last named.
+    held_elsewhere: Option<tokio::task::AbortHandle>,
     committed: bool,
 }
 
@@ -7112,6 +7114,43 @@ async fn dispatch_sdk_request(
                         query_id,
                         page: Err(error.to_string()),
                     });
+                }
+            }
+        }
+        CollabRequest::DecideHeldElsewhere { records } => {
+            if let Some(earlier) = route.held_elsewhere.take() {
+                earlier.abort();
+            }
+            if records.is_empty() {
+                return true;
+            }
+            match route.channel.held_elsewhere(records.clone()).await {
+                Ok(verdicts) => {
+                    let tx = inbound_tx.clone();
+                    let task = tokio::task::spawn_local(async move {
+                        while let Ok(verdicts) = verdicts.read().await {
+                            if !tx
+                                .send_durable(CollabEvent::HeldElsewhereVerdicts { verdicts })
+                                .await
+                            {
+                                break;
+                            }
+                        }
+                    });
+                    route.held_elsewhere = Some(task.abort_handle());
+                }
+                Err(error) => {
+                    let reason = format!("The host couldn't be asked about this: {error}");
+                    let verdicts = records
+                        .into_iter()
+                        .map(|record| runtime_collab::held_elsewhere::HeldDecision {
+                            record,
+                            verdict: runtime_collab::held_elsewhere::HeldVerdict::Refused(
+                                reason.clone(),
+                            ),
+                        })
+                        .collect();
+                    let _ = inbound_tx.send_reply(CollabEvent::HeldElsewhereVerdicts { verdicts });
                 }
             }
         }

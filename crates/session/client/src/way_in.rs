@@ -15,8 +15,6 @@ use serde::{Deserialize, Serialize};
 pub enum Scope {
     /// The person's own desktop, which is the device's own and needs no host.
     Own,
-    /// An invitation a site keeps, sealed, which names the workspace it admits into.
-    Sealed,
     /// A workspace of a host, or (no `workspace`) the workspace its entry admits to.
     Workspace {
         #[serde(default)]
@@ -42,7 +40,7 @@ pub struct Link {
     /// Its secrets did not read: none is used.
     #[serde(default)]
     pub malformed: bool,
-    /// An invitation (its text, or the handle and key of one its host keeps sealed).
+    /// An invitation (its text, or the secret of one the workspace keeps at its host).
     #[serde(default)]
     pub invite: bool,
     /// A workspace service guest ticket.
@@ -104,8 +102,6 @@ pub struct Can {
 pub enum Way {
     /// The person's own desktop, guarded by its home's entry where the home has one.
     OwnDesktop,
-    /// Open the invitation the site keeps, then [`Self::Invitation`] at the host it names.
-    SealedInvitation,
     /// Inspect the invitation, have the person confirm it, and redeem it.
     Invitation,
     /// Spend the guest ticket at the redemption entry the web host names.
@@ -153,7 +149,6 @@ pub fn way_in(link: &Link, here: &Here) -> Way {
     }
     let workspace = match &link.scope {
         Scope::Own => return Way::OwnDesktop,
-        Scope::Sealed => return Way::SealedInvitation,
         Scope::Workspace { workspace } => workspace
             .as_deref()
             .filter(|workspace| !workspace.is_empty()),
@@ -342,19 +337,13 @@ mod tests {
             );
         }
 
-        phase the_own_desktop_a_sealed_link_and_a_bare_entry_have_one_way_each;
+        phase the_own_desktop_and_a_bare_entry_have_one_way_each;
         {
             let own = Link {
                 scope: Scope::Own,
                 ..at(None)
             };
             assert_eq!(way_in(&own, &Here::default()), Way::OwnDesktop);
-            let sealed = Link {
-                scope: Scope::Sealed,
-                invite: true,
-                ..at(None)
-            };
-            assert_eq!(way_in(&sealed, &Here::default()), Way::SealedInvitation);
             assert_eq!(
                 way_in(&at(None), &here(true, false, 1)),
                 Way::Entry,

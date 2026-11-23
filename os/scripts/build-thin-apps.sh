@@ -227,7 +227,15 @@ read -r -a extra_cargo_args <<< "${EXTRA_CARGO_ARGS:-}"
 # (thin-app/sccache) so cc-rs uses the same native compiler cache, any other
 # goes through thin-app/rustc-wrapper. Outside this order, sccache 0.17 rejects
 # an absolute compiler as a second input.
-if [[ -n ${RUSTC_WRAPPER:-} && ${RUSTC_WRAPPER} != "$REPO"/tools/ci/thin-app/* ]]; then
+#
+# A t job already gives every compile its own wrapper and refuses a
+# `build.rustc-wrapper` of ours: that cache is the one outer wrapper, and the
+# workspace wrapper below it is still ours to name.
+under_t=0
+if [[ ${RUSTC_WRAPPER:-} == /run/t/wrapper && -n ${T_CACHE_SOCKET:-} ]]; then
+    under_t=1
+fi
+if [ "$under_t" -eq 0 ] && [[ -n ${RUSTC_WRAPPER:-} && ${RUSTC_WRAPPER} != "$REPO"/tools/ci/thin-app/* ]]; then
     cache_path=$RUSTC_WRAPPER
     cache_config=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$cache_path")
     export TILO_THIN_SCCACHE="$cache_path"
@@ -239,7 +247,7 @@ if [[ -n ${RUSTC_WRAPPER:-} && ${RUSTC_WRAPPER} != "$REPO"/tools/ci/thin-app/* ]
     extra_cargo_args+=(--config "build.rustc-wrapper=\"$RUSTC_WRAPPER\""
                       --config "env.TILO_THIN_SCCACHE.value=$cache_config"
                       --config "env.TILO_THIN_SCCACHE.force=true")
-elif [[ ${RUSTC_WRAPPER-unset} != "$REPO"/tools/ci/thin-app/* ]]; then
+elif [ "$under_t" -eq 0 ] && [[ ${RUSTC_WRAPPER-unset} != "$REPO"/tools/ci/thin-app/* ]]; then
     # The dispatcher runs every compile, also with no cache: it maps the tree's and the
     # build directory's paths. An empty RUSTC_WRAPPER asks for no cache (and would keep
     # cargo from running the dispatcher). A front end that runs cargo on another machine

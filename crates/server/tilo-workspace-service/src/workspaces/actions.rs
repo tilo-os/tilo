@@ -31,14 +31,11 @@
 //! take is absent, and invoking one is the same `UnknownAction` as invoking
 //! one that does not exist.
 //!
-//! Removing or banning a member and ending a call are destructive: they run
-//! only on a confirmation the person gave on their own device. The workspace's
-//! owner removes and bans by asking from a device of their own: their
-//! request is that confirmation. For anyone else this holder cannot ask yet:
-//! the action is left out of their catalogue, and a caller the workspace would
-//! let take one is refused with [`ActionCallError::ConfirmationRequired`]; a
-//! caller's own `confirm` is never taken for the person's. Ending a call
-//! waits for everyone.
+//! Adding, placing, removing and banning a member are admitted by the
+//! workspace's grants like any other action; where someone wants a change
+//! confirmed, an Ask grant asks for it. Ending a call is destructive and waits
+//! for everyone: it is refused with [`ActionCallError::ConfirmationRequired`],
+//! and a caller's own `confirm` is never taken for the person's.
 //!
 //! The holder also serves its own person's MCP server
 //! ([`mcp_server::PROVIDER`]): the devices they run an agent on, read live,
@@ -185,8 +182,6 @@ pub(crate) const SET_CONNECTOR_SECRET: &str = "set-connector-secret";
 const CONNECTOR_SECRETS: [(&str, &str); 1] = [("so.tilo.discord", "bot-token")];
 /// Most bytes a connector secret takes.
 const MAX_CONNECTOR_SECRET: usize = 512;
-/// The roles a public workspace hands out at its entry.
-const ENTRY_ROLES: [&str; 3] = ["viewer", "commenter", "editor"];
 
 /// How long an invitation stays redeemable when the caller does not say.
 const DEFAULT_INVITATION_HOURS: u64 = 7 * 24;
@@ -227,7 +222,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 29] = [
+const VERBS: [Verb; 30] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -263,12 +258,17 @@ const VERBS: [Verb; 29] = [
         kind: roles::GOVERNANCE_KIND,
         params: add_member_params,
     },
-    // A member removes someone ranked below them, as the workspace's roles say; an agent of
-    // theirs, once they said yes.
     Verb {
         id: governance::REMOVE_MEMBER,
         label: "Remove member",
         check: governance::REMOVE_MEMBER,
+        kind: roles::GOVERNANCE_KIND,
+        params: person_params,
+    },
+    Verb {
+        id: governance::BAN,
+        label: "Ban",
+        check: governance::BAN,
         kind: roles::GOVERNANCE_KIND,
         params: person_params,
     },
@@ -440,17 +440,6 @@ const VERBS: [Verb; 29] = [
         params: key_params,
     },
 ];
-
-/// Destructive governance: run for the workspace's owner, whose own request is
-/// their confirmation, and for nobody else until the person's own
-/// confirmation can be asked for.
-const OWNER_CONFIRMED: [Verb; 1] = [Verb {
-    id: governance::BAN,
-    label: "Ban",
-    check: governance::BAN,
-    kind: roles::GOVERNANCE_KIND,
-    params: person_params,
-}];
 
 fn person_param() -> ActionParam {
     ActionParam::required(
@@ -687,7 +676,12 @@ fn publish_params() -> Vec<ActionParam> {
             ParamType::Text,
             "The role everyone who joins from the directory gets.",
         )
-        .with_choices(ENTRY_ROLES),
+        .with_choices(
+            Role::ALL
+                .into_iter()
+                .filter(|role| Role::Editor.includes(*role))
+                .map(Role::key),
+        ),
         ActionParam::optional(
             "description",
             ParamType::Text,
@@ -956,7 +950,6 @@ fn admitted_change(change: &str) -> Option<(&'static str, &'static str)> {
 fn check_of(action: &str) -> Option<&'static str> {
     VERBS
         .iter()
-        .chain(&OWNER_CONFIRMED)
         .find(|verb| verb.id == action)
         .map(|verb| verb.check)
 }
@@ -974,12 +967,10 @@ fn minting_issuer(cert: &DeviceCert, device: &[u8; 32]) -> Option<DeviceCert> {
     None
 }
 
-/// Whether `action` with `args` by a device of `owner`'s person or not needs
-/// the person's own confirmation, which this holder cannot ask for yet. The
-/// workspace's owner confirms removing and banning by asking.
-fn unconfirmed(action: &str, args: &Args, owner: bool) -> bool {
-    (OWNER_CONFIRMED.iter().any(|verb| verb.id == action) && !owner)
-        || (action == governance::CALL && args.text("operation").ok().flatten() == Some(END_CALL))
+/// Whether `action` with `args` ends a call, which waits for everyone's own
+/// confirmation, which this holder cannot ask for yet.
+fn unconfirmed(action: &str, args: &Args) -> bool {
+    action == governance::CALL && args.text("operation").ok().flatten() == Some(END_CALL)
 }
 
 /// The arguments `request` names, to show the person asked about it.
@@ -1386,7 +1377,7 @@ impl Workspaces {
         if request.target.provider != WORKSPACE_GOVERNANCE_PROVIDER {
             return Err(ActionCallError::UnknownAction);
         }
-        self.invoke(Some(workspace_id), caller, None, request).await
+        Box::pin(self.invoke(Some(workspace_id), caller, None, request)).await
     }
 
     /// Whether `caller` may invite into the workspace `workspace_id`, as its
@@ -1481,7 +1472,7 @@ impl Workspaces {
 
     /// A short invite link to the workspace `workspace_id`, for whoever may
     /// invite into it: an editor's invitation, issued as the workspace issues
-    /// every one, sealed on the site's shelf. A page keeps one ready for a
+    /// every one, which the link names there. A page keeps one ready for a
     /// press, since a clipboard write has to happen inside the press, and
     /// asks for the next after each is handed over.
     ///
@@ -1501,8 +1492,8 @@ impl Workspaces {
         arguments.insert("role".to_owned(), Value::from("editor"));
         let request = Self::governance_ask(&workspace, governance::INVITE, arguments);
         let issued = self.page_invoke(workspace_id, caller, &request).await?;
-        // The short link where the site keeps a shelf; the invitation's own
-        // where it does not, which joins just the same.
+        // The short link where this host has a web origin to ask; the
+        // invitation's own where it has none, which joins just the same.
         let link = ["short_link", "link"]
             .into_iter()
             .find_map(|key| issued.get(key).filter(|link| link.is_string()).cloned())
@@ -1570,15 +1561,12 @@ impl Workspaces {
                 let workspace = governed.lock().await;
                 offer.generation = workspace.record.generation;
                 let now = tilo_clock::unix_now_ns();
-                let owner = device.user_public_key == self.inner.host.cert.user_public_key;
-                let confirmed: &[Verb] = if owner { &OWNER_CONFIRMED } else { &[] };
                 let offered = |verb: &Verb| {
                     self.offers(verb, (caller, &device), &workspace, grants.as_ref(), now)
                 };
                 // Removing is published on each person, under the workspace's people.
                 let mut rows: Vec<CatalogueRow> = VERBS
                     .iter()
-                    .chain(confirmed)
                     .filter(|verb| verb.id != governance::REMOVE_MEMBER && offered(verb))
                     .map(|verb| verb.governance_row(workspace.workspace(), &workspace.name()))
                     .collect();
@@ -1934,19 +1922,13 @@ impl Workspaces {
             }
             workspace.workspace().to_owned()
         };
-        let owner = device.user_public_key == self.inner.host.cert.user_public_key;
-        if unconfirmed(action, &args, owner) {
+        if unconfirmed(action, &args) {
             return Err(ActionCallError::confirmation_required());
         }
         // A key's own grant is its own business; anything else an agent asks
         // is decided by its grants here, and by its person's own checks, before
         // its person is asked: last, so their yes is never refused after.
-        if !listed_key
-            && let Some(verb) = VERBS
-                .iter()
-                .chain(&OWNER_CONFIRMED)
-                .find(|verb| verb.id == action)
-        {
+        if !listed_key && let Some(verb) = VERBS.iter().find(|verb| verb.id == action) {
             self.check_governance(&device, &workspace, verb.id, &args, admitting, published)
                 .await?;
             self.admit_operation(
@@ -2291,7 +2273,7 @@ impl Workspaces {
     /// What each person among `workspace`'s people publishes (`workspace/members/<person>`) that
     /// `offered` lets the caller ask, when `query` browses the people: moving them to another
     /// place, and removing them. Every member, `own`, is offered removing themselves, leaving,
-    /// but the owner, who cannot be removed.
+    /// the server's person as anyone; the owner is removed by nobody, themselves included.
     fn member_rows(
         &self,
         workspace: &super::GovernedWorkspace,
@@ -2307,6 +2289,7 @@ impl Workspaces {
             .filter(|verb| matches!(verb.id, ADD_MEMBER | governance::REMOVE_MEMBER))
             .map(|verb| (verb, offered(verb)))
             .collect();
+        let owner = workspace.peer().owner();
         let mut rows = Vec::new();
         for member in self.people(workspace).members {
             let Some(root) = member.root().filter(|_| !member.removed) else {
@@ -2319,15 +2302,10 @@ impl Workspaces {
             } else {
                 &member.name
             };
-            let leaves = |verb: &Verb| {
-                verb.id == governance::REMOVE_MEMBER
-                    && root == own
-                    && own != self.inner.host.cert.user_public_key
-            };
-            for (verb, _) in verbs
-                .iter()
-                .filter(|(verb, offered)| *offered || leaves(verb))
-            {
+            let removing = |verb: &Verb| verb.id == governance::REMOVE_MEMBER;
+            for (verb, _) in verbs.iter().filter(|(verb, offered)| {
+                (*offered || (removing(verb) && root == own)) && !(removing(verb) && root == owner)
+            }) {
                 let mut row = verb.row(GOVERNANCE, &resource, label);
                 row.parent_resource.clone_from(&members);
                 if let Some(action) = row.action.as_mut() {
@@ -2414,11 +2392,11 @@ impl Workspaces {
             now,
         );
         // The invitation's own link, as every build hands it over, and the
-        // short one the site keeps sealed where it keeps a shelf: what a
+        // short one that names it in this workspace at this host: what a
         // person's page hands over in one press, and what the mail to an
         // address carries.
         let link = self.invitation_link(workspace, &issued.signed_invitation);
-        let short_link = self.sealed_invitation_link(&issued.signed_invitation, expires_at_ns);
+        let short_link = self.short_invitation_link(workspace, &issued.signed_invitation);
         let mut answered = json!({
             "workspace": workspace,
             "invite": hex::encode(issued.invite_id),
@@ -2434,8 +2412,8 @@ impl Workspaces {
         // An invitation for an address on the wait list is mailed to it where the
         // entry sends mail; where it sends none, the link is handed over.
         if let (Some(entry), Some(fields)) = (wait_list_entry, answered.as_object_mut()) {
-            // The mail carries the short link where the site keeps one: the
-            // same link a person hands over.
+            // The mail carries the short link where there is one: the same
+            // link a person hands over.
             let mailed_link = short_link.unwrap_or_else(|| link.clone());
             let mailed = self
                 .mail_invite(workspace, device, entry, mailed_link, now)
@@ -2569,7 +2547,7 @@ impl Workspaces {
                     .transpose()
                     .map_err(|_| invalid("`role` is `key_holder` or `store`"))?
                     .unwrap_or(tilo_peer_state::CopyRole::KeyHolder);
-                self.add_server(workspace, args.required_text("origin")?, role)
+                self.add_server(workspace, args.required_text("host")?, role)
                     .await
                     .map_err(|error| refused(&error))?;
                 None
@@ -2583,7 +2561,7 @@ impl Workspaces {
                 self.move_server(
                     workspace,
                     args.required_text("server")?,
-                    args.required_text("origin")?,
+                    args.required_text("host")?,
                 )
                 .await
                 .map_err(|error| refused(&error))?,

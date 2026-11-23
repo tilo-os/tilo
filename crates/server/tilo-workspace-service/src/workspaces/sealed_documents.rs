@@ -240,41 +240,6 @@ impl GovernedWorkspace {
             .map(|waiting| waiting.to_string())
     }
 
-    /// The plaintext of `op`, a member's sealed write of `record` of `app`,
-    /// opened with its channel's keys: `None` when this host takes no part in
-    /// the workspace's channels or holds no keys for this one yet.
-    ///
-    /// # Errors
-    ///
-    /// The keys cannot be read, or the write does not open with them.
-    #[cfg_attr(
-        not(feature = "device-keys"),
-        allow(
-            dead_code,
-            reason = "sealed histories are followed only where they are read"
-        )
-    )]
-    pub(super) async fn open_write(
-        &self,
-        app: &str,
-        document: &str,
-        op: &SignedOp,
-    ) -> Result<Option<Vec<u8>>, String> {
-        let Some(device) = &self.device else {
-            return Ok(None);
-        };
-        let scoped = op.encryption.is_some_and(|metadata| {
-            matches!(
-                metadata.scheme,
-                collab_types::EncryptionScheme::DocumentContentKey { .. }
-            )
-        });
-        let keys =
-            read_document_keys(device, self.workspace(), (app, document), scoped, scoped).await?;
-        let mut open = keys.open();
-        open(op).map(Some)
-    }
-
     /// `record` of `app` as the governor reads it, saved: the record itself,
     /// or for a sealed one its history opened with the channel's keys.
     /// A sealed write that does not open, or waits for a change the record
@@ -512,56 +477,6 @@ pub(super) async fn whole_document(
     }
 }
 
-/// The writes of `record` of `app` of `workspace`, as `peer` (a copy of the governor's state)
-/// holds it, stuck behind a change their own writer never sent, opened with `device`'s keys: no
-/// device will ever send what they wait for (see [`UnmergedReason::BehindUnsent`]). The governor
-/// is the record's store, which every write of it reaches, so what it names so is what the
-/// server's fold leaves out of the record for good. Empty for a record held in the clear, or one
-/// this host holds no keys of.
-pub(crate) async fn unsent_writes(
-    peer: &StatePeer,
-    device: Option<&DeviceKeys>,
-    workspace: &str,
-    (app, document): (&str, &str),
-) -> Vec<SignedOp> {
-    if !peer.publication().is_sealed_document(app, document) {
-        return Vec::new();
-    }
-    let Some(device) = device else {
-        return Vec::new();
-    };
-    let scoped = peer.publication().has_document_keys(app, document);
-    let Ok(keys) = read_document_keys(device, workspace, (app, document), scoped, scoped).await
-    else {
-        return Vec::new();
-    };
-    let opened = match peer
-        .publication()
-        .opened_document(app, document, &mut keys.open())
-    {
-        Ok(Some(opened)) => opened,
-        Ok(None) => return Vec::new(),
-        Err(error) => {
-            tracing::warn!(%workspace, %app, %document, %error, "a sealed document does not open");
-            return Vec::new();
-        }
-    };
-    let history = peer.publication().sealed_history(app, document);
-    let mut unsent = Vec::new();
-    for write in &opened.unmerged {
-        if !matches!(write.reason, UnmergedReason::BehindUnsent { .. }) {
-            continue;
-        }
-        unsent.extend(
-            history
-                .iter()
-                .filter(|op| *op.author.as_bytes() == write.author && op.seq == write.seq)
-                .cloned(),
-        );
-    }
-    unsent
-}
-
 /// Publish `changes` to `record` of `app` into `candidate` as `key`'s write:
 /// sealed with `keys` for a sealed record, in the clear otherwise.
 ///
@@ -708,52 +623,6 @@ pub(super) fn publish_changes_for(
         key,
         now,
     )
-}
-
-/// The server's compactor folds the sealed history of the channels this
-/// server takes part in with their keys, so a newcomer replays one snapshot and
-/// the writes since rather than every write the workspace's members ever made.
-impl crate::compaction::GroupKeys for Workspaces {
-    fn keys<'a>(
-        &'a self,
-        route: &'a crate::compaction::Route,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ContentKeys>> + Send + 'a>> {
-        Box::pin(async move {
-            self.own_route_keys_read_by(
-                &tilo_peer_state::document_frame::DocumentRoute {
-                    cluster_id: route.cluster_id.clone(),
-                    app_id: route.app_id.clone(),
-                    document: route.document_id.clone(),
-                },
-                route.readers.as_deref(),
-                false,
-            )
-            .await?
-            .ok()
-        })
-    }
-
-    fn unsent<'a>(
-        &'a self,
-        route: &'a crate::compaction::Route,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<SignedOp>> + Send + 'a>> {
-        Box::pin(async move {
-            let Ok(state) = self.workspace(&route.cluster_id).await else {
-                return Vec::new();
-            };
-            let (peer, device) = {
-                let governed = state.lock().await;
-                (governed.peer().clone(), governed.device.clone())
-            };
-            unsent_writes(
-                &peer,
-                device.as_ref(),
-                &route.cluster_id,
-                (&route.app_id, &route.document_id),
-            )
-            .await
-        })
-    }
 }
 
 impl Workspaces {
@@ -924,234 +793,11 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Seal the records the workspaces this server takes part in hold in the clear, from
-    /// now on: the host's operator decided it (the server's `reseal`).
-    #[cfg(feature = "agents")]
-    pub fn reseal_existing(&self) {
-        self.inner
-            .resealing
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    fn resealing(&self) -> bool {
-        self.inner
-            .resealing
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Seal every record of the workspaces this server takes part in: open the channel
-    /// of each that has none yet, and seal what each channel retains in the
-    /// clear, as `compactor` does ([`crate::compaction::Compactor::reseal`]):
-    /// records written before their channels were opened.
-    #[cfg(feature = "agents")]
-    pub async fn reseal_own_channels(&self, compactor: &crate::compaction::Compactor) {
-        let workspaces: Vec<_> = self
-            .inner
-            .workspaces
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect();
-        for state in workspaces {
-            let (name, workspace_id, routes) = {
-                let mut workspace = state.lock().await;
-                if !workspace.seals() {
-                    continue;
-                }
-                let plaintext = workspace.peer().plaintext_routes();
-                let mut candidate = workspace.peer().clone();
-                for (app, record) in &plaintext {
-                    match self.sealing_keys(&workspace, app, record).await {
-                        Ok(_) => {
-                            candidate.seal_document(app, record);
-                        }
-                        Err(error) => {
-                            tracing::warn!(workspace = %workspace.workspace(), %app, %record,
-                            %error, "a record's channel was not opened");
-                        }
-                    }
-                }
-                if candidate.sealed_routes().len() != workspace.peer().sealed_routes().len() {
-                    let collaboration = workspace.collaboration().clone();
-                    let settled = match workspace.commit(
-                        candidate,
-                        &self.inner.host.key,
-                        tilo_clock::wall(),
-                        |_, _| Ok(collaboration),
-                    ) {
-                        Ok(_) => self.settle(&mut workspace).await,
-                        Err(error) => Err(error),
-                    };
-                    if let Err(error) = settled {
-                        tracing::warn!(workspace = %workspace.workspace(), %error,
-                            "the workspace's records were not sealed");
-                        continue;
-                    }
-                }
-                let peer = workspace.peer();
-                (
-                    workspace.workspace().to_owned(),
-                    workspace.workspace_id(),
-                    peer.sealed_routes(),
-                )
-            };
-            let Some(workspace) = self
-                .inner
-                .host
-                .workspaces
-                .lock()
-                .await
-                .get(&workspace_id)
-                .cloned()
-            else {
-                continue;
-            };
-            for (app, record) in routes {
-                let channel = neighbour_wire::app_document_group(&app, &record);
-                let route = crate::compaction::Route {
-                    app_id: app,
-                    cluster_id: name.clone(),
-                    document_id: record,
-                    readers: None,
-                };
-                if let Err(error) = compactor
-                    .reseal(&workspace, workspace_id, channel, &route)
-                    .await
-                {
-                    tracing::warn!(workspace = %name, app = %route.app_id, record = %route.document_id,
-                        %error, "a record's writes made in the clear were not sealed");
-                }
-            }
-            drop(workspace);
-        }
-    }
-
-    /// Repair every sealed record of the workspaces this host governs whose store holds writes
-    /// stuck behind a change their own writer never sent: written before a page's writes waited
-    /// for their record, they kept every reader from the record, and no fold since left them
-    /// out. Each such record's channel is folded without them now, as its next fold would
-    /// ([`crate::compaction::Compactor::repair`]). Runs once as the host starts.
-    #[cfg(feature = "device-keys")]
-    pub(crate) async fn fold_away_unsent(&self, compactor: &crate::compaction::Compactor) {
-        let workspaces: Vec<_> = self
-            .inner
-            .workspaces
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect();
-        for state in workspaces {
-            let (peer, device, name, workspace_id) = {
-                let governed = state.lock().await;
-                (
-                    governed.peer().clone(),
-                    governed.device.clone(),
-                    governed.workspace().to_owned(),
-                    governed.workspace_id(),
-                )
-            };
-            let mut holed = Vec::new();
-            for (app, record) in peer.sealed_routes() {
-                if !unsent_writes(&peer, device.as_ref(), &name, (&app, &record))
-                    .await
-                    .is_empty()
-                {
-                    holed.push((app, record));
-                }
-            }
-            if holed.is_empty() {
-                continue;
-            }
-            let Some(workspace) = self
-                .inner
-                .host
-                .workspaces
-                .lock()
-                .await
-                .get(&workspace_id)
-                .cloned()
-            else {
-                continue;
-            };
-            for (app, record) in holed {
-                let channel = neighbour_wire::app_document_group(&app, &record);
-                let route = crate::compaction::Route {
-                    app_id: app,
-                    cluster_id: name.clone(),
-                    document_id: record,
-                    readers: None,
-                };
-                if let Err(error) = compactor
-                    .repair(&workspace, workspace_id, channel, &route)
-                    .await
-                {
-                    tracing::warn!(workspace = %name, app = %route.app_id, record = %route.document_id,
-                        %error, "a record's writes stuck behind a change their writer never sent were not folded away");
-                }
-            }
-        }
-    }
-
-    /// Seal again what the workspaces governed here hold sealed before reader sets
-    /// ([`collab_types::artifact_before_reader_sets`]), as the first device holding their
-    /// keys to open them since: each such document's history is compacted by this server, its
-    /// content sealed under the document's own scope and signed as this server alone, and the
-    /// writes it folds kept beside the document as their authors signed them
-    /// ([`tilo_peer_state::PeerPublication::resealed_originals`]). A workspace whose keys this
-    /// device does not hold yet is tried again while they arrive; one it holds none of waits for
-    /// a device that does, and its readers are told so
-    /// ([`tilo_peer_state::WaitingForUpdate`]). Called as the server starts.
-    #[cfg(feature = "device-keys")]
-    pub(crate) async fn reseal_before_reader_sets(&self) {
-        const TRIES: usize = 60;
-        const BETWEEN: std::time::Duration = std::time::Duration::from_secs(5);
-        for attempt in 0..TRIES {
-            let workspaces: Vec<_> = self
-                .inner
-                .workspaces
-                .lock()
-                .await
-                .values()
-                .cloned()
-                .collect();
-            let mut waiting = 0usize;
-            for state in workspaces {
-                let mut workspace = state.lock().await;
-                let awaiting = workspace.peer().publication().awaiting_reseals();
-                if awaiting.is_empty() {
-                    continue;
-                }
-                if !workspace.seals() || self.holds_as_store(&workspace) {
-                    tracing::info!(workspace = %workspace.workspace(), documents = awaiting.len(),
-                        "documents sealed before reader sets wait for a device holding the workspace's keys");
-                    continue;
-                }
-                workspace.compaction_wait = 0;
-                if let Err(error) = self.compact_sealed_histories(&mut workspace).await {
-                    tracing::warn!(workspace = %workspace.workspace(), %error,
-                        "documents sealed before reader sets were not sealed again");
-                }
-                let left = workspace.peer().publication().awaiting_reseals();
-                tracing::info!(workspace = %workspace.workspace(),
-                    sealed_again = awaiting.len().saturating_sub(left.len()), left = left.len(),
-                    "documents sealed before reader sets sealed again under their own scope");
-                waiting = waiting.saturating_add(left.len());
-            }
-            if waiting == 0 || attempt.saturating_add(1) == TRIES {
-                return;
-            }
-            tokio::time::sleep(BETWEEN).await;
-        }
-    }
-
     /// The keys the governor writes `record` of `app` with: in a workspace whose
     /// channels this server takes part in every new record is sealed from its
     /// first write, so its channel is opened first when it has none (its
     /// genesis, published before anything is written there). A record it
-    /// already holds in the clear stays so until the host's operator decides
-    /// to seal them ([`Workspaces::reseal_existing`]). `None` in a workspace it does
+    /// already holds in the clear stays so. `None` in a workspace it does
     /// not take part in, where records are written in the clear.
     ///
     /// # Errors
@@ -1190,7 +836,7 @@ impl Workspaces {
                 .peer()
                 .publication()
                 .is_sealed_document(app, document);
-        if held_in_the_clear && !self.resealing() {
+        if held_in_the_clear {
             return workspace.document_keys(app, document).await;
         }
         let name = workspace.workspace();
@@ -1270,7 +916,7 @@ impl Workspaces {
 
 #[cfg(all(test, feature = "agents"))]
 mod behind_tests;
-#[cfg(all(test, feature = "agents"))]
+#[cfg(all(test, feature = "agents", feature = "apps"))]
 mod chain_head_tests;
 #[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
 pub mod fixtures;

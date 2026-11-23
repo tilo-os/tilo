@@ -9,9 +9,9 @@
 //! (`tilo_sheets::directory::Store`) reads those sites and asks their entries
 //! through this crate.
 //!
-//! Joining one enters it through its entry ([`through_entry`]), on the session
-//! the device opens with the entry's host; a pasted invitation is verified for
-//! the person, and the workspace it grants is the workspace joined.
+//! A workspace is joined with a pasted invitation, verified for the person:
+//! the workspace it grants is the workspace joined. No site's entry is read to
+//! find a host to enter through.
 //!
 //! Everything network-facing runs over [`tilo_net::Client`]: the desktop's
 //! connection pool, or a page's `fetch`. The person a join is made as, the
@@ -27,12 +27,11 @@ use tilo_server_protocol::directory::{Activity, DirectoryEntry, DirectoryPage};
 use tilo_server_protocol::workspaces::Role;
 
 pub use client::{
-    Granted, Person, SealedInvitation, Shelved, SiteEntry, SiteWorkspace, Taken, Way, client,
-    entry_workspace, fetch_directory, invited_workspace, join_home, read_site, sealed_invitation,
-    shelve, site_entry, take, take_back, through_entry, verify_invitation, web_origin,
+    Granted, Person, SiteEntry, SiteWorkspace, Taken, Way, client, fetch_directory,
+    invited_workspace, kept_invitation, read_site, site_entry, take, verify_invitation, web_origin,
 };
 
-/// Why a site, its entry or its shelf gave nothing to use.
+/// Why a site, its entry or the host of an invitation gave nothing to use.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SiteError {
     /// What the directory sheet says, by the key of its catalogue's message
@@ -78,8 +77,8 @@ pub struct Listed {
     pub site: Option<url::Url>,
     /// The host name it is listed by ("tilo.sh").
     pub host: String,
-    /// Who the entry's host is and where it is dialled, as the site or the directory
-    /// publishes them; `None` where neither names one.
+    /// Who the entry's host is and where it is dialled, as the directory that
+    /// lists it publishes them; `None` where it names none.
     pub entry_host: Option<tilo_server_protocol::web::PageHost>,
 }
 
@@ -153,7 +152,7 @@ pub fn home_listing(site: &url::Url, home: &SiteWorkspace) -> Listed {
         entry_url: home.admission.clone(),
         site: Some(site.clone()),
         host: site.host_str().unwrap_or_default().to_owned(),
-        entry_host: home.host.clone(),
+        entry_host: None,
     }
 }
 
@@ -329,7 +328,6 @@ mod tests {
             entry: site.clone(),
             name: "tilo.sh".into(),
             admission: Some(url::Url::parse("https://workspaces.tilo.sh/").unwrap()),
-            host: None,
         };
         let listed = home_listing(&site, &home);
         assert!(listed.entry.community);

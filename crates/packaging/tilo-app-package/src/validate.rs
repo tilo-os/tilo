@@ -114,6 +114,8 @@ pub enum ManifestError {
     BadProviderScheme(String),
     #[error("invalid resource kind {0:?}")]
     BadResourceKind(String),
+    #[error("resources.private names {0:?}, which resources.kinds does not")]
+    UndeclaredPrivateKind(String),
     #[error("offers: {0}")]
     BadOffer(String),
     #[error("sandbox.services: {0}")]
@@ -492,6 +494,14 @@ fn validate_declarations(m: &Manifest) -> Result<(), ManifestError> {
         if !valid_resource_kind(kind) {
             return Err(ManifestError::BadResourceKind(kind.clone()));
         }
+    }
+    if let Some(kind) = m
+        .resources
+        .private
+        .iter()
+        .find(|kind| !m.resources.kinds.contains(kind))
+    {
+        return Err(ManifestError::UndeclaredPrivateKind(kind.clone()));
     }
     validate_offers(&m.offers)?;
     if let Some(name) = m.sandbox.portals.keys().find(|name| {
@@ -1633,6 +1643,12 @@ mode = "off"
                     Err(ManifestError::BadResourceKind(bad.to_owned()))
                 );
             }
+            m.resources.kinds = vec!["example.note".into()];
+            m.resources.private = vec!["example.draft".into()];
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::UndeclaredPrivateKind("example.draft".into()))
+            );
         }
     }
 

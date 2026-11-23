@@ -1270,3 +1270,80 @@ fn a_field_scrolled_deep_culls_the_glyphs_outside_its_clip_as_one_scrolled_shall
          however far down the field is scrolled"
     );
 }
+
+tilo_test_env::scenario! {
+    fn colour_emoji_draw_as_their_font_paints_them;
+
+    phase joined_and_toned_sequences_shape_to_one_colour_glyph;
+    {
+        let mut renderer = renderer();
+        for sequence in [
+            "👨\u{200d}👩\u{200d}👧\u{200d}👦",
+            "👩🏽\u{200d}💻",
+            "🧑🏿\u{200d}🚀",
+            "👩\u{200d}❤\u{fe0f}\u{200d}👨",
+            "👋🏻",
+            "🏳\u{fe0f}\u{200d}🌈",
+            "🇪🇺",
+        ] {
+            let layout = RichTextLayout::shape_styled(
+                &mut renderer.font_system,
+                &[RichSpan::new(sequence)],
+                &named_style("Noto Color Emoji"),
+                None,
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            let glyphs: Vec<_> = layout
+                .buffer
+                .layout_runs()
+                .flat_map(|run| run.glyphs.iter())
+                .collect();
+            assert_eq!(glyphs.len(), 1, "{sequence:?} draws as one glyph");
+            let font = renderer
+                .vello_font(glyphs[0].font_id, glyphs[0].font_weight)
+                .unwrap();
+            assert!(
+                FontRef::from_index(font.data.as_ref(), font.index)
+                    .unwrap()
+                    .table_data(Tag::new(b"COLR"))
+                    .is_some(),
+                "{sequence:?} comes from the colour emoji face"
+            );
+        }
+    }
+
+    phase flag_shading_blends_with_soft_light;
+    {
+        // Every Noto flag is its colours under a half-transparent white-to-black
+        // gradient the font composites with soft light: the gradient shades the
+        // flag and keeps its hue. Drawn over the flag instead, it greys the blue.
+        let mut renderer = renderer();
+        let style = TextStyle::new(64.0)
+            .with_family(FontChoice::Named("Noto Color Emoji".to_owned()))
+            .with_optical_sizing(OpticalSizing::None);
+        // A colour glyph draws as fills and layers, never as a glyph run.
+        let mut scene = Scene::new();
+        renderer.draw_style(&mut scene, "🇪🇺", Color::BLACK, Affine::IDENTITY, None, &style);
+        let (width, height) = (96, 96);
+        let pixels =
+            crate::offscreen::render_picture(&scene, width, height, Color::WHITE).unwrap();
+        let (mut inked, mut blue) = (0usize, 0usize);
+        for pixel in pixels.chunks_exact(4) {
+            let [r, g, b, _] = [pixel[0], pixel[1], pixel[2], pixel[3]].map(i32::from);
+            if r.min(g).min(b) > 235 {
+                continue;
+            }
+            inked += 1;
+            if r < 40 && b > 100 && b > g + 60 {
+                blue += 1;
+            }
+        }
+        assert!(inked > 1000, "the flag draws ({inked} pixels)");
+        assert!(
+            blue * 2 > inked,
+            "the EU flag keeps its blue under its shading: {blue} of {inked} inked pixels are blue"
+        );
+    }
+}

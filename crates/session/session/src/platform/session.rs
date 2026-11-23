@@ -1574,8 +1574,6 @@ impl Session {
             ui::process::ProcessServices::null().with_clipboard(Arc::new(clipboard.shell())),
         );
         let boot_join = crate::boot_join::BootJoin::at_boot(&directory_store, &handle);
-        let community =
-            crate::community::Community::for_site(crate::platform::directory::community_site());
         // The person's mentions in the workspaces' records: told through those notifications, kept
         // in the records' store, and opened through this session's own API to the apps.
         let mentions = records_store.clone().map(|store| {
@@ -1689,7 +1687,6 @@ impl Session {
             directory_store,
             boot_join: RefCell::new(boot_join),
             hosted_browser: RefCell::new(options.hosted_browser.take()),
-            community: RefCell::new(community),
             portal,
             file_picker,
             lock,
@@ -1723,6 +1720,7 @@ impl Session {
             document_reads,
             document_writes: writes,
             held_stores: crate::engine_records::held_stores(workspace_service),
+            app_stores: Cell::default(),
             desktops,
             notes,
             membership_fed: std::cell::RefCell::new(None),
@@ -2795,7 +2793,21 @@ impl Session {
         {
             return;
         }
-        let rows = tilo_actions::api::survey_placed(&self.shared.published.resources());
+        let mut resources = self.shared.published.resources();
+        // The settings are published by the session's settings service, and offered under
+        // their own provider ([`crate::settings_steps::SettingsSteps`]) wherever the session
+        // serves a broker. The session's own provider must not offer a second copy of them:
+        // one address has one entry.
+        if self
+            .app_wire
+            .as_ref()
+            .and_then(AppWire::agent_broker)
+            .is_some()
+            && self.settings_steps.is_some()
+        {
+            crate::settings_steps::SettingsSteps::leave_out(&mut resources);
+        }
+        let rows = tilo_actions::api::survey_placed(&resources);
         if actions.offer(rows)
             && let Some(broker) = self.app_wire.as_ref().and_then(AppWire::agent_broker)
         {

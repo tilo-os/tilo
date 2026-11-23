@@ -102,7 +102,7 @@ impl EntryPolicy {
                 {
                     return Err(EntryError::Description);
                 }
-                if matches!(listing.default_role, Role::Moderator | Role::Owner) {
+                if !Role::Editor.includes(listing.default_role) {
                     return Err(EntryError::Role);
                 }
                 Some(ListingPolicy {

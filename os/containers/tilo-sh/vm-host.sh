@@ -1,22 +1,21 @@
 #!/usr/bin/env bash
 # A VM host of the local tilo.sh stack: the image tilo.sh's VM hosts run
 # (os/containers/tilo-vm-host), privileged and with a state disk of its own,
-# the placer that places workspaces' VMs on it, and the guest image this
-# checkout built instead of a release's. It is what a hosted workspace needs
+# and the guest image this checkout built instead of a release's. Its member
+# device is a server of the person, which takes a workspace's Linux turns. It is what a hosted workspace needs
 # under it locally: a workspace's Linux programs and its Browser run in its VM
 # here, and its browser session joins the workspace at the server beside it.
 #
 # usage: vm-host.sh up|down [--wipe]|status|env
 #
 #   up       make the state disk, certify this host's member device under the
-#            server's root, ready the guest image, start the placer and
-#            vm-host-0
-#   down     stop both; the state disk and the host's identity stay, so the
+#            server's root, ready the guest image, start vm-host-0
+#   down     stop it; the state disk and the host's identity stay, so the
 #            next up is the same member device with its VMs and the
 #            workspaces' files it keeps. --wipe removes them too
 #   status   what is up, and the VMs the host holds
-#   env      the variables the server reads to place here (nothing while the
-#            host is down)
+#   env      the variables the server reads to run its workspaces' Linux
+#            work here (nothing while the host is down)
 #
 # What a caller passes (each has the default shown):
 #
@@ -44,9 +43,8 @@
 #                                       not this stack's default
 #   TILO_SH_SERVER_SECRETS=<state>/secrets
 #                                       where the server's secrets are on this
-#                                       machine: the hosts' members file and
-#                                       the plans file are written there, for
-#                                       the server to read
+#                                       machine: the plans file is written
+#                                       there, for the server to read
 #   TILO_SH_SERVER_SECRETS_VIEW=/run/secrets
 #                                       where that server reads them (the image
 #                                       mounts them at /run/secrets; the
@@ -67,15 +65,11 @@ set -euo pipefail
 
 state=${TILO_SH_STATE:-/var/lib/tilo-sh}
 vm=$state/vm
-# The server's secrets: where it reads the member devices and the plans file
-# from, which may be a stack's directory rather than this host's.
+# The server's secrets: where it reads the plans file from, which may be a
+# stack's directory rather than this host's.
 secrets=${TILO_SH_SERVER_SECRETS:-$state/secrets}
 pod=vm-host-0
-placer_container=tilo-sh-vm-placer
 host_container=tilo-sh-$pod
-place_port=${TILO_SH_VM_HOST_PLACER_PORT:-7702}
-status_port=${TILO_SH_VM_HOST_STATUS_PORT:-7701}
-member_port=${TILO_SH_VM_HOST_MEMBER_PORT:-7703}
 server_iroh=${TILO_SH_SERVER_IROH:-127.0.0.1:24104}
 server_state=${TILO_SH_SERVER_STATE:-$state/workspaces/lounge/server}
 server_admin=${TILO_SH_TILO_SERVER_ADMIN:-tilo-server-admin}
@@ -201,6 +195,8 @@ member_device() {
       --identity-root /var/lib/tilo-hosted/member/profile/identity 2>/dev/null |
       json_field device)
     if [ -n "$device" ]; then printf '%s' "$device"; return 0; fi
+    [ "$(podman inspect --format '{{.State.Running}}' "$host_container" 2>/dev/null)" = true ] \
+      || fail "the host stopped before it joined: $(podman logs --tail 3 "$host_container" 2>&1)"
     sleep 2
   done
   fail "the host joined no identity in 180 s: set TILO_VM_TICKET to a ticket \`tilo device add --capability admin\` printed (podman logs $host_container says why)"
@@ -251,14 +247,6 @@ plans() {
 JSON
 }
 
-# The VM hosts' member devices as the server reads them: this stack's one host,
-# by the name the placer answers and where its endpoint listens.
-members() { # device
-  mkdir -p "$secrets"
-  printf '{\n  "%s": {\n    "device": "%s",\n    "address": "127.0.0.1:%s"\n  }\n}\n' \
-    "$pod" "$1" "$member_port" > "$secrets/vm-host-members.json"
-}
-
 up() {
   need_root
   [ -e /dev/kvm ] || fail '/dev/kvm: the local stack runs the VMs the tilo.sh VM hosts run, which need KVM'
@@ -277,19 +265,6 @@ up() {
   [ -n "$loop" ] || fail 'the state disk is not attached'
   guest_ref=$(cat "$vm/guest-ref")
 
-  # The placer: the same image and command the cloud's placer runs, naming
-  # this stack's one host, with no cluster to start hosts on. Its state is
-  # its own user's, as the cloud's volume is.
-  install -d -o 10001 -g 10001 -m 0700 "$vm/placer"
-  podman rm -f "$placer_container" >/dev/null 2>&1 || true
-  podman run -d --name "$placer_container" --network host --log-driver k8s-file \
-    --user 10001:10001 --read-only --tmpfs /tmp \
-    --security-opt no-new-privileges --cap-drop ALL \
-    -v "$vm/placer:/var/lib/tilo-placer" \
-    --entrypoint tilo-linux-vm "$image" \
-    hosted place --listen "127.0.0.1:$place_port" \
-    --hosts "$pod=127.0.0.1:$status_port" >/dev/null
-
   # The host itself: privileged for KVM, the cgroup tree, user namespaces and
   # the jail helper's mounts, with its state disk as a raw block device, as the
   # cloud's StatefulSet runs it. It joins the person's devices with the ticket
@@ -306,22 +281,19 @@ up() {
     -e TILO_VM_TICKET="${TILO_VM_TICKET:-}" \
     -e TILO_VM_FOUND="${TILO_VM_FOUND:-0}" \
     -e TILO_VM_MEMORY_MIB="$memory_mib" \
-    -e TILO_VM_STATUS_LISTEN="127.0.0.1:$status_port" \
     -e TILO_VM_GUEST_REF="$guest_ref" \
     -e TILO_VM_SERVER_ENDPOINT="$server_iroh" \
     "$image" >/dev/null
   # The member's device key is the ticket's login's, made on the host's own
-  # disk: read back once it joined, and the server reads the members file it
-  # writes when the stack starts it.
+  # disk: read back once it joined, as the server's person's server.
   device=$(member_device)
   [ -n "$device" ] || fail "the host's member device"
-  members "$device"
-  say "$pod and the placer are up: workspaces' VMs run here, joining the server at $server_iroh"
+  say "$pod is up as $device: workspaces' VMs run here, joining the server at $server_iroh"
 }
 
 down() {
   need_root
-  podman rm -f "$host_container" "$placer_container" >/dev/null 2>&1 || true
+  podman rm -f "$host_container" >/dev/null 2>&1 || true
   if mountpoint -q "$vm/mnt"; then umount "$vm/mnt"; fi
   local loop
   loop=$(state_loop)
@@ -336,7 +308,7 @@ down() {
 
 status() {
   local container loop
-  for container in "$placer_container" "$host_container"; do
+  for container in "$host_container"; do
     if podman container exists "$container" 2>/dev/null; then
       printf '%-24s %s\n' "$container" "$(podman inspect --format '{{.State.Status}}' "$container")"
     else
@@ -352,15 +324,13 @@ status() {
   fi
 }
 
-# What the server reads to place here, and to answer Browser's page actions:
-# nothing while the host is down.
+# What the server reads to run its workspaces' Linux work on the devices that
+# take it, and to answer Browser's page actions: nothing while the host is down.
 server_env() {
   podman container exists "$host_container" 2>/dev/null || return 0
   local endpoint
   endpoint=$(server_endpoint)
   cat <<ENV
-TILO_HOSTED_PLACER=127.0.0.1:$place_port
-TILO_HOSTED_MEMBERS=$server_secrets/vm-host-members.json
 TILO_HOSTED_ACCOUNT=acct-tilo-sh
 TILO_HOSTED_VM_SIZE=${TILO_SH_HOSTED_VM_SIZE:-default}
 TILO_HOSTED_PLANS=$server_secrets/vm-host-plans.json

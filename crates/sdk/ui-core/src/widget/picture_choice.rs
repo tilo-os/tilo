@@ -400,11 +400,9 @@ fn geometry(
     (gap, narrowest, tallest): (f64, f64, f64),
 ) -> (usize, f64, f64) {
     let count = count.max(1);
-    let fit = card_columns(width, narrowest, gap).min(count);
-    let columns = (1..=fit)
-        .rev()
-        .find(|columns| count.is_multiple_of(*columns))
-        .unwrap_or(fit);
+    // As many tiles as fit their narrowest width, so a narrow window wraps them a few to a
+    // row instead of stretching one across the whole measure.
+    let columns = card_columns(width, narrowest, gap).min(count);
     let tile = card_column_width(width, columns, gap);
     (columns, tile, (tile * TILE_ASPECT).min(tallest).round())
 }

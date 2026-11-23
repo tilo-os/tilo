@@ -29,6 +29,7 @@ use ui::permissions::MemberId;
 use ui::state::UndoLog;
 
 use crate::engine::{Engine, SealKeys};
+use neighbour_wire::RefusalReason;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_peer_state::owner::WriteRefusal;
 
@@ -662,7 +663,7 @@ pub(crate) struct Layouts {
     /// This session's own revision at the last look.
     seen: Cell<Option<u64>>,
     /// A failure to read or write a record that the person has not heard yet.
-    refused: RefCell<Option<(WorkspaceId, String)>>,
+    refused: RefCell<Option<(WorkspaceId, RefusalReason)>>,
     /// The last failure the person heard: the same one again is not said twice.
     told: RefCell<Option<String>>,
     /// The session's loop, which a write under way wakes as it moves on.
@@ -1807,7 +1808,7 @@ impl Layouts {
                         held.undo = None;
                     });
                     self.say(
-                        &error.to_string(),
+                        (error.reason(), &error.to_string()),
                         "the workspace's layout was not published",
                         workspace_id,
                     );
@@ -1824,7 +1825,11 @@ impl Layouts {
                     held.pending_steps.restore(steps);
                 });
                 self.keep_pending();
-                self.say(&error, "the workspace's layout was not kept", workspace_id);
+                self.say(
+                    (RefusalReason::Other, &error),
+                    "the workspace's layout was not kept",
+                    workspace_id,
+                );
             }
         }
     }
@@ -2291,7 +2296,7 @@ impl Layouts {
             });
             if let Some(error) = refused {
                 self.say(
-                    &error.to_string(),
+                    (RefusalReason::Other, &error.to_string()),
                     "the view of the layout was not kept",
                     workspace_id,
                 );
@@ -2334,7 +2339,7 @@ impl Layouts {
             Ok(SealKeys::NoSecretStore) => None,
             Err(error) => {
                 self.say(
-                    &error,
+                    (RefusalReason::Other, &error),
                     "the workspace's layout was not written",
                     *workspace_id,
                 );
@@ -2508,7 +2513,7 @@ impl Layouts {
                     held.undo = None;
                 });
                 self.say(
-                    &error.to_string(),
+                    (error.reason(), &error.to_string()),
                     "the workspace's layout was not published",
                     workspace_id,
                 );
@@ -2543,19 +2548,18 @@ impl Layouts {
 
     /// Say why a workspace's record was not kept or published, for the caller to tell the person:
     /// once per reason, not on every frame.
-    fn say(&self, error: &str, what: &str, workspace_id: WorkspaceId) {
-        tracing::warn!(%error, %workspace_id, "{what}");
+    fn say(&self, (reason, error): (RefusalReason, &str), what: &str, workspace_id: WorkspaceId) {
+        tracing::warn!(%error, ?reason, %workspace_id, "{what}");
         if self.told.borrow().as_deref() != Some(error) {
-            *self.refused.borrow_mut() = Some((workspace_id, error.to_owned()));
+            *self.told.borrow_mut() = Some(error.to_owned());
+            *self.refused.borrow_mut() = Some((workspace_id, reason));
         }
     }
 
     /// The refusal the person has not heard yet, once: why what they changed on a workspace's
     /// layout did not reach the workspace.
-    pub(crate) fn take_refusal(&self) -> Option<(WorkspaceId, String)> {
-        let (workspace_id, refused) = self.refused.borrow_mut().take()?;
-        *self.told.borrow_mut() = Some(refused.clone());
-        Some((workspace_id, refused))
+    pub(crate) fn take_refusal(&self) -> Option<(WorkspaceId, RefusalReason)> {
+        self.refused.borrow_mut().take()
     }
 
     /// What the workspace's copy of `key`'s record holds here, read against the revision this

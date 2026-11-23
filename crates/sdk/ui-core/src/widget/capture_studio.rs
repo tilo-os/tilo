@@ -538,20 +538,6 @@ impl CaptureStudio {
         }
     }
 
-    pub fn open_recording_setup(&mut self) {
-        self.open();
-        if !self.take.active {
-            self.set_mode(CaptureMode::Recording);
-        }
-    }
-
-    pub fn open_pip_setup(&mut self) {
-        self.open();
-        if !self.take.active {
-            self.set_mode(CaptureMode::Pip);
-        }
-    }
-
     /// Save the kept last 30 seconds through the same intent as the bar's
     /// Save. Returns whether a ready buffer accepted the action.
     pub fn save_recent_replay(&mut self) -> bool {
@@ -615,20 +601,8 @@ impl CaptureStudio {
         self.choosing() && self.source == SourceMode::Window
     }
 
-    pub fn is_recording_active(&self) -> bool {
-        self.take.active
-    }
-
     pub fn is_recording_start_pending(&self) -> bool {
         self.take.start_pending
-    }
-
-    pub fn is_recording_paused(&self) -> bool {
-        self.take.paused
-    }
-
-    pub fn is_replay_active(&self) -> bool {
-        self.replay_active
     }
 
     pub fn set_mode(&mut self, mode: CaptureMode) {
@@ -954,10 +928,6 @@ impl CaptureStudio {
         self.open = false;
     }
 
-    pub fn screenshot_kept(&self) -> Option<ScreenshotKept> {
-        self.screenshot_receipt.as_ref().map(|receipt| receipt.kept)
-    }
-
     pub fn set_screenshot_finished(
         &mut self,
         kept: ScreenshotKept,
@@ -981,18 +951,6 @@ impl CaptureStudio {
         });
         self.screenshot_pin_pending = false;
         self.open = true;
-    }
-
-    pub fn set_screenshot_pin_pending(&mut self, pending: bool) {
-        self.dirty = true;
-        self.screenshot_pin_pending = pending;
-    }
-
-    pub fn set_screenshot_pinned(&mut self) {
-        self.dirty = true;
-        self.screenshot_pin_pending = false;
-        self.screenshot_receipt = None;
-        self.open = false;
     }
 
     pub fn set_screenshot_transition_progress(&mut self, permille: u16) {

@@ -474,7 +474,7 @@ impl AppBrokerState {
                     Ok(InvocationCaller::NativePerson {
                         invocation: request.invocation,
                         workspace: workspace.into(),
-                        certificate,
+                        certificate: Box::new(certificate),
                         time,
                     })
                 })

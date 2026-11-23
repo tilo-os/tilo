@@ -352,9 +352,9 @@ pub enum WorkspacesRequest {
         workspace: String,
         /// The confirmed entry.
         wait_list_entry: [u8; 32],
-        /// The invitation's web link: the site's short link,
-        /// `https://<site>/i/<handle>#<key>`, which keeps the invitation as
-        /// ciphertext the site cannot read.
+        /// The invitation's web link: the short link that names the
+        /// invitation the workspace keeps at its host,
+        /// `https://<site>/#/@<host>/w/<workspace>?invite=<secret>`.
         link: String,
     },
     /// Share one record, or one item of it, with `workspace`'s members, as the
@@ -412,21 +412,23 @@ pub enum WorkspacesRequest {
     Servers {
         workspace: String,
     },
-    /// Have the server whose site is `origin` keep `workspace` as well:
+    /// Have the server whose own line is `host` keep `workspace` as well:
     /// answered with [`WorkspacesReply::Servers`] after it took it, or
     /// refused in its own words. Only the workspace's owners choose its
     /// servers, and the other server takes it only for an owner it let in.
     AddServer {
         workspace: String,
-        /// The other server's site, like `https://tilo.sh`.
-        origin: String,
+        /// The other server's own `web-host.json` line, which its operator
+        /// hands over: its certificate and where it is dialled.
+        host: String,
     },
-    /// Have a server keep `workspace` no more, named by its site or by its
-    /// device key: answered with [`WorkspacesReply::Servers`]. Only the
-    /// workspace's owners choose its servers.
+    /// Have a server keep `workspace` no more, named by the name the server
+    /// list shows or by its device key: answered with
+    /// [`WorkspacesReply::Servers`]. Only the workspace's owners choose its
+    /// servers.
     RemoveServer {
         workspace: String,
-        /// The server's site, or its device key.
+        /// The server's name in the list, or its device key.
         server: String,
     },
     /// Delete `workspace`, with everything this server keeps of it: final,
@@ -611,9 +613,9 @@ pub fn contact_address(text: &str) -> Result<String, &'static str> {
 pub const MAX_INVITATION_LINK: usize = 16 * 1024;
 
 /// Whether `link` is an invitation on the web entry `entry` (a URL ending
-/// in `/`): under it, either as an `invite=` parameter or as the site's own
-/// short invitation (`i/<handle>#<key>`, the key in the fragment), no longer
-/// than [`MAX_INVITATION_LINK`] and without spaces or control characters.
+/// in `/`): under it as an `invite=` parameter (the invitation's own text, or
+/// the secret of the one its workspace keeps), no longer than
+/// [`MAX_INVITATION_LINK`] and without spaces or control characters.
 /// Only such a link is mailed to an address on a wait list for a member.
 #[must_use]
 pub fn invitation_on_entry(entry: &str, link: &str) -> bool {
@@ -621,27 +623,8 @@ pub fn invitation_on_entry(entry: &str, link: &str) -> bool {
         && link.len() <= MAX_INVITATION_LINK
         && link
             .strip_prefix(entry)
-            .is_some_and(|rest| rest.contains("invite=") || short_invitation(rest))
+            .is_some_and(|rest| rest.contains("invite="))
         && !link.chars().any(|c| c.is_whitespace() || c.is_control())
-}
-
-/// Whether `rest`, a link minus its entry, is the site's short invitation:
-/// `i/<handle>#<key>`, both in the site's own alphabet and nothing else.
-fn short_invitation(rest: &str) -> bool {
-    let Some((handle, key)) = rest
-        .strip_prefix("i/")
-        .and_then(|rest| rest.split_once('#'))
-    else {
-        return false;
-    };
-    let named = |part: &str, longest: usize| {
-        !part.is_empty()
-            && part.len() <= longest
-            && part
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    };
-    named(handle, 64) && named(key, 128)
 }
 
 /// What tells two addresses ([`contact_address`]) apart: lowercased, so
@@ -702,17 +685,16 @@ mod tests {
                 entry,
                 "https://tilo.example/#/workspace?invite=signed-invitation"
             ));
+            let secret = "s".repeat(43);
             assert!(invitation_on_entry(
                 entry,
-                "https://tilo.example/i/AbCdEfGhIjKlMnOp#s3cr3tKeyS3cr3tKey"
+                &format!("https://tilo.example/#/@eu1.tilo.example/w/workspace?invite={secret}")
             ));
             for elsewhere in [
-                "https://tilo.example/i/#",
-                "https://tilo.example/i/handle",
-                "https://tilo.example/i/handle#",
-                "https://tilo.example//i/handle#key",
-                "https://tilo.example/i/han dle#key",
-                "https://elsewhere.example/i/handle#key",
+                "https://tilo.example/",
+                "https://tilo.example/#/@eu1.tilo.example/w/workspace",
+                "https://tilo.example/#/w/workspace?invite=sec ret",
+                "https://elsewhere.example/#/w/workspace?invite=secret",
             ] {
                 assert!(!invitation_on_entry(entry, elsewhere), "{elsewhere:?}");
             }

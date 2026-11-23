@@ -267,13 +267,12 @@ test('a pasted invite or pairing link opens as itself; anything else is not one'
   const pairing = `https://tilo.sh/#/@workspaces.example/w/abc?pair=${'aa'.repeat(32)}${'0f'.repeat(16)}`;
   assert.equal(entryLinkTarget(pairing, base), pairing);
   assert.equal(entryLinkTarget(`${pairing} `, 'https://tilo.sh/#/'), pairing);
-  // The short link a site keeps a sealed invitation under: the one the invite
-  // sheet hands over.
-  const sealed = `https://tilo.sh/i/${'AbCdEfGhIjKlMnOp'}#${'k'.repeat(43)}`;
-  assert.equal(entryLinkTarget(sealed, base), sealed);
+  // The short link the invite sheet hands over: the invitation its workspace
+  // keeps at its host, named by the secret it carries.
+  const short = `https://tilo.sh/#/@node.example/w/abc?invite=${'k'.repeat(43)}`;
+  assert.equal(entryLinkTarget(short, base), short);
   for (const text of ['', 'hello', 'https://tilo.sh/', 'https://tilo.sh/#/desktop/workspace/abc', 'javascript:alert(1)?invite=1',
-    'javascript:alert(1)?pair=1', 'https://tilo.sh/i/AbCdEfGhIjKlMnOp', `https://tilo.sh/i/AbCdEfGhIjKlMnOp#${'k'.repeat(42)}`,
-    `https://tilo.sh/elsewhere#${'k'.repeat(43)}`, null]) {
+    'javascript:alert(1)?pair=1', `https://tilo.sh/#${'k'.repeat(43)}`, `https://tilo.sh/elsewhere#${'k'.repeat(43)}`, null]) {
     assert.equal(entryLinkTarget(text, base), null, String(text));
   }
 });
@@ -302,7 +301,7 @@ test('both locales word the whole entry, its wait list and signing in', () => {
   const entry = [...en.keys()].filter(id => /^arrival-(entry|wait|sign-in|invite)/.test(id));
   assert.ok(entry.length >= 25, `${entry.length} entry messages`);
   for (const id of entry) assert.ok(de.has(id), `de-DE: ${id}`);
-  for (const [id, arg] of [['arrival-wait-inbox', 'email'], ['arrival-wait-listed', 'email'], ['arrival-wait-contact', 'contact'], ['arrival-sign-in-not-member', 'workspace']]) {
+  for (const [id, arg] of [['arrival-wait-inbox', 'email'], ['arrival-wait-listed', 'email'], ['arrival-wait-contact', 'contact']]) {
     for (const messages of [en, de]) assert.ok(messages.get(id).includes(`{ $${arg} }`), id);
   }
 });

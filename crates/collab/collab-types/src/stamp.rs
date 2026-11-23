@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 pub struct Stamp {
     /// The verb invoked.
     pub verb: String,
-    /// Who invoked it: a person, or an agent acting for one.
+    /// Who invoked it: a person, or an agent acting for one, as [`Stamp::by`] writes the actor.
+    /// History names the change's author by it, so it is the actor every reader parses back
+    /// ([`Stamp::invoked_by`]), never a bare id.
     pub invoker: String,
     /// The invocation: every change it made, in every document, names it, so history and undo
     /// take them as one step.
@@ -68,6 +70,12 @@ pub struct Group {
 }
 
 impl Stamp {
+    /// The text a stamp names `actor` by as its invoker.
+    #[must_use]
+    pub fn by(actor: &tilo_action_policy::Actor) -> String {
+        serde_json::to_string(actor).unwrap_or_default()
+    }
+
     /// The message a change carries it as.
     #[must_use]
     pub fn message(&self) -> String {

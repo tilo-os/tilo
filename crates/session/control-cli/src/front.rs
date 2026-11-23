@@ -14,6 +14,7 @@
 //! ([`tilo_actions::tree::pick_action`]); `place#action` names one where
 //! several places offer an action of that name.
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
 
@@ -256,17 +257,38 @@ fn name_of(row: &Offer, rows: &[Offer]) -> String {
     }
 }
 
-/// The row `name` picks among `rows`: `place#action`, or an action by its id
-/// or its title, as the published tree picks one.
+/// Where `row` stands, as a full address names it: its provider and its
+/// resource, so two rows whose place reads alike are told apart.
+fn full_place(row: &Offer) -> String {
+    format!("{}:{}", row.provider, row.action.address.resource)
+}
+
+/// The full address of the action `row` offers: its provider, resource and
+/// action, the one name that finds it alone.
+fn full_name(row: &Offer) -> String {
+    format!("{}#{}", full_place(row), row.action.address.action)
+}
+
+/// The row `name` picks among `rows`: a full address
+/// (`provider:resource#action`), `place#action`, or an action by its id or
+/// its title, as the published tree picks one.
 fn find<'a>(rows: &'a [Offer], name: &str, spelling: &Spelling) -> Result<&'a Offer, String> {
     let (within, wanted) = match name.rsplit_once('#') {
         Some((place, wanted)) => (Some(place), wanted),
         None => (None, name),
     };
-    let here: Vec<&Offer> = rows
-        .iter()
-        .filter(|row| within.is_none_or(|within| at(row, within)))
-        .collect();
+    let here: Vec<&Offer> = match within {
+        // A provider and a resource name one row's place, however several
+        // others read alike.
+        Some(within) if rows.iter().any(|row| full_place(row) == within) => rows
+            .iter()
+            .filter(|row| full_place(row) == within)
+            .collect(),
+        _ => rows
+            .iter()
+            .filter(|row| within.is_none_or(|within| at(row, within)))
+            .collect(),
+    };
     let actions: Vec<ActionDescriptor> = here.iter().map(|row| row.action.clone()).collect();
     let picked = pick_action(wanted, &actions, "this desktop")
         .or_else(|_| pick_action(&wanted.replace('-', " "), &actions, "this desktop"))
@@ -289,20 +311,30 @@ fn find<'a>(rows: &'a [Offer], name: &str, spelling: &Spelling) -> Result<&'a Of
             }
         })
         .collect();
-    fits.dedup_by(|a, b| a.provider == b.provider && a.action.address == b.action.address);
+    // One action has one entry: a row a provider offers twice, or the same
+    // action published under one provider more than once, is read once.
+    let mut seen = HashSet::new();
+    fits.retain(|row| {
+        seen.insert((
+            row.provider.clone(),
+            row.action.address.resource.clone(),
+            row.action.address.action.clone(),
+        ))
+    });
     match fits.as_slice() {
         [one] => Ok(one),
         [] => Err("That didn't work.".into()),
         several => {
             use std::fmt::Write as _;
             let mut text = format!("“{name}” could be more than one thing. Say which:");
+            // Each suggestion is a full address, so what is typed finds the
+            // one row it names rather than asking again.
             for row in several.iter().take(AMBIGUOUS_SHOWN) {
                 let _ = write!(
                     text,
-                    "\n  {} {}#{}    {}",
+                    "\n  {} {}    {}",
                     spelling.run,
-                    place(row),
-                    row.action.address.action,
+                    full_name(row),
                     row.action.action_label
                 );
             }
@@ -490,20 +522,53 @@ fn read_value(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_owned()))
 }
 
+/// The value of an option written `name=@-`: read from standard input, as text, so a secret
+/// (an API key) never stands in a command line, where every process on the machine can read
+/// it.
+pub const FROM_INPUT: &str = "@-";
+
 /// Arguments for an action whose parameters this side has not seen: each
 /// `name=value` (or `--name=value`), its value as the JSON it reads as, else
-/// as text (`count=3` is a number, `title=Groceries` text). Whoever carries out
+/// as text (`count=3` is a number, `title=Groceries` text); `name=@-` reads
+/// that one value from standard input ([`FROM_INPUT`]). Whoever carries out
 /// the action checks them against what it takes.
 ///
 /// # Errors
-/// The sentence that names a word that is no `name=value`.
+/// The sentence that names a word that is no `name=value`, or a value that
+/// could not be read from standard input.
 pub fn arguments(words: &[String]) -> Result<Map<String, Value>, String> {
+    arguments_reading(words, &mut std::io::stdin().lock())
+}
+
+/// [`arguments`], a `name=@-` value read from `input`.
+///
+/// # Errors
+/// As [`arguments`]; more than one value named to be read from `input`.
+pub fn arguments_reading(
+    words: &[String],
+    input: &mut dyn std::io::Read,
+) -> Result<Map<String, Value>, String> {
     let mut args = Map::new();
+    let mut read = false;
     for word in words {
         let Some((key, value)) = word.trim_start_matches("--").split_once('=') else {
             return Err(format!("Write “{word}” as name=value."));
         };
-        args.insert(key.to_string(), read_value(value));
+        let value = if value == FROM_INPUT {
+            if std::mem::replace(&mut read, true) {
+                return Err(format!(
+                    "Only one value is read from standard input; “{key}” is a second."
+                ));
+            }
+            let mut text = String::new();
+            input.read_to_string(&mut text).map_err(|error| {
+                format!("“{key}” could not be read from standard input: {error}")
+            })?;
+            Value::String(text.trim_end_matches(['\n', '\r']).to_owned())
+        } else {
+            read_value(value)
+        };
+        args.insert(key.to_string(), value);
     }
     Ok(args)
 }

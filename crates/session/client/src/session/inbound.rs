@@ -196,12 +196,6 @@ impl Task {
                 delta,
                 ..
             } => self.delta(workspace_id, &delta, author_device_public_key),
-            Envelope::Position {
-                workspace_id,
-                position,
-            } => {
-                self.positions.insert(workspace_id, position);
-            }
             // This session's token for its host's fetch proxy, which dies
             // with the connection.
             Envelope::FetchGrant { token } => self.grant_fetch_proxy(&token),
@@ -526,9 +520,12 @@ impl Task {
         author: [u8; 32],
     ) {
         match message {
-            // Taken in by a session that settles its own keys; the device's own key service hears
-            // the workspace's governance on its own live session.
-            message @ neighbour_wire::NeighbourMsg::MlsGovernance { .. } => {
+            // A channel's governance, and another device's request to join its group, are taken
+            // in by the key service the session runs: the same entry a link frame takes, so a
+            // member's request is answered from a session as it is from a link. The device's own
+            // key service hears too, when it has a link of its own.
+            message @ (neighbour_wire::NeighbourMsg::MlsGovernance { .. }
+            | neighbour_wire::NeighbourMsg::MlsAccessRequest { .. }) => {
                 if let Some(inbound) = tilo_workspace_keys::InboundGovernance::from_message(message)
                     && let Some(governance) = &self.governance
                 {
@@ -883,36 +880,14 @@ impl Task {
         }
     }
 
-    /// Ask the host to replay each record whose writes waited for an app surface that is here
-    /// now, and each one the replica asked to hear again: its writes are decided again.
-    pub(super) fn replay_surfaced(&mut self, client: &ServerClient) {
-        let arrived: Vec<[u8; 32]> = self
-            .awaiting_surface
-            .iter()
-            .filter(|(surface, (_, route))| crate::surfaces::holds(&route.app_id, surface))
-            .map(|(surface, _)| *surface)
-            .collect();
-        for surface in arrived {
-            if let Some((_, route)) = self.awaiting_surface.remove(&surface) {
-                self.replays.insert(route);
-            }
-        }
-        for route in std::mem::take(&mut self.replays) {
-            let Ok(workspace_id) = route.workspace_id() else {
-                continue;
-            };
-            let channel = neighbour_wire::app_document_group(&route.app_id, &route.document);
-            if client
-                .send(Envelope::OpenDocument {
-                    workspace_id,
-                    channel,
-                })
-                .is_err()
-            {
-                self.replays.insert(route);
-                return;
-            }
-        }
+    /// Let each record whose writes waited for an app surface that is here now, and each one the
+    /// replica asked to hear again, wait for its link: a workspace's records reach a device over
+    /// its link to the workspace, which brings them again, never a session, so the host is asked
+    /// for nothing here.
+    pub(super) fn replay_surfaced(&mut self) {
+        self.awaiting_surface
+            .retain(|surface, (_, route)| !crate::surfaces::holds(&route.app_id, surface));
+        self.replays.clear();
     }
 }
 

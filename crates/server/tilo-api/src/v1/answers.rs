@@ -62,27 +62,6 @@ pub struct ApiInfo {
 
 pub use crate::server::Workspace;
 
-/// One resource an export could not read, and why.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Unread {
-    pub path: String,
-    pub error: String,
-}
-
-/// Everything a workspace holds, as its key reads it: every resource of
-/// every app, read in full, in the order a walk from its apps finds them.
-/// The files they name (`tilo.content:` references) are fetched with
-/// `getContent`.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct WorkspaceExport {
-    pub workspace: Workspace,
-    pub exported_at_ms: u64,
-    pub resources: Vec<Resource>,
-    /// What it holds that did not read, each with why.
-    #[serde(default)]
-    pub unread: Vec<Unread>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct KeyRow {
     pub grant: String,
@@ -296,30 +275,6 @@ pub struct Made {
     pub address: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Hit {
-    pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-    pub label: String,
-    /// The action the hit offers; `open` when it opens the resource itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct SearchHits {
-    pub hits: Vec<Hit>,
-    pub query: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Link {
-    pub path: String,
-    /// Opens it in its app for the workspace's members; carries no secret.
-    pub link: String,
-}
-
 /// What an app's window shows for a resource: its view's semantic lines, the
 /// same ones an MCP client's `tilo_view` prints, and a picture with `picture`.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -394,55 +349,15 @@ pub struct ProgramAnswer {
     pub session: String,
 }
 
+/// A content put: where an unfinished one stands, and what every byte of it
+/// is once the last piece answered.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Uploaded {
-    /// `tilo.content:<hash>`: what an action takes the file as.
-    pub content: String,
-    pub size: u64,
-}
-
-/// Several small files put into the workspace in one request.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct PutMany {
-    /// Each file's bytes, base64.
-    pub files: Vec<String>,
-}
-
-/// Each file's `tilo.content:<hash>` reference, in the order asked.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct PutManyAnswer {
-    pub contents: Vec<String>,
-}
-
-/// Content hashes (lowercase BLAKE3 hex) to ask whether the workspace holds.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct HaveHashes {
-    pub hashes: Vec<String>,
-}
-
-/// Whether each asked hash is held, in the order asked.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct HeldHashes {
-    pub have: Vec<bool>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct NewUpload {
-    /// How many bytes the whole file is.
-    pub size: u64,
-}
-
-/// One upload in pieces: where it stands, and what every byte of it is once
-/// the last piece answered.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Upload {
-    /// The id the caller named it by.
-    pub upload: String,
+pub struct PutContent {
     /// How many bytes the whole file is.
     pub size: u64,
     /// How many of them are there: the next piece goes at this offset.
     pub offset: u64,
-    /// `tilo.content:<hash>`, in the answer of the piece that completed it.
+    /// `tilo.content:<hash>`, once every byte is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
 }
@@ -484,49 +399,6 @@ pub struct ModelAsk {
     pub max_output_tokens: u32,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct NewWebhook {
-    /// `https://…`, where each event is posted.
-    pub url: String,
-    /// The kinds to post (`change`, `invocation`, `presence`); all without it.
-    #[serde(default)]
-    pub events: Vec<String>,
-    /// One resource's changes only, and what is under it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Webhook {
-    pub id: String,
-    pub url: String,
-    pub events: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    /// What deliveries are signed with: answered once, when it is made.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret: Option<String>,
-    /// Why nothing is posted to its URL, where nothing is: it is not one this API posts to.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub undelivered: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct WebhookList {
-    pub webhooks: Vec<Webhook>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct DeletedWebhook {
-    pub deleted: String,
-}
-
-/// An upload dropped before every byte of it was sent.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct DeletedUpload {
-    pub deleted: String,
-}
-
 /// Every schema the description carries, by the name operations give it.
 #[must_use]
 pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, schemars::Schema)> {
@@ -539,29 +411,15 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         Error,
         ApiInfo,
         Workspace,
-        WorkspaceExport,
         KeyRow,
         Listing,
         Resource,
         ActionAnswer,
-        SearchHits,
-        Link,
         View,
         Program,
         ProgramAnswer,
-        Uploaded,
-        PutMany,
-        PutManyAnswer,
-        HaveHashes,
-        HeldHashes,
-        NewUpload,
-        Upload,
+        PutContent,
         Event,
         ModelAsk,
-        NewWebhook,
-        Webhook,
-        WebhookList,
-        DeletedWebhook,
-        DeletedUpload,
     ]
 }

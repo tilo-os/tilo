@@ -268,7 +268,6 @@ d-6wqou47w = Note editor
 d-nki6assy = Note details
     .w-from = From { $service }
     .w-from-by = From { $service } by { $by }
-    .w-created = Created
     .w-edited = Edited
     .w-1-word = 1 word
     .w-words = { $count } words

@@ -26,9 +26,7 @@ use neighbour_wire::{NeighbourMsg, OLDEST_PEER_PROTOCOL_VERSION, PEER_PROTOCOL_V
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tilo_server_protocol::auth::{Hello, HelloAck, decode_handshake};
-use tilo_server_protocol::transport::{
-    ALPN, DISCOVERY_ALPN, Envelope, MANAGEMENT_ALPN, SIBLING_ALPN,
-};
+use tilo_server_protocol::transport::{ALPN, Envelope, SIBLING_ALPN};
 
 const FROZEN: &str = include_str!("../../../collab/neighbour-wire/previous-peer-frames.txt");
 
@@ -251,8 +249,7 @@ fn the_previous_versions_main_flows_read_and_write_alike() {
 #[test]
 fn a_server_answers_on_the_protocols_the_previous_version_dials() {
     let (_, frames) = frozen();
-    let answered = [ALPN, SIBLING_ALPN, DISCOVERY_ALPN, MANAGEMENT_ALPN]
-        .map(|alpn| String::from_utf8(alpn.to_vec()).unwrap());
+    let answered = [ALPN, SIBLING_ALPN].map(|alpn| String::from_utf8(alpn.to_vec()).unwrap());
     let dialled = frames
         .iter()
         .filter(|(name, _)| *name == "alpn")

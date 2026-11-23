@@ -93,7 +93,8 @@ describe("reading a workspace", () => {
 
     expect(hits.map((hit) => hit.path)).toEqual([TODO, `${TODO}#append-paragraph`]);
     expect(hits[1]?.action).toBe("append-paragraph");
-    expect(api.last()?.query).toEqual({ q: "todo", app: "notes", limit: "5" });
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/resources/search/actions/find`);
+    expect(JSON.parse(api.last()?.body ?? "{}")).toEqual({ query: "todo", app: "notes", limit: 5 });
   });
 
   it("answers what the window shows for a resource, and its picture", async () => {
@@ -116,7 +117,8 @@ describe("reading a workspace", () => {
     const link = await open(api).workspace("jane-doe").link(TODO, { mode: "app" });
 
     expect(link).toBe(linkTo(TODO));
-    expect(api.last()?.query).toEqual({ path: TODO, mode: "app" });
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/resources/${TODO}/actions/share-link`);
+    expect(JSON.parse(api.last()?.body ?? "{}")).toEqual({ mode: "app" });
   });
 
   it("lists the people in it, and invites one more", async () => {
@@ -155,7 +157,7 @@ describe("acting", () => {
   it("answers a file an action made as its content reference", async () => {
     const api = new FakeApi();
     const letter = await open(api).workspace("jane-doe").do("word-processor#export-content", { format: "docx" });
-    expect(letter).toBe("tilo.content:15");
+    expect(letter).toBe("tilo.content:69c7ff4b13fb9cc707f7593341e677d01ee13f4623ea863980823dc72972f5e4");
   });
 
   it("throws the host's refusal", async () => {
@@ -418,15 +420,16 @@ describe("files", () => {
       .workspace("jane-doe")
       .files.upload(new TextEncoder().encode("passport, in bytes"));
 
-    expect(content).toBe("tilo.content:18");
-    expect(api.last()?.method).toBe("POST");
-    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/uploads`);
+    const hash = "9302ee66c472f04a7ba6712fe10477cd634e1e635382fd57442f873fffb5f5e0";
+    expect(content).toBe(`tilo.content:${hash}`);
+    expect(api.last()?.method).toBe("PUT");
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/contents/${hash}`);
     expect(api.last()?.headers["content-type"]).toBe("application/octet-stream");
   });
 
   it("downloads the bytes an action made", async () => {
     const api = new FakeApi();
-    api.contents.set("tilo.content:2", new Uint8Array([0x50, 0x4b]));
+    api.contents.set("2", new Uint8Array([0x50, 0x4b]));
     const bytes = await open(api).workspace("jane-doe").files.download("tilo.content:2");
 
     expect(Array.from(bytes)).toEqual([0x50, 0x4b]);
@@ -450,5 +453,18 @@ describe("a listing's actions", () => {
     expect(listing.rows[0]?.actions.map((action) => action.id)).toEqual(["rename", "delete"]);
     expect(listing.rows[1]?.actions.map((action) => action.id)).toEqual(["rename"]);
     expect(listing.rows[1]?.actions[0]?.params[0]?.name).toBe("title");
+  });
+});
+
+describe("an export", () => {
+  it("reads what a walk of the listings finds, and names what did not read", async () => {
+    const exported = await open(new FakeApi()).workspace("jane-doe").export();
+
+    expect(exported.workspace.id).toBe(WORKSPACE_ID);
+    expect(exported.resources.map((resource) => resource.path)).toEqual([TODO]);
+    const unread = exported.unread.map((row) => row.path);
+    expect(unread).toContain("notes");
+    expect(unread).toContain(`${TODO}/c01e`);
+    expect(exported.unread.every((row) => row.error !== "")).toBe(true);
   });
 });

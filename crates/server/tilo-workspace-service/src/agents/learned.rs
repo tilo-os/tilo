@@ -1,24 +1,27 @@
-//! What an agent on a workspace's server knows about its keeper, and how it keeps what it learns.
+//! What an agent on a workspace's server knows about the person it answers, and how it keeps
+//! what it learns.
 //!
-//! What a person's agents learned about them is that person's alone. On their devices it is
-//! their own resource in the workspace (Chat's `chat.learned`), which only their devices write. A
-//! server is no device of theirs, so what the agents on it learn is kept by the server in the
-//! person's own store there ([`Workspaces::change_learned`]): the same resource
-//! ([`tilo_workspace_agent::learned::Learned`]), changed through the same three verbs, one for
-//! each workspace. The person reads and changes that list themselves through the server's
+//! What an agent learned about a person is that person's alone, whoever the agent belongs to.
+//! On their devices it is their own resource in the workspace (Chat's `chat.learned`), which only
+//! their devices write. A server is no device of theirs, so what the agents on it learn is kept by
+//! the server in one document per workspace ([`Workspaces::change_learned`]): the same resource
+//! ([`tilo_workspace_agent::learned::Learned`]), changed through the same three verbs. Each fact
+//! names the person it was learned about, and that is its reader rule
+//! ([`tilo_workspace_agent::learned::Fact::is_about`]): a fact is read, corrected and forgotten
+//! for that person alone. Each member reads and changes their own facts through the server's
 //! provider for it.
 //!
-//! One rule decides everything here ([`keeps`]): a turn knows and keeps these facts only where
-//! it is its agent's keeper's own, because the keeper asked, and only where what it was asked
-//! about is private to the keeper and the agent: every member who may read it is one of the two
-//! ([`crate::asks::private_to`]), as the keeper's direct conversation with the
-//! agent is. Such a turn is told the facts with its request ([`learned_for`], [`told`]), and is
-//! offered four tools beside the agent tools: `learn`, `correct`, `forget`, and `learned` for
-//! the whole list. A turn anybody else started with the same agent is told nothing and is
-//! offered none of them, and a call of one by name is refused: nobody makes an agent learn
-//! something about its keeper by writing to it. The keeper's own turn about something other
-//! members read is refused the same way: their words may be in what such a turn reads, and its
-//! answer is theirs to read. A sub-agent's turn neither: it is not its keeper's own agent.
+//! One rule decides which turn knows and keeps facts ([`keeps`]): one a person asked about
+//! something private to them and the agent, so every member who may read it is one of the two
+//! ([`crate::asks::private_to`]), as their direct conversation with the agent is. Such a turn is
+//! told that person's facts with its request ([`learned_for`], [`told`]), and is offered four
+//! tools beside the agent tools: `learn`, `correct`, `forget`, and `learned` for the whole list.
+//! What it keeps is kept about that person. So Ada's agent answering Bo in his own conversation
+//! with it is told Bo's facts and none of Ada's, and what Bo tells it is his: nobody reads what
+//! an agent learned from someone else by writing to it. A turn about something other members
+//! read is told nothing and offered none of the tools, and a call of one by name is refused:
+//! their words may be in what such a turn reads, and its answer is theirs to read. A sub-agent's
+//! turn neither: it is told its job and nothing its starter learned.
 //!
 //! What a fact says is the model's. What the server knows for itself it pins, so a person who
 //! reads the list later sees where each fact came from whatever the model wrote: the agent that
@@ -30,7 +33,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tilo_resource::{Id, NonBlank, Replica};
 use tilo_workspace_agent::Agent;
-use tilo_workspace_agent::learned::{Learned, MAX_SOURCE, learned};
+use tilo_workspace_agent::learned::{Fact, Learned, MAX_SOURCE, learned};
 
 use super::{Ask, ToolDefinition, Turn};
 use crate::workspaces::Workspaces;
@@ -53,8 +56,8 @@ const PAGE: usize = 30;
 /// What a turn that neither knows nor keeps these facts is answered when it calls one of the
 /// tools by name.
 const NOT_THEIRS: &str = "Nothing is kept, corrected, forgotten or read here. What an agent \
-     learns about the person who keeps it is kept in that person's own conversation with it, \
-     in a turn they started, about something nobody else reads: this is not such a turn.";
+     learns about a person is kept in that person's own conversation with it, in a turn they \
+     started, about something nobody else reads: this is not such a turn.";
 
 /// What reading the list answers while it is empty.
 const NOTHING: &str = "Nothing is kept about the person you work for yet.";
@@ -63,61 +66,69 @@ const NO_TEXT: &str = "a fact says something: give `text`";
 const NO_SOURCE: &str = "a fact says where it came from: give `source`";
 const NO_FACT: &str = "name the fact: give `fact`, its id or what it says now";
 
-/// The keeper of `agent`, when a turn `person` asked is its keeper's own. `None` for a turn
-/// anybody else started, and for every turn of a sub-agent: it is told its job in its own
-/// conversation and nothing its keeper's own agent learned, and what it finds out goes to
-/// whoever started it.
+/// The person a turn of `agent` that `person` asked knows and keeps facts about: that person,
+/// whoever the agent belongs to. `None` for nobody, and for every turn of a sub-agent: it is
+/// told its job and nothing its starter learned, and what it finds out goes to whoever started
+/// it.
 #[must_use]
-pub(super) fn keepers_own(agent: &Agent, person: &str) -> Option<[u8; 32]> {
+pub(super) fn knows(agent: &Agent, person: &str) -> Option<[u8; 32]> {
     if agent.sub.is_some() {
         return None;
     }
-    keeper_asking(agent, person)
-}
-
-/// The keeper of `agent`, where `person`, as a turn says who it was asked for, is that keeper:
-/// `None` for anybody else, for nobody, and for an agent nobody keeps.
-#[must_use]
-pub(super) fn keeper_asking(agent: &Agent, person: &str) -> Option<[u8; 32]> {
-    let keeper = tilo_action_policy::PersonId::parse(&agent.keeper)
-        .ok()?
-        .root()?;
     let mut asked = [0_u8; 32];
     hex::decode_to_slice(person, &mut asked).ok()?;
-    (keeper == asked).then_some(keeper)
+    Some(asked)
 }
 
-/// The keeper `turn` knows and keeps facts for: the agent's keeper, where the turn is the
-/// keeper's own ([`keepers_own`]) and what it was asked about is theirs and the agent's alone.
-/// `None` for every other turn, and for an issue's: what it reads is whoever wrote the issue's.
+/// The person `turn` knows and keeps facts about ([`knows`]), where what it was asked about is
+/// theirs and the agent's alone. `None` for every other turn, and for an issue's: what it reads
+/// is whoever wrote the issue's.
 pub(super) fn keeps(turn: &Turn) -> Option<[u8; 32]> {
     match &turn.ask {
-        Ask::Asked { private: true, .. } => keepers_own(&turn.agent, &turn.person),
+        Ask::Asked { private: true, .. } => knows(&turn.agent, &turn.person),
         Ask::Asked { .. } | Ask::Issue { .. } => None,
     }
 }
 
-/// What this server keeps of what was learned in `workspace`, for `turn`: none unless the turn
-/// knows it ([`keeps`]).
+/// `learned` with only the facts about `person` in it: what is read for them.
+fn about(mut learned: Learned, person: &[u8; 32]) -> Learned {
+    let person = hex::encode(person);
+    let others: Vec<Id> = learned
+        .facts
+        .iter()
+        .filter(|(_, fact)| !Fact::is_about(fact, &person))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in &others {
+        learned.facts.remove(id);
+    }
+    learned
+}
+
+/// What this server keeps of what was learned in `workspace` about the person who asked `turn`:
+/// none unless the turn knows it ([`keeps`]), and nothing about anybody else.
 pub(super) async fn learned_for(
     workspaces: &Workspaces,
     workspace: &str,
     turn: &Turn,
 ) -> Option<Learned> {
-    keeps(turn)?;
+    let person = keeps(turn)?;
     let (workspaces, workspace) = (workspaces.clone(), workspace.to_owned());
     tokio::task::spawn_blocking(move || workspaces.learned_about(&workspace))
         .await
         .ok()
         .flatten()
+        .map(|learned| about(learned, &person))
+        .filter(|learned| !learned.facts.is_empty())
 }
 
-/// What a turn that is its keeper's own keeps of what it learns: whose resource, as which agent,
+/// What a turn that knows and keeps facts keeps of what it learns: about whom, as which agent,
 /// and the ask it answers.
 #[derive(Clone)]
 pub(super) struct Keeping {
     workspaces: Workspaces,
-    keeper: [u8; 32],
+    /// The person who asked the turn: whom what it keeps is about, and whose facts it reads.
+    person: [u8; 32],
     workspace: String,
     /// The agent, by its id: who a fact it keeps is by.
     agent: String,
@@ -129,13 +140,13 @@ impl Keeping {
     /// What `turn` in `workspace` keeps of what it learns: none unless it knows and keeps
     /// facts ([`keeps`]).
     pub(super) fn of(workspaces: &Workspaces, workspace: &str, turn: &Turn) -> Option<Self> {
-        let keeper = keeps(turn)?;
+        let person = keeps(turn)?;
         let Ask::Asked { app, ask, .. } = &turn.ask else {
             return None;
         };
         Some(Self {
             workspaces: workspaces.clone(),
-            keeper,
+            person,
             workspace: workspace.to_owned(),
             agent: turn.agent.id.0.clone(),
             message: format!("{app}/{ask}"),
@@ -176,8 +187,9 @@ impl Keeping {
                     text()?,
                     pinned(said("source").unwrap_or("A correction"), &self.message),
                 );
+                let person = self.person;
                 self.change(|resource| {
-                    let fact = named_fact(&state(resource)?, named)?;
+                    let fact = named_fact(&about(state(resource)?, &person), named)?;
                     applied(resource.apply(Learned::CORRECT.with(learned::Correct {
                         fact,
                         text,
@@ -188,8 +200,9 @@ impl Keeping {
             }
             FORGET => {
                 let named = said("fact").ok_or(NO_FACT)?;
+                let person = self.person;
                 self.change(|resource| {
-                    let fact = named_fact(&state(resource)?, named)?;
+                    let fact = named_fact(&about(state(resource)?, &person), named)?;
                     applied(resource.apply(Learned::FORGET.with(learned::Forget { fact })))
                 })?;
                 Ok("Forgotten.".to_owned())
@@ -198,20 +211,22 @@ impl Keeping {
         }
     }
 
-    /// Apply `change` to the keeper's resource, as the turn's agent acting for them.
+    /// Apply `change` to the workspace's resource, as the turn's agent acting for the person who
+    /// asked it.
     fn change<R>(
         &self,
         change: impl FnOnce(&mut Replica<Learned>) -> Result<R, String>,
     ) -> Result<R, String> {
         self.workspaces
-            .change_learned(&self.keeper, &self.workspace, Some(&self.agent), change)
+            .change_learned(&self.person, &self.workspace, Some(&self.agent), change)
     }
 
-    /// The list as a turn reads it, from its `from`th fact.
+    /// The list as a turn reads it, from its `from`th fact: what is about the person who asked.
     fn list(&self, from: usize) -> String {
-        self.workspaces
-            .learned_about(&self.workspace)
-            .map_or_else(|| NOTHING.to_owned(), |resource| listing(&resource, from))
+        self.workspaces.learned_about(&self.workspace).map_or_else(
+            || NOTHING.to_owned(),
+            |resource| listing(&about(resource, &self.person), from),
+        )
     }
 }
 
@@ -353,7 +368,7 @@ pub(super) fn told(learned: &Learned) -> String {
     format!("{OPENS}{told}")
 }
 
-/// `tools`, with the four a turn that is its keeper's own keeps what it learns with.
+/// `tools`, with the four a turn that knows and keeps facts keeps what it learns with.
 pub(super) fn with_tools(
     mut tools: Vec<ToolDefinition>,
     keeping: Option<&Keeping>,
@@ -507,26 +522,52 @@ mod tests {
         resource.state().unwrap()
     }
 
-    /// A turn is its keeper's own only where the person it is asked for is the agent's keeper.
+    /// A turn knows and keeps facts about the person who asked it, whoever the agent belongs
+    /// to, and never for a sub-agent.
     #[test]
-    fn only_the_keepers_own_turn_is_theirs() {
-        assert_eq!(keepers_own(&kept_by(ADA), ADA), Some([7; 32]));
-        assert_eq!(keepers_own(&kept_by(ADA), BO), None, "another member");
-        assert_eq!(keepers_own(&kept_by(ADA), ""), None, "nobody");
+    fn a_turn_knows_the_person_who_asked_it() {
+        assert_eq!(knows(&kept_by(ADA), ADA), Some([7; 32]));
         assert_eq!(
-            keepers_own(&kept_by(""), ADA),
-            None,
-            "an agent nobody keeps"
+            knows(&kept_by(ADA), BO),
+            Some([9; 32]),
+            "Bo, asking Ada's agent, is known as himself"
         );
-        assert_eq!(keepers_own(&kept_by("ada"), "ada"), None, "no person's key");
+        assert_eq!(knows(&kept_by(ADA), ""), None, "nobody");
+        assert_eq!(knows(&kept_by(ADA), "ada"), None, "no person's key");
         let helper = Agent {
             sub: Some(tilo_workspace_agent::Sub::default()),
             ..kept_by(ADA)
         };
-        assert_eq!(keepers_own(&helper, ADA), None, "a sub-agent of hers");
+        assert_eq!(knows(&helper, ADA), None, "a sub-agent of hers");
     }
 
-    /// The ask a turn answers closes a fact's source whatever the model wrote, and the
+    /// What is read for a person is the facts about them: what the agent learned from Ada is
+    /// not in Bo's list, and his is not in hers.
+    #[test]
+    fn a_person_reads_only_the_facts_about_them() {
+        let mut both = Replica::<Learned>::new().as_agent_for("scout", ADA);
+        for (person, fact) in [(ADA, "Takes coffee black."), (BO, "Drinks tea.")] {
+            both = both.as_agent_for("scout", person);
+            both.apply(Learned::LEARN.with(learned::Learn {
+                text: NonBlank::parse(fact).unwrap(),
+                source: NonBlank::parse("They said so").unwrap(),
+            }))
+            .unwrap();
+        }
+        let held = both.state().unwrap();
+        let read = |person: [u8; 32]| -> Vec<String> {
+            about(held.clone(), &person)
+                .facts
+                .iter()
+                .map(|(_, fact)| fact.text.clone())
+                .collect()
+        };
+        assert_eq!(read([7; 32]), ["Takes coffee black."]);
+        assert_eq!(read([9; 32]), ["Drinks tea."]);
+        assert!(read([8; 32]).is_empty(), "nothing about anybody else");
+    }
+
+    /// The message a turn answers closes a fact's source whatever the model wrote, and the
     /// whole stays one line within what a source may be.
     #[test]
     fn the_turns_message_closes_a_facts_source() {

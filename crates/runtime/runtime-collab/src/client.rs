@@ -683,6 +683,22 @@ impl ChannelHandle {
         ))
     }
 
+    /// Hold open what the workspaces holding `records` say of their actions: all of them now,
+    /// then all again whenever one of those workspaces' grants changes, until the stream is
+    /// dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the host refuses or the connection fails.
+    pub async fn held_elsewhere(
+        &self,
+        records: Vec<crate::held_elsewhere::HeldRecord>,
+    ) -> Result<HeldVerdicts, NotAvailable> {
+        Ok(HeldVerdicts(
+            self.feed(Topic::HeldElsewhere(records)).await?,
+        ))
+    }
+
     /// Submit one bounded Nearby Send control command. File contents stay on
     /// the shell-owned resumable transport; this carries only
     /// picker/status/consent control data.
@@ -1454,6 +1470,20 @@ impl ResourcePages {
     pub async fn read(&self) -> Result<Vec<u8>, NotAvailable> {
         match self.0.event().await? {
             Event::Resources(page) => Ok(page),
+            other => Err(unexpected_event(&other)),
+        }
+    }
+}
+
+/// What the holding workspaces say of the records a [`ChannelHandle::held_elsewhere`] names;
+/// dropping it ends the subscription.
+pub struct HeldVerdicts(Feed);
+
+impl HeldVerdicts {
+    /// The decisions as they are next.
+    pub async fn read(&self) -> Result<Vec<crate::held_elsewhere::HeldDecision>, NotAvailable> {
+        match self.0.event().await? {
+            Event::HeldElsewhere(decisions) => Ok(decisions),
             other => Err(unexpected_event(&other)),
         }
     }

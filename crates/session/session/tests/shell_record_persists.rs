@@ -20,7 +20,6 @@
 )]
 
 use std::path::Path;
-use std::time::Duration;
 
 use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
@@ -60,12 +59,8 @@ fn session(root: &Path, state: &Path) -> Session {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    step(&mut session);
+    crate::common::kept_in_workspace(&mut session);
     session
-}
-
-fn step(session: &mut Session) {
-    session.step(Duration::from_millis(1)).expect("a frame");
 }
 
 /// The note `title` the notes app holds, by its published id.

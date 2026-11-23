@@ -72,12 +72,15 @@ impl MemberAccess {
     }
 
     /// This access's policy, with `acting` as who acts: `None` when the
-    /// acting is not for the person this access is. The grants the acting's
-    /// software carries are the caller's to give ([`Self::granted`]).
+    /// acting is not bounded by the person this access is. Every person in
+    /// the tree bounds what it may do, so an agent answering someone else for
+    /// this access's person ([`Acting::agent_of`]) does no more than either.
+    /// The grants the acting's software carries are the caller's to give
+    /// ([`Self::granted`]).
     #[must_use]
     pub fn as_acting(mut self, acting: Acting) -> Option<Self> {
         let person = self.person_id()?;
-        if acting.people().first().copied() != Some(person) {
+        if !acting.people().contains(&person) {
             return None;
         }
         self.granted

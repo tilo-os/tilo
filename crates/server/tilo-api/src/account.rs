@@ -10,7 +10,9 @@
 //! - `account/keys#list`, `#create {name, workspace?, expires_in?}`,
 //!   `#mint {workspace, name?, expires_in?}`, `#revoke {grant}`;
 //! - `account/usage#read`;
-//! - `account/models#ask {workspace, request}`.
+//! - `account/models#ask {workspace, request}`;
+//! - `account/webhooks#list {workspace?}`, `#create {workspace, url, events?, path?}`,
+//!   `#delete {webhook}`: the key's webhooks ([`crate::v1::webhooks`]).
 //!
 //! Each invocation is admitted as every action is ([`tilo_actions::policy::admit`]): a key for
 //! one workspace reaches its own keys, its workspace's setting and its model, and nothing else of
@@ -66,6 +68,8 @@ pub const KEYS: &str = "account/keys";
 pub const USAGE: &str = "account/usage";
 /// The person's own model.
 pub const MODELS: &str = "account/models";
+/// The key's webhooks.
+pub const WEBHOOKS: &str = "account/webhooks";
 /// The revision every page of the account is at: what it publishes never changes.
 const REVISION: &str = "account:1";
 /// How many ended invocations are kept to be observed.
@@ -93,6 +97,9 @@ enum Op {
     RevokeKey,
     Usage,
     AskModel,
+    ListWebhooks,
+    CreateWebhook,
+    DeleteWebhook,
 }
 
 /// An action as the account publishes it.
@@ -123,7 +130,7 @@ const fn verb(
     }
 }
 
-const VERBS: [Verb; 12] = [
+const VERBS: [Verb; 15] = [
     verb(
         WORKSPACES,
         "list",
@@ -284,6 +291,57 @@ const VERBS: [Verb; 12] = [
             ]
         },
     ),
+    verb(
+        WEBHOOKS,
+        "list",
+        "This key's webhooks, without their secrets; with workspace, that workspace's",
+        ActionKind::Read,
+        Op::ListWebhooks,
+        || {
+            vec![ActionParam::optional(
+                "workspace",
+                ParamType::Text,
+                "Only this workspace's, by id.",
+            )]
+        },
+    ),
+    verb(
+        WEBHOOKS,
+        "create",
+        "Post a workspace's events to a URL, signed; answers the secret once",
+        ActionKind::Outside,
+        Op::CreateWebhook,
+        || {
+            vec![
+                workspace_param(),
+                ActionParam::required("url", ParamType::Text, "Where each event is posted."),
+                ActionParam::optional(
+                    "events",
+                    ParamType::Array,
+                    "The kinds to post (change, invocation, presence); all when omitted.",
+                ),
+                ActionParam::optional(
+                    "path",
+                    ParamType::Text,
+                    "One resource's changes only, and what is under it.",
+                ),
+            ]
+        },
+    ),
+    verb(
+        WEBHOOKS,
+        "delete",
+        "Stop posting to a webhook of this key",
+        ActionKind::Outside,
+        Op::DeleteWebhook,
+        || {
+            vec![ActionParam::required(
+                "webhook",
+                ParamType::Text,
+                "The webhook, as account/webhooks#list names it.",
+            )]
+        },
+    ),
 ];
 
 fn workspace_param() -> ActionParam {
@@ -324,6 +382,7 @@ fn resource_label(resource: &str) -> &'static str {
         WORKSPACES => "Workspaces",
         KEYS => "Keys",
         USAGE => "Usage",
+        WEBHOOKS => "Webhooks",
         _ => "Models",
     }
 }
@@ -701,6 +760,16 @@ impl Account {
                 "to create or list workspaces, ask the person for a key for all their workspaces",
             );
         }
+        // A key's webhooks are this server's own: they need no connection of the key's.
+        let webhook = match op {
+            Op::ListWebhooks => Some(crate::v1::webhooks::list(&server, &grant, args)),
+            Op::CreateWebhook => Some(crate::v1::webhooks::create(&server, &grant, args)),
+            Op::DeleteWebhook => Some(crate::v1::webhooks::delete(&server, &grant, args)),
+            _ => None,
+        };
+        if let Some(outcome) = webhook {
+            return outcome;
+        }
         let key = match self.connection() {
             Ok(key) => key,
             // Listing what the key reaches needs no server: a desktop serving its own
@@ -724,6 +793,11 @@ impl Account {
                 Err(error) => refused(&error),
             },
             Op::AskModel => self.ask_model(&key, id, args).await,
+            Op::ListWebhooks | Op::CreateWebhook | Op::DeleteWebhook => failed(
+                "unavailable",
+                "a webhook is kept by the server itself",
+                "try again shortly",
+            ),
         }
     }
 
@@ -910,8 +984,14 @@ fn answer_for(grant: &Grant, op: Op, args: &Value) -> Answer {
         Scope::Account => Answer::Allow,
         Scope::Workspace(own) => match op {
             // Its list is the one workspace it reaches, as the server lists it for the key.
-            Op::ListWorkspaces | Op::ListKeys | Op::RevokeKey => Answer::Allow,
-            Op::Unattended | Op::AskModel if field(args, "workspace") == Some(own.as_str()) => {
+            Op::ListWorkspaces
+            | Op::ListKeys
+            | Op::RevokeKey
+            | Op::ListWebhooks
+            | Op::DeleteWebhook => Answer::Allow,
+            Op::Unattended | Op::AskModel | Op::CreateWebhook
+                if field(args, "workspace") == Some(own.as_str()) =>
+            {
                 Answer::Allow
             }
             _ => Answer::Deny,
@@ -1217,9 +1297,11 @@ impl Server {
         // A key of the person's own reaching all their workspaces revokes any key of theirs,
         // wherever it was made: each workspace that lists it keeps the revocation.
         if grant.scope == Scope::Account && persons_own(grant) && id != grant.id && !minted {
-            let recorded: Vec<String> = self
-                .recorded_keys(key)
-                .await
+            let recorded = match self.recorded_keys(key).await {
+                Ok(recorded) => recorded,
+                Err(outcome) => return outcome,
+            };
+            let recorded: Vec<String> = recorded
                 .into_iter()
                 .filter(|(_, recorded)| recorded.id == id)
                 .map(|(workspace, _)| workspace)
@@ -1336,7 +1418,11 @@ impl Server {
                     keys.push(grant_row(&held));
                 }
             }
-            for (_, recorded) in self.recorded_keys(key).await {
+            let recorded = match self.recorded_keys(key).await {
+                Ok(recorded) => recorded,
+                Err(outcome) => return outcome,
+            };
+            for (_, recorded) in recorded {
                 if recorded.revoked_ms.is_none() && seen.insert(recorded.id.clone()) {
                     keys.push(workspace_grant_row(&recorded));
                 }
@@ -1433,10 +1519,16 @@ impl Server {
     }
 
     /// Every key of its person's that the workspaces `key` reaches keep, each with the workspace
-    /// that keeps it. A workspace that does not answer leaves its keys out.
-    async fn recorded_keys(&self, key: &Connection) -> Vec<(String, WorkspaceGrant)> {
-        let Ok(workspaces) = key.server().labelled(key, &WorkspaceLabels::new()).await else {
-            return Vec::new();
+    /// that keeps it. A workspace that does not answer leaves its keys out; one that refuses the
+    /// key as revoked refuses the whole call, wherever this server learns it.
+    async fn recorded_keys(
+        &self,
+        key: &Connection,
+    ) -> Result<Vec<(String, WorkspaceGrant)>, Outcome> {
+        let workspaces = match key.server().labelled(key, &WorkspaceLabels::new()).await {
+            Ok(workspaces) => workspaces,
+            Err(error @ ServerError::KeyRevoked) => return Err(refused(&error)),
+            Err(_) => return Ok(Vec::new()),
         };
         let mut recorded = Vec::new();
         for workspace in workspaces {
@@ -1446,13 +1538,21 @@ impl Server {
                         .into_iter()
                         .map(|grant| (workspace.id.clone(), grant)),
                 ),
+                Err(revoked) if is_revoked(&revoked) => {
+                    return Err(revoked);
+                }
                 Err(_) => {
                     tracing::info!(workspace = workspace.id, "a workspace's keys were not read");
                 }
             }
         }
-        recorded
+        Ok(recorded)
     }
+}
+
+/// Whether `outcome` refuses the key as revoked.
+fn is_revoked(outcome: &Outcome) -> bool {
+    matches!(outcome, Outcome::Failed { code, .. } if *code == "key_revoked")
 }
 
 /// Whether `grant` is one of the person's own keys rather than an agent's grant: an API key they

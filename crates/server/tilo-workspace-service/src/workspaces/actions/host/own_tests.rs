@@ -4,11 +4,6 @@
 //! device on, and their workspaces share what the host gives them and keep no
 //! more of their writes when it is full.
 
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
-)]
-
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::server_account::{self, Reason, ServerAccount};
@@ -1919,6 +1914,8 @@ async fn an_invited_member_enters_what_they_were_invited_into() {
     .await
     .unwrap();
     assert_eq!(entered.workspace.workspace, created.workspace.workspace);
+    // The host holds their own workspace, where their list is kept: it is a resource of it.
+    super::personal_tests::hold_person_workspace(&workspaces, stranger.user_public_key).await;
     // Their workspace list is kept: they take part here.
     let mut keep = own_request(json!({"list": {"workspaces": []}}));
     keep.target.address.action = tilo_server_session::workspaces::KEEP_PERSONAL.into();
@@ -2051,6 +2048,8 @@ async fn a_kept_own_workspace_lists_as_this_hosts_whatever_a_devices_list_said()
     let person = root.verifying_key().to_bytes();
     let_in(workspaces, &home, person).await;
     let device = tab_of(&root, "Firefox on Linux");
+    // The host holds their own workspace, where the list a device keeps is written.
+    super::personal_tests::hold_person_workspace(workspaces, person).await;
     // A workspace of theirs this host records, kept closed here as it is when its runtime
     // was let go; a device of theirs kept a list naming its own address for it.
     let workspace = uuid::Uuid::new_v4().to_string();

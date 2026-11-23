@@ -40,7 +40,7 @@ async fn a_restarted_computers_first_calls_go_through() {
     let hosted = start(&root, &server, state.path()).await;
     let mut browser = Browser::open(&hosted, &browser_device, &server).await;
     browser.create(SHEETS);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
 
     // The peer as it ran before: Tasks opened, and the first issues made in it.
     let (before, mcp) = computer_agent(&hosted, &laptop, &server).await;

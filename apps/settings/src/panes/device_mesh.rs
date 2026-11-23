@@ -98,7 +98,6 @@ fn work_from(from: WorkFrom, when: WorkWhen) -> WorkSetting {
         },
         from,
         when,
-        agents: false,
     }
 }
 
@@ -328,12 +327,16 @@ pub enum DeviceMeshEffect {
         service: String,
         on: bool,
     },
-    /// Look for a new home server nearby, then approve the one found.
+    /// Print a one-use code a new computer joins with.
     #[effect(kind = "outside")]
-    #[effect(label = "mesh-pair-home")]
-    PairHomeServer,
-    #[effect(kind = "outside")]
-    AddPersonalDevice,
+    #[effect(label = "mesh-add-device")]
+    AddDevice,
+    /// Put the printed code on the clipboard, to hand to the new computer.
+    #[effect(view, label = "mesh-code-copy")]
+    CopyCode {
+        #[param("The code as the pane prints it")]
+        code: String,
+    },
     /// Rename a home server.
     #[effect(kind = "outside", on = HomeServer)]
     #[effect(row)]
@@ -435,7 +438,8 @@ impl DeviceMeshArea {
             model.remote = self.remote.clone();
             if self.devices {
                 model.follow_personal_devices();
-                model.read_servers();
+                // The person's servers are another app's to list, and reading them asks the
+                // person first: only the pane being shown asks, never a window's warm-up.
             } else if let Some(scene) = self.scene.as_deref() {
                 model.personal_devices = Some(scene.personal_devices.clone());
             } else {
@@ -540,53 +544,28 @@ pub(super) enum MeshStatus {
     NotConfigured,
     ConfigUnreadable,
     NotSaved,
-    Looking {
-        target: PairingTarget,
-    },
-    Found {
-        label: String,
-        code: String,
-    },
-    Approving {
-        label: String,
-        code: String,
-    },
-    PairingStopped {
-        cancelled: bool,
-    },
-    DiscoveryUnusable,
-    HomeServerPaired,
-    DeviceAdded,
+    /// Asking this computer for a code a new computer joins with.
+    Issuing,
+    /// A code is ready: it works once, for ten minutes.
+    Issued,
+    /// The code is on the clipboard.
+    Copied,
+    /// The code could not be put on the clipboard: the person copies it by hand.
+    CopyFailed,
+    /// This computer could not print a code.
+    IssueFailed,
 }
 
 impl MeshStatus {
-    fn pairing_shown(&self) -> Option<String> {
+    /// What the pane says under the device list about a code: none while nothing is being
+    /// printed or copied.
+    fn ticket_shown(&self) -> Option<String> {
         Some(match self {
-            Self::Looking {
-                target: PairingTarget::HomePeer,
-            } => t("mesh-status-looking-home"),
-            Self::Looking {
-                target: PairingTarget::PersonalDevice,
-            } => t("mesh-status-looking-device"),
-            Self::Found { label, code } => t_args(
-                "mesh-status-found",
-                &[
-                    ("label", label.as_str().into()),
-                    ("code", code.as_str().into()),
-                ],
-            ),
-            Self::Approving { label, code } => t_args(
-                "mesh-status-approving",
-                &[
-                    ("label", label.as_str().into()),
-                    ("code", code.as_str().into()),
-                ],
-            ),
-            Self::PairingStopped { cancelled: true } => t("mesh-status-pairing-cancelled"),
-            Self::PairingStopped { cancelled: false } => t("mesh-status-pairing-failed"),
-            Self::DiscoveryUnusable => t("mesh-status-discovery-unusable"),
-            Self::HomeServerPaired => t("mesh-status-home-paired"),
-            Self::DeviceAdded => t("mesh-status-device-added"),
+            Self::Issuing => t("mesh-code-issuing"),
+            Self::Issued => t("mesh-code-ready"),
+            Self::Copied => t("mesh-code-copied"),
+            Self::CopyFailed => t("mesh-code-copy-failed"),
+            Self::IssueFailed => t("mesh-code-failed"),
             Self::Ready | Self::NotConfigured | Self::ConfigUnreadable | Self::NotSaved => {
                 return None;
             }
@@ -636,10 +615,11 @@ pub struct DeviceMeshModel {
     next_peer_health: usize,
     apply_child: Option<bounded_command::AsyncCommand>,
     apply_queued: bool,
-    pairing_call: Option<ui::InvocationCall>,
-    pairing_discovery: bool,
-    pairing_candidate: Option<PairCandidate>,
-    pairing_target: PairingTarget,
+    /// The call printing a code for a new computer, while it runs.
+    ticket_call: Option<ui::InvocationCall>,
+    /// The code printed here last: what the pane shows with its copy control.
+    ticket: Option<String>,
+    copy: ui::CopyWatch,
     remote: ui::RemoteActions,
     next_status_refresh: Instant,
     following: std::rc::Weak<MeshFollow>,
@@ -661,21 +641,6 @@ enum Managing {
     Revoke(String),
     /// Taking it out of service with that revocation (`server.retire`).
     Retire(String),
-}
-
-#[derive(Clone, Debug, serde::Deserialize, PartialEq, Eq)]
-struct PairCandidate {
-    device: String,
-    service: String,
-    label: String,
-    verification_code: String,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum PairingTarget {
-    #[default]
-    HomePeer,
-    PersonalDevice,
 }
 
 fn peer_key(action: &str, device: &str) -> String {
@@ -896,10 +861,9 @@ impl DeviceMeshModel {
             next_peer_health: 0,
             apply_child: None,
             apply_queued: false,
-            pairing_call: None,
-            pairing_discovery: false,
-            pairing_candidate: None,
-            pairing_target: PairingTarget::HomePeer,
+            ticket_call: None,
+            ticket: None,
+            copy: ui::CopyWatch::default(),
             remote: ui::RemoteActions::current(),
             next_status_refresh: ui::time::now() + STATUS_REFRESH_INTERVAL,
             following: std::rc::Weak::new(),
@@ -951,12 +915,12 @@ impl DeviceMeshModel {
                 }
                 true
             }
-            DeviceMeshEffect::PairHomeServer => {
-                self.approve_enrollment(PairingTarget::HomePeer);
+            DeviceMeshEffect::AddDevice => {
+                self.issue_ticket();
                 false
             }
-            DeviceMeshEffect::AddPersonalDevice => {
-                self.approve_enrollment(PairingTarget::PersonalDevice);
+            DeviceMeshEffect::CopyCode { code } => {
+                self.copy_code(code);
                 false
             }
             DeviceMeshEffect::RenameHomeServer { device, name } => {
@@ -1519,58 +1483,35 @@ impl DeviceMeshModel {
         }
     }
 
-    fn approve_enrollment(&mut self, target: PairingTarget) {
-        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, device_pairing};
-        if self.pairing_call.is_some() {
+    /// Ask this computer for a code a new computer joins with, one at a time.
+    fn issue_ticket(&mut self) {
+        use ui::tilo_actions::remote::{InvokeArgument, device_tickets};
+        if self.ticket_call.is_some() {
             return;
         }
-        let role = match target {
-            PairingTarget::HomePeer => "home-peer",
-            PairingTarget::PersonalDevice => "personal-device",
-        };
-        let Some(candidate) = self.pairing_candidate.clone() else {
-            self.pairing_target = target;
-            let mut arguments = serde_json::Map::new();
-            arguments.insert("role".into(), role.into());
-            self.pairing_call = Some(self.remote.invoke(
-                device_pairing::target(device_pairing::DISCOVER),
-                InvokeArgument::Json(arguments),
-                None,
-            ));
-            self.pairing_discovery = true;
-            self.status = MeshStatus::Looking { target };
-            self.changed = true;
-            return;
-        };
-        if self.pairing_target != target {
-            self.pairing_candidate = None;
-            self.approve_enrollment(target);
-            return;
-        }
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("role".into(), role.into());
-        arguments.insert("device".into(), candidate.device.clone().into());
-        arguments.insert("service".into(), candidate.service.clone().into());
-        if target == PairingTarget::HomePeer {
-            arguments.insert("workspace_ids".into(), Vec::<u64>::new().into());
-        }
-        arguments.insert("confirm".into(), true.into());
-        self.pairing_call = Some(self.remote.invoke(
-            device_pairing::target(device_pairing::APPROVE),
-            InvokeArgument::Json(arguments),
-            Some(Confirmation::Confirmed),
+        self.ticket_call = Some(self.remote.invoke(
+            device_tickets::target(device_tickets::ISSUE),
+            InvokeArgument::Json(serde_json::Map::new()),
+            None,
         ));
-        self.pairing_discovery = false;
-        self.status = MeshStatus::Approving {
-            label: candidate.label,
-            code: candidate.verification_code,
+        self.status = MeshStatus::Issuing;
+        self.changed = true;
+    }
+
+    /// Put the printed code on the clipboard; whether the person copied it.
+    fn copy_code(&mut self, code: &str) {
+        self.status = if self.copy.watch(ui::try_clipboard_copy(code)) {
+            MeshStatus::Copied
+        } else {
+            MeshStatus::CopyFailed
         };
         self.changed = true;
     }
 
-    fn poll_pairing(&mut self) {
+    /// Take the code the daemon answered, or what stopped it, once it answers.
+    fn poll_ticket(&mut self) {
         use ui::tilo_actions::InvocationUpdate;
-        let Some(call) = self.pairing_call.as_ref() else {
+        let Some(call) = self.ticket_call.as_ref() else {
             return;
         };
         self.remote.poll();
@@ -1578,8 +1519,7 @@ impl DeviceMeshModel {
         if !answer.is_finished() {
             return;
         }
-        self.pairing_call = None;
-        let discovery = std::mem::take(&mut self.pairing_discovery);
+        self.ticket_call = None;
         self.changed = true;
         let output = match answer {
             ui::Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => output,
@@ -1587,63 +1527,38 @@ impl DeviceMeshModel {
                 tracing::warn!(
                     target: "tilo::settings",
                     message = %error.message,
-                    "pairing did not finish"
+                    "a code for a new computer was not printed"
                 );
-                self.status = MeshStatus::PairingStopped { cancelled: false };
+                self.status = MeshStatus::IssueFailed;
                 return;
             }
             ui::Arrival::Ready(_) => {
-                self.status = MeshStatus::PairingStopped { cancelled: true };
+                self.status = MeshStatus::IssueFailed;
                 return;
             }
             ui::Arrival::Failed(error) => {
                 tracing::warn!(
                     target: "tilo::settings",
                     %error,
-                    "pairing did not finish"
+                    "a code for a new computer was not printed"
                 );
-                self.status = MeshStatus::PairingStopped { cancelled: false };
+                self.status = MeshStatus::IssueFailed;
                 return;
             }
             ui::Arrival::Pending { .. } => return,
         };
-        if discovery {
-            match output
-                .value
-                .map(serde_json::from_value::<PairCandidate>)
-                .transpose()
-            {
-                Ok(Some(candidate)) => {
-                    self.status = MeshStatus::Found {
-                        label: candidate.label.clone(),
-                        code: candidate.verification_code.clone(),
-                    };
-                    self.pairing_candidate = Some(candidate);
-                }
-                Ok(None) => {
-                    tracing::warn!(
-                        target: "tilo::settings",
-                        "nearby discovery found no device to pair"
-                    );
-                    self.status = MeshStatus::DiscoveryUnusable;
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        target: "tilo::settings",
-                        %error,
-                        "the device nearby discovery found is not readable"
-                    );
-                    self.status = MeshStatus::DiscoveryUnusable;
-                }
-            }
-            return;
+        let code = output
+            .value
+            .as_ref()
+            .and_then(|answer| answer.get("ticket"))
+            .and_then(serde_json::Value::as_str);
+        if let Some(code) = code {
+            self.ticket = Some(code.to_owned());
+            self.status = MeshStatus::Issued;
+        } else {
+            tracing::warn!(target: "tilo::settings", "the daemon printed no code");
+            self.status = MeshStatus::IssueFailed;
         }
-        self.refresh_runtime_status();
-        self.status = match self.pairing_target {
-            PairingTarget::HomePeer => MeshStatus::HomeServerPaired,
-            PairingTarget::PersonalDevice => MeshStatus::DeviceAdded,
-        };
-        self.pairing_candidate = None;
     }
 
     fn refresh_one_home_peer(&mut self) {
@@ -1702,7 +1617,7 @@ impl DeviceMeshModel {
             None => {}
         }
 
-        self.poll_pairing();
+        self.poll_ticket();
         self.poll_host_calls();
     }
 }
@@ -1734,7 +1649,7 @@ impl DeviceMeshModel {
     }
 
     fn busy(&self) -> bool {
-        self.apply_child.is_some() || self.pairing_call.is_some()
+        self.apply_child.is_some() || self.ticket_call.is_some()
     }
 
     fn next_wake(&self) -> Option<Instant> {
@@ -1775,6 +1690,11 @@ impl DeviceMeshModel {
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let held = area(app)?;
     let model = Rc::clone(held.model());
+    // The pane is shown: ask for the person's servers now, where the question about another
+    // app's action belongs.
+    if held.devices {
+        model.borrow_mut().read_servers();
+    }
     let showing = model.borrow_mut().show();
     let following = model.borrow_mut().follow();
     model.borrow_mut().poll();
@@ -2262,32 +2182,27 @@ mod tests {
     }
 
     #[test]
-    fn a_pairing_that_did_not_finish_says_what_to_do_not_the_hosts_words() {
-        const HOST_WORDS: &str = "the code the second screen showed did not match";
+    fn a_code_that_was_not_printed_says_what_to_do_not_the_hosts_words() {
+        const HOST_WORDS: &str = "the daemon's ticket store was busy";
         let dir = tempfile::tempdir().unwrap();
         let mut model = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
         model.remote = ui::RemoteActions::with_provider(
-            Arc::new(PairingHost {
-                approval_failure: Some(HOST_WORDS.into()),
-                ..PairingHost::default()
+            Arc::new(StubHost {
+                ticket_failure: Some(HOST_WORDS.into()),
+                ..StubHost::default()
             }),
             ui::tilo_actions::remote::Caller::local_person("owner"),
         );
-        model.apply(&DeviceMeshEffect::PairHomeServer).unwrap();
+        model.apply(&DeviceMeshEffect::AddDevice).unwrap();
         model.poll_background_tasks();
-        model.apply(&DeviceMeshEffect::PairHomeServer).unwrap();
-        model.poll_background_tasks();
-        assert_eq!(
-            model.status,
-            MeshStatus::PairingStopped { cancelled: false }
-        );
+        assert_eq!(model.status, MeshStatus::IssueFailed);
 
         let mut app = window_on(model);
         app.settle();
         let shown =
             provider_settings_ui::widgets::announced_text(app.harness().root_widget()).join("\n");
         assert!(
-            shown.contains(&t("mesh-status-pairing-failed")),
+            shown.contains(&t("mesh-code-failed")),
             "the pane says what to do: {shown}"
         );
         assert!(
@@ -2313,14 +2228,14 @@ mod tests {
             assert!(shown.contains(&message), "{message} is shown: {shown}");
         }
         assert!(MeshStatus::Ready.settings_trouble_shown().is_none());
-        assert!(MeshStatus::NotConfigured.pairing_shown().is_none());
+        assert!(MeshStatus::NotConfigured.ticket_shown().is_none());
         assert_eq!(
             MeshStatus::ConfigUnreadable.settings_trouble_shown(),
             Some(t("mesh-status-config-unreadable"))
         );
         assert_eq!(
-            MeshStatus::PairingStopped { cancelled: true }.pairing_shown(),
-            Some(t("mesh-status-pairing-cancelled"))
+            MeshStatus::Copied.ticket_shown(),
+            Some(t("mesh-code-copied"))
         );
     }
 
@@ -2463,9 +2378,9 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn pairing_and_removal_run_through_the_host;
+        fn adding_a_device_and_removal_run_through_the_host;
 
-        phase device_removal_asks_first_and_pairing_is_single_flight;
+        phase device_removal_asks_first_and_printing_a_code_is_single_flight;
         {
             {
                 let effect = DeviceMeshEffect::RemoveHomeServer {
@@ -2490,27 +2405,27 @@ mod tests {
             {
                 let dir = tempfile::tempdir().unwrap();
                 let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
-                let host = Arc::new(PairingHost::default());
+                let host = Arc::new(StubHost::default());
                 pane.remote = ui::RemoteActions::with_provider(
                     host.clone(),
                     ui::tilo_actions::remote::Caller::local_person("owner"),
                 );
-                pane.approve_enrollment(PairingTarget::HomePeer);
-                pane.approve_enrollment(PairingTarget::HomePeer);
-                assert_eq!(host.asked().len(), 1, "one pairing step at a time");
+                pane.issue_ticket();
+                pane.issue_ticket();
+                assert_eq!(host.asked().len(), 1, "one code at a time");
             }
         }
 
         phase a_server_removal_signs_its_revocation_and_retires_it;
         {
             use ui::tilo_actions::remote::{
-                Confirmation, InvokeArgument, RemoteActionTarget, identity_admin,
+                Confirmation, InvokeArgument, RemoteActionTarget, identity_admin, machines,
             };
             let dir = tempfile::tempdir().unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_IDENTITY_ROOT", dir.path());
             let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
-            let host = Arc::new(PairingHost::default());
+            let host = Arc::new(StubHost::default());
             pane.remote = ui::RemoteActions::with_provider(
                 host.clone(),
                 ui::tilo_actions::remote::Caller::local_person("owner"),
@@ -2526,11 +2441,27 @@ mod tests {
             // person's Servers workspace is retired with it.
             pane.poll_background_tasks();
             pane.poll_background_tasks();
+            // A revocation, the retirement, and the person's servers read again to show it gone.
             let asked = host.asked();
-            let [revoke, retire] = asked.as_slice() else {
-                panic!("a revocation, then a retirement: {asked:?}");
-            };
-            assert_eq!(revoke.target, identity_admin::target(identity_admin::REVOKE));
+            assert_eq!(asked.len(), 3, "{asked:?}");
+            let retired = RemoteActionTarget::workspace_governance(
+                &tilo_server_protocol::servers::person_workspace_id(&[0x33; 32]),
+                "server.retire",
+            );
+            let revoke = asked
+                .iter()
+                .find(|call| call.target == identity_admin::target(identity_admin::REVOKE))
+                .expect("the root signs a revocation");
+            let retire = asked
+                .iter()
+                .find(|call| call.target == retired)
+                .expect("the server's entry is retired");
+            assert!(
+                asked
+                    .iter()
+                    .any(|call| call.target == machines::target(machines::SERVERS)),
+                "the servers are read again: {asked:?}"
+            );
             assert_eq!(revoke.confirmation, Some(Confirmation::Confirmed));
             assert_eq!(
                 revoke.argument,
@@ -2543,13 +2474,6 @@ mod tests {
                     .as_object()
                     .unwrap()
                     .clone()
-                )
-            );
-            assert_eq!(
-                retire.target,
-                RemoteActionTarget::workspace_governance(
-                    &tilo_server_protocol::servers::person_workspace_id(&[0x33; 32]),
-                    "server.retire",
                 )
             );
             assert_eq!(retire.confirmation, Some(Confirmation::Confirmed));
@@ -2590,83 +2514,68 @@ mod tests {
             );
         }
 
-        phase pairing_invokes_the_host_actions_and_spawns_nothing;
+        phase a_code_is_printed_through_the_host_action_and_spawns_nothing;
         {
-            use ui::tilo_actions::remote::{Confirmation, InvokeArgument, device_pairing};
+            use ui::tilo_actions::remote::{InvokeArgument, device_tickets};
             let dir = tempfile::tempdir().unwrap();
             let mut pane = DeviceMeshModel::with_path(&dir.path().join("server.toml"));
-            let host = Arc::new(PairingHost::default());
+            let host = Arc::new(StubHost::default());
             pane.remote = ui::RemoteActions::with_provider(
                 host.clone(),
                 ui::tilo_actions::remote::Caller::local_person("owner"),
             );
 
-            pane.apply(&DeviceMeshEffect::PairHomeServer).unwrap();
+            pane.apply(&DeviceMeshEffect::AddDevice).unwrap();
+            assert_eq!(pane.status, MeshStatus::Issuing);
             pane.poll_background_tasks();
             let asked = host.asked();
             assert_eq!(asked.len(), 1);
-            assert_eq!(
-                asked[0].target,
-                device_pairing::target(device_pairing::DISCOVER)
-            );
+            assert_eq!(asked[0].target, device_tickets::target(device_tickets::ISSUE));
             assert_eq!(
                 asked[0].argument,
-                InvokeArgument::Json(
-                    serde_json::json!({"role": "home-peer"})
-                        .as_object()
-                        .unwrap()
-                        .clone()
-                )
+                InvokeArgument::Json(serde_json::Map::new())
             );
-            assert_eq!(
-                pane.status,
-                MeshStatus::Found {
-                    label: "Kitchen NAS".into(),
-                    code: "123-456".into(),
-                }
-            );
-            assert!(pane.pairing_call.is_none(), "discovery has answered");
-
-            pane.apply(&DeviceMeshEffect::PairHomeServer).unwrap();
-            pane.poll_background_tasks();
-            let asked = host.asked();
-            assert_eq!(asked.len(), 2);
-            assert_eq!(
-                asked[1].target,
-                device_pairing::target(device_pairing::APPROVE)
-            );
-            assert_eq!(
-                asked[1].argument,
-                InvokeArgument::Json(
-                    serde_json::json!({
-                        "role": "home-peer",
-                        "device": NEARBY_DEVICE,
-                        "service": NEARBY_SERVICE,
-                        "workspace_ids": [],
-                        "confirm": true,
-                    })
-                    .as_object()
-                    .unwrap()
-                    .clone()
-                )
-            );
-            assert_eq!(asked[1].confirmation, Some(Confirmation::Confirmed));
-            assert_eq!(pane.status, MeshStatus::HomeServerPaired);
-            assert!(
-                pane.pairing_candidate.is_none(),
-                "the paired device is done"
-            );
+            assert_eq!(pane.status, MeshStatus::Issued);
+            assert_eq!(pane.ticket.as_deref(), Some(TICKET));
+            assert!(pane.ticket_call.is_none(), "the code has answered");
             assert!(
                 pane.apply_child.is_none() && pane.management_call.is_none(),
-                "pairing started no process in the app"
+                "printing a code started no process in the app"
             );
+
+            // A refusal says what to do, and the code printed before still stands.
+            pane.remote = ui::RemoteActions::with_provider(
+                Arc::new(StubHost {
+                    ticket_failure: Some("no identity here".into()),
+                    ..StubHost::default()
+                }),
+                ui::tilo_actions::remote::Caller::local_person("owner"),
+            );
+            pane.apply(&DeviceMeshEffect::AddDevice).unwrap();
+            pane.poll_background_tasks();
+            assert_eq!(pane.status, MeshStatus::IssueFailed);
+            assert_eq!(pane.ticket.as_deref(), Some(TICKET));
+
+            // Nothing in this process answers for a clipboard, and the pane says the copy did
+            // not happen rather than claiming it did.
+            pane.apply(&DeviceMeshEffect::CopyCode {
+                code: TICKET.into(),
+            })
+            .unwrap();
+            assert_eq!(pane.status, MeshStatus::CopyFailed);
+
+            // The code is on the page, with the one control that copies it.
+            let mut app = window_on(pane);
+            app.settle();
+            let ids = test_ids(app.harness().root_widget());
+            assert!(ids.iter().any(|id| id == "device_mesh.copy_code"), "{ids:?}");
+            assert!(ids.iter().any(|id| id == "device_mesh.add_device"), "{ids:?}");
         }
     }
 
     const NEARBY_DEVICE: &str = "aa00000000000000000000000000000000000000000000000000000000000001";
     const THIS_DEVICE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
     const PHONE: &str = "2222222222222222222222222222222222222222222222222222222222222222";
-    const NEARBY_SERVICE: &str = "bb00000000000000000000000000000000000000000000000000000000000002";
     /// The revocation the identity step answers, as the pane passes it on.
     const SIGNED_REVOCATION: &str = "{\"signed\":true}";
 
@@ -2683,19 +2592,22 @@ mod tests {
         .unwrap()
     }
 
+    /// The code the stand-in daemon prints.
+    const TICKET: &str = "tilo1aa0000000000000000000000000000000000000000000000000000000000000101";
+
     #[derive(Default)]
-    pub(super) struct PairingHost {
+    pub(super) struct StubHost {
         asked: Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
-        approval_failure: Option<String>,
+        ticket_failure: Option<String>,
     }
 
-    impl PairingHost {
+    impl StubHost {
         pub(super) fn asked(&self) -> Vec<ui::tilo_actions::remote::InvokeRequest> {
             self.asked.lock().unwrap().clone()
         }
     }
 
-    impl ui::tilo_actions::remote::ActionProvider for PairingHost {
+    impl ui::tilo_actions::remote::ActionProvider for StubHost {
         fn query(
             &self,
             _: &ui::tilo_actions::remote::Caller,
@@ -2721,34 +2633,24 @@ mod tests {
                 ui::tilo_actions::remote::ActionCallError,
             >,
         > {
-            use ui::tilo_actions::remote::{device_pairing, identity_admin};
+            use ui::tilo_actions::remote::device_tickets;
             let invocation = request.invocation;
-            let value = if request.target.provider == identity_admin::PROVIDER {
+            let is_ticket = request.target.provider == device_tickets::PROVIDER;
+            let value = if is_ticket {
+                serde_json::json!({ "ticket": TICKET })
+            } else {
                 serde_json::json!({
                     "device": PHONE,
                     "revoked": true,
                     "revocation": SIGNED_REVOCATION,
                 })
-            } else if request.target.address.action == device_pairing::DISCOVER {
-                serde_json::json!({
-                    "role": "home-peer",
-                    "device": NEARBY_DEVICE,
-                    "service": NEARBY_SERVICE,
-                    "label": "Kitchen NAS",
-                    "verification_code": "123-456",
-                })
-            } else {
-                serde_json::json!({"role": "home-peer", "device": NEARBY_DEVICE, "label": "Kitchen NAS"})
             };
-            let failure = self
-                .approval_failure
-                .clone()
-                .filter(|_| request.target.address.action != device_pairing::DISCOVER);
+            let failure = self.ticket_failure.clone().filter(|_| is_ticket);
             self.asked.lock().unwrap().push(request);
             let status = match failure {
                 Some(message) => ui::tilo_actions::remote::ReceiptStatus::Failed {
                     error: ui::tilo_actions::ActionFailure {
-                        code: "pairing-failed".into(),
+                        code: "device-ticket-refused".into(),
                         message,
                         details: None,
                         retryable: true,

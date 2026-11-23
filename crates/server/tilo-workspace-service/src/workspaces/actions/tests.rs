@@ -1,21 +1,17 @@
 //! A governed workspace's administration as `tilo.workspace` actions: offered as
-//! far as the workspace's governance lets the caller, run through the same workspace
-//! methods as the wire API does, and destructive governance held back until the
-//! person's own confirmation can be asked for.
-
-#![expect(
-    clippy::significant_drop_tightening,
-    reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
-)]
+//! far as the workspace's grants let the caller, run through the same workspace
+//! methods as the wire API does, and ending a call held back until everyone's
+//! own confirmation can be asked for.
 
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CatalogueQuery, CatalogueRow, Confirmation,
-    InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+    ActionCallError, ActionProvider, Caller, CatalogueQuery, CatalogueRow, InvokeArgument,
+    InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
     WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT,
-    WORKSPACE_MEMBER_PLACED, workspace_governance_operation,
+    WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS,
+    workspace_governance_child, workspace_governance_operation, workspace_member,
 };
 use tilo_peer_state::join::Role;
 use tilo_server_protocol::workspaces::JoinReply;
@@ -26,9 +22,7 @@ use super::{
     ServiceWorkspaceActions, UNLIST, VERBS, WAIT_LIST,
 };
 use crate::app_serving::AppActionServer as _;
-use crate::workspaces::tests::{
-    governor, guest_device, signed_pre_admission, test_host_taking_part as test_host,
-};
+use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::workspaces::{PreAdmitRequest, SetMemberRoleRequest, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
@@ -255,9 +249,9 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
 
-    // The server's person runs every action the provider serves, on the
-    // workspace's own governance resource, removing and banning included: their
-    // own request confirms it.
+    // The server's person, the workspace's owner, runs every action the
+    // provider serves on the workspace's own governance resource, removing and
+    // banning included.
     let owners = offered(&host, workspace_id, &caller(&owner)).await;
     for verb in INVITE_FAMILY
         .iter()
@@ -292,8 +286,8 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
         offered_in_catalogue(INVITE_FAMILY.iter().chain(&OWN).copied())
     );
 
-    // A Moderator is offered removing and unbanning members below them, but no
-    // invitations. Roles, restrictions and the workspace's settings are written
+    // A Moderator is offered removing, banning and unbanning members, as its
+    // role's grants say, but no invitations. Roles, restrictions and the workspace's settings are written
     // by a member's own device, not asked of the host.
     workspaces
         .set_member_role(
@@ -310,7 +304,12 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
     let moderator = offered(&host, workspace_id, &caller(&bo)).await;
     assert_eq!(
         moderator,
-        offered_in_catalogue([governance::REMOVE_MEMBER, NAME, governance::UNBAN])
+        offered_in_catalogue([
+            governance::REMOVE_MEMBER,
+            governance::BAN,
+            NAME,
+            governance::UNBAN
+        ])
     );
 
     // An agent governs nothing, even on the server person's own key, and a
@@ -707,7 +706,7 @@ async fn an_invitation_at_the_owners_place_makes_its_opener_the_owner() {
 }
 
 #[tokio::test]
-async fn destructive_governance_waits_for_the_person() {
+async fn banning_is_decided_by_grants_and_ending_a_call_waits_for_everyone() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -716,7 +715,23 @@ async fn destructive_governance_waits_for_the_person() {
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let person = |cert: &DeviceCert| hex::encode(cert.user_public_key);
+    let ban = |cert: &DeviceCert| {
+        request(
+            &workspace,
+            governance::BAN,
+            json!({ "person": person(cert) }),
+        )
+    };
 
+    // An Editor holds no grant on banning, and is not told a ban exists:
+    // unknown and forbidden answer alike.
+    assert_eq!(
+        invoke(&host, workspace_id, &caller(&ada), ban(&bo)).await,
+        Err(ActionCallError::UnknownAction)
+    );
+
+    // The Moderator role's grant on banning lets Bo ban Ada, with no
+    // confirmation beside the grant.
     workspaces
         .set_member_role(
             &workspace,
@@ -729,19 +744,17 @@ async fn destructive_governance_waits_for_the_person() {
         )
         .await
         .unwrap();
+    invoke(&host, workspace_id, &caller(&bo), ban(&ada))
+        .await
+        .unwrap();
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert!(
+        members
+            .iter()
+            .any(|member| member.root() == Some(ada.user_public_key) && member.removed),
+        "{members:?}"
+    );
 
-    // Banning would remove Ada: it waits for Bo's own confirmation, which
-    // a caller's word is not, and nothing changes.
-    let mut ban = request(
-        &workspace,
-        governance::BAN,
-        json!({ "person": person(&ada) }),
-    );
-    ban.confirmation = Some(Confirmation::Confirmed);
-    assert_eq!(
-        invoke(&host, workspace_id, &caller(&bo), ban).await,
-        Err(ActionCallError::confirmation_required())
-    );
     let end = request(
         &workspace,
         governance::CALL,
@@ -751,30 +764,12 @@ async fn destructive_governance_waits_for_the_person() {
         invoke(&host, workspace_id, &caller(&owner), end).await,
         Err(ActionCallError::confirmation_required())
     );
-    let members = workspaces.summary(&workspace).await.unwrap().members;
-    assert!(
-        members
-            .iter()
-            .any(|member| member.root() == Some(ada.user_public_key) && !member.removed),
-        "{members:?}"
-    );
-
-    // An Editor is not told a ban exists: unknown and forbidden answer alike.
-    let ban = request(
-        &workspace,
-        governance::BAN,
-        json!({ "person": person(&bo) }),
-    );
-    assert_eq!(
-        invoke(&host, workspace_id, &caller(&ada), ban).await,
-        Err(ActionCallError::UnknownAction)
-    );
 
     server.shutdown().await;
 }
 
 #[tokio::test]
-async fn a_member_removes_someone_ranked_below_them_or_themselves() {
+async fn a_member_granted_removing_removes_anyone_but_the_owner() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -796,36 +791,27 @@ async fn a_member_removes_someone_ranked_below_them_or_themselves() {
         invoke(&host, workspace_id, &caller(&ada), remove(&bo)).await,
         Err(ActionCallError::UnknownAction)
     );
-    // Anyone may leave, but the workspace's owner cannot be removed, not even by themselves:
-    // it always keeps one.
-    let cy = admit(workspaces, &workspace, &owner, 3).await;
-    invoke(&host, workspace_id, &caller(&cy), remove(&cy))
-        .await
-        .unwrap();
-    let members = workspaces.summary(&workspace).await.unwrap().members;
-    assert!(
-        members
-            .iter()
-            .any(|member| member.root() == Some(cy.user_public_key) && member.removed),
-        "{members:?}"
-    );
+    // Nobody removes the owner, not even themselves: the workspace keeps one.
     assert!(matches!(
         invoke(&host, workspace_id, &caller(&owner), remove(&owner)).await,
         Err(ActionCallError::Refused { reason }) if reason.contains("owner cannot be removed")
     ));
-    // A Moderator removes an Editor, answered with the people as they are then.
-    workspaces
-        .set_member_role(
-            &workspace,
-            &owner,
-            SetMemberRoleRequest {
-                request_id: [32; 32],
-                user_public_key: bo.user_public_key,
-                role: Role::Moderator,
-            },
-        )
-        .await
-        .unwrap();
+    // A Moderator removes another Moderator, answered with the people as they are then: the
+    // role's grant on removing reaches every member but the owner.
+    for (request_id, cert) in [([32; 32], &bo), ([33; 32], &ada)] {
+        workspaces
+            .set_member_role(
+                &workspace,
+                &owner,
+                SetMemberRoleRequest {
+                    request_id,
+                    user_public_key: cert.user_public_key,
+                    role: Role::Moderator,
+                },
+            )
+            .await
+            .unwrap();
+    }
     let removed = invoke(&host, workspace_id, &caller(&bo), remove(&ada))
         .await
         .unwrap();
@@ -841,6 +827,38 @@ async fn a_member_removes_someone_ranked_below_them_or_themselves() {
             .iter()
             .any(|member| member.root() == Some(ada.user_public_key) && member.removed),
         "{members:?}"
+    );
+
+    // In a workspace the server makes for Ada, the server's person is offered leaving, as any
+    // member is, and never removing her.
+    let hers = workspaces
+        .create_for("Ada's", None, ada.user_public_key)
+        .await
+        .unwrap();
+    let query = CatalogueQuery {
+        provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
+        parent_resource: Some(workspace_governance_child(
+            &hers.workspace,
+            Some(WORKSPACE_MEMBERS),
+        )),
+        ..CatalogueQuery::default()
+    };
+    let page = settled(
+        host.in_workspace(hers.workspace_id)
+            .query(&caller(&owner), query),
+    )
+    .await
+    .unwrap();
+    let removable: Vec<_> = page
+        .rows
+        .into_iter()
+        .filter_map(|row| row.action)
+        .filter(|action| action.address.action == WORKSPACE_MEMBER_REMOVED)
+        .map(|action| action.address.resource)
+        .collect();
+    assert_eq!(
+        removable,
+        [workspace_member(&hers.workspace, &person(&owner))]
     );
     server.shutdown().await;
 }
@@ -2181,51 +2199,12 @@ fn holder_refused(answered: Result<Value, ActionCallError>) -> String {
     }
 }
 
-/// An owner names a holder by its site, and this device then asks that site
-/// from inside its own network. It asks an https address on the internet
-/// and nothing else: a plain-http address and an address on its own network
-/// are refused before anything is asked, for adding a holder and for
-/// removing one.
+/// An owner names a server by its own web-host.json line, which its operator hands over: this
+/// device asks no site where a server is. A site's address, on the internet or on this device's
+/// own network, is no server's line, and is refused before anything is asked, for adding a server
+/// and for removing one, even where its operator lets this device call its own network.
 #[tokio::test]
-async fn a_holder_is_named_by_an_https_address_on_the_internet_and_nothing_else_is_asked() {
-    use test_http::{Reply, Responder};
-
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
-    let (workspace, workspace_id, governance) = governed(server.workspaces()).await;
-    let owner = caller(&owner);
-    let inside = Responder::handle(|_| Some(Reply::status(403).body(SAID_INSIDE)));
-    for origin in [
-        inside.url(),
-        format!("https://127.0.0.1:{}", inside.port()),
-        "https://10.0.0.5:8500".to_owned(),
-        "http://holder.example".to_owned(),
-    ] {
-        let adding = request(&workspace, super::ADD_SERVER, json!({ "origin": origin }));
-        let reason = holder_refused(invoke(&governance, workspace_id, &owner, adding).await);
-        assert!(reason.contains("is no holder's address"), "{reason}");
-        assert!(!reason.contains(SAID_INSIDE), "{reason}");
-    }
-    let removing = request(
-        &workspace,
-        super::REMOVE_SERVER,
-        json!({ "server": inside.url() }),
-    );
-    let reason = holder_refused(invoke(&governance, workspace_id, &owner, removing).await);
-    assert!(reason.contains("is no holder's address"), "{reason}");
-    assert!(
-        inside.drain_requests().is_empty(),
-        "an address on this device's own network was asked"
-    );
-}
-
-/// Where its operator lets a device call its own network, a holder's site
-/// there is asked. Still no redirect is followed, so a site an owner names
-/// sends this device nowhere else, and what a site answers a refusal with
-/// is not handed on to whoever named it.
-#[tokio::test]
-async fn a_holders_site_sends_the_device_nowhere_else_and_its_refusal_is_not_handed_on() {
+async fn a_server_is_named_by_its_own_line_and_no_site_is_asked() {
     use test_http::{Reply, Responder};
 
     let dir = tempfile::tempdir().unwrap();
@@ -2234,26 +2213,34 @@ async fn a_holders_site_sends_the_device_nowhere_else_and_its_refusal_is_not_han
     let (workspace, workspace_id, governance) = governed(server.workspaces()).await;
     server.workspaces().call_private_model_addresses(true);
     let owner = caller(&owner);
-    let adding =
-        |origin: String| request(&workspace, super::ADD_SERVER, json!({ "origin": origin }));
-
-    let elsewhere = Responder::handle(|_| Some(Reply::status(403).body(SAID_INSIDE)));
-    let onward = format!("{}/elsewhere", elsewhere.url());
-    let redirecting =
-        Responder::handle(move |_| Some(Reply::status(307).header("Location", &onward)));
-    let asked = adding(redirecting.url());
-    let reason = holder_refused(invoke(&governance, workspace_id, &owner, asked).await);
-    assert_eq!(redirecting.drain_requests().len(), 1, "{reason}");
-    assert!(
-        elsewhere.drain_requests().is_empty(),
-        "a redirect was followed: {reason}"
+    let inside = Responder::handle(|_| Some(Reply::status(403).body(SAID_INSIDE)));
+    for site in [
+        inside.url(),
+        format!("https://127.0.0.1:{}", inside.port()),
+        "https://10.0.0.5:8500".to_owned(),
+        "http://holder.example".to_owned(),
+        "https://holder.example".to_owned(),
+    ] {
+        let adding = request(&workspace, super::ADD_SERVER, json!({ "host": site }));
+        let reason = holder_refused(invoke(&governance, workspace_id, &owner, adding).await);
+        assert!(
+            reason.contains("not the host's own web-host.json line"),
+            "{site}: {reason}"
+        );
+        assert!(!reason.contains(SAID_INSIDE), "{reason}");
+    }
+    let removing = request(
+        &workspace,
+        super::REMOVE_SERVER,
+        json!({ "server": inside.url() }),
     );
-    assert!(!reason.contains(SAID_INSIDE), "{reason}");
-
-    let refusing = Responder::handle(|_| Some(Reply::status(401).body(SAID_INSIDE)));
-    let asked = adding(refusing.url());
-    let reason = holder_refused(invoke(&governance, workspace_id, &owner, asked).await);
-    assert_eq!(refusing.drain_requests().len(), 1, "{reason}");
-    assert!(reason.contains("refused to say"), "{reason}");
-    assert!(!reason.contains(SAID_INSIDE), "{reason}");
+    let reason = holder_refused(invoke(&governance, workspace_id, &owner, removing).await);
+    assert!(
+        reason.contains("no server keeping the workspace goes by"),
+        "{reason}"
+    );
+    assert!(
+        inside.drain_requests().is_empty(),
+        "a site was asked where a server is"
+    );
 }

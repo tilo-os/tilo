@@ -2263,6 +2263,32 @@ pub(crate) fn press_window_control(
     super::embedded::run_api_control(history, &intent).map_err(|error| error.to_string())
 }
 
+/// The History control a window whose root widget is `root` offers its bar: the History the root
+/// offers ([`crate::widget::WindowHistory`], a window showing the system's history of what it
+/// shows), else its History API's, `history`.
+pub(crate) fn offered_control(
+    root: &dyn crate::widget::Widget,
+    history: Option<&HistoryHost>,
+) -> Option<crate::widget::HistoryControl> {
+    crate::widget::capability::capability::<dyn crate::widget::WindowHistory>(root)
+        .and_then(crate::widget::WindowHistory::window_history_control)
+        .or_else(|| history.and_then(window_control))
+}
+
+/// Run the window's History `control` where [`offered_control`] found it.
+pub(crate) fn press_offered(
+    root: &mut dyn crate::widget::Widget,
+    history: Option<&mut HistoryHost>,
+    control: crate::widget::HistoryControl,
+) -> Result<(), String> {
+    match crate::widget::capability::capability_mut::<dyn crate::widget::WindowHistory>(root) {
+        Some(offered) if offered.window_history_control().is_some() => {
+            offered.invoke_window_history_control(control)
+        }
+        _ => press_window_control(history.ok_or("History is unavailable")?, control),
+    }
+}
+
 /// Make the History `registration` asks for, over `doc`.
 pub(crate) fn make_history(
     registration: HistoryRegistration,
