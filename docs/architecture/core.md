@@ -1161,7 +1161,12 @@ everything else is visibly optional:
   `tilo migrate`. A migration is a resource with actions (sources, review,
   choose, start, status, undo) on a provider, and its window is a tilolang
   view of that resource. People, agents and the CLI use the same actions;
-  there is no second import window.
+  there is no second import window. The migration's review, choices and
+  record of what has arrived are fields of that resource, so they sync and
+  survive a restart. The provider runs in the daemon of the device that holds
+  the data. A run is an invocation of `start`: its progress and its asks (a
+  secret, a choice) are that invocation's records, and stopping it cancels
+  the invocation. No migration state lives in files on one computer.
 - `tools/`: the dev VM, app CLIs, examples and test fakes.
 
 A crate moves to its group in the push that removes what it duplicates, not
