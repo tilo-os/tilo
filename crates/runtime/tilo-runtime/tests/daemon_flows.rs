@@ -210,3 +210,46 @@ fn an_invitation_made_at_start_names_the_relay_and_another_person_joins_with_it(
         );
     });
 }
+
+/// What the workspace keeps outlives its daemon: an invitation made before the computer restarts
+/// it is listed after, to a device of the person's dialling the next daemon, and a key reads the
+/// workspace again.
+#[test]
+fn what_the_workspace_keeps_is_there_after_the_daemon_restarts() {
+    host::run(|host| async move {
+        let workspace = host.workspace().to_owned();
+        let governance = tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER;
+        let at =
+            |operation| tilo_actions::remote::workspace_governance_address(&workspace, operation);
+        let invited = host
+            .member("Ada's laptop", &workspace)
+            .await
+            .call(governance, at("invite"), &json!({"role": "editor"}))
+            .await;
+        let Ok(tilo_actions::InvocationUpdate::Succeeded { output, .. }) = &invited else {
+            panic!("the person's laptop invites: {invited:?}");
+        };
+        let invite = output.value.as_ref().expect("the invitation")["invite"]
+            .as_str()
+            .expect("its id")
+            .to_owned();
+
+        host.restart().await;
+
+        let listed = host
+            .member("Ada's phone", &workspace)
+            .await
+            .call(governance, at("invitation.list"), &json!({}))
+            .await;
+        let Ok(tilo_actions::InvocationUpdate::Succeeded { output, .. }) = &listed else {
+            panic!("the person's phone lists the invitations: {listed:?}");
+        };
+        let listed = output.value.as_ref().expect("the invitations").to_string();
+        assert!(listed.contains(&invite), "{invite} is still open: {listed}");
+        let (status, read) = host
+            .key("Visa backend")
+            .get(&format!("/v1/workspaces/{workspace}/resources"))
+            .await;
+        assert_eq!(status, 200, "{read}");
+    });
+}

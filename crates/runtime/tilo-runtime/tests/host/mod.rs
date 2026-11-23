@@ -16,6 +16,7 @@
 //! | [`Host::member`], then [`Member::call`] | another device of the person, over `tilo-actions/1` |
 //! | [`Host::visitor`] | a key the workspace has no certificate for ([`Caller::visitor`]) |
 //! | [`stranger`], then [`endpoint`] | another person's computer, dialling through the relay |
+//! | [`Host::restart`] | the computer restarting its daemon on the same home |
 //! | [`Host::dispatch`] | the daemon's one dispatch, as the person's own call |
 //!
 //! Each test runs in a process of its own, with a home, identity store and profile of its own:
@@ -53,7 +54,7 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
@@ -155,7 +156,11 @@ fn own_process(test: &str) {
 
 /// The daemon a test runs against, and its person.
 pub struct Host {
-    daemon: Arc<Daemon>,
+    /// The daemon running now: [`Host::restart`] stops it and starts the next on the same home.
+    daemon: Mutex<Option<Arc<Daemon>>>,
+    profile: PathBuf,
+    workspace: String,
+    person: String,
     /// The person's root, kept here as the computer that founded them keeps it: what certifies
     /// their keys and devices.
     root: tilo_enrollment::root::PersonSigner,
@@ -171,32 +176,67 @@ impl Host {
         let root = tilo_enrollment::root::PersonSigner::new(
             tilo_identity::store::load_from_path(active).unwrap(),
         );
-        Self { daemon, root }
+        Self {
+            workspace: daemon.workspace().to_owned(),
+            person: daemon.actor().to_owned(),
+            daemon: Mutex::new(Some(daemon)),
+            profile: profile.to_owned(),
+            root,
+        }
     }
 
-    /// The daemon itself.
+    /// The daemon running now.
     #[must_use]
-    pub fn daemon(&self) -> &Arc<Daemon> {
-        &self.daemon
+    pub fn daemon(&self) -> Arc<Daemon> {
+        Arc::clone(
+            self.daemon
+                .lock()
+                .unwrap()
+                .as_ref()
+                .expect("a daemon runs between restarts"),
+        )
+    }
+
+    /// Stop the daemon and start it again on the same home, as the computer does when it
+    /// restarts: what it kept is read back. Keys and devices made before reach the stopped
+    /// one, so the test drops them first and makes new ones.
+    ///
+    /// # Panics
+    ///
+    /// When something still holds the stopped daemon, or the next one does not start.
+    pub async fn restart(&self) {
+        let stopped = self.daemon.lock().unwrap().take().expect("a daemon runs");
+        let stopped = Arc::try_unwrap(stopped)
+            .unwrap_or_else(|_| panic!("a key or agent of the test still holds the daemon"));
+        let profile = self.profile.clone();
+        // A computer stops its daemon and starts the next outside any runtime of its own.
+        let started = tokio::task::spawn_blocking(move || {
+            drop(stopped);
+            Daemon::start_reporting(&profile, &mut |_| {}).unwrap()
+        })
+        .await
+        .unwrap();
+        assert_eq!(started.workspace(), self.workspace, "the same workspace");
+        *self.daemon.lock().unwrap() = Some(Arc::new(started));
     }
 
     /// The workspace the daemon founded for its person.
     #[must_use]
     pub fn workspace(&self) -> &str {
-        self.daemon.workspace()
+        &self.workspace
     }
 
     /// The person, by their id: the hex of their root.
     #[must_use]
     pub fn person(&self) -> &str {
-        self.daemon.actor()
+        &self.person
     }
 
     /// The daemon's one dispatch in its founded workspace, as the person's own call: what the
     /// desktop, `tilo do` and the person's apps reach.
     #[must_use]
     pub fn dispatch(&self) -> Arc<dyn ActionProvider + Send + Sync> {
-        Arc::new(self.daemon.action_provider().unwrap())
+        Arc::new(self.daemon().action_provider().unwrap())
     }
 
     /// The person, as [`Self::dispatch`] admits them.
@@ -224,7 +264,7 @@ impl Host {
             DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
         );
         let direct = tilo_api::direct::Direct::here(
-            Arc::clone(&self.daemon) as Arc<dyn tilo_api::session::Here>,
+            self.daemon() as Arc<dyn tilo_api::session::Here>,
             key,
             cert,
             label,
@@ -237,7 +277,7 @@ impl Host {
     /// its client, in the founded workspace.
     #[must_use]
     pub fn agent(&self) -> Agent {
-        let session = self.daemon.mcp_session_factory(self.workspace()).unwrap()().unwrap();
+        let session = self.daemon().mcp_session_factory(self.workspace()).unwrap()().unwrap();
         Agent {
             session,
             calls: std::sync::atomic::AtomicU64::new(1),
@@ -248,7 +288,7 @@ impl Host {
     /// the device link (`tilo-actions/1`), as their laptop or phone does.
     pub async fn member(&self, label: &str, workspace: &str) -> Member {
         let (key, cert) = self.certify(label, DeviceCapabilities::member());
-        self.daemon
+        self.daemon()
             .workspaces()
             .enter(workspace, &cert)
             .await
@@ -272,7 +312,7 @@ impl Host {
             .await
             .unwrap();
         let service = ActionService::new(key.clone(), Arc::new(NoActions));
-        let remote = Arc::new(service.remote(&endpoint, &self.daemon.endpoint_addr(), workspace));
+        let remote = Arc::new(service.remote(&endpoint, &self.daemon().endpoint_addr(), workspace));
         Member {
             remote,
             _service: service,
