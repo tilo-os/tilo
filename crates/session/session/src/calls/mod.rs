@@ -114,10 +114,20 @@ impl Calls {
         let mut people: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut cameras: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut screens: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut bridges: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let devices = callers_in(&live);
         for call in &live {
             let in_call = people.entry(call.channel.clone()).or_default();
             for caller in &call.people {
+                // A bridge is where the call is heard besides, not someone in it: its voice is
+                // played, and it shows as the service it reaches.
+                if let Some(service) = &caller.bridge {
+                    bridges
+                        .entry(call.channel.clone())
+                        .or_default()
+                        .insert(service.clone());
+                    continue;
+                }
                 let Some(person) = &caller.user else {
                     continue;
                 };
@@ -154,7 +164,7 @@ impl Calls {
                 screens.entry(channel.clone()).or_default().insert(person);
             }
         }
-        let rosters = rosters_of(people, cameras, screens);
+        let rosters = rosters_of(people, cameras, screens, bridges);
         let said = format!("{rosters:?}");
         let moved = {
             let mut last = self.said.lock_recover();
@@ -358,11 +368,12 @@ struct People {
 }
 
 /// The rosters each of the workspace's voice channels shows, as everyone in them says: who is in a
-/// call there, and who has a camera or screen on.
+/// call there, who has a camera or screen on, and where a bridge carries it.
 fn rosters_of(
     people: BTreeMap<String, BTreeSet<String>>,
     mut cameras: BTreeMap<String, BTreeSet<String>>,
     mut screens: BTreeMap<String, BTreeSet<String>>,
+    mut bridges: BTreeMap<String, BTreeSet<String>>,
 ) -> Vec<Roster> {
     people
         .into_iter()
@@ -373,6 +384,11 @@ fn rosters_of(
                 .into_iter()
                 .collect(),
             screens: screens
+                .remove(&channel_id)
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
+            bridges: bridges
                 .remove(&channel_id)
                 .unwrap_or_default()
                 .into_iter()
@@ -389,7 +405,8 @@ fn rosters_of(
 fn callers_in(live: &[LiveCall]) -> BTreeMap<String, BTreeMap<[u8; 32], String>> {
     let mut devices: BTreeMap<String, BTreeMap<[u8; 32], String>> = BTreeMap::new();
     for call in live {
-        for caller in &call.people {
+        // A bridge sends no pictures and is nobody's tile.
+        for caller in call.people.iter().filter(|caller| caller.bridge.is_none()) {
             let Some(person) = &caller.user else {
                 continue;
             };

@@ -679,7 +679,14 @@ impl ChatApp {
         if let Some(error) = self.media_error.clone() {
             return error;
         }
-        self.call_connection_label()
+        let connection = self.call_connection_label();
+        match self.call_bridged_note(&self.call.channel) {
+            Some(note) => crate::i18n::t_args(
+                "chat-call-status-bridged",
+                &[("connection", connection.into()), ("note", note.into())],
+            ),
+            None => connection,
+        }
     }
 
     pub(crate) fn draw_huddle_bg(
@@ -844,11 +851,15 @@ impl ChatApp {
             );
             x += icon_side + f64::from(theme.tokens.metrics.icon_label_gap);
         }
-        let status = self
-            .media_error
-            .clone()
-            .filter(|_| self.native_voice.ended_for_a_reason())
-            .unwrap_or_else(|| self.call_connection_label());
+        let bridged = self
+            .call_bridged_note(&self.call.channel)
+            .filter(|_| self.native_voice.snapshot.state == ui::native_media::State::Live);
+        let status = match (self.media_error.clone(), bridged) {
+            (Some(reason), _) if self.native_voice.ended_for_a_reason() => reason,
+            // Connected, and where everyone's voice goes besides.
+            (_, Some(note)) => note,
+            _ => self.call_connection_label(),
+        };
         line_in(
             &mut PaintCtx::new(scene, tf, tr, theme),
             &status,

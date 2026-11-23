@@ -328,6 +328,7 @@ fn call_presence() -> String {
     ui::CallPresence {
         channel: CHANNEL.to_owned(),
         name: "Standup".to_owned(),
+        bridge: None,
     }
     .encode()
 }
@@ -1238,6 +1239,7 @@ fn a_channels_roster_says_who_has_a_camera_or_screen_on() {
         call: ui::CallPresence {
             channel: CHANNEL.to_owned(),
             name: "Standup".to_owned(),
+            bridge: None,
         },
         camera: true,
         screen: false,

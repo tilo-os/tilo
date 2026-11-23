@@ -64,7 +64,10 @@ tilo-secrets = { path = "../../../crates/platform/tilo-secrets" }
 # The bridge end to end: its program on a workspace's host, with this binary.
 tilo-server = { path = "../../../crates/server/tilo-server", features = ["agents"] }
 # The record of an app a workspace keeps and seeds, as the bridge's host names it.
-tilo-workspace-service = { path = "../../../crates/server/tilo-workspace-service", features = ["agents"] }
+tilo-workspace-service = { path = "../../../crates/server/tilo-workspace-service", features = ["agents", "test-support"] }
+tilo-server-protocol = { path = "../../../crates/server/tilo-server-protocol" }
+# The workspace's live session a member's device takes part in the bridged call on.
+tilo-live = { path = "../../../crates/collab/tilo-live", features = ["relay"] }
 tilo-agent-session = { path = "../../../crates/agent/agent-session" }
 tilo-automation = { path = "../../../crates/collab/automation" }
 tilo-user-identity = { path = "../../../crates/collab/tilo-user-identity" }

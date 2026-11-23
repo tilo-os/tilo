@@ -67,6 +67,9 @@ chat-call-status = Anrufstatus
 
 # Die Verbindungszeile unter dem Video des Anrufffensters.
 chat-call-connected = Verbunden
+chat-call-bridged = Dieser Anruf ist mit { $services } verbunden
+chat-call-bridged-short = Verbunden mit { $services }
+chat-call-status-bridged = { $connection }. { $note }
 chat-call-member = { $name }: Lautstärke und Stummschaltung für dich
 chat-call-silence = Für mich stummschalten
 chat-call-volume = Lautstärke { $percent } %

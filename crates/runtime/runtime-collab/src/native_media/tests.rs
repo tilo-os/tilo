@@ -484,5 +484,10 @@ tilo_test_env::scenario! {
         assert!(roster.valid());
         roster.deafened = vec![person(2)];
         assert!(!roster.valid(), "the deafened are among the muted");
+        roster.deafened = vec![person(1)];
+        roster.bridges = vec!["discord".into()];
+        assert!(roster.valid(), "a bridged call names the service it reaches");
+        roster.bridges = vec!["Discord ".into()];
+        assert!(!roster.valid(), "a service is named by its id");
     }
 }

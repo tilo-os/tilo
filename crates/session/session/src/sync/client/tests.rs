@@ -328,6 +328,7 @@ tilo_test_env::scenario! {
         let voice = ui::CallPresence {
             channel: "c_voice".to_owned(),
             name: "Voice".to_owned(),
+            bridge: None,
         };
         let in_voice = |call: Option<String>| PeerPresencePayload::Availability {
             state: "available".to_owned(),
@@ -405,6 +406,7 @@ tilo_test_env::scenario! {
         let voice = ui::CallPresence {
             channel: "c_voice".to_owned(),
             name: "Voice".to_owned(),
+            bridge: None,
         };
         assert!(mine.in_call(Some(InCall {
             call: voice.clone(),

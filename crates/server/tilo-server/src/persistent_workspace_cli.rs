@@ -1667,7 +1667,7 @@ pub(crate) async fn run(
                 discord_api_base: persistent.discord_api_base.clone(),
             },
         );
-        let (runners, discord) = start_bots(
+        let (mut runners, discord) = start_bots(
             &workspaces,
             &workspace,
             &server_cert,
@@ -1681,6 +1681,21 @@ pub(crate) async fn run(
         if let Some(discord) = &discord {
             offer_sign_in(discord, &persistent).await;
         }
+        // The bridge carries the workspace's calls to Discord's voice channels
+        // as the host's own device in the workspace's live session.
+        runners.extend(discord.as_ref().and_then(|discord| {
+            let relay = hosted.server.live_relay()?;
+            Some(tokio::spawn(
+                tilo_server::workspace_bots::discord_voice::VoiceBridge::new(
+                    workspaces.clone(),
+                    workspace.clone(),
+                    server_cert.clone(),
+                    relay,
+                    Arc::clone(discord),
+                )
+                .run(),
+            ))
+        }));
         // The files members post in the workspace's Chat, kept in the same store
         // as what the bots fetch, so they stay once their poster left.
         let posted = connector_host

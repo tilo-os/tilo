@@ -253,6 +253,14 @@ impl ChatApp {
             if !people.is_empty() {
                 item = item.children(people).expanded();
             }
+            // Before anyone joins: whose voices this channel's call also reaches.
+            let services = self.call_bridges(&channel.id);
+            if !services.is_empty() {
+                item = item.secondary(crate::i18n::t_args(
+                    "chat-call-bridged-short",
+                    &[("services", services.join(", ").into())],
+                ));
+            }
         }
         item
     }

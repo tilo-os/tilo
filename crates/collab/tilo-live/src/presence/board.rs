@@ -128,7 +128,7 @@ impl LiveCall {
         };
         self.people
             .iter()
-            .any(|caller| caller.user.as_deref() == Some(person))
+            .any(|caller| caller.bridge.is_none() && caller.user.as_deref() == Some(person))
     }
 }
 
@@ -146,6 +146,10 @@ pub struct LiveCaller {
     pub camera: bool,
     /// The device shares its screen in the call.
     pub screen: bool,
+    /// The service this device bridges the call to (`discord`), when it is a
+    /// bridge rather than a person: the call is shown as bridged there, and
+    /// this caller as nobody's face.
+    pub bridge: Option<String>,
 }
 
 /// Someone else here, as their frames and their certificate tell it.
@@ -1050,6 +1054,7 @@ impl Board {
                 user: member.user.clone(),
                 camera: presence.camera,
                 screen: presence.screen,
+                bridge: presence.call.bridge.clone(),
             };
             match calls
                 .iter_mut()

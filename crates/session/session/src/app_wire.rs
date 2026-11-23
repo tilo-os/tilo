@@ -1661,6 +1661,7 @@ impl AppWire {
             call: ui::CallPresence {
                 channel: call.channel.clone(),
                 name,
+                bridge: None,
             },
             camera: call.camera,
             screen: call.screen,

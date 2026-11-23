@@ -469,6 +469,7 @@ fn bot_replica(
 
 pub mod attachments;
 pub mod discord;
+pub mod discord_voice;
 pub mod installed;
 pub mod membership;
 pub mod requested;

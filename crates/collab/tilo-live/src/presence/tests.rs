@@ -37,6 +37,7 @@ tilo_test_env::scenario! {
                     CallPresence {
                         channel: "c_voice".into(),
                         name: "voice".into(),
+                        bridge: None,
                     }
                     .encode(),
                 ),

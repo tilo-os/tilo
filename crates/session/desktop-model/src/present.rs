@@ -85,6 +85,7 @@ mod tests {
             call: Some(CallPresence {
                 channel: "voice".into(),
                 name: "Standup".into(),
+                bridge: None,
             }),
             status: Some(Status {
                 text: "Writing in Launch notes".into(),

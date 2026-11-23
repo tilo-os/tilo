@@ -339,6 +339,7 @@ fn channel_call() -> String {
     ui::CallPresence {
         channel: CHANNEL.to_owned(),
         name: "Standup".to_owned(),
+        bridge: None,
     }
     .encode()
 }
@@ -591,6 +592,7 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
                 ui::CallPresence {
                     channel: "c_standup".to_owned(),
                     name: "Standup".to_owned(),
+                    bridge: None,
                 }
                 .encode(),
             ),

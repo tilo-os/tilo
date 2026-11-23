@@ -591,6 +591,32 @@ type CallLayoutInputs = (
 );
 
 impl crate::app::ChatApp {
+    /// The services a bridge carries `channel`'s call to, as words (`Discord`): empty for a call
+    /// only Tilo people hear.
+    pub(crate) fn call_bridges(&self, channel: &str) -> Vec<String> {
+        self.native_voice
+            .snapshot
+            .rosters
+            .iter()
+            .filter(|roster| roster.channel_id == channel)
+            .flat_map(|roster| &roster.bridges)
+            .map(|service| ui::author::service_label(service))
+            .filter(|label| !label.is_empty())
+            .collect()
+    }
+
+    /// "This call is bridged to Discord": where everyone's voice in `channel`'s call also goes,
+    /// or `None` when it stays in Tilo.
+    pub(crate) fn call_bridged_note(&self, channel: &str) -> Option<String> {
+        let services = self.call_bridges(channel);
+        (!services.is_empty()).then(|| {
+            crate::i18n::t_args(
+                "chat-call-bridged",
+                &[("services", services.join(", ").into())],
+            )
+        })
+    }
+
     pub(crate) fn native_voice_command(
         &mut self,
         channel: &str,
