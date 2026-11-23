@@ -1437,6 +1437,11 @@ fn broker_services(
             ]
             .concat(),
         ),
+        // What this device's embedder registered is answered by the device's daemon, which keeps
+        // the registry and admits every call of it, from this device and from others alike.
+        providers: BrokerService::unserved(
+            "a provider the device registers is answered by the device's daemon",
+        ),
     }
 }
 

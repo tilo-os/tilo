@@ -749,6 +749,9 @@ pub struct ProcessServices {
     pub keyboard_shortcuts: Option<Arc<dyn KeyboardShortcutServices>>,
     /// The steps the host runs itself, each under its own provider.
     pub host_steps: Vec<Arc<dyn HostStepServices>>,
+    /// The providers this device's embedder registered ([`crate::workspaces::Workspaces::provide`]):
+    /// a call on this device reaches them as another device's does.
+    pub providers: Option<crate::workspaces::providers::Providers>,
     pub continuations: Option<Arc<dyn ContinuationServices>>,
     /// The session's persistent search index; without it apps' content is findable only while
     /// they run.
@@ -836,6 +839,7 @@ impl ProcessServices {
         "shortcut_library",
         "keyboard_shortcuts",
         "host_steps",
+        "providers",
         "continuations",
         "search_index",
         "document_index_changes",

@@ -52,6 +52,7 @@ pub use content::{ContentKeeper, WholeDocuments, WorkspaceContent};
 mod device_actions;
 mod follow;
 mod founding;
+pub mod providers;
 mod removals;
 #[cfg(test)]
 mod work_tests;
@@ -1794,7 +1795,15 @@ impl Workspaces {
         provider: &'static str,
         answers: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
     ) {
-        self.inner.jobs.provide(provider, answers);
+        self.inner.jobs.providers.provide(provider, answers);
+    }
+
+    /// The providers registered with [`Self::provide`], as this device's dispatch reaches them
+    /// for a call made on this device: the same registry, and the same admission, a call from
+    /// another device meets.
+    #[must_use]
+    pub fn providers(&self) -> providers::Providers {
+        self.inner.jobs.providers.clone()
     }
 
     /// Answer the workspaces' governance actions their member devices ask on the device action

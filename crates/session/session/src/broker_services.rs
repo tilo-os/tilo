@@ -125,6 +125,7 @@ broker_services! {
     shortcut_library: Arc<dyn ShortcutLibraryServices>,
     keyboard_shortcuts: Arc<dyn KeyboardShortcutServices>,
     host_steps: Vec<Arc<dyn HostStepServices>> => default,
+    providers: tilo_workspace_service::workspaces::providers::Providers,
     continuations: Arc<dyn ContinuationServices>,
     search_index: Arc<dyn SearchIndexServices>,
     document_index_changes: Arc<dyn DocumentIndexChanges>,

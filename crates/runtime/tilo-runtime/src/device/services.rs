@@ -241,10 +241,11 @@ impl Daemon {
         &self.workspaces
     }
 
-    /// Answer the requests on this device's action service (`tilo-actions/1`) that name
-    /// `provider` with `answers`. The workspace a request asks in admits the asking device to the
-    /// action by its ordinary grants, read from this device's own copy of the workspace, before
-    /// `answers` sees it; a provider decides no grant itself.
+    /// Answer the calls that name `provider` with `answers`: another device's over this device's
+    /// action service (`tilo-actions/1`), and this device's own through its dispatch (`tilo do`,
+    /// an agent's `tilo_do`, a view's button). The workspace a call asks in admits the caller's
+    /// device to the action by its ordinary grants, read from this device's own copy of the
+    /// workspace, before `answers` sees it; a provider decides no grant itself.
     pub fn provide(
         &self,
         provider: &'static str,
@@ -848,6 +849,9 @@ fn broker_services(
             parts.workspaces,
             parts.shell_links,
         ))),
+        // What this device's embedder registered ([`Daemon::provide`]): a call made here reaches
+        // it through the same registry and admission as another device's call.
+        providers: Some(parts.workspaces.copies().providers()),
         ..ProcessServices::default()
     })
 }
