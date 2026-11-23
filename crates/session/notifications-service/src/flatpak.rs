@@ -30,7 +30,7 @@ pub(crate) fn verified_flatpak_app_id_from(
 ) -> Option<String> {
     let proc = proc_root.join(pid.to_string());
     let app_id = flatpak_application_id(&proc.join("root/.flatpak-info"))?;
-    let cgroup = read_bounded(&proc.join("cgroup"), 16 * 1024)?;
+    let cgroup = read_text(&proc.join("cgroup"), 16 * 1024)?;
     if !flatpak_cgroup_matches(&cgroup, &app_id) {
         return None;
     }
@@ -45,9 +45,9 @@ pub(crate) fn verified_flatpak_app_id_from(
         .then_some(app_id)
 }
 
-fn read_bounded(path: &Path, max_bytes: u64) -> Option<String> {
-    let metadata = std::fs::metadata(path).ok()?;
-    (metadata.len() <= max_bytes).then(|| std::fs::read_to_string(path).ok())?
+fn read_text(path: &Path, max_bytes: u64) -> Option<String> {
+    let bytes = tilo_files::native::bounded::read(path, max_bytes).ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 pub(crate) fn valid_app_id(id: &str) -> bool {
@@ -59,7 +59,7 @@ pub(crate) fn valid_app_id(id: &str) -> bool {
 }
 
 fn flatpak_application_id(info_path: &Path) -> Option<String> {
-    let info = read_bounded(info_path, 16 * 1024)?;
+    let info = read_text(info_path, 16 * 1024)?;
     let mut application_section = false;
     for line in info.lines() {
         let line = line.trim();
@@ -209,6 +209,31 @@ mod tests {
             assert!(!valid_app_id(""));
             assert!(!valid_app_id("org/example"));
             assert!(!valid_app_id(&"a".repeat(161)));
+        }
+
+        phase proc_and_oversized_files_are_refused_within_the_byte_bound;
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            assert_eq!(read_text(&tmp.path().join("missing"), 16), None);
+
+            let exact = tmp.path().join("exact");
+            std::fs::write(&exact, "a".repeat(16)).expect("exact");
+            assert_eq!(read_text(&exact, 16).as_deref(), Some("aaaaaaaaaaaaaaaa"));
+
+            let over = tmp.path().join("over");
+            std::fs::write(&over, "a".repeat(17)).expect("over");
+            assert_eq!(read_text(&over, 16), None);
+
+            #[cfg(target_os = "linux")]
+            {
+                let stat = Path::new("/proc/self/stat");
+                assert_eq!(std::fs::metadata(stat).expect("stat").len(), 0);
+                assert_eq!(
+                    read_text(stat, 16),
+                    None,
+                    "a source yielding more bytes than its metadata claimed must be refused"
+                );
+            }
         }
     }
 }
