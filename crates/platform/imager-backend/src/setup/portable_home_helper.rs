@@ -20,11 +20,7 @@ fn failure() -> io::Error {
     io::Error::other("Portable home could not be authenticated or adopted")
 }
 fn path(values: &BTreeMap<String, OsString>, key: &str) -> io::Result<PathBuf> {
-    let path = PathBuf::from(values.get(key).ok_or_else(failure)?);
-    if !path.is_absolute() {
-        return Err(failure());
-    }
-    Ok(path)
+    super::helper_arguments::path(values, key, failure)
 }
 fn receipt(path: &Path) -> io::Result<Expectation> {
     let pin = PinnedDirectory::open_absolute(path.parent().ok_or_else(failure)?)?;
@@ -84,30 +80,23 @@ pub fn run_with_admission(
     if !["review", "adopt"].contains(&action) {
         return Err(failure());
     }
+    let receipt_path = path(&values, "--receipt")?;
+    let setup_package = path(&values, "--setup-package")?;
+    let setup_quarantine = path(&values, "--setup-quarantine")?;
+    let grants = HomeImportGrants {
+        package: path(&values, "--package")?,
+        home: path(&values, "--home")?,
+        workspace: path(&values, "--workspace")?,
+    };
     let mut password = Zeroizing::new(Vec::new());
     input.take(4097).read_to_end(&mut password)?;
     if password.is_empty() || password.len() > 4096 || std::str::from_utf8(&password).is_err() {
         return Err(failure());
     }
     let cancel = AtomicBool::new(false);
-    let expectation = receipt(&path(&values, "--receipt")?)?;
-    let setup = PreparedSetupReview::open(
-        &path(&values, "--setup-package")?,
-        &password,
-        &path(&values, "--setup-quarantine")?,
-        &cancel,
-    )?;
-    let mut review = PortableHomeReview::review(
-        HomeImportGrants {
-            package: path(&values, "--package")?,
-            home: path(&values, "--home")?,
-            workspace: path(&values, "--workspace")?,
-        },
-        &setup,
-        &expectation,
-        &password,
-        &cancel,
-    )?;
+    let expectation = receipt(&receipt_path)?;
+    let setup = PreparedSetupReview::open(&setup_package, &password, &setup_quarantine, &cancel)?;
+    let mut review = PortableHomeReview::review(grants, &setup, &expectation, &password, &cancel)?;
     let preview = review.prepare(password, &cancel)?;
     emit(
         output,
