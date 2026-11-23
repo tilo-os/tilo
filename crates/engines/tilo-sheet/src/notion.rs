@@ -150,7 +150,7 @@ fn tables_from_listing(bytes: &[u8], words: &Words) -> Result<Vec<ImportedTable>
     for block in blocks {
         match block.get("type").and_then(Value::as_str) {
             Some("table") => {
-                if let Some(table) = table_of(block) {
+                if let Some(table) = table_of(block, words) {
                     tables.push(table);
                 }
             }
@@ -165,7 +165,7 @@ fn tables_from_listing(bytes: &[u8], words: &Words) -> Result<Vec<ImportedTable>
     Ok(tables)
 }
 
-fn table_of(block: &Value) -> Option<ImportedTable> {
+fn table_of(block: &Value, words: &Words) -> Option<ImportedTable> {
     let rows: Vec<&Value> = block.get("children")?.as_array()?.iter().collect();
     let mut csv = String::new();
     for row in rows {
