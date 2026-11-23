@@ -656,7 +656,10 @@ impl NativeWorkspaceOwner {
     /// entry carries what that write changed. `false` when the workspace is
     /// not held here or its replica encodes other bytes: the store writes a
     /// snapshot first then.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(dead_code, reason = "the journal is the host's own file record")
+    )]
     pub(crate) fn resume_journal(
         &self,
         workspace: WorkspaceId,
