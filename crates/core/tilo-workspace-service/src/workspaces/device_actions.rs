@@ -1104,8 +1104,9 @@ impl super::Workspaces {
 
     /// Keep that this device answered the schedule at `trigger` of the
     /// automation `automation`, marked `mark`, through `answered_ms`: the
-    /// progress whichever device fires it next carries on from.
-    #[cfg(feature = "apps")]
+    /// progress whichever device fires it next carries on from. The trigger
+    /// runner is an apps build's with agents, and it is the runner's to ask.
+    #[cfg(all(feature = "apps", feature = "agents"))]
     pub(crate) async fn answer_schedule(
         &self,
         workspace: &str,
