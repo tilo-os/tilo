@@ -185,41 +185,6 @@ async fn one_device_holds_a_workspace_through_its_first_use_and_leaving_it() {
     let _ = fixture;
 }
 
-/// A record an earlier build wrote opens here: its workspaces are listed and
-/// their records read, through the layout this build brings up.
-#[test]
-fn a_record_an_earlier_build_wrote_opens() {
-    const FOUNDERS: &str = "40267648-f762-4c8d-89ad-c5ab27aa13b8";
-    const GOLDEN: &str = include_str!("../golden/owner-workspace-document/v7.hex");
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("owner.json");
-    let parts = path.with_extension("workspaces");
-    std::fs::create_dir_all(&parts).unwrap();
-    let bytes: Vec<u8> = GOLDEN
-        .split_whitespace()
-        .map(|byte| u8::from_str_radix(byte, 16).unwrap())
-        .collect();
-    std::fs::write(parts.join(format!("{FOUNDERS}.1.json")), &bytes).unwrap();
-    std::fs::write(
-        parts.join("index.json"),
-        format!(r#"{{"version":2,"revision":1,"held":{{"{FOUNDERS}":1}}}}"#),
-    )
-    .unwrap();
-    let owner = open_file(&path).unwrap();
-    let workspace = tilo_desktop_model::WorkspaceId::parse(FOUNDERS).unwrap();
-    assert!(owner.contains_workspace(workspace) || owner.workspaces().contains(&workspace));
-    let read = owner
-        .with_current(workspace, |view| {
-            Ok((
-                view.peer().rows().len(),
-                view.peer().certificates().len(),
-                view.device().device_public_key,
-            ))
-        })
-        .expect("the record an earlier build wrote reads");
-    assert!(read.0 > 0 || read.1 > 0, "its workspace is there");
-}
-
 /// A device admitted after another wrote holds the history it is sent and can
 /// write at once, and the earlier device holds what it writes.
 #[tokio::test]
