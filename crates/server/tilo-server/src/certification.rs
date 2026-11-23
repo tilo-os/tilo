@@ -1323,6 +1323,63 @@ mod confirmation_tests {
         assert_eq!(waiting.await.unwrap(), Ok(ConfirmationAnswer::AllowOnce));
     }
 
+    /// A question put to one person is theirs alone to answer, and only by what it offers:
+    /// another person's answer is refused and never shown them, an always the question did not
+    /// offer is refused and settles nothing, and the offered answer reaches the asker once.
+    #[tokio::test]
+    async fn a_question_is_answered_only_by_its_person_and_only_as_it_offers() {
+        let protocol = protocol();
+        let ada = [21; 32];
+        let bo = [22; 32];
+        let waiting = tokio::spawn({
+            let protocol = protocol.clone();
+            async move {
+                protocol
+                    .confirm_for(ada, question(3, Duration::from_secs(30)))
+                    .await
+            }
+        });
+        while protocol.pending_for(&ada).is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            !protocol.pending_for(&ada)[0].allow_always,
+            "this question offers no always"
+        );
+        assert_eq!(
+            protocol.pending_for(&bo),
+            Vec::new(),
+            "another person is not shown it"
+        );
+        assert!(
+            protocol
+                .answer_for(&bo, [3; 32], ConfirmationAnswer::AllowOnce)
+                .is_err(),
+            "another person's answer is refused"
+        );
+        assert!(
+            protocol
+                .answer_for(&ada, [3; 32], ConfirmationAnswer::AllowAlways)
+                .is_err(),
+            "an always the question did not offer is refused"
+        );
+        assert!(
+            !waiting.is_finished(),
+            "neither refused answer settled the question"
+        );
+        assert_eq!(
+            protocol.answer_for(&ada, [3; 32], ConfirmationAnswer::AllowOnce),
+            Ok(())
+        );
+        assert_eq!(waiting.await.unwrap(), Ok(ConfirmationAnswer::AllowOnce));
+        assert!(
+            protocol
+                .answer_for(&ada, [3; 32], ConfirmationAnswer::AllowOnce)
+                .is_err(),
+            "an answered question takes no second answer"
+        );
+    }
+
     fn member_request(
         member: &ed25519_dalek::SigningKey,
         device: &ed25519_dalek::SigningKey,
