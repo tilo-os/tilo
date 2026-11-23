@@ -61,6 +61,11 @@ pub mod documents;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod environment;
+/// The tokens a host's fetch proxy takes, minted when a page asks its host
+/// for one; the proxy admits the person each names.
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub mod fetch_grants;
 /// A workspace's file tree, held in the device's own service.
 #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
 pub mod files;

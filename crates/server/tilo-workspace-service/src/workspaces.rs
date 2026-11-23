@@ -975,6 +975,9 @@ pub(crate) struct WorkspaceServices {
     /// The apps this host serves, when its embedder serves any: what its
     /// devices reach on its action service ([`crate::app_serving::Served`]).
     pub(crate) apps: Option<Arc<dyn crate::app_serving::AppActionServer>>,
+    /// The tokens this host's fetch proxy takes, which the host mints for a
+    /// page that asks it ([`tilo_server_protocol::workspaces::FETCH_GRANT`]).
+    pub(crate) fetch_grants: Arc<crate::fetch_grants::Grants>,
 }
 
 impl WorkspaceServices {

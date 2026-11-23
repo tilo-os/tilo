@@ -1,7 +1,8 @@
 //! A page's apps read a site without CORS headers through the workspace
-//! host it is admitted to: the host says it serves the fetch proxy when the
-//! session starts, the page sends its session with each proxied request,
-//! and the answer reads like the site's own (tilo-net wire protocol v1).
+//! host it is admitted to: the page asks the host for a token over its
+//! actions link, sends it with each proxied request, and the answer reads
+//! like the site's own (tilo-net wire protocol v1). A person the host admits
+//! no workspace of is refused the token.
 
 #![allow(
     clippy::unwrap_used,
@@ -158,6 +159,35 @@ async fn an_admitted_page_reads_a_site_without_cors_through_its_host() {
         }
     })
     .await;
+    // A person this host admits no workspace of asks for a token over its own
+    // actions link and is refused one, so their page has nothing to send the
+    // proxy.
+    let (outsider_root, _) = UserIdentity::generate("Mallory", 2);
+    let outsider_device = enrol(&outsider_root, "browser", DeviceCapabilities::member());
+    let outsider = start_peer(
+        host.iroh(),
+        outsider_device.cert.clone(),
+        host_device.cert.clone(),
+        outsider_device.key.clone(),
+    );
+    wait_for("the host to refuse the outsider", || {
+        let refused = !outsider.status().failures.is_empty();
+        async move { refused.then_some(()) }
+    })
+    .await;
+    // The grant is asked as soon as the actions link opens, before the
+    // workspace links are dialled; a token arriving late would still be a
+    // token the proxy takes.
+    let settled = tokio::time::Instant::now() + std::time::Duration::from_millis(250);
+    while tokio::time::Instant::now() < settled {
+        assert_eq!(
+            outsider.fetch_proxy_session(),
+            None,
+            "a page of a person the host admits no workspace of was granted a token"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    outsider.close();
     peer.close();
 }
 

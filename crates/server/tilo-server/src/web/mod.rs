@@ -242,9 +242,9 @@ struct Web {
     /// Members' profiles, for `/profile`.
     profiles: Arc<profiles::Profiles>,
     /// The fetch proxy, when [`WebConfig::fetch_proxy`] asked for one, and the
-    /// tokens its pages' sessions take for it.
+    /// tokens this host's pages ask for it.
     fetch: Option<tilo_net::proxy::host::FetchProxy>,
-    grants: Arc<fetch::Grants>,
+    grants: Arc<tilo_workspace_service::fetch_grants::Grants>,
     /// The links to the workspaces' files this host serves.
     content_links: Arc<crate::content_links::ContentLinks>,
     /// The live session: the one account of who is here.
@@ -625,6 +625,10 @@ async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
     let acceptor =
         tokio_rustls::TlsAcceptor::from(Arc::new(identity.https_config().map_err(failed)?));
     let fetch = fetch::Serving::start(config.fetch_proxy.as_ref()).map_err(failed)?;
+    // A host that serves a proxy mints the token of each grant its pages ask.
+    if fetch.proxy.is_some() {
+        context.server.fetch_grants.serves();
+    }
     let Some(live) = live else {
         return Err(failed("the server runs no live session".into()));
     };
@@ -668,7 +672,7 @@ async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
         workspaces: workspaces.clone(),
         profiles: Arc::new(profiles::Profiles::new(state_root.join("profiles"))),
         fetch: fetch.proxy,
-        grants: Arc::default(),
+        grants: context.server.fetch_grants.clone(),
         content_links,
         presence: live.authority(),
         page_errors: page_errors::PageErrors::default(),

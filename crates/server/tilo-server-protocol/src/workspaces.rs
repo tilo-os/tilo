@@ -868,6 +868,15 @@ pub const ENTER_WORKSPACE: &str = "workspace.enter";
 /// of its own.
 pub const ADMINISTER_WORKSPACES: &str = "workspace.administer";
 
+/// Grant the asking device a token for the host's fetch proxy: the bearer
+/// token a page sends with each request it makes through its host
+/// ([`FETCH_PATH`](crate::web::FETCH_PATH), as `tilo_net::proxy` names it).
+/// The device proves itself by the signed invocation it asks with; the host
+/// answers `{"token": "<hex>"}` ([`fetch_grant_answer`]), or `{"token":
+/// null}` when it serves no proxy. Only a device of a person the host admits
+/// — its own person, or a member of a workspace it serves — is granted one.
+pub const FETCH_GRANT: &str = "workspace.fetch-grant";
+
 /// The scope a device with no certificate from its host yet asks the entry in: it names no
 /// workspace, and the host answers nothing there but [`ENTER_ENTRY`].
 pub const ENTRY_SCOPE: &str = "workspace.entry";
@@ -1522,6 +1531,43 @@ pub fn administered_reply(value: &serde_json::Value) -> Result<WorkspacesReply, 
         .cloned()
         .ok_or("the host answered no reply")?;
     serde_json::from_value(reply).map_err(|error| error.to_string())
+}
+
+/// The [`FETCH_GRANT`] ask under `invocation`: a page asks its host for the
+/// token its proxied requests carry, over the one actions transport rather
+/// than a request kind of its own.
+#[must_use]
+pub fn fetch_grant_invoke(invocation: tilo_actions::InvocationId) -> InvokeRequest {
+    InvokeRequest {
+        invocation,
+        target: RemoteActionTarget {
+            provider: HOST_ACTIONS_PROVIDER.to_owned(),
+            address: ActionAddress::new(HOST_WORKSPACES_RESOURCE.to_owned(), FETCH_GRANT),
+        },
+        argument: InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
+/// The answer [`FETCH_GRANT`] gives `token` as: the token in hex under
+/// `token`, or `null` when the host serves no proxy.
+#[must_use]
+pub fn fetch_grant_answer(token: Option<[u8; 32]>) -> serde_json::Value {
+    serde_json::json!({ "token": token.map(hex::encode) })
+}
+
+/// The token [`FETCH_GRANT`] answered `value` with: `None` when the host
+/// serves no proxy.
+#[must_use]
+pub fn fetch_grant_token(value: &serde_json::Value) -> Option<[u8; 32]> {
+    let token = value.get("token")?.as_str()?;
+    hex::decode(token).ok()?.try_into().ok()
 }
 
 /// The [`ENTER_ENTRY`] ask for `entering` and this device's `cert`, under `invocation`: what a

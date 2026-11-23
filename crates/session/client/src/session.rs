@@ -859,11 +859,36 @@ impl Task {
             return;
         }
         match self.reach(Purpose::Actions).await {
-            Ok(link) => self.actions = Some(link),
+            Ok(link) => {
+                self.actions = Some(link);
+                self.request_fetch_grant();
+            }
             Err(error) => {
                 tracing::info!(%error, "the host did not answer its action service");
             }
         }
+    }
+
+    /// Ask the host for this session's fetch proxy token, as soon as its actions link is up: the
+    /// page sends it with each request it makes through the host's proxy
+    /// ([`crate::Link::fetch_proxy_session`]). A host that serves no proxy, or refuses this device,
+    /// leaves the page with none.
+    fn request_fetch_grant(&self) {
+        let Some(link) = self.actions.clone() else {
+            return;
+        };
+        let signer = Arc::clone(&self.signer);
+        let cert = self.config.cert.clone();
+        let host = self.config.server_cert.device_public_key;
+        let reports = Arc::clone(&self.reports);
+        n0_future::task::spawn(async move {
+            let Some(token) = ask_fetch_grant(&link, signer, &cert, host).await else {
+                return;
+            };
+            if reports.status().phase != TransportPhase::Closed {
+                reports.set_fetch_proxy(Some(hex::encode(token)));
+            }
+        });
     }
 
     /// Dial the host on `purpose`: a link of its own for each conversation.
@@ -4433,6 +4458,55 @@ fn entry_state(entered: &tilo_server_protocol::entering::Entered) -> crate::Entr
             host: host.clone(),
         },
         Entered::Refused(refusal) => refused_entry(refusal),
+    }
+}
+
+/// Ask the host for this device's fetch proxy token, on the actions link: the
+/// token the page sends with each request it makes through the proxy
+/// ([`tilo_server_protocol::workspaces::FETCH_GRANT`]), or none when the host
+/// serves no proxy or refuses this device.
+async fn ask_fetch_grant(
+    link: &tilo_server_client::link::Link,
+    signer: Arc<dyn tilo_server_client::DeviceSigner>,
+    cert: &DeviceCert,
+    host: [u8; 32],
+) -> Option<[u8; 32]> {
+    use tilo_actions::remote::{ReceiptStatus, RemoteActionFrame, RemoteActionMessage};
+    let mut invoke = tilo_server_protocol::workspaces::fetch_grant_invoke(
+        tilo_actions::InvocationId::new(),
+    );
+    // No workspace's roster names the device here, so the host reads who asks
+    // from the invocation this device signs.
+    invoke.signed = Some(Box::new(
+        tilo_server_protocol::invocation::sign_invocation(
+            "",
+            &invoke,
+            cert,
+            signer.as_ref(),
+            tilo_clock::unix_now_ns(),
+        )
+        .await
+        .ok()?,
+    ));
+    let frame = ask_action(
+        link,
+        signer,
+        cert.device_public_key,
+        "",
+        host,
+        RemoteActionMessage::Invoke(invoke),
+    )
+    .await
+    .ok()?;
+    let message = RemoteActionFrame::decode(&frame).ok()?.message;
+    let RemoteActionMessage::Receipt(receipt) = message else {
+        return None;
+    };
+    match receipt.status {
+        ReceiptStatus::Completed { output } => {
+            tilo_server_protocol::workspaces::fetch_grant_token(&output.value.unwrap_or_default())
+        }
+        _ => None,
     }
 }
 

@@ -243,6 +243,7 @@ impl ServiceSessions {
             environments: crate::environment::EnvironmentRegistry::at(
                 cfg.state_root.join("environments.json"),
             ),
+            fetch_grants: Arc::default(),
         };
         let sessions = Self {
             endpoint: endpoint.clone(),
@@ -354,6 +355,7 @@ impl ServiceSessions {
             member: cfg.member.clone(),
             surfaces: Arc::clone(&cfg.surfaces),
             apps,
+            fetch_grants: self.handler.fetch_grants.clone(),
         }
     }
 
@@ -1220,6 +1222,9 @@ pub struct ServerProtocol {
     /// The devices this service certified for its browser environments, see
     /// [`crate::environment`].
     pub environments: crate::environment::EnvironmentRegistry,
+    /// The tokens this host's fetch proxy takes, minted when a page asks its
+    /// host for one: the listener that serves the proxy takes the same ones.
+    pub fetch_grants: Arc<crate::fetch_grants::Grants>,
 }
 
 impl ServerProtocol {

@@ -831,9 +831,8 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         })
         .unwrap(),
     );
-    // The tokens a page's sessions take as they start, over their own
-    // carrier: one per connection, and the person it names is what the proxy
-    // admits.
+    // The tokens a page asks its host for: one per grant, and the person it
+    // names is what the proxy admits.
     let owner_token = web
         .grants
         .grant(owner.user_public_key, owner.device_public_key)

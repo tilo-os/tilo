@@ -1,26 +1,25 @@
 //! The host's fetch proxy for its members' pages ([`protocol::FETCH_PATH`]):
-//! `tilo_net::proxy::host` behind the browser sessions this listener
-//! authenticates.
+//! `tilo_net::proxy::host` behind the tokens this listener hands out.
 //!
 //! A page reads a site that sends no CORS headers (a feed, a video
 //! directory's API, a calendar subscription) through the workspace host it
-//! is admitted to. Only a member's or guest's device with an open session
-//! may: the host minted its token for that connection as the session started
-//! ([`Grants`]), and its person must be admitted to a workspace here. The proxy
-//! itself enforces destinations, bounds, rates and budgets (see
-//! `tilo_net::proxy::host`);
+//! is admitted to. Only a member's or guest's device may: its page asks the
+//! host for a token
+//! ([`tilo_server_protocol::workspaces::FETCH_GRANT`]) and sends it with each
+//! request, and the person the token names must be admitted to a workspace
+//! here. The proxy itself enforces destinations, bounds, rates and budgets
+//! (see `tilo_net::proxy::host`);
 //! this module adds who may call it, which workspaces' budgets a request counts
 //! against (every workspace here its person is admitted to), and the CORS
 //! headers a page on the web entry's origin needs to read the answer.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use hyper::{Method, Request, Response, header};
 use tilo_net::proxy::ProxyFailure;
 use tilo_net::proxy::host::{Caller, Config, FetchProxy, Workspace};
+use tilo_workspace_service::fetch_grants::Granted;
 
 use super::{Body, Web, protocol, reply};
 
@@ -88,46 +87,6 @@ async fn write_metrics(proxy: FetchProxy, path: PathBuf) {
     }
 }
 
-/// The tokens this listener's fetch proxy takes: one per page, minted when the
-/// page reaches the host and taken back when it leaves.
-#[derive(Default)]
-pub struct Grants {
-    open: Mutex<HashMap<[u8; 32], Holder>>,
-}
-
-/// The device a token was minted for, and the person it is.
-#[derive(Clone, Copy)]
-struct Holder {
-    user: [u8; 32],
-    device: [u8; 32],
-}
-
-impl Grants {
-    /// What `token` names, while its connection holds it.
-    fn holder(&self, token: &[u8; 32]) -> Option<Holder> {
-        self.open.lock().ok()?.get(token).copied()
-    }
-}
-
-impl Grants {
-    /// A token naming a request made for `user` on `device`.
-    pub fn grant(&self, user: [u8; 32], device: [u8; 32]) -> Option<[u8; 32]> {
-        let token: [u8; 32] = rand::random();
-        self.open
-            .lock()
-            .ok()?
-            .insert(token, Holder { user, device });
-        Some(token)
-    }
-
-    /// Take `token` back: the device that held it is gone.
-    pub fn revoke(&self, token: [u8; 32]) {
-        if let Ok(mut open) = self.open.lock() {
-            open.remove(&token);
-        }
-    }
-}
-
 /// Answer one request to the fetch route, or its CORS preflight.
 pub(super) async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<Body> {
     let origin = request.headers().get(header::ORIGIN).cloned();
@@ -188,14 +147,14 @@ async fn caller(
             hex::decode(session).ok()?.try_into().ok()
         })
         .ok_or("the fetch proxy is for pages signed in to this host")?;
-    let Holder { user, device } = web
+    let Granted { person, device } = web
         .grants
-        .holder(&token)
+        .granted(&token)
         .ok_or("the session ended; sign in again")?;
-    let workspaces = member_of(web, user).await;
+    let workspaces = member_of(web, person).await;
     // The person this host runs for may use it before any of their workspaces is
     // bound here: their fetches count against their device's budget alone.
-    if workspaces.is_empty() && user != web.context.server.identity.user_public_key {
+    if workspaces.is_empty() && person != web.context.server.identity.user_public_key {
         return Err("the fetch proxy is for members of a workspace on this host");
     }
     Ok((Caller(device), workspaces))

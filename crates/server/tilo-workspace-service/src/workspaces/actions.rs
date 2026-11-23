@@ -67,7 +67,7 @@ use tilo_actions::{
 };
 use tilo_peer_state::join::Role;
 use tilo_server_protocol::workspaces::{
-    ADMINISTER_WORKSPACES, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
+    ADMINISTER_WORKSPACES, FETCH_GRANT, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
 };
 use tilo_user_identity::DeviceCert;
 use tokio::sync::Mutex as AsyncMutex;
@@ -1568,8 +1568,8 @@ impl Workspaces {
 
     /// Answer one of the host's own operations `request` asks for, as the device `certificate`
     /// certifies: a page's whole administration as one action
-    /// ([`Self::administer_invoke`]), else one of the operations the catalogue publishes
-    /// ([`Self::account_invoke`]).
+    /// ([`Self::administer_invoke`]), a page's fetch proxy token ([`FETCH_GRANT`]), else one of
+    /// the operations the catalogue publishes ([`Self::account_invoke`]).
     async fn host_operation_invoke(
         &self,
         workspace_id: Option<WorkspaceId>,
@@ -1585,7 +1585,41 @@ impl Workspaces {
         {
             return Box::pin(self.administer_invoke(caller, certificate, request)).await;
         }
+        // A page's token for the host's fetch proxy, minted for the device that asks.
+        if request.target.address.resource == HOST_WORKSPACES_RESOURCE
+            && request.target.address.action == FETCH_GRANT
+        {
+            return self.fetch_grant(certificate).await;
+        }
         Box::pin(self.account_invoke(workspace_id, caller, certificate, request, None)).await
+    }
+
+    /// Grant the device `certificate` names a token for this host's fetch
+    /// proxy ([`FETCH_GRANT`]): a page sends it with each request it makes
+    /// through the proxy, which admits the person and device it names. Only a
+    /// person this host admits — its own, or a member of a workspace it serves
+    /// — is granted one, the same people the session handshake admitted. A
+    /// host that serves no proxy grants nothing.
+    async fn fetch_grant(&self, certificate: &DeviceCert) -> Result<Value, ActionCallError> {
+        let host = &self.inner.host;
+        let person = certificate.user_public_key;
+        if !crate::workspace_access::admits_person(
+            &host.workspaces,
+            host.cert.user_public_key,
+            person,
+        )
+        .await
+        {
+            return Err(ActionCallError::Refused {
+                reason: "the fetch proxy is for members of a workspace on this host".into(),
+            });
+        }
+        let token = if host.fetch_grants.served() {
+            host.fetch_grants.grant(person, certificate.device_public_key)
+        } else {
+            None
+        };
+        Ok(tilo_server_protocol::workspaces::fetch_grant_answer(token))
     }
 
     async fn invoke(
