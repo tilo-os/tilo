@@ -126,6 +126,7 @@ fn published_call(
     let Invocation::Action {
         app,
         action,
+        name,
         args,
         target,
         from,
@@ -172,7 +173,8 @@ fn published_call(
     Ok(json!({
         "app": app,
         "resource": resource,
-        "action": action,
+        // As the app publishes it: the verb, not the id the package names it by.
+        "action": name,
         "arguments": arguments,
         "published": true,
     }))

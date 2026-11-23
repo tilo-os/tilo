@@ -1304,4 +1304,56 @@ mod tests {
             "the step is taken back on the document the app keeps it in"
         );
     }
+
+    #[test]
+    fn a_platform_apps_verb_reaches_the_session_as_the_verb_it_publishes() {
+        let vision = crate::platform_apps::platform_packages()
+            .expect("the platform's packages read")
+            .into_iter()
+            .find(|meta| meta.app == crate::platform_apps::VISION_APP)
+            .expect("the image model is a platform package");
+        let api = Rc::new(Asked::default());
+        let invoker = ApiInvoker {
+            api: Rc::clone(&api) as Rc<dyn TaskApi>,
+            callees: Callees {
+                published: HashSet::from([vision.app.clone()]),
+                apps: HashMap::from([(vision.app.clone(), vision)]),
+                ..Callees::default()
+            },
+            steps: Rc::new(RefCell::new(Steps::default())),
+        };
+        let model = ResourceRef::parse_id("vision:vision.image-model", "so.tilo.vision#ImageModel")
+            .expect("the model's resource id");
+        let invocation = Invocation::Action {
+            app: tilolang_runtime::ids::AppId::from(crate::platform_apps::VISION_APP),
+            action: "so.tilo.vision#describe".to_owned(),
+            name: "describe".to_owned(),
+            args: vec![
+                ("model".to_owned(), Value::resource(&model)),
+                (
+                    "image".to_owned(),
+                    Value::Text("tilo.content:fixture".to_owned()),
+                ),
+            ],
+            class: tilolang_runtime::meta::EffectClass::Undoable,
+            destructive: false,
+            author: None,
+            target: Some(model),
+            from: None,
+        };
+        invoker.invoke(&invocation);
+        let sent = api.0.borrow();
+        let [call] = sent.as_slice() else {
+            panic!("one call reaches the session: {sent:?}");
+        };
+        assert_eq!(
+            (&call["resource"], &call["action"], &call["published"]),
+            (
+                &json!("vision:vision.image-model"),
+                &json!("describe"),
+                &json!(true)
+            ),
+            "the verb the session publishes, not the id the package names it by: {call}"
+        );
+    }
 }
