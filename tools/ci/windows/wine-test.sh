@@ -76,7 +76,7 @@ case "$mode" in
     # on Windows yet, in words, rather than crash or start half of one.
     runtime="${2:?the tilo-runtime.exe to run}"
     set +e
-    output="$(timeout --kill-after=30 300 wine "$runtime" --daemon \
+    output="$(timeout --kill-after=30 300 wine "$runtime" \
       --profile 'C:\tilo-runtime-profile' 2>&1)"
     status=$?
     set -e
