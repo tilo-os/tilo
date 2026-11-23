@@ -13,7 +13,8 @@ use std::fmt;
 
 use serde_json::{Map, Value};
 
-/// Objects up to this size sort on the stack instead of touching the heap.
+/// Objects up to this size sort in place on the stack on every target instead
+/// of touching the heap.
 const SMALL_OBJECT_LEN: usize = 8;
 
 static EMPTY_VALUE: Value = Value::Null;
@@ -160,7 +161,7 @@ fn write_object<'a>(
             }
         }
         if let Some(entries) = stack.get_mut(..len) {
-            sort_entries(entries);
+            insertion_sort_entries(entries);
             sink.write_str("{");
             for (position, &(key, item)) in entries.iter().enumerate() {
                 if position > 0 {
@@ -208,6 +209,26 @@ fn is_sorted_keys(object: &Map<String, Value>) -> bool {
         previous = Some(bytes);
     }
     true
+}
+
+/// In-place insertion sort for small stack-allocated entry slices, avoiding
+/// heap allocations on both native and `wasm32` targets.
+fn insertion_sort_entries(entries: &mut [(&str, &Value)]) {
+    for end in 1..entries.len() {
+        let mut cursor = end;
+        while cursor > 0 {
+            let prev = cursor.saturating_sub(1);
+            let needs_swap = matches!(
+                (entries.get(prev), entries.get(cursor)),
+                (Some(left), Some(right)) if left.0.as_bytes() > right.0.as_bytes()
+            );
+            if !needs_swap {
+                break;
+            }
+            entries.swap(prev, cursor);
+            cursor = prev;
+        }
+    }
 }
 
 fn sort_entries(entries: &mut [(&str, &Value)]) {
@@ -408,6 +429,11 @@ mod tests {
         let six: Value = serde_json::from_str(r#"{"b":1,"":2,"a":3,"ab":4,"B":5,"A":6}"#).unwrap();
         assert!(!is_sorted_keys(six.as_object().unwrap()));
         assert_eq!(to_string(&six), r#"{"":2,"A":6,"B":5,"a":3,"ab":4,"b":1}"#);
+
+        let reversed_eight: Value =
+            serde_json::from_str(r#"{"h":8,"g":7,"f":6,"e":5,"d":4,"c":3,"b":2,"a":1}"#).unwrap();
+        assert!(!is_sorted_keys(reversed_eight.as_object().unwrap()));
+        assert_eq!(to_string(&reversed_eight), expected);
     }
 
     #[test]
