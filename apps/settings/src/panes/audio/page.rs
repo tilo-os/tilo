@@ -498,7 +498,7 @@ fn stream_row(
             .with_id(&format!("audio.stream.{id}.volume.sl"))
             .with_accessible_name(&t_args(
                 "sound-app-volume",
-                &[("app", s.app.as_str().into())],
+                &[("app", s.application.as_str().into())],
             ))
             .with_enabled(!muted),
         crate::on_row::binding(
@@ -551,7 +551,7 @@ fn stream_row(
         );
         controls = controls.push(Box::new(route));
     }
-    let mut line = ui::widget::ListRow::new(format!("audio.stream.{id}"), s.app.clone())
+    let mut line = ui::widget::ListRow::new(format!("audio.stream.{id}"), s.application.clone())
         .trailing(Box::new(controls));
     if let Some(media) = s.media.as_deref().filter(|media| !media.is_empty()) {
         line = line.secondary(media);

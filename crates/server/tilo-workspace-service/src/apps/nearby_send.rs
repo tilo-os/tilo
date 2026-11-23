@@ -240,7 +240,13 @@ pub fn surface() -> tilo_actions::surface::Surface {
 /// The resource as the session's services publish it.
 #[must_use]
 pub fn resource(label: impl Into<String>) -> ResourceSpec {
-    tilo_resource::LiveRow::typed::<NearbySendRoot>(RESOURCE, label).into_resource()
+    // The verbs go with the resource: a press, a script and an agent reach the same ones, and
+    // what moved is personal to the person the engine answers for.
+    tilo_resource::offer::<NearbySendAction>(
+        tilo_resource::LiveRow::typed::<NearbySendRoot>(RESOURCE, label)
+            .into_resource()
+            .with_personal_reading(),
+    )
 }
 
 /// A receiver at an address this host names, as a lab stands one up: no

@@ -1206,17 +1206,6 @@ d-ycck5awo = Power row
     .w-restart = Restart
     .w-shut-down = Shut down
 
-d-6rjhuenw = Emoji card
-
-d-wdiwq4yt = About sheet
-
-d-tkt6f7u6 = About card
-    .w-updates = Updates
-    .w-close = Close
-    .w-all-details = All details
-
-d-vv7k7lcl = Peek card
-
 d-u2tma44r = Devices section
     .w-devices = Devices
     .w-nearby-send = Nearby Send
@@ -1229,6 +1218,17 @@ d-2abiywd2 = Controls editor
     .w-customise-the-panel = Customise the panel
     .w-panel-controls = Panel controls
     .w-reset-the-panel = Reset the panel
+
+d-6rjhuenw = Emoji card
+
+d-wdiwq4yt = About sheet
+
+d-tkt6f7u6 = About card
+    .w-updates = Updates
+    .w-close = Close
+    .w-all-details = All details
+
+d-vv7k7lcl = Peek card
 
 d-zzd3yipu = Strips
 

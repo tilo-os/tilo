@@ -790,7 +790,7 @@ fn stream(
 ) -> Stream {
     Stream {
         node,
-        app: app.to_owned(),
+        application: app.to_owned(),
         media: Some(media.to_owned()),
         playback,
         target,

@@ -649,6 +649,9 @@ pub(crate) struct QuickSettingsService {
     /// Whether the settings document was read at all, and the version that was read: one that did
     /// not move is not read again.
     settings: settings_store::SettingsFollower,
+    /// Whether an action this service took changed the controls, so the reading it answers with
+    /// and the one it published are told apart once: what a press changed is published too.
+    changed: std::cell::Cell<bool>,
 }
 
 impl QuickSettingsService {
@@ -696,6 +699,7 @@ impl QuickSettingsService {
         })?;
         *self.shown.borrow_mut() = config;
         self.settings.changed(settings_store::stamp());
+        self.changed.set(true);
         Ok(true)
     }
 }
@@ -734,7 +738,8 @@ impl tilo_service::Service for QuickSettingsService {
     }
 
     fn poll(&mut self) -> bool {
-        self.follow()
+        let changed = self.changed.replace(false);
+        changed | self.follow()
     }
 }
 
