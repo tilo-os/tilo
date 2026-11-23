@@ -736,6 +736,9 @@ view library_grid(
     let photos = lib.photos.filter(p -> shown(lib, place, p))
     if selecting {
         ui.MediaGrid(size: .small, fill) {
+            // A press with shift, or a drag over the cards, takes the range of cards it covers
+            // as the selection: what a person expects of a grid of photographs.
+            on select(picked: List<Photo>): set(selection, picked.map(x -> x.id))
             for p in photos {
                 ui.MediaCard(
                     p,
@@ -801,12 +804,14 @@ view places_page(lib: Library, viewing: State<Text>) {
         p -> p.location != "" and p.latitude == 0.0 and p.longitude == 0.0,
     )
     stack(gap: .group, fill) {
+        // The photographs on the world: each a card that keeps the size it is given on screen
+        // at every zoom, standing on the place it was taken.
         if let first = mapped.first() {
             ui.Map(
                 name: "Places",
                 latitude: first.latitude,
                 longitude: first.longitude,
-                zoom: 0.2,
+                world: true,
                 aspect: 1.6,
             ) {
                 for p in mapped {
@@ -814,10 +819,10 @@ view places_page(lib: Library, viewing: State<Text>) {
                         name: p.name,
                         latitude: p.latitude,
                         longitude: p.longitude,
-                        width: 360,
-                        height: 260,
+                        width: 96,
+                        height: 96,
                     ) {
-                        ui.MediaCard(p, title: p.name, picture: card_picture(p)) {
+                        ui.MediaCard(p, picture: card_picture(p)) {
                             on activate: set(viewing, p.id)
                         }
                     }
