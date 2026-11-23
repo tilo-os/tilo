@@ -257,7 +257,11 @@ other way round: its ticket names the tab's pending request, and the person runs
 `tilo device add <ticket>` on a device that is logged in, and the person's root certifies the tab
 like any other device. A computer that holds no root hands the signing on: the person's tab that
 holds their root, or any of their logged-in devices, sees the request among `devices#pending` and
-answers it. `tilo login` is always this computer logging in. There is no site lookup. `/v1` REST is only an edge
+answers it. `tilo login` is always this computer logging in. A ticket is only how a
+device that is online gets its certificate: the Imager, running on a device of
+the person, issues the new device's certificate with the same functions and
+writes it into the image, so an image written today joins whenever it first
+boots. There is no second enrolment protocol. There is no site lookup. `/v1` REST is only an edge
 for callers outside Tilo.
 
 ### Where work runs
