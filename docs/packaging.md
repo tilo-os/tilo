@@ -346,6 +346,15 @@ composition downloads; `publish-desktop-payload` publishes it and advances the
 `TILO_DESKTOP_PAYLOAD_*` channel variables. Distribution packages are built and
 validated on t; t does not publish them to a package registry.
 
+`package-arch` and `package-nix` build one distribution's package each, directly
+in an image of that distribution: `makepkg` reads `dist/arch/PKGBUILD` in an Arch
+image, and `nix build` reads `dist/nix/package.nix` in a Nix image, so neither
+needs a nested container engine. Each check runs the same install test as the
+full job and keeps what it built in its outputs, with a `SHA256SUMS` beside it:
+`t dispatch package-arch` then `t outputs package-arch` gives the
+`.pkg.tar.zst` files, and `package-nix` the store closure as
+`tilo-session-amd64.nar.gz`.
+
 The check runs on a native node for its architecture. amd64 containers run
 directly, and every target userspace is pinned to a verified OCI digest rather
 than a mutable distribution tag. `desktop-package-{arch}` runs all five

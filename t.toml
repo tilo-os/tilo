@@ -3359,6 +3359,40 @@ secrets = ["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"]
 [check.matrix]
 deb = ["amd64", "arm64"]
 
+# The two distributions whose package is built by its own package manager rather than by a script
+# in this tree: makepkg reads dist/arch/PKGBUILD and nix build reads dist/nix/package.nix. Each
+# check runs in an image of that distribution, so the build and the install test that follows it
+# use the same userspace without a nested container engine. Both are release checks: dispatch one
+# to build the package and get it with its checksum (`t outputs package-arch`).
+
+[[check]]
+name = "package-arch"
+# Installs the build dependencies from Arch's mirrors, which no fixed host list names, so its
+# result is never served.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "set -euo pipefail\n# dist/arch/build-arch.sh builds with makepkg and dist/arch/test-package.sh installs and verifies\n# the package in this same Arch userspace (dist/ci/run-package-job.sh).\nexport TILO_IN_PACKAGE_CONTAINER=1 TILO_PACKAGE_DISTRO=arch\nexport TILO_EXPECT_ARCH=amd64 TILO_EXECUTION_ARCH=amd64 TILO_EMULATED=0\n# BLAKE3's hand-written native archives mislink against Arch's rolling binutils; its pure build\n# does not (dist/ci/run-package-job.sh).\nexport TILO_BLAKE3_PURE=1 CARGO_BUILD_JOBS=8\nmkdir -p /workspace /artifacts\n# The base image carries no Git, which the source copy reads; the job's own dependency install\n# upgrades the system again, so this transaction changes nothing it would not.\npacman -Syu --needed --noconfirm git\n# The job's build runs as the package builder, not the copy's owner.\ngit config --system --add safe.directory /workspace\nbash dist/ci/archive-package-source.sh \"$PWD\" | tar --extract --directory=/\ncd /workspace\nbash dist/ci/run-package-job.sh\nmkdir -p /target/package/arch\ncp /artifacts/*.pkg.tar.zst /target/package/arch/\ncd /target/package/arch\nsha256sum ./*.pkg.tar.zst > SHA256SUMS\n"
+image = "docker.io/library/archlinux@sha256:d4594bb2300cba11f41c2f27923eb56f63d9988909c402f9c95517d1e362c899"
+requires = ["arch=x86_64", "disk-100g"]
+git = true
+outputs = ["/target/package/arch/**"]
+timeout_secs = 14400
+on = ["dispatch"]
+heavy = true
+
+[[check]]
+name = "package-nix"
+# Fetches the flake's inputs and Cargo's crates from hosts no fixed list names, so its result is
+# never served.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "set -euo pipefail\nexport PATH=/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH\n# dist/ci/run-package-job.sh's Nix userspace: nix build of the flake package, the installed-result\n# verification, the NixOS module evaluation, and the store closure as a portable archive.\nexport TILO_IN_PACKAGE_CONTAINER=1 TILO_PACKAGE_DISTRO=nix\nexport TILO_EXPECT_ARCH=amd64 TILO_EXECUTION_ARCH=amd64\nexport CARGO_BUILD_JOBS=8\nmkdir -p /workspace /artifacts\nbash dist/ci/archive-package-source.sh \"$PWD\" | tar --extract --directory=/\ncd /workspace\nbash dist/ci/run-package-job.sh\nmkdir -p /target/package/nix\ncp /artifacts/*.nar.gz /target/package/nix/\ncd /target/package/nix\nsha256sum ./*.nar.gz > SHA256SUMS\n"
+image = "docker.io/nixos/nix@sha256:7a007c766426c1877758ddc5cb87a965ac131fc78c582ce0083d922d51ae945c"
+requires = ["arch=x86_64", "disk-100g"]
+git = true
+outputs = ["/target/package/nix/**"]
+timeout_secs = 14400
+on = ["dispatch"]
+heavy = true
+
 [[check]]
 name = "host-session-e2e"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
